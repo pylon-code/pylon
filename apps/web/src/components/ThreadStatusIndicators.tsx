@@ -185,6 +185,7 @@ export function ThreadStatusLabel({
         <TooltipTrigger
           render={
             <span
+              role="img"
               aria-label={status.label}
               className={`inline-flex size-3.5 shrink-0 items-center justify-center ${status.colorClass}`}
             />
@@ -202,6 +203,7 @@ export function ThreadStatusLabel({
       <TooltipTrigger
         render={
           <span
+            role="img"
             aria-label={status.label}
             className={`inline-flex items-center gap-1 text-[10px] ${status.colorClass}`}
           />
@@ -316,7 +318,7 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
               />
             }
           >
-            <DotMatrix aria-hidden state="terminal" className="size-3" />
+            <DotMatrix aria-hidden state="terminal" className="size-3.5" />
           </TooltipTrigger>
           <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
         </Tooltip>

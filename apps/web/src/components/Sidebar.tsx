@@ -760,7 +760,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                   />
                 }
               >
-                <DotMatrix aria-hidden state="terminal" className="size-3" />
+                <DotMatrix aria-hidden state="terminal" className="size-3.5" />
               </TooltipTrigger>
               <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
             </Tooltip>
@@ -2231,6 +2231,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               <TooltipTrigger
                 render={
                   <span
+                    role="img"
                     aria-label={projectStatus.label}
                     className={`-ml-0.5 relative inline-flex size-3.5 shrink-0 items-center justify-center ${projectStatus.colorClass}`}
                   />
