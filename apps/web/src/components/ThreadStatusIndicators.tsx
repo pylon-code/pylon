@@ -192,7 +192,7 @@ export function ThreadStatusLabel({
             />
           }
         >
-          <DotMatrix state={status.matrix} label={status.label} className="size-3.5" />
+          <DotMatrix state={status.matrix} aria-hidden className="size-3.5" />
         </TooltipTrigger>
         <TooltipPopup side="top">{status.label}</TooltipPopup>
       </Tooltip>
@@ -209,7 +209,7 @@ export function ThreadStatusLabel({
           />
         }
       >
-        <DotMatrix state={status.matrix} label={status.label} className="size-3.5" />
+        <DotMatrix state={status.matrix} aria-hidden className="size-3.5" />
         <span className="hidden md:inline">{status.label}</span>
       </TooltipTrigger>
       <TooltipPopup side="top">{status.label}</TooltipPopup>
