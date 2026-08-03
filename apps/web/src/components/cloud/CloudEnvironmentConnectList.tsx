@@ -176,21 +176,21 @@ export function CloudEnvironmentConnectRows({
     const savedConnection = savedEnvironment
       ? presentSavedCloudEnvironmentConnection(savedEnvironment.connection)
       : null;
-    const dotClassName = savedConnection
+    const connectionDot = savedConnection
       ? savedConnection.tone === "connected"
-        ? "bg-success"
+        ? { state: "live" as const, colorClassName: "text-success" }
         : savedConnection.tone === "connecting"
-          ? "bg-warning"
+          ? { state: "connecting" as const, colorClassName: "text-warning" }
           : savedConnection.tone === "error"
-            ? "bg-destructive"
-            : "bg-muted-foreground/35"
+            ? { state: "error" as const, colorClassName: "text-destructive" }
+            : { state: "idle" as const, colorClassName: "text-muted-foreground/35" }
       : availability === "online"
-        ? "bg-success"
+        ? { state: "live" as const, colorClassName: "text-success" }
         : availability === "error"
-          ? "bg-destructive"
+          ? { state: "error" as const, colorClassName: "text-destructive" }
           : availability === "checking"
-            ? "bg-warning"
-            : "bg-muted-foreground/35";
+            ? { state: "connecting" as const, colorClassName: "text-warning" }
+            : { state: "idle" as const, colorClassName: "text-muted-foreground/35" };
     const statusText = savedConnection
       ? savedConnection.statusText
       : availability === "online"
@@ -206,13 +206,8 @@ export function CloudEnvironmentConnectRows({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <ConnectionStatusDot
-                dotClassName={dotClassName}
-                pingClassName={
-                  savedConnection?.tone === "connecting" ||
-                  (savedConnection === null && availability === "checking")
-                    ? "bg-warning/60 duration-2000"
-                    : null
-                }
+                state={connectionDot.state}
+                colorClassName={connectionDot.colorClassName}
                 tooltipText={
                   savedConnection
                     ? savedConnection.statusText

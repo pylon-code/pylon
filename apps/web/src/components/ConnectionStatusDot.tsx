@@ -1,34 +1,25 @@
 import { cn } from "~/lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+import { DotMatrix, type DotMatrixState } from "~/components/ui/dot-matrix";
 
 type ConnectionStatusDotProps = {
   tooltipText?: string | null;
-  dotClassName: string;
-  pingClassName?: string | null;
+  state: Extract<DotMatrixState, "live" | "connecting" | "error" | "idle">;
+  colorClassName: string;
 };
 
 export function ConnectionStatusDot({
   tooltipText,
-  dotClassName,
-  pingClassName,
+  state,
+  colorClassName,
 }: ConnectionStatusDotProps) {
   const dotContent = (
-    <>
-      {pingClassName ? (
-        <span
-          className={cn(
-            "absolute inline-flex h-full w-full animate-status-ping rounded-full",
-            pingClassName,
-          )}
-        />
-      ) : null}
-      <span className={cn("relative inline-flex size-2 rounded-full", dotClassName)} />
-    </>
+    <DotMatrix aria-hidden state={state} className={cn("size-3.5", colorClassName)} />
   );
 
   if (!tooltipText) {
     return (
-      <span className="relative flex size-3 shrink-0 items-center justify-center">
+      <span className="relative flex size-3.5 shrink-0 items-center justify-center">
         {dotContent}
       </span>
     );
@@ -39,7 +30,7 @@ export function ConnectionStatusDot({
       type="button"
       title={tooltipText}
       aria-label={tooltipText}
-      className="relative flex size-3 shrink-0 cursor-help items-center justify-center rounded-full outline-hidden"
+      className="relative flex size-3.5 shrink-0 cursor-help items-center justify-center rounded-full outline-hidden"
     >
       {dotContent}
     </button>

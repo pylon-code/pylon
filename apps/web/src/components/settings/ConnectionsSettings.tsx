@@ -737,7 +737,8 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
           <div className="flex min-h-5 items-center gap-1.5">
             <ConnectionStatusDot
               tooltipText={`Link created at ${formatAccessTimestamp(pairingLink.createdAt)}`}
-              dotClassName="bg-amber-400"
+              state="live"
+              colorClassName="text-amber-400"
             />
             <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
             <Popover>
@@ -934,8 +935,8 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
           <div className="flex min-h-5 items-center gap-1.5">
             <ConnectionStatusDot
               tooltipText={statusTooltip}
-              dotClassName={isLive ? "bg-success" : "bg-muted-foreground/30"}
-              pingClassName={isLive ? "bg-success/60 duration-2000" : null}
+              state={isLive ? "live" : "idle"}
+              colorClassName={isLive ? "text-success" : "text-muted-foreground/40"}
             />
             <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
             {clientSession.current ? (
@@ -1356,14 +1357,14 @@ function SavedBackendListRow({
   const connectionState = environment.connection.phase;
   const isConnected = connectionState === "connected";
   const isConnecting = connectionState === "connecting" || connectionState === "reconnecting";
-  const stateDotClassName =
+  const connectionDot =
     connectionState === "connected"
-      ? "bg-success"
+      ? { state: "live" as const, colorClassName: "text-success" }
       : connectionState === "connecting" || connectionState === "reconnecting"
-        ? "bg-warning"
+        ? { state: "connecting" as const, colorClassName: "text-warning" }
         : connectionState === "error"
-          ? "bg-destructive"
-          : "bg-muted-foreground/40";
+          ? { state: "error" as const, colorClassName: "text-destructive" }
+          : { state: "idle" as const, colorClassName: "text-muted-foreground/40" };
   const statusTooltip = connectionStatusText(environment.connection);
   const errorTraceId = environment.connection.traceId;
   const { copyToClipboard: copyTraceIdToClipboard } = useCopyToClipboard<{ traceId: string }>({
@@ -1419,12 +1420,8 @@ function SavedBackendListRow({
           <div className="flex min-h-5 items-center gap-1.5">
             <ConnectionStatusDot
               tooltipText={statusTooltip}
-              dotClassName={stateDotClassName}
-              pingClassName={
-                connectionState === "connecting" || connectionState === "reconnecting"
-                  ? "bg-warning/60 duration-2000"
-                  : null
-              }
+              state={connectionDot.state}
+              colorClassName={connectionDot.colorClassName}
             />
             <h3 className="text-sm font-medium text-foreground">{environment.label}</h3>
           </div>
