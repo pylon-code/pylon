@@ -737,7 +737,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
           <div className="flex min-h-5 items-center gap-1.5">
             <ConnectionStatusDot
               tooltipText={`Link created at ${formatAccessTimestamp(pairingLink.createdAt)}`}
-              state="live"
+              state="idle"
               colorClassName="text-amber-400"
             />
             <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
