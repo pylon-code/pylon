@@ -19,8 +19,6 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
-  CircleCheckIcon,
-  CircleDashedIcon,
   ClockIcon,
   CopyIcon,
   FolderIcon,
@@ -145,6 +143,7 @@ import { primaryServerProvidersAtom } from "../state/server";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Button } from "./ui/button";
+import { DotMatrix } from "./ui/dot-matrix";
 import {
   Dialog,
   DialogDescription,
@@ -487,8 +486,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       ? {
           label: "Working",
           icon: "working" as const,
-          className:
-            "animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400",
+          className: "text-sky-600 dark:text-sky-400",
         }
       : status === "approval"
         ? {
@@ -505,7 +503,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
           : status === "failed"
             ? {
                 label: "Failed",
-                icon: null,
+                icon: "failed" as const,
                 className: "text-red-700 dark:text-red-300",
               }
             : isWoke
@@ -959,9 +957,11 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                       )}
                     >
                       {topStatus.icon === "working" ? (
-                        <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
+                        <DotMatrix aria-hidden state="working" className="size-4" />
+                      ) : topStatus.icon === "failed" ? (
+                        <DotMatrix aria-hidden state="error" className="size-4" />
                       ) : topStatus.icon === "done" ? (
-                        <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
+                        <DotMatrix aria-hidden state="done" className="size-4" />
                       ) : topStatus.icon === "woke" ? (
                         <AlarmClockIcon aria-hidden className="size-4 shrink-0" />
                       ) : null}
