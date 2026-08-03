@@ -652,7 +652,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("lucide-x");
+    expect(markup).toContain('data-state="error"');
     expect(markup).toContain('aria-label="Tool call failed"');
   });
 });
