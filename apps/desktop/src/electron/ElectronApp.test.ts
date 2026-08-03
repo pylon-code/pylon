@@ -60,7 +60,7 @@ vi.mock("electron", () => ({
     getVersion: getVersionMock,
     isDefaultProtocolClient: isDefaultProtocolClientMock,
     isPackaged: true,
-    name: "T3 Code",
+    name: "Pylon",
     on: onMock,
     quit: quitMock,
     relaunch: relaunchMock,

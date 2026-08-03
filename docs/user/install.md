@@ -19,6 +19,24 @@ This starts the T3 Code server on your machine and opens the local web app. Use
 
 ## Desktop App
 
+### Pylon fork
+
+Pylon's desktop build installs beside T3 Code rather than replacing it. The apps use different
+bundle IDs, URL handlers, Electron profiles, runtime databases, and updater metadata. On macOS the
+local Pylon build installs as `Pylon (Alpha).app`; its default runtime data lives under
+`~/.pylon-code`, while T3 Code continues using its own `.t3` and Electron data.
+
+From the Pylon repository, build the local macOS installer with:
+
+```bash
+pnpm exec vp run dist:desktop:dmg
+```
+
+Open the generated `Pylon-*.dmg` in `release/`, copy `Pylon (Alpha).app` into Applications, and use
+the normal macOS right-click **Open** flow for the first unsigned local launch.
+
+### Upstream T3 Code
+
 Download the latest release from
 [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or install from a package
 registry.

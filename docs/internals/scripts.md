@@ -75,10 +75,14 @@ authenticated.
 
 - Default build is unsigned/not notarized for local sharing.
 - The DMG build uses `assets/prod/black-macos-1024.png` as the production app icon source.
-- Desktop production windows load the bundled UI from the `t3code://app/` root URL (not a
+- Desktop production windows load the bundled UI from the `pylon-code://app/` root URL (not a
   `127.0.0.1` document URL, and not an explicit `index.html` path).
 - Desktop packaging includes `apps/server/dist` (the `t3` backend) and starts it on loopback with an
   auth token for WebSocket/API traffic.
+- Pylon's packaged desktop identity is independent from T3 Code: `com.pylon.code`, the
+  `pylon-code://` handler, the `pylon-code` Electron profile, and `~/.pylon-code` runtime state.
+  Development uses the corresponding `*.dev`/`pylon-code-dev` identities. Do not restore upstream
+  T3 desktop identifiers during selective adoption.
 - Your tester can still open it on macOS by right-clicking the app and choosing **Open** on first
   launch.
 - To keep staging files for debugging package contents, run: `vp run dist:desktop:dmg --keep-stage`
@@ -86,6 +90,8 @@ authenticated.
 - Signed macOS builds also require `T3CODE_APPLE_TEAM_ID` and
   `T3CODE_MACOS_PROVISIONING_PROFILE`. The passkey RP domain is derived from
   `T3CODE_CLERK_PUBLISHABLE_KEY` unless `T3CODE_CLERK_PASSKEY_RP_DOMAINS` overrides it.
+- Set `PYLON_DESKTOP_UPDATE_REPOSITORY=owner/repo` when building artifacts outside GitHub Actions
+  that should use Pylon's updater. GitHub Actions derives the same value from `GITHUB_REPOSITORY`.
 - Windows `--signed` uses Azure Trusted Signing and expects:
   `AZURE_TRUSTED_SIGNING_ENDPOINT`, `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`,
   `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`, and `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`.

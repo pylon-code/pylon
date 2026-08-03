@@ -8,6 +8,17 @@ You can think of Pylon as a "bring-your-own-subscription" alternative to apps li
 
 Pylon still retains upstream compatibility identifiers such as `.t3`, `T3CODE_HOME`, `t3.json`, `npx t3`, `@t3tools/*`, `com.t3tools.*`, and some T3-named source files. Treat those as implementation details, not product copy. Do not rename compatibility identifiers during branding or UI work unless the developer explicitly expands the scope and the migration is handled across every client and connection mode.
 
+The desktop product identity is deliberately independent from T3 Code so both apps can be installed and run at the same time. Preserve these Pylon-owned boundaries when adopting upstream desktop work:
+
+- macOS/Windows application ID: `com.pylon.code` (`com.pylon.code.dev.*` for local development);
+- renderer protocols: `pylon-code://` and `pylon-code-dev://`;
+- runtime home: `~/.pylon-code` unless explicitly overridden;
+- Electron profiles: `pylon-code` and `pylon-code-dev`;
+- Linux executable/registration: `pylon`, `pylon-code.desktop`, and `pylon-code` WM class;
+- packaged app and artifacts: `Pylon (Alpha)` / `Pylon (Nightly)` and `Pylon-*`.
+
+T3-named environment variables may still be passed to the bundled compatibility server. They are not permission to point Pylon at T3's default runtime or Electron data directories.
+
 ## Fork direction and source control
 
 Pylon is a long-lived independent product, not a temporary reskin or a patch queue intended to collapse back into T3 Code. Build in Pylon's direction while preserving the upstream qualities described below.
