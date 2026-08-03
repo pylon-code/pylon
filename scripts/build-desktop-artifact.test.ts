@@ -13,6 +13,7 @@ import {
   createStageWorkspaceConfig,
   createStagePatchedDependencies,
   createBuildConfig,
+  DESKTOP_STAGE_PACKAGE_NAME,
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
@@ -310,6 +311,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   });
 
   it("limits Electron locales and excludes the unused Claude SDK executable", () => {
+    assert.equal(DESKTOP_STAGE_PACKAGE_NAME, "pylon-code");
     assert.deepStrictEqual(DESKTOP_ELECTRON_LANGUAGES, ["en-US"]);
     assert.deepStrictEqual(DESKTOP_FILE_EXCLUSIONS, [
       "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
@@ -369,6 +371,25 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.deepStrictEqual(config.files, DESKTOP_FILE_EXCLUSIONS);
       }
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect("uses an explicit Apple Development identity for local macOS builds", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        undefined,
+        "Apple Development: Pylon Developer (PYLONTEAM1)",
+      );
+
+      const mac = config.mac as Record<string, unknown>;
+      assert.equal(mac.identity, "Apple Development: Pylon Developer (PYLONTEAM1)");
+      assert.equal(mac.hardenedRuntime, false);
+    }),
   );
 
   it.effect("preserves both Linux icon resize failures with structural context", () => {
@@ -774,8 +795,44 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.skipBuild, false);
       assert.equal(resolved.keepStage, false);
       assert.equal(resolved.signed, false);
+      assert.equal(resolved.localMacSigningIdentity, undefined);
       assert.equal(resolved.verbose, false);
       assert.equal(resolved.mockUpdates, false);
+    }),
+  );
+
+  it.effect("resolves the Pylon local macOS signing identity from the environment", () =>
+    Effect.gen(function* () {
+      const resolved = yield* resolveBuildOptions({
+        platform: Option.some("mac"),
+        target: Option.none(),
+        arch: Option.some("arm64"),
+        buildVersion: Option.none(),
+        outputDir: Option.some("release-test"),
+        skipBuild: Option.none(),
+        keepStage: Option.none(),
+        signed: Option.none(),
+        verbose: Option.none(),
+        mockUpdates: Option.none(),
+        mockUpdateServerPort: Option.none(),
+        wslPrebuild: Option.none(),
+      }).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                PYLON_DESKTOP_LOCAL_SIGNING_IDENTITY:
+                  "Apple Development: Pylon Developer (PYLONTEAM1)",
+              },
+            }),
+          ),
+        ),
+      );
+
+      assert.equal(
+        resolved.localMacSigningIdentity,
+        "Apple Development: Pylon Developer (PYLONTEAM1)",
+      );
     }),
   );
 });

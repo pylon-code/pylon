@@ -29,11 +29,16 @@ local Pylon build installs as `Pylon (Alpha).app`; its default runtime data live
 From the Pylon repository, build the local macOS installer with:
 
 ```bash
-pnpm exec vp run dist:desktop:dmg
+PYLON_DESKTOP_LOCAL_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" \
+  vp run dist:desktop:dmg
 ```
 
+Use an identity listed by `security find-identity -v -p codesigning`. You can omit the environment
+variable for an ad-hoc-signed build, though newer macOS provenance policy may reject that build
+after it is copied from the DMG.
+
 Open the generated `Pylon-*.dmg` in `release/`, copy `Pylon (Alpha).app` into Applications, and use
-the normal macOS right-click **Open** flow for the first ad-hoc-signed, unnotarized local launch.
+the normal macOS right-click **Open** flow if the first unnotarized local launch is blocked.
 
 ### Upstream T3 Code
 

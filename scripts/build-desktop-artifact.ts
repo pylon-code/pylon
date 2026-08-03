@@ -36,6 +36,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.pylon.code";
+export const DESKTOP_STAGE_PACKAGE_NAME = "pylon-code";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -602,6 +603,7 @@ interface ResolvedBuildOptions {
   readonly skipBuild: boolean;
   readonly keepStage: boolean;
   readonly signed: boolean;
+  readonly localMacSigningIdentity: string | undefined;
   readonly verbose: boolean;
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
@@ -1032,6 +1034,9 @@ const BuildEnvConfig = Config.all({
   skipBuild: Config.boolean("T3CODE_DESKTOP_SKIP_BUILD").pipe(Config.withDefault(false)),
   keepStage: Config.boolean("T3CODE_DESKTOP_KEEP_STAGE").pipe(Config.withDefault(false)),
   signed: Config.boolean("T3CODE_DESKTOP_SIGNED").pipe(Config.withDefault(false)),
+  localMacSigningIdentity: Config.string("PYLON_DESKTOP_LOCAL_SIGNING_IDENTITY").pipe(
+    Config.option,
+  ),
   verbose: Config.boolean("T3CODE_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
   mockUpdates: Config.boolean("T3CODE_DESKTOP_MOCK_UPDATES").pipe(Config.withDefault(false)),
   mockUpdateServerPort: Config.string("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
@@ -1117,6 +1122,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const skipBuild = resolveBooleanFlag(input.skipBuild, env.skipBuild);
   const keepStage = resolveBooleanFlag(input.keepStage, env.keepStage);
   const signed = resolveBooleanFlag(input.signed, env.signed);
+  const localMacSigningIdentity = Option.getOrUndefined(env.localMacSigningIdentity)?.trim();
   const verbose = resolveBooleanFlag(input.verbose, env.verbose);
 
   const mockUpdates = resolveBooleanFlag(input.mockUpdates, env.mockUpdates);
@@ -1143,6 +1149,10 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     skipBuild,
     keepStage,
     signed,
+    localMacSigningIdentity:
+      localMacSigningIdentity && localMacSigningIdentity.length > 0
+        ? localMacSigningIdentity
+        : undefined,
     verbose,
     mockUpdates,
     mockUpdateServerPort,
@@ -1534,6 +1544,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         readonly provisioningProfilePath: string;
       }
     | undefined,
+  localMacSigningIdentity?: string,
 ) {
   const buildConfig: Record<string, unknown> = {
     appId: DESKTOP_APP_ID,
@@ -1569,9 +1580,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
       // Modern macOS rejects Electron's nested linker signatures when the app
-      // bundle is left completely unsigned. Ad-hoc signing gives local builds
-      // a coherent signature without requiring a Developer ID certificate.
-      ...(signed ? {} : { identity: "-", hardenedRuntime: false }),
+      // bundle is left completely unsigned. Ad-hoc signing is the portable
+      // fallback; developers can select a local Apple Development certificate
+      // when macOS provenance policy rejects an installed ad-hoc DMG.
+      ...(signed ? {} : { identity: localMacSigningIdentity ?? "-", hardenedRuntime: false }),
       protocols: [
         {
           name: "Pylon",
@@ -1916,7 +1928,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     stageDependencies,
   );
   const stagePackageJson: StagePackageJson = {
-    name: "pylon",
+    // Electron reads the package name before our main process can override
+    // app paths, so this must match the isolated production profile too.
+    name: DESKTOP_STAGE_PACKAGE_NAME,
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
@@ -1938,6 +1952,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
             provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
           }
         : undefined,
+      options.localMacSigningIdentity,
     ),
     dependencies: stageDependencies,
     devDependencies: {

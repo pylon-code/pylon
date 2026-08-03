@@ -73,7 +73,10 @@ authenticated.
 
 ### Desktop `.dmg` packaging notes
 
-- Default build is ad-hoc signed for local launch, but not Developer ID signed or notarized.
+- Default builds are ad-hoc signed, but not Developer ID signed or notarized. On macOS versions
+  that reject installed ad-hoc DMGs, set `PYLON_DESKTOP_LOCAL_SIGNING_IDENTITY` to an Apple
+  Development identity from `security find-identity -v -p codesigning` before building. This is
+  local development signing only; it does not enable release notarization.
 - The DMG build uses `assets/prod/black-macos-1024.png` as the production app icon source.
 - Desktop production windows load the bundled UI from the `pylon-code://app/` root URL (not a
   `127.0.0.1` document URL, and not an explicit `index.html` path).
@@ -81,10 +84,11 @@ authenticated.
   auth token for WebSocket/API traffic.
 - Pylon's packaged desktop identity is independent from T3 Code: `com.pylon.code`, the
   `pylon-code://` handler, the `pylon-code` Electron profile, and `~/.pylon-code` runtime state.
+  The staged Electron package is also named `pylon-code` so subprocesses use the isolated profile
+  before the main process starts.
   Development uses the corresponding `*.dev`/`pylon-code-dev` identities. Do not restore upstream
   T3 desktop identifiers during selective adoption.
-- Your tester can still open it on macOS by right-clicking the app and choosing **Open** on first
-  launch.
+- Unnotarized builds may still require right-clicking the app and choosing **Open** on first launch.
 - To keep staging files for debugging package contents, run: `vp run dist:desktop:dmg --keep-stage`
 - To allow code-signing/notarization when configured in CI/secrets, add: `--signed`.
 - Signed macOS builds also require `T3CODE_APPLE_TEAM_ID` and
