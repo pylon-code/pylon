@@ -17,6 +17,7 @@ import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic"
 import type { SidebarThreadSummary } from "../types";
 import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { DotMatrix } from "./ui/dot-matrix";
 
 export interface PrStatusIndicator {
   label: string;
@@ -191,11 +192,7 @@ export function ThreadStatusLabel({
             />
           }
         >
-          <span
-            className={`size-[9px] rounded-full ${status.dotClass} ${
-              status.pulse ? "animate-status-pulse" : ""
-            }`}
-          />
+          <DotMatrix state={status.matrix} label={status.label} className="size-3.5" />
         </TooltipTrigger>
         <TooltipPopup side="top">{status.label}</TooltipPopup>
       </Tooltip>
@@ -212,11 +209,7 @@ export function ThreadStatusLabel({
           />
         }
       >
-        <span
-          className={`h-1.5 w-1.5 rounded-full ${status.dotClass} ${
-            status.pulse ? "animate-status-pulse" : ""
-          }`}
-        />
+        <DotMatrix state={status.matrix} label={status.label} className="size-3.5" />
         <span className="hidden md:inline">{status.label}</span>
       </TooltipTrigger>
       <TooltipPopup side="top">{status.label}</TooltipPopup>

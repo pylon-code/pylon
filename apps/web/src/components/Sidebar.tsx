@@ -124,6 +124,7 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import { Kbd } from "./ui/kbd";
+import { DotMatrix } from "./ui/dot-matrix";
 import {
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
@@ -2239,10 +2240,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                 }
               >
                 <span className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover/project-header:opacity-0">
-                  <span
-                    className={`size-[9px] rounded-full ${projectStatus.dotClass} ${
-                      projectStatus.pulse ? "animate-status-pulse" : ""
-                    }`}
+                  <DotMatrix
+                    state={projectStatus.matrix}
+                    label={projectStatus.label}
+                    className="size-3.5"
                   />
                 </span>
                 <ChevronRightIcon className="absolute inset-0 m-auto size-3.5 text-muted-foreground/70 opacity-0 transition-opacity duration-150 group-hover/project-header:opacity-100" />
