@@ -8,6 +8,18 @@ You can think of Pylon as a "bring-your-own-subscription" alternative to apps li
 
 Pylon still retains upstream compatibility identifiers such as `.t3`, `T3CODE_HOME`, `t3.json`, `npx t3`, `@t3tools/*`, `com.t3tools.*`, and some T3-named source files. Treat those as implementation details, not product copy. Do not rename compatibility identifiers during branding or UI work unless the developer explicitly expands the scope and the migration is handled across every client and connection mode.
 
+## Fork direction and source control
+
+Pylon is a long-lived independent product, not a temporary reskin or a patch queue intended to collapse back into T3 Code. Build in Pylon's direction while preserving the upstream qualities described below.
+
+- The canonical repository is the private `rynfar/pylon` repository. Its writable remote is `origin`, and its default product branch is `pylon`.
+- Base Pylon work on `pylon` or a task branch created from it. Do not treat the inherited `main` branch as Pylon's product branch.
+- `t3code-upstream` (`pingdotgg/t3code`) and `t3code-fork` (`rynfar/t3code`) are reference remotes. They are intentionally fetch-only. Never push to them or re-enable their push URLs.
+- Upstream changes are opt-in. Fetch and inspect upstream commits, then cherry-pick or selectively merge only changes that benefit Pylon. Do not hard-reset, wholesale rebase, or replace Pylon with an upstream branch.
+- Resolve upstream conflicts Pylon-first. Preserve Pylon branding, agent guidance, Kanban behavior, and later Pylon-specific product decisions unless the developer explicitly chooses otherwise.
+- An inherited compatibility name is not permission to restore visible T3 branding. Keep product identity and runtime compatibility separate.
+- Before committing or publishing, verify the current branch and remotes. If the checkout is not rooted in the Pylon repository or a push would target a T3 remote, stop and correct it before proceeding.
+
 ## What makes Pylon special?
 
 Pylon inherits a product used by more than 100,000 people. Preserve the qualities that made the upstream project successful while giving the fork a coherent Pylon identity.
@@ -118,7 +130,7 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 - Never make a PR unless the developer explicitly asks you to do so.
 - Conventional commit titles, plain language: `fix(web): new threads no longer spike CPU`.
 - Body: the problem in a sentence or two, then how you fixed it. End with the model and harness that did the work.
-- **Rebase onto latest main before opening.** Stale branches conflict and burn a review round.
+- **Rebase onto the latest `pylon` branch before opening.** Stale branches conflict and burn a review round. Never rebase a Pylon branch directly onto a T3 remote.
 - UI changes need before/after images. Motion or timing needs a short video.
 - One concern per PR. If the description says "also", split it.
 - When babysitting: poll checks and comments newer than the last push, verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
