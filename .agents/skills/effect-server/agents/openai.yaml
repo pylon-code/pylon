@@ -1,0 +1,4 @@
+interface:
+  display_name: "Effect Server Work"
+  short_description: "Change Pylon server code safely"
+  default_prompt: "Use $effect-server to implement and verify this Pylon server change with the repository Effect patterns."

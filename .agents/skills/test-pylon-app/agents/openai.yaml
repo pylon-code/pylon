@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pylon App Testing"
+  short_description: "Launch isolated Pylon test environments"
+  default_prompt: "Use $test-pylon-app to launch an isolated Pylon environment and iteratively test it in the browser while preserving state."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Pylon Mobile"
+  short_description: "Test Pylon on iOS or Android"
+  default_prompt: "Use $test-pylon-mobile to launch Pylon against an isolated backend and verify the affected flow on an available simulator or emulator."

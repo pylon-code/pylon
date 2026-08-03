@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pylon Branding"
+  short_description: "Apply and verify Pylon brand assets"
+  default_prompt: "Use $pylon-branding to update and verify Pylon branding across the affected app surfaces."

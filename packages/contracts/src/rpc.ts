@@ -51,6 +51,17 @@ import {
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
+  KanbanArchiveWorkItemInput,
+  KanbanCreateWorkItemInput,
+  KanbanMoveWorkItemInput,
+  KanbanOperationError,
+  KanbanRestoreWorkItemInput,
+  KanbanStreamItem,
+  KanbanSubscribeInput,
+  KanbanUpdateWorkItemInput,
+  KanbanWorkItem,
+} from "./kanban.ts";
+import {
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
@@ -197,6 +208,14 @@ export const WS_METHODS = {
 
   // Review methods
   reviewGetDiffPreview: "review.getDiffPreview",
+
+  // Kanban methods
+  kanbanCreateWorkItem: "kanban.createWorkItem",
+  kanbanUpdateWorkItem: "kanban.updateWorkItem",
+  kanbanMoveWorkItem: "kanban.moveWorkItem",
+  kanbanArchiveWorkItem: "kanban.archiveWorkItem",
+  kanbanRestoreWorkItem: "kanban.restoreWorkItem",
+  kanbanSubscribe: "kanban.subscribe",
 
   // Terminal methods
   terminalOpen: "terminal.open",
@@ -566,6 +585,43 @@ export const WsReviewGetDiffPreviewRpc = Rpc.make(WS_METHODS.reviewGetDiffPrevie
   error: Schema.Union([ReviewDiffPreviewError, EnvironmentAuthorizationError]),
 });
 
+export const WsKanbanCreateWorkItemRpc = Rpc.make(WS_METHODS.kanbanCreateWorkItem, {
+  payload: KanbanCreateWorkItemInput,
+  success: KanbanWorkItem,
+  error: Schema.Union([KanbanOperationError, EnvironmentAuthorizationError]),
+});
+
+export const WsKanbanUpdateWorkItemRpc = Rpc.make(WS_METHODS.kanbanUpdateWorkItem, {
+  payload: KanbanUpdateWorkItemInput,
+  success: KanbanWorkItem,
+  error: Schema.Union([KanbanOperationError, EnvironmentAuthorizationError]),
+});
+
+export const WsKanbanMoveWorkItemRpc = Rpc.make(WS_METHODS.kanbanMoveWorkItem, {
+  payload: KanbanMoveWorkItemInput,
+  success: KanbanWorkItem,
+  error: Schema.Union([KanbanOperationError, EnvironmentAuthorizationError]),
+});
+
+export const WsKanbanArchiveWorkItemRpc = Rpc.make(WS_METHODS.kanbanArchiveWorkItem, {
+  payload: KanbanArchiveWorkItemInput,
+  success: KanbanWorkItem,
+  error: Schema.Union([KanbanOperationError, EnvironmentAuthorizationError]),
+});
+
+export const WsKanbanRestoreWorkItemRpc = Rpc.make(WS_METHODS.kanbanRestoreWorkItem, {
+  payload: KanbanRestoreWorkItemInput,
+  success: KanbanWorkItem,
+  error: Schema.Union([KanbanOperationError, EnvironmentAuthorizationError]),
+});
+
+export const WsKanbanSubscribeRpc = Rpc.make(WS_METHODS.kanbanSubscribe, {
+  payload: KanbanSubscribeInput,
+  success: KanbanStreamItem,
+  error: Schema.Union([KanbanOperationError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 export const WsTerminalOpenRpc = Rpc.make(WS_METHODS.terminalOpen, {
   payload: TerminalOpenInput,
   success: TerminalSessionSnapshot,
@@ -830,6 +886,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsSwitchRefRpc,
   WsVcsInitRpc,
   WsReviewGetDiffPreviewRpc,
+  WsKanbanCreateWorkItemRpc,
+  WsKanbanUpdateWorkItemRpc,
+  WsKanbanMoveWorkItemRpc,
+  WsKanbanArchiveWorkItemRpc,
+  WsKanbanRestoreWorkItemRpc,
+  WsKanbanSubscribeRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,
   WsTerminalWriteRpc,

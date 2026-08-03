@@ -96,6 +96,7 @@ import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
+import * as KanbanService from "./kanban/KanbanService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -360,6 +361,7 @@ const makeWsRpcLayer = (
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
       const review = yield* ReviewService.ReviewService;
+      const kanban = yield* KanbanService.KanbanService;
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
@@ -1853,6 +1855,30 @@ const makeWsRpcLayer = (
         [WS_METHODS.reviewGetDiffPreview]: (input) =>
           observeRpcEffect(WS_METHODS.reviewGetDiffPreview, review.getDiffPreview(input), {
             "rpc.aggregate": "review",
+          }),
+        [WS_METHODS.kanbanCreateWorkItem]: (input) =>
+          observeRpcEffect(WS_METHODS.kanbanCreateWorkItem, kanban.create(input), {
+            "rpc.aggregate": "kanban",
+          }),
+        [WS_METHODS.kanbanUpdateWorkItem]: (input) =>
+          observeRpcEffect(WS_METHODS.kanbanUpdateWorkItem, kanban.update(input), {
+            "rpc.aggregate": "kanban",
+          }),
+        [WS_METHODS.kanbanMoveWorkItem]: (input) =>
+          observeRpcEffect(WS_METHODS.kanbanMoveWorkItem, kanban.move(input), {
+            "rpc.aggregate": "kanban",
+          }),
+        [WS_METHODS.kanbanArchiveWorkItem]: (input) =>
+          observeRpcEffect(WS_METHODS.kanbanArchiveWorkItem, kanban.archive(input), {
+            "rpc.aggregate": "kanban",
+          }),
+        [WS_METHODS.kanbanRestoreWorkItem]: (input) =>
+          observeRpcEffect(WS_METHODS.kanbanRestoreWorkItem, kanban.restore(input), {
+            "rpc.aggregate": "kanban",
+          }),
+        [WS_METHODS.kanbanSubscribe]: () =>
+          observeRpcStream(WS_METHODS.kanbanSubscribe, kanban.stream, {
+            "rpc.aggregate": "kanban",
           }),
         [WS_METHODS.terminalOpen]: (input) =>
           observeRpcEffect(WS_METHODS.terminalOpen, terminalManager.open(input), {

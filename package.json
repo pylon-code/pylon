@@ -15,8 +15,9 @@
     "start:marketing": "vp run --filter @t3tools/marketing preview",
     "start:mock-update-server": "node scripts/mock-update-server.ts",
     "screenshots:mobile": "node scripts/mobile-showcase.ts",
-    "icons:export": "node scripts/export-brand-icons.ts",
-    "icons:check": "node scripts/export-brand-icons.ts --check",
+    "icons:export": "node scripts/export-pylon-brand-icons.mjs",
+    "icons:check": "node scripts/export-pylon-brand-icons.mjs --check",
+    "icons:export:t3": "node scripts/export-brand-icons.ts",
     "build": "vp run --filter './apps/*' --filter './packages/*' --filter './oxlint-plugin-t3code' --filter './scripts' build",
     "build:marketing": "vp run --filter @t3tools/marketing build",
     "build:desktop": "vp run --filter @t3tools/desktop --filter t3 build",
@@ -50,6 +51,7 @@
     "@oxlint/plugins": "^1.63.0",
     "@types/node": "catalog:",
     "@typescript/native-preview": "catalog:",
+    "sharp": "0.34.5",
     "vite-plus": "catalog:"
   },
   "engines": {

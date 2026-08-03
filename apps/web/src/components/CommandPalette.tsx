@@ -29,6 +29,7 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import {
   ArrowLeftIcon,
+  Columns3Icon,
   CornerLeftUpIcon,
   FileSearchIcon,
   FolderIcon,
@@ -1392,6 +1393,18 @@ function OpenCommandPaletteDialog(props: {
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
     });
   }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:board",
+    searchTerms: ["board", "kanban", "work", "planning", "tasks"],
+    title: "Open board",
+    icon: <Columns3Icon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "board.open",
+    run: async () => {
+      await navigate({ to: "/board" });
+    },
+  });
 
   actionItems.push({
     kind: "action",

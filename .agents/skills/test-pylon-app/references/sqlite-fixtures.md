@@ -1,6 +1,6 @@
 # SQLite fixtures
 
-Load this reference only when inspecting or seeding local T3 state directly.
+Load this reference only when inspecting or seeding local Pylon state directly. Compatibility paths and database names still use T3 identifiers.
 
 ## Select the correct database
 
