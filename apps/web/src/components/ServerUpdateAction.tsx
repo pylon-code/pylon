@@ -12,6 +12,7 @@ import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { manualServerUpdateCommand } from "~/versionSkew";
 import { Button } from "./ui/button";
+import { DotMatrix } from "./ui/dot-matrix";
 import { toastManager } from "./ui/toast";
 
 const UPDATE_STEPS = [
@@ -28,8 +29,8 @@ function updateFailureMessage(error: unknown): string {
 /**
  * Monochrome step rail for an in-flight server update. The update is a
  * wait, not a warning: done steps recede to gray, the active step is the
- * only bright element and pulses. Failure keeps the rail but surfaces the
- * error below it.
+ * only bright element and carries a DotMatrix marker. Failure keeps the
+ * rail but surfaces the error below it.
  */
 export function ServerUpdateProgress({
   fromVersion,
@@ -62,7 +63,7 @@ export function ServerUpdateProgress({
                   : failed
                     ? "text-destructive"
                     : running
-                      ? "animate-status-pulse text-foreground"
+                      ? "text-foreground"
                       : "text-muted-foreground/50",
               )}
               aria-current={running ? "step" : undefined}
@@ -73,15 +74,13 @@ export function ServerUpdateProgress({
                   strokeWidth={2.5}
                   aria-hidden="true"
                 />
+              ) : running ? (
+                <DotMatrix aria-hidden state="working" className="size-3.5 shrink-0" />
               ) : (
                 <span
                   className={cn(
                     "size-1.5 shrink-0 rounded-full",
-                    failed
-                      ? "bg-destructive"
-                      : running
-                        ? "bg-foreground"
-                        : "border border-muted-foreground/40",
+                    failed ? "bg-destructive" : "border border-muted-foreground/40",
                   )}
                   aria-hidden="true"
                 />
