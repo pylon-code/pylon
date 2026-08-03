@@ -12,7 +12,7 @@ const DOT_INDEXES = Array.from({ length: GRID * GRID }, (_, i) => i);
 function hash(n: number, salt: number, range: number): number {
   let h = (Math.imul(n, 374761393) + Math.imul(salt, 668265263)) >>> 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
-  return ((h ^ (h >>> 16)) % range) / 1000;
+  return (((h ^ (h >>> 16)) >>> 0) % range) / 1000;
 }
 
 const glyph = (dots: ReadonlyArray<readonly [number, number]>) =>
@@ -143,7 +143,13 @@ function DotMatrix({ className, state, label, ...props }: DotMatrixProps) {
       className={cn("inline-flex shrink-0", className)}
       {...props}
     >
-      <svg aria-hidden viewBox="0 0 20 20" fill="currentColor" className="size-full">
+      <svg
+        aria-hidden
+        viewBox="0 0 20 20"
+        fill="currentColor"
+        className="size-full"
+        style={{ color: "inherit" }}
+      >
         {DOT_INDEXES.map((i) => {
           const row = Math.floor(i / GRID);
           const col = i % GRID;

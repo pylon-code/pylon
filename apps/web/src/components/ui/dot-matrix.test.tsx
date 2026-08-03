@@ -44,4 +44,13 @@ describe("DotMatrix", () => {
       'aria-label="connecting"',
     );
   });
+
+  it("never emits a positive animation-delay (unsigned hash regression)", () => {
+    const html = renderToStaticMarkup(<DotMatrix state="working" />);
+    const delays = [...html.matchAll(/animation-delay:\s*([-\d.]+)s/g)].map((m) => Number(m[1]));
+    expect(delays.length).toBeGreaterThan(0);
+    for (const delay of delays) {
+      expect(delay).toBeLessThanOrEqual(0);
+    }
+  });
 });
