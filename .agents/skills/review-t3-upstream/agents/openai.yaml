@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review T3 Upstream"
+  short_description: "Review and selectively adopt T3 changes"
+  default_prompt: "Use $review-t3-upstream to fetch T3 updates, explain the candidates, and help me choose what Pylon should adopt."
