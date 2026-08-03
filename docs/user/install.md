@@ -33,7 +33,7 @@ pnpm exec vp run dist:desktop:dmg
 ```
 
 Open the generated `Pylon-*.dmg` in `release/`, copy `Pylon (Alpha).app` into Applications, and use
-the normal macOS right-click **Open** flow for the first unsigned local launch.
+the normal macOS right-click **Open** flow for the first ad-hoc-signed, unnotarized local launch.
 
 ### Upstream T3 Code
 

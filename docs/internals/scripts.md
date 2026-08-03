@@ -73,7 +73,7 @@ authenticated.
 
 ### Desktop `.dmg` packaging notes
 
-- Default build is unsigned/not notarized for local sharing.
+- Default build is ad-hoc signed for local launch, but not Developer ID signed or notarized.
 - The DMG build uses `assets/prod/black-macos-1024.png` as the production app icon source.
 - Desktop production windows load the bundled UI from the `pylon-code://app/` root URL (not a
   `127.0.0.1` document URL, and not an explicit `index.html` path).

@@ -1568,6 +1568,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
+      // Modern macOS rejects Electron's nested linker signatures when the app
+      // bundle is left completely unsigned. Ad-hoc signing gives local builds
+      // a coherent signature without requiring a Developer ID certificate.
+      ...(signed ? {} : { identity: "-", hardenedRuntime: false }),
       protocols: [
         {
           name: "Pylon",

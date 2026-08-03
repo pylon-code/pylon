@@ -349,6 +349,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.notProperty(mac, "asarUnpack");
       assert.notProperty(linux, "asarUnpack");
       assert.deepStrictEqual(win.asarUnpack, WINDOWS_ASAR_UNPACK);
+      assert.equal((mac.mac as Record<string, unknown>).identity, "-");
+      assert.equal((mac.mac as Record<string, unknown>).hardenedRuntime, false);
       // Linux must register the Pylon renderer scheme so the generated .desktop
       // entry advertises MimeType=x-scheme-handler/pylon-code for OAuth deep links.
       assert.deepStrictEqual((linux.linux as Record<string, unknown>).protocols, [
@@ -537,6 +539,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.equal(config.appId, "com.pylon.code");
         assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
         assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
+        assert.notProperty(mac, "identity");
+        assert.notProperty(mac, "hardenedRuntime");
         assert.deepStrictEqual(mac.protocols, [{ name: "Pylon", schemes: ["pylon-code"] }]);
       }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
