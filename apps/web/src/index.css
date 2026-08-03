@@ -236,6 +236,38 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
+/* Dot-matrix status indicator. Per-dot duration/delay arrive inline from the
+   DotMatrix component; steps() holds keep many concurrent indicators cheap for
+   the compositor (same duty-cycle discipline as status-pulse above). The blink
+   animates element opacity while resting brightness lives in fill-opacity, so
+   state changes cross-fade independently of the blink. */
+@keyframes dot-matrix-blink {
+  0%,
+  40% {
+    opacity: 1;
+    animation-timing-function: steps(4);
+  }
+  50%,
+  90% {
+    opacity: var(--dot-matrix-blink-lo, 1);
+    animation-timing-function: steps(4);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+.dot-matrix-dot {
+  transition: fill-opacity 0.3s;
+}
+.dot-matrix-dot[data-animated="true"] {
+  animation: dot-matrix-blink 1s infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot-matrix-dot[data-animated="true"] {
+    animation: none;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
