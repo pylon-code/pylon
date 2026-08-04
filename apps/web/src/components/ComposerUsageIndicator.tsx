@@ -14,6 +14,33 @@ import { getComposerUsageView } from "./ComposerUsageIndicator.logic";
 const NEAR_LIMIT_PERCENT = 80;
 
 /**
+ * A nearly-empty window still shows a sliver, so the bar reads as "barely
+ * used" rather than as a rendering failure.
+ */
+const MIN_VISIBLE_FILL_PERCENT = 3;
+
+/**
+ * Fixed-width fill bar for one window.
+ *
+ * Decorative — the percentage sits next to it — so it is hidden from
+ * assistive tech. Colors come from `currentColor`, which keeps the fill in
+ * step with the near-limit emphasis on the number without a second decision.
+ */
+function UsageBar({ percent }: { readonly percent: number }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block h-1 w-5 shrink-0 overflow-hidden rounded-full bg-current/15"
+    >
+      <span
+        className="block h-full rounded-full bg-current"
+        style={{ width: `${Math.max(MIN_VISIBLE_FILL_PERCENT, Math.min(100, percent))}%` }}
+      />
+    </span>
+  );
+}
+
+/**
  * Subscription usage for the account the current thread runs on, sitting at
  * the right of the composer context strip.
  *
@@ -56,7 +83,17 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
                   </span>
                 ) : null}
                 <span className="text-muted-foreground/50">{entry.label}</span>
-                <span className={cn(entry.usedPercent >= NEAR_LIMIT_PERCENT && "text-warning")}>
+                {/*
+                  Bar and number share one element so the near-limit color
+                  applies to both from a single decision.
+                */}
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1",
+                    entry.usedPercent >= NEAR_LIMIT_PERCENT && "text-warning",
+                  )}
+                >
+                  <UsageBar percent={entry.usedPercent} />
                   {entry.usedPercent}%
                 </span>
               </span>
