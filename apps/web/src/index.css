@@ -232,14 +232,22 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     animation-timing-function: steps(2);
   }
   12% {
-    opacity: 0.7;
+    opacity: 0.78;
     animation-timing-function: steps(2);
   }
   24% {
-    opacity: 0.4;
+    opacity: 0.56;
     animation-timing-function: steps(2);
   }
-  36%,
+  36% {
+    opacity: 0.38;
+    animation-timing-function: steps(2);
+  }
+  48% {
+    opacity: 0.22;
+    animation-timing-function: steps(2);
+  }
+  60%,
   100% {
     opacity: var(--dot-matrix-blink-lo, 1);
   }
