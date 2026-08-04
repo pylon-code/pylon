@@ -12,12 +12,16 @@ import {
   PlusIcon,
   ShieldOffIcon,
 } from "lucide-react";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { sortScopedProjectsForSidebar } from "~/components/Sidebar.logic";
 import { isElectron } from "~/env";
 import { cn, randomUUID } from "~/lib/utils";
-import { useProjects, useThreadShells } from "~/state/entities";
+import {
+  useAllEnvironmentShellsBootstrapped,
+  useProjects,
+  useThreadShells,
+} from "~/state/entities";
 import { useEnvironments } from "~/state/environments";
 import { followUpEnvironment } from "~/state/followups";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -54,8 +58,11 @@ interface ProjectOption {
 export function FollowUpList() {
   const projects = useProjects();
   const threads = useThreadShells();
+  const shellsBootstrapped = useAllEnvironmentShellsBootstrapped();
   const { environments } = useEnvironments();
-  const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
+  const [selectedProjectKey, setSelectedProjectKey] = useState<string | null | undefined>(
+    undefined,
+  );
   const [dialogProjectRef, setDialogProjectRef] = useState<ScopedProjectRef | null>(null);
 
   const orderedProjects = useMemo(
@@ -77,7 +84,10 @@ export function FollowUpList() {
       ),
     [orderedProjects],
   );
-  const selectedProject = projectByKey.get(selectedProjectKey ?? "") ?? orderedProjects[0] ?? null;
+  const selectedProject =
+    selectedProjectKey === undefined || selectedProjectKey === null
+      ? null
+      : (projectByKey.get(selectedProjectKey) ?? orderedProjects[0] ?? null);
   const projectItems = useMemo<ReadonlyArray<ProjectOption>>(
     () =>
       orderedProjects.map((project) => ({
@@ -86,6 +96,27 @@ export function FollowUpList() {
       })),
     [environmentLabels, orderedProjects],
   );
+
+  useEffect(() => {
+    if (!shellsBootstrapped || selectedProjectKey !== undefined) return;
+    const firstProject = orderedProjects[0];
+    setSelectedProjectKey(
+      firstProject
+        ? scopedProjectKey(scopeProjectRef(firstProject.environmentId, firstProject.id))
+        : null,
+    );
+  }, [orderedProjects, selectedProjectKey, shellsBootstrapped]);
+
+  if (!shellsBootstrapped || selectedProjectKey === undefined) {
+    return (
+      <Empty className="min-h-0 flex-1" role="status">
+        <EmptyHeader>
+          <EmptyTitle>Loading projects…</EmptyTitle>
+          <EmptyDescription>Waiting for connected environments.</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
 
   if (selectedProject === null) {
     return (
@@ -420,8 +451,8 @@ function FollowUpResolutionDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogPopup>
-        <form onSubmit={handleSubmit}>
+      <DialogPopup className="overflow-hidden">
+        <form className="flex min-h-0 flex-1 flex-col overflow-hidden" onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>{actionLabel} follow-up</DialogTitle>
             <DialogDescription>

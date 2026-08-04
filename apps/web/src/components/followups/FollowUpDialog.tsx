@@ -105,8 +105,8 @@ export function FollowUpDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogPopup>
-        <form onSubmit={handleSubmit}>
+      <DialogPopup className="overflow-hidden">
+        <form className="flex min-h-0 flex-1 flex-col overflow-hidden" onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Add follow-up</DialogTitle>
             <DialogDescription>
