@@ -490,13 +490,13 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       : status === "approval"
         ? {
             label: "Approval",
-            icon: null,
+            icon: "approval" as const,
             className: "text-warning",
           }
         : status === "input"
           ? {
               label: "Input",
-              icon: null,
+              icon: "input" as const,
               className: "text-warning",
             }
           : status === "failed"
@@ -957,6 +957,10 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     >
                       {topStatus.icon === "working" ? (
                         <DotMatrix aria-hidden state="spinner" className="size-3" />
+                      ) : topStatus.icon === "approval" ? (
+                        <DotMatrix aria-hidden state="approval" className="size-3" />
+                      ) : topStatus.icon === "input" ? (
+                        <DotMatrix aria-hidden state="input" className="size-3" />
                       ) : topStatus.icon === "failed" ? (
                         <DotMatrix aria-hidden state="error" className="size-3" />
                       ) : topStatus.icon === "done" ? (
