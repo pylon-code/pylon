@@ -2,9 +2,12 @@ import { useEffect, useState } from "react";
 
 import {
   useClientSettings,
+  usePrimarySettings,
   useSidebarV2Enabled,
   useUpdateClientSettings,
+  useUpdatePrimarySettings,
 } from "../../hooks/useSettings";
+import { isFollowUpBetaEnabled } from "../../state/followups";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
@@ -61,6 +64,8 @@ export function BetaSettingsPanel() {
     (settings) => settings.sidebarAutoSettleAfterDays,
   );
   const updateSettings = useUpdateClientSettings();
+  const followUpsEnabled = usePrimarySettings(isFollowUpBetaEnabled);
+  const updatePrimarySettings = useUpdatePrimarySettings();
 
   return (
     <SettingsPageContainer>
@@ -80,6 +85,19 @@ export function BetaSettingsPanel() {
                 })
               }
               aria-label="Enable the sidebar v2 beta"
+            />
+          }
+        />
+        <SettingsRow
+          title="Follow-ups"
+          description="Capture project-scoped blockers, open work, and ideas with evidence, branch gates, and falsifiable verify checks. The same server setting controls the UI, agent tools, and enforcement gate."
+          control={
+            <Switch
+              checked={followUpsEnabled}
+              onCheckedChange={(checked) =>
+                updatePrimarySettings({ followUpsEnabled: Boolean(checked) })
+              }
+              aria-label="Enable the follow-ups beta"
             />
           }
         />
