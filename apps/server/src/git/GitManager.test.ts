@@ -627,6 +627,7 @@ function makeManager(input?: {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
   const followUpQueries: string[] = [];
+  const sourceControlProviderResolutions: string[] = [];
   const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-git-manager-test-",
   });
@@ -645,7 +646,11 @@ function makeManager(input?: {
         SourceControlProviderRegistry.SourceControlProviderRegistry.of({
           get: () => Effect.succeed(provider),
           resolveHandle: () => Effect.succeed({ provider, context: null }),
-          resolve: () => Effect.succeed(provider),
+          resolve: ({ cwd }) =>
+            Effect.sync(() => {
+              sourceControlProviderResolutions.push(cwd);
+              return provider;
+            }),
           discover: Effect.succeed([]),
         }),
       ),
@@ -682,7 +687,12 @@ function makeManager(input?: {
 
   return GitManager.make.pipe(
     Effect.provide(managerLayer),
-    Effect.map((manager) => ({ manager, ghCalls, followUpQueries })),
+    Effect.map((manager) => ({
+      manager,
+      ghCalls,
+      followUpQueries,
+      sourceControlProviderResolutions,
+    })),
   );
 }
 
@@ -2255,13 +2265,14 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
       yield* runGit(repoDir, ["push", "-u", "origin", "feature/gate-blocked"]);
 
-      const { manager, ghCalls, followUpQueries } = yield* makeManager({
-        serverSettings: { followUpsEnabled: true },
-        followUpBlockers: [
-          followUpBlocker("feature/gate-blocked", "a11y"),
-          followUpBlocker("feature/gate-blocked", "perf"),
-        ],
-      });
+      const { manager, ghCalls, followUpQueries, sourceControlProviderResolutions } =
+        yield* makeManager({
+          serverSettings: { followUpsEnabled: true },
+          followUpBlockers: [
+            followUpBlocker("feature/gate-blocked", "a11y"),
+            followUpBlocker("feature/gate-blocked", "perf"),
+          ],
+        });
 
       const error = yield* Effect.flip(
         runStackedAction(manager, {
@@ -2275,6 +2286,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(error.message).toContain("perf");
       expect(error.message).toContain("waive");
       expect(followUpQueries).toEqual(["feature/gate-blocked"]);
+      expect(sourceControlProviderResolutions).toEqual([]);
       expect(ghCalls.some((call) => call.startsWith("pr list "))).toBe(false);
       expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
     }),
