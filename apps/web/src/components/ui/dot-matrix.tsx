@@ -155,11 +155,33 @@ export type DotMatrixProps = Omit<React.ComponentProps<"span">, "children"> & {
   label?: string;
 };
 
+/** Each state's canonical hue — the five-color status language shared across
+ * every DotMatrix call site. `working`/`connecting`/`spinner` are "in
+ * motion", `done`/`live` are "settled well", `error`/`recording` are
+ * "needs attention now", `approval`/`input` are "needs a decision", and
+ * `idle`/`terminal`/`plan` are unlabeled resting states. */
+const TONE: Record<DotMatrixState, string> = {
+  working: "text-primary",
+  connecting: "text-primary",
+  spinner: "text-primary",
+  done: "text-success",
+  live: "text-success",
+  error: "text-destructive",
+  recording: "text-destructive",
+  approval: "text-warning",
+  input: "text-warning",
+  idle: "text-muted-foreground",
+  terminal: "text-muted-foreground",
+  plan: "text-muted-foreground",
+};
+
 /**
- * 5×5 dot-matrix status indicator — Pylon's shared status language. Dots
- * inherit the surrounding text color; callers pick hue with a text class and
- * size with a size class (14px+ keeps dots legible). Animated states blink
- * per-dot with stepped timing; static glyph states carry no animation
+ * 5×5 dot-matrix status indicator — Pylon's shared status language. Each
+ * state carries a canonical tone from `TONE` (dots render in `currentColor`,
+ * so the tone class sets it); callers may override with a `className` text
+ * color when a surface genuinely needs to differ. Size stays a caller
+ * concern — pick a size class (14px+ keeps dots legible). Animated states
+ * blink per-dot with stepped timing; static glyph states carry no animation
  * timeline, so a wall of settled threads costs the compositor nothing.
  */
 function DotMatrix({ className, state, label, ...props }: DotMatrixProps) {
@@ -169,7 +191,7 @@ function DotMatrix({ className, state, label, ...props }: DotMatrixProps) {
       role="status"
       aria-label={label ?? state}
       data-state={state}
-      className={cn("inline-flex shrink-0", className)}
+      className={cn("inline-flex shrink-0", TONE[state], className)}
       {...props}
     >
       <svg

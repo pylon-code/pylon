@@ -68,4 +68,33 @@ describe("DotMatrix", () => {
       expect(delay).toBeLessThanOrEqual(0);
     }
   });
+
+  it("applies each state's canonical tone by default", () => {
+    const toneByState: Record<string, string> = {
+      working: "text-primary",
+      connecting: "text-primary",
+      spinner: "text-primary",
+      done: "text-success",
+      live: "text-success",
+      error: "text-destructive",
+      recording: "text-destructive",
+      approval: "text-warning",
+      input: "text-warning",
+      idle: "text-muted-foreground",
+      terminal: "text-muted-foreground",
+      plan: "text-muted-foreground",
+    };
+    for (const [state, tone] of Object.entries(toneByState)) {
+      const html = renderToStaticMarkup(<DotMatrix state={state as keyof typeof toneByState} />);
+      const rootTag = html.slice(0, html.indexOf(">") + 1);
+      expect(rootTag, `${state} should carry ${tone}`).toContain(tone);
+    }
+  });
+
+  it("lets a caller override the default tone via className (twMerge keeps the override)", () => {
+    const html = renderToStaticMarkup(<DotMatrix state="working" className="text-foreground" />);
+    const rootTag = html.slice(0, html.indexOf(">") + 1);
+    expect(rootTag).toContain("text-foreground");
+    expect(rootTag).not.toContain("text-primary");
+  });
 });
