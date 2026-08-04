@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { DotMatrix } from "./dot-matrix";
+import { DotMatrix, type DotMatrixState } from "./dot-matrix";
 
 const countAnimated = (html: string) => (html.match(/data-animated="true"/g) ?? []).length;
 const countChase = (html: string) => (html.match(/data-animated="chase"/g) ?? []).length;
@@ -70,7 +70,7 @@ describe("DotMatrix", () => {
   });
 
   it("applies each state's canonical tone by default", () => {
-    const toneByState: Record<string, string> = {
+    const toneByState: Record<DotMatrixState, string> = {
       working: "text-primary",
       connecting: "text-primary",
       spinner: "text-primary",
@@ -84,8 +84,8 @@ describe("DotMatrix", () => {
       terminal: "text-muted-foreground",
       plan: "text-muted-foreground",
     };
-    for (const [state, tone] of Object.entries(toneByState)) {
-      const html = renderToStaticMarkup(<DotMatrix state={state as keyof typeof toneByState} />);
+    for (const [state, tone] of Object.entries(toneByState) as [DotMatrixState, string][]) {
+      const html = renderToStaticMarkup(<DotMatrix state={state} />);
       const rootTag = html.slice(0, html.indexOf(">") + 1);
       expect(rootTag, `${state} should carry ${tone}`).toContain(tone);
     }
