@@ -16,6 +16,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
+  providerInstancePrioritySortKey,
   type ModelSelection,
   type ProviderDriverKind,
   ProviderInstanceId,
@@ -60,6 +61,11 @@ export interface ProviderInstanceEntry {
   readonly isDefault: boolean;
   /** True when `availability === "unavailable"` is absent or "available". */
   readonly isAvailable: boolean;
+  /**
+   * Configured drain order, lower first. Only `applyProviderInstanceSettings`
+   * can populate it — priority lives in settings, not on the wire snapshot.
+   */
+  readonly priority?: number | undefined;
   readonly snapshot: ServerProvider;
   readonly models: ReadonlyArray<ServerProviderModel>;
 }
@@ -207,7 +213,48 @@ export function applyProviderInstanceSettings(
       : entry.isDefault
         ? (legacyProviders[entry.driverKind]?.enabled ?? entry.enabled)
         : false;
-    return enabled === entry.enabled ? entry : { ...entry, enabled };
+    const priority = explicitInstance?.priority;
+    if (enabled === entry.enabled && priority === entry.priority) return entry;
+    return { ...entry, enabled, priority };
+  });
+}
+
+/**
+ * Whether an instance is currently refusing turns because its subscription
+ * window is spent, as of `nowMs`.
+ *
+ * A `rejected` verdict without a `resetsAt` does not count. Without a reset
+ * time there is nothing to expire, and routing permanently away from an
+ * account on a signal that never clears is worse than trying it and letting
+ * the provider report the real error — every verdict Claude actually sends
+ * carries a reset time.
+ */
+export function isProviderInstanceDrained(entry: ProviderInstanceEntry, nowMs: number): boolean {
+  const rateLimit = entry.snapshot.rateLimit;
+  if (rateLimit?.status !== "rejected" || rateLimit.resetsAt === undefined) return false;
+  const resetsAtMs = Date.parse(rateLimit.resetsAt);
+  return Number.isFinite(resetsAtMs) && resetsAtMs > nowMs;
+}
+
+/**
+ * Order instances for automatic routing: instances that can serve a turn now
+ * before drained ones, then by configured `priority`, then by the caller's
+ * existing order.
+ *
+ * Drained instances are pushed to the back rather than dropped, so a caller
+ * that finds every instance drained still resolves one. Attempting a turn and
+ * surfacing the provider's own error beats a composer that refuses to send.
+ */
+export function sortProviderInstancesForRouting(
+  entries: ReadonlyArray<ProviderInstanceEntry>,
+  nowMs: number,
+): ReadonlyArray<ProviderInstanceEntry> {
+  return [...entries].sort((left, right) => {
+    const drainedDelta =
+      Number(isProviderInstanceDrained(left, nowMs)) -
+      Number(isProviderInstanceDrained(right, nowMs));
+    if (drainedDelta !== 0) return drainedDelta;
+    return providerInstancePrioritySortKey(left) - providerInstancePrioritySortKey(right);
   });
 }
 

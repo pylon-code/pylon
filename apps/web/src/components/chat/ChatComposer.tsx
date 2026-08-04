@@ -186,10 +186,12 @@ import { getProviderDisplayName, getProviderInteractionModeToggle } from "../../
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  isProviderInstanceDrained,
   NO_PROVIDER_MODEL_SELECTION,
   resolveProviderDriverKindForInstanceSelection,
   resolveSelectableProviderInstanceEntry,
   sortProviderInstanceEntries,
+  sortProviderInstancesForRouting,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
@@ -800,17 +802,31 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   //   4. First enabled entry matching the current driver kind.
   //   5. First enabled entry overall / default instance for the kind.
   //
+  // Candidates 1 and 2 are pinned: an explicit picker choice and a thread's
+  // live session binding are honored even when that account is spent, so an
+  // existing thread never migrates off the account it started on. Everything
+  // below them has not bound to a session yet and is free to route around a
+  // drained account, in configured priority order.
+  //
+  // `Date.now()` is read without a ticking dependency on purpose. Drain
+  // windows run for hours, the memo already recomputes on every provider
+  // snapshot and thread change, and a per-minute recompute of a hot component
+  // buys nothing at that timescale.
   const selectedInstanceId = useMemo<ProviderInstanceId>(() => {
-    const candidates: Array<string | null | undefined> = [
-      composerDraft.activeProvider,
-      activeThread?.session?.providerInstanceId,
-      activeThreadModelSelection?.instanceId,
-      activeProjectDefaultModelSelection?.instanceId,
+    const nowMs = Date.now();
+    const candidates: Array<{
+      readonly instanceId: string | null | undefined;
+      readonly pinned: boolean;
+    }> = [
+      { instanceId: composerDraft.activeProvider, pinned: true },
+      { instanceId: activeThread?.session?.providerInstanceId, pinned: true },
+      { instanceId: activeThreadModelSelection?.instanceId, pinned: false },
+      { instanceId: activeProjectDefaultModelSelection?.instanceId, pinned: false },
     ];
     for (const candidate of candidates) {
-      if (!candidate) continue;
+      if (!candidate.instanceId) continue;
       const match = providerInstanceEntries.find(
-        (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
+        (entry) => entry.instanceId === candidate.instanceId && entry.enabled && entry.isAvailable,
       );
       if (match) {
         // When locked to a specific driver kind, ignore persisted instance
@@ -822,13 +838,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         ) {
           continue;
         }
+        // Drained and unpinned: defer to the ordered fallback below, which
+        // prefers a healthy instance and lands back here only when every
+        // instance is drained.
+        if (!candidate.pinned && isProviderInstanceDrained(match, nowMs)) continue;
         return match.instanceId;
       }
     }
-    const compatibleEntries = providerInstanceEntries.filter(
-      (entry) =>
-        (!lockedProvider || entry.driverKind === lockedProvider) &&
-        (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey),
+    const compatibleEntries = sortProviderInstancesForRouting(
+      providerInstanceEntries.filter(
+        (entry) =>
+          (!lockedProvider || entry.driverKind === lockedProvider) &&
+          (!lockedContinuationGroupKey ||
+            entry.continuationGroupKey === lockedContinuationGroupKey),
+      ),
+      nowMs,
     );
     const requestedDriverEntries = compatibleEntries.filter(
       (entry) => entry.driverKind === requestedDriverKind,
