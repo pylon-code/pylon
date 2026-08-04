@@ -177,6 +177,36 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+/**
+ * Subscription rate-limit state as last reported by a running session.
+ *
+ * Distinct from `usageLimits`, which is a polled gauge: this is the pushed
+ * signal a provider emits mid-session (`account.rate-limits.updated`), and it
+ * is what tells the server an account is actually spent. `rejected` means the
+ * provider refused the turn for quota reasons, not that a request failed.
+ *
+ * Volatile like `updateState` — never persisted. A restart re-learns it from
+ * the next turn, and `resetsAt` bounds how long a stale value can matter.
+ *
+ * `rateLimitType` is an open string rather than a closed union: providers add
+ * window kinds (`five_hour`, `seven_day`, `seven_day_opus`, …) on their own
+ * schedule, and an unrecognized one must not fail the snapshot decode.
+ */
+export const ServerProviderRateLimitStatus = Schema.Literals([
+  "allowed",
+  "allowed_warning",
+  "rejected",
+]);
+export type ServerProviderRateLimitStatus = typeof ServerProviderRateLimitStatus.Type;
+
+export const ServerProviderRateLimit = Schema.Struct({
+  status: ServerProviderRateLimitStatus,
+  rateLimitType: Schema.optional(TrimmedNonEmptyString),
+  resetsAt: Schema.optional(IsoDateTime),
+  observedAt: IsoDateTime,
+});
+export type ServerProviderRateLimit = typeof ServerProviderRateLimit.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -212,6 +242,7 @@ export const ServerProvider = Schema.Struct({
   ),
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   usageLimits: Schema.optional(ServerProviderUsageLimits),
+  rateLimit: Schema.optional(ServerProviderRateLimit),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
 });
