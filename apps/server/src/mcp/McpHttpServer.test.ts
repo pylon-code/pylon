@@ -1,13 +1,21 @@
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  PreviewTabId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { McpProtocol, McpSchema, McpServer } from "effect/unstable/ai";
 import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
+import * as FollowUpService from "../followups/FollowUpService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -38,6 +46,22 @@ const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer))),
 );
+const FollowUpServiceTestLayer = Layer.succeed(
+  FollowUpService.FollowUpService,
+  FollowUpService.FollowUpService.of({
+    file: () => Effect.die("unused"),
+    updateStatus: () => Effect.die("unused"),
+    getSnapshot: Effect.succeed({ sequence: 0, items: [] }),
+    openBlockersForBranch: () => Effect.succeed([]),
+    stream: Stream.empty,
+  }),
+);
+const makeFollowUpRegistrationTestLayer = (followUpsEnabled: boolean) =>
+  McpHttpServer.FollowUpToolkitRegistrationLive.pipe(
+    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(ServerSettings.layerTest({ followUpsEnabled })),
+    Layer.provide(FollowUpServiceTestLayer),
+  );
 
 it("normalizes empty successful notification responses to accepted", () => {
   const notificationResponse = McpHttpServer.normalizeMcpHttpResponse(
@@ -50,6 +74,45 @@ it("normalizes empty successful notification responses to accepted", () => {
   );
   expect(resultResponse.status).toBe(200);
 });
+
+it.effect("keeps follow-up tools undiscoverable when the initial beta setting is off", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const settings = yield* ServerSettings.ServerSettingsService;
+
+    expect(server.tools.some(({ tool }) => tool.name.startsWith("followup_"))).toBe(false);
+    yield* settings.updateSettings({ followUpsEnabled: true });
+    expect(server.tools.some(({ tool }) => tool.name.startsWith("followup_"))).toBe(false);
+  }).pipe(Effect.provide(makeFollowUpRegistrationTestLayer(false))),
+);
+
+it.effect("rejects follow-up calls immediately after the beta setting is disabled", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    expect(
+      server.tools
+        .filter(({ tool }) => tool.name.startsWith("followup_"))
+        .map(({ tool }) => tool.name)
+        .sort(),
+    ).toEqual(["followup_check_gate", "followup_file", "followup_list", "followup_resolve"]);
+
+    yield* settings.updateSettings({ followUpsEnabled: false });
+    const result = yield* server
+      .callTool({
+        name: "followup_list",
+        arguments: { projectId: ProjectId.make("project-followups-mcp") },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+
+    expect(result.isError).toBe(true);
+    const errorText = result.content.find((content) => content.type === "text");
+    expect(errorText?.text).toContain("Follow-ups are disabled in server settings.");
+  }).pipe(Effect.provide(makeFollowUpRegistrationTestLayer(true))),
+);
 
 it.effect("returns bounded structural preview snapshot failures", () =>
   Effect.scoped(

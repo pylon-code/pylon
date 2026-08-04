@@ -48,6 +48,20 @@ const makeFailingSecretStoreLayer = (cause: ServerSecretStore.SecretStoreError) 
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("defaults follow-ups off and applies beta patches", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+
+      assert.isFalse((yield* serverSettings.getSettings).followUpsEnabled);
+      assert.isTrue(
+        (yield* serverSettings.updateSettings({ followUpsEnabled: true })).followUpsEnabled,
+      );
+      assert.isFalse(
+        (yield* serverSettings.updateSettings({ followUpsEnabled: false })).followUpsEnabled,
+      );
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("preserves context when reading a provider environment secret fails", () => {
     const platformCause = PlatformError.systemError({
       _tag: "PermissionDenied",

@@ -179,6 +179,18 @@ describe("ServerSettings worktree defaults", () => {
   });
 });
 
+describe("ServerSettings follow-ups beta", () => {
+  it("defaults the server-authoritative beta off", () => {
+    expect(decodeServerSettings({}).followUpsEnabled).toBe(false);
+    expect(DEFAULT_SERVER_SETTINGS.followUpsEnabled).toBe(false);
+  });
+
+  it("accepts follow-up beta updates", () => {
+    expect(decodeServerSettingsPatch({ followUpsEnabled: true }).followUpsEnabled).toBe(true);
+    expect(decodeServerSettingsPatch({ followUpsEnabled: false }).followUpsEnabled).toBe(false);
+  });
+});
+
 describe("ServerSettings.sourceControlWritingStyle", () => {
   it("defaults all style settings for legacy configs", () => {
     const settings = decodeServerSettings({});

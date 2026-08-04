@@ -10,9 +10,12 @@ import { McpProtocol, McpSchema, McpServer, Tool } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import packageJson from "../../package.json" with { type: "json" };
+import * as ServerSettings from "../serverSettings.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { FollowUpToolkitHandlersLive } from "./toolkits/followups/handlers.ts";
+import { FollowUpToolkit } from "./toolkits/followups/tools.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
@@ -216,6 +219,16 @@ export const PreviewToolkitRegistrationLive = Layer.mergeAll(
   PreviewSnapshotRegistrationLive,
 );
 
+export const FollowUpToolkitRegistrationLive = Layer.unwrap(
+  Effect.gen(function* () {
+    const settingsService = yield* ServerSettings.ServerSettingsService;
+    const settings = yield* settingsService.getSettings;
+    return settings.followUpsEnabled
+      ? McpServer.toolkit(FollowUpToolkit).pipe(Layer.provide(FollowUpToolkitHandlersLive))
+      : Layer.empty;
+  }),
+);
+
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -223,4 +236,7 @@ const McpTransportLive = McpServer.layerHttp({
   protocols: [McpProtocol.v2025_06_18],
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
-export const layer = PreviewToolkitRegistrationLive.pipe(Layer.provideMerge(McpTransportLive));
+export const layer = Layer.mergeAll(
+  PreviewToolkitRegistrationLive,
+  FollowUpToolkitRegistrationLive,
+).pipe(Layer.provideMerge(McpTransportLive));
