@@ -6017,6 +6017,7 @@ function ChatViewContent(props: ChatViewProps) {
                                   ? { onCheckoutPullRequestRequest: openPullRequestDialog }
                                   : {})}
                                 {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
+                                providerStatus={activeProviderStatus}
                                 availableEnvironments={logicalProjectEnvironments}
                               />
                             </div>

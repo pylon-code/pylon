@@ -46,7 +46,6 @@ import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { discoverClaudeSkills } from "../Drivers/ClaudeSkills.ts";
 import { fetchClaudeOAuthUsageLimits } from "../claudeOAuthUsage.ts";
-import { parseClaudeUsageLimitsJson } from "../providerUsageLimits.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -814,10 +813,11 @@ function accountIdentityFromAuthStatus(result: CommandResult): string | undefine
 /**
  * Read one instance's account identity and subscription usage.
  *
- * Usage comes from Anthropic's OAuth usage endpoint, which returns structured
- * percentages for every window. Scraping `claude --print "/usage"` is the
- * fallback for when that cannot be read — no stored token, an expired one, or
- * an offline machine — and costs an extra CLI spawn, so it only runs then.
+ * Usage comes solely from Anthropic's OAuth usage endpoint. There is no CLI
+ * fallback: `claude --print "/usage"` reports figures derived from this
+ * machine's local sessions, so it disagrees with the account's real totals,
+ * and a gauge that silently switches between two different numbers is worse
+ * than one that is briefly absent.
  */
 export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(function* (
   claudeSettings: ClaudeSettings,
@@ -850,40 +850,8 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
   );
   if (Option.isNone(probed)) return undefined;
 
-  const [authResult, oauthUsageLimits] = probed.value;
-  const accountIdentity = accountIdentityFromAuthStatus(authResult);
-  if (oauthUsageLimits) return { accountIdentity, usageLimits: oauthUsageLimits };
-
-  const usageResult = yield* runClaudeCommand(
-    claudeSettings,
-    [
-      "--print",
-      "/usage",
-      "--output-format",
-      "json",
-      "--permission-mode",
-      "plan",
-      "--strict-mcp-config",
-      "--mcp-config",
-      '{"mcpServers":{}}',
-    ],
-    {
-      ...(environment ?? process.env),
-      ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-    },
-    runOptions,
-  ).pipe(
-    Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
-    Effect.catchCause(() => Effect.succeed(Option.none())),
-  );
-
-  return {
-    accountIdentity,
-    usageLimits:
-      Option.isSome(usageResult) && usageResult.value.code === 0
-        ? parseClaudeUsageLimitsJson(usageResult.value.stdout, checkedAt)
-        : undefined,
-  };
+  const [authResult, usageLimits] = probed.value;
+  return { accountIdentity: accountIdentityFromAuthStatus(authResult), usageLimits };
 });
 
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
