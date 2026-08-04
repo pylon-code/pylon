@@ -127,7 +127,7 @@ const STATES = {
     chase: true,
     blink: (_i: number, row: number, col: number) => {
       const turn = (Math.atan2(row - CENTER, col - CENTER) + Math.PI) / (2 * Math.PI);
-      return { duration: 1.1, delay: -turn * 1.1, lo: 0.12 };
+      return { duration: 1.1, delay: -(1 - turn) * 1.1, lo: 0.12 };
     },
   },
   approval: { glyph: BANG, blink: () => ({ duration: 1.6, delay: 0, lo: 0.45 }) },
