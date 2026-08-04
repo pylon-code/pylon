@@ -406,6 +406,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   compact: boolean;
   activeContextWindow: ReturnType<typeof deriveLatestContextWindowSnapshot>;
   activeThreadProviderDisplayName: string | null;
+  activeProviderUsageLimits: ServerProvider["usageLimits"] | undefined;
+  timestampFormat: UnifiedSettings["timestampFormat"];
   isPreparingWorktree: boolean;
   pendingAction: {
     questionIndex: number;
@@ -433,6 +435,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         <ContextWindowMeter
           usage={props.activeContextWindow}
           providerDisplayName={props.activeThreadProviderDisplayName}
+          providerUsageLimits={props.activeProviderUsageLimits}
+          timestampFormat={props.timestampFormat}
         />
       ) : null}
       {props.isPreparingWorktree ? (
@@ -942,16 +946,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => deriveLatestContextWindowSnapshot(activeThreadActivities ?? []),
     [activeThreadActivities],
   );
+  // The running session's instance is the source of truth for both the popover's provider
+  // name and its usage limits, so the two can never describe different providers.
+  const activeThreadProviderInstanceId =
+    activeThread?.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId;
   const activeThreadProviderDisplayName = useMemo(() => {
-    if (!activeThreadModelSelection) return null;
-    const entry = providerStatuses.find(
-      (p) => p.instanceId === activeThreadModelSelection.instanceId,
-    );
+    if (!activeThreadProviderInstanceId) return null;
+    const entry = providerStatuses.find((p) => p.instanceId === activeThreadProviderInstanceId);
     if (entry) {
       return getProviderDisplayName(providerStatuses, entry.driver);
     }
-    return formatProviderDisplayName(activeThreadModelSelection.instanceId);
-  }, [providerStatuses, activeThreadModelSelection]);
+    return formatProviderDisplayName(activeThreadProviderInstanceId);
+  }, [providerStatuses, activeThreadProviderInstanceId]);
+  const activeProviderUsageLimits = settings.showProviderUsageInContextPopover
+    ? providerStatuses.find((provider) => provider.instanceId === activeThreadProviderInstanceId)
+        ?.usageLimits
+    : undefined;
 
   // ------------------------------------------------------------------
   // Composer-local state
@@ -3210,6 +3220,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   compact={isComposerPrimaryActionsCompact}
                   activeContextWindow={activeContextWindow}
                   activeThreadProviderDisplayName={activeThreadProviderDisplayName}
+                  activeProviderUsageLimits={activeProviderUsageLimits}
+                  timestampFormat={settings.timestampFormat}
                   pendingAction={pendingPrimaryAction}
                   isRunning={phase === "running"}
                   showPlanFollowUpPrompt={pendingUserInputs.length === 0 && showPlanFollowUpPrompt}
