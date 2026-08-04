@@ -10,6 +10,7 @@ import * as Duration from "effect/Duration";
 import { describe, expect, it } from "vite-plus/test";
 import {
   backgroundActivitySharedPolicySettings,
+  buildProviderInstanceReorderPatch,
   buildProviderInstanceUpdatePatch,
   formatDiagnosticsDescription,
   hasChangedBackgroundActivitySettings,
@@ -226,5 +227,137 @@ describe("buildProviderInstanceUpdatePatch", () => {
 
     expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
     expect(patch.providers).toBeUndefined();
+  });
+});
+
+describe("buildProviderInstanceReorderPatch", () => {
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const defaultId = ProviderInstanceId.make("claudeAgent");
+  const customId = ProviderInstanceId.make("claude_personal");
+  const thirdId = ProviderInstanceId.make("claude_spare");
+
+  const row = (instanceId: ProviderInstanceId, isDefault = false) => ({
+    instanceId,
+    instance: { driver: claude, enabled: true } satisfies ProviderInstanceConfig,
+    isDefault,
+  });
+
+  const settingsWith = (...ids: ReadonlyArray<ProviderInstanceId>) => ({
+    ...DEFAULT_SERVER_SETTINGS,
+    providerInstances: Object.fromEntries(
+      ids.map((id) => [id, { driver: claude, enabled: true } satisfies ProviderInstanceConfig]),
+    ),
+  });
+
+  it("writes a dense priority across the whole driver group", () => {
+    const patch = buildProviderInstanceReorderPatch({
+      settings: settingsWith(defaultId, customId, thirdId),
+      driver: claude,
+      rows: [row(defaultId, true), row(customId), row(thirdId)],
+      instanceId: thirdId,
+      direction: "up",
+    });
+
+    expect(patch?.providerInstances?.[defaultId]?.priority).toBe(0);
+    expect(patch?.providerInstances?.[thirdId]?.priority).toBe(1);
+    expect(patch?.providerInstances?.[customId]?.priority).toBe(2);
+  });
+
+  it("moves an account later", () => {
+    const patch = buildProviderInstanceReorderPatch({
+      settings: settingsWith(defaultId, customId),
+      driver: claude,
+      rows: [row(defaultId, true), row(customId)],
+      instanceId: defaultId,
+      direction: "down",
+    });
+
+    expect(patch?.providerInstances?.[customId]?.priority).toBe(0);
+    expect(patch?.providerInstances?.[defaultId]?.priority).toBe(1);
+  });
+
+  it("leaves other drivers' instances untouched", () => {
+    const codexId = ProviderInstanceId.make("codex");
+    const patch = buildProviderInstanceReorderPatch({
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [codexId]: { driver: ProviderDriverKind.make("codex"), enabled: true },
+          [defaultId]: { driver: claude, enabled: true },
+          [customId]: { driver: claude, enabled: true },
+        },
+      },
+      driver: claude,
+      rows: [row(defaultId, true), row(customId)],
+      instanceId: customId,
+      direction: "up",
+    });
+
+    expect(patch?.providerInstances?.[codexId]?.priority).toBeUndefined();
+  });
+
+  // Writing a priority onto a synthesized default slot promotes it, which
+  // moves its config into the envelope — the legacy block has to reset too.
+  it("resets the legacy provider block when it promotes a default slot", () => {
+    const patch = buildProviderInstanceReorderPatch({
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providers: {
+          ...DEFAULT_SERVER_SETTINGS.providers,
+          claudeAgent: {
+            ...DEFAULT_SERVER_SETTINGS.providers.claudeAgent,
+            binaryPath: "/legacy/claude",
+          },
+        },
+        providerInstances: { [customId]: { driver: claude, enabled: true } },
+      },
+      driver: claude,
+      rows: [row(defaultId, true), row(customId)],
+      instanceId: customId,
+      direction: "up",
+    });
+
+    expect(patch?.providers?.claudeAgent).toEqual(DEFAULT_SERVER_SETTINGS.providers.claudeAgent);
+  });
+
+  it("leaves the legacy provider block alone when every slot is already explicit", () => {
+    const patch = buildProviderInstanceReorderPatch({
+      settings: settingsWith(defaultId, customId),
+      driver: claude,
+      rows: [row(defaultId, true), row(customId)],
+      instanceId: customId,
+      direction: "up",
+    });
+
+    expect(patch?.providers).toBeUndefined();
+  });
+
+  // The caller disables the button on a null patch rather than writing a
+  // no-op settings update.
+  it.each([
+    ["up past the front", defaultId, "up" as const],
+    ["down past the back", customId, "down" as const],
+  ])("returns null when moving %s", (_label, instanceId, direction) => {
+    expect(
+      buildProviderInstanceReorderPatch({
+        settings: settingsWith(defaultId, customId),
+        driver: claude,
+        rows: [row(defaultId, true), row(customId)],
+        instanceId,
+        direction,
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null for an instance that is not in the group", () => {
+    expect(
+      buildProviderInstanceReorderPatch({
+        settings: settingsWith(defaultId, customId),
+        driver: claude,
+        rows: [row(defaultId, true), row(customId)],
+        instanceId: ProviderInstanceId.make("claude_missing"),
+        direction: "up",
+      }),
+    ).toBeNull();
   });
 });

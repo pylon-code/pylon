@@ -3,6 +3,7 @@
 import {
   ArrowUpCircleIcon,
   ChevronDownIcon,
+  ChevronUpIcon,
   CopyIcon,
   DownloadIcon,
   LoaderIcon,
@@ -343,6 +344,20 @@ interface ProviderInstanceCardProps {
    * omit it.
    */
   readonly headerAction?: ReactNode | undefined;
+  /**
+   * Drain-order controls for this account. Pass `undefined` when the driver
+   * has a single account — order means nothing then, so the buttons are
+   * absent rather than disabled. `onMoveUp` / `onMoveDown` are individually
+   * `undefined` at the ends of the list.
+   */
+  readonly drainOrder?:
+    | {
+        readonly position: number;
+        readonly total: number;
+        readonly onMoveUp?: (() => void) | undefined;
+        readonly onMoveDown?: (() => void) | undefined;
+      }
+    | undefined;
   readonly hiddenModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
   readonly modelOrder: ReadonlyArray<string>;
@@ -388,6 +403,7 @@ export function ProviderInstanceCard({
   onUpdate,
   onDelete,
   headerAction,
+  drainOrder,
   hiddenModels,
   favoriteModels,
   modelOrder,
@@ -551,8 +567,48 @@ export function ProviderInstanceCard({
     </>
   );
 
+  const drainOrderNode = drainOrder ? (
+    <span className="inline-flex shrink-0 items-center">
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              className="size-5 rounded-sm p-0 text-muted-foreground"
+              disabled={!drainOrder.onMoveUp}
+              onClick={drainOrder.onMoveUp}
+              aria-label={`Use ${displayName} earlier (currently ${drainOrder.position + 1} of ${drainOrder.total})`}
+            >
+              <ChevronUpIcon className="size-3.5" />
+            </Button>
+          }
+        />
+        <TooltipPopup side="top">Use this account earlier</TooltipPopup>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              className="size-5 rounded-sm p-0 text-muted-foreground"
+              disabled={!drainOrder.onMoveDown}
+              onClick={drainOrder.onMoveDown}
+              aria-label={`Use ${displayName} later (currently ${drainOrder.position + 1} of ${drainOrder.total})`}
+            >
+              <ChevronDownIcon className="size-3.5" />
+            </Button>
+          }
+        />
+        <TooltipPopup side="top">Use this account later</TooltipPopup>
+      </Tooltip>
+    </span>
+  ) : null;
+
   const titleTailNode = (
     <>
+      {drainOrderNode}
       {headerAction ? (
         <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
           {headerAction}

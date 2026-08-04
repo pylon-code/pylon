@@ -92,8 +92,15 @@ switching should be rare and sticky.
 
 When Claude refuses a turn because a subscription window is spent, Pylon records that account as out
 of capacity until the window resets. From then on, **new threads open on the next account** that
-still has room. Accounts are tried in the order they appear in your provider settings, with the
-built-in Claude provider first.
+still has room.
+
+### Choose Which Account Drains First
+
+Accounts are used in the order they are listed in Settings → Providers. Use the up and down arrows on
+an account to change that order — the top account is used until it runs out, then the next one.
+
+The arrows appear only when you have more than one account for the same provider, and reordering
+affects new threads only.
 
 A pill appears at the bottom of the sidebar while an account is out of capacity. It names the
 account that picked up the work and roughly when the spent one comes back, and it disappears on its

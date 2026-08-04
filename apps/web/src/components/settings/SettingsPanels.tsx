@@ -20,6 +20,7 @@ import {
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
+  providerInstancePrioritySortKey,
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
@@ -120,6 +121,7 @@ import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
   backgroundActivitySharedPolicySettings,
+  buildProviderInstanceReorderPatch,
   buildProviderInstanceUpdatePatch,
   formatDiagnosticsDescription,
   hasChangedBackgroundActivitySettings,
@@ -1903,17 +1905,28 @@ export function ProviderSettingsPanel() {
       } satisfies ProviderInstanceConfig);
     const isDirty =
       explicitInstance !== undefined || !Equal.equals(legacyConfig, defaultLegacyConfig);
-    rows.push({
-      instanceId: defaultInstanceId,
-      instance: effectiveInstance,
-      driver,
-      isDefault: true,
-      isDirty,
-    });
+    const driverRows: InstanceRow[] = [
+      {
+        instanceId: defaultInstanceId,
+        instance: effectiveInstance,
+        driver,
+        isDefault: true,
+        isDirty,
+      },
+    ];
     for (const [id, instance] of instancesByDriver.get(providerSettings.provider) ?? []) {
       if (id === defaultInstanceId) continue;
-      rows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
+      driverRows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
     }
+    // The rendered order is the drain order, so sort by it here rather than
+    // leaving the list and the router to disagree. Stable, so instances
+    // without a configured priority keep default-first / settings-author order.
+    driverRows.sort(
+      (left, right) =>
+        providerInstancePrioritySortKey(left.instance) -
+        providerInstancePrioritySortKey(right.instance),
+    );
+    rows.push(...driverRows);
   }
   for (const [driver, list] of instancesByDriver) {
     if (visibleDriverKinds.has(driver)) continue;
@@ -1946,6 +1959,26 @@ export function ProviderSettingsPanel() {
         textGenerationModelSelection: options?.textGenerationModelSelection,
       }),
     );
+  };
+
+  // Drain order is per driver, so a move only ever shuffles that driver's own
+  // rows. Reorder controls stay hidden for a driver with a single account.
+  const orderRowsByDriver = new Map<ProviderDriverKind, InstanceRow[]>();
+  for (const row of rows) {
+    const list = orderRowsByDriver.get(row.driver) ?? [];
+    list.push(row);
+    orderRowsByDriver.set(row.driver, list);
+  }
+
+  const moveProviderInstance = (row: InstanceRow, direction: "up" | "down") => {
+    const patch = buildProviderInstanceReorderPatch({
+      settings,
+      driver: row.driver,
+      rows: orderRowsByDriver.get(row.driver) ?? [],
+      instanceId: row.instanceId,
+      direction,
+    });
+    if (patch) updateSettings(patch);
   };
 
   const deleteProviderInstance = (id: ProviderInstanceId) => {
@@ -2199,6 +2232,24 @@ export function ProviderSettingsPanel() {
                 }
               }}
               onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
+              {...(() => {
+                const driverRows = orderRowsByDriver.get(row.driver) ?? [];
+                if (driverRows.length < 2) return {};
+                const position = driverRows.findIndex(
+                  (candidate) => candidate.instanceId === row.instanceId,
+                );
+                return {
+                  drainOrder: {
+                    position,
+                    total: driverRows.length,
+                    onMoveUp: position > 0 ? () => moveProviderInstance(row, "up") : undefined,
+                    onMoveDown:
+                      position < driverRows.length - 1
+                        ? () => moveProviderInstance(row, "down")
+                        : undefined,
+                  },
+                };
+              })()}
               headerAction={headerAction}
               hiddenModels={modelPreferences.hiddenModels}
               favoriteModels={favoriteModels}
