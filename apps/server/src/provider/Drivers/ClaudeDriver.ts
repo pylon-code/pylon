@@ -61,6 +61,7 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
+const USAGE_PROBE_FAILURE_TTL = Duration.minutes(1);
 
 function isClaudeNativeCommandPath(commandPath: string): boolean {
   const normalized = normalizeCommandPath(commandPath);
@@ -168,16 +169,23 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         () =>
           probeClaudeUsageLimits(effectiveConfig, processEnv, cwd).pipe(
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
             Effect.provideService(Path.Path, path),
           ),
         {
           capacity: 2,
+          // A failed probe backs off rather than retrying on every snapshot
+          // refresh. Usage now comes from a rate-limited HTTP endpoint that
+          // answers 429 under load, so an uncached failure would keep pushing
+          // against the limit that caused it. Short enough that logging in
+          // still shows up promptly.
           timeToLive: Exit.match({
             onSuccess: (result) =>
               result?.accountIdentity && result?.usageLimits
                 ? CAPABILITIES_PROBE_TTL
-                : Duration.zero,
-            onFailure: () => Duration.zero,
+                : USAGE_PROBE_FAILURE_TTL,
+            onFailure: () => USAGE_PROBE_FAILURE_TTL,
           }),
         },
       );
@@ -205,6 +213,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(HttpClient.HttpClient, httpClient),
         Effect.provideService(Path.Path, path),
       );
 

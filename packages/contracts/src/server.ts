@@ -109,7 +109,16 @@ export const ServerProviderUsageWindow = Schema.Struct({
 export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
 
 export const ServerProviderUsageLimits = Schema.Struct({
-  source: Schema.Literals(["codexAppServer", "claudePrint"]),
+  /**
+   * Where the reading came from (`codexAppServer`, `claudeOAuth`,
+   * `claudePrint`, …). Provenance only — nothing renders it.
+   *
+   * An open string rather than a closed union: a provider gaining a new usage
+   * source must not fail an older client's snapshot decode. `ServerProviders`
+   * drops members it cannot decode, so a closed union here would make the
+   * whole provider vanish from the picker over a field no one reads.
+   */
+  source: TrimmedNonEmptyString,
   checkedAt: IsoDateTime,
   windows: Schema.Array(ServerProviderUsageWindow),
 });

@@ -13,6 +13,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/unstable/http";
 import {
   createModelCapabilities,
   getModelSelectionStringOptionValue,
@@ -38,11 +39,13 @@ import {
   parseGenericCliVersion,
   providerModelsFromSettings,
   spawnAndCollect,
+  type CommandResult,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { discoverClaudeSkills } from "../Drivers/ClaudeSkills.ts";
+import { fetchClaudeOAuthUsageLimits } from "../claudeOAuthUsage.ts";
 import { parseClaudeUsageLimitsJson } from "../providerUsageLimits.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
@@ -794,6 +797,28 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
 
+function accountIdentityFromAuthStatus(result: CommandResult): string | undefined {
+  if (result.code !== 0) return undefined;
+  try {
+    const decoded: unknown = JSON.parse(result.stdout);
+    const email =
+      typeof decoded === "object" && decoded !== null
+        ? (decoded as { email?: unknown }).email
+        : undefined;
+    return typeof email === "string" ? email.trim() || undefined : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read one instance's account identity and subscription usage.
+ *
+ * Usage comes from Anthropic's OAuth usage endpoint, which returns structured
+ * percentages for every window. Scraping `claude --print "/usage"` is the
+ * fallback for when that cannot be read — no stored token, an expired one, or
+ * an offline machine — and costs an extra CLI spawn, so it only runs then.
+ */
 export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(function* (
   claudeSettings: ClaudeSettings,
   environment?: NodeJS.ProcessEnv,
@@ -805,65 +830,60 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
     }
   | undefined,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
 > {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  return yield* Effect.all(
+  const runOptions = { closeStdin: true as const, ...(cwd ? { cwd } : {}) };
+
+  const probed = yield* Effect.all(
     [
-      runClaudeCommand(
-        claudeSettings,
-        [
-          "--print",
-          "/usage",
-          "--output-format",
-          "json",
-          "--permission-mode",
-          "plan",
-          "--strict-mcp-config",
-          "--mcp-config",
-          '{"mcpServers":{}}',
-        ],
-        {
-          ...(environment ?? process.env),
-          ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-        },
-        { closeStdin: true, ...(cwd ? { cwd } : {}) },
-      ),
-      runClaudeCommand(claudeSettings, ["auth", "status", "--json"], environment, {
-        closeStdin: true,
-        ...(cwd ? { cwd } : {}),
-      }),
+      runClaudeCommand(claudeSettings, ["auth", "status", "--json"], environment, runOptions),
+      fetchClaudeOAuthUsageLimits(claudeSettings, checkedAt),
     ],
     { concurrency: "unbounded" },
   ).pipe(
     Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
-    Effect.map(
-      Option.map(([usageResult, authResult]) => {
-        let accountIdentity: string | undefined;
-        if (authResult.code === 0) {
-          try {
-            const decoded: unknown = JSON.parse(authResult.stdout);
-            const email =
-              typeof decoded === "object" && decoded !== null
-                ? (decoded as { email?: unknown }).email
-                : undefined;
-            accountIdentity = typeof email === "string" ? email.trim() || undefined : undefined;
-          } catch {
-            accountIdentity = undefined;
-          }
-        }
-        return {
-          accountIdentity,
-          usageLimits:
-            usageResult.code === 0
-              ? parseClaudeUsageLimitsJson(usageResult.stdout, checkedAt)
-              : undefined,
-        };
-      }),
-    ),
     Effect.catchCause(() => Effect.succeed(Option.none())),
-    Effect.map(Option.getOrUndefined),
   );
+  if (Option.isNone(probed)) return undefined;
+
+  const [authResult, oauthUsageLimits] = probed.value;
+  const accountIdentity = accountIdentityFromAuthStatus(authResult);
+  if (oauthUsageLimits) return { accountIdentity, usageLimits: oauthUsageLimits };
+
+  const usageResult = yield* runClaudeCommand(
+    claudeSettings,
+    [
+      "--print",
+      "/usage",
+      "--output-format",
+      "json",
+      "--permission-mode",
+      "plan",
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
+    ],
+    {
+      ...(environment ?? process.env),
+      ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+    },
+    runOptions,
+  ).pipe(
+    Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
+    Effect.catchCause(() => Effect.succeed(Option.none())),
+  );
+
+  return {
+    accountIdentity,
+    usageLimits:
+      Option.isSome(usageResult) && usageResult.value.code === 0
+        ? parseClaudeUsageLimitsJson(usageResult.value.stdout, checkedAt)
+        : undefined,
+  };
 });
 
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
@@ -879,7 +899,10 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
 > {
   const resolvedEnvironment = environment ?? process.env;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
