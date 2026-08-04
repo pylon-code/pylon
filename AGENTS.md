@@ -137,6 +137,24 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 - The server is event-sourced and its async flows emit typed receipts. Wait on receipts and worker drains, never on sleeps or polling. A test that needs a timeout to pass is wrong.
 - Upon request, user-visible frontend changes should get one integrated pass in a real client: `test-pylon-app` for web, `test-pylon-mobile` for mobile. The primary agent does this once after integrating. Subagents do not launch their own dev servers. Ask permission before doing computer use or spinning up browsers.
 
+## Follow-ups
+
+Pylon tracks follow-ups per project (beta). Use the `followup_*` MCP tools.
+
+- **Before filing, ask: was I asked to do this, and can I do it now?** If yes, filing is
+  forbidden — do the work. The list is not a place to put work you were asked to finish.
+- Every follow-up needs a `deferReason` from the closed set: `out-of-scope`, `needs-decision`,
+  `blocked-externally`, `idea`. "Ran out of time", "seemed hard", and "probably fine" are not
+  valid reasons — finish the work or say you are stuck.
+- Every follow-up needs a `verifyCheck`: a concrete, falsifiable check another agent can run
+  later to decide whether it still matters.
+- Use `blocker` only when a competent reviewer would refuse to merge the current work because of
+  it, and name the branch it gates.
+- Call `followup_list` when you start work in a project, and `followup_check_gate` before you
+  report work complete or open a pull request.
+- You may resolve a follow-up you actually addressed, and mark one moot with evidence. **You may
+  never waive one** — only the developer decides that something does not need doing.
+
 ## Pull requests
 
 - Never make a PR unless the developer explicitly asks you to do so.
