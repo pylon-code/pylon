@@ -110,7 +110,6 @@ import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
-import * as KanbanService from "./kanban/KanbanService.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
@@ -765,15 +764,6 @@ const buildAppUnderTest = (options?: {
                 diff: "",
               }),
             ...options?.layers?.checkpointDiffQuery,
-          }),
-          Layer.mock(KanbanService.KanbanService)({
-            create: () => Effect.die("KanbanService not stubbed in this test"),
-            update: () => Effect.die("KanbanService not stubbed in this test"),
-            move: () => Effect.die("KanbanService not stubbed in this test"),
-            archive: () => Effect.die("KanbanService not stubbed in this test"),
-            restore: () => Effect.die("KanbanService not stubbed in this test"),
-            getSnapshot: Effect.succeed({ sequence: 0, items: [] }),
-            stream: Stream.empty,
           }),
         ),
       ),

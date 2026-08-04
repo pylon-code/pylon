@@ -1,4 +1,4 @@
-import { Columns3Icon, SettingsIcon } from "lucide-react";
+import { SettingsIcon } from "lucide-react";
 import { memo, useCallback, useId } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 
@@ -128,12 +128,6 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const { isMobile, setOpenMobile } = useSidebar();
-  const handleBoardClick = useCallback(() => {
-    if (isMobile) {
-      setOpenMobile(false);
-    }
-    void navigate({ to: "/board" });
-  }, [isMobile, navigate, setOpenMobile]);
   const handleSettingsClick = useCallback(() => {
     if (isMobile) {
       setOpenMobile(false);
@@ -146,12 +140,6 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
       <SidebarMenu>
-        <SidebarMenuItem>
-          <SidebarMenuButton isActive={pathname === "/board"} onClick={handleBoardClick}>
-            <Columns3Icon />
-            <span>Board</span>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
         <SidebarMenuItem>
           <SidebarMenuButton onClick={handleSettingsClick}>
             <SettingsIcon />

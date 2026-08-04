@@ -1,4 +1,4 @@
-import { CommandId, KanbanWorkItemId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { type CxOptions, cx } from "class-variance-authority";
 import * as Encoding from "effect/Encoding";
 import { twMerge } from "tailwind-merge";
@@ -32,8 +32,6 @@ export function randomUUID(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-export const newCommandId = (): CommandId => CommandId.make(randomUUID());
-
 export const newProjectId = (): ProjectId => ProjectId.make(randomUUID());
 
 export const newThreadId = (): ThreadId => ThreadId.make(randomUUID());
@@ -41,5 +39,3 @@ export const newThreadId = (): ThreadId => ThreadId.make(randomUUID());
 export const newDraftId = (): DraftId => DraftId.make(randomUUID());
 
 export const newMessageId = (): MessageId => MessageId.make(randomUUID());
-
-export const newKanbanWorkItemId = (): KanbanWorkItemId => KanbanWorkItemId.make(randomUUID());
