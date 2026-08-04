@@ -917,6 +917,107 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
+      it.effect("projects pushed rate-limit state onto the instance snapshot", () =>
+        Effect.gen(function* () {
+          const claudeDriver = ProviderDriverKind.make("claudeAgent");
+          const claudeInstanceId = ProviderInstanceId.make("claude_personal");
+          const initialProvider = {
+            instanceId: claudeInstanceId,
+            driver: claudeDriver,
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: "2026-08-04T00:00:00.000Z",
+            version: "2.1.220",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          } as const satisfies ServerProvider;
+          const instance = {
+            instanceId: claudeInstanceId,
+            driverKind: claudeDriver,
+            continuationIdentity: {
+              driverKind: claudeDriver,
+              continuationKey: "claude:instance:claude_personal",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                provider: claudeDriver,
+                packageName: null,
+              }),
+              getSnapshot: Effect.succeed(initialProvider),
+              refresh: Effect.never,
+              streamChanges: Stream.empty,
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+          } satisfies ProviderInstance;
+          const instanceRegistryLayer = Layer.succeed(
+            ProviderInstanceRegistry.ProviderInstanceRegistry,
+            {
+              getInstance: (instanceId) =>
+                Effect.succeed(instanceId === claudeInstanceId ? instance : undefined),
+              listInstances: Effect.succeed([instance]),
+              listUnavailable: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+            },
+          );
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const runtimeServices = yield* Layer.build(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(instanceRegistryLayer),
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), {
+                  prefix: "t3-provider-registry-rate-limit-",
+                }),
+              ),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ).pipe(Scope.provide(scope));
+
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry.ProviderRegistry;
+            assert.strictEqual((yield* registry.getProviders)[0]?.rateLimit, undefined);
+
+            const drained = yield* registry.setProviderRateLimitState({
+              instanceId: claudeInstanceId,
+              state: {
+                status: "rejected",
+                rateLimitType: "five_hour",
+                resetsAt: "2026-08-04T20:00:00.000Z",
+                observedAt: "2026-08-04T18:30:00.000Z",
+              },
+            });
+            assert.strictEqual(drained[0]?.rateLimit?.status, "rejected");
+            assert.strictEqual(drained[0]?.rateLimit?.resetsAt, "2026-08-04T20:00:00.000Z");
+
+            // Clearing must strip the field, not leave a stale value behind.
+            const cleared = yield* registry.setProviderRateLimitState({
+              instanceId: claudeInstanceId,
+              state: null,
+            });
+            assert.strictEqual(cleared[0]?.rateLimit, undefined);
+
+            // An unknown instance resolves with the current list rather than
+            // failing, matching `refreshInstance`.
+            const unknown = yield* registry.setProviderRateLimitState({
+              instanceId: ProviderInstanceId.make("claude_missing"),
+              state: {
+                status: "rejected",
+                observedAt: "2026-08-04T18:30:00.000Z",
+              },
+            });
+            assert.strictEqual(unknown.length, 1);
+            assert.strictEqual(unknown[0]?.rateLimit, undefined);
+          }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
       it("persists merged provider snapshots for the providers that were refreshed", () => {
         const previousProviders = [
           {
