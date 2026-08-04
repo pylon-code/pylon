@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { DotMatrix } from "./dot-matrix";
 
 const countAnimated = (html: string) => (html.match(/data-animated="true"/g) ?? []).length;
+const countChase = (html: string) => (html.match(/data-animated="chase"/g) ?? []).length;
 
 describe("DotMatrix", () => {
   it("renders a full 5x5 grid with a status label", () => {
@@ -43,6 +44,20 @@ describe("DotMatrix", () => {
     expect(renderToStaticMarkup(<DotMatrix state="connecting" />)).toContain(
       'aria-label="connecting"',
     );
+  });
+
+  it("animates only the ring dots in spinner, using the chase keyframe", () => {
+    const html = renderToStaticMarkup(<DotMatrix state="spinner" />);
+    // RING glyph has 12 dots (perimeter minus corners); the 4 corners plus 9
+    // interior dots must stay unanimated.
+    expect(countAnimated(html)).toBe(0);
+    expect(countChase(html)).toBe(12);
+    const corners = ['cx="2" cy="2"', 'cx="18" cy="2"', 'cx="2" cy="18"', 'cx="18" cy="18"'];
+    for (const corner of corners) {
+      const cornerCircle = html.split("<circle").find((c) => c.includes(corner));
+      expect(cornerCircle).toBeDefined();
+      expect(cornerCircle).not.toContain("data-animated");
+    }
   });
 
   it("never emits a positive animation-delay (unsigned hash regression)", () => {

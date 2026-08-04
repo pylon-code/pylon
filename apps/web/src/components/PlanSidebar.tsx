@@ -33,7 +33,7 @@ function stepStatusIcon(status: string): React.ReactNode {
     return <DotMatrix aria-hidden state="done" className="size-4 shrink-0 text-success" />;
   }
   if (status === "inProgress") {
-    return <DotMatrix aria-hidden state="working" className="size-4 shrink-0 text-primary" />;
+    return <DotMatrix aria-hidden state="spinner" className="size-4 shrink-0 text-primary" />;
   }
   return <DotMatrix aria-hidden state="idle" className="size-4 shrink-0 text-muted-foreground" />;
 }

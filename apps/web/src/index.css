@@ -224,14 +224,32 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     opacity: 1;
   }
 }
+/* Narrow bright window for "chase" states — a single dot travels around a
+   glyph rather than half of it lighting at once like dot-matrix-blink. */
+@keyframes dot-matrix-chase {
+  0%,
+  12% {
+    opacity: 1;
+    animation-timing-function: steps(3);
+  }
+  22%,
+  100% {
+    opacity: var(--dot-matrix-blink-lo, 1);
+  }
+}
 .dot-matrix-dot {
   transition: fill-opacity 0.3s;
 }
-.dot-matrix-dot[data-animated="true"] {
+.dot-matrix-dot[data-animated="true"],
+.dot-matrix-dot[data-animated="chase"] {
   animation: dot-matrix-blink 1s infinite;
 }
+.dot-matrix-dot[data-animated="chase"] {
+  animation-name: dot-matrix-chase;
+}
 @media (prefers-reduced-motion: reduce) {
-  .dot-matrix-dot[data-animated="true"] {
+  .dot-matrix-dot[data-animated="true"],
+  .dot-matrix-dot[data-animated="chase"] {
     animation: none;
   }
 }

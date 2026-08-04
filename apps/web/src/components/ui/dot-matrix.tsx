@@ -70,6 +70,22 @@ const PROMPT = glyph([
   [4, 3],
   [4, 4],
 ]);
+/* The 12-dot perimeter of the 5x5 grid, corners excluded, so it reads as a
+   circle rather than a square. */
+const RING = glyph([
+  [0, 1],
+  [0, 2],
+  [0, 3],
+  [1, 0],
+  [1, 4],
+  [2, 0],
+  [2, 4],
+  [3, 0],
+  [3, 4],
+  [4, 1],
+  [4, 2],
+  [4, 3],
+]);
 
 type Blink = { duration: number; delay: number; lo: number };
 
@@ -82,6 +98,9 @@ type StateConfig = {
   dim?: number;
   /** Blink parameters per on dot, keyed by index and grid position. */
   blink?: (i: number, row: number, col: number) => Blink;
+  /** Use the narrow-duty-cycle chase keyframe instead of the 50/50 blink, so a
+   * single dot travels around the glyph rather than half of it lighting at once. */
+  chase?: boolean;
 };
 
 const STATES = {
@@ -100,6 +119,16 @@ const STATES = {
       delay: -Math.max(Math.abs(row - CENTER), Math.abs(col - CENTER)) * 0.18,
       lo: 0.15,
     }),
+  },
+  /** A single dot chasing around a ring — the agent is actively producing work. */
+  spinner: {
+    glyph: RING,
+    dim: 0.06,
+    chase: true,
+    blink: (_i: number, row: number, col: number) => {
+      const turn = (Math.atan2(row - CENTER, col - CENTER) + Math.PI) / (2 * Math.PI);
+      return { duration: 1.1, delay: -turn * 1.1, lo: 0.12 };
+    },
   },
   approval: { glyph: BANG, blink: () => ({ duration: 1.6, delay: 0, lo: 0.45 }) },
   input: {
@@ -163,7 +192,7 @@ function DotMatrix({ className, state, label, ...props }: DotMatrixProps) {
               cx={2 + col * 4}
               cy={2 + row * 4}
               r={1.4}
-              data-animated={blink ? "true" : undefined}
+              data-animated={blink ? (config.chase ? "chase" : "true") : undefined}
               style={
                 {
                   fillOpacity: rest,
