@@ -84,6 +84,26 @@ CLAUDE_CONFIG_DIR path: ~/.claude_personal_home
 Use the email shown in Settings to confirm each provider is using the intended account. Emails are
 blurred by default; click the blurred email to reveal it.
 
+## What Happens When One Account Runs Out?
+
+Pylon drains one account before it moves to the next, rather than spreading work across both. Claude
+never shares a prompt cache between organizations, so every account switch pays for a fresh start —
+switching should be rare and sticky.
+
+When Claude refuses a turn because a subscription window is spent, Pylon records that account as out
+of capacity until the window resets. From then on, **new threads open on the next account** that
+still has room. Accounts are tried in the order they appear in your provider settings, with the
+built-in Claude provider first.
+
+A pill appears at the bottom of the sidebar while an account is out of capacity. It names the
+account that picked up the work and roughly when the spent one comes back, and it disappears on its
+own once the window resets. Click it to open provider settings.
+
+If every configured account is out of capacity, Pylon still sends to one rather than blocking the
+composer, so you see Claude's own message instead of a silent refusal.
+
+Threads that are already running do not move. See the next section.
+
 ## Can I Switch Claude Accounts In An Existing Thread?
 
 Usually, no.
