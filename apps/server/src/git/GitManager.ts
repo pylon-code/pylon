@@ -1584,6 +1584,11 @@ export const make = Effect.gen(function* () {
     yield* assertNoOpenBlockers(branch, cwd);
     const provider = yield* sourceControlProvider(cwd);
     const terms = getChangeRequestTerminologyForKind(provider.kind);
+    yield* emit({
+      kind: "phase_started",
+      phase: "pr",
+      label: `Preparing ${terms.shortLabel}...`,
+    });
     if (!details.hasUpstream) {
       return yield* new GitManagerError({
         operation: "runPrStep",
@@ -2097,18 +2102,11 @@ export const make = Effect.gen(function* () {
           : { status: "skipped_not_requested" as const };
 
         const pr = wantsPr
-          ? yield* progress
-              .emit({
-                kind: "phase_started",
-                phase: "pr",
-                label: "Preparing PR...",
-              })
-              .pipe(
-                Effect.tap(() => Ref.set(currentPhase, Option.some("pr"))),
-                Effect.flatMap(() =>
-                  runPrStep(textGenerationSettings, input.cwd, currentBranch, progress.emit),
-                ),
-              )
+          ? yield* Ref.set(currentPhase, Option.some("pr")).pipe(
+              Effect.flatMap(() =>
+                runPrStep(textGenerationSettings, input.cwd, currentBranch, progress.emit),
+              ),
+            )
           : { status: "skipped_not_requested" as const };
 
         const toast = yield* buildCompletionToast(input.cwd, {

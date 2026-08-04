@@ -18,6 +18,7 @@ import type {
   FollowUp,
   GitActionProgressEvent,
   GitPreparePullRequestThreadInput,
+  SourceControlProviderKind,
   ThreadId,
 } from "@t3tools/contracts";
 
@@ -623,6 +624,7 @@ function makeManager(input?: {
   serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   setupScriptRunner?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"];
   followUpBlockers?: ReadonlyArray<FollowUp>;
+  sourceControlProviderKind?: SourceControlProviderKind;
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
@@ -642,18 +644,22 @@ function makeManager(input?: {
   const sourceControlRegistryLayer = Layer.effect(
     SourceControlProviderRegistry.SourceControlProviderRegistry,
     GitHubSourceControlProvider.make.pipe(
-      Effect.map((provider) =>
-        SourceControlProviderRegistry.SourceControlProviderRegistry.of({
-          get: () => Effect.succeed(provider),
-          resolveHandle: () => Effect.succeed({ provider, context: null }),
+      Effect.map((provider) => {
+        const resolvedProvider = {
+          ...provider,
+          kind: input?.sourceControlProviderKind ?? provider.kind,
+        };
+        return SourceControlProviderRegistry.SourceControlProviderRegistry.of({
+          get: () => Effect.succeed(resolvedProvider),
+          resolveHandle: () => Effect.succeed({ provider: resolvedProvider, context: null }),
           resolve: ({ cwd }) =>
             Effect.sync(() => {
               sourceControlProviderResolutions.push(cwd);
-              return provider;
+              return resolvedProvider;
             }),
           discover: Effect.succeed([]),
-        }),
-      ),
+        });
+      }),
       Effect.provide(Layer.succeed(GitHubCli.GitHubCli, gitHubCli)),
     ),
   );
@@ -2289,6 +2295,62 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(sourceControlProviderResolutions).toEqual([]);
       expect(ghCalls.some((call) => call.startsWith("pr list "))).toBe(false);
       expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
+    }),
+  );
+
+  it.effect("shipping gate preserves GitLab MR preparation terminology after provider lookup", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/gate-gitlab"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/gate-gitlab"]);
+
+      const { manager, followUpQueries, sourceControlProviderResolutions } = yield* makeManager({
+        serverSettings: { followUpsEnabled: true },
+        sourceControlProviderKind: "gitlab",
+        ghScenario: {
+          prListSequence: [
+            "[]",
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 603,
+                title: "Gate GitLab",
+                url: "https://gitlab.com/pingdotgg/codething-mvp/-/merge_requests/603",
+                baseRefName: "main",
+                headRefName: "feature/gate-gitlab",
+              },
+            ]),
+          ],
+        },
+      });
+      const events: GitActionProgressEvent[] = [];
+
+      const result = yield* runStackedAction(
+        manager,
+        { cwd: repoDir, action: "create_pr" },
+        {
+          progressReporter: {
+            publish: (event) =>
+              Effect.sync(() => {
+                events.push(event);
+              }),
+          },
+        },
+      );
+
+      expect(result.pr.status).toBe("created");
+      expect(followUpQueries).toEqual(["feature/gate-gitlab"]);
+      expect(sourceControlProviderResolutions[0]).toBe(repoDir);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          kind: "phase_started",
+          phase: "pr",
+          label: "Preparing MR...",
+        }),
+      );
     }),
   );
 
