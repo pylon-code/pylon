@@ -40,7 +40,6 @@ import {
 import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
-  CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
@@ -54,7 +53,6 @@ import {
   TerminalIcon,
   Undo2Icon,
   WrenchIcon,
-  XIcon,
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
@@ -1764,7 +1762,7 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
     case "bot":
       return <BotIcon className={className} aria-hidden />;
     case "check":
-      return <CheckIcon className={className} aria-hidden />;
+      return <DotMatrix aria-hidden state="done" className={cn(className, "text-success")} />;
     case "circle-alert":
       return <CircleAlertIcon className={className} aria-hidden />;
     case "eye":
@@ -1782,7 +1780,7 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
     case "wrench":
       return <WrenchIcon className={className} aria-hidden />;
     case "x":
-      return <XIcon className={className} aria-hidden />;
+      return <DotMatrix aria-hidden state="error" className={cn(className, "text-destructive")} />;
     case "zap":
       return <ZapIcon className={className} aria-hidden />;
   }
