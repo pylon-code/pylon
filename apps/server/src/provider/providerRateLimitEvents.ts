@@ -76,10 +76,14 @@ export function rateLimitFromClaudeEvent(
 }
 
 /**
- * Normalize whichever provider emitted the event.
+ * Normalize an `account.rate-limits.updated` payload from whichever provider
+ * emitted it.
+ *
+ * Both emitters wrap the driver's own message under `rateLimits`, so unwrap
+ * that envelope before handing the message to a driver reader.
  *
  * Only Claude is understood today. Codex emits the same runtime event, but its
- * payload carries percentage windows rather than an allowed/rejected verdict,
+ * message carries percentage windows rather than an allowed/rejected verdict,
  * which the polled `usageLimits` gauge already covers — so it returns
  * `undefined` here rather than being coerced into a drain verdict it does not
  * express. Grok, Cursor, and OpenCode never emit this event at all.
@@ -88,5 +92,7 @@ export function rateLimitFromRuntimeEventPayload(
   payload: unknown,
   observedAt: string,
 ): ServerProviderRateLimit | undefined {
-  return rateLimitFromClaudeEvent(payload, observedAt);
+  const envelope = asRecord(payload);
+  if (!envelope) return undefined;
+  return rateLimitFromClaudeEvent(envelope["rateLimits"], observedAt);
 }

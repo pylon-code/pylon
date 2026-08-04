@@ -20,9 +20,13 @@ const REAL_CLAUDE_EVENT = {
   session_id: "206c8150-dd19-47a5-b3aa-c50fc6a1e1fd",
 };
 
+// Both `ClaudeAdapter` and `CodexAdapter` publish the driver's own message
+// under a `rateLimits` key, so every payload reaching the parser is wrapped.
+const envelope = (rateLimits: unknown) => ({ rateLimits });
+
 describe("rateLimitFromRuntimeEventPayload", () => {
   it("reads a real Claude rate_limit_event", () => {
-    const parsed = rateLimitFromRuntimeEventPayload(REAL_CLAUDE_EVENT, OBSERVED_AT);
+    const parsed = rateLimitFromRuntimeEventPayload(envelope(REAL_CLAUDE_EVENT), OBSERVED_AT);
 
     expect(parsed?.status).toBe("allowed");
     expect(parsed?.rateLimitType).toBe("five_hour");
@@ -35,7 +39,7 @@ describe("rateLimitFromRuntimeEventPayload", () => {
 
   it("reads a rejected verdict", () => {
     const parsed = rateLimitFromRuntimeEventPayload(
-      { rate_limit_info: { status: "rejected", rateLimitType: "seven_day" } },
+      envelope({ rate_limit_info: { status: "rejected", rateLimitType: "seven_day" } }),
       OBSERVED_AT,
     );
 
@@ -45,7 +49,7 @@ describe("rateLimitFromRuntimeEventPayload", () => {
 
   it("keeps a window kind this build has never seen", () => {
     const parsed = rateLimitFromRuntimeEventPayload(
-      { rate_limit_info: { status: "allowed_warning", rateLimitType: "seven_day_opus" } },
+      envelope({ rate_limit_info: { status: "allowed_warning", rateLimitType: "seven_day_opus" } }),
       OBSERVED_AT,
     );
 
@@ -59,11 +63,20 @@ describe("rateLimitFromRuntimeEventPayload", () => {
     ["a string", "rate limited"],
     ["an array", []],
     ["an empty object", {}],
+    ["a bare message with no envelope", REAL_CLAUDE_EVENT],
+  ])("returns undefined for a payload that is %s", (_label, payload) => {
+    expect(rateLimitFromRuntimeEventPayload(payload, OBSERVED_AT)).toBeUndefined();
+  });
+
+  it.each([
+    ["null", null],
+    ["a string", "rate limited"],
+    ["an empty object", {}],
     ["a missing rate_limit_info", { type: "rate_limit_event" }],
     ["an unknown status", { rate_limit_info: { status: "on_fire" } }],
     ["a non-string status", { rate_limit_info: { status: 429 } }],
-  ])("returns undefined for %s", (_label, payload) => {
-    expect(rateLimitFromRuntimeEventPayload(payload, OBSERVED_AT)).toBeUndefined();
+  ])("returns undefined for a message that is %s", (_label, rateLimits) => {
+    expect(rateLimitFromRuntimeEventPayload(envelope(rateLimits), OBSERVED_AT)).toBeUndefined();
   });
 
   it.each([
@@ -73,7 +86,7 @@ describe("rateLimitFromRuntimeEventPayload", () => {
     ["already in milliseconds", 1785808200000],
   ])("drops an implausible resetsAt (%s) without dropping the verdict", (_label, resetsAt) => {
     const parsed = rateLimitFromRuntimeEventPayload(
-      { rate_limit_info: { status: "rejected", resetsAt } },
+      envelope({ rate_limit_info: { status: "rejected", resetsAt } }),
       OBSERVED_AT,
     );
 
@@ -86,7 +99,7 @@ describe("rateLimitFromRuntimeEventPayload", () => {
   // into a drain decision it does not express.
   it("returns undefined for a Codex-shaped payload", () => {
     const parsed = rateLimitFromRuntimeEventPayload(
-      { rateLimits: { primary: { usedPercent: 80, windowDurationMins: 300 } } },
+      envelope({ primary: { usedPercent: 80, windowDurationMins: 300 } }),
       OBSERVED_AT,
     );
 

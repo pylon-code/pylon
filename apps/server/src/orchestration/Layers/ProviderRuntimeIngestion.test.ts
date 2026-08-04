@@ -9,6 +9,7 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  type ServerProviderRateLimit,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -36,6 +37,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -161,6 +163,28 @@ function createProviderServiceHarness() {
   };
 }
 
+/**
+ * Records what ingestion pushes at the provider registry. Only
+ * `setProviderRateLimitState` is exercised here; every other member is left to
+ * `Layer.mock`, which dies loudly if ingestion ever reaches for one.
+ */
+function createProviderRegistryHarness() {
+  const rateLimitCalls: Array<{
+    readonly instanceId: ProviderInstanceId;
+    readonly state: ServerProviderRateLimit | null;
+  }> = [];
+
+  const layer = Layer.mock(ProviderRegistry)({
+    setProviderRateLimitState: (input) =>
+      Effect.sync(() => {
+        rateLimitCalls.push(input);
+        return [];
+      }),
+  });
+
+  return { layer, rateLimitCalls };
+}
+
 type ProviderRuntimeTestReadModel = OrchestrationReadModel;
 type ProviderRuntimeTestThread = ProviderRuntimeTestReadModel["threads"][number];
 type ProviderRuntimeTestMessage = ProviderRuntimeTestThread["messages"][number];
@@ -222,6 +246,7 @@ describe("ProviderRuntimeIngestion", () => {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
+    const providerRegistry = createProviderRegistryHarness();
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
@@ -239,6 +264,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
+      Layer.provideMerge(providerRegistry.layer),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
@@ -315,9 +341,128 @@ describe("ProviderRuntimeIngestion", () => {
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       emit: provider.emit,
       setProviderSession: provider.setSession,
+      rateLimitCalls: providerRegistry.rateLimitCalls,
       drain,
     };
   }
+
+  describe("account.rate-limits.updated", () => {
+    const claudeInstance = ProviderInstanceId.make("claude-primary");
+    const emitRateLimits = (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      options: {
+        readonly eventId: string;
+        readonly payload: unknown;
+        readonly instanceId?: ProviderInstanceId;
+        readonly threadId?: string;
+        readonly createdAt?: string;
+      },
+    ) => {
+      harness.emit({
+        type: "account.rate-limits.updated",
+        eventId: asEventId(options.eventId),
+        provider: ProviderDriverKind.make("claude"),
+        threadId: asThreadId(options.threadId ?? "thread-1"),
+        createdAt: options.createdAt ?? "2026-08-04T18:30:00.000Z",
+        ...(options.instanceId ? { providerInstanceId: options.instanceId } : {}),
+        payload: options.payload,
+      });
+    };
+
+    // The adapters wrap the driver's own message under `rateLimits`.
+    const claudeRateLimits = (info: Record<string, unknown>) => ({
+      rateLimits: { type: "rate_limit_event", rate_limit_info: info },
+    });
+
+    it("pushes a rejected verdict at the reporting instance", async () => {
+      const harness = await createHarness();
+
+      emitRateLimits(harness, {
+        eventId: "evt-rate-limit-rejected",
+        instanceId: claudeInstance,
+        payload: claudeRateLimits({
+          status: "rejected",
+          rateLimitType: "five_hour",
+          resetsAt: 1785808200,
+        }),
+      });
+      await harness.drain();
+
+      expect(harness.rateLimitCalls).toEqual([
+        {
+          instanceId: claudeInstance,
+          state: {
+            status: "rejected",
+            rateLimitType: "five_hour",
+            resetsAt: "2026-08-04T01:50:00.000Z",
+            observedAt: "2026-08-04T18:30:00.000Z",
+          },
+        },
+      ]);
+    });
+
+    it("replaces a drained verdict when the window reopens", async () => {
+      const harness = await createHarness();
+
+      emitRateLimits(harness, {
+        eventId: "evt-rate-limit-drained",
+        instanceId: claudeInstance,
+        payload: claudeRateLimits({ status: "rejected", rateLimitType: "five_hour" }),
+      });
+      emitRateLimits(harness, {
+        eventId: "evt-rate-limit-recovered",
+        instanceId: claudeInstance,
+        createdAt: "2026-08-04T23:45:00.000Z",
+        payload: claudeRateLimits({ status: "allowed", rateLimitType: "five_hour" }),
+      });
+      await harness.drain();
+
+      expect(harness.rateLimitCalls.map((call) => call.state?.status)).toEqual([
+        "rejected",
+        "allowed",
+      ]);
+    });
+
+    // A drained account is drained for every thread, so the verdict must not
+    // be gated on the reporting thread being in the read model.
+    it("records a verdict reported by a thread it does not know", async () => {
+      const harness = await createHarness();
+
+      emitRateLimits(harness, {
+        eventId: "evt-rate-limit-unknown-thread",
+        instanceId: claudeInstance,
+        threadId: "thread-does-not-exist",
+        payload: claudeRateLimits({ status: "rejected" }),
+      });
+      await harness.drain();
+
+      expect(harness.rateLimitCalls).toHaveLength(1);
+      expect(harness.rateLimitCalls[0]?.instanceId).toBe(claudeInstance);
+    });
+
+    // Leaving prior state alone beats clearing it: an unattributable or
+    // unreadable verdict is worse than a slightly stale one.
+    it.each([
+      [
+        "the payload is unreadable",
+        { instanceId: claudeInstance, payload: { rateLimits: { status: "on_fire" } } },
+      ],
+      [
+        "the event names no instance",
+        { payload: claudeRateLimits({ status: "rejected", rateLimitType: "five_hour" }) },
+      ],
+    ])("touches no state when %s", async (label, options) => {
+      const harness = await createHarness();
+
+      emitRateLimits(harness, {
+        eventId: `evt-rate-limit-${label.replaceAll(" ", "-")}`,
+        ...options,
+      });
+      await harness.drain();
+
+      expect(harness.rateLimitCalls).toEqual([]);
+    });
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
