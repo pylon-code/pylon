@@ -59,6 +59,10 @@
       "types": "./src/state/filesystem.ts",
       "default": "./src/state/filesystem.ts"
     },
+    "./state/followups": {
+      "types": "./src/state/followups.ts",
+      "default": "./src/state/followups.ts"
+    },
     "./state/git": {
       "types": "./src/state/git.ts",
       "default": "./src/state/git.ts"
