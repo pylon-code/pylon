@@ -191,7 +191,6 @@ import {
   resolveProviderDriverKindForInstanceSelection,
   resolveSelectableProviderInstanceEntry,
   sortProviderInstanceEntries,
-  sortProviderInstancesForRouting,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
@@ -845,21 +844,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return match.instanceId;
       }
     }
-    const compatibleEntries = sortProviderInstancesForRouting(
-      providerInstanceEntries.filter(
-        (entry) =>
-          (!lockedProvider || entry.driverKind === lockedProvider) &&
-          (!lockedContinuationGroupKey ||
-            entry.continuationGroupKey === lockedContinuationGroupKey),
-      ),
-      nowMs,
+    const compatibleEntries = providerInstanceEntries.filter(
+      (entry) =>
+        (!lockedProvider || entry.driverKind === lockedProvider) &&
+        (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey),
     );
     const requestedDriverEntries = compatibleEntries.filter(
       (entry) => entry.driverKind === requestedDriverKind,
     );
     return (
-      resolveSelectableProviderInstanceEntry(requestedDriverEntries, undefined)?.instanceId ??
-      resolveSelectableProviderInstanceEntry(compatibleEntries, undefined)?.instanceId ??
+      resolveSelectableProviderInstanceEntry(requestedDriverEntries, undefined, nowMs)
+        ?.instanceId ??
+      resolveSelectableProviderInstanceEntry(compatibleEntries, undefined, nowMs)?.instanceId ??
       NO_PROVIDER_MODEL_SELECTION.instanceId
     );
   }, [

@@ -266,6 +266,70 @@ describe("account drain routing", () => {
       ]);
     });
   });
+
+  // Every caller that resolves without an explicit request routes through the
+  // shared helper, so project creation and new threads cannot diverge.
+  describe("resolveSelectableProviderInstance", () => {
+    it("skips a drained account when nothing was requested", () => {
+      const instanceId = resolveSelectableProviderInstance(
+        [
+          drainedProvider("claude_primary", "2026-08-04T21:00:00.000Z"),
+          provider({ provider: claude, instanceId: "claude_backup" }),
+        ],
+        undefined,
+        NOW_MS,
+      );
+
+      expect(instanceId).toBe("claude_backup");
+    });
+
+    it("honors an explicitly requested account even while it is drained", () => {
+      const instanceId = resolveSelectableProviderInstance(
+        [
+          drainedProvider("claude_primary", "2026-08-04T21:00:00.000Z"),
+          provider({ provider: claude, instanceId: "claude_backup" }),
+        ],
+        ProviderInstanceId.make("claude_primary"),
+        NOW_MS,
+      );
+
+      expect(instanceId).toBe("claude_primary");
+    });
+
+    it("falls back to a drained account when every account is spent", () => {
+      const instanceId = resolveSelectableProviderInstance(
+        [
+          drainedProvider("claude_primary", "2026-08-04T21:00:00.000Z"),
+          drainedProvider("claude_backup", "2026-08-04T22:00:00.000Z"),
+        ],
+        undefined,
+        NOW_MS,
+      );
+
+      expect(instanceId).toBe("claude_primary");
+    });
+  });
+
+  // Project creation persists this, so it must not write a spent account.
+  describe("resolveDefaultProviderModelSelection", () => {
+    it("seeds a new project with an account that can serve a turn", () => {
+      const selection = resolveDefaultProviderModelSelection(
+        [
+          drainedProvider("claude_primary", "2026-08-04T21:00:00.000Z"),
+          provider({
+            provider: claude,
+            instanceId: "claude_backup",
+            models: [model("sonnet", false, true)],
+          }),
+        ],
+        null,
+        NOW_MS,
+      );
+
+      expect(selection?.instanceId).toBe("claude_backup");
+      expect(selection?.model).toBe("sonnet");
+    });
+  });
 });
 
 describe("deriveProviderInstanceEntries", () => {

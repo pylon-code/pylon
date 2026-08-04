@@ -342,10 +342,18 @@ const isSelectableProviderInstanceEntry = (entry: ProviderInstanceEntry): boolea
  * ready first, then a non-error probe result. An errored provider is retained
  * only when it was explicitly requested; it is never invented as a new-user
  * default.
+ *
+ * Only the fallback consults drain state, and it does so through
+ * {@link sortProviderInstancesForRouting} — an explicitly requested instance is
+ * honored even while it is spent, because that request came from a user's pick
+ * or a thread's existing binding. Every caller that lands here without a
+ * request (new projects, new threads, a selection whose instance was deleted)
+ * gets drain-and-priority ordering without having to know it exists.
  */
 export function resolveSelectableProviderInstanceEntry(
   entries: ReadonlyArray<ProviderInstanceEntry>,
   instanceId: ProviderInstanceId | undefined,
+  nowMs: number = Date.now(),
 ): ProviderInstanceEntry | undefined {
   if (instanceId !== undefined) {
     const requested = entries.find((entry) => entry.instanceId === instanceId);
@@ -353,9 +361,10 @@ export function resolveSelectableProviderInstanceEntry(
       return requested;
     }
   }
+  const ordered = sortProviderInstancesForRouting(entries, nowMs);
   return (
-    entries.find(isProviderInstancePickerReady) ??
-    entries.find((entry) => isSelectableProviderInstanceEntry(entry) && entry.status !== "error")
+    ordered.find(isProviderInstancePickerReady) ??
+    ordered.find((entry) => isSelectableProviderInstanceEntry(entry) && entry.status !== "error")
   );
 }
 
@@ -364,13 +373,22 @@ export function resolveSelectableProviderInstanceEntry(
  * id that no longer exists (e.g. a persisted thread selection after the
  * user deleted the custom instance). Returns a ready or non-error fallback,
  * or `undefined` when no provider can safely become a new selection.
+ *
+ * Drain state rides the wire snapshot, so the fallback avoids a spent account
+ * here as it does everywhere. Configured `priority` does not: it lives in
+ * settings and only reaches an entry through
+ * {@link applyProviderInstanceSettings}, which callers holding raw snapshots
+ * (project creation against a remote environment, for one) have not applied.
+ * Those callers are choosing a stored default rather than routing a turn, and
+ * the composer re-resolves with full priority knowledge before anything runs.
  */
 export function resolveSelectableProviderInstance(
   providers: ReadonlyArray<ServerProvider>,
   instanceId: ProviderInstanceId | undefined,
+  nowMs: number = Date.now(),
 ): ProviderInstanceId | undefined {
   const entries = deriveProviderInstanceEntries(providers);
-  return resolveSelectableProviderInstanceEntry(entries, instanceId)?.instanceId;
+  return resolveSelectableProviderInstanceEntry(entries, instanceId, nowMs)?.instanceId;
 }
 
 /**
@@ -382,8 +400,9 @@ export function resolveSelectableProviderInstance(
 export function resolveDefaultProviderModelSelection(
   providers: ReadonlyArray<ServerProvider>,
   selection: ModelSelection | null | undefined,
+  nowMs: number = Date.now(),
 ): ModelSelection | null {
-  const instanceId = resolveSelectableProviderInstance(providers, selection?.instanceId);
+  const instanceId = resolveSelectableProviderInstance(providers, selection?.instanceId, nowMs);
   if (instanceId === undefined) return null;
   if (selection?.instanceId === instanceId) return selection;
   const model = getDefaultProviderInstanceModel(providers, instanceId);
