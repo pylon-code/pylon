@@ -78,13 +78,6 @@ function ChatRouteGlobalShortcuts() {
         return;
       }
 
-      if (command === "board.open") {
-        event.preventDefault();
-        event.stopPropagation();
-        void navigate({ to: "/board" });
-        return;
-      }
-
       if (command === "chat.newLocal") {
         event.preventDefault();
         event.stopPropagation();

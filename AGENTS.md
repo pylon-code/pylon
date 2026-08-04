@@ -28,7 +28,7 @@ Pylon is a long-lived independent product, not a temporary reskin or a patch que
 - `t3code-upstream` (`pingdotgg/t3code`) and `t3code-fork` (`rynfar/t3code`) are reference remotes. They are intentionally fetch-only. Never push to them or re-enable their push URLs.
 - Upstream changes are opt-in. Fetch and inspect upstream commits, then cherry-pick or selectively merge only changes that benefit Pylon. Do not hard-reset, wholesale rebase, or replace Pylon with an upstream branch.
 - Use the `review-t3-upstream` skill whenever the user asks what changed in T3, whether Pylon should update, or wants to evaluate or adopt upstream work. The skill owns the durable review ledger in `.agents/upstream-review.md`; never bypass its human decision gate.
-- Resolve upstream conflicts Pylon-first. Preserve Pylon branding, agent guidance, Kanban behavior, and later Pylon-specific product decisions unless the developer explicitly chooses otherwise.
+- Resolve upstream conflicts Pylon-first. Preserve Pylon branding, agent guidance, and later Pylon-specific product decisions unless the developer explicitly chooses otherwise.
 - An inherited compatibility name is not permission to restore visible T3 branding. Keep product identity and runtime compatibility separate.
 - Before committing or publishing, verify the current branch and remotes. If the checkout is not rooted in the Pylon repository or a push would target a T3 remote, stop and correct it before proceeding.
 

@@ -23,7 +23,7 @@ For every change set, check the applicable dimensions:
 
 | Dimension    | Questions                                                                                                                    |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| Product fit  | Does it advance Pylon's direction or merely copy T3? Does it conflict with Kanban or another Pylon workflow?                 |
+| Product fit  | Does it advance Pylon's direction or merely copy T3? Does it conflict with a Pylon workflow?                                 |
 | Branding     | Does it restore T3 logos, names, hosted origins, analytics, or marketing copy? Can behavior be adopted without the branding? |
 | Architecture | Does it respect contracts, deciders, projectors, reactors, receipts, and adapter boundaries?                                 |
 | Providers    | What happens for Codex, Claude, Cursor, Grok, and OpenCode? Is unsupported behavior explicit?                                |
