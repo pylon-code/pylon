@@ -277,7 +277,7 @@ export function PreviewChromeRow({
                 <DotMatrix
                   aria-hidden
                   state="recording"
-                  className="absolute -right-1 -top-1 size-3 text-destructive"
+                  className="absolute -right-1 -top-1 size-3.5"
                 />
               ) : null}
             </TooltipTrigger>

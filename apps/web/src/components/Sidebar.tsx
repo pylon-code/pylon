@@ -760,7 +760,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                   />
                 }
               >
-                <DotMatrix aria-hidden state="terminal" className="size-3.5" />
+                <DotMatrix aria-hidden state="terminal" className="size-3" />
               </TooltipTrigger>
               <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
             </Tooltip>
@@ -2238,7 +2238,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                 }
               >
                 <span className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover/project-header:opacity-0">
-                  <DotMatrix state={projectStatus.matrix} aria-hidden className="size-3.5" />
+                  <DotMatrix state={projectStatus.matrix} aria-hidden className="size-3" />
                 </span>
                 <ChevronRightIcon className="absolute inset-0 m-auto size-3.5 text-muted-foreground/70 opacity-0 transition-opacity duration-150 group-hover/project-header:opacity-100" />
               </TooltipTrigger>

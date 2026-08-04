@@ -5,7 +5,9 @@ import { DotMatrix, type DotMatrixState } from "~/components/ui/dot-matrix";
 type ConnectionStatusDotProps = {
   tooltipText?: string | null;
   state: Extract<DotMatrixState, "live" | "connecting" | "error" | "idle">;
-  colorClassName: string;
+  /** Only needed when a caller wants a hue other than the state's canonical
+   * tone (see dot-matrix.tsx's TONE map). */
+  colorClassName?: string | undefined;
 };
 
 export function ConnectionStatusDot({
@@ -14,7 +16,7 @@ export function ConnectionStatusDot({
   colorClassName,
 }: ConnectionStatusDotProps) {
   const dotContent = (
-    <DotMatrix aria-hidden state={state} className={cn("size-3.5", colorClassName)} />
+    <DotMatrix aria-hidden state={state} className={cn("size-3", colorClassName)} />
   );
 
   if (!tooltipText) {

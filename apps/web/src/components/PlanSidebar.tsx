@@ -30,12 +30,12 @@ import { useAtomCommand } from "~/state/use-atom-command";
 
 function stepStatusIcon(status: string): React.ReactNode {
   if (status === "completed") {
-    return <DotMatrix aria-hidden state="done" className="size-4 shrink-0 text-success" />;
+    return <DotMatrix aria-hidden state="done" className="size-3.5 shrink-0" />;
   }
   if (status === "inProgress") {
-    return <DotMatrix aria-hidden state="spinner" className="size-4 shrink-0 text-primary" />;
+    return <DotMatrix aria-hidden state="spinner" className="size-3.5 shrink-0" />;
   }
-  return <DotMatrix aria-hidden state="idle" className="size-4 shrink-0 text-muted-foreground" />;
+  return <DotMatrix aria-hidden state="idle" className="size-3.5 shrink-0" />;
 }
 
 interface PlanSidebarProps {
