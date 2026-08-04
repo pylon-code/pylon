@@ -46,7 +46,7 @@ interface FollowUpServiceShape {
 }
 
 export class FollowUpService extends Context.Service<FollowUpService, FollowUpServiceShape>()(
-  "pylon/followups/FollowUpService",
+  "t3/followups/FollowUpService",
 ) {}
 
 const EmptyRequest = Schema.Struct({});

@@ -109,6 +109,7 @@ import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
+import * as FollowUpService from "./followups/FollowUpService.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
@@ -535,6 +536,13 @@ const buildAppUnderTest = (options?: {
           Layer.provideMerge(gitVcsDriverLayer),
           Layer.provide(vcsDriverRegistryLayer),
         );
+    const followUpLayer = Layer.mock(FollowUpService.FollowUpService)({
+      file: () => Effect.die("FollowUpService not stubbed in this test"),
+      updateStatus: () => Effect.die("FollowUpService not stubbed in this test"),
+      getSnapshot: Effect.succeed({ sequence: 0, items: [] }),
+      openBlockersForBranch: () => Effect.die("FollowUpService not stubbed in this test"),
+      stream: Stream.empty,
+    });
     const vcsStatusBroadcasterLayer = options?.layers?.vcsStatusBroadcaster
       ? Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
           ...options.layers.vcsStatusBroadcaster,
@@ -662,7 +670,7 @@ const buildAppUnderTest = (options?: {
       Layer.provide(gitManagerLayer),
       Layer.provide(gitVcsDriverLayer),
       Layer.provide(gitWorkflowLayer),
-      Layer.provide(reviewLayer),
+      Layer.provide(Layer.mergeAll(reviewLayer, followUpLayer)),
       Layer.provide(vcsProvisioningLayer),
       Layer.provide(
         Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({

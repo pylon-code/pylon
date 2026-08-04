@@ -51,6 +51,14 @@ import {
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
+  FollowUp,
+  FollowUpFileInput,
+  FollowUpOperationError,
+  FollowUpStreamItem,
+  FollowUpSubscribeInput,
+  FollowUpUpdateStatusInput,
+} from "./followups.ts";
+import {
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
@@ -197,6 +205,11 @@ export const WS_METHODS = {
 
   // Review methods
   reviewGetDiffPreview: "review.getDiffPreview",
+
+  // Follow-up methods
+  followUpFile: "followUp.file",
+  followUpUpdateStatus: "followUp.updateStatus",
+  followUpSubscribe: "followUp.subscribe",
 
   // Terminal methods
   terminalOpen: "terminal.open",
@@ -566,6 +579,25 @@ export const WsReviewGetDiffPreviewRpc = Rpc.make(WS_METHODS.reviewGetDiffPrevie
   error: Schema.Union([ReviewDiffPreviewError, EnvironmentAuthorizationError]),
 });
 
+export const WsFollowUpFileRpc = Rpc.make(WS_METHODS.followUpFile, {
+  payload: FollowUpFileInput,
+  success: FollowUp,
+  error: Schema.Union([FollowUpOperationError, EnvironmentAuthorizationError]),
+});
+
+export const WsFollowUpUpdateStatusRpc = Rpc.make(WS_METHODS.followUpUpdateStatus, {
+  payload: FollowUpUpdateStatusInput,
+  success: FollowUp,
+  error: Schema.Union([FollowUpOperationError, EnvironmentAuthorizationError]),
+});
+
+export const WsFollowUpSubscribeRpc = Rpc.make(WS_METHODS.followUpSubscribe, {
+  payload: FollowUpSubscribeInput,
+  success: FollowUpStreamItem,
+  error: Schema.Union([FollowUpOperationError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 export const WsTerminalOpenRpc = Rpc.make(WS_METHODS.terminalOpen, {
   payload: TerminalOpenInput,
   success: TerminalSessionSnapshot,
@@ -830,6 +862,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsSwitchRefRpc,
   WsVcsInitRpc,
   WsReviewGetDiffPreviewRpc,
+  WsFollowUpFileRpc,
+  WsFollowUpUpdateStatusRpc,
+  WsFollowUpSubscribeRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,
   WsTerminalWriteRpc,

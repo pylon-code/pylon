@@ -96,6 +96,7 @@ import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
+import * as FollowUpService from "./followups/FollowUpService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -360,6 +361,7 @@ const makeWsRpcLayer = (
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
       const review = yield* ReviewService.ReviewService;
+      const followUps = yield* FollowUpService.FollowUpService;
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
@@ -1853,6 +1855,18 @@ const makeWsRpcLayer = (
         [WS_METHODS.reviewGetDiffPreview]: (input) =>
           observeRpcEffect(WS_METHODS.reviewGetDiffPreview, review.getDiffPreview(input), {
             "rpc.aggregate": "review",
+          }),
+        [WS_METHODS.followUpFile]: (input) =>
+          observeRpcEffect(WS_METHODS.followUpFile, followUps.file(input), {
+            "rpc.aggregate": "followup",
+          }),
+        [WS_METHODS.followUpUpdateStatus]: (input) =>
+          observeRpcEffect(WS_METHODS.followUpUpdateStatus, followUps.updateStatus(input), {
+            "rpc.aggregate": "followup",
+          }),
+        [WS_METHODS.followUpSubscribe]: () =>
+          observeRpcStream(WS_METHODS.followUpSubscribe, followUps.stream, {
+            "rpc.aggregate": "followup",
           }),
         [WS_METHODS.terminalOpen]: (input) =>
           observeRpcEffect(WS_METHODS.terminalOpen, terminalManager.open(input), {
