@@ -74,6 +74,70 @@ describe("parseClaudeUsageLimitsJson", () => {
     });
   });
 
+  // Captured from Claude Code 2.1.220. Two things moved since the parser was
+  // written: `--output-format json` now emits an array of stream messages
+  // rather than one object, and the reset separator is " at " rather than ", ".
+  it("parses the array envelope and ' at ' separator real Claude Code emits", () => {
+    const output = JSON.stringify([
+      { type: "system", subtype: "init", session_id: "2f33563e" },
+      { type: "assistant", message: { role: "assistant" } },
+      {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: [
+          "You are currently using your subscription to power your Claude Code usage",
+          "",
+          "Current session: 12% used · resets Aug 4 at 6:49pm (America/Denver)",
+          "Current week (all models): 16% used · resets Aug 9 at 4:59pm (America/Denver)",
+          "Current week (Fable): 1% used · resets Aug 9 at 5pm (America/Denver)",
+        ].join("\n"),
+      },
+    ]);
+
+    expect(parseClaudeUsageLimitsJson(output, "2026-08-04T20:00:00.000Z")).toEqual({
+      source: "claudePrint",
+      checkedAt: "2026-08-04T20:00:00.000Z",
+      windows: [
+        {
+          label: "Session",
+          usedPercent: 12,
+          windowDurationMins: 300,
+          resetsAt: "2026-08-05T00:49:00.000Z",
+        },
+        {
+          label: "Weekly (all models)",
+          usedPercent: 16,
+          windowDurationMins: 10_080,
+          resetsAt: "2026-08-09T22:59:00.000Z",
+        },
+        {
+          label: "Weekly (Fable)",
+          usedPercent: 1,
+          windowDurationMins: 10_080,
+          resetsAt: "2026-08-09T23:00:00.000Z",
+        },
+      ],
+    });
+  });
+
+  it("ignores non-result entries in the array envelope", () => {
+    const output = JSON.stringify([
+      { type: "system", result: "Current session: 99% used · resets Aug 4 at 1am (UTC)" },
+      {
+        type: "result",
+        result: "Current session: 12% used · resets Aug 4 at 6:49pm (America/Denver)",
+      },
+    ]);
+
+    expect(parseClaudeUsageLimitsJson(output, "2026-08-04T20:00:00.000Z")?.windows[0]).toEqual({
+      label: "Session",
+      usedPercent: 12,
+      windowDurationMins: 300,
+      resetsAt: "2026-08-05T00:49:00.000Z",
+    });
+  });
+
   it("fails closed for malformed or changed output", () => {
     expect(parseClaudeUsageLimitsJson("not json", "2026-07-22T12:00:00.000Z")).toBeUndefined();
     expect(

@@ -110,28 +110,59 @@ function parseClaudeReset(input: {
   return best?.iso;
 }
 
-export function parseClaudeUsageLimitsJson(
-  output: string,
-  checkedAt: string,
-): ServerProviderUsageLimits | undefined {
-  let result: string;
+const resultTextFrom = (value: unknown): string | undefined => {
+  if (typeof value !== "object" || value === null) return undefined;
+  const candidate = (value as { result?: unknown }).result;
+  return typeof candidate === "string" ? candidate : undefined;
+};
+
+/**
+ * Pull the assistant's text out of a `claude --print --output-format json`
+ * payload.
+ *
+ * Claude Code 2.1.x emits an array of stream messages and carries the text on
+ * the trailing `type: "result"` entry; older builds emitted a single object
+ * with the same field. Both are accepted because the format has already moved
+ * once and Pylon does not control it \u2014 reading the last matching entry keeps
+ * a future prefix message from hijacking the parse.
+ */
+function readClaudePrintResult(output: string): string | undefined {
+  let decoded: unknown;
   try {
-    const decoded: unknown = JSON.parse(output);
-    if (
-      typeof decoded !== "object" ||
-      decoded === null ||
-      typeof (decoded as { result?: unknown }).result !== "string"
-    ) {
-      return undefined;
-    }
-    result = (decoded as { result: string }).result.replaceAll("\r\n", "\n");
+    decoded = JSON.parse(output);
   } catch {
     return undefined;
   }
 
+  if (!Array.isArray(decoded)) return resultTextFrom(decoded);
+  for (let index = decoded.length - 1; index >= 0; index -= 1) {
+    const entry = decoded[index];
+    if (
+      typeof entry === "object" &&
+      entry !== null &&
+      (entry as { type?: unknown }).type !== "result"
+    ) {
+      continue;
+    }
+    const text = resultTextFrom(entry);
+    if (text !== undefined) return text;
+  }
+  return undefined;
+}
+
+export function parseClaudeUsageLimitsJson(
+  output: string,
+  checkedAt: string,
+): ServerProviderUsageLimits | undefined {
+  const rawResult = readClaudePrintResult(output);
+  if (rawResult === undefined) return undefined;
+  const result = rawResult.replaceAll("\r\n", "\n");
+
   const windows: ServerProviderUsageWindow[] = [];
+  // The day/time separator is " at " on Claude Code 2.1.x and was "," before
+  // it; accept either rather than chasing the current build.
   const pattern =
-    /^Current (session|week(?: \([^)]+\))?):\s*(\d{1,3}(?:\.\d+)?)% used\s*[\u00b7-]\s*resets ([A-Za-z]{3,9}) (\d{1,2}), (\d{1,2})(?::(\d{2}))?(am|pm) \(([^)]+)\)$/gim;
+    /^Current (session|week(?: \([^)]+\))?):\s*(\d{1,3}(?:\.\d+)?)% used\s*[\u00b7-]\s*resets ([A-Za-z]{3,9}) (\d{1,2})(?:,| at) (\d{1,2})(?::(\d{2}))?(am|pm) \(([^)]+)\)$/gim;
   for (const match of result.matchAll(pattern)) {
     const [, rawLabel, percent, month, day, hour, minute, meridiem, timeZone] = match;
     if (!rawLabel || !percent || !month || !day || !hour || !meridiem || !timeZone) continue;
