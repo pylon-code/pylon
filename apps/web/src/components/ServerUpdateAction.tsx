@@ -4,8 +4,6 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { CheckIcon } from "lucide-react";
-
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
 import { serverEnvironment } from "~/state/server";
@@ -69,11 +67,7 @@ export function ServerUpdateProgress({
               aria-current={running ? "step" : undefined}
             >
               {complete ? (
-                <CheckIcon
-                  className="size-3.5 shrink-0 opacity-70"
-                  strokeWidth={2.5}
-                  aria-hidden="true"
-                />
+                <DotMatrix aria-hidden state="done" className="size-3.5 shrink-0 text-success" />
               ) : running ? (
                 <DotMatrix aria-hidden state="working" className="size-3.5 shrink-0" />
               ) : (

@@ -9,13 +9,7 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
 import ChatMarkdown from "./ChatMarkdown";
-import {
-  CheckIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
-  EllipsisIcon,
-  LoaderIcon,
-} from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, EllipsisIcon, LoaderIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import type { ActivePlanState } from "../session-logic";
 import type { LatestProposedPlanState } from "../session-logic";
@@ -27,6 +21,7 @@ import {
   downloadPlanAsTextFile,
   stripDisplayedPlanMarkdown,
 } from "../proposedPlan";
+import { DotMatrix } from "./ui/dot-matrix";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { projectEnvironment } from "~/state/projects";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -37,7 +32,7 @@ function stepStatusIcon(status: string): React.ReactNode {
   if (status === "completed") {
     return (
       <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-success/10 text-success-foreground">
-        <CheckIcon className="size-3" />
+        <DotMatrix aria-hidden state="done" className="size-3.5" />
       </span>
     );
   }

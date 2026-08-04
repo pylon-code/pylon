@@ -119,13 +119,15 @@ describe("ServerUpdateProgress", () => {
     expect(markup).toContain("Download");
     expect(markup).toContain("Install");
     expect(markup).toContain("Resuming");
-    // The wait state is monochrome and calm: no success/warning colors, no
-    // status sentence, and the active step's marker (not its text label)
-    // carries the shared DotMatrix "working" indicator instead of a
-    // breathing-text pulse.
-    expect(markup).not.toContain("text-success");
+    // The rail's text labels stay monochrome and calm: no status sentence,
+    // and the active step's marker (not its text label) carries the shared
+    // DotMatrix "working" indicator instead of a breathing-text pulse. The
+    // two completed steps (download, install) precede "resuming" and each
+    // carry a green DotMatrix "done" marker so completion reads clearly.
+    expect(markup).toContain("text-success");
     expect(markup).not.toContain("text-primary");
     expect(markup).toContain('data-state="working"');
+    expect(markup).toContain('data-state="done"');
     expect(markup).not.toContain("animate-status-pulse");
     expect(markup).not.toContain("animate-spin");
   });

@@ -2037,7 +2037,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   <TooltipTrigger
                     render={<span className="flex size-4 items-center justify-center" />}
                   >
-                    <DotMatrix aria-hidden state="done" className="size-3.5" />
+                    <DotMatrix aria-hidden state="done" className="size-3.5 text-success" />
                   </TooltipTrigger>
                   <TooltipPopup>Completed</TooltipPopup>
                 </Tooltip>

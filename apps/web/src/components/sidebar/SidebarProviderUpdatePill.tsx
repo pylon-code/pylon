@@ -1,7 +1,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import type { ServerProvider } from "@t3tools/contracts";
-import { CircleCheckIcon, DownloadIcon, LoaderIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+import { DownloadIcon, LoaderIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 
 import { primaryServerProvidersAtom } from "../../state/server";
@@ -9,6 +9,7 @@ import {
   getProviderUpdateSidebarPillView,
   type ProviderUpdateSidebarPillView,
 } from "../ProviderUpdateLaunchNotification.logic";
+import { DotMatrix } from "../ui/dot-matrix";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const PROVIDER_UPDATE_PILL_STYLES = {
@@ -174,7 +175,7 @@ export function SidebarProviderUpdatePill() {
               {displayedView.tone === "loading" ? (
                 <LoaderIcon className="size-3.5 animate-spin" />
               ) : displayedView.tone === "success" ? (
-                <CircleCheckIcon className="size-3.5" />
+                <DotMatrix aria-hidden state="done" className="size-3.5" />
               ) : displayedView.tone === "error" ? (
                 <TriangleAlertIcon className="size-3.5" />
               ) : (
