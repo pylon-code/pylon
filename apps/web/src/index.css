@@ -133,11 +133,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 @theme inline {
   --color-zinc-25: oklch(99.2% 0 0);
   --animate-skeleton: skeleton 2s -1s infinite linear;
-  /* Duty-cycled indicator animations: long holds with stepped ramps, so the
+  /* Duty-cycled indicator animation: long holds with stepped ramps, so the
      compositor updates discrete frames instead of every vsync. */
-  --animate-status-pulse: status-pulse 2s infinite;
   --animate-status-ping: status-ping 2s infinite;
-  --animate-sidebar-working-text: sidebar-working-text 3.4s infinite;
   --font-sans:
     "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
     sans-serif;
@@ -189,21 +187,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       background-position: -200% 0;
     }
   }
-  @keyframes status-pulse {
-    0%,
-    40% {
-      opacity: 1;
-      animation-timing-function: steps(6);
-    }
-    50%,
-    90% {
-      opacity: 0.5;
-      animation-timing-function: steps(6);
-    }
-    100% {
-      opacity: 1;
-    }
-  }
   @keyframes status-ping {
     /* Burst first (immediate feedback for click ripples), then hold
        invisible for the rest of the cycle. Mirrors animate-ping's
@@ -219,20 +202,70 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       scale: 2;
     }
   }
-  @keyframes sidebar-working-text {
-    0%,
-    36% {
-      opacity: 1;
-      animation-timing-function: steps(10);
-    }
-    50%,
-    86% {
-      opacity: 0.75;
-      animation-timing-function: steps(10);
-    }
-    100% {
-      opacity: 1;
-    }
+}
+
+/* Dot-matrix status indicator. Per-dot duration/delay arrive inline from the
+   DotMatrix component; steps() holds keep many concurrent indicators cheap for
+   the compositor (same duty-cycle discipline as status-ping above). The blink
+   animates element opacity while resting brightness lives in fill-opacity, so
+   state changes cross-fade independently of the blink. */
+@keyframes dot-matrix-blink {
+  0%,
+  40% {
+    opacity: 1;
+    animation-timing-function: steps(4);
+  }
+  50%,
+  90% {
+    opacity: var(--dot-matrix-blink-lo, 1);
+    animation-timing-function: steps(4);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+/* A head with a fading tail for "chase" states — multiple dots light at
+   decreasing brightness to create a trailing effect around the glyph. */
+@keyframes dot-matrix-chase {
+  0% {
+    opacity: 1;
+    animation-timing-function: steps(2);
+  }
+  12% {
+    opacity: 0.78;
+    animation-timing-function: steps(2);
+  }
+  24% {
+    opacity: 0.56;
+    animation-timing-function: steps(2);
+  }
+  36% {
+    opacity: 0.38;
+    animation-timing-function: steps(2);
+  }
+  48% {
+    opacity: 0.22;
+    animation-timing-function: steps(2);
+  }
+  60%,
+  100% {
+    opacity: var(--dot-matrix-blink-lo, 1);
+  }
+}
+.dot-matrix-dot {
+  transition: fill-opacity 0.3s;
+}
+.dot-matrix-dot[data-animated="true"],
+.dot-matrix-dot[data-animated="chase"] {
+  animation: dot-matrix-blink 1s infinite;
+}
+.dot-matrix-dot[data-animated="chase"] {
+  animation-name: dot-matrix-chase;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot-matrix-dot[data-animated="true"],
+  .dot-matrix-dot[data-animated="chase"] {
+    animation: none;
   }
 }
 

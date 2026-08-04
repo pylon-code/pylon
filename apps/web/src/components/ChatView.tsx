@@ -296,6 +296,7 @@ import {
   AlertDialogTitle,
 } from "./ui/alert-dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { DotMatrix } from "./ui/dot-matrix";
 import { ServerUpdateAction, ServerUpdateProgress } from "./ServerUpdateAction";
 import {
   buildVersionMismatchDismissalKey,
@@ -1923,12 +1924,7 @@ function ChatViewContent(props: ChatViewProps) {
         items.push({
           id: `environment-unavailable:${activeEnvironmentUnavailableState.environmentId}`,
           variant: "default",
-          icon: (
-            <span
-              className="size-1.5 animate-status-pulse rounded-full bg-foreground"
-              aria-hidden="true"
-            />
-          ),
+          icon: <DotMatrix aria-hidden state="connecting" className="size-3.5 text-foreground" />,
           title: `${unavailableConnection.phase === "connecting" ? "Connecting" : "Reconnecting"} to ${activeEnvironmentUnavailableState.label}`,
           description: "It may be finishing an update. One moment.",
         });
@@ -1978,10 +1974,7 @@ function ChatViewContent(props: ChatViewProps) {
         id: `server-version:${serverUpdateEnvironmentId}`,
         variant: updateFailed ? "error" : updateInProgress ? "default" : "warning",
         icon: updateInProgress ? (
-          <span
-            className="size-1.5 animate-status-pulse rounded-full bg-foreground"
-            aria-hidden="true"
-          />
+          <DotMatrix aria-hidden state="connecting" className="size-3.5 text-foreground" />
         ) : (
           <TriangleAlertIcon />
         ),

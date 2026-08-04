@@ -40,7 +40,6 @@ import {
 import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
-  CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
@@ -50,12 +49,10 @@ import {
   MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
-  MinusIcon,
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
   WrenchIcon,
-  XIcon,
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
@@ -99,6 +96,7 @@ import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
+import { DotMatrix } from "../ui/dot-matrix";
 
 import {
   buildInlineTerminalContextText,
@@ -1095,11 +1093,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   return (
     <div className="py-0.5 pl-1.5">
       <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70 tabular-nums">
-        <span className="inline-flex items-center gap-[3px]">
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:400ms]" />
-        </span>
+        <DotMatrix aria-hidden state="working" className="size-4" />
         <span>
           {row.createdAt ? (
             <>
@@ -1768,7 +1762,7 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
     case "bot":
       return <BotIcon className={className} aria-hidden />;
     case "check":
-      return <CheckIcon className={className} aria-hidden />;
+      return <DotMatrix aria-hidden state="done" className={cn(className)} />;
     case "circle-alert":
       return <CircleAlertIcon className={className} aria-hidden />;
     case "eye":
@@ -1786,7 +1780,7 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
     case "wrench":
       return <WrenchIcon className={className} aria-hidden />;
     case "x":
-      return <XIcon className={className} aria-hidden />;
+      return <DotMatrix aria-hidden state="error" className={cn(className)} />;
     case "zap":
       return <ZapIcon className={className} aria-hidden />;
   }
@@ -2032,7 +2026,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                       />
                     }
                   >
-                    <XIcon className="block size-3 shrink-0 text-destructive" aria-hidden />
+                    <DotMatrix aria-hidden state="error" className="size-3.5" />
                   </TooltipTrigger>
                   <TooltipPopup>Failed</TooltipPopup>
                 </Tooltip>
@@ -2041,13 +2035,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   <TooltipTrigger
                     render={<span className="flex size-4 items-center justify-center" />}
                   >
-                    <span className="inline-flex size-4 items-center justify-center">
-                      <CheckIcon
-                        className="block size-3 shrink-0 stroke-current"
-                        stroke="currentColor"
-                        aria-hidden
-                      />
-                    </span>
+                    <DotMatrix aria-hidden state="done" className="size-3.5" />
                   </TooltipTrigger>
                   <TooltipPopup>Completed</TooltipPopup>
                 </Tooltip>
@@ -2056,7 +2044,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   <TooltipTrigger
                     render={<span className="flex size-4 items-center justify-center" />}
                   >
-                    <MinusIcon className="block size-3 shrink-0 opacity-70" aria-hidden />
+                    <DotMatrix aria-hidden state="idle" className="size-3.5 opacity-70" />
                   </TooltipTrigger>
                   <TooltipPopup>Empty</TooltipPopup>
                 </Tooltip>

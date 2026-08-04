@@ -19,8 +19,6 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
-  CircleCheckIcon,
-  CircleDashedIcon,
   ClockIcon,
   CopyIcon,
   FolderIcon,
@@ -145,6 +143,7 @@ import { primaryServerProvidersAtom } from "../state/server";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Button } from "./ui/button";
+import { DotMatrix } from "./ui/dot-matrix";
 import {
   Dialog,
   DialogDescription,
@@ -479,46 +478,44 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const isInFlight = status === "working" || status === "approval" || status === "input";
   const shouldRecede =
     (status === "ready" || isInFlight) && !isUnread && !isWoke && !props.isActive && !isSelected;
-  // Status hues follow the system-wide convention set by sidebar v1 and the
-  // mobile Live Activity/widgets (amber approval, indigo input, sky working)
-  // so a thread reads the same color everywhere it surfaces.
+  // Status hues follow the shared five-color system (see dot-matrix.tsx's
+  // TONE map) so a thread reads the same color everywhere it surfaces.
   const topStatus =
     status === "working"
       ? {
           label: "Working",
           icon: "working" as const,
-          className:
-            "animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400",
+          className: "text-primary",
         }
       : status === "approval"
         ? {
             label: "Approval",
-            icon: null,
-            className: "text-amber-700 dark:text-amber-300",
+            icon: "approval" as const,
+            className: "text-warning",
           }
         : status === "input"
           ? {
               label: "Input",
-              icon: null,
-              className: "text-indigo-600 dark:text-indigo-300",
+              icon: "input" as const,
+              className: "text-warning",
             }
           : status === "failed"
             ? {
                 label: "Failed",
-                icon: null,
-                className: "text-red-700 dark:text-red-300",
+                icon: "failed" as const,
+                className: "text-destructive",
               }
             : isWoke
               ? {
                   label: "Woke",
                   icon: "woke" as const,
-                  className: "text-amber-700 dark:text-amber-300",
+                  className: "text-warning",
                 }
               : isUnread
                 ? {
                     label: "Done",
                     icon: "done" as const,
-                    className: "text-emerald-700 dark:text-emerald-300",
+                    className: "text-success",
                   }
                 : null;
 
@@ -776,7 +773,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       data-testid={`sidebar-v2-terminal-status-${thread.id}`}
       className={cn("inline-flex shrink-0 items-center justify-center", terminalStatus.colorClass)}
     >
-      <TerminalIcon className={cn("size-3.5", terminalStatus.pulse && "animate-status-pulse")} />
+      <DotMatrix aria-hidden state="terminal" className="size-3" />
     </span>
   ) : null;
 
@@ -843,7 +840,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   <span
                     role="status"
                     aria-label="Woke from snooze"
-                    className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-warning"
                   >
                     <AlarmClockIcon aria-hidden className="size-3" />
                     Woke
@@ -959,9 +956,15 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                       )}
                     >
                       {topStatus.icon === "working" ? (
-                        <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
+                        <DotMatrix aria-hidden state="spinner" className="size-3" />
+                      ) : topStatus.icon === "approval" ? (
+                        <DotMatrix aria-hidden state="approval" className="size-3" />
+                      ) : topStatus.icon === "input" ? (
+                        <DotMatrix aria-hidden state="input" className="size-3" />
+                      ) : topStatus.icon === "failed" ? (
+                        <DotMatrix aria-hidden state="error" className="size-3" />
                       ) : topStatus.icon === "done" ? (
-                        <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
+                        <DotMatrix aria-hidden state="done" className="size-3" />
                       ) : topStatus.icon === "woke" ? (
                         <AlarmClockIcon aria-hidden className="size-4 shrink-0" />
                       ) : null}

@@ -9,13 +9,7 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
 import ChatMarkdown from "./ChatMarkdown";
-import {
-  CheckIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
-  EllipsisIcon,
-  LoaderIcon,
-} from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, EllipsisIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import type { ActivePlanState } from "../session-logic";
 import type { LatestProposedPlanState } from "../session-logic";
@@ -27,6 +21,7 @@ import {
   downloadPlanAsTextFile,
   stripDisplayedPlanMarkdown,
 } from "../proposedPlan";
+import { DotMatrix } from "./ui/dot-matrix";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { projectEnvironment } from "~/state/projects";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -35,24 +30,12 @@ import { useAtomCommand } from "~/state/use-atom-command";
 
 function stepStatusIcon(status: string): React.ReactNode {
   if (status === "completed") {
-    return (
-      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-success/10 text-success-foreground">
-        <CheckIcon className="size-3" />
-      </span>
-    );
+    return <DotMatrix aria-hidden state="done" className="size-3.5 shrink-0" />;
   }
   if (status === "inProgress") {
-    return (
-      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-        <LoaderIcon className="size-3 animate-spin" />
-      </span>
-    );
+    return <DotMatrix aria-hidden state="spinner" className="size-3.5 shrink-0" />;
   }
-  return (
-    <span className="flex size-5 shrink-0 items-center justify-center rounded-full border border-border/60 bg-muted/30">
-      <span className="size-1.5 rounded-full bg-muted-foreground/30" />
-    </span>
-  );
+  return <DotMatrix aria-hidden state="idle" className="size-3.5 shrink-0" />;
 }
 
 interface PlanSidebarProps {

@@ -1,4 +1,3 @@
-import { CheckIcon } from "lucide-react";
 import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import type { EnvironmentId, ServerProvider } from "@t3tools/contracts";
 import {
@@ -25,6 +24,7 @@ import {
   type ProviderUpdateToastView,
 } from "./ProviderUpdateLaunchNotification.logic";
 import { Button } from "./ui/button";
+import { DotMatrix } from "./ui/dot-matrix";
 import { Spinner } from "./ui/spinner";
 
 type ProviderUpdateCommandResult = AtomCommandResult<
@@ -121,7 +121,7 @@ function EnvironmentUpdateRow({
       trailing = <Spinner className="size-4 text-muted-foreground" />;
       break;
     case "success":
-      trailing = <CheckIcon aria-hidden="true" className="size-4 text-success" />;
+      trailing = <DotMatrix aria-hidden state="done" className="size-3.5" />;
       break;
     case "failed":
     case "unchanged":

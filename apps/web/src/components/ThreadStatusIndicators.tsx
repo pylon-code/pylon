@@ -4,7 +4,7 @@ import {
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
 import type { VcsStatusResult } from "@t3tools/contracts";
-import { CloudIcon, FolderGit2Icon, GitPullRequestIcon, TerminalIcon } from "lucide-react";
+import { CloudIcon, FolderGit2Icon, GitPullRequestIcon } from "lucide-react";
 import { useMemo } from "react";
 import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
 import { useProject } from "../state/entities";
@@ -17,6 +17,7 @@ import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic"
 import type { SidebarThreadSummary } from "../types";
 import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { DotMatrix } from "./ui/dot-matrix";
 
 export interface PrStatusIndicator {
   label: string;
@@ -30,7 +31,6 @@ export interface PrStatusIndicator {
 export interface TerminalStatusIndicator {
   label: "Terminal process running";
   colorClass: string;
-  pulse: boolean;
 }
 
 export type ThreadPr = VcsStatusResult["pr"];
@@ -134,8 +134,7 @@ export function terminalStatusFromRunningIds(
   }
   return {
     label: "Terminal process running",
-    colorClass: "text-teal-600 dark:text-teal-300/90",
-    pulse: true,
+    colorClass: "text-muted-foreground",
   };
 }
 
@@ -186,16 +185,13 @@ export function ThreadStatusLabel({
         <TooltipTrigger
           render={
             <span
+              role="img"
               aria-label={status.label}
               className={`inline-flex size-3.5 shrink-0 items-center justify-center ${status.colorClass}`}
             />
           }
         >
-          <span
-            className={`size-[9px] rounded-full ${status.dotClass} ${
-              status.pulse ? "animate-status-pulse" : ""
-            }`}
-          />
+          <DotMatrix state={status.matrix} aria-hidden className="size-3" />
         </TooltipTrigger>
         <TooltipPopup side="top">{status.label}</TooltipPopup>
       </Tooltip>
@@ -207,16 +203,13 @@ export function ThreadStatusLabel({
       <TooltipTrigger
         render={
           <span
+            role="img"
             aria-label={status.label}
             className={`inline-flex items-center gap-1 text-[10px] ${status.colorClass}`}
           />
         }
       >
-        <span
-          className={`h-1.5 w-1.5 rounded-full ${status.dotClass} ${
-            status.pulse ? "animate-status-pulse" : ""
-          }`}
-        />
+        <DotMatrix state={status.matrix} aria-hidden className="size-3" />
         <span className="hidden md:inline">{status.label}</span>
       </TooltipTrigger>
       <TooltipPopup side="top">{status.label}</TooltipPopup>
@@ -325,9 +318,7 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
               />
             }
           >
-            <TerminalIcon
-              className={`size-3 ${terminalStatus.pulse ? "animate-status-pulse" : ""}`}
-            />
+            <DotMatrix aria-hidden state="terminal" className="size-3" />
           </TooltipTrigger>
           <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
         </Tooltip>

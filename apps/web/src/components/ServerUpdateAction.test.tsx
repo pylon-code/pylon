@@ -119,11 +119,17 @@ describe("ServerUpdateProgress", () => {
     expect(markup).toContain("Download");
     expect(markup).toContain("Install");
     expect(markup).toContain("Resuming");
-    // The wait state is monochrome and calm: no success/warning colors, no
-    // status sentence, one duty-cycled pulse on the active step.
-    expect(markup).not.toContain("text-success");
-    expect(markup).not.toContain("text-primary");
-    expect(markup).toContain("animate-status-pulse");
+    // The rail's text labels stay monochrome and calm: no status sentence,
+    // and the active step's marker (not its text label) carries the shared
+    // DotMatrix "spinner" indicator (blue, from its canonical tone) instead
+    // of a breathing-text pulse. The two completed steps (download, install)
+    // precede "resuming" and each carry a green DotMatrix "done" marker so
+    // completion reads clearly.
+    expect(markup).toContain("text-success");
+    expect(markup).toContain("text-primary");
+    expect(markup).toContain('data-state="spinner"');
+    expect(markup).toContain('data-state="done"');
+    expect(markup).not.toContain("animate-status-pulse");
     expect(markup).not.toContain("animate-spin");
   });
 
@@ -144,5 +150,6 @@ describe("ServerUpdateProgress", () => {
     expect(markup).toContain('role="alert"');
     expect(markup).toContain("The package could not be verified.");
     expect(markup).not.toContain("animate-status-pulse");
+    expect(markup).not.toContain('data-state="spinner"');
   });
 });
