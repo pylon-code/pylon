@@ -201,6 +201,7 @@ import {
   deriveLatestContextWindowSnapshot,
   formatProviderDisplayName,
 } from "../../lib/contextWindow";
+import type { ProviderUsageAccount } from "../providerUsage/ProviderUsageAccounts";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -406,7 +407,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   compact: boolean;
   activeContextWindow: ReturnType<typeof deriveLatestContextWindowSnapshot>;
   activeThreadProviderDisplayName: string | null;
-  activeProviderUsageLimits: ServerProvider["usageLimits"] | undefined;
+  activeProviderUsageAccounts: readonly ProviderUsageAccount[];
   timestampFormat: UnifiedSettings["timestampFormat"];
   isPreparingWorktree: boolean;
   pendingAction: {
@@ -435,7 +436,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         <ContextWindowMeter
           usage={props.activeContextWindow}
           providerDisplayName={props.activeThreadProviderDisplayName}
-          providerUsageLimits={props.activeProviderUsageLimits}
+          providerUsageAccounts={props.activeProviderUsageAccounts}
           timestampFormat={props.timestampFormat}
         />
       ) : null}
@@ -958,10 +959,30 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     return formatProviderDisplayName(activeThreadProviderInstanceId);
   }, [providerStatuses, activeThreadProviderInstanceId]);
-  const activeProviderUsageLimits = settings.showProviderUsageInContextPopover
-    ? providerStatuses.find((provider) => provider.instanceId === activeThreadProviderInstanceId)
-        ?.usageLimits
-    : undefined;
+  // Every configured account for the active thread's driver, not just the one
+  // the thread is bound to: Pylon routes threads across several accounts of the
+  // same provider, so remaining capacity is a question about all of them.
+  const activeProviderUsageAccounts = useMemo((): readonly ProviderUsageAccount[] => {
+    if (!settings.showProviderUsageInContextPopover) return [];
+    const activeProvider = providerStatuses.find(
+      (provider) => provider.instanceId === activeThreadProviderInstanceId,
+    );
+    if (!activeProvider) return [];
+    return providerStatuses
+      .filter((provider) => provider.driver === activeProvider.driver && provider.usageLimits)
+      .map((provider) => ({
+        instanceId: provider.instanceId,
+        displayName: provider.displayName ?? formatProviderDisplayName(provider.instanceId),
+        accentColor: provider.accentColor,
+        // Narrowed by the `provider.usageLimits` filter above.
+        usageLimits: provider.usageLimits as NonNullable<typeof provider.usageLimits>,
+        isActive: provider.instanceId === activeThreadProviderInstanceId,
+      }));
+  }, [
+    settings.showProviderUsageInContextPopover,
+    providerStatuses,
+    activeThreadProviderInstanceId,
+  ]);
 
   // ------------------------------------------------------------------
   // Composer-local state
@@ -3220,7 +3241,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   compact={isComposerPrimaryActionsCompact}
                   activeContextWindow={activeContextWindow}
                   activeThreadProviderDisplayName={activeThreadProviderDisplayName}
-                  activeProviderUsageLimits={activeProviderUsageLimits}
+                  activeProviderUsageAccounts={activeProviderUsageAccounts}
                   timestampFormat={settings.timestampFormat}
                   pendingAction={pendingPrimaryAction}
                   isRunning={phase === "running"}

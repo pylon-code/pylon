@@ -112,12 +112,19 @@ describe("ClientSettings sidebar v2", () => {
 });
 
 describe("ClientSettings provider usage", () => {
-  it("keeps context-popover usage opt-in", () => {
-    expect(decodeClientSettings({}).showProviderUsageInContextPopover).toBe(false);
+  // Pylon diverges from upstream here: upstream defaults context-popover usage
+  // off because it is a niche readout for a single account. Pylon routes threads
+  // across several accounts of one provider, so the remaining capacity of each is
+  // routine information and ships on.
+  it("shows context-popover usage by default", () => {
+    expect(decodeClientSettings({}).showProviderUsageInContextPopover).toBe(true);
+  });
+
+  it("allows turning context-popover usage off", () => {
     expect(
-      decodeClientSettings({ showProviderUsageInContextPopover: true })
+      decodeClientSettings({ showProviderUsageInContextPopover: false })
         .showProviderUsageInContextPopover,
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 

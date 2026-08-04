@@ -1,9 +1,11 @@
 import { cn } from "~/lib/utils";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
-import type { ServerProviderUsageLimits } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { ProviderUsageRows } from "../providerUsage/ProviderUsageRows";
+import {
+  ProviderUsageAccounts,
+  type ProviderUsageAccount,
+} from "../providerUsage/ProviderUsageAccounts";
 
 function formatPercentage(value: number | null): string | null {
   if (value === null || !Number.isFinite(value)) {
@@ -18,7 +20,7 @@ function formatPercentage(value: number | null): string | null {
 export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot;
   providerDisplayName?: string | null;
-  providerUsageLimits?: ServerProviderUsageLimits | undefined;
+  providerUsageAccounts?: readonly ProviderUsageAccount[] | undefined;
   timestampFormat: TimestampFormat;
 }) {
   const { usage, providerDisplayName } = props;
@@ -138,13 +140,12 @@ export function ContextWindowMeter(props: {
               {providerDisplayName ?? "It"} automatically compacts its context when needed.
             </div>
           ) : null}
-          {props.providerUsageLimits ? (
+          {props.providerUsageAccounts && props.providerUsageAccounts.length > 0 ? (
             <div className="mt-1 grid gap-2.5 border-t border-border/60 pt-2.5">
               <div className="font-medium text-muted-foreground text-xs">Provider limits</div>
-              <ProviderUsageRows
-                usageLimits={props.providerUsageLimits}
+              <ProviderUsageAccounts
+                accounts={props.providerUsageAccounts}
                 timestampFormat={props.timestampFormat}
-                compact
               />
             </div>
           ) : null}
