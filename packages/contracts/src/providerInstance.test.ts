@@ -7,6 +7,8 @@ import {
   ProviderInstanceConfigMap,
   ProviderInstanceId,
   ProviderInstanceRef,
+  PROVIDER_INSTANCE_PRIORITY_UNSET,
+  providerInstancePrioritySortKey,
 } from "./providerInstance.ts";
 
 const decodeProviderDriverKind = Schema.decodeUnknownSync(ProviderDriverKind);
@@ -204,5 +206,47 @@ describe("ProviderInstanceConfigMap", () => {
         "1codex": { driver: "codex" },
       }),
     ).toThrow();
+  });
+});
+
+describe("provider instance drain priority", () => {
+  it("decodes an explicit priority", () => {
+    expect(decodeProviderInstanceConfig({ driver: "claudeAgent", priority: 0 }).priority).toBe(0);
+  });
+
+  it("leaves priority absent when unset", () => {
+    expect(decodeProviderInstanceConfig({ driver: "claudeAgent" }).priority).toBeUndefined();
+  });
+
+  it("rejects a negative priority", () => {
+    expect(() => decodeProviderInstanceConfig({ driver: "claudeAgent", priority: -1 })).toThrow();
+  });
+
+  it("sorts unprioritized instances after every explicitly ordered one", () => {
+    expect(providerInstancePrioritySortKey({ priority: 0 })).toBe(0);
+    expect(providerInstancePrioritySortKey({})).toBe(PROVIDER_INSTANCE_PRIORITY_UNSET);
+    expect(providerInstancePrioritySortKey({})).toBeGreaterThan(
+      providerInstancePrioritySortKey({ priority: 9_000 }),
+    );
+  });
+
+  // A stable sort plus a shared key is what preserves existing config order for
+  // anyone who never sets a priority.
+  it("keeps existing order among instances that share a key", () => {
+    const instances = [
+      { id: "claude_work", priority: undefined },
+      { id: "claude_personal", priority: 0 },
+      { id: "claude_spare", priority: undefined },
+    ];
+
+    const ordered = [...instances].sort(
+      (a, b) => providerInstancePrioritySortKey(a) - providerInstancePrioritySortKey(b),
+    );
+
+    expect(ordered.map((entry) => entry.id)).toEqual([
+      "claude_personal",
+      "claude_work",
+      "claude_spare",
+    ]);
   });
 });
