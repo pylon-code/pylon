@@ -52,6 +52,8 @@ import {
 } from "../textGeneration/TextGenerationPresets.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
+import * as FollowUpService from "../followups/FollowUpService.ts";
+import * as FollowUps from "../followups/gate.ts";
 import { extractBranchNameFromRemoteRef } from "./remoteRefs.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import type { GitManagerServiceError } from "@t3tools/contracts";
@@ -580,10 +582,29 @@ export const make = Effect.gen(function* () {
   const textGeneration = yield* TextGeneration.TextGeneration;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
+  const followUpService = yield* FollowUpService.FollowUpService;
   const crypto = yield* Crypto.Crypto;
 
   const sourceControlProvider = (cwd: string) => sourceControlProviders.resolve({ cwd });
   const serverSettingsService = yield* ServerSettings.ServerSettingsService;
+  const assertNoOpenBlockers = Effect.fn("GitManager.assertNoOpenBlockers")(function* (
+    branch: string,
+    cwd: string,
+  ) {
+    return yield* FollowUps.assertNoOpenBlockers(branch).pipe(
+      Effect.provideService(FollowUpService.FollowUpService, followUpService),
+      Effect.provideService(ServerSettings.ServerSettingsService, serverSettingsService),
+      Effect.mapError(
+        (error) =>
+          new GitManagerError({
+            operation: "runPrStep",
+            cwd,
+            detail: error.message,
+            cause: error,
+          }),
+      ),
+    );
+  });
 
   const readRecentCommitSubjects = (cwd: string) =>
     gitCore
@@ -1551,8 +1572,6 @@ export const make = Effect.gen(function* () {
     fallbackBranch: string | null,
     emit: GitActionProgressEmitter,
   ) {
-    const provider = yield* sourceControlProvider(cwd);
-    const terms = getChangeRequestTerminologyForKind(provider.kind);
     const details = yield* gitCore.statusDetails(cwd);
     const branch = details.branch ?? fallbackBranch;
     if (!branch) {
@@ -1562,6 +1581,9 @@ export const make = Effect.gen(function* () {
         detail: "Cannot create a pull request from detached HEAD.",
       });
     }
+    yield* assertNoOpenBlockers(branch, cwd);
+    const provider = yield* sourceControlProvider(cwd);
+    const terms = getChangeRequestTerminologyForKind(provider.kind);
     if (!details.hasUpstream) {
       return yield* new GitManagerError({
         operation: "runPrStep",

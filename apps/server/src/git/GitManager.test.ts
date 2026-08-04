@@ -11,9 +11,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { expect } from "vite-plus/test";
 import type {
+  FollowUp,
   GitActionProgressEvent,
   GitPreparePullRequestThreadInput,
   ThreadId,
@@ -21,11 +23,14 @@ import type {
 
 import {
   DEFAULT_SERVER_SETTINGS,
+  FollowUpId,
   GitCommandError,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   TextGenerationError,
 } from "@t3tools/contracts";
+import * as FollowUpService from "../followups/FollowUpService.ts";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -617,9 +622,11 @@ function makeManager(input?: {
   textGeneration?: Partial<FakeGitTextGeneration>;
   serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   setupScriptRunner?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"];
+  followUpBlockers?: ReadonlyArray<FollowUp>;
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
+  const followUpQueries: string[] = [];
   const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-git-manager-test-",
   });
@@ -657,14 +664,47 @@ function makeManager(input?: {
         runForThread: () => Effect.succeed({ status: "no-script" as const }),
       },
     ),
+    Layer.mock(FollowUpService.FollowUpService)({
+      file: () => Effect.die("FollowUpService.file is not used by GitManager tests"),
+      updateStatus: () =>
+        Effect.die("FollowUpService.updateStatus is not used by GitManager tests"),
+      getSnapshot: Effect.die("FollowUpService.getSnapshot is not used by GitManager tests"),
+      openBlockersForBranch: (branchRef) =>
+        Effect.sync(() => {
+          followUpQueries.push(branchRef);
+          return input?.followUpBlockers ?? [];
+        }),
+      stream: Stream.die("FollowUpService.stream is not used by GitManager tests"),
+    }),
     vcsDriverLayer,
     serverSettingsLayer,
   ).pipe(Layer.provideMerge(sourceControlRegistryLayer), Layer.provideMerge(NodeServices.layer));
 
   return GitManager.make.pipe(
     Effect.provide(managerLayer),
-    Effect.map((manager) => ({ manager, ghCalls })),
+    Effect.map((manager) => ({ manager, ghCalls, followUpQueries })),
   );
+}
+
+function followUpBlocker(ref: string, title: string): FollowUp {
+  return {
+    id: FollowUpId.make(`item-${title}`),
+    projectId: ProjectId.make("project-1"),
+    kind: "blocker",
+    status: "open",
+    title,
+    observation: "Would fail review.",
+    deferReason: "needs-decision",
+    verifyCheck: "Does it still reproduce?",
+    evidence: [],
+    gate: { kind: "branch", ref },
+    sourceKind: "agent",
+    sourceThreadId: null,
+    resolution: null,
+    revision: 0,
+    createdAt: "2026-08-04T12:00:00.000Z",
+    updatedAt: "2026-08-04T12:00:00.000Z",
+  };
 }
 
 const asThreadId = (threadId: string) => threadId as ThreadId;
@@ -2124,6 +2164,119 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           call.includes("pr create --base main --head feature/create-pr-only"),
         ),
       ).toBe(true);
+    }),
+  );
+
+  it.effect("shipping gate allows PR creation without querying blockers when disabled", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/gate-disabled"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/gate-disabled"]);
+
+      const { manager, ghCalls, followUpQueries } = yield* makeManager({
+        serverSettings: { followUpsEnabled: false },
+        followUpBlockers: [followUpBlocker("feature/gate-disabled", "a11y")],
+        ghScenario: {
+          prListSequence: [
+            "[]",
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 601,
+                title: "Gate disabled",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/601",
+                baseRefName: "main",
+                headRefName: "feature/gate-disabled",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const result = yield* runStackedAction(manager, {
+        cwd: repoDir,
+        action: "create_pr",
+      });
+
+      expect(result.pr.status).toBe("created");
+      expect(followUpQueries).toEqual([]);
+      expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(true);
+    }),
+  );
+
+  it.effect("shipping gate allows PR creation when enabled without blockers", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/gate-clear"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/gate-clear"]);
+
+      const { manager, ghCalls, followUpQueries } = yield* makeManager({
+        serverSettings: { followUpsEnabled: true },
+        ghScenario: {
+          prListSequence: [
+            "[]",
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 602,
+                title: "Gate clear",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/602",
+                baseRefName: "main",
+                headRefName: "feature/gate-clear",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const result = yield* runStackedAction(manager, {
+        cwd: repoDir,
+        action: "create_pr",
+      });
+
+      expect(result.pr.status).toBe("created");
+      expect(followUpQueries).toEqual(["feature/gate-clear"]);
+      expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(true);
+    }),
+  );
+
+  it.effect("shipping gate blocks PR creation before provider lookup when blockers are open", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/gate-blocked"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/gate-blocked"]);
+
+      const { manager, ghCalls, followUpQueries } = yield* makeManager({
+        serverSettings: { followUpsEnabled: true },
+        followUpBlockers: [
+          followUpBlocker("feature/gate-blocked", "a11y"),
+          followUpBlocker("feature/gate-blocked", "perf"),
+        ],
+      });
+
+      const error = yield* Effect.flip(
+        runStackedAction(manager, {
+          cwd: repoDir,
+          action: "commit_push_pr",
+        }),
+      );
+
+      expect(error._tag).toBe("GitManagerError");
+      expect(error.message).toContain("a11y");
+      expect(error.message).toContain("perf");
+      expect(error.message).toContain("waive");
+      expect(followUpQueries).toEqual(["feature/gate-blocked"]);
+      expect(ghCalls.some((call) => call.startsWith("pr list "))).toBe(false);
+      expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
     }),
   );
 

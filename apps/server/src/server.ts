@@ -269,8 +269,11 @@ const SourceControlProviderRegistryLayerLive = SourceControlProviderRegistry.lay
   Layer.provideMerge(VcsDriverRegistryLayerLive),
 );
 
+const FollowUpLayerLive = FollowUpService.layer;
+
 const GitManagerLayerLive = GitManager.layer.pipe(
   Layer.provideMerge(ProjectSetupScriptRunner.layer),
+  Layer.provideMerge(FollowUpLayerLive),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
   Layer.provideMerge(TextGeneration.layer),
@@ -295,8 +298,6 @@ const ReviewLayerLive = ReviewService.layer.pipe(
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(VcsDriverRegistryLayerLive),
 );
-
-const FollowUpLayerLive = FollowUpService.layer;
 
 const VcsLayerLive = Layer.empty.pipe(
   Layer.provideMerge(VcsProjectConfig.layer),
