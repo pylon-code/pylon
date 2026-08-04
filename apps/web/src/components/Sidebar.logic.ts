@@ -579,7 +579,7 @@ export function resolveThreadStatusPill(input: {
   if (thread.hasPendingApprovals) {
     return {
       label: "Pending Approval",
-      colorClass: "text-amber-600 dark:text-amber-300/90",
+      colorClass: "text-warning",
       matrix: "approval",
     };
   }
@@ -587,7 +587,7 @@ export function resolveThreadStatusPill(input: {
   if (thread.hasPendingUserInput) {
     return {
       label: "Awaiting Input",
-      colorClass: "text-indigo-600 dark:text-indigo-300/90",
+      colorClass: "text-warning",
       matrix: "input",
     };
   }
@@ -595,15 +595,15 @@ export function resolveThreadStatusPill(input: {
   if (thread.session?.status === "running") {
     return {
       label: "Working",
-      colorClass: "text-sky-600 dark:text-sky-300/80",
-      matrix: "working",
+      colorClass: "text-primary",
+      matrix: "spinner",
     };
   }
 
   if (thread.session?.status === "starting") {
     return {
       label: "Connecting",
-      colorClass: "text-sky-600 dark:text-sky-300/80",
+      colorClass: "text-primary",
       matrix: "connecting",
     };
   }
@@ -616,7 +616,7 @@ export function resolveThreadStatusPill(input: {
   if (hasPlanReadyPrompt) {
     return {
       label: "Plan Ready",
-      colorClass: "text-violet-600 dark:text-violet-300/90",
+      colorClass: "text-muted-foreground",
       matrix: "plan",
     };
   }
@@ -624,7 +624,7 @@ export function resolveThreadStatusPill(input: {
   if (hasUnseenCompletion(thread)) {
     return {
       label: "Completed",
-      colorClass: "text-emerald-600 dark:text-emerald-300/90",
+      colorClass: "text-success",
       matrix: "done",
     };
   }

@@ -921,7 +921,9 @@ describe("resolveThreadStatusPill", () => {
       resolveThreadStatusPill({
         thread: baseThread,
       }),
-    ).toMatchObject({ label: "Working", matrix: "working" });
+      // The sidebar row uses the ring spinner, not the row-sweep: the sweep
+      // is reserved for the chat stream's own working row.
+    ).toMatchObject({ label: "Working", matrix: "spinner" });
   });
 
   it("shows connecting while the session is starting", () => {

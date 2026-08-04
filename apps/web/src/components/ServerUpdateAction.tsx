@@ -25,10 +25,10 @@ function updateFailureMessage(error: unknown): string {
 }
 
 /**
- * Monochrome step rail for an in-flight server update. The update is a
- * wait, not a warning: done steps recede to gray, the active step is the
- * only bright element and carries a DotMatrix marker. Failure keeps the
- * rail but surfaces the error below it.
+ * Calm step rail for an in-flight server update. The update is a wait, not
+ * a warning: done and active steps carry their DotMatrix marker's canonical
+ * tone (success green, primary blue), everything else recedes to gray.
+ * Failure keeps the rail but surfaces the error below it.
  */
 export function ServerUpdateProgress({
   fromVersion,
@@ -67,9 +67,9 @@ export function ServerUpdateProgress({
               aria-current={running ? "step" : undefined}
             >
               {complete ? (
-                <DotMatrix aria-hidden state="done" className="size-3.5 shrink-0 text-success" />
+                <DotMatrix aria-hidden state="done" className="size-3.5 shrink-0" />
               ) : running ? (
-                <DotMatrix aria-hidden state="working" className="size-3.5 shrink-0" />
+                <DotMatrix aria-hidden state="spinner" className="size-3.5 shrink-0" />
               ) : (
                 <span
                   className={cn(

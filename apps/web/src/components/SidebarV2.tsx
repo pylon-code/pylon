@@ -478,45 +478,44 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const isInFlight = status === "working" || status === "approval" || status === "input";
   const shouldRecede =
     (status === "ready" || isInFlight) && !isUnread && !isWoke && !props.isActive && !isSelected;
-  // Status hues follow the system-wide convention set by sidebar v1 and the
-  // mobile Live Activity/widgets (amber approval, indigo input, sky working)
-  // so a thread reads the same color everywhere it surfaces.
+  // Status hues follow the shared five-color system (see dot-matrix.tsx's
+  // TONE map) so a thread reads the same color everywhere it surfaces.
   const topStatus =
     status === "working"
       ? {
           label: "Working",
           icon: "working" as const,
-          className: "text-sky-600 dark:text-sky-400",
+          className: "text-primary",
         }
       : status === "approval"
         ? {
             label: "Approval",
             icon: null,
-            className: "text-amber-700 dark:text-amber-300",
+            className: "text-warning",
           }
         : status === "input"
           ? {
               label: "Input",
               icon: null,
-              className: "text-indigo-600 dark:text-indigo-300",
+              className: "text-warning",
             }
           : status === "failed"
             ? {
                 label: "Failed",
                 icon: "failed" as const,
-                className: "text-red-700 dark:text-red-300",
+                className: "text-destructive",
               }
             : isWoke
               ? {
                   label: "Woke",
                   icon: "woke" as const,
-                  className: "text-amber-700 dark:text-amber-300",
+                  className: "text-warning",
                 }
               : isUnread
                 ? {
                     label: "Done",
                     icon: "done" as const,
-                    className: "text-emerald-700 dark:text-emerald-300",
+                    className: "text-success",
                   }
                 : null;
 
@@ -774,7 +773,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       data-testid={`sidebar-v2-terminal-status-${thread.id}`}
       className={cn("inline-flex shrink-0 items-center justify-center", terminalStatus.colorClass)}
     >
-      <DotMatrix aria-hidden state="terminal" className="size-3.5" />
+      <DotMatrix aria-hidden state="terminal" className="size-3" />
     </span>
   ) : null;
 
@@ -957,11 +956,11 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                       )}
                     >
                       {topStatus.icon === "working" ? (
-                        <DotMatrix aria-hidden state="working" className="size-4" />
+                        <DotMatrix aria-hidden state="spinner" className="size-3" />
                       ) : topStatus.icon === "failed" ? (
-                        <DotMatrix aria-hidden state="error" className="size-4" />
+                        <DotMatrix aria-hidden state="error" className="size-3" />
                       ) : topStatus.icon === "done" ? (
-                        <DotMatrix aria-hidden state="done" className="size-4" />
+                        <DotMatrix aria-hidden state="done" className="size-3" />
                       ) : topStatus.icon === "woke" ? (
                         <AlarmClockIcon aria-hidden className="size-4 shrink-0" />
                       ) : null}
