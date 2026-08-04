@@ -133,6 +133,7 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 
 - Smallest proof that the change works. `vp test run <files>` for the tests you touched, targeted lint and typecheck for the scope you changed.
 - **Do not run repo-wide checks.** No `vp check`, no `vp run -r test`, no `vp run -r typecheck` unless I ask. CI owns the full suite.
+- **Read verification output; do not trust the exit code alone.** A `vp run -F` filter matching no package exits 0 having checked nothing. The server package is named `t3`, not `@t3tools/server` — `-F @t3tools/server typecheck` is a silent no-op that reads as a pass.
 - Backend behavior changes ship with focused tests for that behavior.
 - The server is event-sourced and its async flows emit typed receipts. Wait on receipts and worker drains, never on sleeps or polling. A test that needs a timeout to pass is wrong.
 - Upon request, user-visible frontend changes should get one integrated pass in a real client: `test-pylon-app` for web, `test-pylon-mobile` for mobile. The primary agent does this once after integrating. Subagents do not launch their own dev servers. Ask permission before doing computer use or spinning up browsers.
