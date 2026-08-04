@@ -840,7 +840,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   <span
                     role="status"
                     aria-label="Woke from snooze"
-                    className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-warning"
                   >
                     <AlarmClockIcon aria-hidden className="size-3" />
                     Woke
