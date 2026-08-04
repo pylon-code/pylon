@@ -936,7 +936,7 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
             <ConnectionStatusDot
               tooltipText={statusTooltip}
               state={isLive ? "live" : "idle"}
-              colorClassName={isLive ? "text-success" : "text-muted-foreground/40"}
+              colorClassName={isLive ? undefined : "text-muted-foreground/40"}
             />
             <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
             {clientSession.current ? (
@@ -1359,11 +1359,14 @@ function SavedBackendListRow({
   const isConnecting = connectionState === "connecting" || connectionState === "reconnecting";
   const connectionDot =
     connectionState === "connected"
-      ? { state: "live" as const, colorClassName: "text-success" }
+      ? { state: "live" as const, colorClassName: undefined }
       : connectionState === "connecting" || connectionState === "reconnecting"
-        ? { state: "connecting" as const, colorClassName: "text-warning" }
+        ? // Deliberate override: connecting here means "not yet available",
+          // not "in motion", so it borrows the warning tone rather than the
+          // spinner's default primary.
+          { state: "connecting" as const, colorClassName: "text-warning" }
         : connectionState === "error"
-          ? { state: "error" as const, colorClassName: "text-destructive" }
+          ? { state: "error" as const, colorClassName: undefined }
           : { state: "idle" as const, colorClassName: "text-muted-foreground/40" };
   const statusTooltip = connectionStatusText(environment.connection);
   const errorTraceId = environment.connection.traceId;

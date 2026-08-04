@@ -1093,7 +1093,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   return (
     <div className="py-0.5 pl-1.5">
       <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70 tabular-nums">
-        <DotMatrix aria-hidden state="working" className="size-4 text-sky-600 dark:text-sky-400" />
+        <DotMatrix aria-hidden state="working" className="size-4" />
         <span>
           {row.createdAt ? (
             <>
@@ -1762,7 +1762,7 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
     case "bot":
       return <BotIcon className={className} aria-hidden />;
     case "check":
-      return <DotMatrix aria-hidden state="done" className={cn(className, "text-success")} />;
+      return <DotMatrix aria-hidden state="done" className={cn(className)} />;
     case "circle-alert":
       return <CircleAlertIcon className={className} aria-hidden />;
     case "eye":
@@ -1780,7 +1780,7 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
     case "wrench":
       return <WrenchIcon className={className} aria-hidden />;
     case "x":
-      return <DotMatrix aria-hidden state="error" className={cn(className, "text-destructive")} />;
+      return <DotMatrix aria-hidden state="error" className={cn(className)} />;
     case "zap":
       return <ZapIcon className={className} aria-hidden />;
   }
@@ -2026,7 +2026,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                       />
                     }
                   >
-                    <DotMatrix aria-hidden state="error" className="size-3.5 text-destructive" />
+                    <DotMatrix aria-hidden state="error" className="size-3.5" />
                   </TooltipTrigger>
                   <TooltipPopup>Failed</TooltipPopup>
                 </Tooltip>
@@ -2035,7 +2035,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   <TooltipTrigger
                     render={<span className="flex size-4 items-center justify-center" />}
                   >
-                    <DotMatrix aria-hidden state="done" className="size-3.5 text-success" />
+                    <DotMatrix aria-hidden state="done" className="size-3.5" />
                   </TooltipTrigger>
                   <TooltipPopup>Completed</TooltipPopup>
                 </Tooltip>

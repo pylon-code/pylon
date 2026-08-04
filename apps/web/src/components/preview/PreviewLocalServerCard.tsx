@@ -35,7 +35,7 @@ function describeServer(server: PreviewableServer): string {
 }
 
 function PulsingDot() {
-  return <DotMatrix state="live" label="Listening" className="size-3 shrink-0 text-success" />;
+  return <DotMatrix state="live" label="Listening" className="size-3 shrink-0" />;
 }
 
 function DimDot() {

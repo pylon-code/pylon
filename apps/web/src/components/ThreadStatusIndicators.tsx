@@ -134,7 +134,7 @@ export function terminalStatusFromRunningIds(
   }
   return {
     label: "Terminal process running",
-    colorClass: "text-teal-600 dark:text-teal-300/90",
+    colorClass: "text-muted-foreground",
   };
 }
 
@@ -191,7 +191,7 @@ export function ThreadStatusLabel({
             />
           }
         >
-          <DotMatrix state={status.matrix} aria-hidden className="size-3.5" />
+          <DotMatrix state={status.matrix} aria-hidden className="size-3" />
         </TooltipTrigger>
         <TooltipPopup side="top">{status.label}</TooltipPopup>
       </Tooltip>
@@ -209,7 +209,7 @@ export function ThreadStatusLabel({
           />
         }
       >
-        <DotMatrix state={status.matrix} aria-hidden className="size-3.5" />
+        <DotMatrix state={status.matrix} aria-hidden className="size-3" />
         <span className="hidden md:inline">{status.label}</span>
       </TooltipTrigger>
       <TooltipPopup side="top">{status.label}</TooltipPopup>
@@ -318,7 +318,7 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
               />
             }
           >
-            <DotMatrix aria-hidden state="terminal" className="size-3.5" />
+            <DotMatrix aria-hidden state="terminal" className="size-3" />
           </TooltipTrigger>
           <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
         </Tooltip>
