@@ -4,9 +4,13 @@
  * A provider session cannot cross accounts, so continuing work elsewhere means
  * a fresh session that remembers nothing. Everything it knows arrives in one
  * visible message — deliberately one, rather than history synthesized onto the
- * new account. The seam being obvious is the point: the carried context is
- * exactly what you can read and edit before sending, so a bad reconstruction
- * is something you correct rather than discover three turns later.
+ * new account, so the seam is obvious rather than disguised.
+ *
+ * The carried context is shown but not editable. In the common case it is the
+ * verbatim transcript plus a generated diff, neither of which can be wrong, so
+ * there is nothing to correct — while an editable handoff could have its
+ * framing stripped or its diff mangled. Steering the continuation is what the
+ * next message is for.
  *
  * Two rules shape the content, both from the drain-and-swap design:
  *
@@ -19,6 +23,13 @@
  * @module components/chat/ThreadHandoff.logic
  */
 import type { OrchestrationMessage, ThreadHandoffEstimate } from "@t3tools/contracts";
+import { estimateThreadHandoff, formatHandoffTokenCost } from "@t3tools/contracts";
+
+import {
+  isProviderInstanceDrained,
+  sortProviderInstancesForRouting,
+  type ProviderInstanceEntry,
+} from "../../providerInstances";
 
 /**
  * Turns kept verbatim when a thread is too large to replay whole.
@@ -119,4 +130,86 @@ export function buildThreadHandoffSeed(input: ThreadHandoffSeedInput): string | 
   );
 
   return sections.join("\n\n");
+}
+
+export interface ThreadHandoffOffer {
+  /** Account the thread is bound to, which has run out of capacity. */
+  readonly spentAccountName: string;
+  readonly spentAccentColor?: string | undefined;
+  readonly resetsAt?: string | undefined;
+  /** Account the work would continue on. */
+  readonly targetInstanceId: string;
+  readonly targetAccountName: string;
+  readonly targetAccentColor?: string | undefined;
+  readonly estimate: ThreadHandoffEstimate;
+  /** Coarse token figure for the cost warning, e.g. `31k`. */
+  readonly costLabel: string;
+  /** Plain lines describing exactly what crosses over. */
+  readonly carries: ReadonlyArray<string>;
+}
+
+/**
+ * Decide whether to offer a handoff for the thread's bound account, and on
+ * what terms.
+ *
+ * Returns `null` in every case where the offer would be noise: the account is
+ * fine, nothing else can take the work, or there is nothing to carry. The
+ * offer is never acted on automatically — waiting for the window to reset is
+ * free, and only the user knows whether the work is worth paying for now.
+ */
+export function getThreadHandoffOffer(input: {
+  readonly entries: ReadonlyArray<ProviderInstanceEntry>;
+  readonly boundInstanceId: string | undefined;
+  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly usedTokens?: number | undefined;
+  readonly maxTokens?: number | undefined;
+  readonly nowMs: number;
+}): ThreadHandoffOffer | null {
+  if (!input.boundInstanceId) return null;
+  const bound = input.entries.find((entry) => entry.instanceId === input.boundInstanceId);
+  if (!bound || !isProviderInstanceDrained(bound, input.nowMs)) return null;
+
+  const target = sortProviderInstancesForRouting(
+    input.entries.filter(
+      (entry) =>
+        entry.driverKind === bound.driverKind &&
+        entry.instanceId !== bound.instanceId &&
+        entry.enabled &&
+        entry.isAvailable &&
+        !isProviderInstanceDrained(entry, input.nowMs),
+    ),
+    input.nowMs,
+  )[0];
+  // Nothing to hand off to. The drain pill already says the account is spent;
+  // an offer with no destination would only restate it.
+  if (!target) return null;
+
+  const estimate = estimateThreadHandoff({
+    ...(input.usedTokens !== undefined ? { usedTokens: input.usedTokens } : {}),
+    ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+  });
+  if (estimate.isEmpty) return null;
+
+  const { carried, omittedCount } = selectHandoffMessages({ messages: input.messages, estimate });
+  if (carried.length === 0) return null;
+
+  const carries = [
+    "the original request",
+    omittedCount > 0
+      ? `the last ${carried.length} turns verbatim (${omittedCount} earlier turn${omittedCount === 1 ? "" : "s"} left behind)`
+      : `all ${carried.length} turns, verbatim`,
+    "the diff since this thread started",
+  ];
+
+  return {
+    spentAccountName: bound.displayName,
+    ...(bound.accentColor ? { spentAccentColor: bound.accentColor } : {}),
+    ...(bound.snapshot.rateLimit?.resetsAt ? { resetsAt: bound.snapshot.rateLimit.resetsAt } : {}),
+    targetInstanceId: target.instanceId,
+    targetAccountName: target.displayName,
+    ...(target.accentColor ? { targetAccentColor: target.accentColor } : {}),
+    estimate,
+    costLabel: formatHandoffTokenCost(estimate.carriedTokens),
+    carries,
+  };
 }

@@ -1,9 +1,18 @@
-import { MessageId, type OrchestrationMessage, type ThreadHandoffEstimate } from "@t3tools/contracts";
+import {
+  MessageId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type OrchestrationMessage,
+  type ServerProvider,
+  type ThreadHandoffEstimate,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
   buildThreadHandoffSeed,
   CONDENSED_VERBATIM_TURN_COUNT,
+  getThreadHandoffOffer,
   selectHandoffMessages,
 } from "./ThreadHandoff.logic";
 
@@ -157,5 +166,124 @@ describe("buildThreadHandoffSeed", () => {
 
     expect(seed).toContain("fresh session");
     expect(seed).not.toContain("undefined");
+  });
+});
+
+describe("getThreadHandoffOffer", () => {
+  const CLAUDE = ProviderDriverKind.make("claudeAgent");
+  const NOW_MS = Date.parse("2026-08-05T18:00:00.000Z");
+
+  const account = (input: {
+    instanceId: string;
+    displayName: string;
+    drainedUntil?: string;
+    enabled?: boolean;
+  }): ServerProvider => ({
+    instanceId: ProviderInstanceId.make(input.instanceId),
+    driver: CLAUDE,
+    displayName: input.displayName,
+    ...(input.drainedUntil
+      ? {
+          rateLimit: {
+            status: "rejected" as const,
+            rateLimitType: "five_hour",
+            observedAt: "2026-08-05T17:00:00.000Z",
+            resetsAt: input.drainedUntil,
+          },
+        }
+      : {}),
+    enabled: input.enabled ?? true,
+    installed: true,
+    version: null,
+    status: "ready" as const,
+    auth: { status: "authenticated" as const },
+    checkedAt: "2026-08-05T17:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+  });
+
+  const offerFor = (
+    providers: ReadonlyArray<ServerProvider>,
+    overrides: { usedTokens?: number; maxTokens?: number; messages?: OrchestrationMessage[] } = {},
+  ) =>
+    getThreadHandoffOffer({
+      entries: deriveProviderInstanceEntries(providers),
+      boundInstanceId: "claude_work",
+      messages: overrides.messages ?? conversation(4),
+      usedTokens: overrides.usedTokens ?? 31_000,
+      maxTokens: overrides.maxTokens ?? 1_000_000,
+      nowMs: NOW_MS,
+    });
+
+  const DRAINED_WORK = () =>
+    account({
+      instanceId: "claude_work",
+      displayName: "Claude Work",
+      drainedUntil: "2026-08-05T21:00:00.000Z",
+    });
+  const HEALTHY_PERSONAL = () =>
+    account({ instanceId: "claude_personal", displayName: "Claude Personal" });
+
+  it("offers the healthy account with its cost when the bound one is spent", () => {
+    const offer = offerFor([DRAINED_WORK(), HEALTHY_PERSONAL()]);
+
+    expect(offer?.spentAccountName).toBe("Claude Work");
+    expect(offer?.targetAccountName).toBe("Claude Personal");
+    expect(offer?.costLabel).toBe("31k");
+    expect(offer?.resetsAt).toBe("2026-08-05T21:00:00.000Z");
+  });
+
+  it("says the transcript crosses whole when it fits", () => {
+    const offer = offerFor([DRAINED_WORK(), HEALTHY_PERSONAL()]);
+
+    expect(offer?.carries).toContain("all 4 turns, verbatim");
+    expect(offer?.estimate.fidelity).toBe("verbatim");
+  });
+
+  it("says what gets left behind when the thread is too large", () => {
+    const offer = offerFor([DRAINED_WORK(), HEALTHY_PERSONAL()], {
+      usedTokens: 900_000,
+      maxTokens: 1_000_000,
+      messages: conversation(20),
+    });
+
+    expect(offer?.estimate.fidelity).toBe("condensed");
+    expect(offer?.carries.some((line) => line.includes("left behind"))).toBe(true);
+  });
+
+  // Every case below would put a control on screen that cannot help.
+  it("stays silent while the bound account is healthy", () => {
+    expect(offerFor([account({ instanceId: "claude_work", displayName: "Claude Work" }), HEALTHY_PERSONAL()])).toBeNull();
+  });
+
+  it("stays silent when there is nowhere to hand off to", () => {
+    expect(offerFor([DRAINED_WORK()])).toBeNull();
+  });
+
+  it("stays silent when the only other account is also spent", () => {
+    expect(
+      offerFor([
+        DRAINED_WORK(),
+        account({
+          instanceId: "claude_personal",
+          displayName: "Claude Personal",
+          drainedUntil: "2026-08-05T22:00:00.000Z",
+        }),
+      ]),
+    ).toBeNull();
+  });
+
+  it("stays silent when the other account is disabled", () => {
+    expect(
+      offerFor([
+        DRAINED_WORK(),
+        account({ instanceId: "claude_personal", displayName: "Claude Personal", enabled: false }),
+      ]),
+    ).toBeNull();
+  });
+
+  it("stays silent when the thread has nothing worth carrying", () => {
+    expect(offerFor([DRAINED_WORK(), HEALTHY_PERSONAL()], { usedTokens: 0 })).toBeNull();
   });
 });
