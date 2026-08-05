@@ -55,16 +55,17 @@ All four candidates adopted onto `upstream/2026-08-04-followup`.
 All sixteen candidates adopted. Fifteen landed on `upstream/2026-08-05-batch` and merged into `pylon`
 as `c18398bf9`.
 
-C9 is integrated on `upstream/2026-08-05-remote-updates` but **deliberately not merged**: Pylon has not
-set up self-update yet, so the change is dormant infrastructure whose launcher protocol bump would
-require existing installs to take one local service update first. Merge it when remote background-service
-updates become a shipping concern.
+C9 was held back for one round and then merged into `pylon` as `72da243e6`, since remote
+background-service updates are planned work. Note for whoever sets that up: launcher protocol 2 fails
+closed, so an install running protocol 1 needs one **local** service update before remote updates
+containing migrations will apply.
 
-Known gap from the browser verification pass: C14's fix does not resolve the reported bug in Pylon. The
-composer command menu still detaches from the composer by ~254px when the right panel is toggled, in both
-the draft and thread views, correcting only on the next resize. The upstream code is present and correct
-and Pylon's own composer divergence is padding-only, so this needs an upstream follow-up rather than a
-Pylon-side revert.
+The browser verification pass found that C14's fix did not resolve the bug it targets — the composer
+command menu still detached by ~254px on panel toggle. Fixed Pylon-side in `ce5371d41`: upstream assumed
+the composer's ancestors resize on every frame of the panel animation, but they reach their new width
+immediately while the composer is still moving, so the one size notification arrives a layout early.
+Position is now re-measured until it settles. **This is a Pylon-only divergence in `ChatComposer.tsx` and
+is worth reporting upstream**, where the same defect remains.
 
 | Change set | Upstream                                  | Decision | Pylon reference          | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------- | ----------------------------------------- | -------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
