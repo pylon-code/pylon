@@ -439,6 +439,13 @@ export const OrchestrationThreadShell = Schema.Struct({
   snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
+  /**
+   * The thread this one continues. Carried on the shell as well as the detail
+   * so a client can find a thread's continuation without loading every thread:
+   * the handed-off thread stays open, and it can only say where its work went
+   * by looking for the thread that points back at it.
+   */
+  continuedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
