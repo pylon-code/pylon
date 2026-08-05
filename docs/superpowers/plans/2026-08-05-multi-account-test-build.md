@@ -6,12 +6,14 @@ your build is the first look.
 
 ## Read this before promising the developer anything
 
-**Draining a running thread does not move it.** Phase B routes *new* threads away from a spent
-account. An existing thread stays bound to the account it started on, by design — mid-thread
-handoff is Phase C and is not built. If the developer drains their work account mid-thread and
-expects that thread to continue on the personal account, that will not happen and it is not a
-bug. What they can verify is: the spent account is detected, the sidebar pill appears, and the
-*next new thread* opens on the personal account.
+**A running thread never moves itself.** A provider session cannot cross accounts, so a spent
+thread cannot resume in place — and nothing switches automatically, by design. Phase B routes
+_new_ threads away from a spent account. Phase C offers a _manual_ handoff: an "Out of capacity"
+tab appears above the composer, and accepting it creates a **new** thread on the other account
+seeded with the earlier work. The original stays open and the two link to each other.
+
+So if the developer drains an account mid-thread and expects that thread to keep going on its
+own, it will not, and that is correct. What they should see is the tab offering the move.
 
 Say this up front rather than after the test fails.
 
@@ -24,13 +26,19 @@ contains: pylon fully merged (verify with `git merge-base --is-ancestor pylon HE
 worktree: .claude/worktrees/provider-usage-limits  (already checked out there)
 ```
 
-Both phases are on this one branch: Phase A (usage visibility) and Phase B (drain state,
-routing, drain pill, settings reorder), plus the OAuth usage source that replaced the CLI
-scrape.
+All three phases are on this one branch: Phase A (usage visibility), Phase B (drain state,
+routing, drain pill, settings reorder), and Phase C (manual cross-account thread handoff), plus
+the OAuth usage source that replaced the CLI scrape.
+
+**This branch adds database migration 38** (`projection_threads.continued_from_thread_id`). It
+runs automatically on first launch and is a nullable column with no backfill, so an existing
+database upgrades cleanly. It is additive only — nothing reads it on older builds — but a
+database that has run 38 and is then opened by a build _without_ this branch is untested. Take a
+`VACUUM INTO` snapshot before pointing this build at real data.
 
 ## Prerequisite the build cannot substitute for
 
-The developer needs **two real Claude logins**. The branch currently has a *fixture* second
+The developer needs **two real Claude logins**. The branch currently has a _fixture_ second
 account — `claude_personal` in the worktree's settings points at the default config dir with no
 separate `CLAUDE_CONFIG_DIR`, so both accounts report the same usage. A real second account is
 what makes the test meaningful:
@@ -83,8 +91,8 @@ that live in `~/.t3`.** `T3CODE_HOME` overrides it (`apps/desktop/src/app/Deskto
 Ask the developer which they want and confirm what actually happened on first launch rather
 than assuming:
 
-- *Their real projects* — point the build at the existing home explicitly.
-- *A clean room* — let it use its own home and add a project by hand.
+- _Their real projects_ — point the build at the existing home explicitly.
+- _A clean room_ — let it use its own home and add a project by hand.
 
 Do not copy data out of a running install; if seeding is wanted, snapshot with `VACUUM INTO`
 (see `CLAUDE.md` → Test data) and copy in, never out.
@@ -100,7 +108,7 @@ Nothing below has been confirmed in a client. Check each and report what you act
 2. **The numbers are account-wide.** They should match claude.ai, not the lower figure
    `claude --print "/usage"` prints (that reported only this machine's share — 17% against 40%
    for the same account).
-3. **Composer strip.** Below the composer: branch selector on the *left* beside the workspace
+3. **Composer strip.** Below the composer: branch selector on the _left_ beside the workspace
    control; usage on the right as `● 5h N% · 7d N%` with small fill bars. Bars and numbers turn
    amber past 80%. Check it does not crowd the branch selector at narrow widths — that is the
    most likely visual problem.
@@ -112,12 +120,23 @@ Nothing below has been confirmed in a client. Check each and report what you act
 6. **On drain:** a pill appears in the sidebar footer naming the account that took over and when
    the spent one resets. New threads should then open on the other account. Existing threads
    should not move — see the warning at the top.
+7. **The handoff tab.** On a thread whose account is spent, an amber "Out of capacity" tab
+   appears on the composer's top-right edge. Opening it should name both accounts, the reset
+   time, the token cost, and what crosses. It must _not_ appear when the other account is also
+   spent, disabled, or absent.
+8. **Accepting a handoff.** Creates a new thread on the other account, sends one seeded message
+   carrying the request, transcript, and a file-level diff summary, and navigates there. Both
+   threads should then show a link to the other under the header. This is the least-proven path
+   on the branch — see below.
 
 ## Known gaps — do not present these as working
 
-- **Mobile is untouched.** Neither phase changed `apps/mobile`. The composer strip change is
-  web/desktop only.
-- **Phase C (thread handoff) does not exist.**
+- **Mobile is untouched.** No phase changed `apps/mobile`. The composer strip and the handoff
+  tab are web/desktop only.
+- **The handoff has never run against a live server.** Its logic is well covered by tests, but
+  every test uses fixtures. The first real run is the developer's. Watch for: the thread being
+  created but the seed failing to send (the failure path deletes the half-created thread and
+  toasts), and the diff summary being empty on a thread with no completed checkpoints.
 - **The OAuth usage endpoint answers 429 under load.** One 429 was observed in development. The
   cache is 5 minutes on success, 1 minute on failure. With several accounts polling this is
   unproven; if usage goes blank intermittently, suspect the rate limit first.
