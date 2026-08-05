@@ -1,6 +1,6 @@
 # Follow-ups — Design
 
-**Status:** Proposed, awaiting review
+**Status:** Implemented and follow-on hardened
 **Date:** 2026-08-04
 
 ## The problem
@@ -37,7 +37,7 @@ An agent noticing something and saying it in prose is not tracking.
 - Not a project manager, sprint tool, or issue tracker.
 - Not a work queue. Agents do not "pull work" from it autonomously.
 - No cross-project aggregate view in v1. Items are project-scoped.
-- No scheduled background validation in v1 (see Validation).
+- No automatic or scheduled provider-run validation in v1 (see Validation).
 - No mobile UI in v1. Contracts stay client-agnostic so mobile can follow.
 
 ## Core model
@@ -60,6 +60,7 @@ _different_ agent, weeks later, with none of the originating conversation.
 | `sourceKind`              | `human \| agent`                                               | Provenance.                                         |
 | `sourceThreadId`          | nullable `ThreadId`                                            | Thread it was filed from.                           |
 | `resolution`              | nullable `{ note, threadId?, commitSha? }`                     | How it ended. Required to leave `open`.             |
+| `lastValidation`          | nullable validation record                                     | Latest durable check; full history stays in events. |
 | `createdAt` / `updatedAt` | ISO                                                            |                                                     |
 
 `verifyCheck` is the load-bearing field. Without it, revalidation is guesswork. Examples from the
@@ -86,8 +87,8 @@ Each kind is decided by a test, not a feeling. Three levels only; five-level sch
   commit ref where possible. Agents may set this.
 - **`waived`** → a human decided it does not need doing. **Agents may never set this.** If an
   agent could waive, the gate would be self-defeating.
-- **`moot`** → validation determined it no longer applies. Requires evidence in `resolution`.
-  Agents may set this, and it is challengeable.
+- **`moot`** → validation determined it no longer applies. A direct status update cannot select
+  this state; it comes from an evidence-backed validation record.
 
 No `in_progress` state. If something is being worked, that is a thread — keeping the state out
 preserves the boundary that Kanban violated.
@@ -125,10 +126,13 @@ The anti-oblivion mechanism, and the reason this is not another passive list.
 There is no system event for _claiming_ completion. So enforcement attaches to the actions that
 constitute shipping, which are real code paths that can refuse:
 
-1. **Shipping actions refuse** while unresolved blockers are attached to the same branch — PR
-   creation and any Pylon-owned completion/merge path. Refusal names the blocking items.
+1. **Change-request creation refuses** while unresolved blockers are attached to the same
+   project and branch. `GitManager.runPrStep` is the sole enforced shipping boundary. It derives
+   the final branch and repository path before provider resolution or change-request lookup.
+   Unknown or ambiguous repository ownership fails closed, and refusal names the blockers.
 2. **Gate status is visible on the branch in the UI**, so the developer sees it even if an agent
-   glosses over it.
+   glosses over it. A query failure remains visibly unavailable and retains the last synchronized
+   count rather than looking clear.
 3. **`followup_check_gate`** lets an agent query gate state deliberately before claiming done.
 
 Leaving the gate requires `resolved`, `waived` (human only), or `moot`. This is a hard gate by
@@ -161,28 +165,34 @@ work.
 - `followup_file` — file one. Requires `title`, `observation`, `deferReason`, `verifyCheck`,
   `kind`; `gate` required when `kind` is `blocker`. Rejects unknown `deferReason`.
 - `followup_list` — list for the current project; filter by kind/status/gate.
-- `followup_resolve` — set `resolved` or `moot` with a `resolution`. **Cannot set `waived`.**
+- `followup_resolve` — set `resolved` with a resolution. **Cannot set `moot` or `waived`.**
 - `followup_check_gate` — report unresolved blockers for a branch.
+- `followup_record_validation` — record a completed visible validation as `still-needed`, `moot`,
+  or `uncertain`; only an evidence-backed `moot` closes the item.
 
-Tools are registered only when the beta flag is on.
+The supported MCP registry is fixed when the environment starts. Enabling the beta therefore
+requires one restart before agents can discover these tools. Live handler guards still reject
+calls immediately after disabling, even when the names remain discoverable until restart.
 
 ## Validation loop
 
-The property that makes over-capture safe: items are cheap to re-check, so cleanup does not cost
-human attention.
+The property that makes over-capture safe: items carry enough information for an explicit,
+challengeable re-check.
 
-A validator agent reads `verifyCheck` and `evidence`, diffs against the current tree, and returns
-still-needed / moot / uncertain. It also audits **classification honesty** — "is this really
-out of scope, or did the filing agent dodge work it was asked to do?" — and may reclassify. The
-closed reason set is therefore a checkable claim, not just guidance.
+A developer starts validation from the list. Pylon opens a normal, visible project thread with a
+read-only validation prompt containing `verifyCheck` and `evidence`. The agent performs the check,
+then records `still-needed`, `moot`, or `uncertain` through MCP. The durable record includes its
+note, evidence, validation thread, checked commit, and server timestamp; the projection retains
+the latest result and the event log retains the history. `still-needed` and `uncertain` leave the
+item open. `moot` requires evidence and closes it atomically.
 
 **When it runs (v1):**
 
-- On demand, when the developer asks.
-- At gate check, so a stale blocker cannot block shipping.
+- On demand, when the developer chooses **Validate**.
 
-No scheduled background sweep in v1. A reactor mutating the list unasked burns tokens and feels
-intrusive; add it only if the list grows enough to need it.
+The shipping gate does not launch a provider. It has no durable validation job, thread, model,
+permission, cancellation, or uniformly read-only provider session to own that work safely. It
+therefore checks the durable state and fails closed. No scheduled background sweep runs in v1.
 
 ## Beta gating
 
@@ -194,7 +204,9 @@ Ships behind a toggle in the existing `BetaSettingsPanel.tsx` (precedent: sideba
 3. gate enforcement.
 
 A half-disabled state where agents file items the developer cannot see is worse than either
-extreme.
+extreme. UI availability is tri-state while environments connect: pending renders a loading
+surface, available renders the list, and unavailable redirects away. Disabling is live for UI,
+handlers, streams, and the gate; only MCP tool discovery waits for restart as described above.
 
 ## Architecture
 
@@ -209,7 +221,8 @@ orchestration files, which is the evidence.
 - `apps/server/src/mcp/toolkits/followups/`
 - `packages/client-runtime/src/state/followups.ts`
 - `apps/web/src/components/followups/`
-- new migration (id **37**; id 36 is retired — see `Migrations.ts`)
+- migrations **37** (events and projection) and **38** (durable validation evidence); id 36 is
+  retired — see `Migrations.ts`
 
 **Registration touchpoints** (additive lines; conflict textually, resolve by keeping both):
 `contracts/index.ts`, `contracts/rpc.ts`, `ws.ts`, `RpcAuthorization.ts`, `Migrations.ts`,
@@ -220,25 +233,38 @@ eight touchpoints were untouched by upstream. `server.ts` (+26/−6) and `McpHtt
 are churny, but both take additive registration lines.
 
 **The one new risk** is the gate hook, which touches a completion path upstream actively develops.
-Mitigation: exactly one line at the call site —
-`yield* FollowUps.assertNoOpenBlockers(ref)` — with all logic inside the follow-ups module, so an
-upstream conflict is a one-line "keep both" rather than a logic merge.
+The implemented boundary is one call from `GitManager.runPrStep` to
+`FollowUps.assertNoOpenBlockers(branchRef, cwd)`. All project lookup, query, and policy remain in
+the follow-ups module so the shipping workflow does not duplicate them.
 
-## Decisions made during design, open to reversal on review
+The service treats project identity as an authorization boundary. Item, thread, snapshot, stream,
+and gate queries validate the requested project. Repository-path lookup accepts exactly one
+distinct matching project across root and worktree paths; zero or multiple matches fail closed.
+Subscribers attach before snapshots are read, both for follow-ups and for the settings stream that
+controls their availability, so a concurrent update cannot fall into a snapshot/subscribe gap.
 
-1. **Acting on an item**: both paths supported — "start a thread from this" seeds the composer
-   with the dossier, and an agent may resolve one inline in the current thread. The item records
-   which via `resolution.threadId`. No `in_progress` state; no auto-linking of drafts (a draft has
-   no thread identity until first send — the same trap Kanban hit).
-2. **Resolved vs waived**: separate states with different permissions; agents may resolve and moot
-   but never waive.
-3. **Validation timing**: on demand and at gate check only; no scheduled reactor in v1.
+## Decisions retained from design
+
+1. **Acting on an item**: **Start thread** and **Validate** seed the composer with distinct,
+   Pylon-owned framed sections. Switching modes replaces only the matching owned frame and
+   preserves every byte outside it. The resulting normal thread can later be linked in resolution
+   or validation evidence. No `in_progress` state; no auto-linking of drafts (a draft has no
+   thread identity until first send — the same trap Kanban hit).
+2. **Resolved vs waived**: separate states with different permissions; agents may resolve directly
+   and may produce moot only through evidence-backed validation, but never waive.
+3. **Validation timing**: on demand only; no provider launch at the gate and no scheduled reactor
+   in v1.
+4. **Reverse states and evidence**: the UI supports **Reopen**, shows resolution metadata, and
+   renders validation evidence with full commit and timestamp values available to inspect.
 
 ## Success criteria
 
 - A follow-up filed by an agent in one thread is actionable by a different agent, in a different
   thread, weeks later, without the original conversation.
-- An agent cannot ship work past an unresolved blocker attached to that work.
-- An agent cannot file a follow-up for work it was asked to do and could have done.
+- Pylon refuses its change-request action while an unresolved blocker is attached to that project
+  and branch.
+- Agent guidance and the tool contract make the bright-line filing rule explicit and require a
+  closed defer reason; this is a policy boundary, not a mechanically provable property.
 - Stale items can be identified without the developer reading them.
-- Turning the beta flag off removes every trace from both the UI and agent tooling.
+- Turning the beta flag off immediately removes the UI and disables handlers, streams, and gate
+  enforcement; a restart refreshes the fixed MCP discovery catalog.

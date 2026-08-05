@@ -44,6 +44,7 @@ import {
   resolveBranchToolbarValue,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
+  resolveFollowUpBranchGateTarget,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
 import {
@@ -301,6 +302,11 @@ export function BranchToolbarBranchSelector({
     canonicalActiveBranch,
     (_currentBranch: string | null, optimisticBranch: string | null) => optimisticBranch,
   );
+  const followUpGateTarget = resolveFollowUpBranchGateTarget({
+    followUpsAvailable,
+    activeProjectRef,
+    resolvedActiveBranch,
+  });
   const listedActiveBranch =
     resolvedActiveBranch === null ? null : (branchByName.get(resolvedActiveBranch) ?? null);
   const activeBranchRefQuery = useEnvironmentQuery(
@@ -721,10 +727,10 @@ export function BranchToolbarBranchSelector({
       value={resolvedActiveBranch}
     >
       <div className={cn("flex min-w-0 items-center gap-1", className)}>
-        {followUpsAvailable && activeProjectRef && resolvedActiveBranch ? (
+        {followUpGateTarget ? (
           <FollowUpBranchGateStatus
-            branchRef={resolvedActiveBranch}
-            projectRef={activeProjectRef}
+            branchRef={followUpGateTarget.branchRef}
+            projectRef={followUpGateTarget.projectRef}
           />
         ) : null}
         {branchPr && branchPrStatus ? (

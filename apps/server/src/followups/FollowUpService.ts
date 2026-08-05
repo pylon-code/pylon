@@ -120,6 +120,13 @@ function invalidProjectError(): FollowUpOperationError {
   });
 }
 
+function ambiguousProjectError(): FollowUpOperationError {
+  return new FollowUpOperationError({
+    code: "invalid-project",
+    message: "Multiple projects own that repository path in this environment.",
+  });
+}
+
 function invalidThreadError(): FollowUpOperationError {
   return new FollowUpOperationError({
     code: "invalid-thread",
@@ -328,7 +335,7 @@ const make = Effect.gen(function* () {
     `,
   });
 
-  const getProjectForRepositoryPath = SqlSchema.findOneOption({
+  const getProjectsForRepositoryPath = SqlSchema.findAll({
     Request: RepositoryPathLookup,
     Result: ProjectRow,
     execute: ({ cwd }) => sql`
@@ -341,7 +348,6 @@ const make = Effect.gen(function* () {
       INNER JOIN projection_projects AS project
         ON project.project_id = thread.project_id AND project.deleted_at IS NULL
       WHERE thread.worktree_path = ${cwd} AND thread.deleted_at IS NULL
-      LIMIT 1
     `,
   });
 
@@ -350,7 +356,7 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<A, FollowUpOperationError, R> =>
     effect.pipe(Effect.mapError(() => persistenceError()));
 
-  const getSnapshot = Effect.fn("FollowUpService.getSnapshot")(function* (projectId: ProjectId) {
+  const loadSnapshot = Effect.fn("FollowUpService.loadSnapshot")(function* (projectId: ProjectId) {
     const [items, latest] = yield* Effect.all([
       mapPersistence(listItems({ projectId })),
       mapPersistence(getLatestSequence({})),
@@ -368,6 +374,11 @@ const make = Effect.gen(function* () {
     if (Option.isNone(project)) {
       return yield* invalidProjectError();
     }
+  });
+
+  const getSnapshot = Effect.fn("FollowUpService.getSnapshot")(function* (projectId: ProjectId) {
+    yield* validateProject(projectId);
+    return yield* loadSnapshot(projectId);
   });
 
   const validateThread = Effect.fn("FollowUpService.validateThread")(function* (
@@ -403,9 +414,6 @@ const make = Effect.gen(function* () {
   const validateItemProject = Effect.fn("FollowUpService.validateItemProject")(function* (
     command: FollowUpDomainCommand,
   ) {
-    if (command.type === "file") {
-      return;
-    }
     const owner = yield* mapPersistence(getItemProject({ itemId: command.input.itemId }));
     if (Option.isSome(owner) && owner.value.projectId !== command.input.projectId) {
       return yield* invalidProjectError();
@@ -433,7 +441,7 @@ const make = Effect.gen(function* () {
         const event = yield* sql
           .withTransaction(
             Effect.gen(function* () {
-              const snapshot = yield* getSnapshot(command.input.projectId);
+              const snapshot = yield* loadSnapshot(command.input.projectId);
               yield* validateItemProject(command);
               yield* validateCommandLinks(command);
               const now = DateTime.formatIso(yield* DateTime.now);
@@ -491,7 +499,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* validateProject(projectId);
           const subscription = yield* PubSub.subscribe(changes);
-          const latest = yield* getSnapshot(projectId);
+          const latest = yield* loadSnapshot(projectId);
           return Stream.concat(
             Stream.succeed<FollowUpStreamItem>({ kind: "snapshot", snapshot: latest }),
             Stream.fromSubscription(subscription).pipe(
@@ -515,11 +523,14 @@ const make = Effect.gen(function* () {
 
   const projectIdForRepositoryPath = Effect.fn("FollowUpService.projectIdForRepositoryPath")(
     function* (cwd: string) {
-      const project = yield* mapPersistence(getProjectForRepositoryPath({ cwd }));
-      if (Option.isNone(project)) {
+      const projects = yield* mapPersistence(getProjectsForRepositoryPath({ cwd }));
+      if (projects.length === 0) {
         return yield* invalidProjectError();
       }
-      return project.value.projectId;
+      if (projects.length > 1) {
+        return yield* ambiguousProjectError();
+      }
+      return projects[0]!.projectId;
     },
   );
 

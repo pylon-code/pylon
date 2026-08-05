@@ -25,6 +25,7 @@ import type {
 import {
   DEFAULT_SERVER_SETTINGS,
   FollowUpId,
+  FollowUpOperationError,
   GitCommandError,
   ProjectId,
   ProviderDriverKind,
@@ -625,6 +626,7 @@ function makeManager(input?: {
   setupScriptRunner?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"];
   followUpBlockers?: ReadonlyArray<FollowUp>;
   followUpProjectId?: ProjectId;
+  followUpProjectLookupError?: FollowUpOperationError;
   sourceControlProviderKind?: SourceControlProviderKind;
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
@@ -694,7 +696,9 @@ function makeManager(input?: {
       projectIdForThread: () =>
         Effect.die("FollowUpService.projectIdForThread is not used by GitManager tests"),
       projectIdForRepositoryPath: () =>
-        Effect.succeed(input?.followUpProjectId ?? ProjectId.make("project-1")),
+        input?.followUpProjectLookupError
+          ? Effect.fail(input.followUpProjectLookupError)
+          : Effect.succeed(input?.followUpProjectId ?? ProjectId.make("project-1")),
     }),
     vcsDriverLayer,
     serverSettingsLayer,
@@ -2314,6 +2318,46 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("shipping gate fails closed when repository ownership is missing or ambiguous", () =>
+    Effect.gen(function* () {
+      for (const ownership of ["missing", "ambiguous"] as const) {
+        const repoDir = yield* makeTempDir("t3code-git-manager-");
+        yield* initRepo(repoDir);
+        const branch = `feature/gate-owner-${ownership}`;
+        yield* runGit(repoDir, ["checkout", "-b", branch]);
+        const remoteDir = yield* createBareRemote();
+        yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+        yield* runGit(repoDir, ["push", "-u", "origin", branch]);
+
+        const { manager, ghCalls, followUpQueries, sourceControlProviderResolutions } =
+          yield* makeManager({
+            serverSettings: { followUpsEnabled: true },
+            followUpProjectLookupError: new FollowUpOperationError({
+              code: "invalid-project",
+              message:
+                ownership === "missing"
+                  ? "No project owns this repository path."
+                  : "Multiple projects own this repository path.",
+            }),
+          });
+
+        const error = yield* runStackedAction(manager, {
+          cwd: repoDir,
+          action: "create_pr",
+        }).pipe(Effect.flip);
+
+        expect(error._tag).toBe("GitManagerError");
+        expect(error.message).toMatch(
+          new RegExp(ownership === "missing" ? "No project" : "Multiple projects"),
+        );
+        expect(followUpQueries).toEqual([]);
+        expect(sourceControlProviderResolutions).toEqual([]);
+        expect(ghCalls.some((call) => call.startsWith("pr list "))).toBe(false);
+        expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
+      }
+    }),
+  );
+
   it.effect("shipping gate blocks PR creation before provider lookup when blockers are open", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
@@ -2411,6 +2455,44 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           label: "Preparing MR...",
         }),
       );
+    }),
+  );
+
+  it.effect("uses GitLab MR terminology when the branch loses its upstream before creation", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/gitlab-upstream-failure"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/gitlab-upstream-failure"]);
+
+      const { manager, sourceControlProviderResolutions } = yield* makeManager({
+        sourceControlProviderKind: "gitlab",
+      });
+      let removedUpstream = false;
+
+      const error = yield* runStackedAction(
+        manager,
+        { cwd: repoDir, action: "create_pr" },
+        {
+          progressReporter: {
+            publish: (event) =>
+              Effect.sync(() => {
+                if (event.kind === "action_started" && !removedUpstream) {
+                  runGitSyncForFakeGh(repoDir, ["branch", "--unset-upstream"]);
+                  removedUpstream = true;
+                }
+              }),
+          },
+        },
+      ).pipe(Effect.flip);
+
+      expect(removedUpstream).toBe(true);
+      expect(sourceControlProviderResolutions).toEqual([repoDir]);
+      expect(error.message).toContain("merge request");
+      expect(error.message).not.toMatch(/\bPR\b/i);
+      expect(error.message).not.toMatch(/pull request/i);
     }),
   );
 

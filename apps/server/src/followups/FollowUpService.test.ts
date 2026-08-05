@@ -188,6 +188,17 @@ testLayer("FollowUpService", (it) => {
     }),
   );
 
+  it.effect("rejects a public snapshot for an unknown project", () =>
+    Effect.gen(function* () {
+      const service = yield* FollowUpService;
+      const error = yield* service
+        .getSnapshot(ProjectId.make("missing-snapshot-project"))
+        .pipe(Effect.flip);
+
+      assert.equal(error.code, "invalid-project");
+    }),
+  );
+
   it.effect("isolates snapshots and same-named branch gates by project", () =>
     Effect.gen(function* () {
       const service = yield* FollowUpService;
@@ -299,6 +310,103 @@ testLayer("FollowUpService", (it) => {
     }),
   );
 
+  it.effect("rejects a new command that reuses an item id owned by another project", () =>
+    Effect.gen(function* () {
+      const service = yield* FollowUpService;
+      const firstProjectId = ProjectId.make("project-global-id-first");
+      const secondProjectId = ProjectId.make("project-global-id-second");
+      const itemId = FollowUpId.make("item-global-owner");
+      yield* seedProject(firstProjectId);
+      yield* seedProject(secondProjectId);
+
+      yield* service.file({
+        commandId: CommandId.make("command-global-id-first"),
+        itemId,
+        projectId: firstProjectId,
+        kind: "blocker",
+        title: "Original blocker",
+        observation: "This blocker must remain owned by the first project.",
+        deferReason: "needs-decision",
+        verifyCheck: "Confirm the first project still owns the blocker.",
+        gate: { kind: "branch", ref: "feature/original-gate" },
+        sourceKind: "agent",
+      });
+
+      const error = yield* service
+        .file({
+          commandId: CommandId.make("command-global-id-second"),
+          itemId,
+          projectId: secondProjectId,
+          kind: "open",
+          title: "Attempted replacement",
+          observation: "This must not replace or re-home the original blocker.",
+          deferReason: "out-of-scope",
+          verifyCheck: "Confirm the attempted replacement was rejected.",
+          sourceKind: "agent",
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error.code, "invalid-project");
+      const firstSnapshot = yield* service.getSnapshot(firstProjectId);
+      const secondSnapshot = yield* service.getSnapshot(secondProjectId);
+      const blockers = yield* service.openBlockersForBranch(
+        firstProjectId,
+        "feature/original-gate",
+      );
+      assert.equal(firstSnapshot.items.length, 1);
+      assert.equal(firstSnapshot.items[0]?.id, itemId);
+      assert.equal(firstSnapshot.items[0]?.projectId, firstProjectId);
+      assert.equal(firstSnapshot.items[0]?.title, "Original blocker");
+      assert.equal(firstSnapshot.items[0]?.status, "open");
+      assert.equal(firstSnapshot.items[0]?.revision, 0);
+      assert.deepStrictEqual(firstSnapshot.items[0]?.gate, {
+        kind: "branch",
+        ref: "feature/original-gate",
+      });
+      assert.deepStrictEqual(secondSnapshot.items, []);
+      assert.deepStrictEqual(
+        blockers.map((item) => item.id),
+        [itemId],
+      );
+    }),
+  );
+
+  it.effect("preserves same-project duplicate item conflicts for new commands", () =>
+    Effect.gen(function* () {
+      const service = yield* FollowUpService;
+      const projectId = ProjectId.make("project-same-id-conflict");
+      const itemId = FollowUpId.make("item-same-id-conflict");
+      yield* seedProject(projectId);
+      yield* service.file({
+        commandId: CommandId.make("command-same-id-first"),
+        itemId,
+        projectId,
+        kind: "open",
+        title: "Original item",
+        observation: "This item already exists.",
+        deferReason: "out-of-scope",
+        verifyCheck: "Confirm duplicate filing is rejected.",
+        sourceKind: "agent",
+      });
+
+      const error = yield* service
+        .file({
+          commandId: CommandId.make("command-same-id-second"),
+          itemId,
+          projectId,
+          kind: "open",
+          title: "Duplicate item",
+          observation: "A new command must not overwrite it.",
+          deferReason: "out-of-scope",
+          verifyCheck: "Confirm duplicate filing is rejected.",
+          sourceKind: "agent",
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error.code, "conflict");
+    }),
+  );
+
   it.effect("validates resolution threads against the follow-up project", () =>
     Effect.gen(function* () {
       const service = yield* FollowUpService;
@@ -368,6 +476,102 @@ testLayer("FollowUpService", (it) => {
     }),
   );
 
+  it.effect("rejects wrong-project threads for file, resolution, and validation commands", () =>
+    Effect.gen(function* () {
+      const service = yield* FollowUpService;
+      const projectId = ProjectId.make("project-thread-table");
+      const otherProjectId = ProjectId.make("project-thread-table-other");
+      const otherThreadId = ThreadId.make("thread-table-other");
+      yield* seedProject(projectId);
+      yield* seedProject(otherProjectId);
+      yield* seedThread(otherThreadId, otherProjectId);
+
+      const resolutionItem = yield* service.file({
+        commandId: CommandId.make("command-thread-table-resolution-file"),
+        itemId: FollowUpId.make("item-thread-table-resolution"),
+        projectId,
+        kind: "open",
+        title: "Resolution thread scope",
+        observation: "Resolution threads must stay in the item project.",
+        deferReason: "out-of-scope",
+        verifyCheck: "Check the resolution thread owner.",
+        sourceKind: "human",
+      });
+      const validationItem = yield* service.file({
+        commandId: CommandId.make("command-thread-table-validation-file"),
+        itemId: FollowUpId.make("item-thread-table-validation"),
+        projectId,
+        kind: "open",
+        title: "Validation thread scope",
+        observation: "Validation threads must stay in the item project.",
+        deferReason: "out-of-scope",
+        verifyCheck: "Check the validation thread owner.",
+        sourceKind: "human",
+      });
+
+      const cases = [
+        {
+          label: "file",
+          run: service.file({
+            commandId: CommandId.make("command-thread-table-file"),
+            itemId: FollowUpId.make("item-thread-table-file"),
+            projectId,
+            kind: "open",
+            title: "File thread scope",
+            observation: "Source threads must stay in the item project.",
+            deferReason: "out-of-scope",
+            verifyCheck: "Check the source thread owner.",
+            sourceKind: "agent",
+            sourceThreadId: otherThreadId,
+          }),
+        },
+        {
+          label: "resolution",
+          run: service.updateStatus({
+            commandId: CommandId.make("command-thread-table-resolution"),
+            itemId: resolutionItem.id,
+            projectId,
+            expectedRevision: resolutionItem.revision,
+            status: "resolved",
+            actor: "human",
+            resolution: { note: "Wrong project.", threadId: otherThreadId, commitSha: null },
+          }),
+        },
+        {
+          label: "validation",
+          run: service.recordValidation({
+            commandId: CommandId.make("command-thread-table-validation"),
+            itemId: validationItem.id,
+            projectId,
+            expectedRevision: validationItem.revision,
+            outcome: "uncertain",
+            verifyCheck: validationItem.verifyCheck,
+            note: "Wrong project.",
+            evidence: [],
+            checkedCommitSha: null,
+            threadId: otherThreadId,
+          }),
+        },
+      ] as const;
+
+      for (const candidate of cases) {
+        const error = yield* candidate.run.pipe(Effect.flip);
+        assert.equal(error.code, "invalid-thread", candidate.label);
+      }
+
+      const snapshot = yield* service.getSnapshot(projectId);
+      assert.equal(
+        snapshot.items.some((item) => item.id === "item-thread-table-file"),
+        false,
+      );
+      for (const itemId of [resolutionItem.id, validationItem.id]) {
+        const unchanged = snapshot.items.find((item) => item.id === itemId);
+        assert.equal(unchanged?.status, "open");
+        assert.equal(unchanged?.revision, 0);
+      }
+    }),
+  );
+
   it.effect("derives MCP and repository project authority from persisted projections", () =>
     Effect.gen(function* () {
       const service = yield* FollowUpService;
@@ -377,10 +581,32 @@ testLayer("FollowUpService", (it) => {
       const worktreePath = "/tmp/followup-authority-worktree";
       yield* seedProject(projectId, workspaceRoot);
       yield* seedThread(threadId, projectId, worktreePath);
+      yield* seedThread(ThreadId.make("thread-authority-root-match"), projectId, workspaceRoot);
 
       assert.equal(yield* service.projectIdForThread(threadId), projectId);
       assert.equal(yield* service.projectIdForRepositoryPath(workspaceRoot), projectId);
       assert.equal(yield* service.projectIdForRepositoryPath(worktreePath), projectId);
+    }),
+  );
+
+  it.effect("fails closed when a repository path has no owner or multiple owners", () =>
+    Effect.gen(function* () {
+      const service = yield* FollowUpService;
+      const firstProjectId = ProjectId.make("project-path-owner-first");
+      const secondProjectId = ProjectId.make("project-path-owner-second");
+      const sharedPath = "/tmp/followup-ambiguous-owner";
+      yield* seedProject(firstProjectId, sharedPath);
+      yield* seedProject(secondProjectId, "/tmp/followup-second-root");
+      yield* seedThread(ThreadId.make("thread-path-owner-second"), secondProjectId, sharedPath);
+
+      const missing = yield* service
+        .projectIdForRepositoryPath("/tmp/followup-missing-owner")
+        .pipe(Effect.flip);
+      const ambiguous = yield* service.projectIdForRepositoryPath(sharedPath).pipe(Effect.flip);
+
+      assert.equal(missing.code, "invalid-project");
+      assert.equal(ambiguous.code, "invalid-project");
+      assert.match(ambiguous.message, /multiple projects/i);
     }),
   );
 
@@ -421,6 +647,7 @@ testLayer("FollowUpService", (it) => {
       assert.equal(results.filter(Result.isSuccess).length, 1);
       const failures = results.filter(Result.isFailure);
       assert.equal(failures.length, 1);
+      assert.equal(failures[0]?.failure.code, "conflict");
       const snapshot = yield* service.getSnapshot(projectId);
       assert.equal(snapshot.items[0]?.revision, 1);
       assert.equal(snapshot.items[0]?.status, "resolved");
@@ -530,6 +757,59 @@ testLayer("FollowUpService", (it) => {
         if (items[0]?.kind === "snapshot" && items[1]?.kind === "event") {
           assert.equal(items[1].event.sequence, items[0].snapshot.sequence + 1);
           assert.equal(items[1].event.payload.item.projectId, projectId);
+        }
+      }),
+    ),
+  );
+
+  it.effect("isolates a project stream from events published for another project", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const service = yield* FollowUpService;
+        const firstProjectId = ProjectId.make("project-stream-isolation-first");
+        const secondProjectId = ProjectId.make("project-stream-isolation-second");
+        yield* seedProject(firstProjectId);
+        yield* seedProject(secondProjectId);
+        const snapshotSeen = yield* Deferred.make<void>();
+        const collectedFiber = yield* service.stream(firstProjectId).pipe(
+          Stream.tap((item) =>
+            item.kind === "snapshot" ? Deferred.succeed(snapshotSeen, undefined) : Effect.void,
+          ),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+
+        yield* Deferred.await(snapshotSeen);
+        yield* service.file({
+          commandId: CommandId.make("command-stream-isolation-second"),
+          itemId: FollowUpId.make("item-stream-isolation-second"),
+          projectId: secondProjectId,
+          kind: "open",
+          title: "Other project event",
+          observation: "This event must not cross the stream boundary.",
+          deferReason: "out-of-scope",
+          verifyCheck: "Observe the first project stream.",
+          sourceKind: "agent",
+        });
+        yield* service.file({
+          commandId: CommandId.make("command-stream-isolation-first"),
+          itemId: FollowUpId.make("item-stream-isolation-first"),
+          projectId: firstProjectId,
+          kind: "open",
+          title: "First project event",
+          observation: "This is the next visible event for the subscribed project.",
+          deferReason: "out-of-scope",
+          verifyCheck: "Observe the first project stream.",
+          sourceKind: "agent",
+        });
+
+        const items = Array.from(yield* Fiber.join(collectedFiber));
+        assert.equal(items[0]?.kind, "snapshot");
+        assert.equal(items[1]?.kind, "event");
+        if (items[1]?.kind === "event") {
+          assert.equal(items[1].event.payload.item.projectId, firstProjectId);
+          assert.equal(items[1].event.payload.item.id, "item-stream-isolation-first");
         }
       }),
     ),

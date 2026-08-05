@@ -4,23 +4,35 @@ import { useEffect } from "react";
 import { FollowUpList } from "~/components/followups/FollowUpList";
 import { SidebarInset } from "~/components/ui/sidebar";
 import { useEnvironments } from "~/state/environments";
-import { hasAvailableFollowUpEnvironment } from "~/state/followups";
+import { resolveFollowUpAvailability } from "~/state/followups";
+
+const FOLLOW_UP_ROUTE_CLASS =
+  "h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh";
 
 function FollowUpsRouteView() {
   const navigate = useNavigate();
   const { environments, isReady } = useEnvironments();
-  const available = hasAvailableFollowUpEnvironment(environments);
+  const availability = resolveFollowUpAvailability(isReady, environments);
 
   useEffect(() => {
-    if (isReady && !available) {
+    if (availability === "unavailable") {
       void navigate({ to: "/", replace: true });
     }
-  }, [available, isReady, navigate]);
+  }, [availability, navigate]);
 
-  if (!isReady || !available) return null;
+  if (availability === "unavailable") return null;
+  if (availability === "pending") {
+    return (
+      <SidebarInset className={FOLLOW_UP_ROUTE_CLASS}>
+        <div className="flex min-h-0 flex-1 items-center justify-center" role="status">
+          <p className="text-xs font-medium text-muted-foreground">Loading Follow-ups…</p>
+        </div>
+      </SidebarInset>
+    );
+  }
 
   return (
-    <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
+    <SidebarInset className={FOLLOW_UP_ROUTE_CLASS}>
       <FollowUpList />
     </SidebarInset>
   );

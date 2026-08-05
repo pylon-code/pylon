@@ -223,12 +223,15 @@ it.effect("derives MCP project and agent provenance from the invocation thread",
       resolution: { threadId },
     });
 
-    yield* server
+    const gateResult = yield* server
       .callTool({ name: "followup_check_gate", arguments: { branchRef: "feature/followups" } })
       .pipe(
         Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
         Effect.provideService(McpSchema.McpServerClient, client),
       );
+    expect(gateResult.isError).toBe(false);
+    expect(gateResult.structuredContent).toEqual({ blocked: false, blockers: [] });
+    expect(gateResult.content).toEqual([{ type: "text", text: '{"blocked":false,"blockers":[]}' }]);
     expect(gateQueries).toEqual([{ projectId, branchRef: "feature/followups" }]);
 
     const validationResult = yield* server

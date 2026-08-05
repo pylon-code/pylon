@@ -1598,7 +1598,7 @@ export const make = Effect.gen(function* () {
       return yield* new GitManagerError({
         operation: "runPrStep",
         cwd,
-        detail: "Current branch has not been pushed. Push before creating a PR.",
+        detail: `Current branch has not been pushed. Push before creating a ${terms.singular}.`,
       });
     }
 
@@ -1655,7 +1655,7 @@ export const make = Effect.gen(function* () {
           new GitManagerError({
             operation: "runPrStep",
             cwd,
-            detail: "Failed to write pull request body temp file.",
+            detail: `Failed to write ${terms.singular} body temp file.`,
             cause,
           }),
       ),

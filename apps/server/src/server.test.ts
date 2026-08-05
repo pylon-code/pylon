@@ -4542,6 +4542,69 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("subscribes to settings before loading the server-config snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const initialSettings = { ...DEFAULT_SERVER_SETTINGS, followUpsEnabled: false };
+        const updatedSettings = { ...initialSettings, followUpsEnabled: true };
+        const settingsChanges = yield* PubSub.unbounded<typeof initialSettings>();
+        const snapshotCaptured = yield* Deferred.make<void>();
+        const releaseSnapshot = yield* Deferred.make<void>();
+        const subscriptionAcquired = yield* Deferred.make<void>();
+        const snapshotSeamArmed = yield* Ref.make(false);
+
+        yield* buildAppUnderTest({
+          layers: {
+            keybindings: {
+              streamChanges: Stream.empty,
+            },
+            providerRegistry: {
+              streamChanges: Stream.empty,
+            },
+            serverSettings: {
+              getSettings: Ref.get(snapshotSeamArmed).pipe(
+                Effect.flatMap((armed) =>
+                  armed
+                    ? Deferred.succeed(snapshotCaptured, undefined).pipe(
+                        Effect.andThen(Deferred.await(releaseSnapshot)),
+                        Effect.as(initialSettings),
+                      )
+                    : Effect.succeed(initialSettings),
+                ),
+              ),
+              streamChanges: Stream.die("subscribeServerConfig must use the eager subscription"),
+              subscribeChanges: PubSub.subscribe(settingsChanges).pipe(
+                Effect.tap(() => Deferred.succeed(subscriptionAcquired, undefined)),
+                Effect.map((subscription) => Stream.fromSubscription(subscription)),
+              ),
+            },
+          },
+        });
+        yield* Ref.set(snapshotSeamArmed, true);
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const eventsFiber = yield* withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.subscribeServerConfig]({}).pipe(Stream.take(2), Stream.runCollect),
+        ).pipe(Effect.forkScoped);
+
+        yield* Deferred.await(snapshotCaptured);
+        assertTrue(Option.isSome(yield* Deferred.poll(subscriptionAcquired)));
+        yield* PubSub.publish(settingsChanges, updatedSettings);
+        yield* Deferred.succeed(releaseSnapshot, undefined);
+
+        const [snapshot, update] = Array.from(yield* Fiber.join(eventsFiber));
+        assert.equal(snapshot?.type, "snapshot");
+        if (snapshot?.type === "snapshot") {
+          assert.equal(snapshot.config.settings.followUpsEnabled, false);
+        }
+        assert.equal(update?.type, "settingsUpdated");
+        if (update?.type === "settingsUpdated") {
+          assert.equal(update.payload.settings.followUpsEnabled, true);
+        }
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("routes websocket resource telemetry through the subscription", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();

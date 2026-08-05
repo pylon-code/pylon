@@ -39,6 +39,58 @@ export function FollowUpBranchGateBadge({
   );
 }
 
+export type FollowUpBranchGatePresentation =
+  | { readonly kind: "loading" }
+  | { readonly kind: "clear" }
+  | { readonly kind: "blocked"; readonly blockerCount: number }
+  | { readonly kind: "unavailable"; readonly lastKnownBlockerCount: number | null };
+
+export function resolveFollowUpBranchGatePresentation(input: {
+  readonly failed: boolean;
+  readonly synchronized: boolean;
+  readonly blockerCount: number;
+}): FollowUpBranchGatePresentation {
+  if (input.failed) {
+    return {
+      kind: "unavailable",
+      lastKnownBlockerCount: input.synchronized ? input.blockerCount : null,
+    };
+  }
+  if (!input.synchronized) return { kind: "loading" };
+  return input.blockerCount === 0
+    ? { kind: "clear" }
+    : { kind: "blocked", blockerCount: input.blockerCount };
+}
+
+export function FollowUpBranchGateUnavailable({
+  branchRef,
+  lastKnownBlockerCount,
+}: {
+  readonly branchRef: string;
+  readonly lastKnownBlockerCount: number | null;
+}) {
+  const lastKnownLabel =
+    lastKnownBlockerCount === null
+      ? ""
+      : `; last synchronized count was ${lastKnownBlockerCount} ${
+          lastKnownBlockerCount === 1 ? "blocker" : "blockers"
+        }`;
+  const label = `Gate status unavailable for ${branchRef}${lastKnownLabel}`;
+
+  return (
+    <span
+      aria-label={label}
+      className="inline-flex shrink-0 items-center gap-0.5 rounded bg-warning/8 px-1 py-0.5 text-[11px] font-medium text-warning-foreground tabular-nums dark:bg-warning/16"
+      data-testid="follow-up-branch-gate-unavailable"
+      role="status"
+      title={label}
+    >
+      <ShieldAlertIcon className="size-3" />
+      <span>{lastKnownBlockerCount ?? "?"}</span>
+    </span>
+  );
+}
+
 export function FollowUpBranchGateStatus({
   branchRef,
   projectRef,
@@ -53,13 +105,32 @@ export function FollowUpBranchGateStatus({
     }),
   );
   const state = AsyncResult.getOrElse(result, () => EMPTY_FOLLOW_UP_CLIENT_STATE);
-  if (result._tag === "Failure" || !state.synchronized) return null;
-
-  const blockers = openFollowUpBlockersForBranch(state.snapshot.items, {
-    projectId: projectRef.projectId,
-    branchRef,
+  const blockerCount = state.synchronized
+    ? openFollowUpBlockersForBranch(state.snapshot.items, {
+        projectId: projectRef.projectId,
+        branchRef,
+      }).length
+    : 0;
+  const presentation = resolveFollowUpBranchGatePresentation({
+    failed: result._tag === "Failure",
+    synchronized: state.synchronized,
+    blockerCount,
   });
-  if (blockers.length === 0) return null;
 
-  return <FollowUpBranchGateBadge branchRef={branchRef} blockerCount={blockers.length} />;
+  switch (presentation.kind) {
+    case "unavailable":
+      return (
+        <FollowUpBranchGateUnavailable
+          branchRef={branchRef}
+          lastKnownBlockerCount={presentation.lastKnownBlockerCount}
+        />
+      );
+    case "blocked":
+      return (
+        <FollowUpBranchGateBadge branchRef={branchRef} blockerCount={presentation.blockerCount} />
+      );
+    case "loading":
+    case "clear":
+      return null;
+  }
 }

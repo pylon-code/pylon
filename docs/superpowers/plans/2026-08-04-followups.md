@@ -1,10 +1,33 @@
 # Follow-ups Implementation Plan
 
+> **Implemented outcome (authoritative):** This file preserves the original task-by-task plan and
+> its historical RED/GREEN snippets. Unchecked boxes, proposed code, exact test counts, and old
+> commit commands below are not current instructions. The shipped source, focused tests,
+> [`docs/user/follow-ups.md`](../../user/follow-ups.md), and
+> [`docs/internals/followups.md`](../../internals/followups.md) are authoritative.
+>
+> The implementation uses migrations 37 and 38 and the compatibility-tagged
+> `"t3/followups/FollowUpService"`; its subscription RPC is declared with `stream: true`. The MCP
+> surface has five tools. All derive project authority from the invocation thread, accept no
+> caller-selected project, and enforce the live beta guard. `followup_resolve` only resolves;
+> evidence-backed moot outcomes go through `followup_record_validation`. Tool discovery is fixed at
+> environment startup, so enabling requires a restart, while disabling immediately hides the UI,
+> rejects handlers, ends streams, and disables the gate.
+>
+> The shipped web lifecycle includes **Start thread**, **Validate**, **Reopen**, resolution and
+> validation evidence, tri-state route bootstrap, and an accessible unavailable gate status.
+> Start/Validate draft prompts use distinct framed Pylon-owned sentinels and preserve unrelated
+> draft bytes. The sole shipping gate is `GitManager.runPrStep`; it uses the resolved branch and an
+> unambiguous persisted repository owner, runs before provider resolution or change-request lookup,
+> and fails closed. It never launches automatic provider validation. That accepted residual is
+> deliberate: validation is an explicit visible thread flow until a durable, cancellable,
+> read-only provider-job boundary exists.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give Pylon a project-scoped, durable list of follow-ups and ideas that both the developer and agents can file, that agents can pick up and adversarially re-validate, and that mechanically blocks shipping when a blocker is unresolved.
 
-**Architecture:** A self-contained bounded context — its own contracts, pure decider, Effect service, SQLite projection, and RPC surface — plus an MCP toolkit so any MCP-capable provider can file and resolve items with no per-adapter work. One deliberately minimal hook into the completion path enforces the shipping gate. Everything ships behind a beta flag, default off.
+**Architecture:** A self-contained bounded context — its own contracts, pure decider, Effect service, SQLite projection, and RPC surface — plus a provider-neutral MCP toolkit. One deliberately minimal hook in change-request creation enforces the shipping gate. Everything ships behind a beta flag, default off.
 
 **Read the design spec first:** `docs/superpowers/specs/2026-08-04-followups-design.md`. It carries the rationale (why not threads, why not memory, what killed the Kanban board) that this plan assumes.
 
@@ -16,11 +39,13 @@
 - **Run tests through the repo-local binary**: `./node_modules/.bin/vp test run <files>` from the repo root, or `npx vitest run <path>` from inside a package directory. A global `vp` brings its own dependency tree and every `describe()` dies with `TypeError: Cannot read properties of undefined (reading 'config')`, which reads like a broken test rather than a broken toolchain.
 - **Never run repo-wide checks.** No `vp check`, no `vp run -r test`, no `vp run -r typecheck`. Typecheck per package with `vp run typecheck` from inside that package directory. CI owns the full suite.
 - **Server work**: invoke the `effect-server` skill before editing anything under `apps/server`. It owns this repo's Effect and event-sourcing conventions.
-- **Migration id 37.** Id 36 is permanently retired (see the comment in `apps/server/src/persistence/Migrations.ts`) — never reuse it.
+- **Migration ids 37 and 38.** Id 36 is permanently retired (see the comment in `apps/server/src/persistence/Migrations.ts`) — never reuse it.
 - Conventional commit titles, **no AI attribution lines**.
 - `deferReason` is a closed set: `out-of-scope | needs-decision | blocked-externally | idea`. Never add a free-text escape.
-- Agents may set status `resolved` and `moot`. **Agents may never set `waived`** — only a human may waive. If an agent could waive, the gate defeats itself.
-- The beta flag must gate all three of: UI surfaces, MCP tool registration, gate enforcement.
+- Agents may resolve addressed work. An agent records `moot` only through evidence-backed validation.
+  **Agents may never set `waived`** — only a human may waive. If an agent could waive, the gate defeats itself.
+- The beta flag gates UI surfaces, live MCP/WS handlers and streams, and gate enforcement. MCP
+  discovery is fixed at startup, so enabling requires a restart; disabling is immediate.
 
 ---
 
@@ -673,7 +698,7 @@ git commit -m "feat(server): pure follow-up decider"
 
 Invoke the `effect-server` skill first.
 
-**Model this file closely on the structure of `apps/server/src/kanban/KanbanService.ts` as it existed at commit `4bad4f6da`** (`git show 4bad4f6da:apps/server/src/kanban/KanbanService.ts`). That file is the proven pattern in this repo for: a mutation semaphore, `command_id` idempotency, a single transaction per command, `PubSub` fan-out, and a snapshot-then-events stream that attaches under the semaphore so there is no snapshot/subscribe gap. Reuse that shape; substitute follow-up schemas and add `openBlockersForBranch`.
+**Model this file closely on the structure of `apps/server/src/kanban/KanbanService.ts` immediately before its removal at `d31439f62^`** (`git show d31439f62^:apps/server/src/kanban/KanbanService.ts`). That file is the proven pattern in this repo for: a mutation semaphore, `command_id` idempotency, a single transaction per command, `PubSub` fan-out, and a snapshot-then-events stream that attaches under the semaphore so there is no snapshot/subscribe gap. Reuse that shape; substitute follow-up schemas and add `openBlockersForBranch`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -849,9 +874,9 @@ Expected: FAIL — `FollowUpService.ts` does not exist.
 
 - [ ] **Step 3: Implement the service**
 
-Create `apps/server/src/followups/FollowUpService.ts` following `git show 4bad4f6da:apps/server/src/kanban/KanbanService.ts`. Requirements, all of which that reference file demonstrates:
+Create `apps/server/src/followups/FollowUpService.ts` following `git show d31439f62^:apps/server/src/kanban/KanbanService.ts`. Requirements, all of which that reference file demonstrates:
 
-1. `Context.Service` tagged `"pylon/followups/FollowUpService"` with the shape in **Interfaces** above.
+1. `Context.Service` tagged `"t3/followups/FollowUpService"` with the shape in **Interfaces** above.
 2. A `Semaphore.make(1)` mutation mutex; every command runs under `mutationMutex.withPermits(1)`.
 3. Idempotency: look up `follow_up_events` by `command_id` first; if found, decode `payload_json` and return its `item` without re-running the decider.
 4. Inside `sql.withTransaction`: read the snapshot, validate the project exists (`SELECT project_id FROM projection_projects WHERE project_id = ? AND deleted_at IS NULL`, else `invalid-project`), validate `sourceThreadId` when present (`projection_threads`, else `invalid-thread`), run `decideFollowUpCommand`, insert into `follow_up_events` `RETURNING sequence`, then upsert `follow_ups`.
@@ -887,7 +912,7 @@ git commit -m "feat(server): follow-up service with gate query"
 - Consumes: `FollowUpService` (Task 4), contracts (Task 1).
 - Produces (consumed by Task 7): `WS_METHODS.followUpFile`, `followUpUpdateStatus`, `followUpSubscribe`.
 
-Invoke the `effect-server` skill first. **Reference `git show 4bad4f6da -- packages/contracts/src/rpc.ts apps/server/src/ws.ts apps/server/src/auth/RpcAuthorization.ts apps/server/src/server.ts`** to see exactly how a bounded context was wired before; mirror it.
+Invoke the `effect-server` skill first. **Reference `git show d31439f62^ -- packages/contracts/src/rpc.ts apps/server/src/ws.ts apps/server/src/auth/RpcAuthorization.ts apps/server/src/server.ts`** to see exactly how a bounded context was wired before; mirror it.
 
 - [ ] **Step 1: Add the contract RPCs**
 
@@ -934,6 +959,7 @@ export const WsFollowUpSubscribeRpc = Rpc.make(WS_METHODS.followUpSubscribe, {
   payload: FollowUpSubscribeInput,
   success: FollowUpStreamItem,
   error: Schema.Union([FollowUpOperationError, EnvironmentAuthorizationError]),
+  stream: true,
 });
 ```
 
@@ -1024,7 +1050,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { FollowUpToolkit } from "./tools.ts";
 
 describe("follow-up toolkit", () => {
-  it("exposes exactly the four follow-up tools", () => {
+  it("exposes exactly the five follow-up tools", () => {
     const names = Object.values(FollowUpToolkit.tools)
       .map((tool) => tool.name)
       .sort();
@@ -1032,6 +1058,7 @@ describe("follow-up toolkit", () => {
       "followup_check_gate",
       "followup_file",
       "followup_list",
+      "followup_record_validation",
       "followup_resolve",
     ]);
   });
@@ -1061,32 +1088,45 @@ Expected: FAIL — `tools.ts` does not exist.
 
 - [ ] **Step 3: Define the tools**
 
-Create `apps/server/src/mcp/toolkits/followups/tools.ts` using these four `Tool.make` definitions inside a `Toolkit.make(...)` export named `FollowUpToolkit`. Annotate `followup_list` and `followup_check_gate` as `Tool.Readonly, true` and `Tool.Idempotent, true`; annotate `followup_file` and `followup_resolve` as `Tool.Destructive, false`.
+Create `apps/server/src/mcp/toolkits/followups/tools.ts` using five `Tool.make` definitions inside a `Toolkit.make(...)` export named `FollowUpToolkit`. Annotate `followup_list` and `followup_check_gate` as `Tool.Readonly, true` and `Tool.Idempotent, true`; annotate `followup_file`, `followup_resolve`, and `followup_record_validation` as `Tool.Destructive, false`.
 
 `followup_file` — parameters `FollowUpFileInput` minus `commandId`/`itemId`/`sourceKind` (the handler supplies those), success `FollowUp`. Description verbatim:
 
 > File a follow-up for work you are NOT doing now. Before filing, ask yourself: was I asked to do this, and can I do it now? If yes, filing is forbidden — do the work instead. Only file when the work genuinely falls outside what you were asked to do. You must supply a deferReason from the closed set (out-of-scope, needs-decision, blocked-externally, idea) — "ran out of time", "seemed hard", and "probably fine" are not valid reasons to defer. You must also supply verifyCheck: a concrete, falsifiable check a different agent can run weeks from now to decide whether this still matters. Use kind "blocker" only when a competent reviewer would refuse to merge the current work because of it, and then you must name the branch it gates.
 
-`followup_list` — parameters a struct of `projectId` plus optional `status` and `kind` filters, success `Schema.Array(FollowUp)`. Description verbatim:
+`followup_list` — parameters optional `status` and `kind` filters, success `Schema.Array(FollowUp)`. The handler derives the project from the invocation thread. Description:
 
-> List follow-ups for a project. Call this when you start work in a project and again before you report work complete, so you do not claim done while a blocker is open.
+> List follow-ups for the current thread's project. Call this when you start work and again before you report work complete, so you do not claim done while a blocker is open.
 
-`followup_resolve` — parameters a struct of `itemId`, `expectedRevision`, `status` restricted to `Schema.Literals(["resolved", "moot"])`, and `resolution`, success `FollowUp`. Description verbatim:
+`followup_resolve` — parameters `itemId`, `expectedRevision`, and `resolution`; it always selects `resolved`. Description:
 
-> Close a follow-up you have actually addressed (status "resolved") or that no longer applies (status "moot"). Both require a resolution note, and for "moot" the note must say what you checked and what you found. You cannot waive a follow-up — only a person can decide that something does not need doing.
+> Close a follow-up you have actually addressed. You cannot waive it or mark it moot here: use followup_record_validation for a checked moot result, and only a person can waive work.
 
 `followup_check_gate` — parameters a struct of `branchRef`, success a struct of `{ blocked: Schema.Boolean, blockers: Schema.Array(FollowUp) }`. Description verbatim:
 
-> Report whether unresolved blockers are attached to a branch. Call this before reporting work complete or opening a pull request. If blocked is true, resolve the listed blockers or ask the developer to waive them — do not report the work as finished.
+> Report whether unresolved blockers are attached to a branch in the current project. Call this before reporting work complete or opening a change request. If blocked is true, resolve the listed blockers or ask the developer to waive them — do not report the work as finished.
+
+`followup_record_validation` — parameters `FollowUpRecordValidationInput`, success `FollowUp`.
+It records work already performed in the current visible thread as `still-needed`, `moot`, or
+`uncertain`; it does not launch a provider. A moot outcome requires concrete evidence and is the
+only validation outcome that closes the item.
 
 - [ ] **Step 4: Implement handlers**
 
 Create `apps/server/src/mcp/toolkits/followups/handlers.ts` exporting `FollowUpToolkitHandlersLive`, following `preview/handlers.ts`. Each handler resolves `FollowUpService` and `McpInvocationContext`, then:
 
-- `followup_file` — generate `commandId` and `itemId` with `crypto.randomUUIDv4`, set `sourceKind: "agent"`, set `sourceThreadId` from the invocation context when available, call `service.file`.
-- `followup_list` — call `service.getSnapshot`, filter by `projectId` and any supplied `status`/`kind`.
-- `followup_resolve` — generate `commandId`, call `service.updateStatus` with `actor: "agent"`. The decider already rejects `waived` from an agent; do not add a second check.
-- `followup_check_gate` — call `service.openBlockersForBranch(branchRef)`, return `{ blocked: blockers.length > 0, blockers }`.
+- Every handler first checks the live beta setting and derives `projectId` from the authenticated
+  invocation thread.
+- `followup_file` — generate `commandId` and `itemId` with `crypto.randomUUIDv4`, stamp
+  `sourceKind: "agent"` and the invocation thread, then call `service.file`.
+- `followup_list` — call the project-scoped `service.getSnapshot`, then apply optional
+  `status`/`kind` filters.
+- `followup_resolve` — generate `commandId`, stamp agent authority and the invocation thread, and
+  call `service.updateStatus` with status `resolved`.
+- `followup_check_gate` — call `service.openBlockersForBranch(projectId, branchRef)`, return
+  `{ blocked: blockers.length > 0, blockers }`.
+- `followup_record_validation` — generate `commandId`, stamp the invocation thread/project, and
+  call `service.recordValidation`.
 
 - [ ] **Step 5: Register the toolkit**
 
@@ -1126,7 +1166,7 @@ git commit -m "feat(server): follow-up mcp toolkit"
 - Consumes: `WS_METHODS` (Task 5), contracts (Task 1).
 - Produces (consumed by Task 8): `FollowUpClientState`, `EMPTY_FOLLOW_UP_CLIENT_STATE`, `applyFollowUpStreamItem(state, item)`, `createFollowUpEnvironmentAtoms(runtime)` returning `{ list, file, updateStatus }`.
 
-**Model on `git show 4bad4f6da:packages/client-runtime/src/state/kanban.ts`** — same reducer and `createEnvironmentSubscriptionAtomFamily` / `createEnvironmentRpcCommand` shape.
+**Model on `git show d31439f62^:packages/client-runtime/src/state/kanban.ts`** — same reducer and `createEnvironmentSubscriptionAtomFamily` / `createEnvironmentRpcCommand` shape.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1408,18 +1448,16 @@ git commit -m "feat(web): follow-ups list behind a beta flag"
 **Files:**
 
 - Create: `apps/server/src/followups/gate.ts`, `apps/server/src/followups/gate.test.ts`
-- Modify: `apps/server/src/ws.ts` — the `WS_METHODS.gitPreparePullRequestThread` handler (around line 1809)
+- Modify: `apps/server/src/git/GitManager.ts` — `GitManager.runPrStep`
 
-**Why this call site:** `createPullRequest` is implemented separately per provider
-(`GitHubSourceControlProvider`, `BitbucketSourceControlProvider`,
-`AzureDevOpsSourceControlProvider`). Gating there would mean three call sites and three future
-upstream conflicts. The `gitPreparePullRequestThread` RPC handler sits above all three, so one
-line there covers every provider.
+**Implemented call site:** `GitManager.runPrStep` is the common change-request boundary used by
+every source-control provider. It has the authoritative final branch and repository cwd and runs
+before provider resolution, lookup, or creation. One call there covers every provider.
 
 **Interfaces:**
 
 - Consumes: `FollowUpService.openBlockersForBranch` (Task 4).
-- Produces: `assertNoOpenBlockers(branchRef) → Effect<void, FollowUpOperationError>`.
+- Produces: `assertNoOpenBlockers(branchRef, cwd) → Effect<void, FollowUpOperationError>`.
 
 Invoke the `effect-server` skill first.
 
@@ -1481,6 +1519,11 @@ Expected: FAIL — `gate.ts` does not exist.
 
 - [ ] **Step 3: Implement the gate**
 
+> The code sketch below records the original proposal. The implemented gate additionally reads the
+> live beta setting, resolves exactly one persisted project owner for `cwd`, queries blockers by
+> `(projectId, branchRef)`, and fails closed when ownership is missing or ambiguous. It does not
+> launch a provider validation job.
+
 Create `apps/server/src/followups/gate.ts`:
 
 ```ts
@@ -1510,9 +1553,11 @@ export function describeBlockers(blockers: ReadonlyArray<FollowUp>): string {
  */
 export const assertNoOpenBlockers = Effect.fn("FollowUps.assertNoOpenBlockers")(function* (
   branchRef: string,
+  cwd: string,
 ) {
   const service = yield* FollowUpService;
-  const blockers = yield* service.openBlockersForBranch(branchRef);
+  const projectId = yield* service.projectIdForRepositoryPath(cwd);
+  const blockers = yield* service.openBlockersForBranch(projectId, branchRef);
   if (isBlocked(blockers)) {
     return yield* new FollowUpOperationError({
       code: "invalid-command",
@@ -1524,23 +1569,18 @@ export const assertNoOpenBlockers = Effect.fn("FollowUps.assertNoOpenBlockers")(
 
 - [ ] **Step 4: Wire the single call site**
 
-Open `apps/server/src/ws.ts` and find the `[WS_METHODS.gitPreparePullRequestThread]` handler
-(around line 1809). Add exactly one line at the start of its effect, before any provider call:
+Open `apps/server/src/git/GitManager.ts` and find `runPrStep`. After resolving the final branch and
+before resolving a provider or looking up a change request, add the sole production call:
 
 ```ts
-yield * FollowUps.assertNoOpenBlockers(branchRef);
+yield * FollowUps.assertNoOpenBlockers(branchRef, cwd);
 ```
 
 Import at the top as `import * as FollowUps from "./followups/gate.ts";`
 
-Read the handler's input first to get the correct branch reference — it may arrive as a field on
-the input or need deriving from the thread. Use whatever that handler already has; do not add a
-new lookup. If no branch ref is available there, stop and report BLOCKED rather than guessing:
-gating on the wrong ref is worse than not gating.
-
-If the beta flag is readable server-side, wrap the call so it is a no-op when the flag is off. If
-it is not readable there, leave the gate unconditional, say so in the commit body, and record it
-in the Task 10 internals doc as a known limitation.
+The gate module reads the server-authoritative beta flag. Keep the provider-neutral “change
+request” terminology before provider resolution; provider-specific pull/merge-request terms are
+only available afterward.
 
 - [ ] **Step 5: Run tests and typecheck**
 
@@ -1583,9 +1623,10 @@ Pylon tracks follow-ups per project (beta). Use the `followup_*` MCP tools.
 - Use `blocker` only when a competent reviewer would refuse to merge the current work because of
   it, and name the branch it gates.
 - Call `followup_list` when you start work in a project, and `followup_check_gate` before you
-  report work complete or open a pull request.
-- You may resolve a follow-up you actually addressed, and mark one moot with evidence. **You may
-  never waive one** — only the developer decides that something does not need doing.
+  report work complete or open a change request.
+- You may resolve a follow-up you actually addressed. Record a checked moot result with evidence
+  through `followup_record_validation`. **You may never waive one** — only the developer decides
+  that something does not need doing.
 ```
 
 - [ ] **Step 2: Write the user doc**
@@ -1610,7 +1651,7 @@ Agents may not file a follow-up for work you asked them to do. If it was in scop
 
 ## Blockers
 
-A blocker names the branch it gates. Pylon refuses to open a pull request for a branch that still
+A blocker names the branch it gates. Pylon refuses to open a change request for a branch that still
 has unresolved blockers, so work cannot quietly ship past something that needed attention.
 
 Resolve a blocker once it is handled, or waive it if you decide it does not need doing. Only you
@@ -1618,8 +1659,8 @@ can waive — an agent cannot dismiss its own blocker.
 
 ## Ideas
 
-Ideas are allowed to never happen. Capture them without committing to them, and archive them when
-they stop being interesting.
+Ideas are allowed to never happen. Capture them without committing to them; resolve or waive them
+when you make a decision, and reopen them if that decision changes.
 ```
 
 Add it to `docs/README.md` under "Using Pylon", beside the other user docs.
@@ -1643,38 +1684,57 @@ git commit -m "docs: follow-ups guidance for agents and users"
 
 ```bash
 ./node_modules/.bin/vp test run \
+  packages/contracts/src/followups.test.ts \
+  packages/contracts/src/settings.test.ts \
+  packages/client-runtime/src/state/followups.test.ts \
   apps/server/src/followups/decider.test.ts \
   apps/server/src/followups/FollowUpService.test.ts \
   apps/server/src/followups/gate.test.ts \
   apps/server/src/mcp/toolkits/followups/tools.test.ts \
+  apps/server/src/mcp/McpHttpServer.test.ts \
+  apps/server/src/serverSettings.test.ts \
   apps/server/src/server.test.ts \
-  packages/client-runtime/src/state/followups.test.ts \
-  apps/web/src/components/followups/followUps.logic.test.ts
+  apps/server/src/git/GitManager.test.ts \
+  apps/web/src/components/BranchToolbar.logic.test.ts \
+  apps/web/src/components/followups/followUps.logic.test.ts \
+  apps/web/src/components/followups/FollowUpPresentation.test.tsx \
+  apps/web/src/components/followups/FollowUpBranchGateStatus.test.tsx \
+  apps/web/src/state/followups.test.ts
 ```
 
 Then typecheck per package from inside each of `packages/contracts`, `packages/client-runtime`, `apps/server`, `apps/web`: `vp run typecheck`. Do not run repo-wide checks.
 
 - [ ] **Step 2: Verify the migration on real-shaped data**
 
-From the worktree root, seed and boot:
+From the worktree root, create a unique ignored home, snapshot the live database into it with
+`VACUUM INTO`, remove only migrations 37/38 and their isolated tables, then boot the server-only
+process against that copy. Never point a server at live state:
 
 ```bash
-mkdir -p .t3/userdata
-bun -e "new (require('bun:sqlite').Database)(process.env.HOME + '/.t3/userdata/state.sqlite', { readonly: true }).run(\"VACUUM INTO '.t3/userdata/state.sqlite'\")"
-vp run dev
+followups_migration_home="$(mktemp -d "$PWD/.t3/followups-migrations.XXXXXX")"
+mkdir -p "$followups_migration_home/userdata"
+FOLLOWUPS_MIGRATION_HOME="$followups_migration_home" bun -e 'new (require("bun:sqlite").Database)(process.env.HOME + "/.t3/userdata/state.sqlite", { readonly: true }).run(`VACUUM INTO ${JSON.stringify(process.env.FOLLOWUPS_MIGRATION_HOME + "/userdata/state.sqlite")}`)'
+node apps/server/scripts/t3-sqlite-state.ts exec --base-dir "$followups_migration_home" --sql "DROP TABLE IF EXISTS follow_up_events; DROP TABLE IF EXISTS follow_ups; DELETE FROM effect_sql_migrations WHERE migration_id IN (37, 38)"
+./node_modules/.bin/vp run dev:server --home-dir "$followups_migration_home" >"$followups_migration_home/server.log" 2>&1 &
+followups_server_pid=$!
 ```
 
-Read the actual ports from the `[dev-runner]` line. Confirm the log shows migration `37_FollowUps` running, then confirm the tables exist:
+Capture that exact PID and stop only it with `kill -INT "$followups_server_pid"`. Confirm migration
+rows 37 and 38, both tables and indexes, nullable `last_validation_json`, retained project/thread
+counts, and `PRAGMA integrity_check`:
 
 ```bash
-node apps/server/scripts/t3-sqlite-state.ts query --base-dir .t3 --sql "SELECT name FROM sqlite_master WHERE name LIKE 'follow_up%'"
+node apps/server/scripts/t3-sqlite-state.ts query --base-dir "$followups_migration_home" --sql "SELECT name FROM sqlite_master WHERE name LIKE 'follow_up%'"
 ```
 
-Expected: `follow_ups` and `follow_up_events`. Stop the dev server by the PID you started — never `pkill -f`.
+Expected: migrations `37_FollowUps` and `38_FollowUpValidation`, `follow_ups`,
+`follow_up_events`, their indexes, and `integrity_check = ok`.
 
 - [ ] **Step 3: Ask before any browser verification**
 
-A UI pass needs the developer's explicit go-ahead. If granted, use the `test-pylon-app` skill and check: the sidebar shows **Follow-ups** only when the beta flag is on; filing from the dialog persists and appears in the right group; resolving moves an item to Closed; **Waive** is available in the UI; and turning the flag off removes the sidebar entry and the route.
+A UI pass needs the developer's explicit go-ahead. If granted, use the `test-pylon-app` skill and
+check beta visibility, filing, **Start thread**, **Validate**, **Resolve**, **Waive**, **Reopen**,
+resolution/validation evidence, branch gate count/unavailable state, and live disable behavior.
 
 - [ ] **Step 4: Report**
 
@@ -1685,7 +1745,8 @@ Summarize what passed, what was skipped, and anything left open. Do not open a p
 ## Explicit non-goals
 
 - No cross-project aggregate view. Items are project-scoped.
-- No scheduled background validation. Validation runs on demand and at gate check.
+- No automatic or scheduled provider-run validation. Validation runs on demand in a visible
+  project thread; the gate reads durable state and fails closed.
 - No mobile UI. Contracts stay client-agnostic so it can follow later.
 - No automatic context injection into agents — Pylon has no injection hook, and building one means touching all five provider adapters. Awareness comes from the MCP tools plus the `AGENTS.md` rules, with the gate as the mechanical backstop.
 - No `in_progress` state. Work being done is a thread, not a follow-up.

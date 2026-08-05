@@ -128,6 +128,28 @@ export function FollowUpValidationDetails({
       <p className="mt-0.5 whitespace-pre-wrap break-words text-xs leading-4 text-foreground/90">
         {validation.note}
       </p>
+      {validation.evidence.length > 0 ? (
+        <ul aria-label="Validation evidence" className="mt-2 grid gap-1">
+          {validation.evidence.map((evidence) => (
+            <li
+              key={`${evidence.path}:${evidence.line ?? ""}:${evidence.commitSha}`}
+              className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 rounded bg-muted/35 px-2 py-1 font-mono text-[11px] leading-4 text-muted-foreground"
+            >
+              <span className="break-all text-foreground/85">
+                {evidence.path}
+                {evidence.line === null ? "" : `:${evidence.line}`}
+              </span>
+              <span
+                aria-label={`Evidence commit ${evidence.commitSha}`}
+                className="break-all"
+                title={evidence.commitSha}
+              >
+                @ {evidence.commitSha}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
         <Button
           className="h-auto px-0 py-1 text-xs"
@@ -147,10 +169,20 @@ export function FollowUpValidationDetails({
           {validation.evidence.length} evidence{" "}
           {validation.evidence.length === 1 ? "entry" : "entries"}
         </span>
+        <time
+          className="font-mono text-[11px] text-muted-foreground"
+          dateTime={validation.validatedAt}
+        >
+          {validation.validatedAt}
+        </time>
         {validation.checkedCommitSha ? (
-          <span className="inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground">
+          <span
+            aria-label={`Checked commit ${validation.checkedCommitSha}`}
+            className="inline-flex min-w-0 items-center gap-1 font-mono text-[11px] text-muted-foreground"
+            title={validation.checkedCommitSha}
+          >
             <GitCommitHorizontalIcon className="size-3.5" />
-            {validation.checkedCommitSha.slice(0, 10)}
+            <span className="break-all">{validation.checkedCommitSha}</span>
           </span>
         ) : null}
       </div>

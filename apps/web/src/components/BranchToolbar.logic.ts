@@ -1,4 +1,4 @@
-import type { EnvironmentId, VcsRef, ProjectId } from "@t3tools/contracts";
+import type { EnvironmentId, VcsRef, ProjectId, ScopedProjectRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { toSortableTimestamp } from "../lib/threadSort";
 export {
@@ -52,6 +52,16 @@ export function shouldShowEnvironmentIndicator(input: {
 }): boolean {
   if (input.canPickEnvironment) return true;
   return input.activeEnvironment !== null && !input.activeEnvironment.isPrimary;
+}
+
+export function resolveFollowUpBranchGateTarget(input: {
+  readonly followUpsAvailable: boolean;
+  readonly activeProjectRef: ScopedProjectRef | null;
+  readonly resolvedActiveBranch: string | null;
+}): { readonly projectRef: ScopedProjectRef; readonly branchRef: string } | null {
+  if (!input.followUpsAvailable || input.activeProjectRef === null) return null;
+  if (input.resolvedActiveBranch === null) return null;
+  return { projectRef: input.activeProjectRef, branchRef: input.resolvedActiveBranch };
 }
 
 export function resolveEnvModeLabel(mode: EnvMode): string {

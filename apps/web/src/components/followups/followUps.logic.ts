@@ -78,6 +78,49 @@ function followUpEvidencePrompt(item: FollowUp): string {
         .join("\n");
 }
 
+const FOLLOW_UP_PROMPT_FRAMES = {
+  work: {
+    start: "<!-- PYLON-OWNED FOLLOW-UP WORK START -->",
+    end: "<!-- PYLON-OWNED FOLLOW-UP WORK END -->",
+  },
+  validation: {
+    start: "<!-- PYLON-OWNED FOLLOW-UP VALIDATION START -->",
+    end: "<!-- PYLON-OWNED FOLLOW-UP VALIDATION END -->",
+  },
+} as const;
+
+type FollowUpPromptMode = keyof typeof FOLLOW_UP_PROMPT_FRAMES;
+
+function frameFollowUpPrompt(mode: FollowUpPromptMode, prompt: string): string {
+  const frame = FOLLOW_UP_PROMPT_FRAMES[mode];
+  return [frame.start, prompt, frame.end].join("\n");
+}
+
+function findOwnedFollowUpPromptRange(
+  prompt: string,
+): { readonly start: number; readonly end: number } | null {
+  let firstRange: { readonly start: number; readonly end: number } | null = null;
+  for (const frame of Object.values(FOLLOW_UP_PROMPT_FRAMES)) {
+    const start = prompt.indexOf(frame.start);
+    if (start < 0) continue;
+    const endMarker = prompt.indexOf(frame.end, start + frame.start.length);
+    if (endMarker < 0) continue;
+    const range = { start, end: endMarker + frame.end.length };
+    if (firstRange === null || range.start < firstRange.start) {
+      firstRange = range;
+    }
+  }
+  return firstRange;
+}
+
+function mergeOwnedFollowUpPrompt(existingPrompt: string, dossier: string): string {
+  const ownedRange = findOwnedFollowUpPromptRange(existingPrompt);
+  if (ownedRange !== null) {
+    return `${existingPrompt.slice(0, ownedRange.start)}${dossier}${existingPrompt.slice(ownedRange.end)}`;
+  }
+  return existingPrompt.length === 0 ? dossier : `${existingPrompt}\n\n---\n\n${dossier}`;
+}
+
 export function buildFollowUpThreadPrompt(item: FollowUp): string {
   const context = [
     `Kind: ${FOLLOW_UP_KIND_LABELS[item.kind]}`,
@@ -86,62 +129,60 @@ export function buildFollowUpThreadPrompt(item: FollowUp): string {
     ...(item.sourceThreadId ? [`Filed from thread: ${item.sourceThreadId}`] : []),
   ];
 
-  return [
-    "Take on this saved Pylon follow-up. Revalidate the verify check before changing code, then address it if it still applies.",
-    "",
-    `## ${item.title}`,
-    followUpPromptMarker(item),
-    ...context,
-    "",
-    "### Observation",
-    item.observation,
-    "",
-    "### Verify check",
-    item.verifyCheck,
-    "",
-    "### Evidence",
-    followUpEvidencePrompt(item),
-    "",
-    `When the work is complete, resolve follow-up ${item.id} with an evidence-backed note from this thread.`,
-  ].join("\n");
+  return frameFollowUpPrompt(
+    "work",
+    [
+      "Take on this saved Pylon follow-up. Revalidate the verify check before changing code, then address it if it still applies.",
+      "",
+      `## ${item.title}`,
+      followUpPromptMarker(item),
+      ...context,
+      "",
+      "### Observation",
+      item.observation,
+      "",
+      "### Verify check",
+      item.verifyCheck,
+      "",
+      "### Evidence",
+      followUpEvidencePrompt(item),
+      "",
+      `When the work is complete, resolve follow-up ${item.id} with an evidence-backed note from this thread.`,
+    ].join("\n"),
+  );
 }
 
 export function buildFollowUpValidationPrompt(item: FollowUp): string {
-  return [
-    "Validate this saved Pylon follow-up in this visible thread. Investigate read-only: do not change code as part of validation.",
-    "Return exactly one outcome: still-needed, moot, or uncertain. Uncertain must fail closed and leave the item open. Never waive it.",
-    "Only choose moot when concrete evidence proves the follow-up no longer applies.",
-    "After checking, call followup_record_validation with the current revision, the verify check below, your outcome, note, evidence, and checked commit SHA.",
-    "",
-    `## Validate: ${item.title}`,
-    `Validation for ${followUpPromptMarker(item)}`,
-    `Current revision: ${item.revision}`,
-    "",
-    "### Observation",
-    item.observation,
-    "",
-    "### Verify check",
-    item.verifyCheck,
-    "",
-    "### Existing evidence",
-    followUpEvidencePrompt(item),
-  ].join("\n");
+  return frameFollowUpPrompt(
+    "validation",
+    [
+      "Validate this saved Pylon follow-up in this visible thread. Investigate read-only: do not change code as part of validation.",
+      "Return exactly one outcome: still-needed, moot, or uncertain. Uncertain must fail closed and leave the item open. Never waive it.",
+      "Only choose moot when concrete evidence proves the follow-up no longer applies.",
+      "After checking, call followup_record_validation with the current revision, the verify check below, your outcome, note, evidence, and checked commit SHA.",
+      "",
+      `## Validate: ${item.title}`,
+      `Validation for ${followUpPromptMarker(item)}`,
+      `Current revision: ${item.revision}`,
+      "",
+      "### Observation",
+      item.observation,
+      "",
+      "### Verify check",
+      item.verifyCheck,
+      "",
+      "### Existing evidence",
+      followUpEvidencePrompt(item),
+    ].join("\n"),
+  );
 }
 
 export function mergeFollowUpThreadPrompt(existingPrompt: string, item: FollowUp): string {
-  const marker = followUpPromptMarker(item);
-  if (existingPrompt.includes(marker)) return existingPrompt;
-
-  const dossier = buildFollowUpThreadPrompt(item);
-  return existingPrompt.trim().length === 0 ? dossier : `${existingPrompt}\n\n---\n\n${dossier}`;
+  return mergeOwnedFollowUpPrompt(existingPrompt, buildFollowUpThreadPrompt(item));
 }
 
 export function mergeFollowUpValidationPrompt(existingPrompt: string, item: FollowUp): string {
-  const marker = `Validation for ${followUpPromptMarker(item)}`;
-  if (existingPrompt.includes(marker)) return existingPrompt;
-
-  const dossier = buildFollowUpValidationPrompt(item);
-  return existingPrompt.trim().length === 0 ? dossier : `${existingPrompt}\n\n---\n\n${dossier}`;
+  return mergeOwnedFollowUpPrompt(existingPrompt, buildFollowUpValidationPrompt(item));
 }
 
 export function openFollowUpBlockersForBranch(

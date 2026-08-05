@@ -22,13 +22,50 @@ interface FollowUpEnvironmentAvailabilityState {
     | undefined;
 }
 
+export type FollowUpAvailability = "pending" | "available" | "unavailable";
+
+function resolveEnvironmentFollowUpAvailability(
+  environment: FollowUpEnvironmentAvailabilityState,
+): FollowUpAvailability {
+  if (
+    environment.connection.phase === "connected" &&
+    environment.serverConfig?.settings.followUpsEnabled === true
+  ) {
+    return "available";
+  }
+  switch (environment.connection.phase) {
+    case "available":
+    case "connecting":
+    case "reconnecting":
+      return "pending";
+    case "connected":
+      return environment.serverConfig === null || environment.serverConfig === undefined
+        ? "pending"
+        : "unavailable";
+    case "offline":
+    case "error":
+      return "unavailable";
+  }
+}
+
+export function resolveFollowUpAvailability(
+  catalogReady: boolean,
+  environments: ReadonlyArray<FollowUpEnvironmentAvailabilityState>,
+): FollowUpAvailability {
+  if (!catalogReady) return "pending";
+  let pending = false;
+  for (const environment of environments) {
+    const availability = resolveEnvironmentFollowUpAvailability(environment);
+    if (availability === "available") return "available";
+    if (availability === "pending") pending = true;
+  }
+  return pending ? "pending" : "unavailable";
+}
+
 export function isFollowUpEnvironmentAvailable(
   environment: FollowUpEnvironmentAvailabilityState,
 ): boolean {
-  return (
-    environment.connection.phase === "connected" &&
-    environment.serverConfig?.settings.followUpsEnabled === true
-  );
+  return resolveEnvironmentFollowUpAvailability(environment) === "available";
 }
 
 type FollowUpEnvironmentAvailability = FollowUpEnvironmentAvailabilityState & {
@@ -51,12 +88,26 @@ export function hasAvailableFollowUpEnvironment(
   return environments.some(isFollowUpEnvironmentAvailable);
 }
 
+export function areAvailableFollowUpShellsBootstrapped(
+  environments: ReadonlyArray<{
+    readonly available: boolean;
+    readonly shellBootstrapped: boolean;
+  }>,
+): boolean {
+  return environments.every(
+    (environment) => !environment.available || environment.shellBootstrapped,
+  );
+}
+
 export const availableFollowUpShellsBootstrappedAtom = Atom.make((get) => {
+  const shellStates: Array<{ available: boolean; shellBootstrapped: boolean }> = [];
   for (const [environmentId, environment] of get(environmentPresentations.presentationsAtom)) {
-    if (!isFollowUpEnvironmentAvailable(environment)) continue;
-    if (Option.isNone(get(environmentShell.stateValueAtom(environmentId)).snapshot)) {
-      return false;
-    }
+    const available = isFollowUpEnvironmentAvailable(environment);
+    shellStates.push({
+      available,
+      shellBootstrapped:
+        !available || Option.isSome(get(environmentShell.stateValueAtom(environmentId)).snapshot),
+    });
   }
-  return true;
+  return areAvailableFollowUpShellsBootstrapped(shellStates);
 }).pipe(Atom.withLabel("available-follow-up-shells-bootstrapped"));

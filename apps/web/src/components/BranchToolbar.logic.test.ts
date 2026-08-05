@@ -1,9 +1,11 @@
-import { EnvironmentId, type VcsRef } from "@t3tools/contracts";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { EnvironmentId, ProjectId, type VcsRef } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   dedupeRemoteBranchesWithLocalMatches,
   deriveLocalBranchNameFromRemoteRef,
   resolveEnvironmentOptionLabel,
+  resolveFollowUpBranchGateTarget,
   resolveBranchSelectionTarget,
   resolveCurrentWorkspaceLabel,
   resolveDraftEnvModeAfterBranchChange,
@@ -22,6 +24,43 @@ import {
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+
+describe("resolveFollowUpBranchGateTarget", () => {
+  const projectRef = scopeProjectRef(localEnvironmentId, ProjectId.make("project-followups"));
+
+  it("wires the active project and branch into the toolbar gate", () => {
+    expect(
+      resolveFollowUpBranchGateTarget({
+        followUpsAvailable: true,
+        activeProjectRef: projectRef,
+        resolvedActiveBranch: "feature/release",
+      }),
+    ).toEqual({ projectRef, branchRef: "feature/release" });
+  });
+
+  it.each([
+    {
+      label: "unavailable beta",
+      followUpsAvailable: false,
+      activeProjectRef: projectRef,
+      resolvedActiveBranch: "feature/release",
+    },
+    {
+      label: "missing project",
+      followUpsAvailable: true,
+      activeProjectRef: null,
+      resolvedActiveBranch: "feature/release",
+    },
+    {
+      label: "missing branch",
+      followUpsAvailable: true,
+      activeProjectRef: projectRef,
+      resolvedActiveBranch: null,
+    },
+  ] as const)("omits the toolbar gate for $label", (input) => {
+    expect(resolveFollowUpBranchGateTarget(input)).toBeNull();
+  });
+});
 
 describe("resolvePreviousWorktreeSeed", () => {
   it("picks the most recently updated worktree thread", () => {

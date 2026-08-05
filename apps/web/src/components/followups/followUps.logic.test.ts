@@ -151,6 +151,44 @@ describe("follow-up thread dossier", () => {
     expect(merged).toContain("Validation for Follow-up ID: follow-up-42");
     expect(mergeFollowUpValidationPrompt(merged, dossierItem)).toBe(merged);
   });
+
+  it("replaces the owned work block with validation while preserving unrelated bytes", () => {
+    const prefix = "  Keep this user-authored prefix byte-for-byte.\n";
+    const suffix = "\n\nKeep this user-authored suffix too.  ";
+    const workDraft = `${mergeFollowUpThreadPrompt(prefix, dossierItem)}${suffix}`;
+    const switched = mergeFollowUpValidationPrompt(workDraft, dossierItem);
+
+    expect(switched.startsWith(prefix)).toBe(true);
+    expect(switched.endsWith(suffix)).toBe(true);
+    expect(switched).toContain("PYLON-OWNED FOLLOW-UP VALIDATION START");
+    expect(switched).toContain("PYLON-OWNED FOLLOW-UP VALIDATION END");
+    expect(switched).not.toContain("PYLON-OWNED FOLLOW-UP WORK START");
+    expect(switched).not.toContain("Take on this saved Pylon follow-up");
+    expect(switched.match(/Validation for Follow-up ID: follow-up-42/g)).toHaveLength(1);
+  });
+
+  it("replaces the owned validation block with work while preserving unrelated bytes", () => {
+    const prefix = "\tUser context before the dossier.\n\n";
+    const suffix = "\nUser context after the dossier.\n";
+    const validationDraft = `${mergeFollowUpValidationPrompt(prefix, dossierItem)}${suffix}`;
+    const switched = mergeFollowUpThreadPrompt(validationDraft, dossierItem);
+
+    expect(switched.startsWith(prefix)).toBe(true);
+    expect(switched.endsWith(suffix)).toBe(true);
+    expect(switched).toContain("PYLON-OWNED FOLLOW-UP WORK START");
+    expect(switched).toContain("PYLON-OWNED FOLLOW-UP WORK END");
+    expect(switched).not.toContain("PYLON-OWNED FOLLOW-UP VALIDATION START");
+    expect(switched).not.toContain("Investigate read-only");
+    expect(switched.match(/Follow-up ID: follow-up-42/g)).toHaveLength(1);
+  });
+
+  it("treats incomplete marker-like user content as unrelated text", () => {
+    const userDraft = "User note: PYLON-OWNED FOLLOW-UP WORK START (not a complete frame).  ";
+    const merged = mergeFollowUpValidationPrompt(userDraft, dossierItem);
+
+    expect(merged.startsWith(userDraft)).toBe(true);
+    expect(merged).toContain("PYLON-OWNED FOLLOW-UP VALIDATION START");
+  });
 });
 
 describe("openFollowUpBlockersForBranch", () => {
