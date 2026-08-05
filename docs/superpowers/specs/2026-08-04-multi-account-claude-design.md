@@ -18,8 +18,9 @@ Verified on 2026-08-04 rather than assumed. These findings shape every decision 
 | Credentials isolate per `CLAUDE_CONFIG_DIR`         | A fresh config dir reports `loggedIn: false` while the default reports the signed-in account. macOS keychain entries are hash-suffixed per config dir (`Claude Code-credentials-<hash>`), so two accounts can be signed in at once. |
 | Session transcripts are account-agnostic            | Transcript JSONL keys are `cwd`, `sessionId`, `message`, `uuid`, `parentUuid`, `gitBranch`, … — no account, org, or subscription identifier.                                                                                        |
 | `--resume` works across config dirs                 | A session created on account A, its transcript copied to account B's config dir, resumed on B and recalled a token from the prior turn. Lossless.                                                                                   |
-| `rate_limit_event` omits `utilization` at low usage | Real event carried `{status, resetsAt, rateLimitType, overageStatus}` only. `utilization` is optional in the SDK type and was absent.                                                                                               |
-| `claude --print "/usage"` costs nothing             | `total_cost_usd: 0`, zero input and output tokens. Reports session and weekly windows with percentages and reset times as human-readable text.                                                                                      |
+| `rate_limit_event` omits `utilization` at low usage | Real event carried `{status, resetsAt, rateLimitType, overageStatus}` only. `utilization` is optional in the SDK type and was absent. Re-verified on 2.1.220 at 12% session / 16% weekly — still absent.                            |
+| `GET /api/oauth/usage` returns structured usage     | Private OAuth endpoint (`Authorization: Bearer <token>`, `anthropic-beta: oauth-2025-04-20`) returns continuous percentages and reset times for every window as JSON — what claude.ai's own UI renders. Answers 429 under load.     |
+| `claude --print "/usage"` reports *local* figures   | Costs nothing (`total_cost_usd: 0`, zero tokens) but its output is human text, and its percentages derive from this machine's sessions: 17% weekly against the endpoint's 40% for the same account, seconds apart.                  |
 | Prompt caches never cross organizations             | Anthropic: "Caches are isolated between organizations. Different organizations never share caches, even if they use identical prompts."                                                                                             |
 
 Two consequences follow directly:
@@ -37,8 +38,19 @@ Two consequences follow directly:
 
 Adopts upstream T3 Code PR #4326 (`pingdotgg/t3code@0abc172d`), which threads
 `ServerProviderUsageLimits` through the existing provider snapshot. Codex reads the typed
-`account/rateLimits/read`; Claude parses `claude --print "/usage"`. Usage is best-effort and
-fails closed — a timeout or changed output omits usage without degrading provider readiness.
+`account/rateLimits/read`. Usage is best-effort and fails closed — a timeout or an
+unrecognized payload omits usage without degrading provider readiness.
+
+**Claude no longer scrapes the CLI.** Upstream parsed `claude --print "/usage"`, whose prose
+output changed shape twice between #4326 and this branch (a stream-message array replaced the
+single JSON object, and the reset separator became `at`), each time failing silently. Pylon
+reads `GET /api/oauth/usage` instead: structured JSON, per-account via the config dir's
+keychain entry, and accurate where the CLI reported only this machine's share. Credentials are
+read, never refreshed or written — Pylon needs a gauge, not a session.
+
+The scrape was removed rather than kept as a fallback. Its numbers describe something
+different, so falling back would silently swap one figure for another; a briefly absent gauge
+beats a quietly wrong one.
 
 Pylon adaptations:
 
@@ -49,9 +61,14 @@ Pylon adaptations:
 - **`showProviderUsageInContextPopover` defaults on.** Upstream defaults it off as a niche
   readout; with account routing it is routine information.
 
-The context popover is the deliberate home for the gauge. It is a lookup, it sits beside the
-context-window meter that answers the structurally identical "how much room do I have"
-question, and it costs no resting screen real estate.
+The context popover is the deliberate home for the *full* gauge — every window with its reset
+time. It is a lookup, it sits beside the context-window meter that answers the structurally
+identical "how much room do I have" question, and it costs no resting screen real estate.
+
+A two-window summary (session and account-wide weekly, as percentages with fill bars) also
+sits in the composer context strip, opposite the workspace controls. That was added after
+living with the popover: while draining an account deliberately, "how close am I" is a glance,
+not a lookup. Model-scoped weeklies stay in the popover.
 
 ### Phase B — drain-and-swap routing
 
@@ -69,8 +86,10 @@ question, and it costs no resting screen real estate.
   otherwise absent. A persistent indicator was rejected: the gauge belongs in the popover, and
   a ticking countdown would violate the repo's no-continuous-repaint rule.
 
-`/usage` (5-minute cached poll) and `rate_limit_event` (pushed live during a session) are
-complementary, not alternatives. The poll drives the gauge; the event drives routing.
+The two sources are complementary, not alternatives. `GET /api/oauth/usage` (5-minute cached
+poll, 1-minute backoff on failure since it answers 429 under load) drives the gauge;
+`rate_limit_event` (typed, pushed live during a session) drives routing. Routing therefore has
+no dependency on the polled source at all — a gauge outage cannot misroute a turn.
 
 The five-color status language in `docs/user/status-indicators.md` describes _thread_ state and
 is deliberately not reused for account capacity. Account identity uses the existing per-instance
@@ -110,13 +129,15 @@ long thread some reasoning is lost. This is what already happens when any long t
 
 ## Scope boundaries
 
-Three branches, one concern each:
+Originally three branches, one concern each. A and B shipped together on
+`feat/2026-08-04-account-drain-routing` so the drain-and-swap workflow could be exercised
+end to end in one build; C remains separate.
 
-| Branch | Concern                               | Depends on                                        |
-| ------ | ------------------------------------- | ------------------------------------------------- |
-| A      | Adopt #4326 + multi-account popover   | —                                                 |
-| B      | Priority, ledger, routing, drain pill | A                                                 |
-| C      | Thread handoff                        | B for the auto-trigger; manual form needs nothing |
+| Branch | Concern                               | Depends on                                        | State    |
+| ------ | ------------------------------------- | ------------------------------------------------- | -------- |
+| A      | Adopt #4326 + multi-account popover   | —                                                 | Shipped  |
+| B      | Priority, ledger, routing, drain pill | A                                                 | Shipped  |
+| C      | Thread handoff                        | B for the auto-trigger; manual form needs nothing | Not started |
 
 Deferred: mobile surfaces (upstream touches no mobile files), Grok/Cursor/OpenCode usage,
 credit balances and usage-based plans, persistent usage caches.
@@ -127,7 +148,11 @@ credit balances and usage-based plans, persistent usage caches.
   still never moving. One-line policy, decide after living with it.
 - Whether `utilization` appears in `rate_limit_event` under real load. If it does, pre-emptive
   switching becomes possible as an optimization; the reactive path remains the correctness
-  guarantee either way.
+  guarantee either way. Note the OAuth endpoint already reports continuous percentages, so
+  this now matters only for routing, not for the gauge.
+- Whether the OAuth endpoint's rate limit is tight enough to matter with several accounts
+  configured. One 429 was observed during development; a 5-minute success TTL and 1-minute
+  failure backoff were sized against that single data point.
 
 ## Note on account provenance
 
