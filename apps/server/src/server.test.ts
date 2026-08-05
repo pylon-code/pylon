@@ -12,6 +12,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
+  FollowUpId,
   GitCommandError,
   KeybindingRule,
   MessageId,
@@ -52,6 +53,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -341,6 +343,7 @@ const buildAppUnderTest = (options?: {
       SourceControlRepositoryService.SourceControlRepositoryService["Service"]
     >;
     reviewService?: Partial<ReviewService.ReviewService["Service"]>;
+    followUpService?: Partial<FollowUpService.FollowUpService["Service"]>;
     vcsStatusBroadcaster?: Partial<VcsStatusBroadcaster.VcsStatusBroadcaster["Service"]>;
     projectSetupScriptRunner?: Partial<
       ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]
@@ -539,9 +542,13 @@ const buildAppUnderTest = (options?: {
     const followUpLayer = Layer.mock(FollowUpService.FollowUpService)({
       file: () => Effect.die("FollowUpService not stubbed in this test"),
       updateStatus: () => Effect.die("FollowUpService not stubbed in this test"),
-      getSnapshot: Effect.succeed({ sequence: 0, items: [] }),
+      recordValidation: () => Effect.die("FollowUpService not stubbed in this test"),
+      getSnapshot: () => Effect.succeed({ sequence: 0, items: [] }),
       openBlockersForBranch: () => Effect.die("FollowUpService not stubbed in this test"),
-      stream: Stream.empty,
+      stream: () => Stream.empty,
+      projectIdForThread: () => Effect.die("FollowUpService not stubbed in this test"),
+      projectIdForRepositoryPath: () => Effect.die("FollowUpService not stubbed in this test"),
+      ...options?.layers?.followUpService,
     });
     const vcsStatusBroadcasterLayer = options?.layers?.vcsStatusBroadcaster
       ? Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
@@ -596,6 +603,7 @@ const buildAppUnderTest = (options?: {
           getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
           updateSettings: () => Effect.succeed(DEFAULT_SERVER_SETTINGS),
           streamChanges: Stream.empty,
+          subscribeChanges: Effect.succeed(Stream.empty),
           ...options?.layers?.serverSettings,
         }),
       ),
@@ -7712,6 +7720,247 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assertFailure(result, terminalError);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("guards follow-up WebSocket RPCs when the environment beta is disabled", () =>
+    Effect.gen(function* () {
+      const serviceCalls: string[] = [];
+      yield* buildAppUnderTest({
+        layers: {
+          serverSettings: {
+            getSettings: Effect.succeed({ ...DEFAULT_SERVER_SETTINGS, followUpsEnabled: false }),
+          },
+          followUpService: {
+            file: () =>
+              Effect.sync(() => {
+                serviceCalls.push("file");
+                throw new Error("disabled RPC reached the service");
+              }),
+            updateStatus: () =>
+              Effect.sync(() => {
+                serviceCalls.push("update");
+                throw new Error("disabled RPC reached the service");
+              }),
+            stream: () => {
+              serviceCalls.push("stream");
+              return Stream.die("disabled RPC reached the service");
+            },
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const error = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.followUpFile]({
+            commandId: CommandId.make("command-ws-disabled"),
+            itemId: FollowUpId.make("item-ws-disabled"),
+            projectId: defaultProjectId,
+            kind: "open",
+            title: "Must stay hidden",
+            observation: "The beta is disabled.",
+            deferReason: "out-of-scope",
+            verifyCheck: "Confirm the RPC is rejected.",
+          }),
+        ).pipe(Effect.flip),
+      );
+
+      const updateError = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.followUpUpdateStatus]({
+            commandId: CommandId.make("command-ws-disabled-update"),
+            itemId: FollowUpId.make("item-ws-disabled"),
+            projectId: defaultProjectId,
+            expectedRevision: 0,
+            status: "resolved",
+            resolution: { note: "Must not run.", threadId: null, commitSha: null },
+          }),
+        ).pipe(Effect.flip),
+      );
+      const streamError = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.followUpSubscribe]({ projectId: defaultProjectId }).pipe(
+            Stream.runDrain,
+          ),
+        ).pipe(Effect.flip),
+      );
+
+      for (const candidate of [error, updateError, streamError]) {
+        assert.equal(candidate._tag, "FollowUpOperationError");
+        if (candidate._tag === "FollowUpOperationError") {
+          assert.equal(candidate.code, "forbidden");
+        }
+      }
+      assert.deepEqual(serviceCalls, []);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("ends an existing follow-up subscription as soon as the beta is disabled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const enabledSettings = { ...DEFAULT_SERVER_SETTINGS, followUpsEnabled: true };
+        const settingsRef = yield* Ref.make(enabledSettings);
+        const settingsChanges = yield* PubSub.unbounded<typeof enabledSettings>();
+        const snapshotSeen = yield* Deferred.make<void>();
+        yield* buildAppUnderTest({
+          layers: {
+            serverSettings: {
+              getSettings: Ref.get(settingsRef),
+              subscribeChanges: PubSub.subscribe(settingsChanges).pipe(
+                Effect.map((subscription) => Stream.fromSubscription(subscription)),
+              ),
+            },
+            followUpService: {
+              stream: () =>
+                Stream.concat(
+                  Stream.succeed({
+                    kind: "snapshot" as const,
+                    snapshot: { sequence: 0, items: [] },
+                  }),
+                  Stream.never,
+                ),
+            },
+          },
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const subscription = yield* withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.followUpSubscribe]({ projectId: defaultProjectId }).pipe(
+            Stream.tap((item) =>
+              item.kind === "snapshot"
+                ? Deferred.succeed(snapshotSeen, undefined).pipe(Effect.ignore)
+                : Effect.void,
+            ),
+            Stream.runDrain,
+          ),
+        ).pipe(Effect.forkScoped);
+
+        yield* Deferred.await(snapshotSeen);
+        const disabledSettings = { ...enabledSettings, followUpsEnabled: false };
+        yield* Ref.set(settingsRef, disabledSettings);
+        yield* PubSub.publish(settingsChanges, disabledSettings);
+
+        const error = yield* Fiber.join(subscription).pipe(Effect.flip);
+        assert.equal(error._tag, "FollowUpOperationError");
+        if (error._tag === "FollowUpOperationError") {
+          assert.equal(error.code, "forbidden");
+        }
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("injects human authority and project scope at follow-up WebSocket boundaries", () =>
+    Effect.gen(function* () {
+      let fileInput: Parameters<FollowUpService.FollowUpService["Service"]["file"]>[0] | undefined;
+      let updateInput:
+        | Parameters<FollowUpService.FollowUpService["Service"]["updateStatus"]>[0]
+        | undefined;
+      let subscribedProjectId: ProjectId | undefined;
+      const now = "2026-08-04T12:00:00.000Z";
+      yield* buildAppUnderTest({
+        layers: {
+          serverSettings: {
+            getSettings: Effect.succeed({ ...DEFAULT_SERVER_SETTINGS, followUpsEnabled: true }),
+          },
+          followUpService: {
+            file: (input) =>
+              Effect.sync(() => {
+                fileInput = input;
+                return {
+                  id: input.itemId,
+                  projectId: input.projectId,
+                  kind: input.kind,
+                  status: "open" as const,
+                  title: input.title,
+                  observation: input.observation,
+                  deferReason: input.deferReason,
+                  verifyCheck: input.verifyCheck,
+                  evidence: input.evidence ?? [],
+                  gate: input.gate ?? null,
+                  sourceKind: input.sourceKind,
+                  sourceThreadId: input.sourceThreadId ?? null,
+                  resolution: null,
+                  lastValidation: null,
+                  revision: 0,
+                  createdAt: now,
+                  updatedAt: now,
+                };
+              }),
+            updateStatus: (input) =>
+              Effect.sync(() => {
+                updateInput = input;
+                return {
+                  id: input.itemId,
+                  projectId: input.projectId,
+                  kind: "open" as const,
+                  status: input.status,
+                  title: "Boundary item",
+                  observation: "Check trusted authority.",
+                  deferReason: "out-of-scope" as const,
+                  verifyCheck: "Inspect the service command.",
+                  evidence: [],
+                  gate: null,
+                  sourceKind: "human" as const,
+                  sourceThreadId: null,
+                  resolution: input.resolution ?? null,
+                  lastValidation: null,
+                  revision: 1,
+                  createdAt: now,
+                  updatedAt: now,
+                };
+              }),
+            stream: (projectId) => {
+              subscribedProjectId = projectId;
+              return Stream.succeed({
+                kind: "snapshot" as const,
+                snapshot: { sequence: 0, items: [] },
+              });
+            },
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const filed = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.followUpFile]({
+            commandId: CommandId.make("command-ws-authority"),
+            itemId: FollowUpId.make("item-ws-authority"),
+            projectId: defaultProjectId,
+            kind: "open",
+            title: "Boundary item",
+            observation: "Check trusted authority.",
+            deferReason: "out-of-scope",
+            verifyCheck: "Inspect the service command.",
+          }),
+        ),
+      );
+      assert.equal(filed.sourceKind, "human");
+      assert.equal(fileInput?.sourceKind, "human");
+      assert.isNull(fileInput?.sourceThreadId ?? null);
+
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.followUpUpdateStatus]({
+            commandId: CommandId.make("command-ws-authority-update"),
+            itemId: filed.id,
+            projectId: defaultProjectId,
+            expectedRevision: 0,
+            status: "waived",
+            resolution: { note: "Human decision.", threadId: null, commitSha: null },
+          }),
+        ),
+      );
+      assert.equal(updateInput?.actor, "human");
+      assert.equal(updateInput?.projectId, defaultProjectId);
+
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.followUpSubscribe]({ projectId: defaultProjectId }).pipe(
+            Stream.take(1),
+            Stream.runDrain,
+          ),
+        ),
+      );
+      assert.equal(subscribedProjectId, defaultProjectId);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 });

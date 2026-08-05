@@ -85,8 +85,6 @@ export function FollowUpDialog({
         verifyCheck: verifyCheck.trim(),
         evidence: [],
         gate: kind === "blocker" ? { kind: "branch", ref: branchRef.trim() } : null,
-        sourceKind: "human",
-        sourceThreadId: null,
       },
     });
     setIsSaving(false);

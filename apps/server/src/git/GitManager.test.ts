@@ -624,11 +624,12 @@ function makeManager(input?: {
   serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   setupScriptRunner?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"];
   followUpBlockers?: ReadonlyArray<FollowUp>;
+  followUpProjectId?: ProjectId;
   sourceControlProviderKind?: SourceControlProviderKind;
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
-  const followUpQueries: string[] = [];
+  const followUpQueries: Array<{ readonly projectId: ProjectId; readonly branchRef: string }> = [];
   const sourceControlProviderResolutions: string[] = [];
   const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-git-manager-test-",
@@ -679,13 +680,21 @@ function makeManager(input?: {
       file: () => Effect.die("FollowUpService.file is not used by GitManager tests"),
       updateStatus: () =>
         Effect.die("FollowUpService.updateStatus is not used by GitManager tests"),
-      getSnapshot: Effect.die("FollowUpService.getSnapshot is not used by GitManager tests"),
-      openBlockersForBranch: (branchRef) =>
+      recordValidation: () =>
+        Effect.die("FollowUpService.recordValidation is not used by GitManager tests"),
+      getSnapshot: () => Effect.die("FollowUpService.getSnapshot is not used by GitManager tests"),
+      openBlockersForBranch: (projectId, branchRef) =>
         Effect.sync(() => {
-          followUpQueries.push(branchRef);
-          return input?.followUpBlockers ?? [];
+          followUpQueries.push({ projectId, branchRef });
+          return (input?.followUpBlockers ?? []).filter(
+            (item) => item.projectId === projectId && item.gate?.ref === branchRef,
+          );
         }),
-      stream: Stream.die("FollowUpService.stream is not used by GitManager tests"),
+      stream: () => Stream.die("FollowUpService.stream is not used by GitManager tests"),
+      projectIdForThread: () =>
+        Effect.die("FollowUpService.projectIdForThread is not used by GitManager tests"),
+      projectIdForRepositoryPath: () =>
+        Effect.succeed(input?.followUpProjectId ?? ProjectId.make("project-1")),
     }),
     vcsDriverLayer,
     serverSettingsLayer,
@@ -717,6 +726,7 @@ function followUpBlocker(ref: string, title: string): FollowUp {
     sourceKind: "agent",
     sourceThreadId: null,
     resolution: null,
+    lastValidation: null,
     revision: 0,
     createdAt: "2026-08-04T12:00:00.000Z",
     updatedAt: "2026-08-04T12:00:00.000Z",
@@ -2257,8 +2267,50 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       });
 
       expect(result.pr.status).toBe("created");
-      expect(followUpQueries).toEqual(["feature/gate-clear"]);
+      expect(followUpQueries).toEqual([
+        { projectId: ProjectId.make("project-1"), branchRef: "feature/gate-clear" },
+      ]);
       expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(true);
+    }),
+  );
+
+  it.effect("shipping gate ignores the same branch name in another project", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/shared-gate"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/shared-gate"]);
+
+      const secondProjectId = ProjectId.make("project-2");
+      const { manager, followUpQueries } = yield* makeManager({
+        serverSettings: { followUpsEnabled: true },
+        followUpProjectId: secondProjectId,
+        followUpBlockers: [followUpBlocker("feature/shared-gate", "first-project-only")],
+        ghScenario: {
+          prListSequence: [
+            "[]",
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 604,
+                title: "Scoped gate",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/604",
+                baseRefName: "main",
+                headRefName: "feature/shared-gate",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const result = yield* runStackedAction(manager, { cwd: repoDir, action: "create_pr" });
+
+      expect(result.pr.status).toBe("created");
+      expect(followUpQueries).toEqual([
+        { projectId: secondProjectId, branchRef: "feature/shared-gate" },
+      ]);
     }),
   );
 
@@ -2291,7 +2343,9 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(error.message).toContain("a11y");
       expect(error.message).toContain("perf");
       expect(error.message).toContain("waive");
-      expect(followUpQueries).toEqual(["feature/gate-blocked"]);
+      expect(followUpQueries).toEqual([
+        { projectId: ProjectId.make("project-1"), branchRef: "feature/gate-blocked" },
+      ]);
       expect(sourceControlProviderResolutions).toEqual([]);
       expect(ghCalls.some((call) => call.startsWith("pr list "))).toBe(false);
       expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
@@ -2342,8 +2396,14 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       );
 
       expect(result.pr.status).toBe("created");
-      expect(followUpQueries).toEqual(["feature/gate-gitlab"]);
+      expect(followUpQueries).toEqual([
+        { projectId: ProjectId.make("project-1"), branchRef: "feature/gate-gitlab" },
+      ]);
       expect(sourceControlProviderResolutions[0]).toBe(repoDir);
+      expect(events.find((event) => event.kind === "phase_started")).toMatchObject({
+        phase: "pr",
+        label: "Checking change request blockers...",
+      });
       expect(events).toContainEqual(
         expect.objectContaining({
           kind: "phase_started",
@@ -4219,6 +4279,11 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
             event.kind === "phase_started",
         ),
       ).toEqual([
+        expect.objectContaining({
+          kind: "phase_started",
+          phase: "pr",
+          label: "Checking change request blockers...",
+        }),
         expect.objectContaining({
           kind: "phase_started",
           phase: "pr",

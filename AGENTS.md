@@ -151,9 +151,11 @@ Pylon tracks follow-ups per project (beta). Use the `followup_*` MCP tools.
 - Use `blocker` only when a competent reviewer would refuse to merge the current work because of
   it, and name the branch it gates.
 - Call `followup_list` when you start work in a project, and `followup_check_gate` before you
-  report work complete or open a pull request.
-- You may resolve a follow-up you actually addressed, and mark one moot with evidence. **You may
-  never waive one** — only the developer decides that something does not need doing.
+  report work complete or open a change request.
+- You may resolve a follow-up you actually addressed. To mark one moot, run its `verifyCheck` in a
+  visible thread and use `followup_record_validation` with concrete evidence. `still-needed` and
+  `uncertain` stay open. **You may never waive one** — only the developer decides that something
+  does not need doing.
 
 ## Pull requests
 

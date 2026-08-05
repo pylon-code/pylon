@@ -15,7 +15,7 @@ export function describeBlockers(blockers: ReadonlyArray<FollowUp>): string {
       blockers.length === 1 ? "blocker" : "blockers"
     }:`,
     lines,
-    "Resolve them, or waive them from the follow-ups list, before shipping.",
+    "Resolve them, or waive them from the follow-ups list, before opening a change request.",
   ].join("\n");
 }
 
@@ -25,6 +25,7 @@ export function describeBlockers(blockers: ReadonlyArray<FollowUp>): string {
  */
 export const assertNoOpenBlockers = Effect.fn("FollowUps.assertNoOpenBlockers")(function* (
   branchRef: string,
+  cwd: string,
 ) {
   const settingsService = yield* ServerSettingsService;
   const settings = yield* settingsService.getSettings.pipe(
@@ -41,7 +42,8 @@ export const assertNoOpenBlockers = Effect.fn("FollowUps.assertNoOpenBlockers")(
   }
 
   const service = yield* FollowUpService;
-  const blockers = yield* service.openBlockersForBranch(branchRef);
+  const projectId = yield* service.projectIdForRepositoryPath(cwd);
+  const blockers = yield* service.openBlockersForBranch(projectId, branchRef);
   if (isBlocked(blockers)) {
     return yield* new FollowUpOperationError({
       code: "invalid-command",

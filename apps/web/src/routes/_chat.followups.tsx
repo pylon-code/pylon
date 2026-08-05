@@ -1,25 +1,23 @@
-import { useAtomValue } from "@effect/atom-react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 
 import { FollowUpList } from "~/components/followups/FollowUpList";
 import { SidebarInset } from "~/components/ui/sidebar";
-import { usePrimarySettings } from "~/hooks/useSettings";
-import { isFollowUpBetaEnabled } from "~/state/followups";
-import { primaryServerConfigAtom } from "~/state/server";
+import { useEnvironments } from "~/state/environments";
+import { hasAvailableFollowUpEnvironment } from "~/state/followups";
 
 function FollowUpsRouteView() {
   const navigate = useNavigate();
-  const primaryServerConfig = useAtomValue(primaryServerConfigAtom);
-  const enabled = usePrimarySettings(isFollowUpBetaEnabled);
+  const { environments, isReady } = useEnvironments();
+  const available = hasAvailableFollowUpEnvironment(environments);
 
   useEffect(() => {
-    if (primaryServerConfig !== null && !enabled) {
+    if (isReady && !available) {
       void navigate({ to: "/", replace: true });
     }
-  }, [enabled, navigate, primaryServerConfig]);
+  }, [available, isReady, navigate]);
 
-  if (primaryServerConfig === null || !enabled) return null;
+  if (!isReady || !available) return null;
 
   return (
     <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">

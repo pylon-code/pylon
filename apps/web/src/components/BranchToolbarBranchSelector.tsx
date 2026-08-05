@@ -27,6 +27,8 @@ import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { shouldLoadNextBranchPageAfterScroll } from "../state/paginatedBranches";
 import { usePaginatedBranches } from "../state/queries";
 import { useProject, useThread } from "../state/entities";
+import { useEnvironment } from "../state/environments";
+import { isFollowUpEnvironmentAvailable } from "../state/followups";
 import { useEnvironmentQuery } from "../state/query";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -49,6 +51,7 @@ import {
   prStatusIndicator,
   resolveThreadPr,
 } from "./ThreadStatusIndicators";
+import { FollowUpBranchGateStatus } from "./followups/FollowUpBranchGateStatus";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
 import {
@@ -129,6 +132,9 @@ export function BranchToolbarBranchSelector({
       ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
       : null;
   const activeProject = useProject(activeProjectRef);
+  const activeEnvironment = useEnvironment(activeProjectRef?.environmentId ?? environmentId);
+  const followUpsAvailable =
+    activeEnvironment !== null && isFollowUpEnvironmentAvailable(activeEnvironment);
 
   const activeThreadId = serverThread?.id ?? (draftThread ? threadId : undefined);
   const activeThreadBranch =
@@ -715,6 +721,12 @@ export function BranchToolbarBranchSelector({
       value={resolvedActiveBranch}
     >
       <div className={cn("flex min-w-0 items-center gap-1", className)}>
+        {followUpsAvailable && activeProjectRef && resolvedActiveBranch ? (
+          <FollowUpBranchGateStatus
+            branchRef={resolvedActiveBranch}
+            projectRef={activeProjectRef}
+          />
+        ) : null}
         {branchPr && branchPrStatus ? (
           <Tooltip>
             <TooltipTrigger

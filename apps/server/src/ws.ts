@@ -97,6 +97,7 @@ import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as FollowUpService from "./followups/FollowUpService.ts";
+import { guardFollowUpStream, requireFollowUpsEnabled } from "./followups/availability.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -1857,17 +1858,29 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "review",
           }),
         [WS_METHODS.followUpFile]: (input) =>
-          observeRpcEffect(WS_METHODS.followUpFile, followUps.file(input), {
-            "rpc.aggregate": "followup",
-          }),
+          observeRpcEffect(
+            WS_METHODS.followUpFile,
+            requireFollowUpsEnabled().pipe(
+              Effect.andThen(
+                followUps.file({ ...input, sourceKind: "human", sourceThreadId: null }),
+              ),
+            ),
+            { "rpc.aggregate": "followup" },
+          ),
         [WS_METHODS.followUpUpdateStatus]: (input) =>
-          observeRpcEffect(WS_METHODS.followUpUpdateStatus, followUps.updateStatus(input), {
-            "rpc.aggregate": "followup",
-          }),
-        [WS_METHODS.followUpSubscribe]: () =>
-          observeRpcStream(WS_METHODS.followUpSubscribe, followUps.stream, {
-            "rpc.aggregate": "followup",
-          }),
+          observeRpcEffect(
+            WS_METHODS.followUpUpdateStatus,
+            requireFollowUpsEnabled().pipe(
+              Effect.andThen(followUps.updateStatus({ ...input, actor: "human" })),
+            ),
+            { "rpc.aggregate": "followup" },
+          ),
+        [WS_METHODS.followUpSubscribe]: (input) =>
+          observeRpcStream(
+            WS_METHODS.followUpSubscribe,
+            guardFollowUpStream(() => followUps.stream(input.projectId)),
+            { "rpc.aggregate": "followup" },
+          ),
         [WS_METHODS.terminalOpen]: (input) =>
           observeRpcEffect(WS_METHODS.terminalOpen, terminalManager.open(input), {
             "rpc.aggregate": "terminal",

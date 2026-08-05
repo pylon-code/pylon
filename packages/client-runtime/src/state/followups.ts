@@ -1,5 +1,6 @@
 import {
   WS_METHODS,
+  type ProjectId,
   type FollowUp,
   type FollowUpSnapshot,
   type FollowUpStreamItem,
@@ -73,8 +74,8 @@ export function createFollowUpEnvironmentAtoms<R, E>(
   return {
     list: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: "environment-data:follow-ups:list",
-      subscribe: (_input: null) =>
-        subscribe(WS_METHODS.followUpSubscribe, {}).pipe(
+      subscribe: (input: { readonly projectId: ProjectId }) =>
+        subscribe(WS_METHODS.followUpSubscribe, input).pipe(
           Stream.scan(EMPTY_FOLLOW_UP_CLIENT_STATE, applyFollowUpStreamItem),
         ),
     }),

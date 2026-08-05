@@ -18,6 +18,7 @@ function blocker(ref: string, title: string): FollowUp {
     sourceKind: "agent",
     sourceThreadId: null,
     resolution: null,
+    lastValidation: null,
     revision: 0,
     createdAt: "2026-08-04T12:00:00.000Z",
     updatedAt: "2026-08-04T12:00:00.000Z",

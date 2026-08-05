@@ -3,10 +3,10 @@ import {
   FollowUpFileInput,
   FollowUpKind,
   FollowUpOperationError,
+  FollowUpRecordValidationInput,
   FollowUpResolution,
   FollowUpStatus,
   NonNegativeInt,
-  ProjectId,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
@@ -21,7 +21,7 @@ const dependencies = [Crypto.Crypto, FollowUpService, McpInvocationContext, Serv
 const {
   commandId: _commandId,
   itemId: _itemId,
-  sourceKind: _sourceKind,
+  projectId: _projectId,
   ...followUpFileFields
 } = FollowUpFileInput.fields;
 
@@ -36,9 +36,8 @@ export const FollowUpFileTool = Tool.make("followup_file", {
 
 export const FollowUpListTool = Tool.make("followup_list", {
   description:
-    "List follow-ups for a project. Call this when you start work in a project and again before you report work complete, so you do not claim done while a blocker is open.",
+    "List follow-ups for the current thread's project. Call this when you start work and again before you report work complete, so you do not claim done while a blocker is open.",
   parameters: Schema.Struct({
-    projectId: ProjectId,
     status: Schema.optional(FollowUpStatus),
     kind: Schema.optional(FollowUpKind),
   }),
@@ -51,12 +50,14 @@ export const FollowUpListTool = Tool.make("followup_list", {
 
 export const FollowUpResolveTool = Tool.make("followup_resolve", {
   description:
-    'Close a follow-up you have actually addressed (status "resolved") or that no longer applies (status "moot"). Both require a resolution note, and for "moot" the note must say what you checked and what you found. You cannot waive a follow-up — only a person can decide that something does not need doing.',
+    "Close a follow-up you have actually addressed. You cannot waive it or mark it moot here: use followup_record_validation for a checked moot result, and only a person can waive work.",
   parameters: Schema.Struct({
     itemId: FollowUp.fields.id,
     expectedRevision: NonNegativeInt,
-    status: Schema.Literals(["resolved", "moot"]),
-    resolution: FollowUpResolution,
+    resolution: Schema.Struct({
+      note: FollowUpResolution.fields.note,
+      commitSha: FollowUpResolution.fields.commitSha,
+    }),
   }),
   success: FollowUp,
   failure: FollowUpOperationError,
@@ -65,7 +66,7 @@ export const FollowUpResolveTool = Tool.make("followup_resolve", {
 
 export const FollowUpCheckGateTool = Tool.make("followup_check_gate", {
   description:
-    "Report whether unresolved blockers are attached to a branch. Call this before reporting work complete or opening a pull request. If blocked is true, resolve the listed blockers or ask the developer to waive them — do not report the work as finished.",
+    "Report whether unresolved blockers are attached to a branch in the current project. Call this before reporting work complete or opening a change request. If blocked is true, resolve the listed blockers or ask the developer to waive them — do not report the work as finished.",
   parameters: Schema.Struct({ branchRef: Schema.String }),
   success: Schema.Struct({
     blocked: Schema.Boolean,
@@ -77,9 +78,19 @@ export const FollowUpCheckGateTool = Tool.make("followup_check_gate", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Idempotent, true);
 
+export const FollowUpRecordValidationTool = Tool.make("followup_record_validation", {
+  description:
+    'Record the result of the current visible thread checking a follow-up\'s verifyCheck and evidence. Choose exactly "still-needed", "moot", or "uncertain". Still-needed and uncertain remain open. Moot requires concrete evidence and is the only validation outcome that closes the item. This records work already performed; it does not launch another agent and can never waive an item.',
+  parameters: FollowUpRecordValidationInput,
+  success: FollowUp,
+  failure: FollowUpOperationError,
+  dependencies,
+}).annotate(Tool.Destructive, false);
+
 export const FollowUpToolkit = Toolkit.make(
   FollowUpFileTool,
   FollowUpListTool,
   FollowUpResolveTool,
   FollowUpCheckGateTool,
+  FollowUpRecordValidationTool,
 );

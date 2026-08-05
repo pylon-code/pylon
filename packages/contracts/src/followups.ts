@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
 
 import {
   CommandId,
@@ -56,6 +57,21 @@ export const FollowUpResolution = Schema.Struct({
 });
 export type FollowUpResolution = typeof FollowUpResolution.Type;
 
+export const FOLLOW_UP_VALIDATION_OUTCOMES = ["still-needed", "moot", "uncertain"] as const;
+export const FollowUpValidationOutcome = Schema.Literals(FOLLOW_UP_VALIDATION_OUTCOMES);
+export type FollowUpValidationOutcome = typeof FollowUpValidationOutcome.Type;
+
+export const FollowUpValidation = Schema.Struct({
+  outcome: FollowUpValidationOutcome,
+  verifyCheck: FollowUpVerifyCheck,
+  note: TrimmedNonEmptyString.check(Schema.isMaxLength(4_000)),
+  evidence: Schema.Array(FollowUpEvidence),
+  threadId: ThreadId,
+  checkedCommitSha: Schema.NullOr(TrimmedString.check(Schema.isMaxLength(64))),
+  validatedAt: IsoDateTime,
+});
+export type FollowUpValidation = typeof FollowUpValidation.Type;
+
 export const FollowUpSourceKind = Schema.Literals(["human", "agent"]);
 export type FollowUpSourceKind = typeof FollowUpSourceKind.Type;
 
@@ -73,13 +89,20 @@ export const FollowUp = Schema.Struct({
   sourceKind: FollowUpSourceKind,
   sourceThreadId: Schema.NullOr(ThreadId),
   resolution: Schema.NullOr(FollowUpResolution),
+  lastValidation: Schema.NullOr(FollowUpValidation).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   revision: NonNegativeInt,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
 export type FollowUp = typeof FollowUp.Type;
 
-export const FollowUpEventType = Schema.Literals(["follow-up.filed", "follow-up.status-changed"]);
+export const FollowUpEventType = Schema.Literals([
+  "follow-up.filed",
+  "follow-up.status-changed",
+  "follow-up.validated",
+]);
 export type FollowUpEventType = typeof FollowUpEventType.Type;
 
 export const FollowUpEventPayload = Schema.Struct({ item: FollowUp });
@@ -118,22 +141,52 @@ export const FollowUpFileInput = Schema.Struct({
   verifyCheck: FollowUpVerifyCheck,
   evidence: Schema.optional(Schema.Array(FollowUpEvidence)),
   gate: Schema.optional(Schema.NullOr(FollowUpGate)),
+});
+export type FollowUpFileInput = typeof FollowUpFileInput.Type;
+
+export const FollowUpFileCommand = Schema.Struct({
+  ...FollowUpFileInput.fields,
   sourceKind: FollowUpSourceKind,
   sourceThreadId: Schema.optional(Schema.NullOr(ThreadId)),
 });
-export type FollowUpFileInput = typeof FollowUpFileInput.Type;
+export type FollowUpFileCommand = typeof FollowUpFileCommand.Type;
 
 export const FollowUpUpdateStatusInput = Schema.Struct({
   commandId: CommandId,
   itemId: FollowUpId,
+  projectId: ProjectId,
   expectedRevision: NonNegativeInt,
   status: FollowUpStatus,
   resolution: Schema.optional(Schema.NullOr(FollowUpResolution)),
-  actor: FollowUpSourceKind,
 });
 export type FollowUpUpdateStatusInput = typeof FollowUpUpdateStatusInput.Type;
 
-export const FollowUpSubscribeInput = Schema.Struct({});
+export const FollowUpUpdateStatusCommand = Schema.Struct({
+  ...FollowUpUpdateStatusInput.fields,
+  actor: FollowUpSourceKind,
+});
+export type FollowUpUpdateStatusCommand = typeof FollowUpUpdateStatusCommand.Type;
+
+export const FollowUpRecordValidationInput = Schema.Struct({
+  itemId: FollowUpId,
+  expectedRevision: NonNegativeInt,
+  outcome: FollowUpValidationOutcome,
+  verifyCheck: FollowUpVerifyCheck,
+  note: TrimmedNonEmptyString.check(Schema.isMaxLength(4_000)),
+  evidence: Schema.Array(FollowUpEvidence),
+  checkedCommitSha: Schema.optional(Schema.NullOr(TrimmedString.check(Schema.isMaxLength(64)))),
+});
+export type FollowUpRecordValidationInput = typeof FollowUpRecordValidationInput.Type;
+
+export const FollowUpRecordValidationCommand = Schema.Struct({
+  ...FollowUpRecordValidationInput.fields,
+  commandId: CommandId,
+  projectId: ProjectId,
+  threadId: ThreadId,
+});
+export type FollowUpRecordValidationCommand = typeof FollowUpRecordValidationCommand.Type;
+
+export const FollowUpSubscribeInput = Schema.Struct({ projectId: ProjectId });
 export type FollowUpSubscribeInput = typeof FollowUpSubscribeInput.Type;
 
 export const FollowUpErrorCode = Schema.Literals([

@@ -3,6 +3,10 @@ import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  type FollowUp,
+  type FollowUpFileCommand,
+  type FollowUpRecordValidationCommand,
+  type FollowUpUpdateStatusCommand,
   PreviewTabId,
   ProjectId,
   ProviderInstanceId,
@@ -46,21 +50,29 @@ const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer))),
 );
-const FollowUpServiceTestLayer = Layer.succeed(
-  FollowUpService.FollowUpService,
-  FollowUpService.FollowUpService.of({
+const makeFollowUpServiceTestLayer = (
+  overrides: Partial<FollowUpService.FollowUpService["Service"]> = {},
+) =>
+  Layer.mock(FollowUpService.FollowUpService)({
     file: () => Effect.die("unused"),
     updateStatus: () => Effect.die("unused"),
-    getSnapshot: Effect.succeed({ sequence: 0, items: [] }),
+    recordValidation: () => Effect.die("unused"),
+    getSnapshot: () => Effect.succeed({ sequence: 0, items: [] }),
     openBlockersForBranch: () => Effect.succeed([]),
-    stream: Stream.empty,
-  }),
-);
-const makeFollowUpRegistrationTestLayer = (followUpsEnabled: boolean) =>
+    stream: () => Stream.empty,
+    projectIdForThread: () => Effect.succeed(ProjectId.make("project-followups-mcp")),
+    projectIdForRepositoryPath: () => Effect.die("unused"),
+    ...overrides,
+  });
+const makeFollowUpRegistrationTestLayer = (
+  followUpsEnabled: boolean,
+  followUpService: Partial<FollowUpService.FollowUpService["Service"]> = {},
+) =>
   McpHttpServer.FollowUpToolkitRegistrationLive.pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(ServerSettings.layerTest({ followUpsEnabled })),
-    Layer.provide(FollowUpServiceTestLayer),
+    Layer.provide(makeFollowUpServiceTestLayer(followUpService)),
   );
 
 it("normalizes empty successful notification responses to accepted", () => {
@@ -95,13 +107,19 @@ it.effect("rejects follow-up calls immediately after the beta setting is disable
         .filter(({ tool }) => tool.name.startsWith("followup_"))
         .map(({ tool }) => tool.name)
         .sort(),
-    ).toEqual(["followup_check_gate", "followup_file", "followup_list", "followup_resolve"]);
+    ).toEqual([
+      "followup_check_gate",
+      "followup_file",
+      "followup_list",
+      "followup_record_validation",
+      "followup_resolve",
+    ]);
 
     yield* settings.updateSettings({ followUpsEnabled: false });
     const result = yield* server
       .callTool({
         name: "followup_list",
-        arguments: { projectId: ProjectId.make("project-followups-mcp") },
+        arguments: {},
       })
       .pipe(
         Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
@@ -113,6 +131,162 @@ it.effect("rejects follow-up calls immediately after the beta setting is disable
     expect(errorText?.text).toContain("Follow-ups are disabled in server settings.");
   }).pipe(Effect.provide(makeFollowUpRegistrationTestLayer(true))),
 );
+
+it.effect("derives MCP project and agent provenance from the invocation thread", () => {
+  const projectId = ProjectId.make("project-followups-authoritative");
+  let filedInput: FollowUpFileCommand | undefined;
+  let updateInput: FollowUpUpdateStatusCommand | undefined;
+  let validationInput: FollowUpRecordValidationCommand | undefined;
+  const gateQueries: Array<{ readonly projectId: ProjectId; readonly branchRef: string }> = [];
+  const snapshotQueries: ProjectId[] = [];
+  const now = "2026-08-04T12:00:00.000Z";
+  const makeItem = (input: FollowUpFileCommand): FollowUp => ({
+    id: input.itemId,
+    projectId: input.projectId,
+    kind: input.kind,
+    status: "open",
+    title: input.title,
+    observation: input.observation,
+    deferReason: input.deferReason,
+    verifyCheck: input.verifyCheck,
+    evidence: input.evidence ?? [],
+    gate: input.gate ?? null,
+    sourceKind: input.sourceKind,
+    sourceThreadId: input.sourceThreadId ?? null,
+    resolution: null,
+    lastValidation: null,
+    revision: 0,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const fileResult = yield* server
+      .callTool({
+        name: "followup_file",
+        arguments: {
+          kind: "blocker",
+          title: "Keep scope authoritative",
+          observation: "Caller-supplied ownership must not cross projects.",
+          deferReason: "needs-decision",
+          verifyCheck: "Inspect the MCP command provenance.",
+          gate: { kind: "branch", ref: "feature/followups" },
+        },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    if (fileResult.isError) {
+      throw new Error(
+        fileResult.content
+          .map((entry) => (entry.type === "text" ? entry.text : entry.type))
+          .join("; "),
+      );
+    }
+    expect(filedInput).toMatchObject({
+      projectId,
+      sourceKind: "agent",
+      sourceThreadId: threadId,
+    });
+
+    const listResult = yield* server
+      .callTool({ name: "followup_list", arguments: {} })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(listResult.isError).not.toBe(true);
+    expect(snapshotQueries).toEqual([projectId]);
+
+    const filed = filedInput && makeItem(filedInput);
+    expect(filed).toBeDefined();
+    const resolveResult = yield* server
+      .callTool({
+        name: "followup_resolve",
+        arguments: {
+          itemId: filed?.id,
+          expectedRevision: 0,
+          resolution: { note: "Implemented.", commitSha: null },
+        },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(resolveResult.isError).not.toBe(true);
+    expect(updateInput).toMatchObject({
+      projectId,
+      actor: "agent",
+      status: "resolved",
+      resolution: { threadId },
+    });
+
+    yield* server
+      .callTool({ name: "followup_check_gate", arguments: { branchRef: "feature/followups" } })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(gateQueries).toEqual([{ projectId, branchRef: "feature/followups" }]);
+
+    const validationResult = yield* server
+      .callTool({
+        name: "followup_record_validation",
+        arguments: {
+          itemId: filed?.id,
+          expectedRevision: 0,
+          outcome: "uncertain",
+          verifyCheck: "Inspect the MCP command provenance.",
+          note: "The available evidence was inconclusive.",
+          evidence: [],
+          checkedCommitSha: null,
+        },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(validationResult.isError).not.toBe(true);
+    expect(validationInput).toMatchObject({ projectId, threadId, outcome: "uncertain" });
+  }).pipe(
+    Effect.provide(
+      makeFollowUpRegistrationTestLayer(true, {
+        projectIdForThread: () => Effect.succeed(projectId),
+        getSnapshot: (queriedProjectId) =>
+          Effect.sync(() => {
+            snapshotQueries.push(queriedProjectId);
+            return { sequence: 0, items: [] };
+          }),
+        file: (input) =>
+          Effect.sync(() => {
+            filedInput = input;
+            return makeItem(input);
+          }),
+        updateStatus: (input) =>
+          Effect.sync(() => {
+            updateInput = input;
+            const source = filedInput && makeItem(filedInput);
+            if (!source) throw new Error("file must run first");
+            return { ...source, status: input.status, resolution: input.resolution ?? null };
+          }),
+        recordValidation: (input) =>
+          Effect.sync(() => {
+            validationInput = input;
+            const source = filedInput && makeItem(filedInput);
+            if (!source) throw new Error("file must run first");
+            return source;
+          }),
+        openBlockersForBranch: (queriedProjectId, branchRef) =>
+          Effect.sync(() => {
+            gateQueries.push({ projectId: queriedProjectId, branchRef });
+            return [];
+          }),
+      }),
+    ),
+  );
+});
 
 it.effect("returns bounded structural preview snapshot failures", () =>
   Effect.scoped(

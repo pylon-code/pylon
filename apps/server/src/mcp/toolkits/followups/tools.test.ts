@@ -3,7 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { FollowUpToolkit } from "./tools.ts";
 
 describe("follow-up toolkit", () => {
-  it("exposes exactly the four follow-up tools", () => {
+  it("exposes the follow-up workflow tools", () => {
     const names = Object.values(FollowUpToolkit.tools)
       .map((tool) => tool.name)
       .sort();
@@ -11,6 +11,7 @@ describe("follow-up toolkit", () => {
       "followup_check_gate",
       "followup_file",
       "followup_list",
+      "followup_record_validation",
       "followup_resolve",
     ]);
   });

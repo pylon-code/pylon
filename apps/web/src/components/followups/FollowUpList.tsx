@@ -10,20 +10,23 @@ import {
   GitBranchIcon,
   MoreHorizontalIcon,
   PlusIcon,
+  ScanSearchIcon,
   ShieldOffIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
+import { useComposerDraftStore } from "~/composerDraftStore";
 import { sortScopedProjectsForSidebar } from "~/components/Sidebar.logic";
 import { isElectron } from "~/env";
+import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { cn, randomUUID } from "~/lib/utils";
-import {
-  useAllEnvironmentShellsBootstrapped,
-  useProjects,
-  useThreadShells,
-} from "~/state/entities";
+import { useProjects, useThreadShells } from "~/state/entities";
 import { useEnvironments } from "~/state/environments";
-import { followUpEnvironment } from "~/state/followups";
+import {
+  availableFollowUpEnvironmentIds,
+  availableFollowUpShellsBootstrappedAtom,
+  followUpEnvironment,
+} from "~/state/followups";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { Badge } from "../ui/badge";
@@ -45,9 +48,18 @@ import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import { FollowUpDialog } from "./FollowUpDialog";
 import {
+  FollowUpPrimaryAction,
+  FollowUpResolutionDetails,
+  FollowUpValidationDetails,
+} from "./FollowUpPresentation";
+import {
   FOLLOW_UP_DEFER_REASON_LABELS,
   FOLLOW_UP_KIND_LABELS,
+  FOLLOW_UP_STATUS_LABELS,
   groupFollowUps,
+  mergeFollowUpValidationPrompt,
+  mergeFollowUpThreadPrompt,
+  resolveFollowUpProjectSelection,
 } from "./followUps.logic";
 
 interface ProjectOption {
@@ -58,16 +70,26 @@ interface ProjectOption {
 export function FollowUpList() {
   const projects = useProjects();
   const threads = useThreadShells();
-  const shellsBootstrapped = useAllEnvironmentShellsBootstrapped();
+  const shellsBootstrapped = useAtomValue(availableFollowUpShellsBootstrappedAtom);
   const { environments } = useEnvironments();
+  const handleNewThread = useNewThreadHandler();
+  const handleNewThreadRef = useRef(handleNewThread);
+  handleNewThreadRef.current = handleNewThread;
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null | undefined>(
     undefined,
   );
   const [dialogProjectRef, setDialogProjectRef] = useState<ScopedProjectRef | null>(null);
 
+  const availableEnvironmentIds = useMemo(
+    () => availableFollowUpEnvironmentIds(environments),
+    [environments],
+  );
   const orderedProjects = useMemo(
-    () => sortScopedProjectsForSidebar(projects, threads, "updated_at"),
-    [projects, threads],
+    () =>
+      sortScopedProjectsForSidebar(projects, threads, "updated_at").filter((project) =>
+        availableEnvironmentIds.has(project.environmentId),
+      ),
+    [availableEnvironmentIds, projects, threads],
   );
   const environmentLabels = useMemo(
     () =>
@@ -84,10 +106,16 @@ export function FollowUpList() {
       ),
     [orderedProjects],
   );
+  const projectKeys = useMemo(() => [...projectByKey.keys()], [projectByKey]);
+  const resolvedProjectKey = resolveFollowUpProjectSelection({
+    bootstrapped: shellsBootstrapped,
+    selectedProjectKey,
+    projectKeys,
+  });
   const selectedProject =
-    selectedProjectKey === undefined || selectedProjectKey === null
+    resolvedProjectKey === undefined || resolvedProjectKey === null
       ? null
-      : (projectByKey.get(selectedProjectKey) ?? orderedProjects[0] ?? null);
+      : (projectByKey.get(resolvedProjectKey) ?? null);
   const projectItems = useMemo<ReadonlyArray<ProjectOption>>(
     () =>
       orderedProjects.map((project) => ({
@@ -98,16 +126,49 @@ export function FollowUpList() {
   );
 
   useEffect(() => {
-    if (!shellsBootstrapped || selectedProjectKey !== undefined) return;
-    const firstProject = orderedProjects[0];
-    setSelectedProjectKey(
-      firstProject
-        ? scopedProjectKey(scopeProjectRef(firstProject.environmentId, firstProject.id))
-        : null,
-    );
-  }, [orderedProjects, selectedProjectKey, shellsBootstrapped]);
+    if (resolvedProjectKey !== undefined && selectedProjectKey !== resolvedProjectKey) {
+      setSelectedProjectKey(resolvedProjectKey);
+    }
+  }, [resolvedProjectKey, selectedProjectKey]);
 
-  if (!shellsBootstrapped || selectedProjectKey === undefined) {
+  useEffect(() => {
+    if (dialogProjectRef !== null && !projectByKey.has(scopedProjectKey(dialogProjectRef))) {
+      setDialogProjectRef(null);
+    }
+  }, [dialogProjectRef, projectByKey]);
+
+  const handleSeedThread = useCallback(
+    async (item: FollowUp, projectRef: ScopedProjectRef, mode: "work" | "validate") => {
+      try {
+        let seeded = false;
+        await handleNewThreadRef.current(projectRef, {
+          onDraftReady: (draftId) => {
+            const store = useComposerDraftStore.getState();
+            const currentPrompt = store.getComposerDraft(draftId)?.prompt ?? "";
+            store.setPrompt(
+              draftId,
+              mode === "validate"
+                ? mergeFollowUpValidationPrompt(currentPrompt, item)
+                : mergeFollowUpThreadPrompt(currentPrompt, item),
+            );
+            seeded = true;
+          },
+        });
+        if (!seeded) {
+          throw new Error("The target project draft was not available.");
+        }
+      } catch {
+        toastManager.add({
+          type: "error",
+          title: `Couldn’t start follow-up ${mode === "validate" ? "validation" : "thread"}`,
+          description: "The dossier remains in Follow-ups. Try again.",
+        });
+      }
+    },
+    [],
+  );
+
+  if (!shellsBootstrapped || resolvedProjectKey === undefined) {
     return (
       <Empty className="min-h-0 flex-1" role="status">
         <EmptyHeader>
@@ -125,9 +186,9 @@ export function FollowUpList() {
           <ClipboardListIcon />
         </EmptyMedia>
         <EmptyHeader>
-          <EmptyTitle>No projects yet</EmptyTitle>
+          <EmptyTitle>No available projects</EmptyTitle>
           <EmptyDescription>
-            Add a project before filing project-scoped follow-ups.
+            Connect an environment with Follow-ups enabled, then add or select a project there.
           </EmptyDescription>
         </EmptyHeader>
       </Empty>
@@ -176,7 +237,11 @@ export function FollowUpList() {
           </div>
         </div>
       </header>
-      <ProjectFollowUps key={selectedKey} projectRef={selectedRef} />
+      <ProjectFollowUps
+        key={selectedKey}
+        projectRef={selectedRef}
+        onSeedThread={handleSeedThread}
+      />
       {dialogProjectRef ? (
         <FollowUpDialog
           projectRef={dialogProjectRef}
@@ -188,9 +253,23 @@ export function FollowUpList() {
   );
 }
 
-function ProjectFollowUps({ projectRef }: { readonly projectRef: ScopedProjectRef }) {
+function ProjectFollowUps({
+  projectRef,
+  onSeedThread,
+}: {
+  readonly projectRef: ScopedProjectRef;
+  readonly onSeedThread: (
+    item: FollowUp,
+    projectRef: ScopedProjectRef,
+    mode: "work" | "validate",
+  ) => Promise<void>;
+}) {
+  const updateStatus = useAtomCommand(followUpEnvironment.updateStatus, "update follow-up status");
   const result = useAtomValue(
-    followUpEnvironment.list({ environmentId: projectRef.environmentId, input: null }),
+    followUpEnvironment.list({
+      environmentId: projectRef.environmentId,
+      input: { projectId: projectRef.projectId },
+    }),
   );
   const state = AsyncResult.getOrElse(result, () => EMPTY_FOLLOW_UP_CLIENT_STATE);
   const items = useMemo(
@@ -199,6 +278,41 @@ function ProjectFollowUps({ projectRef }: { readonly projectRef: ScopedProjectRe
   );
   const grouped = useMemo(() => groupFollowUps(items), [items]);
   const openCount = grouped.blocker.length + grouped.open.length + grouped.idea.length;
+  const handleReopen = useCallback(
+    async (item: FollowUp) => {
+      try {
+        const updateResult = await updateStatus({
+          environmentId: projectRef.environmentId,
+          input: {
+            commandId: CommandId.make(randomUUID()),
+            projectId: projectRef.projectId,
+            itemId: item.id,
+            expectedRevision: item.revision,
+            status: "open",
+            resolution: null,
+          },
+        });
+
+        if (updateResult._tag === "Success") {
+          toastManager.add({ type: "success", title: "Follow-up reopened" });
+          return;
+        }
+      } catch {
+        toastManager.add({
+          type: "error",
+          title: "Couldn’t reopen follow-up",
+          description: "The environment rejected the update.",
+        });
+        return;
+      }
+      toastManager.add({
+        type: "error",
+        title: "Couldn’t reopen follow-up",
+        description: "The dossier changed or the environment rejected the update.",
+      });
+    },
+    [projectRef.environmentId, projectRef.projectId, updateStatus],
+  );
 
   if (result._tag === "Failure") {
     return (
@@ -246,6 +360,8 @@ function ProjectFollowUps({ projectRef }: { readonly projectRef: ScopedProjectRe
             key={kind}
             items={grouped[kind]}
             label={FOLLOW_UP_KIND_LABELS[kind]}
+            onReopen={handleReopen}
+            onSeedThread={onSeedThread}
             projectRef={projectRef}
           />
         ))}
@@ -260,7 +376,13 @@ function ProjectFollowUps({ projectRef }: { readonly projectRef: ScopedProjectRe
           <div className="border-t border-border/55">
             {grouped.closed.length > 0 ? (
               grouped.closed.map((item) => (
-                <FollowUpRow key={item.id} item={item} projectRef={projectRef} />
+                <FollowUpRow
+                  key={item.id}
+                  item={item}
+                  onReopen={handleReopen}
+                  onSeedThread={onSeedThread}
+                  projectRef={projectRef}
+                />
               ))
             ) : (
               <p className="px-3 py-3 text-xs text-muted-foreground">No closed follow-ups.</p>
@@ -278,10 +400,18 @@ function ProjectFollowUps({ projectRef }: { readonly projectRef: ScopedProjectRe
 function FollowUpSection({
   label,
   items,
+  onReopen,
+  onSeedThread,
   projectRef,
 }: {
   readonly label: string;
   readonly items: ReadonlyArray<FollowUp>;
+  readonly onReopen: (item: FollowUp) => Promise<void>;
+  readonly onSeedThread: (
+    item: FollowUp,
+    projectRef: ScopedProjectRef,
+    mode: "work" | "validate",
+  ) => Promise<void>;
   readonly projectRef: ScopedProjectRef;
 }) {
   return (
@@ -298,7 +428,13 @@ function FollowUpSection({
       {items.length > 0 ? (
         <div className="overflow-hidden rounded-lg border border-border/60 bg-card/20">
           {items.map((item) => (
-            <FollowUpRow key={item.id} item={item} projectRef={projectRef} />
+            <FollowUpRow
+              key={item.id}
+              item={item}
+              onReopen={onReopen}
+              onSeedThread={onSeedThread}
+              projectRef={projectRef}
+            />
           ))}
         </div>
       ) : (
@@ -310,16 +446,58 @@ function FollowUpSection({
 
 function FollowUpRow({
   item,
+  onReopen,
+  onSeedThread,
   projectRef,
 }: {
   readonly item: FollowUp;
+  readonly onReopen: (item: FollowUp) => Promise<void>;
+  readonly onSeedThread: (
+    item: FollowUp,
+    projectRef: ScopedProjectRef,
+    mode: "work" | "validate",
+  ) => Promise<void>;
   readonly projectRef: ScopedProjectRef;
 }) {
   const [resolutionStatus, setResolutionStatus] = useState<"resolved" | "waived" | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
+  const [isReopening, setIsReopening] = useState(false);
+
+  const handlePrimaryAction = async () => {
+    if (item.status === "open") {
+      if (isStarting) return;
+      setIsStarting(true);
+      try {
+        await onSeedThread(item, projectRef, "work");
+      } finally {
+        setIsStarting(false);
+      }
+      return;
+    }
+
+    if (isReopening) return;
+    setIsReopening(true);
+    try {
+      await onReopen(item);
+    } finally {
+      setIsReopening(false);
+    }
+  };
+
+  const handleValidate = async () => {
+    if (isValidating) return;
+    setIsValidating(true);
+    try {
+      await onSeedThread(item, projectRef, "validate");
+    } finally {
+      setIsValidating(false);
+    }
+  };
 
   return (
     <article className="border-b border-border/50 p-3 last:border-b-0 sm:p-4">
-      <div className="flex items-start gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <h3 className="min-w-0 text-sm font-semibold leading-5 text-foreground">
@@ -332,8 +510,8 @@ function FollowUpRow({
               {item.sourceKind === "agent" ? "Agent filed" : "Human filed"}
             </Badge>
             {item.status !== "open" ? (
-              <Badge size="sm" variant="success">
-                {item.status}
+              <Badge size="sm" variant={item.status === "resolved" ? "success" : "secondary"}>
+                {FOLLOW_UP_STATUS_LABELS[item.status]}
               </Badge>
             ) : null}
           </div>
@@ -369,27 +547,51 @@ function FollowUpRow({
                 .join(" · ")}
             </p>
           ) : null}
+          {item.lastValidation ? (
+            <FollowUpValidationDetails
+              environmentId={projectRef.environmentId}
+              validation={item.lastValidation}
+            />
+          ) : null}
+          {item.resolution && item.status !== "moot" ? (
+            <FollowUpResolutionDetails
+              environmentId={projectRef.environmentId}
+              resolution={item.resolution}
+            />
+          ) : null}
         </div>
-        {item.status === "open" ? (
-          <Menu>
-            <MenuTrigger
-              aria-label={`Actions for ${item.title}`}
-              render={<Button size="icon-sm" variant="ghost" />}
-            >
-              <MoreHorizontalIcon />
-            </MenuTrigger>
-            <MenuPopup align="end">
-              <MenuItem onClick={() => setResolutionStatus("resolved")}>
-                <CheckCircle2Icon />
-                Resolve
-              </MenuItem>
-              <MenuItem onClick={() => setResolutionStatus("waived")}>
-                <ShieldOffIcon />
-                Waive
-              </MenuItem>
-            </MenuPopup>
-          </Menu>
-        ) : null}
+        <div className="flex shrink-0 items-center gap-3 self-end sm:self-start">
+          <FollowUpPrimaryAction
+            busy={item.status === "open" ? isStarting : isReopening}
+            onReopen={() => void handlePrimaryAction()}
+            onStartThread={() => void handlePrimaryAction()}
+            status={item.status}
+          />
+          {item.status === "open" ? (
+            <Menu>
+              <MenuTrigger
+                aria-label={`Actions for ${item.title}`}
+                render={<Button size="icon-sm" variant="ghost" />}
+              >
+                <MoreHorizontalIcon />
+              </MenuTrigger>
+              <MenuPopup align="end">
+                <MenuItem disabled={isValidating} onClick={() => void handleValidate()}>
+                  <ScanSearchIcon />
+                  {isValidating ? "Starting validation…" : "Validate"}
+                </MenuItem>
+                <MenuItem onClick={() => setResolutionStatus("resolved")}>
+                  <CheckCircle2Icon />
+                  Resolve
+                </MenuItem>
+                <MenuItem onClick={() => setResolutionStatus("waived")}>
+                  <ShieldOffIcon />
+                  Waive
+                </MenuItem>
+              </MenuPopup>
+            </Menu>
+          ) : null}
+        </div>
       </div>
       {resolutionStatus ? (
         <FollowUpResolutionDialog
@@ -428,11 +630,11 @@ function FollowUpResolutionDialog({
       environmentId: projectRef.environmentId,
       input: {
         commandId: CommandId.make(randomUUID()),
+        projectId: projectRef.projectId,
         itemId: item.id,
         expectedRevision: item.revision,
         status,
         resolution: { note: note.trim(), threadId: null, commitSha: null },
-        actor: "human",
       },
     });
     setIsSaving(false);

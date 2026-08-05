@@ -3,7 +3,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 
 import { FollowUpService } from "../../../followups/FollowUpService.ts";
-import { ServerSettingsService } from "../../../serverSettings.ts";
+import { requireFollowUpsEnabled } from "../../../followups/availability.ts";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 import { FollowUpToolkit } from "./tools.ts";
 
@@ -13,31 +13,13 @@ const uuidError = () =>
     message: "A follow-up identifier could not be generated.",
   });
 
-const ensureFollowUpsEnabled = Effect.fn("FollowUpToolkit.ensureEnabled")(function* () {
-  const settingsService = yield* ServerSettingsService;
-  const settings = yield* settingsService.getSettings.pipe(
-    Effect.mapError(
-      () =>
-        new FollowUpOperationError({
-          code: "persistence",
-          message: "Follow-up settings could not be read.",
-        }),
-    ),
-  );
-  if (!settings.followUpsEnabled) {
-    return yield* new FollowUpOperationError({
-      code: "forbidden",
-      message: "Follow-ups are disabled in server settings.",
-    });
-  }
-});
-
 const handlers = {
   followup_file: (input) =>
     Effect.gen(function* () {
       const service = yield* FollowUpService;
       const invocation = yield* McpInvocationContext;
-      yield* ensureFollowUpsEnabled();
+      yield* requireFollowUpsEnabled();
+      const projectId = yield* service.projectIdForThread(invocation.threadId);
       const crypto = yield* Crypto.Crypto;
       const commandId = yield* crypto.randomUUIDv4.pipe(
         Effect.map(CommandId.make),
@@ -51,6 +33,7 @@ const handlers = {
         ...input,
         commandId,
         itemId,
+        projectId,
         sourceKind: "agent",
         sourceThreadId: invocation.threadId,
       });
@@ -58,12 +41,12 @@ const handlers = {
   followup_list: (input) =>
     Effect.gen(function* () {
       const service = yield* FollowUpService;
-      yield* McpInvocationContext;
-      yield* ensureFollowUpsEnabled();
-      const snapshot = yield* service.getSnapshot;
+      const invocation = yield* McpInvocationContext;
+      yield* requireFollowUpsEnabled();
+      const projectId = yield* service.projectIdForThread(invocation.threadId);
+      const snapshot = yield* service.getSnapshot(projectId);
       return snapshot.items.filter(
         (item) =>
-          item.projectId === input.projectId &&
           (input.status === undefined || item.status === input.status) &&
           (input.kind === undefined || item.kind === input.kind),
       );
@@ -71,29 +54,53 @@ const handlers = {
   followup_resolve: (input) =>
     Effect.gen(function* () {
       const service = yield* FollowUpService;
-      yield* McpInvocationContext;
-      yield* ensureFollowUpsEnabled();
+      const invocation = yield* McpInvocationContext;
+      yield* requireFollowUpsEnabled();
+      const projectId = yield* service.projectIdForThread(invocation.threadId);
       const crypto = yield* Crypto.Crypto;
       const commandId = yield* crypto.randomUUIDv4.pipe(
         Effect.map(CommandId.make),
         Effect.mapError(uuidError),
       );
       return yield* service.updateStatus({
-        ...input,
         commandId,
+        itemId: input.itemId,
+        projectId,
+        expectedRevision: input.expectedRevision,
+        status: "resolved",
         actor: "agent",
+        resolution: { ...input.resolution, threadId: invocation.threadId },
       });
     }),
   followup_check_gate: (input) =>
     Effect.gen(function* () {
       const service = yield* FollowUpService;
-      yield* McpInvocationContext;
-      yield* ensureFollowUpsEnabled();
-      const blockers = yield* service.openBlockersForBranch(input.branchRef);
+      const invocation = yield* McpInvocationContext;
+      yield* requireFollowUpsEnabled();
+      const projectId = yield* service.projectIdForThread(invocation.threadId);
+      const blockers = yield* service.openBlockersForBranch(projectId, input.branchRef);
       return {
         blocked: blockers.length > 0,
         blockers: [...blockers],
       };
+    }),
+  followup_record_validation: (input) =>
+    Effect.gen(function* () {
+      const service = yield* FollowUpService;
+      const invocation = yield* McpInvocationContext;
+      yield* requireFollowUpsEnabled();
+      const projectId = yield* service.projectIdForThread(invocation.threadId);
+      const crypto = yield* Crypto.Crypto;
+      const commandId = yield* crypto.randomUUIDv4.pipe(
+        Effect.map(CommandId.make),
+        Effect.mapError(uuidError),
+      );
+      return yield* service.recordValidation({
+        ...input,
+        commandId,
+        projectId,
+        threadId: invocation.threadId,
+      });
     }),
 } satisfies Parameters<typeof FollowUpToolkit.toLayer>[0];
 

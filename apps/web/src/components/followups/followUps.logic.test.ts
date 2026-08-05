@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vite-plus/test";
-import { FollowUpId, ProjectId, type FollowUp } from "@t3tools/contracts";
+import { FollowUpId, ProjectId, ThreadId, type FollowUp } from "@t3tools/contracts";
 
-import { groupFollowUps } from "./followUps.logic";
+import {
+  buildFollowUpThreadPrompt,
+  buildFollowUpValidationPrompt,
+  groupFollowUps,
+  mergeFollowUpThreadPrompt,
+  mergeFollowUpValidationPrompt,
+  openFollowUpBlockersForBranch,
+  resolveFollowUpProjectSelection,
+} from "./followUps.logic";
 
 function item(overrides: Partial<FollowUp> = {}): FollowUp {
   return {
@@ -18,6 +26,7 @@ function item(overrides: Partial<FollowUp> = {}): FollowUp {
     sourceKind: "agent",
     sourceThreadId: null,
     resolution: null,
+    lastValidation: null,
     revision: 0,
     createdAt: "2026-08-04T12:00:00.000Z",
     updatedAt: "2026-08-04T12:00:00.000Z",
@@ -45,5 +54,140 @@ describe("groupFollowUps", () => {
       item({ id: FollowUpId.make("newer"), createdAt: "2026-08-03T00:00:00.000Z" }),
     ]);
     expect(grouped.open.map((entry) => entry.id)).toEqual(["newer", "older"]);
+  });
+});
+
+describe("resolveFollowUpProjectSelection", () => {
+  it("waits for bootstrap and then selects the first project", () => {
+    expect(
+      resolveFollowUpProjectSelection({
+        bootstrapped: false,
+        selectedProjectKey: undefined,
+        projectKeys: ["environment-1:project-1"],
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveFollowUpProjectSelection({
+        bootstrapped: true,
+        selectedProjectKey: null,
+        projectKeys: ["environment-1:project-1"],
+      }),
+    ).toBe("environment-1:project-1");
+  });
+
+  it("preserves a valid selection and recovers when it disappears", () => {
+    expect(
+      resolveFollowUpProjectSelection({
+        bootstrapped: true,
+        selectedProjectKey: "environment-1:project-2",
+        projectKeys: ["environment-1:project-1", "environment-1:project-2"],
+      }),
+    ).toBe("environment-1:project-2");
+    expect(
+      resolveFollowUpProjectSelection({
+        bootstrapped: true,
+        selectedProjectKey: "environment-1:project-2",
+        projectKeys: ["environment-1:project-1"],
+      }),
+    ).toBe("environment-1:project-1");
+    expect(
+      resolveFollowUpProjectSelection({
+        bootstrapped: true,
+        selectedProjectKey: "environment-1:project-2",
+        projectKeys: [],
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("follow-up thread dossier", () => {
+  const dossierItem = item({
+    id: FollowUpId.make("follow-up-42"),
+    kind: "blocker",
+    title: "Protect the release branch",
+    observation: "The release check can be bypassed.",
+    verifyCheck: "Attempt the release with the check failing.",
+    evidence: [{ path: "apps/web/src/release.ts", line: 42, commitSha: "abcdef123456" }],
+    gate: { kind: "branch", ref: "release" },
+    sourceThreadId: ThreadId.make("thread-source"),
+  });
+
+  it("includes the evidence and source context needed to revalidate the work", () => {
+    const prompt = buildFollowUpThreadPrompt(dossierItem);
+
+    expect(prompt).toContain("Protect the release branch");
+    expect(prompt).toContain("Follow-up ID: follow-up-42");
+    expect(prompt).toContain("The release check can be bypassed.");
+    expect(prompt).toContain("Attempt the release with the check failing.");
+    expect(prompt).toContain("apps/web/src/release.ts:42 @ abcdef123456");
+    expect(prompt).toContain("Branch gate: release");
+    expect(prompt).toContain("Filed from thread: thread-source");
+  });
+
+  it("preserves existing draft content and does not append the same dossier twice", () => {
+    const merged = mergeFollowUpThreadPrompt("Keep this draft instruction.", dossierItem);
+
+    expect(merged).toMatch(/^Keep this draft instruction\./);
+    expect(merged).toContain("Follow-up ID: follow-up-42");
+    expect(mergeFollowUpThreadPrompt(merged, dossierItem)).toBe(merged);
+  });
+
+  it("seeds a fail-closed read-only validation with exact recorder outcomes", () => {
+    const prompt = buildFollowUpValidationPrompt(dossierItem);
+
+    expect(prompt).toContain("Investigate read-only");
+    expect(prompt).toContain("still-needed, moot, or uncertain");
+    expect(prompt).toContain("Uncertain must fail closed");
+    expect(prompt).toContain("Never waive");
+    expect(prompt).toContain("followup_record_validation");
+    expect(prompt).toContain(dossierItem.verifyCheck);
+    expect(prompt).toContain("apps/web/src/release.ts:42 @ abcdef123456");
+  });
+
+  it("preserves an occupied draft when adding validation instructions", () => {
+    const merged = mergeFollowUpValidationPrompt("Do not replace this.", dossierItem);
+
+    expect(merged).toMatch(/^Do not replace this\./);
+    expect(merged).toContain("Validation for Follow-up ID: follow-up-42");
+    expect(mergeFollowUpValidationPrompt(merged, dossierItem)).toBe(merged);
+  });
+});
+
+describe("openFollowUpBlockersForBranch", () => {
+  it("matches only open blockers for the exact project and branch", () => {
+    const matches = openFollowUpBlockersForBranch(
+      [
+        item({
+          id: FollowUpId.make("match"),
+          kind: "blocker",
+          gate: { kind: "branch", ref: "release" },
+        }),
+        item({
+          id: FollowUpId.make("closed"),
+          kind: "blocker",
+          status: "resolved",
+          gate: { kind: "branch", ref: "release" },
+        }),
+        item({
+          id: FollowUpId.make("other-branch"),
+          kind: "blocker",
+          gate: { kind: "branch", ref: "main" },
+        }),
+        item({
+          id: FollowUpId.make("other-project"),
+          projectId: ProjectId.make("project-2"),
+          kind: "blocker",
+          gate: { kind: "branch", ref: "release" },
+        }),
+        item({
+          id: FollowUpId.make("not-blocker"),
+          kind: "open",
+          gate: { kind: "branch", ref: "release" },
+        }),
+      ],
+      { projectId: ProjectId.make("project-1"), branchRef: "release" },
+    );
+
+    expect(matches.map((entry) => entry.id)).toEqual(["match"]);
   });
 });

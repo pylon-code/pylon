@@ -591,7 +591,7 @@ export const make = Effect.gen(function* () {
     branch: string,
     cwd: string,
   ) {
-    return yield* FollowUps.assertNoOpenBlockers(branch).pipe(
+    return yield* FollowUps.assertNoOpenBlockers(branch, cwd).pipe(
       Effect.provideService(FollowUpService.FollowUpService, followUpService),
       Effect.provideService(ServerSettings.ServerSettingsService, serverSettingsService),
       Effect.mapError(
@@ -1578,9 +1578,14 @@ export const make = Effect.gen(function* () {
       return yield* new GitManagerError({
         operation: "runPrStep",
         cwd,
-        detail: "Cannot create a pull request from detached HEAD.",
+        detail: "Cannot create a change request from detached HEAD.",
       });
     }
+    yield* emit({
+      kind: "phase_started",
+      phase: "pr",
+      label: "Checking change request blockers...",
+    });
     yield* assertNoOpenBlockers(branch, cwd);
     const provider = yield* sourceControlProvider(cwd);
     const terms = getChangeRequestTerminologyForKind(provider.kind);
@@ -1983,7 +1988,7 @@ export const make = Effect.gen(function* () {
           return yield* new GitManagerError({
             operation: "runStackedAction",
             cwd: input.cwd,
-            detail: "Commit local changes before creating a PR.",
+            detail: "Commit local changes before creating a change request.",
           });
         }
 
@@ -2010,7 +2015,7 @@ export const make = Effect.gen(function* () {
           return yield* new GitManagerError({
             operation: "runStackedAction",
             cwd: input.cwd,
-            detail: "Cannot create a pull request from detached HEAD.",
+            detail: "Cannot create a change request from detached HEAD.",
           });
         }
 

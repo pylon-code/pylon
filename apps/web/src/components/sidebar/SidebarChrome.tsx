@@ -2,8 +2,9 @@ import { ListTodoIcon, SettingsIcon } from "lucide-react";
 import { memo, useCallback, useId } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 
-import { useEnvironmentIdentificationMode, usePrimarySettings } from "../../hooks/useSettings";
-import { isFollowUpBetaEnabled } from "../../state/followups";
+import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
+import { useEnvironments } from "../../state/environments";
+import { hasAvailableFollowUpEnvironment } from "../../state/followups";
 import { cn } from "../../lib/utils";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -129,7 +130,8 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const { isMobile, setOpenMobile } = useSidebar();
-  const followUpsEnabled = usePrimarySettings(isFollowUpBetaEnabled);
+  const { environments } = useEnvironments();
+  const followUpsAvailable = hasAvailableFollowUpEnvironment(environments);
   const handleFollowUpsClick = useCallback(() => {
     if (isMobile) {
       setOpenMobile(false);
@@ -148,7 +150,7 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
       <SidebarMenu>
-        {followUpsEnabled ? (
+        {followUpsAvailable ? (
           <SidebarMenuItem>
             <SidebarMenuButton isActive={pathname === "/followups"} onClick={handleFollowUpsClick}>
               <ListTodoIcon />

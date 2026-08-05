@@ -7,15 +7,17 @@ import {
   FollowUpGate,
   FollowUpOperationError,
   FollowUpResolution,
+  FollowUpValidation,
   FollowUpSnapshot,
   FollowUpId,
   NonNegativeInt,
   ProjectId,
   ThreadId,
   type FollowUpEvent,
-  type FollowUpFileInput,
+  type FollowUpFileCommand,
+  type FollowUpRecordValidationCommand,
   type FollowUpStreamItem,
-  type FollowUpUpdateStatusInput,
+  type FollowUpUpdateStatusCommand,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -34,15 +36,29 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { decideFollowUpCommand, type FollowUpDomainCommand } from "./decider.ts";
 
 interface FollowUpServiceShape {
-  readonly file: (input: FollowUpFileInput) => Effect.Effect<FollowUp, FollowUpOperationError>;
+  readonly file: (input: FollowUpFileCommand) => Effect.Effect<FollowUp, FollowUpOperationError>;
   readonly updateStatus: (
-    input: FollowUpUpdateStatusInput,
+    input: FollowUpUpdateStatusCommand,
   ) => Effect.Effect<FollowUp, FollowUpOperationError>;
-  readonly getSnapshot: Effect.Effect<FollowUpSnapshot, FollowUpOperationError>;
+  readonly recordValidation: (
+    input: FollowUpRecordValidationCommand,
+  ) => Effect.Effect<FollowUp, FollowUpOperationError>;
+  readonly getSnapshot: (
+    projectId: ProjectId,
+  ) => Effect.Effect<FollowUpSnapshot, FollowUpOperationError>;
   readonly openBlockersForBranch: (
+    projectId: ProjectId,
     ref: string,
   ) => Effect.Effect<ReadonlyArray<FollowUp>, FollowUpOperationError>;
-  readonly stream: Stream.Stream<FollowUpStreamItem, FollowUpOperationError>;
+  readonly stream: (
+    projectId: ProjectId,
+  ) => Stream.Stream<FollowUpStreamItem, FollowUpOperationError>;
+  readonly projectIdForThread: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProjectId, FollowUpOperationError>;
+  readonly projectIdForRepositoryPath: (
+    cwd: string,
+  ) => Effect.Effect<ProjectId, FollowUpOperationError>;
 }
 
 export class FollowUpService extends Context.Service<FollowUpService, FollowUpServiceShape>()(
@@ -53,6 +69,8 @@ const EmptyRequest = Schema.Struct({});
 const CommandLookup = Schema.Struct({ commandId: CommandId });
 const ProjectLookup = Schema.Struct({ projectId: ProjectId });
 const ThreadLookup = Schema.Struct({ threadId: ThreadId });
+const ItemLookup = Schema.Struct({ itemId: FollowUpId });
+const RepositoryPathLookup = Schema.Struct({ cwd: Schema.String });
 
 const ProjectRow = Schema.Struct({ projectId: ProjectId });
 const ThreadRow = Schema.Struct({ projectId: ProjectId });
@@ -81,10 +99,11 @@ const PersistedFollowUpRow = FollowUp.mapFields(
     evidence: Schema.fromJsonString(FollowUp.fields.evidence),
     gate: Schema.NullOr(Schema.fromJsonString(FollowUpGate)),
     resolution: Schema.NullOr(Schema.fromJsonString(FollowUpResolution)),
+    lastValidation: Schema.NullOr(Schema.fromJsonString(FollowUpValidation)),
   }),
 );
 
-const BranchLookup = Schema.Struct({ ref: Schema.String });
+const BranchLookup = Schema.Struct({ projectId: ProjectId, ref: Schema.String });
 const isFollowUpOperationError = Schema.is(FollowUpOperationError);
 
 function persistenceError(): FollowUpOperationError {
@@ -115,9 +134,9 @@ const make = Effect.gen(function* () {
   const mutationMutex = yield* Semaphore.make(1);
 
   const listItems = SqlSchema.findAll({
-    Request: EmptyRequest,
+    Request: ProjectLookup,
     Result: PersistedFollowUpRow,
-    execute: () => sql`
+    execute: ({ projectId }) => sql`
       SELECT
         item_id AS "id",
         project_id AS "projectId",
@@ -132,10 +151,12 @@ const make = Effect.gen(function* () {
         source_kind AS "sourceKind",
         source_thread_id AS "sourceThreadId",
         resolution_json AS resolution,
+        last_validation_json AS "lastValidation",
         revision,
         created_at AS "createdAt",
         updated_at AS "updatedAt"
       FROM follow_ups
+      WHERE project_id = ${projectId}
       ORDER BY created_at, item_id
     `,
   });
@@ -143,7 +164,7 @@ const make = Effect.gen(function* () {
   const listOpenBlockers = SqlSchema.findAll({
     Request: BranchLookup,
     Result: PersistedFollowUpRow,
-    execute: () => sql`
+    execute: ({ projectId }) => sql`
       SELECT
         item_id AS "id",
         project_id AS "projectId",
@@ -158,11 +179,13 @@ const make = Effect.gen(function* () {
         source_kind AS "sourceKind",
         source_thread_id AS "sourceThreadId",
         resolution_json AS resolution,
+        last_validation_json AS "lastValidation",
         revision,
         created_at AS "createdAt",
         updated_at AS "updatedAt"
       FROM follow_ups
-      WHERE kind = 'blocker' AND status = 'open'
+      WHERE project_id = ${projectId}
+        AND kind = 'blocker' AND status = 'open'
       ORDER BY created_at, item_id
     `,
   });
@@ -232,6 +255,7 @@ const make = Effect.gen(function* () {
         source_kind,
         source_thread_id,
         resolution_json,
+        last_validation_json,
         revision,
         created_at,
         updated_at
@@ -249,6 +273,7 @@ const make = Effect.gen(function* () {
         ${item.sourceKind},
         ${item.sourceThreadId},
         ${item.resolution === null ? null : JSON.stringify(item.resolution)},
+        ${item.lastValidation === null ? null : JSON.stringify(item.lastValidation)},
         ${item.revision},
         ${item.createdAt},
         ${item.updatedAt}
@@ -266,6 +291,7 @@ const make = Effect.gen(function* () {
         source_kind = excluded.source_kind,
         source_thread_id = excluded.source_thread_id,
         resolution_json = excluded.resolution_json,
+        last_validation_json = excluded.last_validation_json,
         revision = excluded.revision,
         created_at = excluded.created_at,
         updated_at = excluded.updated_at
@@ -292,14 +318,41 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  const getItemProject = SqlSchema.findOneOption({
+    Request: ItemLookup,
+    Result: ProjectRow,
+    execute: ({ itemId }) => sql`
+      SELECT project_id AS "projectId"
+      FROM follow_ups
+      WHERE item_id = ${itemId}
+    `,
+  });
+
+  const getProjectForRepositoryPath = SqlSchema.findOneOption({
+    Request: RepositoryPathLookup,
+    Result: ProjectRow,
+    execute: ({ cwd }) => sql`
+      SELECT project_id AS "projectId"
+      FROM projection_projects
+      WHERE workspace_root = ${cwd} AND deleted_at IS NULL
+      UNION
+      SELECT thread.project_id AS "projectId"
+      FROM projection_threads AS thread
+      INNER JOIN projection_projects AS project
+        ON project.project_id = thread.project_id AND project.deleted_at IS NULL
+      WHERE thread.worktree_path = ${cwd} AND thread.deleted_at IS NULL
+      LIMIT 1
+    `,
+  });
+
   const mapPersistence = <A, E, R>(
     effect: Effect.Effect<A, E, R>,
   ): Effect.Effect<A, FollowUpOperationError, R> =>
     effect.pipe(Effect.mapError(() => persistenceError()));
 
-  const getSnapshot = Effect.fn("FollowUpService.getSnapshot")(function* () {
+  const getSnapshot = Effect.fn("FollowUpService.getSnapshot")(function* (projectId: ProjectId) {
     const [items, latest] = yield* Effect.all([
-      mapPersistence(listItems({})),
+      mapPersistence(listItems({ projectId })),
       mapPersistence(getLatestSequence({})),
     ]);
     return {
@@ -330,12 +383,32 @@ const make = Effect.gen(function* () {
   const validateCommandLinks = Effect.fn("FollowUpService.validateCommandLinks")(function* (
     command: FollowUpDomainCommand,
   ) {
-    if (command.type !== "file") {
+    yield* validateProject(command.input.projectId);
+    if (command.type === "file") {
+      if (command.input.sourceThreadId !== undefined && command.input.sourceThreadId !== null) {
+        yield* validateThread(command.input.sourceThreadId, command.input.projectId);
+      }
       return;
     }
-    yield* validateProject(command.input.projectId);
-    if (command.input.sourceThreadId !== undefined && command.input.sourceThreadId !== null) {
-      yield* validateThread(command.input.sourceThreadId, command.input.projectId);
+    if (command.type === "update-status") {
+      const resolutionThreadId = command.input.resolution?.threadId ?? null;
+      if (resolutionThreadId !== null) {
+        yield* validateThread(resolutionThreadId, command.input.projectId);
+      }
+      return;
+    }
+    yield* validateThread(command.input.threadId, command.input.projectId);
+  });
+
+  const validateItemProject = Effect.fn("FollowUpService.validateItemProject")(function* (
+    command: FollowUpDomainCommand,
+  ) {
+    if (command.type === "file") {
+      return;
+    }
+    const owner = yield* mapPersistence(getItemProject({ itemId: command.input.itemId }));
+    if (Option.isSome(owner) && owner.value.projectId !== command.input.projectId) {
+      return yield* invalidProjectError();
     }
   });
 
@@ -346,17 +419,22 @@ const make = Effect.gen(function* () {
   const runCommand = (command: FollowUpDomainCommand) =>
     mutationMutex.withPermits(1)(
       Effect.gen(function* () {
+        yield* validateProject(command.input.projectId);
         const existing = yield* mapPersistence(
           getEventByCommandId({ commandId: command.input.commandId }),
         );
         if (Option.isSome(existing)) {
+          if (existing.value.payload.item.projectId !== command.input.projectId) {
+            return yield* invalidProjectError();
+          }
           return existing.value.payload.item;
         }
 
         const event = yield* sql
           .withTransaction(
             Effect.gen(function* () {
-              const snapshot = yield* getSnapshot();
+              const snapshot = yield* getSnapshot(command.input.projectId);
+              yield* validateItemProject(command);
               yield* validateCommandLinks(command);
               const now = DateTime.formatIso(yield* DateTime.now);
               const decision = decideFollowUpCommand(snapshot, command, now);
@@ -399,33 +477,61 @@ const make = Effect.gen(function* () {
     );
 
   const openBlockersForBranch = Effect.fn("FollowUpService.openBlockersForBranch")(function* (
+    projectId: ProjectId,
     ref: string,
   ) {
-    const items = yield* mapPersistence(listOpenBlockers({ ref }));
+    yield* validateProject(projectId);
+    const items = yield* mapPersistence(listOpenBlockers({ projectId, ref }));
     return items.filter((item) => item.gate?.ref === ref);
   });
 
-  const stream = Stream.unwrap(
-    mutationMutex.withPermits(1)(
-      Effect.gen(function* () {
-        const subscription = yield* PubSub.subscribe(changes);
-        const latest = yield* getSnapshot();
-        return Stream.concat(
-          Stream.succeed<FollowUpStreamItem>({ kind: "snapshot", snapshot: latest }),
-          Stream.fromSubscription(subscription).pipe(
-            Stream.map((event): FollowUpStreamItem => ({ kind: "event", event })),
-          ),
-        );
-      }),
-    ),
+  const stream = (projectId: ProjectId) =>
+    Stream.unwrap(
+      mutationMutex.withPermits(1)(
+        Effect.gen(function* () {
+          yield* validateProject(projectId);
+          const subscription = yield* PubSub.subscribe(changes);
+          const latest = yield* getSnapshot(projectId);
+          return Stream.concat(
+            Stream.succeed<FollowUpStreamItem>({ kind: "snapshot", snapshot: latest }),
+            Stream.fromSubscription(subscription).pipe(
+              Stream.filter((event) => event.payload.item.projectId === projectId),
+              Stream.map((event): FollowUpStreamItem => ({ kind: "event", event })),
+            ),
+          );
+        }),
+      ),
+    );
+
+  const projectIdForThread = Effect.fn("FollowUpService.projectIdForThread")(function* (
+    threadId: ThreadId,
+  ) {
+    const thread = yield* mapPersistence(getThread({ threadId }));
+    if (Option.isNone(thread)) {
+      return yield* invalidThreadError();
+    }
+    return thread.value.projectId;
+  });
+
+  const projectIdForRepositoryPath = Effect.fn("FollowUpService.projectIdForRepositoryPath")(
+    function* (cwd: string) {
+      const project = yield* mapPersistence(getProjectForRepositoryPath({ cwd }));
+      if (Option.isNone(project)) {
+        return yield* invalidProjectError();
+      }
+      return project.value.projectId;
+    },
   );
 
   return FollowUpService.of({
     file: (input) => runCommand({ type: "file", input }),
     updateStatus: (input) => runCommand({ type: "update-status", input }),
-    getSnapshot: getSnapshot(),
+    recordValidation: (input) => runCommand({ type: "record-validation", input }),
+    getSnapshot,
     openBlockersForBranch,
     stream,
+    projectIdForThread,
+    projectIdForRepositoryPath,
   });
 });
 
