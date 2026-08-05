@@ -375,6 +375,17 @@ export const OrchestrationThread = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   // Pending-only state. Optional so older servers remain compatible.
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
+  /**
+   * The thread this one continues, when work was handed off to another
+   * provider account rather than resumed in place.
+   *
+   * A provider session cannot cross accounts — its continuity lives in the
+   * provider's own store, keyed to one set of credentials — so a handoff
+   * starts a fresh thread seeded from Pylon's event log. Recording the parent
+   * is what makes that seam visible instead of the work appearing to restart
+   * for no reason. Optional so payloads from pre-handoff servers still decode.
+   */
+  continuedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
