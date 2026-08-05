@@ -1,11 +1,10 @@
 import type { EnvironmentId, ServerSelfUpdateCapability } from "@t3tools/contracts";
-import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
+import type { ServerUpdateStage, ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
-import { cn } from "~/lib/utils";
 import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { manualServerUpdateCommand } from "~/versionSkew";
@@ -13,91 +12,49 @@ import { Button } from "./ui/button";
 import { DotMatrix } from "./ui/dot-matrix";
 import { toastManager } from "./ui/toast";
 
-const UPDATE_STEPS = [
-  { stage: "downloading", label: "Download", activeLabel: "Downloading" },
-  { stage: "installing", label: "Install", activeLabel: "Installing" },
-  { stage: "resuming", label: "Resume", activeLabel: "Resuming" },
-] as const;
+// The wire "installing" stage is a sub-second launcher handoff, so the UI
+// folds it into the download phase; everything after the handoff is the
+// restart the user is actually waiting through.
+const UPDATE_STAGE_LABELS: Record<ServerUpdateStage, string> = {
+  downloading: "Downloading…",
+  installing: "Downloading…",
+  resuming: "Restarting…",
+};
 const pendingUpdateEnvironmentIds = new Set<EnvironmentId>();
+
+export function serverUpdateStageLabel(stage: ServerUpdateStage): string {
+  return UPDATE_STAGE_LABELS[stage];
+}
 
 function updateFailureMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Server update failed.";
 }
 
 /**
- * Calm step rail for an in-flight server update. The update is a wait, not
- * a warning: done and active steps carry their DotMatrix marker's canonical
- * tone (success green, primary blue), everything else recedes to gray.
- * Failure keeps the rail but surfaces the error below it.
+ * One-row status for an in-flight server update: "Downloading…" then
+ * "Restarting…". The update is a wait, not a warning: a single DotMatrix
+ * marker and label, no step rail, no versions. Failure turns the row red
+ * with the rollback reason.
  */
 export function ServerUpdateProgress({
-  fromVersion,
   state,
 }: {
-  readonly fromVersion: string;
   readonly state: Exclude<ServerUpdateState, { status: "idle" }>;
 }) {
-  const currentIndex = UPDATE_STEPS.findIndex(({ stage }) => stage === state.stage);
-
-  return (
-    <div className="mt-1 min-w-0 space-y-2.5">
-      <p className="text-xs text-muted-foreground/70">
-        {fromVersion} <span aria-hidden="true">→</span> {state.targetVersion}
-      </p>
-      <ol className="flex min-w-0 items-center" aria-label="Server update progress">
-        {UPDATE_STEPS.map((step, index) => {
-          const complete = index < currentIndex;
-          const current = index === currentIndex;
-          const failed = current && state.status === "failed";
-          const running = current && state.status === "running";
-          return (
-            <li
-              key={step.stage}
-              className={cn(
-                "flex min-w-0 items-center text-xs font-medium",
-                index < UPDATE_STEPS.length - 1 ? "flex-1" : null,
-                complete
-                  ? "text-muted-foreground"
-                  : failed
-                    ? "text-destructive"
-                    : running
-                      ? "text-foreground"
-                      : "text-muted-foreground/50",
-              )}
-              aria-current={running ? "step" : undefined}
-            >
-              {complete ? (
-                <DotMatrix aria-hidden state="done" className="size-3.5 shrink-0" />
-              ) : running ? (
-                <DotMatrix aria-hidden state="spinner" className="size-3.5 shrink-0" />
-              ) : (
-                <span
-                  className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    failed ? "bg-destructive" : "border border-muted-foreground/40",
-                  )}
-                  aria-hidden="true"
-                />
-              )}
-              <span className="ml-1.5 truncate">{running ? step.activeLabel : step.label}</span>
-              {index < UPDATE_STEPS.length - 1 ? (
-                <span
-                  className={cn(
-                    "mx-2 h-px min-w-3 flex-1",
-                    complete ? "bg-muted-foreground/40" : "bg-border",
-                  )}
-                  aria-hidden="true"
-                />
-              ) : null}
-            </li>
-          );
-        })}
-      </ol>
-      {state.status === "failed" ? (
-        <p className="text-xs text-destructive" role="alert">
+  if (state.status === "failed") {
+    return (
+      <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-destructive" role="alert">
+        <DotMatrix aria-hidden state="error" className="size-3.5 shrink-0" />
+        <span className="min-w-0 truncate" title={state.message}>
           {state.message}
-        </p>
-      ) : null}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-1 flex items-center gap-2 text-xs font-medium text-foreground">
+      <DotMatrix aria-hidden state="spinner" className="size-3.5 shrink-0" />
+      <span>{serverUpdateStageLabel(state.stage)}</span>
     </div>
   );
 }
@@ -112,7 +69,7 @@ export function ServerUpdateAction({
   serverLabel,
   selfUpdate,
   targetVersion,
-  label = "Update server",
+  label = "Update",
 }: {
   readonly environmentId: EnvironmentId;
   readonly serverLabel: string;
