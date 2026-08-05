@@ -46,7 +46,15 @@ If you are already running the desktop app and want to make it reachable from ot
 3. The settings panel will show the default reachable endpoint, with a `+N` control when more endpoints are available. Expand it to inspect alternatives such as loopback, LAN, private-network, or HTTPS endpoints.
 4. Use **Create Link** to generate a pairing link you can share with another device.
 
-The default endpoint controls the QR code and primary copy action for pairing links. You can change it from the expanded endpoint list. The preference is stored by endpoint type, so choosing the local LAN endpoint survives normal IP address changes when you move between networks.
+Each pairing link row has a **Share** button that expands a panel with a scannable QR code, the full
+pairing URL, and copy actions. The panel's endpoint picker chooses which endpoint the QR code and URL
+use, so you can hand a phone a LAN address and a remote browser an HTTPS one from the same link.
+Loopback endpoints are never offered as QR targets, because a phone scanning `127.0.0.1` would dial
+itself; they remain available as a copyable URL for same-machine use.
+
+The endpoint you pick in the panel applies to that share only. The saved default endpoint still
+decides which endpoint a row offers first, and that preference is stored by endpoint type, so
+choosing the local LAN endpoint survives normal IP address changes when you move between networks.
 
 When no user default is saved, the app uses the built-in LAN endpoint for pairing links when
 available. You can set another endpoint as the default from the expanded endpoint list.
