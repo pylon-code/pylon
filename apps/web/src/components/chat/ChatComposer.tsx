@@ -108,13 +108,27 @@ import { basenameOfPath } from "../../pierre-icons";
 import { cn, randomUUID } from "~/lib/utils";
 import { Separator } from "../ui/separator";
 
+type ComposerCommandMenuPosition = {
+  bottom: number;
+  left: number;
+  maxHeight: number;
+  width: number;
+};
+
+/** Frames without movement before the position is treated as settled. */
+const COMPOSER_MENU_SETTLED_FRAMES = 3;
+
+function composerCommandMenuPositionsEqual(
+  a: ComposerCommandMenuPosition,
+  b: ComposerCommandMenuPosition,
+): boolean {
+  return (
+    a.bottom === b.bottom && a.left === b.left && a.maxHeight === b.maxHeight && a.width === b.width
+  );
+}
+
 function ComposerCommandMenuLayer(props: { anchor: HTMLElement | null; children: ReactNode }) {
-  const [position, setPosition] = useState<{
-    bottom: number;
-    left: number;
-    maxHeight: number;
-    width: number;
-  } | null>(null);
+  const [position, setPosition] = useState<ComposerCommandMenuPosition | null>(null);
 
   useLayoutEffect(() => {
     const anchor = props.anchor;
@@ -123,28 +137,75 @@ function ComposerCommandMenuLayer(props: { anchor: HTMLElement | null; children:
       return;
     }
 
-    const updatePosition = () => {
+    let frame = 0;
+    let stillFrames = 0;
+    let previous: ComposerCommandMenuPosition | null = null;
+
+    const measure = () => {
       const rect = anchor.getBoundingClientRect();
-      setPosition({
+      const next = {
         bottom: window.innerHeight - rect.top + 8,
         left: rect.left,
         maxHeight: Math.max(96, rect.top - 24),
         width: rect.width,
-      });
+      };
+      const moved = previous === null || !composerCommandMenuPositionsEqual(previous, next);
+      previous = next;
+      setPosition((current) =>
+        current && composerCommandMenuPositionsEqual(current, next) ? current : next,
+      );
+      return moved;
     };
 
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
+    // What moves the composer is position, not size. Opening a side panel or the
+    // terminal drawer reaches its new ancestor width immediately while the
+    // composer is still gliding into place, so a size notification alone lands
+    // on a rect that is one layout behind and nothing fires again. Re-measure
+    // across frames until the position holds still, then stop: no permanent
+    // animation loop, and nothing is left behind mid-transition.
+    const track = () => {
+      stillFrames = 0;
+      if (frame !== 0) return;
+      const step = () => {
+        const moved = measure();
+        stillFrames = moved ? 0 : stillFrames + 1;
+        if (stillFrames >= COMPOSER_MENU_SETTLED_FRAMES) {
+          frame = 0;
+          return;
+        }
+        frame = requestAnimationFrame(step);
+      };
+      frame = requestAnimationFrame(step);
+    };
 
-    const observer =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updatePosition);
-    observer?.observe(anchor);
+    measure();
+    window.addEventListener("resize", track);
+    window.addEventListener("scroll", track, true);
+    // Transition events bubble, so one capturing listener covers every ancestor
+    // that animates the composer into its new position.
+    document.addEventListener("transitionrun", track, true);
+    document.addEventListener("transitionend", track, true);
+    document.addEventListener("transitioncancel", track, true);
+
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(track);
+    if (observer) {
+      // The composer is centered and capped at a max width, so opening a side
+      // panel slides it sideways without ever resizing it. Watching the anchor
+      // alone would leave the menu behind; the ancestors are what shrink.
+      observer.observe(anchor);
+      for (let element = anchor.parentElement; element; element = element.parentElement) {
+        observer.observe(element);
+      }
+    }
 
     return () => {
+      if (frame !== 0) cancelAnimationFrame(frame);
       observer?.disconnect();
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
+      window.removeEventListener("resize", track);
+      window.removeEventListener("scroll", track, true);
+      document.removeEventListener("transitionrun", track, true);
+      document.removeEventListener("transitionend", track, true);
+      document.removeEventListener("transitioncancel", track, true);
     };
   }, [props.anchor]);
 

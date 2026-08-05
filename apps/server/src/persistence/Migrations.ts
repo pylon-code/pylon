@@ -48,7 +48,8 @@ import Migration0032 from "./Migrations/032_AuthPairingProofKeyThumbprint.ts";
 import Migration0033 from "./Migrations/033_ProjectionThreadsSettled.ts";
 import Migration0034 from "./Migrations/034_ProjectionThreadsSnoozed.ts";
 import Migration0035 from "./Migrations/035_ProjectionThreadTitleRegeneration.ts";
-import Migration0037 from "./Migrations/037_ProjectionThreadsContinuedFrom.ts";
+import Migration0037 from "./Migrations/037_ProjectionThreadsPinned.ts";
+import Migration0038 from "./Migrations/038_ProjectionThreadsContinuedFrom.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -99,7 +100,8 @@ export const migrationEntries = [
   // 36 retired: the Kanban board was removed before any release shipped it.
   // Do not reuse id 36 — environments that ran the unreleased branch recorded it
   // as applied and would silently skip a new migration with the same id.
-  [37, "ProjectionThreadsContinuedFrom", Migration0037],
+  [37, "ProjectionThreadsPinned", Migration0037],
+  [38, "ProjectionThreadsContinuedFrom", Migration0038],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
