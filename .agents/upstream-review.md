@@ -52,9 +52,19 @@ All four candidates adopted onto `upstream/2026-08-04-followup`.
 
 ## 2026-08-05 — `d7950ac153c6fdd788ef63699a5d061243bb4997..2a04db134c2d88f06e5b8d61a8410cb51ea07430`
 
-All sixteen candidates adopted. Fifteen landed on `upstream/2026-08-05-batch`; C9 was isolated onto
-`upstream/2026-08-05-remote-updates` because it rewrites the launcher update boundary and deserves an
-independent revert and validation story.
+All sixteen candidates adopted. Fifteen landed on `upstream/2026-08-05-batch` and merged into `pylon`
+as `c18398bf9`.
+
+C9 is integrated on `upstream/2026-08-05-remote-updates` but **deliberately not merged**: Pylon has not
+set up self-update yet, so the change is dormant infrastructure whose launcher protocol bump would
+require existing installs to take one local service update first. Merge it when remote background-service
+updates become a shipping concern.
+
+Known gap from the browser verification pass: C14's fix does not resolve the reported bug in Pylon. The
+composer command menu still detaches from the composer by ~254px when the right panel is toggled, in both
+the draft and thread views, correcting only on the next resize. The upstream code is present and correct
+and Pylon's own composer divergence is padding-only, so this needs an upstream follow-up rather than a
+Pylon-side revert.
 
 | Change set | Upstream                                  | Decision | Pylon reference          | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                         |
 | ---------- | ----------------------------------------- | -------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
