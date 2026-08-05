@@ -5,6 +5,13 @@ import { passkeys } from "@clerk/electron/passkeys";
 import { ClerkProvider as ElectronClerkProvider } from "@clerk/electron/react";
 import { createHashHistory, createBrowserHistory } from "@tanstack/react-router";
 
+// Pylon ships its brand faces rather than inheriting whatever the OS supplies.
+// Settings -> Appearance still overrides them per surface; these are the
+// defaults those pickers reset back to.
+import "@fontsource-variable/dm-sans/index.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
+
 import "./index.css";
 
 import { isElectron } from "./env";
