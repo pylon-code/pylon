@@ -207,6 +207,8 @@ import { formatProviderSkillDisplayName } from "../../providerSkillPresentation"
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
+import type { ThreadHandoffOffer } from "./ThreadHandoff.logic";
+import { ThreadHandoffTab } from "./ThreadHandoffTab";
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -591,10 +593,16 @@ export interface ChatComposerProps {
   composerElementContextsRef: React.RefObject<ElementContextDraft[]>;
   composerRef: React.RefObject<ChatComposerHandle | null>;
 
+  // Cross-account handoff. Resolved by the parent, which owns the thread
+  // creation the offer leads to; the composer only shows it.
+  threadHandoffOffer: ThreadHandoffOffer | null;
+  isContinuingThreadOnAccount: boolean;
+
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
+  onContinueThreadOnAccount: () => void;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
@@ -679,9 +687,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerImagesRef,
     composerTerminalContextsRef,
     composerElementContextsRef,
+    threadHandoffOffer,
+    isContinuingThreadOnAccount,
     onSend,
     onInterrupt,
     onImplementPlanInNewThread,
+    onContinueThreadOnAccount,
     onRespondToApproval,
     onSelectActivePendingUserInputOption,
     onAdvanceActivePendingUserInput,
@@ -2717,9 +2728,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     <form
       ref={composerFormRef}
       onSubmit={submitComposer}
-      className="mx-auto w-full min-w-0 max-w-3xl"
+      className="relative mx-auto w-full min-w-0 max-w-3xl"
       data-chat-composer-form="true"
     >
+      {/*
+        Sits on the composer's top edge rather than inside it: the offer is
+        about the thread, not about the message being written, and it must not
+        move the input when it appears.
+      */}
+      <ThreadHandoffTab
+        offer={threadHandoffOffer}
+        onContinue={onContinueThreadOnAccount}
+        isBusy={isContinuingThreadOnAccount}
+      />
       <div
         className={cn(
           "group rounded-[22px] p-px transition-colors duration-200",

@@ -122,6 +122,26 @@ This is different from the recommended Codex setup. Claude Code keeps account an
 multiple files under its config directory, so T3 Code keeps separate config directories isolated
 instead of trying to share part of the state.
 
+### Continuing The Work On Another Account
+
+When the account a thread is running on is out of capacity and another account has room, a small
+**Out of capacity** tab appears above the composer. Click it to see what continuing elsewhere would
+cost before anything is spent.
+
+Pylon never switches on its own. Waiting for the window to reset is free, and only you know whether
+the work is worth paying to move now.
+
+Continuing starts a **new** thread on the other account, because a Claude session cannot cross
+accounts. The new thread opens with a single message carrying the original request, the conversation
+so far, and a summary of the files changed. The panel tells you in advance roughly how many tokens
+that costs. It is billed fresh — no cache carries between accounts.
+
+Long threads carry their most recent turns rather than the whole conversation, and the panel says so
+before you commit. Most threads are small enough to cross whole.
+
+The original thread stays open. Both threads show a line linking to the other, so the seam is visible
+rather than looking like work restarted for no reason.
+
 ## I Want To Use OpenRouter
 
 Use this when you want Claude Code to talk to OpenRouter directly, without running a local router.

@@ -12,8 +12,11 @@ import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
   buildThreadHandoffSeed,
   CONDENSED_VERBATIM_TURN_COUNT,
+  getThreadContinuationLinks,
   getThreadHandoffOffer,
+  HANDOFF_DIFF_FILE_LIMIT,
   selectHandoffMessages,
+  summarizeHandoffDiff,
 } from "./ThreadHandoff.logic";
 
 let messageCounter = 0;
@@ -81,6 +84,56 @@ describe("selectHandoffMessages", () => {
     const selected = selectHandoffMessages({ messages, estimate: VERBATIM });
 
     expect(selected.carried).toHaveLength(1);
+  });
+});
+
+describe("summarizeHandoffDiff", () => {
+  const patchFor = (path: string, added: number, removed: number): string =>
+    [
+      `diff --git a/${path} b/${path}`,
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      `@@ -1,${removed + 1} +1,${added + 1} @@`,
+      " context",
+      ...Array.from({ length: removed }, (_, index) => `-gone ${index}`),
+      ...Array.from({ length: added }, (_, index) => `+new ${index}`),
+    ].join("\n");
+
+  it("counts the files and lines the way git reports them", () => {
+    const summary = summarizeHandoffDiff(
+      [patchFor("src/a.ts", 30, 1), patchFor("src/b.ts", 10, 1)].join("\n"),
+    );
+
+    expect(summary).toContain("2 files changed, 40 insertions(+), 2 deletions(-)");
+  });
+
+  // The paths are the point: they tell the continuation where the work is.
+  it("lists each file with its own line counts", () => {
+    const summary = summarizeHandoffDiff(patchFor("src/a.ts", 30, 1));
+
+    expect(summary).toContain("- src/a.ts (+30, -1)");
+  });
+
+  it("says how many files it stopped listing rather than truncating quietly", () => {
+    const overflow = 3;
+    const summary = summarizeHandoffDiff(
+      Array.from({ length: HANDOFF_DIFF_FILE_LIMIT + overflow }, (_, index) =>
+        patchFor(`src/file-${index}.ts`, 1, 0),
+      ).join("\n"),
+    );
+
+    expect(summary).toContain(`and ${overflow} further files`);
+    expect(summary).not.toContain(`src/file-${HANDOFF_DIFF_FILE_LIMIT}.ts (`);
+  });
+
+  // The seed changes its closing instruction when there is no diff, so an
+  // unusable patch has to read as absent rather than as an empty change set.
+  it.each([
+    ["nothing", undefined],
+    ["an empty patch", ""],
+    ["unparseable text", "not a patch at all"],
+  ])("returns undefined for %s", (_label, patch) => {
+    expect(summarizeHandoffDiff(patch)).toBeUndefined();
   });
 });
 
@@ -169,6 +222,82 @@ describe("buildThreadHandoffSeed", () => {
   });
 });
 
+describe("getThreadContinuationLinks", () => {
+  const CLAUDE = ProviderDriverKind.make("claudeAgent");
+  const shell = (input: {
+    id: string;
+    title: string;
+    instanceId: string;
+    continuedFromThreadId?: string;
+  }) => ({
+    id: input.id,
+    environmentId: "env-1",
+    title: input.title,
+    modelSelection: { instanceId: input.instanceId },
+    ...(input.continuedFromThreadId ? { continuedFromThreadId: input.continuedFromThreadId } : {}),
+  });
+
+  const PARENT = shell({ id: "thread-work", title: "Add retries", instanceId: "claude_work" });
+  const CHILD = shell({
+    id: "thread-personal",
+    title: "Add retries",
+    instanceId: "claude_personal",
+    continuedFromThreadId: "thread-work",
+  });
+
+  const entries = deriveProviderInstanceEntries([
+    {
+      instanceId: ProviderInstanceId.make("claude_personal"),
+      driver: CLAUDE,
+      displayName: "Claude Personal",
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready" as const,
+      auth: { status: "authenticated" as const },
+      checkedAt: "2026-08-05T17:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    } as ServerProvider,
+  ]);
+
+  const linksFor = (thread: { id: string; continuedFromThreadId?: string | null }) =>
+    getThreadContinuationLinks({ thread, shells: [PARENT, CHILD], entries });
+
+  it("points a continuation back at the thread it came from", () => {
+    const links = linksFor({ id: "thread-personal", continuedFromThreadId: "thread-work" });
+
+    expect(links).toHaveLength(1);
+    expect(links[0]?.direction).toBe("from");
+    expect(links[0]?.threadId).toBe("thread-work");
+  });
+
+  // Without this the handed-off thread just looks abandoned.
+  it("points a handed-off thread forward at where its work went", () => {
+    const links = linksFor({ id: "thread-work" });
+
+    expect(links).toHaveLength(1);
+    expect(links[0]?.direction).toBe("into");
+    expect(links[0]?.accountName).toBe("Claude Personal");
+  });
+
+  it("leaves an ordinary thread unmarked", () => {
+    expect(linksFor({ id: "thread-unrelated" })).toEqual([]);
+  });
+
+  // A deleted parent must not leave a link that goes nowhere.
+  it("drops a link whose thread is gone", () => {
+    const links = getThreadContinuationLinks({
+      thread: { id: "thread-personal", continuedFromThreadId: "thread-deleted" },
+      shells: [CHILD],
+      entries,
+    });
+
+    expect(links).toEqual([]);
+  });
+});
+
 describe("getThreadHandoffOffer", () => {
   const CLAUDE = ProviderDriverKind.make("claudeAgent");
   const NOW_MS = Date.parse("2026-08-05T18:00:00.000Z");
@@ -254,7 +383,12 @@ describe("getThreadHandoffOffer", () => {
 
   // Every case below would put a control on screen that cannot help.
   it("stays silent while the bound account is healthy", () => {
-    expect(offerFor([account({ instanceId: "claude_work", displayName: "Claude Work" }), HEALTHY_PERSONAL()])).toBeNull();
+    expect(
+      offerFor([
+        account({ instanceId: "claude_work", displayName: "Claude Work" }),
+        HEALTHY_PERSONAL(),
+      ]),
+    ).toBeNull();
   });
 
   it("stays silent when there is nowhere to hand off to", () => {

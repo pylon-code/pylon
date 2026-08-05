@@ -22,9 +22,14 @@
  *
  * @module components/chat/ThreadHandoff.logic
  */
-import type { OrchestrationMessage, ThreadHandoffEstimate } from "@t3tools/contracts";
+import type {
+  OrchestrationMessage,
+  ProviderInstanceId,
+  ThreadHandoffEstimate,
+} from "@t3tools/contracts";
 import { estimateThreadHandoff, formatHandoffTokenCost } from "@t3tools/contracts";
 
+import { getDiffLineStat, getRenderablePatch, resolveFileDiffPath } from "../../lib/diffRendering";
 import {
   isProviderInstanceDrained,
   sortProviderInstancesForRouting,
@@ -39,6 +44,51 @@ import {
  * already accounts for.
  */
 export const CONDENSED_VERBATIM_TURN_COUNT = 6;
+
+/**
+ * Files listed individually before the summary starts counting instead.
+ *
+ * A long thread can touch hundreds of files, and the point of the summary is to
+ * tell the continuation where to look — not to spend its context on a manifest.
+ */
+export const HANDOFF_DIFF_FILE_LIMIT = 40;
+
+const pluralize = (count: number, noun: string): string =>
+  `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+/**
+ * Condense a thread's cumulative patch into the stat block the seed carries.
+ *
+ * The patch itself is deliberately not carried: it can dwarf the conversation,
+ * and the cost shown on the offer is measured from the thread's context, not
+ * from a diff of unknown size. Paths and line counts are enough to point the
+ * continuation at the work; it is told to read the repository for the rest.
+ *
+ * Returns `undefined` when there is no parseable change, which is the seed's
+ * signal to tell the continuation to verify state on its own.
+ */
+export function summarizeHandoffDiff(patch: string | undefined): string | undefined {
+  const renderable = getRenderablePatch(patch, "thread-handoff");
+  if (renderable?.kind !== "files" || renderable.files.length === 0) return undefined;
+
+  const files = renderable.files;
+  const total = getDiffLineStat(files);
+  const lines = [
+    `${pluralize(files.length, "file")} changed, ${pluralize(total.additions, "insertion")}(+), ${pluralize(total.deletions, "deletion")}(-)`,
+    "",
+  ];
+
+  for (const file of files.slice(0, HANDOFF_DIFF_FILE_LIMIT)) {
+    const stat = getDiffLineStat([file]);
+    lines.push(`- ${resolveFileDiffPath(file)} (+${stat.additions}, -${stat.deletions})`);
+  }
+  // Said out loud rather than silently truncated, so the continuation knows the
+  // list is partial and the repository is the authority.
+  const remaining = files.length - HANDOFF_DIFF_FILE_LIMIT;
+  if (remaining > 0) lines.push(`- …and ${pluralize(remaining, "further file")}`);
+
+  return lines.join("\n");
+}
 
 export interface ThreadHandoffSeedInput {
   readonly messages: ReadonlyArray<OrchestrationMessage>;
@@ -72,7 +122,10 @@ export function selectHandoffMessages(input: {
   readonly omittedCount: number;
 } {
   const substantive = input.messages.filter((message) => message.text.trim().length > 0);
-  if (input.estimate.fidelity === "verbatim" || substantive.length <= CONDENSED_VERBATIM_TURN_COUNT) {
+  if (
+    input.estimate.fidelity === "verbatim" ||
+    substantive.length <= CONDENSED_VERBATIM_TURN_COUNT
+  ) {
     return { carried: substantive, omittedCount: 0 };
   }
   const carried = substantive.slice(-CONDENSED_VERBATIM_TURN_COUNT);
@@ -132,13 +185,89 @@ export function buildThreadHandoffSeed(input: ThreadHandoffSeedInput): string | 
   return sections.join("\n\n");
 }
 
+/**
+ * One end of a handoff seam, as the thread on screen should describe it.
+ *
+ * `from` reads on the continuation ("this picks up earlier work"); `into` on
+ * the thread that was handed off ("the work moved on"). Both exist because the
+ * original stays open: without the forward link it just looks abandoned.
+ */
+export interface ThreadContinuationLink {
+  readonly direction: "from" | "into";
+  readonly threadId: string;
+  readonly environmentId: string;
+  readonly title: string;
+  /** Account the linked thread runs on, when it can be identified. */
+  readonly accountName?: string | undefined;
+  readonly accentColor?: string | undefined;
+}
+
+interface ContinuationShell {
+  readonly id: string;
+  readonly environmentId: string;
+  readonly title: string;
+  readonly continuedFromThreadId?: string | null | undefined;
+  readonly modelSelection?: { readonly instanceId?: string | undefined } | null | undefined;
+}
+
+/**
+ * Resolve the handoff links to show on a thread: where its work came from, and
+ * where it went.
+ *
+ * Both ends are looked up in the thread shells the client already holds, so
+ * neither costs a request. A missing thread on either side yields no link
+ * rather than a dead one.
+ */
+export function getThreadContinuationLinks(input: {
+  readonly thread: {
+    readonly id: string;
+    readonly continuedFromThreadId?: string | null | undefined;
+  } | null;
+  readonly shells: ReadonlyArray<ContinuationShell>;
+  readonly entries: ReadonlyArray<ProviderInstanceEntry>;
+}): ReadonlyArray<ThreadContinuationLink> {
+  if (!input.thread) return [];
+
+  const describe = (
+    shell: ContinuationShell,
+    direction: ThreadContinuationLink["direction"],
+  ): ThreadContinuationLink => {
+    const account = input.entries.find(
+      (entry) => entry.instanceId === shell.modelSelection?.instanceId,
+    );
+    return {
+      direction,
+      threadId: shell.id,
+      environmentId: shell.environmentId,
+      title: shell.title,
+      ...(account ? { accountName: account.displayName } : {}),
+      ...(account?.accentColor ? { accentColor: account.accentColor } : {}),
+    };
+  };
+
+  const links: ThreadContinuationLink[] = [];
+
+  const parentId = input.thread.continuedFromThreadId;
+  if (parentId) {
+    const parent = input.shells.find((shell) => shell.id === parentId);
+    if (parent) links.push(describe(parent, "from"));
+  }
+
+  const child = input.shells.find(
+    (shell) => shell.continuedFromThreadId === input.thread?.id && shell.id !== input.thread?.id,
+  );
+  if (child) links.push(describe(child, "into"));
+
+  return links;
+}
+
 export interface ThreadHandoffOffer {
   /** Account the thread is bound to, which has run out of capacity. */
   readonly spentAccountName: string;
   readonly spentAccentColor?: string | undefined;
   readonly resetsAt?: string | undefined;
   /** Account the work would continue on. */
-  readonly targetInstanceId: string;
+  readonly targetInstanceId: ProviderInstanceId;
   readonly targetAccountName: string;
   readonly targetAccentColor?: string | undefined;
   readonly estimate: ThreadHandoffEstimate;

@@ -165,7 +165,20 @@ import {
 } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
-import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+  NO_PROVIDER_MODEL_SELECTION,
+} from "../providerInstances";
+import {
+  buildThreadHandoffSeed,
+  getThreadContinuationLinks,
+  getThreadHandoffOffer,
+  summarizeHandoffDiff,
+} from "./chat/ThreadHandoff.logic";
+import { ThreadContinuationBanner } from "./chat/ThreadContinuationBanner";
+import { deriveLatestContextWindowSnapshot } from "../lib/contextWindow";
+import { useCheckpointDiff } from "../lib/checkpointDiffState";
 import { useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
@@ -219,6 +232,7 @@ import {
   useThreadProposedPlans,
   useThreadRefs,
   useThreadShell,
+  useThreadShells,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
@@ -3993,6 +4007,83 @@ function ChatViewContent(props: ChatViewProps) {
     nowMinute,
     supportsSettlement,
   ]);
+  // ------------------------------------------------------------------
+  // Cross-account handoff
+  // ------------------------------------------------------------------
+  // A provider session cannot move between accounts, so a thread bound to a
+  // drained one can only continue as a fresh thread elsewhere. The offer is
+  // resolved here, next to the thread-creation path that acts on it, and the
+  // composer only renders it.
+  const threadHandoffEntries = useMemo(
+    () => applyProviderInstanceSettings(deriveProviderInstanceEntries(providerStatuses), settings),
+    [providerStatuses, settings],
+  );
+  const threadHandoffContextWindow = useMemo(
+    () => deriveLatestContextWindowSnapshot(threadActivities),
+    [threadActivities],
+  );
+  const threadHandoffOffer = useMemo(() => {
+    if (!activeThread || !isServerThread) return null;
+    return getThreadHandoffOffer({
+      entries: threadHandoffEntries,
+      boundInstanceId:
+        activeThread.session?.providerInstanceId ?? activeThread.modelSelection?.instanceId,
+      messages: activeThread.messages,
+      usedTokens: threadHandoffContextWindow?.usedTokens,
+      // A provider that never reports a window leaves this null; the estimate
+      // falls back to its own default rather than treating it as zero.
+      maxTokens: threadHandoffContextWindow?.maxTokens ?? undefined,
+      // Minute resolution is enough to retire the offer, and sharing the app's
+      // one clock keeps it from carrying a timer of its own.
+      nowMs: Date.parse(`${nowMinute}:00.000Z`),
+    });
+  }, [activeThread, isServerThread, nowMinute, threadHandoffContextWindow, threadHandoffEntries]);
+  // Fetched only while an offer stands. The seed names the files the earlier
+  // thread changed so the continuation checks the repository instead of
+  // trusting the transcript's account of its own work.
+  const latestReadyCheckpointTurnCount = useMemo(() => {
+    let latest = 0;
+    for (const checkpoint of activeThread?.checkpoints ?? []) {
+      if (checkpoint.status === "ready" && checkpoint.checkpointTurnCount > latest) {
+        latest = checkpoint.checkpointTurnCount;
+      }
+    }
+    return latest > 0 ? latest : null;
+  }, [activeThread?.checkpoints]);
+  const threadHandoffDiff = useCheckpointDiff(
+    {
+      environmentId: activeThread?.environmentId ?? null,
+      threadId: activeThreadId,
+      fromTurnCount: 0,
+      toTurnCount: latestReadyCheckpointTurnCount,
+      ignoreWhitespace: false,
+      cacheScope: "thread-handoff",
+    },
+    { enabled: threadHandoffOffer !== null },
+  );
+  const threadHandoffDiffSummary = useMemo(
+    () => summarizeHandoffDiff(threadHandoffDiff.data?.diff),
+    [threadHandoffDiff.data?.diff],
+  );
+  const [isContinuingThreadOnAccount, setIsContinuingThreadOnAccount] = useState(false);
+  // Both ends of the seam, read from shells the client already holds. Keyed on
+  // the two ids rather than the thread object so a streaming turn does not
+  // rescan every shell on each token.
+  const allThreadShells = useThreadShells();
+  const activeThreadContinuedFrom = activeThread?.continuedFromThreadId ?? null;
+  const threadContinuationLinks = useMemo(
+    () =>
+      getThreadContinuationLinks({
+        thread:
+          activeThreadId === null
+            ? null
+            : { id: activeThreadId, continuedFromThreadId: activeThreadContinuedFrom },
+        shells: allThreadShells,
+        entries: threadHandoffEntries,
+      }),
+    [activeThreadContinuedFrom, activeThreadId, allThreadShells, threadHandoffEntries],
+  );
+
   const unsettleThreadMutation = useAtomCommand(threadEnvironment.unsettle, {
     reportFailure: false,
   });
@@ -5457,6 +5548,196 @@ function ChatViewContent(props: ChatViewProps) {
     composerRef,
   ]);
 
+  // Continue a spent thread's work on another account.
+  //
+  // Only ever runs from the composer's handoff tab. Nothing switches accounts
+  // on its own: waiting out the reset is free, and paying to replay the
+  // context is a call only the user can make.
+  const onContinueThreadOnAccount = useCallback(async () => {
+    const offer = threadHandoffOffer;
+    if (
+      !offer ||
+      !activeThread ||
+      !activeProject ||
+      !isServerThread ||
+      isContinuingThreadOnAccount ||
+      isConnecting ||
+      activeEnvironmentUnavailable ||
+      sendInFlightRef.current
+    ) {
+      return;
+    }
+
+    const sendCtx = composerRef.current?.getSendContext();
+    if (!sendCtx?.providerAvailable) {
+      return;
+    }
+
+    const seedText = buildThreadHandoffSeed({
+      messages: activeThread.messages,
+      estimate: offer.estimate,
+      ...(threadHandoffDiffSummary ? { diffSummary: threadHandoffDiffSummary } : {}),
+      sourceAccountName: offer.spentAccountName,
+      targetAccountName: offer.targetAccountName,
+    });
+    // The offer already refused to appear for a thread with nothing to carry,
+    // so this only trips if the thread emptied out underneath it.
+    if (seedText === null) return;
+
+    // The accounts run the same provider CLI, so the model slug normally
+    // carries over untouched; resolving it against the target keeps a
+    // per-account model list from producing a selection it cannot honor.
+    const targetModel = resolveAppModelSelectionForInstance(
+      offer.targetInstanceId,
+      settings,
+      providerStatuses,
+      sendCtx.selectedModel,
+    );
+    if (targetModel === null) return;
+    const nextThreadModelSelection: ModelSelection = {
+      ...sendCtx.selectedModelSelection,
+      instanceId: offer.targetInstanceId,
+      model: targetModel,
+    };
+    const targetProviderModels =
+      providerStatuses.find((provider) => provider.instanceId === offer.targetInstanceId)?.models ??
+      sendCtx.selectedProviderModels;
+    const outgoingSeedText = formatOutgoingPrompt({
+      provider: sendCtx.selectedProvider,
+      model: targetModel,
+      models: targetProviderModels,
+      effort: sendCtx.selectedPromptEffort,
+      text: seedText,
+    });
+
+    const createdAt = new Date().toISOString();
+    const nextThreadId = newThreadId();
+    // Same title: the two threads are one piece of work, and the continuation
+    // banner is what says where the seam is.
+    const nextThreadTitle = truncate(activeThread.title);
+
+    setIsContinuingThreadOnAccount(true);
+    sendInFlightRef.current = true;
+    beginLocalDispatch({ preparingWorktree: false });
+    const finish = () => {
+      sendInFlightRef.current = false;
+      setIsContinuingThreadOnAccount(false);
+      resetLocalDispatch();
+    };
+
+    const createResult = await createThread({
+      environmentId,
+      input: {
+        threadId: nextThreadId,
+        projectId: activeProject.id,
+        title: nextThreadTitle,
+        modelSelection: nextThreadModelSelection,
+        runtimeMode,
+        interactionMode,
+        branch: activeThreadBranch,
+        worktreePath: activeThread.worktreePath,
+        // The link the continuation banner reads. Without it the new thread
+        // looks like work restarting for no reason.
+        continuedFromThreadId: activeThread.id,
+        createdAt,
+      },
+    });
+    let failure: AtomCommandResult<unknown, unknown> | null =
+      createResult._tag === "Failure" ? createResult : null;
+
+    if (failure === null) {
+      const startResult = await startThreadTurn({
+        environmentId,
+        input: {
+          threadId: nextThreadId,
+          message: {
+            messageId: newMessageId(),
+            role: "user",
+            text: outgoingSeedText,
+            attachments: [],
+          },
+          modelSelection: nextThreadModelSelection,
+          titleSeed: nextThreadTitle,
+          runtimeMode,
+          interactionMode,
+          createdAt,
+        },
+      });
+      failure = startResult._tag === "Failure" ? startResult : null;
+    }
+
+    if (failure === null) {
+      const startedResult = await settlePromise(() =>
+        waitForStartedServerThread(scopeThreadRef(activeThread.environmentId, nextThreadId)),
+      );
+      failure = startedResult._tag === "Failure" ? startedResult : null;
+    }
+
+    if (failure === null) {
+      const navigateResult = await settlePromise(() =>
+        navigate({
+          to: "/$environmentId/$threadId",
+          params: {
+            environmentId: activeThread.environmentId,
+            threadId: nextThreadId,
+          },
+        }),
+      );
+      failure = navigateResult._tag === "Failure" ? navigateResult : null;
+    }
+
+    if (failure !== null) {
+      // A half-created thread would sit in the sidebar claiming to continue
+      // work it never received, so it goes rather than lingering.
+      const cleanupResult = await deleteThread({
+        environmentId,
+        input: { threadId: nextThreadId },
+      });
+      if (cleanupResult._tag === "Failure" && !isAtomCommandInterrupted(cleanupResult)) {
+        console.warn(
+          "Failed to clean up continuation thread after start failure.",
+          squashAtomCommandFailure(cleanupResult),
+        );
+      }
+      if (!isAtomCommandInterrupted(failure)) {
+        const error = squashAtomCommandFailure(failure);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `Could not continue on ${offer.targetAccountName}`,
+            description:
+              error instanceof Error
+                ? error.message
+                : "An error occurred while creating the continuation thread.",
+          }),
+        );
+      }
+    }
+    finish();
+  }, [
+    activeEnvironmentUnavailable,
+    activeProject,
+    activeThread,
+    activeThreadBranch,
+    beginLocalDispatch,
+    composerRef,
+    createThread,
+    deleteThread,
+    environmentId,
+    interactionMode,
+    isConnecting,
+    isContinuingThreadOnAccount,
+    isServerThread,
+    navigate,
+    providerStatuses,
+    resetLocalDispatch,
+    runtimeMode,
+    settings,
+    startThreadTurn,
+    threadHandoffDiffSummary,
+    threadHandoffOffer,
+  ]);
+
   const getModelDisabledReason = useCallback(
     (instanceId: ProviderInstanceId, model: string): string | null => {
       if (!activeThread) {
@@ -5781,6 +6062,7 @@ function ChatViewContent(props: ChatViewProps) {
           error={threadError}
           onDismiss={() => setThreadError(activeThread.id, null)}
         />
+        <ThreadContinuationBanner links={threadContinuationLinks} />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
@@ -5963,6 +6245,9 @@ function ChatViewContent(props: ChatViewProps) {
                             onSend={onSend}
                             onInterrupt={onInterrupt}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
+                            threadHandoffOffer={threadHandoffOffer}
+                            isContinuingThreadOnAccount={isContinuingThreadOnAccount}
+                            onContinueThreadOnAccount={onContinueThreadOnAccount}
                             onRespondToApproval={onRespondToApproval}
                             onSelectActivePendingUserInputOption={
                               onSelectActivePendingUserInputOption
