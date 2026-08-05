@@ -120,6 +120,13 @@ function invalidProjectError(): FollowUpOperationError {
   });
 }
 
+function missingRepositoryOwnerError(cwd: string): FollowUpOperationError {
+  return new FollowUpOperationError({
+    code: "invalid-project",
+    message: `No project owns repository path ${cwd} in this environment.`,
+  });
+}
+
 function ambiguousProjectError(): FollowUpOperationError {
   return new FollowUpOperationError({
     code: "invalid-project",
@@ -525,7 +532,7 @@ const make = Effect.gen(function* () {
     function* (cwd: string) {
       const projects = yield* mapPersistence(getProjectsForRepositoryPath({ cwd }));
       if (projects.length === 0) {
-        return yield* invalidProjectError();
+        return yield* missingRepositoryOwnerError(cwd);
       }
       if (projects.length > 1) {
         return yield* ambiguousProjectError();

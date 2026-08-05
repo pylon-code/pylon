@@ -1,13 +1,18 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   type EditorId,
+  type EnvironmentId,
   type ServerConfig,
   type ServerConfigStreamEvent,
   type ServerLifecycleWelcomePayload,
   type ServerProvider,
   type ServerSettings,
 } from "@t3tools/contracts";
-import { createServerEnvironmentAtoms } from "@t3tools/client-runtime/state/server";
+import { AVAILABLE_CONNECTION_STATE } from "@t3tools/client-runtime/connection";
+import {
+  createServerEnvironmentAtoms,
+  isCurrentServerConfigProjection,
+} from "@t3tools/client-runtime/state/server";
 import { createEnvironmentServerConfigsAtom } from "@t3tools/client-runtime/state/shell";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import * as Option from "effect/Option";
@@ -21,6 +26,33 @@ import { environmentSession } from "./session";
 export const serverEnvironment = createServerEnvironmentAtoms(connectionAtomRuntime, {
   initialConfigValueAtom: environmentSession.initialConfigValueAtom,
 });
+
+const SERVER_CONFIG_NOT_SYNCHRONIZED_ATOM = Atom.make(false).pipe(
+  Atom.withLabel("web-server-config-synchronized:empty"),
+);
+
+export const serverConfigSynchronizedAtom = Atom.family((environmentId: EnvironmentId | null) => {
+  if (environmentId === null) return SERVER_CONFIG_NOT_SYNCHRONIZED_ATOM;
+  return Atom.make((get) => {
+    const connection = Option.getOrElse(
+      AsyncResult.value(get(environmentCatalog.stateAtom(environmentId))),
+      () => AVAILABLE_CONNECTION_STATE,
+    );
+    const projection = Option.getOrNull(
+      AsyncResult.value(get(serverEnvironment.configProjection({ environmentId, input: {} }))),
+    );
+    return isCurrentServerConfigProjection(connection, projection);
+  }).pipe(Atom.withLabel(`web-server-config-synchronized:${environmentId}`));
+});
+
+export const serverConfigSynchronizationByEnvironmentAtom = Atom.make((get) => {
+  const synchronized = new Map<EnvironmentId, boolean>();
+  for (const environmentId of get(environmentCatalog.catalogValueAtom).entries.keys()) {
+    synchronized.set(environmentId, get(serverConfigSynchronizedAtom(environmentId)));
+  }
+  return synchronized;
+}).pipe(Atom.withLabel("web-server-config-synchronization-by-environment"));
+
 export const environmentServerConfigsAtom = createEnvironmentServerConfigsAtom({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   serverConfigValueAtom: serverEnvironment.configValueAtom,

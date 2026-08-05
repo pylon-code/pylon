@@ -9,6 +9,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -20,6 +21,7 @@ import {
   AVAILABLE_CONNECTION_STATE,
   PrimaryConnectionTarget,
   type PreparedConnection,
+  type SupervisorConnectionState,
 } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
@@ -27,6 +29,7 @@ import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import {
   applyServerConfigProjection,
+  isCurrentServerConfigProjection,
   makeEnvironmentServerConfigState,
   isLegacyUpdateHandoffLoss,
   matchesServerUpdateReadyEvent,
@@ -210,11 +213,15 @@ describe("server state projection", () => {
   );
 
   it("applies every config category to the projected snapshot", () => {
-    const snapshot = applyServerConfigProjection(Option.none(), {
-      version: 1,
-      type: "snapshot",
-      config: CONFIG,
-    });
+    const snapshot = applyServerConfigProjection(
+      Option.none(),
+      {
+        version: 1,
+        type: "snapshot",
+        config: CONFIG,
+      },
+      7,
+    );
     const settings = { ...CONFIG.settings };
     const projected = applyServerConfigProjection(snapshot, {
       version: 1,
@@ -225,6 +232,41 @@ describe("server state projection", () => {
     const result = Option.getOrThrow(projected);
     expect(result.config.settings).toBe(settings);
     expect(result.latestEvent.type).toBe("settingsUpdated");
+    expect(result.synchronizedGeneration).toBe(7);
+  });
+
+  it("does not treat cached config as synchronized to a connection generation", () => {
+    const cached = applyServerConfigProjection(Option.none(), {
+      version: 1,
+      type: "snapshot",
+      config: CONFIG,
+    });
+
+    expect(Option.getOrThrow(cached).synchronizedGeneration).toBeNull();
+  });
+
+  it("recognizes only a live snapshot from the connected generation as current", () => {
+    const live = Option.getOrThrow(
+      applyServerConfigProjection(Option.none(), snapshotEvent(CONFIG), 7),
+    );
+    const connected = {
+      ...AVAILABLE_CONNECTION_STATE,
+      desired: true,
+      network: "online" as const,
+      phase: "connected" as const,
+      generation: 7,
+    };
+
+    expect(isCurrentServerConfigProjection(connected, live)).toBe(true);
+    expect(isCurrentServerConfigProjection({ ...connected, generation: 8 }, live)).toBe(false);
+    expect(isCurrentServerConfigProjection({ ...connected, phase: "backoff" }, live)).toBe(false);
+    expect(
+      isCurrentServerConfigProjection(connected, {
+        ...live,
+        source: "cache",
+        synchronizedGeneration: null,
+      }),
+    ).toBe(false);
   });
 
   it("retains welcome when a ready event follows in the same stream chunk", () => {
@@ -264,6 +306,7 @@ describe("server state projection", () => {
           config: cached,
           latestEvent: snapshotEvent(cached),
           source: "cache",
+          synchronizedGeneration: null,
         },
         initial,
       ),
@@ -274,6 +317,7 @@ describe("server state projection", () => {
           config: staleLive,
           latestEvent: snapshotEvent(staleLive),
           source: "live",
+          synchronizedGeneration: 1,
         },
         initial,
       ),
@@ -284,6 +328,7 @@ describe("server state projection", () => {
           config: live,
           latestEvent: snapshotEvent(live),
           source: "live",
+          synchronizedGeneration: 2,
         },
         initial,
       ),
@@ -349,6 +394,146 @@ describe("server state projection", () => {
       );
 
       expect((yield* Queue.take(savedConfigs)).providers).toEqual([]);
+    }),
+  );
+
+  it.effect("synchronizes config only after each connection generation's snapshot", () =>
+    Effect.gen(function* () {
+      const events = yield* Queue.unbounded<ServerConfigStreamEvent>();
+      const client = {
+        [WS_METHODS.subscribeServerConfig]: () => Stream.fromQueue(events),
+      } as unknown as WsRpcProtocolClient;
+      const connectionState = yield* SubscriptionRef.make<SupervisorConnectionState>({
+        ...AVAILABLE_CONNECTION_STATE,
+        desired: true,
+        network: "online" as const,
+        phase: "connected" as const,
+        generation: 1,
+      });
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: TARGET,
+        state: connectionState,
+        session: yield* SubscriptionRef.make(Option.some(session(client))),
+        prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+      const cache = Persistence.EnvironmentCacheStore.of({
+        loadShell: () => Effect.succeed(Option.none()),
+        saveShell: () => Effect.void,
+        loadThread: () => Effect.succeed(Option.none()),
+        saveThread: () => Effect.void,
+        removeThread: () => Effect.void,
+        loadServerConfig: () => Effect.succeed(Option.some(CONFIG)),
+        saveServerConfig: () => Effect.void,
+        loadVcsRefs: () => Effect.succeed(Option.none()),
+        saveVcsRefs: () => Effect.void,
+        removeVcsRefs: () => Effect.void,
+        clearVcsRefs: () => Effect.void,
+        clear: () => Effect.void,
+      });
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* makeEnvironmentServerConfigState().pipe(
+            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+            Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+          );
+          const cached = Option.getOrThrow(yield* SubscriptionRef.get(state));
+          expect(cached.source).toBe("cache");
+          expect(cached.synchronizedGeneration).toBeNull();
+
+          const firstDelta = yield* SubscriptionRef.changes(state).pipe(
+            Stream.filter(
+              Option.exists((projection) => projection.latestEvent.type === "settingsUpdated"),
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* Queue.offer(events, {
+            version: 1,
+            type: "settingsUpdated",
+            payload: { settings: CONFIG.settings },
+          });
+          const afterDelta = Option.getOrThrow(Option.getOrThrow(yield* Fiber.join(firstDelta)));
+          expect(afterDelta.source).toBe("cache");
+          expect(afterDelta.synchronizedGeneration).toBeNull();
+
+          const firstSnapshot = yield* SubscriptionRef.changes(state).pipe(
+            Stream.filter(
+              Option.exists(
+                (projection) =>
+                  projection.latestEvent.type === "snapshot" &&
+                  projection.synchronizedGeneration === 1,
+              ),
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* Queue.offer(events, snapshotEvent(CONFIG));
+          const generationOne = Option.getOrThrow(
+            Option.getOrThrow(yield* Fiber.join(firstSnapshot)),
+          );
+          expect(generationOne.source).toBe("live");
+          expect(
+            isCurrentServerConfigProjection(
+              yield* SubscriptionRef.get(connectionState),
+              generationOne,
+            ),
+          ).toBe(true);
+
+          yield* SubscriptionRef.update(connectionState, (current) => ({
+            ...current,
+            generation: 2,
+          }));
+          expect(
+            isCurrentServerConfigProjection(
+              yield* SubscriptionRef.get(connectionState),
+              generationOne,
+            ),
+          ).toBe(false);
+
+          const secondDelta = yield* SubscriptionRef.changes(state).pipe(
+            Stream.filter(
+              Option.exists((projection) => projection.latestEvent.type === "settingsUpdated"),
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* Queue.offer(events, {
+            version: 1,
+            type: "settingsUpdated",
+            payload: { settings: CONFIG.settings },
+          });
+          const generationTwoBeforeSnapshot = Option.getOrThrow(
+            Option.getOrThrow(yield* Fiber.join(secondDelta)),
+          );
+          expect(generationTwoBeforeSnapshot.synchronizedGeneration).toBe(1);
+          expect(
+            isCurrentServerConfigProjection(
+              yield* SubscriptionRef.get(connectionState),
+              generationTwoBeforeSnapshot,
+            ),
+          ).toBe(false);
+
+          const generationTwoSnapshot = yield* SubscriptionRef.changes(state).pipe(
+            Stream.filter(Option.exists((projection) => projection.synchronizedGeneration === 2)),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* Queue.offer(events, snapshotEvent(CONFIG));
+          const generationTwo = Option.getOrThrow(
+            Option.getOrThrow(yield* Fiber.join(generationTwoSnapshot)),
+          );
+          expect(
+            isCurrentServerConfigProjection(
+              yield* SubscriptionRef.get(connectionState),
+              generationTwo,
+            ),
+          ).toBe(true);
+        }),
+      );
     }),
   );
 

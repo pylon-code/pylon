@@ -370,11 +370,12 @@ export class GitPullRequestMaterializationError extends Schema.TaggedErrorClass<
     headRepository: Schema.NullOr(TrimmedNonEmptyStringSchema),
     headBranch: TrimmedNonEmptyStringSchema,
     localBranch: TrimmedNonEmptyStringSchema,
+    changeRequestName: Schema.optional(TrimmedNonEmptyStringSchema),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Failed to materialize pull request #${this.pullRequestNumber} branch ${this.headBranch} as ${this.localBranch}.`;
+    return `Failed to materialize ${this.changeRequestName ?? "change request"} #${this.pullRequestNumber} branch ${this.headBranch} as ${this.localBranch}.`;
   }
 }
 

@@ -595,18 +595,23 @@ testLayer("FollowUpService", (it) => {
       const firstProjectId = ProjectId.make("project-path-owner-first");
       const secondProjectId = ProjectId.make("project-path-owner-second");
       const sharedPath = "/tmp/followup-ambiguous-owner";
+      const missingPath = "/tmp/followup-missing-owner";
       yield* seedProject(firstProjectId, sharedPath);
       yield* seedProject(secondProjectId, "/tmp/followup-second-root");
       yield* seedThread(ThreadId.make("thread-path-owner-second"), secondProjectId, sharedPath);
 
-      const missing = yield* service
-        .projectIdForRepositoryPath("/tmp/followup-missing-owner")
-        .pipe(Effect.flip);
+      const missing = yield* service.projectIdForRepositoryPath(missingPath).pipe(Effect.flip);
       const ambiguous = yield* service.projectIdForRepositoryPath(sharedPath).pipe(Effect.flip);
 
       assert.equal(missing.code, "invalid-project");
+      assert.equal(
+        missing.message,
+        `No project owns repository path ${missingPath} in this environment.`,
+      );
+      assert.equal(/project is no longer available/i.test(missing.message), false);
       assert.equal(ambiguous.code, "invalid-project");
       assert.match(ambiguous.message, /multiple projects/i);
+      assert.notEqual(missing.message, ambiguous.message);
     }),
   );
 

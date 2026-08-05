@@ -1,4 +1,5 @@
 import type { FollowUp, FollowUpKind } from "@t3tools/contracts";
+import { sha256 } from "@noble/hashes/sha2";
 
 export const FOLLOW_UP_KIND_LABELS: Readonly<Record<FollowUpKind, string>> = {
   blocker: "Blockers",
@@ -78,39 +79,117 @@ function followUpEvidencePrompt(item: FollowUp): string {
         .join("\n");
 }
 
-const FOLLOW_UP_PROMPT_FRAMES = {
-  work: {
-    start: "<!-- PYLON-OWNED FOLLOW-UP WORK START -->",
-    end: "<!-- PYLON-OWNED FOLLOW-UP WORK END -->",
-  },
-  validation: {
-    start: "<!-- PYLON-OWNED FOLLOW-UP VALIDATION START -->",
-    end: "<!-- PYLON-OWNED FOLLOW-UP VALIDATION END -->",
-  },
-} as const;
+function followUpResolutionPrompt(item: FollowUp): ReadonlyArray<string> {
+  if (item.resolution === null) return [];
 
-type FollowUpPromptMode = keyof typeof FOLLOW_UP_PROMPT_FRAMES;
+  const commitSha = item.resolution.commitSha?.trim() ?? "";
+  return [
+    "",
+    "### Recorded resolution",
+    item.resolution.note,
+    ...(item.resolution.threadId ? [`Resolution thread: ${item.resolution.threadId}`] : []),
+    ...(commitSha.length > 0 ? [`Resolution commit: ${commitSha}`] : []),
+  ];
+}
+
+const FOLLOW_UP_PROMPT_FRAME_VERSION = "v1";
+const FOLLOW_UP_PROMPT_FRAME_HEADER_PREFIX = `<!-- PYLON-OWNED FOLLOW-UP ${FOLLOW_UP_PROMPT_FRAME_VERSION} `;
+const FOLLOW_UP_PROMPT_FRAME_FOOTER_PREFIX = `<!-- /PYLON-OWNED FOLLOW-UP ${FOLLOW_UP_PROMPT_FRAME_VERSION} `;
+const FOLLOW_UP_PROMPT_FRAME_FOOTER_PATTERN =
+  /^<!-- \/PYLON-OWNED FOLLOW-UP v1 mode=(work|validation) utf16=(0|[1-9]\d*) sha256=([0-9a-f]{64}) -->/;
+
+type FollowUpPromptMode = "work" | "validation";
+
+function encodeUtf16LittleEndian(value: string): Uint8Array {
+  const bytes = new Uint8Array(value.length * 2);
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    bytes[index * 2] = codeUnit & 0xff;
+    bytes[index * 2 + 1] = codeUnit >>> 8;
+  }
+  return bytes;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  let hex = "";
+  for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+  return hex;
+}
+
+function followUpPromptChecksum(mode: FollowUpPromptMode, prompt: string): string {
+  const checksumInput = [
+    "pylon-owned-follow-up",
+    FOLLOW_UP_PROMPT_FRAME_VERSION,
+    mode,
+    String(prompt.length),
+    prompt,
+  ].join("\0");
+  return bytesToHex(sha256(encodeUtf16LittleEndian(checksumInput)));
+}
+
+function followUpPromptFrameMarker(
+  boundary: "header" | "footer",
+  mode: FollowUpPromptMode,
+  promptLength: number,
+  checksum: string,
+): string {
+  const prefix =
+    boundary === "header"
+      ? FOLLOW_UP_PROMPT_FRAME_HEADER_PREFIX
+      : FOLLOW_UP_PROMPT_FRAME_FOOTER_PREFIX;
+  return `${prefix}mode=${mode} utf16=${promptLength} sha256=${checksum} -->`;
+}
 
 function frameFollowUpPrompt(mode: FollowUpPromptMode, prompt: string): string {
-  const frame = FOLLOW_UP_PROMPT_FRAMES[mode];
-  return [frame.start, prompt, frame.end].join("\n");
+  const checksum = followUpPromptChecksum(mode, prompt);
+  return [
+    followUpPromptFrameMarker("header", mode, prompt.length, checksum),
+    prompt,
+    followUpPromptFrameMarker("footer", mode, prompt.length, checksum),
+  ].join("\n");
 }
 
 function findOwnedFollowUpPromptRange(
   prompt: string,
 ): { readonly start: number; readonly end: number } | null {
-  let firstRange: { readonly start: number; readonly end: number } | null = null;
-  for (const frame of Object.values(FOLLOW_UP_PROMPT_FRAMES)) {
-    const start = prompt.indexOf(frame.start);
-    if (start < 0) continue;
-    const endMarker = prompt.indexOf(frame.end, start + frame.start.length);
-    if (endMarker < 0) continue;
-    const range = { start, end: endMarker + frame.end.length };
-    if (firstRange === null || range.start < firstRange.start) {
-      firstRange = range;
+  let searchFrom = prompt.length;
+  while (searchFrom >= 0) {
+    const footerStart = prompt.lastIndexOf(FOLLOW_UP_PROMPT_FRAME_FOOTER_PREFIX, searchFrom);
+    if (footerStart < 0) return null;
+    searchFrom = footerStart - 1;
+
+    const footerMatch = FOLLOW_UP_PROMPT_FRAME_FOOTER_PATTERN.exec(prompt.slice(footerStart));
+    if (footerMatch === null) continue;
+
+    const modeValue = footerMatch[1];
+    const promptLengthValue = footerMatch[2];
+    const checksum = footerMatch[3];
+    if (
+      (modeValue !== "work" && modeValue !== "validation") ||
+      promptLengthValue === undefined ||
+      checksum === undefined
+    ) {
+      continue;
     }
+    const mode = modeValue;
+    const promptLength = Number(promptLengthValue);
+    if (!Number.isSafeInteger(promptLength) || promptLength > prompt.length) continue;
+
+    const bodyEnd = footerStart - 1;
+    if (bodyEnd < 0 || prompt[bodyEnd] !== "\n") continue;
+    const bodyStart = bodyEnd - promptLength;
+    if (bodyStart < 0) continue;
+
+    const expectedHeader = followUpPromptFrameMarker("header", mode, promptLength, checksum);
+    const frameStart = bodyStart - expectedHeader.length - 1;
+    if (frameStart < 0 || prompt.slice(frameStart, bodyStart) !== `${expectedHeader}\n`) continue;
+
+    const body = prompt.slice(bodyStart, bodyEnd);
+    if (followUpPromptChecksum(mode, body) !== checksum) continue;
+
+    return { start: frameStart, end: footerStart + footerMatch[0].length };
   }
-  return firstRange;
+  return null;
 }
 
 function mergeOwnedFollowUpPrompt(existingPrompt: string, dossier: string): string {
@@ -146,6 +225,7 @@ export function buildFollowUpThreadPrompt(item: FollowUp): string {
       "",
       "### Evidence",
       followUpEvidencePrompt(item),
+      ...followUpResolutionPrompt(item),
       "",
       `When the work is complete, resolve follow-up ${item.id} with an evidence-backed note from this thread.`,
     ].join("\n"),
@@ -173,6 +253,7 @@ export function buildFollowUpValidationPrompt(item: FollowUp): string {
       "",
       "### Existing evidence",
       followUpEvidencePrompt(item),
+      ...followUpResolutionPrompt(item),
     ].join("\n"),
   );
 }

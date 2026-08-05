@@ -204,9 +204,12 @@ Ships behind a toggle in the existing `BetaSettingsPanel.tsx` (precedent: sideba
 3. gate enforcement.
 
 A half-disabled state where agents file items the developer cannot see is worse than either
-extreme. UI availability is tri-state while environments connect: pending renders a loading
-surface, available renders the list, and unavailable redirects away. Disabling is live for UI,
-handlers, streams, and the gate; only MCP tool discovery waits for restart as described above.
+extreme. UI availability is tri-state per environment, and cached settings never settle it: the
+client waits for a server-config snapshot tagged with the active connection generation. Pending
+states carry a reason, so initial connection/config bootstrap, reconnect backoff, and recoverable
+offline state render distinct truthful status. Available renders the list; only permanently
+settled unavailability redirects away. Disabling is live for UI, handlers, streams, and the gate;
+only MCP tool discovery waits for restart as described above.
 
 ## Architecture
 
@@ -239,17 +242,22 @@ the follow-ups module so the shipping workflow does not duplicate them.
 
 The service treats project identity as an authorization boundary. Item, thread, snapshot, stream,
 and gate queries validate the requested project. Repository-path lookup accepts exactly one
-distinct matching project across root and worktree paths; zero or multiple matches fail closed.
+distinct matching project across root and worktree paths; zero owners report the repository path,
+while multiple owners remain a distinct fail-closed error.
 Subscribers attach before snapshots are read, both for follow-ups and for the settings stream that
-controls their availability, so a concurrent update cannot fall into a snapshot/subscribe gap.
+controls their availability, so a concurrent update cannot fall into a snapshot/subscribe gap. A
+live config snapshot also records its ephemeral connection generation; delta events cannot promote
+cached or prior-generation settings into current eligibility.
 
 ## Decisions retained from design
 
 1. **Acting on an item**: **Start thread** and **Validate** seed the composer with distinct,
-   Pylon-owned framed sections. Switching modes replaces only the matching owned frame and
-   preserves every byte outside it. The resulting normal thread can later be linked in resolution
-   or validation evidence. No `in_progress` state; no auto-linking of drafts (a draft has no
-   thread identity until first send — the same trap Kanban hit).
+   Pylon-owned framed sections. Frames duplicate their mode, length, and SHA-256 metadata; only a
+   fully validated rightmost frame is replaceable. Switching modes therefore ignores marker text
+   inside dossier fields, preserves corrupt or unverifiable frame-looking user content, and keeps
+   every byte outside the owned frame. The resulting normal thread can later be linked in
+   resolution or validation evidence. No `in_progress` state; no auto-linking of drafts (a draft
+   has no thread identity until first send — the same trap Kanban hit).
 2. **Resolved vs waived**: separate states with different permissions; agents may resolve directly
    and may produce moot only through evidence-backed validation, but never waive.
 3. **Validation timing**: on demand only; no provider launch at the gate and no scheduled reactor

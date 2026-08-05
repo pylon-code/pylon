@@ -33,6 +33,7 @@ import {
   TextGenerationError,
 } from "@t3tools/contracts";
 import * as FollowUpService from "../followups/FollowUpService.ts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -627,6 +628,7 @@ function makeManager(input?: {
   followUpBlockers?: ReadonlyArray<FollowUp>;
   followUpProjectId?: ProjectId;
   followUpProjectLookupError?: FollowUpOperationError;
+  followUpService?: FollowUpService.FollowUpService["Service"];
   sourceControlProviderKind?: SourceControlProviderKind;
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
@@ -638,6 +640,31 @@ function makeManager(input?: {
   });
 
   const serverSettingsLayer = ServerSettings.ServerSettingsService.layerTest(input?.serverSettings);
+  const followUpServiceLayer = input?.followUpService
+    ? Layer.succeed(FollowUpService.FollowUpService, input.followUpService)
+    : Layer.mock(FollowUpService.FollowUpService)({
+        file: () => Effect.die("FollowUpService.file is not used by GitManager tests"),
+        updateStatus: () =>
+          Effect.die("FollowUpService.updateStatus is not used by GitManager tests"),
+        recordValidation: () =>
+          Effect.die("FollowUpService.recordValidation is not used by GitManager tests"),
+        getSnapshot: () =>
+          Effect.die("FollowUpService.getSnapshot is not used by GitManager tests"),
+        openBlockersForBranch: (projectId, branchRef) =>
+          Effect.sync(() => {
+            followUpQueries.push({ projectId, branchRef });
+            return (input?.followUpBlockers ?? []).filter(
+              (item) => item.projectId === projectId && item.gate?.ref === branchRef,
+            );
+          }),
+        stream: () => Stream.die("FollowUpService.stream is not used by GitManager tests"),
+        projectIdForThread: () =>
+          Effect.die("FollowUpService.projectIdForThread is not used by GitManager tests"),
+        projectIdForRepositoryPath: () =>
+          input?.followUpProjectLookupError
+            ? Effect.fail(input.followUpProjectLookupError)
+            : Effect.succeed(input?.followUpProjectId ?? ProjectId.make("project-1")),
+      });
 
   const vcsDriverLayer = GitVcsDriver.layer.pipe(
     Layer.provideMerge(VcsProcess.layer),
@@ -678,28 +705,7 @@ function makeManager(input?: {
         runForThread: () => Effect.succeed({ status: "no-script" as const }),
       },
     ),
-    Layer.mock(FollowUpService.FollowUpService)({
-      file: () => Effect.die("FollowUpService.file is not used by GitManager tests"),
-      updateStatus: () =>
-        Effect.die("FollowUpService.updateStatus is not used by GitManager tests"),
-      recordValidation: () =>
-        Effect.die("FollowUpService.recordValidation is not used by GitManager tests"),
-      getSnapshot: () => Effect.die("FollowUpService.getSnapshot is not used by GitManager tests"),
-      openBlockersForBranch: (projectId, branchRef) =>
-        Effect.sync(() => {
-          followUpQueries.push({ projectId, branchRef });
-          return (input?.followUpBlockers ?? []).filter(
-            (item) => item.projectId === projectId && item.gate?.ref === branchRef,
-          );
-        }),
-      stream: () => Stream.die("FollowUpService.stream is not used by GitManager tests"),
-      projectIdForThread: () =>
-        Effect.die("FollowUpService.projectIdForThread is not used by GitManager tests"),
-      projectIdForRepositoryPath: () =>
-        input?.followUpProjectLookupError
-          ? Effect.fail(input.followUpProjectLookupError)
-          : Effect.succeed(input?.followUpProjectId ?? ProjectId.make("project-1")),
-    }),
+    followUpServiceLayer,
     vcsDriverLayer,
     serverSettingsLayer,
   ).pipe(Layer.provideMerge(sourceControlRegistryLayer), Layer.provideMerge(NodeServices.layer));
@@ -739,10 +745,16 @@ function followUpBlocker(ref: string, title: string): FollowUp {
 
 const asThreadId = (threadId: string) => threadId as ThreadId;
 
-const GitManagerTestLayer = GitVcsDriver.layer.pipe(
-  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-git-manager-test-" })),
-  Layer.provideMerge(VcsProcess.layer),
-  Layer.provideMerge(NodeServices.layer),
+const GitManagerTestLayer = Layer.merge(
+  GitVcsDriver.layer.pipe(
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-git-manager-test-" })),
+    Layer.provideMerge(VcsProcess.layer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+  FollowUpService.layer.pipe(
+    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(NodeServices.layer),
+  ),
 );
 
 it.layer(GitManagerTestLayer)("GitManager", (it) => {
@@ -2358,6 +2370,48 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("shipping gate surfaces the real missing repository owner error", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const branch = "feature/gate-real-missing-owner";
+      yield* runGit(repoDir, ["checkout", "-b", branch]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", branch]);
+
+      const realFollowUpService = yield* FollowUpService.FollowUpService;
+      const { manager, ghCalls, followUpQueries, sourceControlProviderResolutions } =
+        yield* makeManager({
+          serverSettings: { followUpsEnabled: true },
+          followUpService: realFollowUpService,
+        });
+
+      const error = yield* runStackedAction(manager, {
+        cwd: repoDir,
+        action: "create_pr",
+      }).pipe(Effect.flip);
+
+      if (error._tag !== "GitManagerError") {
+        return yield* Effect.die(error);
+      }
+      const expected = `No project owns repository path ${repoDir} in this environment.`;
+      expect(error.operation).toBe("runPrStep");
+      expect(error.detail).toBe(expected);
+      expect(error.message).toContain(expected);
+      expect(error.message).not.toMatch(/project is no longer available/i);
+      expect(error.cause).toMatchObject({
+        _tag: "FollowUpOperationError",
+        code: "invalid-project",
+        message: expected,
+      });
+      expect(followUpQueries).toEqual([]);
+      expect(sourceControlProviderResolutions).toEqual([]);
+      expect(ghCalls.some((call) => call.startsWith("pr list "))).toBe(false);
+      expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
+    }),
+  );
+
   it.effect("shipping gate blocks PR creation before provider lookup when blockers are open", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
@@ -3583,7 +3637,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
-  it.effect("preserves both branch materialization failures when the fallback also fails", () =>
+  it.effect("uses GitLab terminology while preserving both branch materialization failures", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
@@ -3592,12 +3646,13 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
 
       const missingForkDir = NodePath.join(repoDir, "missing-fork.git");
-      const { manager } = yield* makeManager({
+      const { manager, sourceControlProviderResolutions } = yield* makeManager({
+        sourceControlProviderKind: "gitlab",
         ghScenario: {
           pullRequest: {
             number: 93,
             title: "Missing fork branch",
-            url: "https://github.com/pingdotgg/codething-mvp/pull/93",
+            url: "https://gitlab.com/pingdotgg/codething-mvp/-/merge_requests/93",
             baseRefName: "main",
             headRefName: "feature/missing-fork-branch",
             state: "open",
@@ -3639,6 +3694,16 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         expect.objectContaining({ _tag: "GitCommandError" }),
       ]);
       expect(error.cause.cause).toBe(error.cause.errors[0]);
+      expect(sourceControlProviderResolutions).toContain(repoDir);
+      const userFacingMessages = [
+        error.message.replace(error.localBranch, ""),
+        error.cause.message,
+      ];
+      for (const message of userFacingMessages) {
+        expect(message).toMatch(/\b(?:MR|merge request)\b/i);
+        expect(message).not.toMatch(/\bPR\b/i);
+        expect(message).not.toMatch(/pull request/i);
+      }
     }),
   );
 
@@ -4151,18 +4216,19 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
-  it.effect("rejects worktree prep when the PR head branch is checked out in the main repo", () =>
+  it.effect("uses GitLab terminology when the MR head branch is checked out in the main repo", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
       yield* runGit(repoDir, ["checkout", "-b", "feature/pr-root-only"]);
 
-      const { manager } = yield* makeManager({
+      const { manager, sourceControlProviderResolutions } = yield* makeManager({
+        sourceControlProviderKind: "gitlab",
         ghScenario: {
           pullRequest: {
             number: 79,
             title: "Root-only PR",
-            url: "https://github.com/pingdotgg/codething-mvp/pull/79",
+            url: "https://gitlab.com/pingdotgg/codething-mvp/-/merge_requests/79",
             baseRefName: "main",
             headRefName: "feature/pr-root-only",
             state: "open",
@@ -4180,6 +4246,10 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       );
 
       expect(errorMessage).toContain("already checked out in the main repo");
+      expect(errorMessage).toMatch(/\b(?:MR|merge request)\b/i);
+      expect(errorMessage).not.toMatch(/\bPR\b/i);
+      expect(errorMessage).not.toMatch(/pull request/i);
+      expect(sourceControlProviderResolutions).toContain(repoDir);
     }),
   );
 

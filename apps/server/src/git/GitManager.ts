@@ -815,6 +815,7 @@ export const make = Effect.gen(function* () {
   const materializePullRequestHeadBranch = (
     cwd: string,
     pullRequest: ResolvedPullRequest & PullRequestHeadRemoteInfo,
+    terms: ChangeRequestTerminology,
     localBranch = pullRequest.headBranch,
   ) =>
     materializePullRequestHeadBranchBase(cwd, pullRequest, localBranch).pipe(
@@ -834,9 +835,10 @@ export const make = Effect.gen(function* () {
                   headRepository: resolveHeadRepositoryNameWithOwner(pullRequest),
                   headBranch: pullRequest.headBranch,
                   localBranch,
+                  changeRequestName: terms.singular,
                   cause: new AggregateError(
                     [primaryCause, fallbackCause],
-                    `Repository-head and pull-request-ref fetches both failed for pull request #${pullRequest.number}.`,
+                    `Repository-head and ${terms.singular} ref fetches both failed for ${terms.singular} #${pullRequest.number}.`,
                     { cause: primaryCause },
                   ),
                 }),
@@ -1776,14 +1778,22 @@ export const make = Effect.gen(function* () {
     return yield* Effect.gen(function* () {
       const normalizedReference = normalizePullRequestReference(input.reference);
       const rootWorktreePath = yield* canonicalizeExistingPath(input.cwd);
-      const pullRequestSummary = yield* (yield* sourceControlProvider(input.cwd)).getChangeRequest({
+      const provider = yield* sourceControlProvider(input.cwd);
+      const terms = getChangeRequestTerminologyForKind(provider.kind);
+      const pullRequestSummary = yield* provider.getChangeRequest({
         cwd: input.cwd,
         reference: normalizedReference,
       });
       const pullRequest = toResolvedPullRequest(pullRequestSummary);
+      const mainWorktreeConflictError = () =>
+        new GitManagerError({
+          operation: "preparePullRequestThread",
+          cwd: input.cwd,
+          detail: `This ${terms.shortLabel} branch is already checked out in the main repo. Use Local, or switch the main repo off that branch before creating a worktree thread.`,
+        });
 
       if (input.mode === "local") {
-        yield* (yield* sourceControlProvider(input.cwd)).checkoutChangeRequest({
+        yield* provider.checkoutChangeRequest({
           cwd: input.cwd,
           reference: normalizedReference,
           force: true,
@@ -1867,17 +1877,13 @@ export const make = Effect.gen(function* () {
         };
       }
       if (existingBranchBeforeFetchPath === rootWorktreePath) {
-        return yield* new GitManagerError({
-          operation: "preparePullRequestThread",
-          cwd: input.cwd,
-          detail:
-            "This PR branch is already checked out in the main repo. Use Local, or switch the main repo off that branch before creating a worktree thread.",
-        });
+        return yield* mainWorktreeConflictError();
       }
 
       yield* materializePullRequestHeadBranch(
         input.cwd,
         pullRequestWithRemoteInfo,
+        terms,
         localPullRequestBranch,
       );
 
@@ -1897,12 +1903,7 @@ export const make = Effect.gen(function* () {
         };
       }
       if (existingBranchAfterFetchPath === rootWorktreePath) {
-        return yield* new GitManagerError({
-          operation: "preparePullRequestThread",
-          cwd: input.cwd,
-          detail:
-            "This PR branch is already checked out in the main repo. Use Local, or switch the main repo off that branch before creating a worktree thread.",
-        });
+        return yield* mainWorktreeConflictError();
       }
 
       const worktree = yield* gitCore.createWorktree({

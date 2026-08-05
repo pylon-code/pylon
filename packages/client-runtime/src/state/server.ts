@@ -30,6 +30,7 @@ import {
   scheduleAtomCommandEffect,
 } from "./runtime.ts";
 import { EnvironmentRegistry } from "../connection/registry.ts";
+import type { SupervisorConnectionState } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
@@ -223,11 +224,14 @@ export interface ServerConfigProjection {
   readonly config: ServerConfig;
   readonly latestEvent: ServerConfigStreamEvent;
   readonly source: "cache" | "live";
+  /** Connection generation whose live snapshot established this projection. */
+  readonly synchronizedGeneration: number | null;
 }
 
 export function applyServerConfigProjection(
   current: Option.Option<ServerConfigProjection>,
   event: ServerConfigStreamEvent,
+  synchronizedGeneration: number | null = null,
 ): Option.Option<ServerConfigProjection> {
   switch (event.type) {
     case "snapshot":
@@ -235,36 +239,48 @@ export function applyServerConfigProjection(
         config: event.config,
         latestEvent: event,
         source: "live",
+        synchronizedGeneration,
       });
     case "keybindingsUpdated":
       return Option.map(current, (projection) => ({
+        ...projection,
         config: {
           ...projection.config,
           keybindings: event.payload.keybindings,
           issues: event.payload.issues,
         },
         latestEvent: event,
-        source: "live",
       }));
     case "providerStatuses":
       return Option.map(current, (projection) => ({
+        ...projection,
         config: {
           ...projection.config,
           providers: event.payload.providers,
         },
         latestEvent: event,
-        source: "live",
       }));
     case "settingsUpdated":
       return Option.map(current, (projection) => ({
+        ...projection,
         config: {
           ...projection.config,
           settings: event.payload.settings,
         },
         latestEvent: event,
-        source: "live",
       }));
   }
+}
+
+export function isCurrentServerConfigProjection(
+  connection: SupervisorConnectionState,
+  projection: ServerConfigProjection | null,
+): boolean {
+  return (
+    connection.phase === "connected" &&
+    projection?.source === "live" &&
+    projection.synchronizedGeneration === connection.generation
+  );
 }
 
 export function projectServerConfig(
@@ -307,6 +323,7 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
         config,
         latestEvent: cachedConfigSnapshotEvent(config),
         source: "cache" as const,
+        synchronizedGeneration: null,
       })),
     );
     const persistence = yield* Queue.sliding<ServerConfig>(1);
@@ -349,7 +366,15 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
     yield* subscribe(WS_METHODS.subscribeServerConfig, {}).pipe(
       Stream.runForEach((event) =>
         Effect.gen(function* () {
-          const next = applyServerConfigProjection(yield* SubscriptionRef.get(state), event);
+          const synchronizedGeneration =
+            event.type === "snapshot"
+              ? (yield* SubscriptionRef.get(supervisor.state)).generation
+              : null;
+          const next = applyServerConfigProjection(
+            yield* SubscriptionRef.get(state),
+            event,
+            synchronizedGeneration,
+          );
           if (Option.isNone(next)) {
             return;
           }

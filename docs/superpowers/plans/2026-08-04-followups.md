@@ -15,13 +15,15 @@
 > rejects handlers, ends streams, and disables the gate.
 >
 > The shipped web lifecycle includes **Start thread**, **Validate**, **Reopen**, resolution and
-> validation evidence, tri-state route bootstrap, and an accessible unavailable gate status.
-> Start/Validate draft prompts use distinct framed Pylon-owned sentinels and preserve unrelated
-> draft bytes. The sole shipping gate is `GitManager.runPrStep`; it uses the resolved branch and an
+> validation evidence, current-generation config eligibility, reasoned reconnect/offline route
+> recovery, and an accessible unavailable gate status. Start/Validate draft prompts use
+> length/SHA-256-validated Pylon-owned frames and preserve every unrelated or unverifiable draft
+> byte. The sole shipping gate is `GitManager.runPrStep`; it uses the resolved branch and an
 > unambiguous persisted repository owner, runs before provider resolution or change-request lookup,
-> and fails closed. It never launches automatic provider validation. That accepted residual is
-> deliberate: validation is an explicit visible thread flow until a durable, cancellable,
-> read-only provider-job boundary exists.
+> and fails closed. Post-resolution failures use the provider's change-request terminology. It
+> never launches automatic provider validation. That accepted residual is deliberate: validation
+> is an explicit visible thread flow until a durable, cancellable, read-only provider-job boundary
+> exists.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

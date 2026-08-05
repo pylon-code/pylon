@@ -26,7 +26,8 @@ project, but the service verifies ownership; the WebSocket server stamps human p
 does not accept a project or provenance from the tool caller: it derives both from the invocation
 thread and stamps agent provenance. Git derives gate scope from the persisted project/worktree
 projection for the repository path. No list, stream, mutation, replay, or same-named branch query
-falls back to environment-wide data.
+falls back to environment-wide data. A path with no owner reports that exact authority failure;
+multiple owners remain a separate fail-closed condition.
 
 ## Persistence and concurrency
 
@@ -48,6 +49,11 @@ command. `still-needed` and `uncertain` increment the revision but stay open. `m
 evidence and atomically records the validation and closes the item. Direct status changes cannot
 mark an item moot.
 
+Start-thread and validation dossiers share the composer with arbitrary user text. Pylon frames its
+owned section with duplicated mode, UTF-16 length, and SHA-256 metadata and replaces only the
+rightmost frame that validates completely. Marker strings inside dossier fields cannot terminate
+the frame; incomplete, corrupt, or otherwise unverifiable frame-looking text remains user content.
+
 ## Authority and lifecycle
 
 Items are `blocker`, `open`, or `idea`. A blocker names the branch it gates; only unresolved
@@ -67,6 +73,13 @@ so enabling the flag requires an environment restart before agents can discover 
 registered tools. Disabling immediately hides the UI, rejects already registered handlers, and
 causes existing WebSocket subscriptions to fail before another item can be emitted; the gate also
 honors the live disabled setting.
+
+The client may retain server config as a reconnect cache, but cached or prior-generation settings
+cannot decide Follow-ups eligibility. Each live config snapshot records the connection generation
+that produced it; settings/provider/keybinding deltas retain that identity and cannot establish it.
+The web client exposes Follow-ups only when the synchronized generation matches the active
+connection. Bootstrap, reconnect backoff, and offline recovery remain pending with distinct status
+copy; only settled disabled, failed, or empty environments are redirectable.
 
 There is one shipping-boundary call site: [`GitManager.runPrStep`][git-manager] resolves the
 authoritative final branch first, then calls the project-scoped gate before provider resolution and

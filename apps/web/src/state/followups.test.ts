@@ -14,16 +14,19 @@ describe("follow-up environment availability", () => {
     environmentId: EnvironmentId.make("environment-enabled"),
     connection: { phase: "connected" as const },
     serverConfig: { settings: { followUpsEnabled: true } },
+    serverConfigSynchronized: true,
   };
   const connectedDisabled = {
     environmentId: EnvironmentId.make("environment-disabled"),
     connection: { phase: "connected" as const },
     serverConfig: { settings: { followUpsEnabled: false } },
+    serverConfigSynchronized: true,
   };
   const reconnectingEnabled = {
     environmentId: EnvironmentId.make("environment-reconnecting"),
     connection: { phase: "reconnecting" as const },
     serverConfig: { settings: { followUpsEnabled: true } },
+    serverConfigSynchronized: true,
   };
 
   it("requires both a connected environment and its enabled setting", () => {
@@ -34,8 +37,51 @@ describe("follow-up environment availability", () => {
       isFollowUpEnvironmentAvailable({
         connection: { phase: "connected" },
         serverConfig: null,
+        serverConfigSynchronized: false,
       }),
     ).toBe(false);
+  });
+
+  it("waits for current-generation config instead of trusting cached feature settings", () => {
+    const cachedDisabled = {
+      connection: { phase: "connected" as const },
+      serverConfig: { settings: { followUpsEnabled: false } },
+      serverConfigSynchronized: false,
+    };
+    const cachedEnabled = {
+      connection: { phase: "connected" as const },
+      serverConfig: { settings: { followUpsEnabled: true } },
+      serverConfigSynchronized: false,
+    };
+
+    expect(resolveFollowUpAvailability(true, [cachedDisabled])).toEqual({
+      status: "pending",
+      reason: "server-config",
+    });
+    expect(resolveFollowUpAvailability(true, [cachedEnabled])).toEqual({
+      status: "pending",
+      reason: "server-config",
+    });
+    expect(isFollowUpEnvironmentAvailable(cachedEnabled)).toBe(false);
+
+    expect(
+      resolveFollowUpAvailability(true, [
+        {
+          ...cachedDisabled,
+          serverConfig: { settings: { followUpsEnabled: true } },
+          serverConfigSynchronized: true,
+        },
+      ]),
+    ).toEqual({ status: "available" });
+    expect(
+      resolveFollowUpAvailability(true, [
+        {
+          ...cachedEnabled,
+          serverConfig: { settings: { followUpsEnabled: false } },
+          serverConfigSynchronized: true,
+        },
+      ]),
+    ).toEqual({ status: "unavailable", reason: "disabled" });
   });
 
   it("filters project environments and exposes the route when any environment qualifies", () => {
@@ -53,7 +99,7 @@ describe("follow-up environment availability", () => {
       label: "catalog bootstrap",
       catalogReady: false,
       environments: [],
-      expected: "pending",
+      expected: { status: "pending", reason: "catalog" },
     },
     {
       label: "connection bootstrap",
@@ -62,9 +108,10 @@ describe("follow-up environment availability", () => {
         {
           connection: { phase: "connecting" as const },
           serverConfig: null,
+          serverConfigSynchronized: false,
         },
       ],
-      expected: "pending",
+      expected: { status: "pending", reason: "connecting" },
     },
     {
       label: "available connection awaiting startup",
@@ -73,15 +120,28 @@ describe("follow-up environment availability", () => {
         {
           connection: { phase: "available" as const },
           serverConfig: null,
+          serverConfigSynchronized: false,
         },
       ],
-      expected: "pending",
+      expected: { status: "pending", reason: "connecting" },
     },
     {
-      label: "reconnection bootstrap",
+      label: "persistent reconnect backoff",
       catalogReady: true,
       environments: [reconnectingEnabled],
-      expected: "pending",
+      expected: { status: "pending", reason: "reconnecting" },
+    },
+    {
+      label: "recoverable offline environment",
+      catalogReady: true,
+      environments: [
+        {
+          connection: { phase: "offline" as const },
+          serverConfig: { settings: { followUpsEnabled: true } },
+          serverConfigSynchronized: true,
+        },
+      ],
+      expected: { status: "pending", reason: "offline" },
     },
     {
       label: "config bootstrap",
@@ -90,37 +150,53 @@ describe("follow-up environment availability", () => {
         {
           connection: { phase: "connected" as const },
           serverConfig: null,
+          serverConfigSynchronized: false,
         },
       ],
-      expected: "pending",
+      expected: { status: "pending", reason: "server-config" },
     },
     {
       label: "enabled environment",
       catalogReady: true,
       environments: [connectedEnabled],
-      expected: "available",
+      expected: { status: "available" },
     },
     {
       label: "available wins over pending",
       catalogReady: true,
       environments: [reconnectingEnabled, connectedEnabled],
-      expected: "available",
+      expected: { status: "available" },
     },
     {
       label: "settled disabled environment",
       catalogReady: true,
       environments: [connectedDisabled],
-      expected: "unavailable",
+      expected: { status: "unavailable", reason: "disabled" },
+    },
+    {
+      label: "settled connection error",
+      catalogReady: true,
+      environments: [
+        {
+          connection: { phase: "error" as const },
+          serverConfig: null,
+          serverConfigSynchronized: false,
+        },
+      ],
+      expected: { status: "unavailable", reason: "connection-error" },
     },
     {
       label: "no configured environments",
       catalogReady: true,
       environments: [],
-      expected: "unavailable",
+      expected: { status: "unavailable", reason: "no-environments" },
     },
-  ] as const)("reports $expected during $label", ({ catalogReady, environments, expected }) => {
-    expect(resolveFollowUpAvailability(catalogReady, environments)).toBe(expected);
-  });
+  ] as const)(
+    "reports the truthful state during $label",
+    ({ catalogReady, environments, expected }) => {
+      expect(resolveFollowUpAvailability(catalogReady, environments)).toEqual(expected);
+    },
+  );
 
   it("does not let an ineligible environment block eligible shell bootstrap", () => {
     expect(

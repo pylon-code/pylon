@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import {
   VcsCreateWorktreeInput,
   GitPreparePullRequestThreadInput,
+  GitPullRequestMaterializationError,
   GitRunStackedActionResult,
   GitRunStackedActionInput,
   GitResolvePullRequestResult,
@@ -52,6 +53,39 @@ describe("GitPreparePullRequestThreadInput", () => {
 
     expect(parsed.reference).toBe("#42");
     expect(parsed.mode).toBe("worktree");
+  });
+});
+
+describe("GitPullRequestMaterializationError", () => {
+  it("uses the provider-carried change request name in its visible message", () => {
+    const error = new GitPullRequestMaterializationError({
+      cwd: "/repo",
+      pullRequestNumber: 42,
+      headRepository: "group/project",
+      headBranch: "feature/mr-thread",
+      localBranch: "pylon/mr-42/feature/mr-thread",
+      changeRequestName: "merge request",
+      cause: new Error("fetch failed"),
+    });
+
+    expect(error.message).toContain("merge request");
+    expect(error.message).not.toMatch(/\bPR\b/i);
+    expect(error.message).not.toMatch(/pull request/i);
+  });
+
+  it("falls back to provider-neutral copy when an older payload omits the name", () => {
+    const error = new GitPullRequestMaterializationError({
+      cwd: "/repo",
+      pullRequestNumber: 42,
+      headRepository: null,
+      headBranch: "feature/change-request-thread",
+      localBranch: "pylon/change-request-42",
+      cause: new Error("fetch failed"),
+    });
+
+    expect(error.message).toContain("change request");
+    expect(error.message).not.toMatch(/\bPR\b/i);
+    expect(error.message).not.toMatch(/pull request/i);
   });
 });
 

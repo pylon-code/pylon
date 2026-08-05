@@ -14,17 +14,23 @@ import { primaryEnvironmentIdAtom } from "./primaryEnvironment";
 import { useEnvironmentQuery } from "./query";
 import { relayEnvironmentDiscovery } from "./relay";
 import { usePreparedConnection } from "./session";
+import {
+  serverConfigSynchronizedAtom,
+  serverConfigSynchronizationByEnvironmentAtom,
+} from "./server";
 
 export interface EnvironmentPresentation extends BaseEnvironmentPresentation {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly displayUrl: string | null;
   readonly relayManaged: boolean;
+  readonly serverConfigSynchronized: boolean;
 }
 
 function projectEnvironmentPresentation(
   environmentId: EnvironmentId,
   presentation: BaseEnvironmentPresentation,
+  serverConfigSynchronized: boolean,
 ): EnvironmentPresentation {
   return {
     ...presentation,
@@ -32,6 +38,7 @@ function projectEnvironmentPresentation(
     label: presentation.entry.target.label,
     displayUrl: connectionCatalogDisplayUrl(presentation.entry),
     relayManaged: presentation.entry.target._tag === "RelayConnectionTarget",
+    serverConfigSynchronized,
   };
 }
 
@@ -39,13 +46,20 @@ export function useEnvironments() {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const networkStatus = useAtomValue(environmentCatalog.networkStatusValueAtom);
   const presentationById = useAtomValue(environmentPresentations.presentationsAtom);
+  const serverConfigSynchronizationByEnvironment = useAtomValue(
+    serverConfigSynchronizationByEnvironmentAtom,
+  );
 
   const environments = useMemo(
     () =>
       [...presentationById.entries()].map(([environmentId, presentation]) =>
-        projectEnvironmentPresentation(environmentId, presentation),
+        projectEnvironmentPresentation(
+          environmentId,
+          presentation,
+          serverConfigSynchronizationByEnvironment.get(environmentId) ?? false,
+        ),
       ),
-    [presentationById],
+    [presentationById, serverConfigSynchronizationByEnvironment],
   );
 
   return {
@@ -64,12 +78,13 @@ export function useEnvironment(
   environmentId: EnvironmentId | null,
 ): EnvironmentPresentation | null {
   const { presentation } = useEnvironmentPresentation(environmentId);
+  const serverConfigSynchronized = useAtomValue(serverConfigSynchronizedAtom(environmentId));
   return useMemo(
     () =>
       environmentId === null || presentation === null
         ? null
-        : projectEnvironmentPresentation(environmentId, presentation),
-    [environmentId, presentation],
+        : projectEnvironmentPresentation(environmentId, presentation, serverConfigSynchronized),
+    [environmentId, presentation, serverConfigSynchronized],
   );
 }
 

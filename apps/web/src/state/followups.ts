@@ -6,6 +6,7 @@ import { Atom } from "effect/unstable/reactivity";
 import { connectionAtomRuntime } from "../connection/runtime";
 import type { EnvironmentPresentation } from "./environments";
 import { environmentPresentations } from "./presentation";
+import { serverConfigSynchronizedAtom } from "./server";
 import { environmentShell } from "./shell";
 
 export const followUpEnvironment = createFollowUpEnvironmentAtoms(connectionAtomRuntime);
@@ -20,52 +21,97 @@ interface FollowUpEnvironmentAvailabilityState {
     | { readonly settings: Pick<ServerSettings, "followUpsEnabled"> }
     | null
     | undefined;
+  readonly serverConfigSynchronized: boolean;
 }
 
-export type FollowUpAvailability = "pending" | "available" | "unavailable";
+export type FollowUpPendingReason =
+  | "catalog"
+  | "connecting"
+  | "server-config"
+  | "reconnecting"
+  | "offline";
+
+export type FollowUpUnavailableReason = "disabled" | "connection-error" | "no-environments";
+
+export type FollowUpAvailability =
+  | { readonly status: "pending"; readonly reason: FollowUpPendingReason }
+  | { readonly status: "available" }
+  | { readonly status: "unavailable"; readonly reason: FollowUpUnavailableReason };
+
+const AVAILABLE_FOLLOW_UPS = { status: "available" } as const;
+
+function pendingFollowUps(reason: FollowUpPendingReason): FollowUpAvailability {
+  return { status: "pending", reason };
+}
+
+function unavailableFollowUps(reason: FollowUpUnavailableReason): FollowUpAvailability {
+  return { status: "unavailable", reason };
+}
 
 function resolveEnvironmentFollowUpAvailability(
   environment: FollowUpEnvironmentAvailabilityState,
 ): FollowUpAvailability {
-  if (
-    environment.connection.phase === "connected" &&
-    environment.serverConfig?.settings.followUpsEnabled === true
-  ) {
-    return "available";
-  }
   switch (environment.connection.phase) {
     case "available":
     case "connecting":
+      return pendingFollowUps("connecting");
     case "reconnecting":
-      return "pending";
-    case "connected":
-      return environment.serverConfig === null || environment.serverConfig === undefined
-        ? "pending"
-        : "unavailable";
+      return pendingFollowUps("reconnecting");
     case "offline":
+      return pendingFollowUps("offline");
+    case "connected": {
+      if (!environment.serverConfigSynchronized || environment.serverConfig == null) {
+        return pendingFollowUps("server-config");
+      }
+      return environment.serverConfig.settings.followUpsEnabled
+        ? AVAILABLE_FOLLOW_UPS
+        : unavailableFollowUps("disabled");
+    }
     case "error":
-      return "unavailable";
+      return unavailableFollowUps("connection-error");
   }
 }
+
+const PENDING_REASON_PRIORITY: Readonly<Record<FollowUpPendingReason, number>> = {
+  catalog: 0,
+  offline: 1,
+  "server-config": 2,
+  connecting: 3,
+  reconnecting: 4,
+};
 
 export function resolveFollowUpAvailability(
   catalogReady: boolean,
   environments: ReadonlyArray<FollowUpEnvironmentAvailabilityState>,
 ): FollowUpAvailability {
-  if (!catalogReady) return "pending";
-  let pending = false;
+  if (!catalogReady) return pendingFollowUps("catalog");
+  if (environments.length === 0) return unavailableFollowUps("no-environments");
+
+  let pendingReason: FollowUpPendingReason | null = null;
+  let unavailableReason: FollowUpUnavailableReason = "disabled";
   for (const environment of environments) {
     const availability = resolveEnvironmentFollowUpAvailability(environment);
-    if (availability === "available") return "available";
-    if (availability === "pending") pending = true;
+    if (availability.status === "available") return AVAILABLE_FOLLOW_UPS;
+    if (availability.status === "pending") {
+      if (
+        pendingReason === null ||
+        PENDING_REASON_PRIORITY[availability.reason] > PENDING_REASON_PRIORITY[pendingReason]
+      ) {
+        pendingReason = availability.reason;
+      }
+      continue;
+    }
+    if (availability.reason === "connection-error") unavailableReason = "connection-error";
   }
-  return pending ? "pending" : "unavailable";
+  return pendingReason === null
+    ? unavailableFollowUps(unavailableReason)
+    : pendingFollowUps(pendingReason);
 }
 
 export function isFollowUpEnvironmentAvailable(
   environment: FollowUpEnvironmentAvailabilityState,
 ): boolean {
-  return resolveEnvironmentFollowUpAvailability(environment) === "available";
+  return resolveEnvironmentFollowUpAvailability(environment).status === "available";
 }
 
 type FollowUpEnvironmentAvailability = FollowUpEnvironmentAvailabilityState & {
@@ -102,7 +148,10 @@ export function areAvailableFollowUpShellsBootstrapped(
 export const availableFollowUpShellsBootstrappedAtom = Atom.make((get) => {
   const shellStates: Array<{ available: boolean; shellBootstrapped: boolean }> = [];
   for (const [environmentId, environment] of get(environmentPresentations.presentationsAtom)) {
-    const available = isFollowUpEnvironmentAvailable(environment);
+    const available = isFollowUpEnvironmentAvailable({
+      ...environment,
+      serverConfigSynchronized: get(serverConfigSynchronizedAtom(environmentId)),
+    });
     shellStates.push({
       available,
       shellBootstrapped:
