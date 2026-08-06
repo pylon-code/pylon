@@ -646,6 +646,71 @@ export const ServerProviderUpdateInput = Schema.Struct({
 });
 export type ServerProviderUpdateInput = typeof ServerProviderUpdateInput.Type;
 
+/**
+ * Which sign-in an account uses.
+ *
+ * Not interchangeable: a Console (API-billing) account cannot sign in through
+ * the subscription flow, and an org that mandates SSO cannot use either.
+ * Guessing fails only after the user has already authenticated in a browser,
+ * so the client asks.
+ */
+export const ServerProviderLoginMethod = Schema.Literals(["subscription", "console", "sso"]);
+export type ServerProviderLoginMethod = typeof ServerProviderLoginMethod.Type;
+
+export const ProviderLoginSessionId = TrimmedNonEmptyString.pipe(
+  Schema.brand("ProviderLoginSessionId"),
+);
+export type ProviderLoginSessionId = typeof ProviderLoginSessionId.Type;
+
+export const ServerProviderLoginStartInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  method: ServerProviderLoginMethod,
+  /** Pre-fills the login page so the account already signed in is not re-used. */
+  email: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderLoginStartInput = typeof ServerProviderLoginStartInput.Type;
+
+export const ServerProviderLoginStarted = Schema.Struct({
+  sessionId: ProviderLoginSessionId,
+  /** Authorization URL to open. The CLI also tries to open it itself. */
+  url: TrimmedNonEmptyString,
+});
+export type ServerProviderLoginStarted = typeof ServerProviderLoginStarted.Type;
+
+export const ServerProviderLoginSubmitInput = Schema.Struct({
+  sessionId: ProviderLoginSessionId,
+  code: TrimmedNonEmptyString,
+});
+export type ServerProviderLoginSubmitInput = typeof ServerProviderLoginSubmitInput.Type;
+
+export const ServerProviderLoginCancelInput = Schema.Struct({
+  sessionId: ProviderLoginSessionId,
+});
+export type ServerProviderLoginCancelInput = typeof ServerProviderLoginCancelInput.Type;
+
+export const ServerProviderLoginResult = Schema.Struct({
+  /**
+   * Confirmed by re-reading auth status, not by the exit code. The CLI can exit
+   * cleanly after the user abandons the browser.
+   */
+  signedIn: Schema.Boolean,
+  email: Schema.optional(TrimmedNonEmptyString),
+  message: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderLoginResult = typeof ServerProviderLoginResult.Type;
+
+export class ServerProviderLoginError extends Schema.TaggedErrorClass<ServerProviderLoginError>()(
+  "ServerProviderLoginError",
+  {
+    reason: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Provider sign-in failed: ${this.reason}`;
+  }
+}
+
 export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerProviderUpdateError>()(
   "ServerProviderUpdateError",
   {

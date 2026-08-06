@@ -80,6 +80,11 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
+import {
+  ProviderLoginCoordinator,
+  ProviderLoginCoordinatorLive,
+} from "./provider/providerLoginCoordinator.ts";
+import { ProviderLoginSessionsLive } from "./provider/ProviderLoginSessions.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -367,6 +372,7 @@ const makeWsRpcLayer = (
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
+      const providerLogin = yield* ProviderLoginCoordinator;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
@@ -1397,6 +1403,20 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverStartProviderLogin]: (input) =>
+          observeRpcEffect(WS_METHODS.serverStartProviderLogin, providerLogin.start(input), {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverSubmitProviderLoginCode]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverSubmitProviderLoginCode,
+            providerLogin.submitCode(input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCancelProviderLogin]: (input) =>
+          observeRpcEffect(WS_METHODS.serverCancelProviderLogin, providerLogin.cancel(input), {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverUpdateServer]: (input) =>
           observeRpcEffect(WS_METHODS.serverUpdateServer, serverSelfUpdate.update(input), {
             "rpc.aggregate": "server",
@@ -2137,6 +2157,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
             makeWsRpcLayer(session, previewAutomationBroker).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(ProviderMaintenanceRunner.layer),
+              Layer.provide(
+                ProviderLoginCoordinatorLive.pipe(Layer.provide(ProviderLoginSessionsLive)),
+              ),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
