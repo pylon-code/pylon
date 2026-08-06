@@ -113,9 +113,9 @@ describe("compressImageForStash", () => {
 
   it("steps quality down until the encoded image fits", async () => {
     // Only the lowest quality step (0.68) lands under the budget.
-    const { close } = stubCanvasPipeline((quality) => (quality <= 0.68 ? 400_000 : 3_000_000));
+    const { close } = stubCanvasPipeline((quality) => (quality <= 0.68 ? 400_000 : 1_100_000));
 
-    const result = await compressImageForStash(makeFile(9_000_000));
+    const result = await compressImageForStash(makeFile(2_000_000));
 
     expect(result.ok && result.image.recompressed).toBe(true);
     expect(result.ok && result.image.dataUrl.length <= MAX_STASH_IMAGE_DATA_URL_CHARS).toBe(true);
@@ -123,9 +123,13 @@ describe("compressImageForStash", () => {
   });
 
   it("reports too-large when even the smallest encoding overflows the budget", async () => {
-    const { close } = stubCanvasPipeline(() => 8_000_000);
+    // Sized just past MAX_STASH_IMAGE_DATA_URL_CHARS (1.3M) rather than far
+    // past it. This is the one case that walks the entire quality ladder, and
+    // every step base64-encodes the stub's output — at 8MB a step that was
+    // slow enough to blow the suite's 15s timeout on CI while passing locally.
+    const { close } = stubCanvasPipeline(() => 1_100_000);
 
-    const result = await compressImageForStash(makeFile(9_000_000));
+    const result = await compressImageForStash(makeFile(2_000_000));
 
     expect(result).toEqual({ ok: false, reason: "too-large" });
     // The bitmap must still be released on the give-up path.
@@ -237,7 +241,7 @@ describe("compressImageForStash", () => {
         }
         async convertToBlob({ type }: { type: string; quality: number }) {
           // Only a genuinely downscaled pass fits the budget.
-          const size = smallestRequested < 800 ? 100_000 : 5_000_000;
+          const size = smallestRequested < 800 ? 100_000 : 1_100_000;
           return new Blob([new Uint8Array(size)], { type });
         }
       },
