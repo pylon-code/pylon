@@ -3135,8 +3135,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // authoritative API id. AgentInput.effort may be a named level or an
         // integer.
         const launchInput = launchingTool?.input;
+        // A resume re-enters this path for the same task_id and rebuilds the
+        // record, so a model already refined from the subagent's own
+        // assistant snapshot has to survive it — the same reason runHandles
+        // is carried across below. An explicit launch override still wins, so
+        // a resume that genuinely changes model is honoured.
+        const previousAgent = context.taskAgents.get(message.task_id);
         const model =
-          trimmedString(launchInput?.model) ?? trimmedString(context.session.model ?? undefined);
+          trimmedString(launchInput?.model) ??
+          trimmedString(previousAgent?.model) ??
+          trimmedString(context.session.model ?? undefined);
         const rawLaunchEffort = launchInput?.effort;
         const effort =
           trimmedString(rawLaunchEffort) ??
@@ -3153,7 +3161,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           taskType: message.task_type,
           workflowName: message.workflow_name,
           skipTranscript: message.skip_transcript === true,
-          runHandles: context.taskAgents.get(message.task_id)?.runHandles,
+          runHandles: previousAgent?.runHandles,
           owningAgentId,
           model,
           effort,
