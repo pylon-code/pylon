@@ -481,7 +481,8 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   // findable. In-flight rows recede the same as read-ready ones (inbox-zero:
   // working threads aren't your problem yet) — only the colored status label
   // stands out.
-  const isInFlight = status === "working" || status === "approval" || status === "input";
+  const isInFlight =
+    status === "working" || status === "monitoring" || status === "approval" || status === "input";
   const shouldRecede =
     (status === "ready" || isInFlight) && !isUnread && !isWoke && !props.isActive && !isSelected;
   // Status hues follow the shared five-color system (see dot-matrix.tsx's
@@ -493,37 +494,46 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
           icon: "working" as const,
           className: "text-primary",
         }
-      : status === "approval"
+      : status === "monitoring"
         ? {
-            label: "Approval",
-            icon: "approval" as const,
-            className: "text-warning",
+            // The calm sibling of Working: same hue, because the thread does
+            // have live activity, but the steady `live` glyph instead of the
+            // spinner, because a watch loop is presence rather than progress.
+            label: "Monitoring",
+            icon: "monitoring" as const,
+            className: "text-primary",
           }
-        : status === "input"
+        : status === "approval"
           ? {
-              label: "Input",
-              icon: "input" as const,
+              label: "Approval",
+              icon: "approval" as const,
               className: "text-warning",
             }
-          : status === "failed"
+          : status === "input"
             ? {
-                label: "Failed",
-                icon: "failed" as const,
-                className: "text-destructive",
+                label: "Input",
+                icon: "input" as const,
+                className: "text-warning",
               }
-            : isWoke
+            : status === "failed"
               ? {
-                  label: "Woke",
-                  icon: "woke" as const,
-                  className: "text-warning",
+                  label: "Failed",
+                  icon: "failed" as const,
+                  className: "text-destructive",
                 }
-              : isUnread
+              : isWoke
                 ? {
-                    label: "Done",
-                    icon: "done" as const,
-                    className: "text-success",
+                    label: "Woke",
+                    icon: "woke" as const,
+                    className: "text-warning",
                   }
-                : null;
+                : isUnread
+                  ? {
+                      label: "Done",
+                      icon: "done" as const,
+                      className: "text-success",
+                    }
+                  : null;
 
   const gitCwd = thread.worktreePath ?? props.projectCwd;
   const gitStatus = useEnvironmentQuery(
@@ -972,6 +982,8 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     >
                       {topStatus.icon === "working" ? (
                         <DotMatrix aria-hidden state="spinner" className="size-3" />
+                      ) : topStatus.icon === "monitoring" ? (
+                        <DotMatrix aria-hidden state="live" className="size-3" />
                       ) : topStatus.icon === "approval" ? (
                         <DotMatrix aria-hidden state="approval" className="size-3" />
                       ) : topStatus.icon === "input" ? (
