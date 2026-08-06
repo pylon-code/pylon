@@ -111,6 +111,23 @@ describe("ClientSettings sidebar v2", () => {
   });
 });
 
+describe("ClientSettings provider usage", () => {
+  // Pylon diverges from upstream here: upstream defaults context-popover usage
+  // off because it is a niche readout for a single account. Pylon routes threads
+  // across several accounts of one provider, so the remaining capacity of each is
+  // routine information and ships on.
+  it("shows context-popover usage by default", () => {
+    expect(decodeClientSettings({}).showProviderUsageInContextPopover).toBe(true);
+  });
+
+  it("allows turning context-popover usage off", () => {
+    expect(
+      decodeClientSettings({ showProviderUsageInContextPopover: false })
+        .showProviderUsageInContextPopover,
+    ).toBe(false);
+  });
+});
+
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults text generation to Luna at low reasoning effort", () => {
     expect(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection).toEqual({

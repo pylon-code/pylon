@@ -29,7 +29,9 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { rateLimitFromRuntimeEventPayload } from "../../provider/providerRateLimitEvents.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { isGitRepository } from "../../git/Utils.ts";
@@ -830,6 +832,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  const providerRegistry = yield* ProviderRegistry;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
@@ -1429,8 +1432,35 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /**
+   * Record a pushed subscription verdict against the instance that reported
+   * it. Nothing here is thread-scoped, so it runs ahead of the thread guard in
+   * `processRuntimeEvent`: an account drains for every thread at once, and the
+   * verdict must land even when the reporting thread is not in the read model.
+   *
+   * Both the missing-instance and unparseable-payload cases leave prior state
+   * untouched rather than clearing it — a verdict Pylon cannot attribute is
+   * worse than a slightly stale one, and `resetsAt` bounds the staleness.
+   */
+  const applyProviderRateLimitEvent = Effect.fn("applyProviderRateLimitEvent")(function* (
+    event: Extract<ProviderRuntimeEvent, { type: "account.rate-limits.updated" }>,
+  ) {
+    if (event.providerInstanceId === undefined) return;
+    const state = rateLimitFromRuntimeEventPayload(event.payload, event.createdAt);
+    if (!state) return;
+
+    yield* providerRegistry.setProviderRateLimitState({
+      instanceId: event.providerInstanceId,
+      state,
+    });
+  });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
+      if (event.type === "account.rate-limits.updated") {
+        return yield* applyProviderRateLimitEvent(event);
+      }
+
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
 

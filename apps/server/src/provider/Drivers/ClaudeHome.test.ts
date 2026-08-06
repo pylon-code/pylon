@@ -24,6 +24,30 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
       }),
     );
 
+    // A relative path resolved against the server's working directory points
+    // the account at a different place in the dev server than in the packaged
+    // app, and then quietly creates an empty config dir there.
+    it.effect("anchors a relative Claude home to the user's home, not the cwd", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const resolved = path.resolve(NodeOS.homedir(), ".claude-alt");
+
+        expect(yield* resolveClaudeHomePath({ homePath: ".claude-alt" })).toBe(resolved);
+        expect((yield* makeClaudeEnvironment({ homePath: ".claude-alt" })).CLAUDE_CONFIG_DIR).toBe(
+          resolved,
+        );
+      }),
+    );
+
+    it.effect("leaves an absolute Claude home alone", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const homePath = path.resolve(NodeOS.tmpdir(), "claude-elsewhere");
+
+        expect(yield* resolveClaudeHomePath({ homePath })).toBe(homePath);
+      }),
+    );
+
     it.effect("resolves configured Claude HOME and stamps continuation/cache keys with it", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;

@@ -3,6 +3,7 @@
 import {
   ArrowUpCircleIcon,
   ChevronDownIcon,
+  ChevronUpIcon,
   CopyIcon,
   DownloadIcon,
   LoaderIcon,
@@ -22,10 +23,13 @@ import {
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
+import type { TimestampFormat } from "@t3tools/contracts/settings";
 
 import { cn } from "../../lib/utils";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { normalizeProviderAccentColor } from "../../providerInstances";
+import { ProviderSignInDialog } from "./ProviderSignInDialog";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -43,6 +47,7 @@ import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
+import { ProviderUsageRows, ProviderUsageSummary } from "../providerUsage/ProviderUsageRows";
 import {
   getProviderVersionAdvisoryPresentation,
   PROVIDER_STATUS_STYLES,
@@ -320,6 +325,12 @@ function ProviderEnvironmentSection(props: {
 
 interface ProviderInstanceCardProps {
   readonly instanceId: ProviderInstanceId;
+  /**
+   * Enables the sign-in affordance. Optional because a card can render before
+   * an environment is known, and an in-app sign-in needs a server to run the
+   * provider CLI on.
+   */
+  readonly environmentId?: EnvironmentId | undefined;
   readonly instance: ProviderInstanceConfig;
   readonly driverOption: DriverOption | undefined;
   readonly liveProvider: ServerProvider | undefined;
@@ -341,6 +352,20 @@ interface ProviderInstanceCardProps {
    * omit it.
    */
   readonly headerAction?: ReactNode | undefined;
+  /**
+   * Drain-order controls for this account. Pass `undefined` when the driver
+   * has a single account — order means nothing then, so the buttons are
+   * absent rather than disabled. `onMoveUp` / `onMoveDown` are individually
+   * `undefined` at the ends of the list.
+   */
+  readonly drainOrder?:
+    | {
+        readonly position: number;
+        readonly total: number;
+        readonly onMoveUp?: (() => void) | undefined;
+        readonly onMoveDown?: (() => void) | undefined;
+      }
+    | undefined;
   readonly hiddenModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
   readonly modelOrder: ReadonlyArray<string>;
@@ -349,6 +374,7 @@ interface ProviderInstanceCardProps {
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
   readonly onRunUpdate?: (() => void) | undefined;
   readonly isUpdating?: boolean | undefined;
+  readonly timestampFormat: TimestampFormat;
 }
 
 /**
@@ -377,6 +403,7 @@ interface ProviderInstanceCardProps {
  */
 export function ProviderInstanceCard({
   instanceId,
+  environmentId,
   instance,
   driverOption,
   liveProvider,
@@ -385,6 +412,7 @@ export function ProviderInstanceCard({
   onUpdate,
   onDelete,
   headerAction,
+  drainOrder,
   hiddenModels,
   favoriteModels,
   modelOrder,
@@ -393,6 +421,7 @@ export function ProviderInstanceCard({
   onModelOrderChange,
   onRunUpdate,
   isUpdating = false,
+  timestampFormat,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
@@ -409,6 +438,14 @@ export function ProviderInstanceCard({
     ? (liveProvider?.auth.label ?? liveProvider?.auth.type ?? null)
     : null;
   const summary = rawSummary;
+  const [isSignInOpen, setIsSignInOpen] = useState(false);
+  // Only offered when the account genuinely reads as signed out. "Unknown"
+  // means the probe could not tell, and a sign-in would not fix that.
+  const canSignIn =
+    environmentId !== undefined &&
+    enabled &&
+    liveProvider?.auth.status === "unauthenticated" &&
+    instance.driver === "claudeAgent";
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
@@ -547,8 +584,48 @@ export function ProviderInstanceCard({
     </>
   );
 
+  const drainOrderNode = drainOrder ? (
+    <span className="inline-flex shrink-0 items-center">
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              className="size-5 rounded-sm p-0 text-muted-foreground"
+              disabled={!drainOrder.onMoveUp}
+              onClick={drainOrder.onMoveUp}
+              aria-label={`Use ${displayName} earlier (currently ${drainOrder.position + 1} of ${drainOrder.total})`}
+            >
+              <ChevronUpIcon className="size-3.5" />
+            </Button>
+          }
+        />
+        <TooltipPopup side="top">Use this account earlier</TooltipPopup>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              className="size-5 rounded-sm p-0 text-muted-foreground"
+              disabled={!drainOrder.onMoveDown}
+              onClick={drainOrder.onMoveDown}
+              aria-label={`Use ${displayName} later (currently ${drainOrder.position + 1} of ${drainOrder.total})`}
+            >
+              <ChevronDownIcon className="size-3.5" />
+            </Button>
+          }
+        />
+        <TooltipPopup side="top">Use this account later</TooltipPopup>
+      </Tooltip>
+    </span>
+  ) : null;
+
   const titleTailNode = (
     <>
+      {drainOrderNode}
       {headerAction ? (
         <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
           {headerAction}
@@ -592,6 +669,16 @@ export function ProviderInstanceCard({
         </>
       )}
       {summary.detail ? <span>- {summary.detail}</span> : null}
+      {canSignIn ? (
+        <Button
+          variant="outline"
+          size="sm"
+          className="ms-1 h-6 px-2 text-xs"
+          onClick={() => setIsSignInOpen(true)}
+        >
+          Sign in
+        </Button>
+      ) : null}
     </p>
   );
 
@@ -705,6 +792,9 @@ export function ProviderInstanceCard({
               {titleTailNode}
             </div>
             {authRowNode}
+            {enabled && liveProvider?.usageLimits ? (
+              <ProviderUsageSummary usageLimits={liveProvider.usageLimits} />
+            ) : null}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button
@@ -730,6 +820,15 @@ export function ProviderInstanceCard({
       <Collapsible open={isExpanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
           <div className="space-y-5 px-3 pb-4 pt-2 sm:px-4">
+            {enabled && liveProvider?.usageLimits ? (
+              <div className="grid max-w-lg gap-2.5">
+                <p className="text-xs font-medium text-foreground">Provider usage</p>
+                <ProviderUsageRows
+                  usageLimits={liveProvider.usageLimits}
+                  timestampFormat={timestampFormat}
+                />
+              </div>
+            ) : null}
             <div>
               <label htmlFor={`provider-instance-${instanceId}-display-name`} className="block">
                 <span className="text-xs font-medium text-foreground">Display name</span>
@@ -801,6 +900,16 @@ export function ProviderInstanceCard({
           </div>
         </CollapsibleContent>
       </Collapsible>
+      {environmentId !== undefined ? (
+        <ProviderSignInDialog
+          open={isSignInOpen}
+          onOpenChange={setIsSignInOpen}
+          environmentId={environmentId}
+          instanceId={instanceId}
+          accountLabel={displayName}
+          knownEmail={authEmail ?? undefined}
+        />
+      ) : null}
     </div>
   );
 }

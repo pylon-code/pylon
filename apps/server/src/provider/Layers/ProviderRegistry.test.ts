@@ -32,7 +32,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
 import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
-import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
+import { checkClaudeProviderStatus, probeClaudeUsageLimits } from "./ClaudeProvider.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import * as OpenCodeRuntime from "../opencodeRuntime.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
@@ -194,6 +194,7 @@ function recordingMockSpawnerLayer(
   const commands: Array<{
     readonly args: ReadonlyArray<string>;
     readonly env: NodeJS.ProcessEnv | undefined;
+    readonly cwd: string | undefined;
   }> = [];
   const layer = Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
@@ -202,9 +203,10 @@ function recordingMockSpawnerLayer(
         args: ReadonlyArray<string>;
         options?: {
           readonly env?: NodeJS.ProcessEnv;
+          readonly cwd?: string;
         };
       };
-      commands.push({ args: cmd.args, env: cmd.options?.env });
+      commands.push({ args: cmd.args, env: cmd.options?.env, cwd: cmd.options?.cwd });
       return Effect.succeed(mockHandle(handler(cmd.args)));
     }),
   );
@@ -382,6 +384,28 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               displayName: "CI Debug",
               shortDescription: "Debug failing GitHub Actions checks",
             },
+          ]);
+        }),
+      );
+
+      it.effect("includes Codex subscription usage from the app-server snapshot", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                rateLimits: {
+                  rateLimits: {
+                    primary: { usedPercent: 20, windowDurationMins: 300 },
+                    secondary: { usedPercent: 40, windowDurationMins: 10_080 },
+                  },
+                },
+              }),
+            ),
+          );
+
+          assert.deepStrictEqual(status.usageLimits?.windows, [
+            { label: "Session", usedPercent: 20, windowDurationMins: 300 },
+            { label: "Weekly", usedPercent: 40, windowDurationMins: 10_080 },
           ]);
         }),
       );
@@ -889,6 +913,107 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             const registry = yield* ProviderRegistry.ProviderRegistry;
             assert.deepStrictEqual(yield* registry.getProviders, [initialProvider]);
             assert.strictEqual(yield* Ref.get(refreshCalls), 0);
+          }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
+      it.effect("projects pushed rate-limit state onto the instance snapshot", () =>
+        Effect.gen(function* () {
+          const claudeDriver = ProviderDriverKind.make("claudeAgent");
+          const claudeInstanceId = ProviderInstanceId.make("claude_personal");
+          const initialProvider = {
+            instanceId: claudeInstanceId,
+            driver: claudeDriver,
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: "2026-08-04T00:00:00.000Z",
+            version: "2.1.220",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          } as const satisfies ServerProvider;
+          const instance = {
+            instanceId: claudeInstanceId,
+            driverKind: claudeDriver,
+            continuationIdentity: {
+              driverKind: claudeDriver,
+              continuationKey: "claude:instance:claude_personal",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                provider: claudeDriver,
+                packageName: null,
+              }),
+              getSnapshot: Effect.succeed(initialProvider),
+              refresh: Effect.never,
+              streamChanges: Stream.empty,
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+          } satisfies ProviderInstance;
+          const instanceRegistryLayer = Layer.succeed(
+            ProviderInstanceRegistry.ProviderInstanceRegistry,
+            {
+              getInstance: (instanceId) =>
+                Effect.succeed(instanceId === claudeInstanceId ? instance : undefined),
+              listInstances: Effect.succeed([instance]),
+              listUnavailable: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+            },
+          );
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const runtimeServices = yield* Layer.build(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(instanceRegistryLayer),
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), {
+                  prefix: "t3-provider-registry-rate-limit-",
+                }),
+              ),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ).pipe(Scope.provide(scope));
+
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry.ProviderRegistry;
+            assert.strictEqual((yield* registry.getProviders)[0]?.rateLimit, undefined);
+
+            const drained = yield* registry.setProviderRateLimitState({
+              instanceId: claudeInstanceId,
+              state: {
+                status: "rejected",
+                rateLimitType: "five_hour",
+                resetsAt: "2026-08-04T20:00:00.000Z",
+                observedAt: "2026-08-04T18:30:00.000Z",
+              },
+            });
+            assert.strictEqual(drained[0]?.rateLimit?.status, "rejected");
+            assert.strictEqual(drained[0]?.rateLimit?.resetsAt, "2026-08-04T20:00:00.000Z");
+
+            // Clearing must strip the field, not leave a stale value behind.
+            const cleared = yield* registry.setProviderRateLimitState({
+              instanceId: claudeInstanceId,
+              state: null,
+            });
+            assert.strictEqual(cleared[0]?.rateLimit, undefined);
+
+            // An unknown instance resolves with the current list rather than
+            // failing, matching `refreshInstance`.
+            const unknown = yield* registry.setProviderRateLimitState({
+              instanceId: ProviderInstanceId.make("claude_missing"),
+              state: {
+                status: "rejected",
+                observedAt: "2026-08-04T18:30:00.000Z",
+              },
+            });
+            assert.strictEqual(unknown.length, 1);
+            assert.strictEqual(unknown[0]?.rateLimit, undefined);
           }).pipe(Effect.provide(runtimeServices));
         }),
       );
@@ -1840,7 +1965,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(
             defaultClaudeSettings,
-            claudeCapabilities(),
+            claudeCapabilities({ email: "claude@example.com" }),
           );
           assert.strictEqual(status.status, "ready");
           assert.strictEqual(status.installed, true);
@@ -1861,6 +1986,181 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           ),
         ),
       );
+
+      // "Signed out" and "could not tell" need opposite responses from the
+      // user — a sign-in versus a diagnostic — so reporting the first as the
+      // second leaves them with no idea what to do.
+      it.effect("reports a signed-out account as unauthenticated, not unknown", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            noClaudeCapabilities,
+          );
+          assert.strictEqual(status.auth.status, "unauthenticated");
+          assert.match(status.message ?? "", /not signed in/iu);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.220\n", stderr: "", code: 0 };
+              if (joined === "auth status --json") {
+                return {
+                  stdout: JSON.stringify({
+                    loggedIn: false,
+                    authMethod: "none",
+                    apiProvider: "firstParty",
+                  }),
+                  stderr: "",
+                  code: 0,
+                };
+              }
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      // A CLI that cannot answer must stay "unknown". Claiming a confident
+      // "signed out" would offer a sign-in that fixes nothing.
+      it.effect("keeps an unreadable auth status as unknown", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            noClaudeCapabilities,
+          );
+          assert.strictEqual(status.auth.status, "unknown");
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.220\n", stderr: "", code: 0 };
+              if (joined === "auth status --json") {
+                return { stdout: "not json at all", stderr: "", code: 0 };
+              }
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      // Usage now comes from the OAuth endpoint, which needs credentials this
+      // test deliberately does not have. Absent usage must leave the provider
+      // fully usable \u2014 a missing gauge is not a broken provider.
+      // Window parsing itself is covered in claudeOAuthUsage.test.ts.
+      it.effect("stays ready when subscription usage cannot be read", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({ email: "claude@example.com" }),
+          );
+          assert.strictEqual(status.status, "ready");
+          assert.strictEqual(status.auth.status, "authenticated");
+          assert.strictEqual(status.usageLimits, undefined);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.218\n", stderr: "", code: 0 };
+              if (joined === "auth status --json") {
+                return {
+                  stdout: JSON.stringify({ loggedIn: true, email: "claude@example.com" }),
+                  stderr: "",
+                  code: 0,
+                };
+              }
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      // The probe reads the account identity that guards usage against being
+      // attributed to the wrong account, and must do it in the workspace the
+      // provider is configured for \u2014 a different cwd can select a different
+      // Claude config.
+      it.effect("reads the account identity from the configured workspace cwd", () => {
+        const recorded = recordingMockSpawnerLayer((args) => {
+          if (args.join(" ") === "auth status --json") {
+            return {
+              stdout: JSON.stringify({ loggedIn: true, email: "claude@example.com" }),
+              stderr: "",
+              code: 0,
+            };
+          }
+          throw new Error(`Unexpected args: ${args.join(" ")}`);
+        });
+
+        return Effect.gen(function* () {
+          const probed = yield* probeClaudeUsageLimits(
+            defaultClaudeSettings,
+            undefined,
+            "/tmp/provider-usage-workspace",
+          );
+          assert.strictEqual(probed?.accountIdentity, "claude@example.com");
+          // Filtered to the auth-status call: the concurrent OAuth usage read
+          // also spawns (the platform keychain), and that one has no workspace.
+          assert.deepStrictEqual(
+            recorded.commands
+              .filter((command) => command.args.join(" ") === "auth status --json")
+              .map((command) => command.cwd),
+            ["/tmp/provider-usage-workspace"],
+          );
+        }).pipe(Effect.provide(recorded.layer));
+      });
+
+      // A failing identity check is a reason to distrust usage, not a reason to
+      // call an authenticated provider broken.
+      it.effect("stays authenticated when the identity check fails", () => {
+        const spawner = mockSpawnerLayer((args) => {
+          const joined = args.join(" ");
+          if (joined === "--version") return { stdout: "2.1.218\n", stderr: "", code: 0 };
+          if (joined === "auth status --json") {
+            return { stdout: "", stderr: "temporary auth status failure", code: 1 };
+          }
+          throw new Error(`Unexpected args: ${joined}`);
+        });
+
+        return Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({ email: "claude@example.com" }),
+          );
+          assert.strictEqual(status.status, "ready");
+          assert.strictEqual(status.auth.status, "authenticated");
+        }).pipe(Effect.provide(spawner));
+      });
+
+      it.effect("omits Claude usage when live identity mismatches capabilities", () => {
+        const spawner = mockSpawnerLayer((args) => {
+          const joined = args.join(" ");
+          if (joined === "--version") return { stdout: "2.1.218\n", stderr: "", code: 0 };
+          if (joined.startsWith("--print /usage --output-format json")) {
+            return {
+              stdout: JSON.stringify({
+                result: "Current session: 30% used \u00b7 resets Jul 23, 1:30am (America/Chicago)",
+              }),
+              stderr: "",
+              code: 0,
+            };
+          }
+          if (joined === "auth status --json") {
+            return {
+              stdout: JSON.stringify({ email: "second@example.com" }),
+              stderr: "",
+              code: 0,
+            };
+          }
+          throw new Error(`Unexpected args: ${joined}`);
+        });
+
+        return Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({ email: "first@example.com" }),
+          );
+          assert.strictEqual(status.usageLimits, undefined);
+        }).pipe(Effect.provide(spawner));
+      });
 
       it.effect("returns ready and labels Bedrock-backed Claude as authenticated", () =>
         Effect.gen(function* () {
@@ -2194,7 +2494,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           assert.strictEqual(status.status, "ready");
           assert.deepStrictEqual(
             recorded.commands.map((command) => command.env?.CLAUDE_CONFIG_DIR),
-            [claudeConfigDir],
+            [claudeConfigDir, claudeConfigDir],
           );
         }).pipe(Effect.provide(recorded.layer));
       });
@@ -2309,6 +2609,35 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         ),
       );
 
+      it.effect("skips Claude subscription usage for API key auth", () =>
+        Effect.gen(function* () {
+          let usageProbeCalls = 0;
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({ tokenSource: "ANTHROPIC_AUTH_TOKEN" }),
+            undefined,
+            undefined,
+            () => {
+              usageProbeCalls += 1;
+              return Effect.void.pipe(Effect.as(undefined as ServerProvider["usageLimits"]));
+            },
+          );
+
+          assert.strictEqual(status.auth.type, "apiKey");
+          assert.strictEqual(status.usageLimits, undefined);
+          assert.strictEqual(usageProbeCalls, 0);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              if (args.join(" ") === "--version") {
+                return { stdout: "2.1.218\n", stderr: "", code: 0 };
+              }
+              throw new Error(`Unexpected args: ${args.join(" ")}`);
+            }),
+          ),
+        ),
+      );
+
       it.effect("returns unavailable when claude is missing", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(
@@ -2370,10 +2699,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             mockSpawnerLayer((args) => {
               const joined = args.join(" ");
               if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
-              if (joined === "auth status")
+              // A CLI that cannot answer leaves the state genuinely unknown.
+              if (joined === "auth status --json")
                 return {
-                  stdout: '{"loggedIn":false}\n',
-                  stderr: "",
+                  stdout: "",
+                  stderr: "not logged in",
                   code: 1,
                 };
               throw new Error(`Unexpected args: ${joined}`);

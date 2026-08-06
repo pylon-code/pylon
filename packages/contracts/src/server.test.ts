@@ -115,6 +115,66 @@ describe("ServerProvider", () => {
 
     expect(parsed.models[0]?.isLegacy).toBe(true);
   });
+
+  it("decodes dynamic provider usage windows", () => {
+    const parsed = decodeServerProvider({
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      enabled: true,
+      installed: true,
+      version: "2.1.218",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-07-22T12:00:00.000Z",
+      models: [],
+      usageLimits: {
+        source: "claudePrint",
+        checkedAt: "2026-07-22T12:00:00.000Z",
+        windows: [
+          { label: "Session", usedPercent: 30, windowDurationMins: 300 },
+          { label: "Weekly (Fable)", usedPercent: 26, windowDurationMins: 10_080 },
+        ],
+      },
+    });
+
+    expect(parsed.usageLimits?.windows).toHaveLength(2);
+  });
+
+  it("decodes pushed rate-limit state", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      rateLimit: {
+        status: "rejected",
+        rateLimitType: "five_hour",
+        resetsAt: "2026-08-04T20:00:00.000Z",
+        observedAt: "2026-08-04T18:30:00.000Z",
+      },
+    });
+
+    expect(parsed.rateLimit?.status).toBe("rejected");
+    expect(parsed.rateLimit?.resetsAt).toBe("2026-08-04T20:00:00.000Z");
+  });
+
+  // Snapshots produced before this field existed, and providers that never
+  // report quota, must decode unchanged.
+  it("decodes a snapshot with no rate-limit state", () => {
+    expect(decodeServerProvider(baseProviderSnapshot).rateLimit).toBeUndefined();
+  });
+
+  // Providers add window kinds on their own schedule; an unfamiliar one must
+  // not cost us the whole snapshot.
+  it("keeps an unfamiliar rate-limit window kind", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      rateLimit: {
+        status: "allowed_warning",
+        rateLimitType: "some_future_window",
+        observedAt: "2026-08-04T18:30:00.000Z",
+      },
+    });
+
+    expect(parsed.rateLimit?.rateLimitType).toBe("some_future_window");
+  });
 });
 
 describe("server config forward compatibility", () => {

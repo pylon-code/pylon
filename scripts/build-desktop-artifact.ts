@@ -36,6 +36,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.pylon.code";
+const DESKTOP_NIGHTLY_APP_ID = "com.pylon.code.nightly";
 export const DESKTOP_STAGE_PACKAGE_NAME = "pylon-code";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
@@ -785,6 +786,7 @@ function normalizePasskeyRpDomain(value: string): string {
 
 export function resolveMacPasskeySigningConfiguration(
   env: Readonly<Record<string, string | undefined>>,
+  version: string,
 ): MacPasskeySigningConfiguration {
   const teamId = env.T3CODE_APPLE_TEAM_ID?.trim().toUpperCase() ?? "";
   if (!APPLE_TEAM_ID_PATTERN.test(teamId)) {
@@ -820,7 +822,10 @@ export function resolveMacPasskeySigningConfiguration(
   }
 
   return {
-    appId: DESKTOP_APP_ID,
+    // Must match the bundle id electron-builder stamps, or the entitlements
+    // describe an application that is not the one being signed. A signed
+    // nightly therefore needs its own provisioning profile.
+    appId: resolveDesktopAppId(version),
     teamId,
     rpDomains: uniqueRpDomains,
     provisioningProfilePath,
@@ -1531,6 +1536,19 @@ export function resolveDesktopProductName(version: string): string {
     : (desktopPackageJson.productName ?? "Pylon");
 }
 
+/**
+ * Bundle identifier for the build.
+ *
+ * Nightly gets its own so the OS treats it as a distinct application rather
+ * than another copy of the stable one. Sharing an id makes the two fight over
+ * launch services registration, update feeds, and OS-keyed per-app state.
+ */
+export function resolveDesktopAppId(version: string): string {
+  return resolveDesktopUpdateChannel(version) === "nightly"
+    ? DESKTOP_NIGHTLY_APP_ID
+    : DESKTOP_APP_ID;
+}
+
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
@@ -1547,7 +1565,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   localMacSigningIdentity?: string,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
+    appId: resolveDesktopAppId(version),
     productName: resolveDesktopProductName(version),
     artifactName: "Pylon-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
@@ -1878,7 +1896,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot }), appVersion),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
       : undefined;

@@ -156,6 +156,76 @@ export function formatDiagnosticsDescription(input: {
   return `${mode}.`;
 }
 
+export interface ProviderInstanceOrderRow {
+  readonly instanceId: ProviderInstanceId;
+  readonly instance: ProviderInstanceConfig;
+  readonly isDefault: boolean;
+}
+
+/**
+ * Move one account a single slot within its driver's drain order.
+ *
+ * `rows` must be the driver's instances in the order the list currently shows
+ * them. Every instance in the group is rewritten with a dense `0..n-1`
+ * priority, so the stored order always matches the rendered one — no ties, no
+ * gaps, and no dependence on `providerInstances` key order.
+ *
+ * Returns `null` when the move would run off either end, which is what the
+ * caller uses to disable the button.
+ */
+export function buildProviderInstanceReorderPatch(input: {
+  readonly settings: Pick<ServerSettings, "providers" | "providerInstances">;
+  readonly driver: ProviderDriverKind;
+  readonly rows: ReadonlyArray<ProviderInstanceOrderRow>;
+  readonly instanceId: ProviderInstanceId;
+  readonly direction: "up" | "down";
+}): Partial<UnifiedSettings> | null {
+  const fromIndex = input.rows.findIndex((row) => row.instanceId === input.instanceId);
+  if (fromIndex < 0) return null;
+  const toIndex = input.direction === "up" ? fromIndex - 1 : fromIndex + 1;
+  if (toIndex < 0 || toIndex >= input.rows.length) return null;
+
+  const reordered = [...input.rows];
+  const [moved] = reordered.splice(fromIndex, 1);
+  if (!moved) return null;
+  reordered.splice(toIndex, 0, moved);
+
+  const providerInstances: Record<string, ProviderInstanceConfig> = {
+    ...input.settings.providerInstances,
+  };
+  reordered.forEach((row, position) => {
+    providerInstances[row.instanceId] = { ...row.instance, priority: position };
+  });
+
+  // Writing a priority onto a built-in default slot promotes it into an
+  // explicit instance, which moves its config into the envelope. The legacy
+  // per-driver block resets alongside it, matching what
+  // `buildProviderInstanceUpdatePatch` does for a single edit.
+  const promotesDefaultSlot = reordered.some(
+    (row) => row.isDefault && input.settings.providerInstances?.[row.instanceId] === undefined,
+  );
+  type LegacyProviderSettings = ServerSettings["providers"][keyof ServerSettings["providers"]];
+  const legacyProviderDefaults = DEFAULT_UNIFIED_SETTINGS.providers as Record<
+    string,
+    LegacyProviderSettings | undefined
+  >;
+  const legacyProviderDefault = promotesDefaultSlot
+    ? legacyProviderDefaults[input.driver]
+    : undefined;
+
+  return {
+    ...(legacyProviderDefault !== undefined
+      ? {
+          providers: {
+            ...input.settings.providers,
+            [input.driver]: legacyProviderDefault,
+          } as ServerSettings["providers"],
+        }
+      : {}),
+    providerInstances: providerInstances as ServerSettings["providerInstances"],
+  };
+}
+
 export function buildProviderInstanceUpdatePatch(input: {
   readonly settings: Pick<ServerSettings, "providers" | "providerInstances">;
   readonly instanceId: ProviderInstanceId;

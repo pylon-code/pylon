@@ -247,6 +247,7 @@ import { getProviderDisplayName, getProviderInteractionModeToggle } from "../../
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  isProviderInstanceDrained,
   NO_PROVIDER_MODEL_SELECTION,
   resolveProviderDriverKindForInstanceSelection,
   resolveSelectableProviderInstanceEntry,
@@ -262,10 +263,13 @@ import {
   deriveLatestContextWindowSnapshot,
   formatProviderDisplayName,
 } from "../../lib/contextWindow";
+import type { ProviderUsageAccount } from "../providerUsage/ProviderUsageAccounts";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
+import type { ThreadHandoffOffer } from "./ThreadHandoff.logic";
+import { ThreadHandoffTab } from "./ThreadHandoffTab";
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -467,6 +471,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   compact: boolean;
   activeContextWindow: ReturnType<typeof deriveLatestContextWindowSnapshot>;
   activeThreadProviderDisplayName: string | null;
+  activeProviderUsageAccounts: readonly ProviderUsageAccount[];
+  timestampFormat: UnifiedSettings["timestampFormat"];
   isPreparingWorktree: boolean;
   pendingAction: {
     questionIndex: number;
@@ -494,6 +500,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         <ContextWindowMeter
           usage={props.activeContextWindow}
           providerDisplayName={props.activeThreadProviderDisplayName}
+          timestampFormat={props.timestampFormat}
         />
       ) : null}
       {props.isPreparingWorktree ? (
@@ -646,10 +653,16 @@ export interface ChatComposerProps {
   composerElementContextsRef: React.RefObject<ElementContextDraft[]>;
   composerRef: React.RefObject<ChatComposerHandle | null>;
 
+  // Cross-account handoff. Resolved by the parent, which owns the thread
+  // creation the offer leads to; the composer only shows it.
+  threadHandoffOffer: ThreadHandoffOffer | null;
+  isContinuingThreadOnAccount: boolean;
+
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
+  onContinueThreadOnAccount: () => void;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
@@ -734,9 +747,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerImagesRef,
     composerTerminalContextsRef,
     composerElementContextsRef,
+    threadHandoffOffer,
+    isContinuingThreadOnAccount,
     onSend,
     onInterrupt,
     onImplementPlanInNewThread,
+    onContinueThreadOnAccount,
     onRespondToApproval,
     onSelectActivePendingUserInputOption,
     onAdvanceActivePendingUserInput,
@@ -856,17 +872,31 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   //   4. First enabled entry matching the current driver kind.
   //   5. First enabled entry overall / default instance for the kind.
   //
+  // Candidates 1 and 2 are pinned: an explicit picker choice and a thread's
+  // live session binding are honored even when that account is spent, so an
+  // existing thread never migrates off the account it started on. Everything
+  // below them has not bound to a session yet and is free to route around a
+  // drained account, in configured priority order.
+  //
+  // `Date.now()` is read without a ticking dependency on purpose. Drain
+  // windows run for hours, the memo already recomputes on every provider
+  // snapshot and thread change, and a per-minute recompute of a hot component
+  // buys nothing at that timescale.
   const selectedInstanceId = useMemo<ProviderInstanceId>(() => {
-    const candidates: Array<string | null | undefined> = [
-      composerDraft.activeProvider,
-      activeThread?.session?.providerInstanceId,
-      activeThreadModelSelection?.instanceId,
-      activeProjectDefaultModelSelection?.instanceId,
+    const nowMs = Date.now();
+    const candidates: Array<{
+      readonly instanceId: string | null | undefined;
+      readonly pinned: boolean;
+    }> = [
+      { instanceId: composerDraft.activeProvider, pinned: true },
+      { instanceId: activeThread?.session?.providerInstanceId, pinned: true },
+      { instanceId: activeThreadModelSelection?.instanceId, pinned: false },
+      { instanceId: activeProjectDefaultModelSelection?.instanceId, pinned: false },
     ];
     for (const candidate of candidates) {
-      if (!candidate) continue;
+      if (!candidate.instanceId) continue;
       const match = providerInstanceEntries.find(
-        (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
+        (entry) => entry.instanceId === candidate.instanceId && entry.enabled && entry.isAvailable,
       );
       if (match) {
         // When locked to a specific driver kind, ignore persisted instance
@@ -878,6 +908,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         ) {
           continue;
         }
+        // Drained and unpinned: defer to the ordered fallback below, which
+        // prefers a healthy instance and lands back here only when every
+        // instance is drained.
+        if (!candidate.pinned && isProviderInstanceDrained(match, nowMs)) continue;
         return match.instanceId;
       }
     }
@@ -890,8 +924,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       (entry) => entry.driverKind === requestedDriverKind,
     );
     return (
-      resolveSelectableProviderInstanceEntry(requestedDriverEntries, undefined)?.instanceId ??
-      resolveSelectableProviderInstanceEntry(compatibleEntries, undefined)?.instanceId ??
+      resolveSelectableProviderInstanceEntry(requestedDriverEntries, undefined, nowMs)
+        ?.instanceId ??
+      resolveSelectableProviderInstanceEntry(compatibleEntries, undefined, nowMs)?.instanceId ??
       NO_PROVIDER_MODEL_SELECTION.instanceId
     );
   }, [
@@ -1003,16 +1038,42 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => deriveLatestContextWindowSnapshot(activeThreadActivities ?? []),
     [activeThreadActivities],
   );
+  // The running session's instance is the source of truth for both the popover's provider
+  // name and its usage limits, so the two can never describe different providers.
+  const activeThreadProviderInstanceId =
+    activeThread?.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId;
   const activeThreadProviderDisplayName = useMemo(() => {
-    if (!activeThreadModelSelection) return null;
-    const entry = providerStatuses.find(
-      (p) => p.instanceId === activeThreadModelSelection.instanceId,
-    );
+    if (!activeThreadProviderInstanceId) return null;
+    const entry = providerStatuses.find((p) => p.instanceId === activeThreadProviderInstanceId);
     if (entry) {
       return getProviderDisplayName(providerStatuses, entry.driver);
     }
-    return formatProviderDisplayName(activeThreadModelSelection.instanceId);
-  }, [providerStatuses, activeThreadModelSelection]);
+    return formatProviderDisplayName(activeThreadProviderInstanceId);
+  }, [providerStatuses, activeThreadProviderInstanceId]);
+  // Every configured account for the active thread's driver, not just the one
+  // the thread is bound to: Pylon routes threads across several accounts of the
+  // same provider, so remaining capacity is a question about all of them.
+  const activeProviderUsageAccounts = useMemo((): readonly ProviderUsageAccount[] => {
+    if (!settings.showProviderUsageInContextPopover) return [];
+    const activeProvider = providerStatuses.find(
+      (provider) => provider.instanceId === activeThreadProviderInstanceId,
+    );
+    if (!activeProvider) return [];
+    return providerStatuses
+      .filter((provider) => provider.driver === activeProvider.driver && provider.usageLimits)
+      .map((provider) => ({
+        instanceId: provider.instanceId,
+        displayName: provider.displayName ?? formatProviderDisplayName(provider.instanceId),
+        accentColor: provider.accentColor,
+        // Narrowed by the `provider.usageLimits` filter above.
+        usageLimits: provider.usageLimits as NonNullable<typeof provider.usageLimits>,
+        isActive: provider.instanceId === activeThreadProviderInstanceId,
+      }));
+  }, [
+    settings.showProviderUsageInContextPopover,
+    providerStatuses,
+    activeThreadProviderInstanceId,
+  ]);
 
   // ------------------------------------------------------------------
   // Composer-local state
@@ -2727,9 +2788,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     <form
       ref={composerFormRef}
       onSubmit={submitComposer}
-      className="mx-auto w-full min-w-0 max-w-3xl"
+      className="relative mx-auto w-full min-w-0 max-w-3xl"
       data-chat-composer-form="true"
     >
+      {/*
+        Sits on the composer's top edge rather than inside it: the offer is
+        about the thread, not about the message being written, and it must not
+        move the input when it appears.
+      */}
+      <ThreadHandoffTab
+        offer={threadHandoffOffer}
+        onContinue={onContinueThreadOnAccount}
+        isBusy={isContinuingThreadOnAccount}
+      />
       <div
         className={cn(
           "group rounded-[22px] p-px transition-colors duration-200",
@@ -3271,6 +3342,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   compact={isComposerPrimaryActionsCompact}
                   activeContextWindow={activeContextWindow}
                   activeThreadProviderDisplayName={activeThreadProviderDisplayName}
+                  activeProviderUsageAccounts={activeProviderUsageAccounts}
+                  timestampFormat={settings.timestampFormat}
                   pendingAction={pendingPrimaryAction}
                   isRunning={phase === "running"}
                   showPlanFollowUpPrompt={pendingUserInputs.length === 0 && showPlanFollowUpPrompt}

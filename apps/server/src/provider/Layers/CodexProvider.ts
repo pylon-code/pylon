@@ -32,11 +32,13 @@ import {
   buildServerProvider,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
-import { expandHomePath } from "../../pathExpansion.ts";
+import { resolveProviderHomePath } from "../../pathExpansion.ts";
+import { usageLimitsFromCodexRateLimits } from "../providerUsageLimits.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
+const CODEX_RATE_LIMITS_PROBE_TIMEOUT = "2 seconds" as const;
 
 const CODEX_PRESENTATION = {
   displayName: "Codex",
@@ -45,6 +47,7 @@ const CODEX_PRESENTATION = {
 
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
+  readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
@@ -331,7 +334,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   // so `CODEX_HOME=~/.codex_work` would reach codex verbatim and trip
   // "CODEX_HOME points to '~/.codex_work', but that path does not exist".
   // Expand here for parity with `CodexTextGeneration`/`CodexSessionRuntime`.
-  const resolvedHomePath = input.homePath ? expandHomePath(input.homePath) : undefined;
+  const resolvedHomePath = input.homePath ? resolveProviderHomePath(input.homePath) : undefined;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const environment = {
     ...input.environment,
@@ -395,18 +398,31 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models] = yield* Effect.all(
+  const [skillsResponse, models, rateLimits] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
+      accountResponse.account?.type === "chatgpt"
+        ? client
+            .request("account/rateLimits/read", undefined)
+            .pipe(
+              Effect.option,
+              Effect.timeoutOption(CODEX_RATE_LIMITS_PROBE_TIMEOUT),
+              Effect.map(Option.flatten),
+              Effect.map(Option.getOrUndefined),
+            )
+        : Effect.void.pipe(
+            Effect.as(undefined as CodexSchema.V2GetAccountRateLimitsResponse | undefined),
+          ),
     ],
     { concurrency: "unbounded" },
   );
 
   return {
     account: accountResponse,
+    ...(rateLimits ? { rateLimits } : {}),
     version,
     models: applyPreferredCodexDefaultModel(
       appendCustomCodexModels(models, input.customModels ?? []),
@@ -594,6 +610,9 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
 
   const snapshot = probeResult.success.value;
   const accountStatus = accountProbeStatus(snapshot.account);
+  const usageLimits = snapshot.rateLimits
+    ? usageLimitsFromCodexRateLimits(snapshot.rateLimits, checkedAt)
+    : undefined;
 
   return buildServerProvider({
     presentation: CODEX_PRESENTATION,
@@ -606,6 +625,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       version: snapshot.version ?? null,
       status: accountStatus.status,
       auth: accountStatus.auth,
+      ...(usageLimits ? { usageLimits } : {}),
       ...(accountStatus.message ? { message: accountStatus.message } : {}),
     },
   });

@@ -4,14 +4,14 @@ import type { ClaudeSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 
-import { expandHomePath } from "../../pathExpansion.ts";
+import { resolveProviderHomePath } from "../../pathExpansion.ts";
 
 export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function* (
   config: Pick<ClaudeSettings, "homePath">,
 ): Effect.fn.Return<string, never, Path.Path> {
   const path = yield* Path.Path;
   const homePath = config.homePath.trim();
-  return path.resolve(homePath.length > 0 ? expandHomePath(homePath) : NodeOS.homedir());
+  return homePath.length === 0 ? path.resolve(NodeOS.homedir()) : resolveProviderHomePath(homePath);
 });
 
 export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function* (

@@ -7,6 +7,9 @@ import {
   resolveEarlyLinuxPasswordStorePreference,
 } from "./DesktopEarlyElectronStartup.ts";
 
+const STABLE_VERSION = "0.0.31";
+const NIGHTLY_VERSION = "0.0.31-nightly.20260805.1";
+
 describe("DesktopEarlyElectronStartup", () => {
   const joinPath = NodePath.posix.join;
 
@@ -15,6 +18,7 @@ describe("DesktopEarlyElectronStartup", () => {
       env: { T3CODE_HOME: "/home/user/.t3-test" },
       homeDirectory: "/home/user",
       joinPath,
+      appVersion: STABLE_VERSION,
       readFileString: (path) => {
         assert.equal(path, "/home/user/.t3-test/userdata/desktop-settings.json");
         return JSON.stringify({ linuxPasswordStore: "kwallet6" });
@@ -29,6 +33,7 @@ describe("DesktopEarlyElectronStartup", () => {
       env: { T3CODE_HOME: "/home/user/.t3-test" },
       homeDirectory: "/home/user",
       joinPath,
+      appVersion: STABLE_VERSION,
       readFileString: () => `{
         // manually edited setting
         "linuxPasswordStore": "gnome-libsecret",
@@ -43,6 +48,7 @@ describe("DesktopEarlyElectronStartup", () => {
       env: {},
       homeDirectory: "/home/user",
       joinPath,
+      appVersion: STABLE_VERSION,
       readFileString: () => {
         throw new Error("missing");
       },
@@ -56,6 +62,7 @@ describe("DesktopEarlyElectronStartup", () => {
       env: { T3CODE_HOME: "/" },
       homeDirectory: "/home/user",
       joinPath,
+      appVersion: STABLE_VERSION,
       readFileString: (path) => {
         assert.equal(path, "/userdata/desktop-settings.json");
         return JSON.stringify({ linuxPasswordStore: "kwallet6" });
@@ -74,6 +81,7 @@ describe("DesktopEarlyElectronStartup", () => {
       },
       homeDirectory: "/home/user",
       joinPath,
+      appVersion: STABLE_VERSION,
       readFileString: (path) => {
         assert.equal(path, "/home/user/.t3-test/userdata/desktop-settings.json");
         return JSON.stringify({ linuxPasswordStore: "auto" });
@@ -93,6 +101,7 @@ describe("DesktopEarlyElectronStartup", () => {
       },
       homeDirectory: "/home/user",
       joinPath,
+      appVersion: STABLE_VERSION,
       readFileString: (path) => {
         assert.equal(path, "/home/user/.pylon-code/dev/desktop-settings.json");
         return JSON.stringify({ linuxPasswordStore: "kwallet" });
@@ -100,6 +109,67 @@ describe("DesktopEarlyElectronStartup", () => {
     });
 
     assert.equal(preference, "kwallet");
+  });
+
+  // The whole point of the nightly channel: it must not read or write the
+  // state the installed stable app is using, and the safe answer has to be the
+  // default because nobody sets an override before double-clicking an app.
+  it("keeps a nightly build's state out of the stable runtime home", () => {
+    const preference = resolveEarlyLinuxPasswordStorePreference({
+      env: {},
+      homeDirectory: "/home/user",
+      joinPath,
+      appVersion: NIGHTLY_VERSION,
+      readFileString: (path) => {
+        assert.equal(path, "/home/user/.pylon-code-nightly/userdata/desktop-settings.json");
+        return JSON.stringify({ linuxPasswordStore: "kwallet6" });
+      },
+    });
+
+    assert.equal(preference, "kwallet6");
+  });
+
+  it("keeps a stable build on the stable runtime home", () => {
+    const preference = resolveEarlyLinuxPasswordStorePreference({
+      env: {},
+      homeDirectory: "/home/user",
+      joinPath,
+      appVersion: STABLE_VERSION,
+      readFileString: (path) => {
+        assert.equal(path, "/home/user/.pylon-code/userdata/desktop-settings.json");
+        return JSON.stringify({ linuxPasswordStore: "kwallet6" });
+      },
+    });
+
+    assert.equal(preference, "kwallet6");
+  });
+
+  // An explicit home is a deliberate instruction and still outranks the channel.
+  it("lets an explicit T3CODE_HOME override the nightly home", () => {
+    const preference = resolveEarlyLinuxPasswordStorePreference({
+      env: { T3CODE_HOME: "/home/user/.pylon-scratch" },
+      homeDirectory: "/home/user",
+      joinPath,
+      appVersion: NIGHTLY_VERSION,
+      readFileString: (path) => {
+        assert.equal(path, "/home/user/.pylon-scratch/userdata/desktop-settings.json");
+        return JSON.stringify({ linuxPasswordStore: "kwallet6" });
+      },
+    });
+
+    assert.equal(preference, "kwallet6");
+  });
+
+  it("gives a nightly build its own window class", () => {
+    const options = resolveEarlyLinuxElectronOptions({
+      env: { T3CODE_HOME: "/home/user/.t3-test" },
+      homeDirectory: "/home/user",
+      joinPath,
+      appVersion: NIGHTLY_VERSION,
+      readFileString: () => JSON.stringify({ linuxPasswordStore: "auto" }),
+    });
+
+    assert.equal(options.linuxWmClass, "pylon-code-nightly");
   });
 
   it("treats whitespace-only T3CODE_HOME as unconfigured in development", () => {
@@ -110,6 +180,7 @@ describe("DesktopEarlyElectronStartup", () => {
       },
       homeDirectory: "/home/user",
       joinPath,
+      appVersion: STABLE_VERSION,
       readFileString: (path) => {
         assert.equal(path, "/home/user/.pylon-code/dev/desktop-settings.json");
         return JSON.stringify({ linuxPasswordStore: "gnome-libsecret" });

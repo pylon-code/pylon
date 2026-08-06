@@ -7,7 +7,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as PlatformError from "effect/PlatformError";
 
-import { expandHomePath } from "../../pathExpansion.ts";
+import { resolveProviderHomePath } from "../../pathExpansion.ts";
 
 export interface CodexHomeLayout {
   readonly mode: "direct" | "authOverlay";
@@ -34,11 +34,9 @@ const SHADOW_LOCAL_ENTRY_NAMES = new Set(["log", "memories", "tmp"]);
 const REPLACEABLE_SHARED_RUNTIME_DIRECTORIES = new Set(["mcp-oauth-locks"]);
 
 function resolveHomePath(path: Path.Path, value: string | undefined): string {
-  const expanded =
-    value && value.trim().length > 0
-      ? expandHomePath(value)
-      : path.join(NodeOS.homedir(), ".codex");
-  return path.resolve(expanded);
+  return value && value.trim().length > 0
+    ? resolveProviderHomePath(value)
+    : path.resolve(path.join(NodeOS.homedir(), ".codex"));
 }
 
 export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(function* (
@@ -56,7 +54,7 @@ export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(functi
     };
   }
 
-  const effectiveHomePath = path.resolve(expandHomePath(shadowHomePath));
+  const effectiveHomePath = resolveProviderHomePath(shadowHomePath);
   return {
     mode: "authOverlay",
     sharedHomePath,

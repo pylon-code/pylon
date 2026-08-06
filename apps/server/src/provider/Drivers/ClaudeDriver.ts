@@ -12,17 +12,25 @@
  *
  * @module provider/Drivers/ClaudeDriver
  */
-import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import {
+  ClaudeSettings,
+  ProviderDriverKind,
+  type ServerProvider,
+  type ServerProviderUsageLimits,
+} from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { retainUsageLimits } from "../providerUsageRetention.ts";
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
@@ -33,6 +41,7 @@ import {
   checkClaudeProviderStatus,
   makePendingClaudeProvider,
   probeClaudeCapabilities,
+  probeClaudeUsageLimits,
 } from "../Layers/ClaudeProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -59,6 +68,7 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
+const USAGE_PROBE_FAILURE_TTL = Duration.minutes(1);
 
 function isClaudeNativeCommandPath(commandPath: string): boolean {
   const normalized = normalizeCommandPath(commandPath);
@@ -162,16 +172,57 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           ),
       });
       const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(effectiveConfig, cwd);
+      const lastKnownUsage = yield* Ref.make<ServerProviderUsageLimits | undefined>(undefined);
+      const usageProbeCache = yield* Cache.makeWith(
+        () =>
+          probeClaudeUsageLimits(effectiveConfig, processEnv, cwd).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+            Effect.provideService(Path.Path, path),
+          ),
+        {
+          capacity: 2,
+          // A failed probe backs off rather than retrying on every snapshot
+          // refresh. Usage now comes from a rate-limited HTTP endpoint that
+          // answers 429 under load, so an uncached failure would keep pushing
+          // against the limit that caused it. Short enough that logging in
+          // still shows up promptly.
+          timeToLive: Exit.match({
+            onSuccess: (result) =>
+              result?.accountIdentity && result?.usageLimits
+                ? CAPABILITIES_PROBE_TTL
+                : USAGE_PROBE_FAILURE_TTL,
+            onFailure: () => USAGE_PROBE_FAILURE_TTL,
+          }),
+        },
+      );
 
       const checkProvider = checkClaudeProviderStatus(
         effectiveConfig,
         () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
         processEnv,
         cwd,
+        (accountIdentity) =>
+          Cache.get(
+            usageProbeCache,
+            `${capabilitiesCacheKey}:${accountIdentity ?? "unknown"}`,
+          ).pipe(
+            Effect.map((result) => {
+              if (!result) return undefined;
+              return result.accountIdentity &&
+                accountIdentity &&
+                result.accountIdentity !== accountIdentity
+                ? undefined
+                : result.usageLimits;
+            }),
+            Effect.flatMap((usageLimits) => retainUsageLimits(lastKnownUsage, usageLimits)),
+          ),
       ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(HttpClient.HttpClient, httpClient),
         Effect.provideService(Path.Path, path),
       );
 

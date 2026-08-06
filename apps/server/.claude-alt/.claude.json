@@ -1,0 +1,24 @@
+{
+  "firstStartTime": "2026-08-06T19:05:40.537Z",
+  "machineID": "fbf550c9e7ad9e7e45aace08d45f94fa754f7ef0794569cce4ddce287cd94ff3",
+  "opusProMigrationComplete": true,
+  "sonnet1m45MigrationComplete": true,
+  "seenNotifications": {},
+  "hasResetAutoModeOptInForDefaultOffer": true,
+  "migrationVersion": 13,
+  "userID": "2a6a7efe669bba07282c3bf2e6eace95e0ed263b1d1512efa538a8ebed17e3ba",
+  "projects": {
+    "/Users/rynfar/repos/pylon": {
+      "allowedTools": [],
+      "mcpContextUris": [],
+      "mcpServers": {},
+      "enabledMcpjsonServers": [],
+      "disabledMcpjsonServers": [],
+      "hasTrustDialogAccepted": false,
+      "projectOnboardingSeenCount": 0,
+      "hasClaudeMdExternalIncludesApproved": false,
+      "hasClaudeMdExternalIncludesWarningShown": false,
+      "hasUnseenTeamArtifacts": false
+    }
+  }
+}

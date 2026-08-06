@@ -380,6 +380,17 @@ export const OrchestrationThread = Schema.Struct({
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   // Pending-only state. Optional so older servers remain compatible.
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
+  /**
+   * The thread this one continues, when work was handed off to another
+   * provider account rather than resumed in place.
+   *
+   * A provider session cannot cross accounts — its continuity lives in the
+   * provider's own store, keyed to one set of credentials — so a handoff
+   * starts a fresh thread seeded from Pylon's event log. Recording the parent
+   * is what makes that seam visible instead of the work appearing to restart
+   * for no reason. Optional so payloads from pre-handoff servers still decode.
+   */
+  continuedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -434,6 +445,13 @@ export const OrchestrationThreadShell = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
+  /**
+   * The thread this one continues. Carried on the shell as well as the detail
+   * so a client can find a thread's continuation without loading every thread:
+   * the handed-off thread stays open, and it can only say where its work went
+   * by looking for the thread that points back at it.
+   */
+  continuedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
@@ -575,6 +593,8 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /** Set when this thread continues work handed off from another account. */
+  continuedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
 });
 
@@ -1003,6 +1023,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  continuedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

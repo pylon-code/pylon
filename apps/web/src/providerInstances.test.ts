@@ -4,11 +4,14 @@ import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
   getDefaultProviderInstanceModel,
+  isProviderInstanceDrained,
   isProviderInstancePickerReady,
   isProviderInstancePickerVisible,
   resolveDefaultProviderModelSelection,
   resolveSelectableProviderInstance,
   resolveProviderDriverKindForInstanceSelection,
+  sortProviderInstancesForRouting,
+  type ProviderInstanceEntry,
 } from "./providerInstances";
 
 function provider(input: {
@@ -19,11 +22,13 @@ function provider(input: {
   displayName?: string;
   status?: ServerProvider["status"];
   models?: ServerProvider["models"];
+  rateLimit?: ServerProvider["rateLimit"];
 }): ServerProvider {
   return {
     instanceId: ProviderInstanceId.make(input.instanceId),
     driver: input.provider,
     ...(input.displayName ? { displayName: input.displayName } : {}),
+    ...(input.rateLimit ? { rateLimit: input.rateLimit } : {}),
     enabled: input.enabled ?? true,
     installed: true,
     version: null,
@@ -115,6 +120,215 @@ describe("applyProviderInstanceSettings", () => {
     });
 
     expect(entry?.enabled).toBe(false);
+  });
+
+  it("carries the configured drain priority onto the entry", () => {
+    const entries = deriveProviderInstanceEntries([
+      provider({ provider: ProviderDriverKind.make("claudeAgent"), instanceId: "claude_work" }),
+    ]);
+    const [entry] = applyProviderInstanceSettings(entries, {
+      providerInstances: {
+        [ProviderInstanceId.make("claude_work")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          priority: 1,
+        },
+      },
+      providers: {} as never,
+    });
+
+    expect(entry?.priority).toBe(1);
+  });
+});
+
+describe("account drain routing", () => {
+  const NOW_MS = Date.parse("2026-08-04T18:00:00.000Z");
+  const claude = ProviderDriverKind.make("claudeAgent");
+
+  const drainedProvider = (instanceId: string, resetsAt: string | undefined) =>
+    provider({
+      provider: claude,
+      instanceId,
+      rateLimit: {
+        status: "rejected",
+        rateLimitType: "five_hour",
+        observedAt: "2026-08-04T17:00:00.000Z",
+        ...(resetsAt ? { resetsAt } : {}),
+      },
+    });
+
+  const entryFor = (snapshot: ServerProvider) => {
+    const [entry] = deriveProviderInstanceEntries([snapshot]);
+    if (!entry) throw new Error("expected an entry");
+    return entry;
+  };
+
+  describe("isProviderInstanceDrained", () => {
+    it("drains an instance whose window has not reset yet", () => {
+      const entry = entryFor(drainedProvider("claude_primary", "2026-08-04T21:00:00.000Z"));
+
+      expect(isProviderInstanceDrained(entry, NOW_MS)).toBe(true);
+    });
+
+    it("recovers once the reset time passes", () => {
+      const entry = entryFor(drainedProvider("claude_primary", "2026-08-04T17:30:00.000Z"));
+
+      expect(isProviderInstanceDrained(entry, NOW_MS)).toBe(false);
+    });
+
+    // A rejection with nothing to expire would route away from the account
+    // forever, so it is deliberately not honored.
+    it.each([
+      ["a verdict with no reset time", drainedProvider("claude_primary", undefined)],
+      ["an unparseable reset time", drainedProvider("claude_primary", "not-a-date")],
+      ["no rate-limit state at all", provider({ provider: claude, instanceId: "claude_primary" })],
+      [
+        "an allowed verdict",
+        provider({
+          provider: claude,
+          instanceId: "claude_primary",
+          rateLimit: {
+            status: "allowed",
+            observedAt: "2026-08-04T17:00:00.000Z",
+            resetsAt: "2026-08-04T21:00:00.000Z",
+          },
+        }),
+      ],
+    ])("does not drain on %s", (_label, snapshot) => {
+      expect(isProviderInstanceDrained(entryFor(snapshot), NOW_MS)).toBe(false);
+    });
+  });
+
+  describe("sortProviderInstancesForRouting", () => {
+    const withPriority = (entry: ProviderInstanceEntry, priority: number) => ({
+      ...entry,
+      priority,
+    });
+
+    it("prefers the highest-priority healthy instance", () => {
+      const entries = [
+        withPriority(entryFor(provider({ provider: claude, instanceId: "claude_third" })), 2),
+        withPriority(entryFor(provider({ provider: claude, instanceId: "claude_first" })), 0),
+      ];
+
+      expect(sortProviderInstancesForRouting(entries, NOW_MS).map((e) => e.instanceId)).toEqual([
+        "claude_first",
+        "claude_third",
+      ]);
+    });
+
+    it("skips a drained instance even when it sorts first by priority", () => {
+      const entries = [
+        withPriority(entryFor(drainedProvider("claude_primary", "2026-08-04T21:00:00.000Z")), 0),
+        withPriority(entryFor(provider({ provider: claude, instanceId: "claude_backup" })), 1),
+      ];
+
+      expect(sortProviderInstancesForRouting(entries, NOW_MS).map((e) => e.instanceId)).toEqual([
+        "claude_backup",
+        "claude_primary",
+      ]);
+    });
+
+    // Better to attempt the turn and surface the provider's own error than to
+    // resolve nothing and leave the composer unable to send.
+    it("still resolves an instance when every one is drained", () => {
+      const entries = [
+        withPriority(entryFor(drainedProvider("claude_backup", "2026-08-04T22:00:00.000Z")), 1),
+        withPriority(entryFor(drainedProvider("claude_primary", "2026-08-04T21:00:00.000Z")), 0),
+      ];
+
+      expect(sortProviderInstancesForRouting(entries, NOW_MS).map((e) => e.instanceId)).toEqual([
+        "claude_primary",
+        "claude_backup",
+      ]);
+    });
+
+    it("keeps the existing order for instances with no priority configured", () => {
+      const entries = [
+        entryFor(provider({ provider: claude, instanceId: "claude_a" })),
+        entryFor(provider({ provider: claude, instanceId: "claude_b" })),
+      ];
+
+      expect(sortProviderInstancesForRouting(entries, NOW_MS).map((e) => e.instanceId)).toEqual([
+        "claude_a",
+        "claude_b",
+      ]);
+    });
+
+    it("orders an explicitly prioritized instance ahead of unprioritized ones", () => {
+      const entries = [
+        entryFor(provider({ provider: claude, instanceId: "claude_unset" })),
+        withPriority(entryFor(provider({ provider: claude, instanceId: "claude_first" })), 5),
+      ];
+
+      expect(sortProviderInstancesForRouting(entries, NOW_MS).map((e) => e.instanceId)).toEqual([
+        "claude_first",
+        "claude_unset",
+      ]);
+    });
+  });
+
+  // Every caller that resolves without an explicit request routes through the
+  // shared helper, so project creation and new threads cannot diverge.
+  describe("resolveSelectableProviderInstance", () => {
+    it("skips a drained account when nothing was requested", () => {
+      const instanceId = resolveSelectableProviderInstance(
+        [
+          drainedProvider("claude_primary", "2026-08-04T21:00:00.000Z"),
+          provider({ provider: claude, instanceId: "claude_backup" }),
+        ],
+        undefined,
+        NOW_MS,
+      );
+
+      expect(instanceId).toBe("claude_backup");
+    });
+
+    it("honors an explicitly requested account even while it is drained", () => {
+      const instanceId = resolveSelectableProviderInstance(
+        [
+          drainedProvider("claude_primary", "2026-08-04T21:00:00.000Z"),
+          provider({ provider: claude, instanceId: "claude_backup" }),
+        ],
+        ProviderInstanceId.make("claude_primary"),
+        NOW_MS,
+      );
+
+      expect(instanceId).toBe("claude_primary");
+    });
+
+    it("falls back to a drained account when every account is spent", () => {
+      const instanceId = resolveSelectableProviderInstance(
+        [
+          drainedProvider("claude_primary", "2026-08-04T21:00:00.000Z"),
+          drainedProvider("claude_backup", "2026-08-04T22:00:00.000Z"),
+        ],
+        undefined,
+        NOW_MS,
+      );
+
+      expect(instanceId).toBe("claude_primary");
+    });
+  });
+
+  // Project creation persists this, so it must not write a spent account.
+  describe("resolveDefaultProviderModelSelection", () => {
+    it("seeds a new project with an account that can serve a turn", () => {
+      const selection = resolveDefaultProviderModelSelection(
+        [
+          drainedProvider("claude_primary", "2026-08-04T21:00:00.000Z"),
+          provider({
+            provider: claude,
+            instanceId: "claude_backup",
+            models: [model("sonnet", false, true)],
+          }),
+        ],
+        null,
+        NOW_MS,
+      );
+
+      expect(selection?.instanceId).toBe("claude_backup");
+      expect(selection?.model).toBe("sonnet");
+    });
   });
 });
 

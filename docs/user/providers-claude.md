@@ -84,6 +84,33 @@ CLAUDE_CONFIG_DIR path: ~/.claude_personal_home
 Use the email shown in Settings to confirm each provider is using the intended account. Emails are
 blurred by default; click the blurred email to reveal it.
 
+## What Happens When One Account Runs Out?
+
+Pylon drains one account before it moves to the next, rather than spreading work across both. Claude
+never shares a prompt cache between organizations, so every account switch pays for a fresh start —
+switching should be rare and sticky.
+
+When Claude refuses a turn because a subscription window is spent, Pylon records that account as out
+of capacity until the window resets. From then on, **new threads open on the next account** that
+still has room.
+
+### Choose Which Account Drains First
+
+Accounts are used in the order they are listed in Settings → Providers. Use the up and down arrows on
+an account to change that order — the top account is used until it runs out, then the next one.
+
+The arrows appear only when you have more than one account for the same provider, and reordering
+affects new threads only.
+
+A pill appears at the bottom of the sidebar while an account is out of capacity. It names the
+account that picked up the work and roughly when the spent one comes back, and it disappears on its
+own once the window resets. Click it to open provider settings.
+
+If every configured account is out of capacity, Pylon still sends to one rather than blocking the
+composer, so you see Claude's own message instead of a silent refusal.
+
+Threads that are already running do not move. See the next section.
+
 ## Can I Switch Claude Accounts In An Existing Thread?
 
 Usually, no.
@@ -94,6 +121,26 @@ different config directory is treated as a different Claude environment.
 This is different from the recommended Codex setup. Claude Code keeps account and local state across
 multiple files under its config directory, so T3 Code keeps separate config directories isolated
 instead of trying to share part of the state.
+
+### Continuing The Work On Another Account
+
+When the account a thread is running on is out of capacity and another account has room, a small
+**Out of capacity** tab appears above the composer. Click it to see what continuing elsewhere would
+cost before anything is spent.
+
+Pylon never switches on its own. Waiting for the window to reset is free, and only you know whether
+the work is worth paying to move now.
+
+Continuing starts a **new** thread on the other account, because a Claude session cannot cross
+accounts. The new thread opens with a single message carrying the original request, the conversation
+so far, and a summary of the files changed. The panel tells you in advance roughly how many tokens
+that costs. It is billed fresh — no cache carries between accounts.
+
+Long threads carry their most recent turns rather than the whole conversation, and the panel says so
+before you commit. Most threads are small enough to cross whole.
+
+The original thread stays open. Both threads show a line linking to the other, so the seam is visible
+rather than looking like work restarted for no reason.
 
 ## I Want To Use OpenRouter
 
@@ -208,3 +255,23 @@ If the preset needs different Claude files, give it a different `CLAUDE_CONFIG_D
 different API keys, base URLs, or router settings, use Environment variables.
 
 Do not put environment variable assignments in `Launch arguments`.
+
+## Adding A Second Account Without A Terminal
+
+Pylon can sign a Claude account in for you.
+
+1. **Settings → Providers → Add provider**, pick Claude, name it (for example "Personal"),
+   and give it its own **CLAUDE_CONFIG_DIR path** such as `~/.claude_personal_home`. The path
+   is what keeps the two accounts apart — two providers sharing one directory are one account.
+2. The new provider will show as not signed in, with a **Sign in** button.
+3. Choose how that account signs in — Claude subscription, Anthropic Console for API billing,
+   or single sign-on. These are not interchangeable, and picking the wrong one fails only after
+   you have already signed in to a browser.
+4. Pylon opens the Claude sign-in page and waits. Complete it, then paste the code back into
+   Pylon.
+
+The card then shows the account's own email and usage.
+
+If your browser is already signed in to your other account, watch the email on the login page —
+signing in twice as the same account is the usual mistake, and it leaves two providers that
+share one subscription's limits.

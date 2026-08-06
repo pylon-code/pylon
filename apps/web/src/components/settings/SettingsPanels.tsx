@@ -20,6 +20,7 @@ import {
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
+  providerInstancePrioritySortKey,
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
@@ -143,6 +144,7 @@ import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
   backgroundActivitySharedPolicySettings,
+  buildProviderInstanceReorderPatch,
   buildProviderInstanceUpdatePatch,
   formatDiagnosticsDescription,
   hasChangedBackgroundActivitySettings,
@@ -610,6 +612,10 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Project Grouping"]
         : []),
       ...(settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? ["Word wrap"] : []),
+      ...(settings.showProviderUsageInContextPopover !==
+      DEFAULT_UNIFIED_SETTINGS.showProviderUsageInContextPopover
+        ? ["Provider usage in chat"]
+        : []),
       ...(settings.fontFamilySans !== DEFAULT_UNIFIED_SETTINGS.fontFamilySans
         ? ["Interface font"]
         : []),
@@ -677,6 +683,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarProjectGroupingMode,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
+      settings.showProviderUsageInContextPopover,
       settings.wordWrap,
       theme,
     ],
@@ -696,6 +703,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     updateSettings({
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
+      showProviderUsageInContextPopover: DEFAULT_UNIFIED_SETTINGS.showProviderUsageInContextPopover,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       environmentIdentificationMode: DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
@@ -1831,6 +1839,34 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          title="Provider usage in chat"
+          description="Show the active provider's subscription limits in the context window popover."
+          resetAction={
+            settings.showProviderUsageInContextPopover !==
+            DEFAULT_UNIFIED_SETTINGS.showProviderUsageInContextPopover ? (
+              <SettingResetButton
+                label="provider usage in chat"
+                onClick={() =>
+                  updateSettings({
+                    showProviderUsageInContextPopover:
+                      DEFAULT_UNIFIED_SETTINGS.showProviderUsageInContextPopover,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.showProviderUsageInContextPopover}
+              onCheckedChange={(checked) =>
+                updateSettings({ showProviderUsageInContextPopover: Boolean(checked) })
+              }
+              aria-label="Show provider usage in context window popover"
+            />
+          }
+        />
+
+        <SettingsRow
           title={
             <span className="inline-flex items-center gap-1.5">
               Background activity
@@ -2371,17 +2407,28 @@ export function ProviderSettingsPanel() {
       } satisfies ProviderInstanceConfig);
     const isDirty =
       explicitInstance !== undefined || !Equal.equals(legacyConfig, defaultLegacyConfig);
-    rows.push({
-      instanceId: defaultInstanceId,
-      instance: effectiveInstance,
-      driver,
-      isDefault: true,
-      isDirty,
-    });
+    const driverRows: InstanceRow[] = [
+      {
+        instanceId: defaultInstanceId,
+        instance: effectiveInstance,
+        driver,
+        isDefault: true,
+        isDirty,
+      },
+    ];
     for (const [id, instance] of instancesByDriver.get(providerSettings.provider) ?? []) {
       if (id === defaultInstanceId) continue;
-      rows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
+      driverRows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
     }
+    // The rendered order is the drain order, so sort by it here rather than
+    // leaving the list and the router to disagree. Stable, so instances
+    // without a configured priority keep default-first / settings-author order.
+    driverRows.sort(
+      (left, right) =>
+        providerInstancePrioritySortKey(left.instance) -
+        providerInstancePrioritySortKey(right.instance),
+    );
+    rows.push(...driverRows);
   }
   for (const [driver, list] of instancesByDriver) {
     if (visibleDriverKinds.has(driver)) continue;
@@ -2414,6 +2461,26 @@ export function ProviderSettingsPanel() {
         textGenerationModelSelection: options?.textGenerationModelSelection,
       }),
     );
+  };
+
+  // Drain order is per driver, so a move only ever shuffles that driver's own
+  // rows. Reorder controls stay hidden for a driver with a single account.
+  const orderRowsByDriver = new Map<ProviderDriverKind, InstanceRow[]>();
+  for (const row of rows) {
+    const list = orderRowsByDriver.get(row.driver) ?? [];
+    list.push(row);
+    orderRowsByDriver.set(row.driver, list);
+  }
+
+  const moveProviderInstance = (row: InstanceRow, direction: "up" | "down") => {
+    const patch = buildProviderInstanceReorderPatch({
+      settings,
+      driver: row.driver,
+      rows: orderRowsByDriver.get(row.driver) ?? [],
+      instanceId: row.instanceId,
+      direction,
+    });
+    if (patch) updateSettings(patch);
   };
 
   const deleteProviderInstance = (id: ProviderInstanceId) => {
@@ -2642,9 +2709,11 @@ export function ProviderSettingsPanel() {
             <ProviderInstanceCard
               key={row.instanceId}
               instanceId={row.instanceId}
+              {...(primaryEnvironment ? { environmentId: primaryEnvironment.environmentId } : {})}
               instance={row.instance}
               driverOption={driverOption}
               liveProvider={liveProvider}
+              timestampFormat={settings.timestampFormat}
               isExpanded={openInstanceDetails[row.instanceId] ?? false}
               onExpandedChange={(open) =>
                 setOpenInstanceDetails((existing) => ({
@@ -2666,6 +2735,24 @@ export function ProviderSettingsPanel() {
                 }
               }}
               onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
+              {...(() => {
+                const driverRows = orderRowsByDriver.get(row.driver) ?? [];
+                if (driverRows.length < 2) return {};
+                const position = driverRows.findIndex(
+                  (candidate) => candidate.instanceId === row.instanceId,
+                );
+                return {
+                  drainOrder: {
+                    position,
+                    total: driverRows.length,
+                    onMoveUp: position > 0 ? () => moveProviderInstance(row, "up") : undefined,
+                    onMoveDown:
+                      position < driverRows.length - 1
+                        ? () => moveProviderInstance(row, "down")
+                        : undefined,
+                  },
+                };
+              })()}
               headerAction={headerAction}
               hiddenModels={modelPreferences.hiddenModels}
               favoriteModels={favoriteModels}

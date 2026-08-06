@@ -10,6 +10,7 @@ import type {
   ProviderInstanceId,
   ProviderDriverKind,
   ServerProvider,
+  ServerProviderRateLimit,
   ServerProviderUpdateState,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -67,6 +68,21 @@ export interface ProviderRegistryShape {
     readonly instanceId: ProviderInstanceId;
     readonly action: ProviderMaintenanceActionKind;
     readonly state: ServerProviderUpdateState | null;
+  }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+  /**
+   * Apply pushed subscription rate-limit state to one configured instance.
+   *
+   * Volatile like `setProviderMaintenanceActionState` — never persisted, and
+   * projected onto `ServerProvider.rateLimit` so clients observe it through the
+   * existing snapshot stream rather than a second channel. Pass `null` to clear.
+   *
+   * An unknown instance id resolves with the current list rather than failing,
+   * matching `refreshInstance`.
+   */
+  readonly setProviderRateLimitState: (input: {
+    readonly instanceId: ProviderInstanceId;
+    readonly state: ServerProviderRateLimit | null;
   }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
   /**

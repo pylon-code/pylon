@@ -96,6 +96,34 @@ export const ServerProviderSkill = Schema.Struct({
 });
 export type ServerProviderSkill = typeof ServerProviderSkill.Type;
 
+const ServerProviderUsagePercent = Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)).check(
+  Schema.isLessThanOrEqualTo(100),
+);
+
+export const ServerProviderUsageWindow = Schema.Struct({
+  label: TrimmedNonEmptyString,
+  usedPercent: ServerProviderUsagePercent,
+  resetsAt: Schema.optional(IsoDateTime),
+  windowDurationMins: Schema.optional(NonNegativeInt),
+});
+export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
+
+export const ServerProviderUsageLimits = Schema.Struct({
+  /**
+   * Where the reading came from (`codexAppServer`, `claudeOAuth`,
+   * `claudePrint`, …). Provenance only — nothing renders it.
+   *
+   * An open string rather than a closed union: a provider gaining a new usage
+   * source must not fail an older client's snapshot decode. `ServerProviders`
+   * drops members it cannot decode, so a closed union here would make the
+   * whole provider vanish from the picker over a field no one reads.
+   */
+  source: TrimmedNonEmptyString,
+  checkedAt: IsoDateTime,
+  windows: Schema.Array(ServerProviderUsageWindow),
+});
+export type ServerProviderUsageLimits = typeof ServerProviderUsageLimits.Type;
+
 /**
  * Availability of a configured provider instance from the runtime's POV.
  *
@@ -158,6 +186,36 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+/**
+ * Subscription rate-limit state as last reported by a running session.
+ *
+ * Distinct from `usageLimits`, which is a polled gauge: this is the pushed
+ * signal a provider emits mid-session (`account.rate-limits.updated`), and it
+ * is what tells the server an account is actually spent. `rejected` means the
+ * provider refused the turn for quota reasons, not that a request failed.
+ *
+ * Volatile like `updateState` — never persisted. A restart re-learns it from
+ * the next turn, and `resetsAt` bounds how long a stale value can matter.
+ *
+ * `rateLimitType` is an open string rather than a closed union: providers add
+ * window kinds (`five_hour`, `seven_day`, `seven_day_opus`, …) on their own
+ * schedule, and an unrecognized one must not fail the snapshot decode.
+ */
+export const ServerProviderRateLimitStatus = Schema.Literals([
+  "allowed",
+  "allowed_warning",
+  "rejected",
+]);
+export type ServerProviderRateLimitStatus = typeof ServerProviderRateLimitStatus.Type;
+
+export const ServerProviderRateLimit = Schema.Struct({
+  status: ServerProviderRateLimitStatus,
+  rateLimitType: Schema.optional(TrimmedNonEmptyString),
+  resetsAt: Schema.optional(IsoDateTime),
+  observedAt: IsoDateTime,
+});
+export type ServerProviderRateLimit = typeof ServerProviderRateLimit.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -192,6 +250,8 @@ export const ServerProvider = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  usageLimits: Schema.optional(ServerProviderUsageLimits),
+  rateLimit: Schema.optional(ServerProviderRateLimit),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
 });
@@ -585,6 +645,71 @@ export const ServerProviderUpdateInput = Schema.Struct({
   instanceId: Schema.optionalKey(ProviderInstanceId),
 });
 export type ServerProviderUpdateInput = typeof ServerProviderUpdateInput.Type;
+
+/**
+ * Which sign-in an account uses.
+ *
+ * Not interchangeable: a Console (API-billing) account cannot sign in through
+ * the subscription flow, and an org that mandates SSO cannot use either.
+ * Guessing fails only after the user has already authenticated in a browser,
+ * so the client asks.
+ */
+export const ServerProviderLoginMethod = Schema.Literals(["subscription", "console", "sso"]);
+export type ServerProviderLoginMethod = typeof ServerProviderLoginMethod.Type;
+
+export const ProviderLoginSessionId = TrimmedNonEmptyString.pipe(
+  Schema.brand("ProviderLoginSessionId"),
+);
+export type ProviderLoginSessionId = typeof ProviderLoginSessionId.Type;
+
+export const ServerProviderLoginStartInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  method: ServerProviderLoginMethod,
+  /** Pre-fills the login page so the account already signed in is not re-used. */
+  email: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderLoginStartInput = typeof ServerProviderLoginStartInput.Type;
+
+export const ServerProviderLoginStarted = Schema.Struct({
+  sessionId: ProviderLoginSessionId,
+  /** Authorization URL to open. The CLI also tries to open it itself. */
+  url: TrimmedNonEmptyString,
+});
+export type ServerProviderLoginStarted = typeof ServerProviderLoginStarted.Type;
+
+export const ServerProviderLoginSubmitInput = Schema.Struct({
+  sessionId: ProviderLoginSessionId,
+  code: TrimmedNonEmptyString,
+});
+export type ServerProviderLoginSubmitInput = typeof ServerProviderLoginSubmitInput.Type;
+
+export const ServerProviderLoginCancelInput = Schema.Struct({
+  sessionId: ProviderLoginSessionId,
+});
+export type ServerProviderLoginCancelInput = typeof ServerProviderLoginCancelInput.Type;
+
+export const ServerProviderLoginResult = Schema.Struct({
+  /**
+   * Confirmed by re-reading auth status, not by the exit code. The CLI can exit
+   * cleanly after the user abandons the browser.
+   */
+  signedIn: Schema.Boolean,
+  email: Schema.optional(TrimmedNonEmptyString),
+  message: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderLoginResult = typeof ServerProviderLoginResult.Type;
+
+export class ServerProviderLoginError extends Schema.TaggedErrorClass<ServerProviderLoginError>()(
+  "ServerProviderLoginError",
+  {
+    reason: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Provider sign-in failed: ${this.reason}`;
+  }
+}
 
 export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerProviderUpdateError>()(
   "ServerProviderUpdateError",

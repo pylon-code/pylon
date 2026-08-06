@@ -4,6 +4,7 @@ import {
   type ModelSelection,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
+  type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -12,6 +13,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/unstable/http";
 import {
   createModelCapabilities,
   getModelSelectionStringOptionValue,
@@ -37,11 +39,13 @@ import {
   parseGenericCliVersion,
   providerModelsFromSettings,
   spawnAndCollect,
+  type CommandResult,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { discoverClaudeSkills } from "../Drivers/ClaudeSkills.ts";
+import { fetchClaudeOAuthUsageLimits } from "../claudeOAuthUsage.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -571,6 +575,7 @@ function apiProviderAuthMetadata(
 // account info. The previous 8s budget expired mid-init, so the probe returned
 // `undefined` and left the provider unverified and unselectable in the picker.
 const CAPABILITIES_PROBE_TIMEOUT_MS = 25_000;
+const USAGE_PROBE_TIMEOUT_MS = 4_000;
 
 /**
  * Keep workspace-scoped command discovery intact while isolating the periodic
@@ -776,6 +781,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   claudeSettings: ClaudeSettings,
   args: ReadonlyArray<string>,
   environment?: NodeJS.ProcessEnv,
+  options?: { readonly closeStdin?: boolean; readonly cwd?: string },
 ) {
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
   const spawnCommand = yield* resolveSpawnCommand(claudeSettings.binaryPath, args, {
@@ -784,8 +790,87 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
     env: claudeEnvironment,
     shell: spawnCommand.shell,
+    ...(options?.cwd ? { cwd: options.cwd } : {}),
+    ...(options?.closeStdin ? { stdin: "ignore" as const } : {}),
   });
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
+});
+
+interface ClaudeAuthStatus {
+  /** `undefined` when the CLI did not report it, which is not the same as `false`. */
+  readonly loggedIn: boolean | undefined;
+  readonly email: string | undefined;
+}
+
+/**
+ * Parse `claude auth status --json`.
+ *
+ * The CLI exits 0 whether or not anybody is signed in, so `loggedIn` is the
+ * only field that distinguishes the two. It is read separately from the email
+ * so a CLI that omits it still yields an account identity, and so a missing
+ * field is never mistaken for a confident "signed out".
+ */
+function claudeAuthStatusFromResult(result: CommandResult): ClaudeAuthStatus | undefined {
+  if (result.code !== 0) return undefined;
+  try {
+    const decoded: unknown = JSON.parse(result.stdout);
+    if (typeof decoded !== "object" || decoded === null) return undefined;
+    const record = decoded as { loggedIn?: unknown; email?: unknown };
+    return {
+      loggedIn: typeof record.loggedIn === "boolean" ? record.loggedIn : undefined,
+      email: typeof record.email === "string" ? record.email.trim() || undefined : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function accountIdentityFromAuthStatus(result: CommandResult): string | undefined {
+  return claudeAuthStatusFromResult(result)?.email;
+}
+
+/**
+ * Read one instance's account identity and subscription usage.
+ *
+ * Usage comes solely from Anthropic's OAuth usage endpoint. There is no CLI
+ * fallback: `claude --print "/usage"` reports figures derived from this
+ * machine's local sessions, so it disagrees with the account's real totals,
+ * and a gauge that silently switches between two different numbers is worse
+ * than one that is briefly absent.
+ */
+export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(function* (
+  claudeSettings: ClaudeSettings,
+  environment?: NodeJS.ProcessEnv,
+  cwd?: string,
+): Effect.fn.Return<
+  | {
+      readonly accountIdentity: string | undefined;
+      readonly usageLimits: ServerProviderUsageLimits | undefined;
+    }
+  | undefined,
+  never,
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
+> {
+  const checkedAt = DateTime.formatIso(yield* DateTime.now);
+  const runOptions = { closeStdin: true as const, ...(cwd ? { cwd } : {}) };
+
+  const probed = yield* Effect.all(
+    [
+      runClaudeCommand(claudeSettings, ["auth", "status", "--json"], environment, runOptions),
+      fetchClaudeOAuthUsageLimits(claudeSettings, checkedAt),
+    ],
+    { concurrency: "unbounded" },
+  ).pipe(
+    Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
+    Effect.catchCause(() => Effect.succeed(Option.none())),
+  );
+  if (Option.isNone(probed)) return undefined;
+
+  const [authResult, usageLimits] = probed.value;
+  return { accountIdentity: accountIdentityFromAuthStatus(authResult), usageLimits };
 });
 
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
@@ -795,10 +880,16 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   ) => Effect.Effect<ClaudeCapabilitiesProbe | undefined>,
   environment?: NodeJS.ProcessEnv,
   cwd?: string,
+  resolveUsage?: (
+    accountIdentity: string | undefined,
+  ) => Effect.Effect<ServerProviderUsageLimits | undefined>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
 > {
   const resolvedEnvironment = environment ?? process.env;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
@@ -915,6 +1006,20 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 
   if (!capabilities) {
+    // The init probe cannot tell "signed out" from "could not tell", and the
+    // two need opposite responses from the user: one is a sign-in, the other is
+    // a diagnostic. Ask the CLI directly rather than reporting the ambiguity.
+    // A command that cannot run leaves the state unknown, which is already the
+    // fallback — the point of asking is only to upgrade to a confident "no".
+    const authStatusResult = yield* runClaudeCommand(
+      claudeSettings,
+      ["auth", "status", "--json"],
+      resolvedEnvironment,
+      { closeStdin: true, ...(cwd ? { cwd } : {}) },
+    ).pipe(Effect.option);
+    const authStatus = Option.isSome(authStatusResult)
+      ? claudeAuthStatusFromResult(authStatusResult.value)
+      : undefined;
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -926,8 +1031,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         installed: true,
         version: parsedVersion,
         status: "warning",
-        auth: { status: "unknown" },
-        message: "Could not verify Claude authentication status from initialization result.",
+        auth:
+          authStatus?.loggedIn === false ? { status: "unauthenticated" } : { status: "unknown" },
+        message:
+          authStatus?.loggedIn === false
+            ? "Claude is not signed in on this account."
+            : "Could not verify Claude authentication status from initialization result.",
       },
     });
   }
@@ -937,6 +1046,24 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       subscriptionType: capabilities.subscriptionType,
       authMethod: capabilities.tokenSource,
     }) ?? apiProviderAuthMetadata(capabilities.apiProvider);
+  const usageLimits =
+    authMetadata?.type === "apiKey" || authMetadata?.type === "bedrock"
+      ? undefined
+      : yield* resolveUsage
+          ? resolveUsage(capabilities.email?.trim() || undefined).pipe(
+              Effect.catchCause(() => Effect.void),
+            )
+          : probeClaudeUsageLimits(claudeSettings, resolvedEnvironment, cwd).pipe(
+              Effect.map((result) => {
+                if (!result) return undefined;
+                const expectedIdentity = capabilities.email?.trim();
+                return result.accountIdentity &&
+                  expectedIdentity &&
+                  result.accountIdentity !== expectedIdentity
+                  ? undefined
+                  : result.usageLimits;
+              }),
+            );
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
@@ -953,6 +1080,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...(capabilities.email ? { email: capabilities.email } : {}),
         ...(authMetadata ? authMetadata : {}),
       },
+      ...(usageLimits ? { usageLimits } : {}),
       ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
     },
   });

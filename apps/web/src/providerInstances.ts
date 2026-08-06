@@ -16,6 +16,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
+  providerInstancePrioritySortKey,
   type ModelSelection,
   type ProviderDriverKind,
   ProviderInstanceId,
@@ -60,6 +61,11 @@ export interface ProviderInstanceEntry {
   readonly isDefault: boolean;
   /** True when `availability === "unavailable"` is absent or "available". */
   readonly isAvailable: boolean;
+  /**
+   * Configured drain order, lower first. Only `applyProviderInstanceSettings`
+   * can populate it — priority lives in settings, not on the wire snapshot.
+   */
+  readonly priority?: number | undefined;
   readonly snapshot: ServerProvider;
   readonly models: ReadonlyArray<ServerProviderModel>;
 }
@@ -207,7 +213,48 @@ export function applyProviderInstanceSettings(
       : entry.isDefault
         ? (legacyProviders[entry.driverKind]?.enabled ?? entry.enabled)
         : false;
-    return enabled === entry.enabled ? entry : { ...entry, enabled };
+    const priority = explicitInstance?.priority;
+    if (enabled === entry.enabled && priority === entry.priority) return entry;
+    return { ...entry, enabled, priority };
+  });
+}
+
+/**
+ * Whether an instance is currently refusing turns because its subscription
+ * window is spent, as of `nowMs`.
+ *
+ * A `rejected` verdict without a `resetsAt` does not count. Without a reset
+ * time there is nothing to expire, and routing permanently away from an
+ * account on a signal that never clears is worse than trying it and letting
+ * the provider report the real error — every verdict Claude actually sends
+ * carries a reset time.
+ */
+export function isProviderInstanceDrained(entry: ProviderInstanceEntry, nowMs: number): boolean {
+  const rateLimit = entry.snapshot.rateLimit;
+  if (rateLimit?.status !== "rejected" || rateLimit.resetsAt === undefined) return false;
+  const resetsAtMs = Date.parse(rateLimit.resetsAt);
+  return Number.isFinite(resetsAtMs) && resetsAtMs > nowMs;
+}
+
+/**
+ * Order instances for automatic routing: instances that can serve a turn now
+ * before drained ones, then by configured `priority`, then by the caller's
+ * existing order.
+ *
+ * Drained instances are pushed to the back rather than dropped, so a caller
+ * that finds every instance drained still resolves one. Attempting a turn and
+ * surfacing the provider's own error beats a composer that refuses to send.
+ */
+export function sortProviderInstancesForRouting(
+  entries: ReadonlyArray<ProviderInstanceEntry>,
+  nowMs: number,
+): ReadonlyArray<ProviderInstanceEntry> {
+  return [...entries].sort((left, right) => {
+    const drainedDelta =
+      Number(isProviderInstanceDrained(left, nowMs)) -
+      Number(isProviderInstanceDrained(right, nowMs));
+    if (drainedDelta !== 0) return drainedDelta;
+    return providerInstancePrioritySortKey(left) - providerInstancePrioritySortKey(right);
   });
 }
 
@@ -295,10 +342,18 @@ const isSelectableProviderInstanceEntry = (entry: ProviderInstanceEntry): boolea
  * ready first, then a non-error probe result. An errored provider is retained
  * only when it was explicitly requested; it is never invented as a new-user
  * default.
+ *
+ * Only the fallback consults drain state, and it does so through
+ * {@link sortProviderInstancesForRouting} — an explicitly requested instance is
+ * honored even while it is spent, because that request came from a user's pick
+ * or a thread's existing binding. Every caller that lands here without a
+ * request (new projects, new threads, a selection whose instance was deleted)
+ * gets drain-and-priority ordering without having to know it exists.
  */
 export function resolveSelectableProviderInstanceEntry(
   entries: ReadonlyArray<ProviderInstanceEntry>,
   instanceId: ProviderInstanceId | undefined,
+  nowMs: number = Date.now(),
 ): ProviderInstanceEntry | undefined {
   if (instanceId !== undefined) {
     const requested = entries.find((entry) => entry.instanceId === instanceId);
@@ -306,9 +361,10 @@ export function resolveSelectableProviderInstanceEntry(
       return requested;
     }
   }
+  const ordered = sortProviderInstancesForRouting(entries, nowMs);
   return (
-    entries.find(isProviderInstancePickerReady) ??
-    entries.find((entry) => isSelectableProviderInstanceEntry(entry) && entry.status !== "error")
+    ordered.find(isProviderInstancePickerReady) ??
+    ordered.find((entry) => isSelectableProviderInstanceEntry(entry) && entry.status !== "error")
   );
 }
 
@@ -317,13 +373,22 @@ export function resolveSelectableProviderInstanceEntry(
  * id that no longer exists (e.g. a persisted thread selection after the
  * user deleted the custom instance). Returns a ready or non-error fallback,
  * or `undefined` when no provider can safely become a new selection.
+ *
+ * Drain state rides the wire snapshot, so the fallback avoids a spent account
+ * here as it does everywhere. Configured `priority` does not: it lives in
+ * settings and only reaches an entry through
+ * {@link applyProviderInstanceSettings}, which callers holding raw snapshots
+ * (project creation against a remote environment, for one) have not applied.
+ * Those callers are choosing a stored default rather than routing a turn, and
+ * the composer re-resolves with full priority knowledge before anything runs.
  */
 export function resolveSelectableProviderInstance(
   providers: ReadonlyArray<ServerProvider>,
   instanceId: ProviderInstanceId | undefined,
+  nowMs: number = Date.now(),
 ): ProviderInstanceId | undefined {
   const entries = deriveProviderInstanceEntries(providers);
-  return resolveSelectableProviderInstanceEntry(entries, instanceId)?.instanceId;
+  return resolveSelectableProviderInstanceEntry(entries, instanceId, nowMs)?.instanceId;
 }
 
 /**
@@ -335,8 +400,9 @@ export function resolveSelectableProviderInstance(
 export function resolveDefaultProviderModelSelection(
   providers: ReadonlyArray<ServerProvider>,
   selection: ModelSelection | null | undefined,
+  nowMs: number = Date.now(),
 ): ModelSelection | null {
-  const instanceId = resolveSelectableProviderInstance(providers, selection?.instanceId);
+  const instanceId = resolveSelectableProviderInstance(providers, selection?.instanceId, nowMs);
   if (instanceId === undefined) return null;
   if (selection?.instanceId === instanceId) return selection;
   const model = getDefaultProviderInstanceModel(providers, instanceId);

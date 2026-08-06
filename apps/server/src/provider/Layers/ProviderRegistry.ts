@@ -27,6 +27,7 @@ import {
   ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
+  type ServerProviderRateLimit,
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -292,6 +293,13 @@ export const ProviderRegistryLive = Layer.effect(
     const maintenanceActionStatesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, { readonly update?: ServerProviderUpdateState | undefined }>
     >(new Map());
+    // Pushed subscription rate-limit state, keyed by instance. Volatile for the
+    // same reason maintenance action state is: it describes what a provider is
+    // doing right now, not what it is configured to be. A restart re-learns it
+    // from the next turn.
+    const rateLimitStatesRef = yield* Ref.make<
+      ReadonlyMap<ProviderInstanceId, ServerProviderRateLimit>
+    >(new Map());
 
     // Live-source registry — the dynamic counterpart to the boot-time
     // `bootSources`. Keyed by `instanceId`; the stored `ProviderInstance`
@@ -344,6 +352,35 @@ export const ProviderRegistryLive = Layer.effect(
       };
     });
 
+    const applyProviderRateLimit = Effect.fn("applyProviderRateLimit")(function* (
+      provider: ServerProvider,
+    ) {
+      const rateLimitStates = yield* Ref.get(rateLimitStatesRef);
+      const rateLimit = rateLimitStates.get(provider.instanceId);
+      if (!rateLimit) {
+        // Strip rather than pass through: a snapshot rebuilt from the probe
+        // must not resurrect state we have since cleared.
+        const { rateLimit: _rateLimit, ...providerWithoutRateLimit } = provider;
+        return providerWithoutRateLimit;
+      }
+      return {
+        ...provider,
+        rateLimit,
+      };
+    });
+
+    /**
+     * Project every volatile per-instance overlay onto a freshly probed
+     * snapshot. Probes rebuild snapshots from scratch, so anything not stored
+     * in a Ref has to be re-applied here or it silently disappears.
+     */
+    const applyVolatileProviderState = Effect.fn("applyVolatileProviderState")(function* (
+      provider: ServerProvider,
+    ) {
+      const withUpdateState = yield* applyProviderUpdateState(provider);
+      return yield* applyProviderRateLimit(withUpdateState);
+    });
+
     const upsertProviders = Effect.fn("upsertProviders")(function* (
       nextProviders: ReadonlyArray<ServerProvider>,
       options?: {
@@ -354,7 +391,7 @@ export const ProviderRegistryLive = Layer.effect(
     ) {
       const nextProvidersWithUpdateState = yield* Effect.forEach(
         nextProviders,
-        applyProviderUpdateState,
+        applyVolatileProviderState,
         {
           concurrency: "unbounded",
         },
@@ -442,12 +479,42 @@ export const ProviderRegistryLive = Layer.effect(
           return existingProviders;
         }
 
-        const nextProvider = yield* applyProviderUpdateState(matchingProvider);
+        const nextProvider = yield* applyVolatileProviderState(matchingProvider);
         return yield* upsertProviders([nextProvider], {
           persist: false,
         });
       },
     );
+
+    const setProviderRateLimitState = Effect.fn("setProviderRateLimitState")(function* (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly state: ServerProviderRateLimit | null;
+    }) {
+      yield* Ref.update(rateLimitStatesRef, (previous) => {
+        const next = new Map(previous);
+        if (input.state === null) {
+          next.delete(input.instanceId);
+        } else {
+          next.set(input.instanceId, input.state);
+        }
+        return next;
+      });
+
+      const existingProviders = yield* Ref.get(providersRef);
+      const matchingProvider = existingProviders.find(
+        (candidate) => candidate.instanceId === input.instanceId,
+      );
+      // Unknown instance is a no-op returning the current list, matching
+      // `refreshInstance` so transport layers never special-case unknowns.
+      if (!matchingProvider) {
+        return existingProviders;
+      }
+
+      const nextProvider = yield* applyVolatileProviderState(matchingProvider);
+      return yield* upsertProviders([nextProvider], {
+        persist: false,
+      });
+    });
 
     const refreshOneSource = Effect.fn("refreshOneSource")(function* (
       providerSource: ProviderSnapshotSource,
@@ -712,6 +779,7 @@ export const ProviderRegistryLive = Layer.effect(
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
+      setProviderRateLimitState,
       get streamChanges() {
         return Stream.fromPubSub(changesPubSub);
       },

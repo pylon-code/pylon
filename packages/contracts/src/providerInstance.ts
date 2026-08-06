@@ -35,7 +35,7 @@
  */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 const PROVIDER_SLUG_MAX_CHARS = 64;
 /**
@@ -127,9 +127,29 @@ export const ProviderInstanceConfig = Schema.Struct({
   accentColor: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optionalKey(ProviderInstanceEnvironment),
   enabled: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Drain order across instances of one driver. Lower runs first.
+   *
+   * Optional so existing configurations keep working untouched: an instance
+   * without a priority sorts after every explicitly ordered one, preserving
+   * whatever order the caller already had.
+   */
+  priority: Schema.optionalKey(NonNegativeInt),
   config: Schema.optionalKey(Schema.Unknown),
 });
 export type ProviderInstanceConfig = typeof ProviderInstanceConfig.Type;
+
+/**
+ * Sort key for {@link ProviderInstanceConfig.priority}.
+ *
+ * Unset priorities sort last. Pair with a stable sort so instances that share a
+ * key — including every unprioritized one — keep their existing relative order.
+ */
+export const PROVIDER_INSTANCE_PRIORITY_UNSET = Number.MAX_SAFE_INTEGER;
+
+export const providerInstancePrioritySortKey = (config: {
+  readonly priority?: number | undefined;
+}): number => config.priority ?? PROVIDER_INSTANCE_PRIORITY_UNSET;
 
 /**
  * Map shape for `ServerSettings.providerInstances`. Keyed by

@@ -128,6 +128,12 @@ import {
   ServerConfigStreamEvent,
   ServerConfig,
   ServerProviderUpdateError,
+  ServerProviderLoginCancelInput,
+  ServerProviderLoginError,
+  ServerProviderLoginResult,
+  ServerProviderLoginStarted,
+  ServerProviderLoginStartInput,
+  ServerProviderLoginSubmitInput,
   ServerProviderUpdateInput,
   ServerLifecycleStreamEvent,
   ServerRemoveKeybindingInput,
@@ -228,6 +234,9 @@ export const WS_METHODS = {
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
+  serverStartProviderLogin: "server.startProviderLogin",
+  serverSubmitProviderLoginCode: "server.submitProviderLoginCode",
+  serverCancelProviderLogin: "server.cancelProviderLogin",
   serverUpdateServer: "server.updateServer",
   serverUpdateServerWithProgress: "server.updateServerWithProgress",
   serverUpsertKeybinding: "server.upsertKeybinding",
@@ -309,6 +318,35 @@ export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvide
   payload: ServerProviderUpdateInput,
   success: ServerProviderUpdatedPayload,
   error: Schema.Union([ServerProviderUpdateError, EnvironmentAuthorizationError]),
+});
+
+/**
+ * Sign in to a provider account from the client.
+ *
+ * Two calls because the flow is interactive: the CLI prints an authorization
+ * URL and then waits on stdin for the code the browser hands back, so the
+ * process has to stay alive between them. Without this, adding a second
+ * account needs a terminal, which makes it a maintainer-only feature.
+ */
+export const WsServerStartProviderLoginRpc = Rpc.make(WS_METHODS.serverStartProviderLogin, {
+  payload: ServerProviderLoginStartInput,
+  success: ServerProviderLoginStarted,
+  error: Schema.Union([ServerProviderLoginError, EnvironmentAuthorizationError]),
+});
+
+export const WsServerSubmitProviderLoginCodeRpc = Rpc.make(
+  WS_METHODS.serverSubmitProviderLoginCode,
+  {
+    payload: ServerProviderLoginSubmitInput,
+    success: ServerProviderLoginResult,
+    error: Schema.Union([ServerProviderLoginError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsServerCancelProviderLoginRpc = Rpc.make(WS_METHODS.serverCancelProviderLogin, {
+  payload: ServerProviderLoginCancelInput,
+  success: Schema.Void,
+  error: EnvironmentAuthorizationError,
 });
 
 export const WsServerUpdateServerRpc = Rpc.make(WS_METHODS.serverUpdateServer, {
@@ -807,6 +845,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
   WsServerUpdateProviderRpc,
+  WsServerStartProviderLoginRpc,
+  WsServerSubmitProviderLoginCodeRpc,
+  WsServerCancelProviderLoginRpc,
   WsServerUpdateServerRpc,
   WsServerUpdateServerWithProgressRpc,
   WsServerUpsertKeybindingRpc,

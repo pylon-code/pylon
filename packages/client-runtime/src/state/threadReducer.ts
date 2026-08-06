@@ -94,6 +94,10 @@ export function applyThreadDetailEvent(
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
+          // Carried on the live event too, not just the snapshot: the user
+          // lands on a continuation thread the moment it is created, and the
+          // seam has to be visible then rather than after a reload.
+          continuedFromThreadId: event.payload.continuedFromThreadId ?? null,
           deletedAt: null,
           messages: [],
           proposedPlans: [],

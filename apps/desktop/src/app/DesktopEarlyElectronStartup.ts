@@ -9,6 +9,7 @@ import {
   type LinuxPasswordStoreSwitch,
   type LinuxPasswordStorePreference,
 } from "../linuxSecretStorage.ts";
+import { isNightlyDesktopVersion } from "../updates/updateChannels.ts";
 import {
   resolveDesktopBaseDir,
   resolveDesktopStateDir,
@@ -20,6 +21,12 @@ interface EarlyDesktopSettingsInput {
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
   readonly readFileString: (path: string) => string;
+  /**
+   * Needed this early because the runtime home differs per channel: reading a
+   * stable install's settings to configure a nightly one would be reading the
+   * wrong app's state.
+   */
+  readonly appVersion: string;
 }
 
 type EarlyLinuxElectronOptionsInput = EarlyDesktopSettingsInput;
@@ -48,12 +55,14 @@ function resolveEarlyDesktopSettingsPath(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
+  readonly appVersion: string;
 }): string {
   const t3Home = Option.fromUndefinedOr(input.env.T3CODE_HOME);
   const baseDir = resolveDesktopBaseDir({
     homeDirectory: input.homeDirectory,
     joinPath: input.joinPath,
     t3Home,
+    isNightly: isNightlyDesktopVersion(input.appVersion),
   });
   const stateDir = resolveDesktopStateDir({
     baseDir,
@@ -81,7 +90,14 @@ export function resolveEarlyLinuxElectronOptions(
 ): EarlyLinuxElectronOptions {
   const preference = resolveEarlyLinuxPasswordStorePreference(input);
   return {
-    linuxWmClass: isDevelopmentEnvironment(input.env) ? "pylon-code-dev" : "pylon-code",
+    // Must match DesktopEnvironment's linuxWmClass: the window manager groups
+    // by this, so a shared class would make a nightly window indistinguishable
+    // from the stable app's.
+    linuxWmClass: isDevelopmentEnvironment(input.env)
+      ? "pylon-code-dev"
+      : isNightlyDesktopVersion(input.appVersion)
+        ? "pylon-code-nightly"
+        : "pylon-code",
     passwordStore: resolveLinuxPasswordStoreSwitch({
       preference,
       env: input.env,
