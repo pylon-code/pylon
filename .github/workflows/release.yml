@@ -218,6 +218,16 @@ jobs:
         name: Read production relay tracing config
         shell: bash
         run: |
+          set -euo pipefail
+          # Connect is optional. Without Cloudflare credentials there is no relay
+          # to read state from, so emit an empty config rather than failing the
+          # whole release: the desktop apps build and auto-update without it.
+          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" || -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+            echo "Cloudflare credentials absent; building without Connect relay tracing." >&2
+            printf '# Connect is not configured; no relay client tracing.\n' \
+              > "$RUNNER_TEMP/relay-client-tracing.env"
+            exit 0
+          fi
           vp run --filter t3code-relay deploy \
             --stage prod \
             --read-state \
@@ -242,6 +252,11 @@ jobs:
           if [[ -z "$relay_domain" && -n "${RELAY_API_ZONE_NAME:-}" ]]; then
             relay_domain="relay.$RELAY_API_ZONE_NAME"
           fi
+          # Connect is opt-in. A repository that has not configured Clerk and a
+          # relay still produces working desktop builds; it just ships without
+          # cloud sign-in. Partial configuration is treated as none, because
+          # half-configured Connect fails at runtime in the user's app rather
+          # than here, where the cause is still visible.
           required=(
             relay_domain
             CLERK_PUBLISHABLE_KEY
@@ -255,8 +270,14 @@ jobs:
             fi
           done
           if (( ${#missing[@]} > 0 )); then
-            printf 'Missing required relay deployment configuration: %s\n' "${missing[*]}" >&2
-            exit 1
+            printf 'Connect is not configured (missing: %s); building without it.\n' "${missing[*]}" >&2
+            {
+              echo "clerk_publishable_key="
+              echo "clerk_jwt_template="
+              echo "clerk_cli_oauth_client_id="
+              echo "relay_url="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           echo "clerk_publishable_key=$CLERK_PUBLISHABLE_KEY" >> "$GITHUB_OUTPUT"
@@ -407,8 +428,16 @@ jobs:
         shell: bash
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
+          # The artifact is always uploaded so the download stays uniform, but
+          # it carries no variables when Connect is not configured.
+          if ! grep -q '^T3CODE_RELAY_CLIENT_OTLP_TRACES_' "$config_path" 2>/dev/null; then
+            echo "No relay client tracing config; continuing without it." >&2
+            exit 0
+          fi
           tracing_token="$(sed -n 's/^T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=//p' "$config_path")"
-          echo "::add-mask::$tracing_token"
+          if [[ -n "$tracing_token" ]]; then
+            echo "::add-mask::$tracing_token"
+          fi
           cat "$config_path" >> "$GITHUB_ENV"
 
       - name: Align package versions to release version
@@ -707,8 +736,16 @@ jobs:
         shell: bash
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
+          # The artifact is always uploaded so the download stays uniform, but
+          # it carries no variables when Connect is not configured.
+          if ! grep -q '^T3CODE_RELAY_CLIENT_OTLP_TRACES_' "$config_path" 2>/dev/null; then
+            echo "No relay client tracing config; continuing without it." >&2
+            exit 0
+          fi
           tracing_token="$(sed -n 's/^T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=//p' "$config_path")"
-          echo "::add-mask::$tracing_token"
+          if [[ -n "$tracing_token" ]]; then
+            echo "::add-mask::$tracing_token"
+          fi
           cat "$config_path" >> "$GITHUB_ENV"
 
       - name: Align package versions to release version
@@ -904,8 +941,16 @@ jobs:
         shell: bash
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
+          # The artifact is always uploaded so the download stays uniform, but
+          # it carries no variables when Connect is not configured.
+          if ! grep -q '^T3CODE_RELAY_CLIENT_OTLP_TRACES_' "$config_path" 2>/dev/null; then
+            echo "No relay client tracing config; continuing without it." >&2
+            exit 0
+          fi
           tracing_token="$(sed -n 's/^T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=//p' "$config_path")"
-          echo "::add-mask::$tracing_token"
+          if [[ -n "$tracing_token" ]]; then
+            echo "::add-mask::$tracing_token"
+          fi
           cat "$config_path" >> "$GITHUB_ENV"
 
       - name: Align package versions to release version
