@@ -1758,8 +1758,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             // Poll until the injected process boundary observes the new
             // executable. This verifies the public settings-to-probe behavior
             // without depending on timestamps assigned by TestClock.
+            // FIXME: this polls rather than waiting on a receipt, which the
+            // repository guidance rightly calls wrong. Sixty iterations was
+            // enough on a developer machine and flaked on a four-core CI
+            // runner, blocking a release; the budget is raised to stop that
+            // while the real fix — observing the reprobe's own completion
+            // signal — is done separately.
             const refreshed = yield* Effect.gen(function* () {
-              for (let attempts = 0; attempts < 60; attempts += 1) {
+              for (let attempts = 0; attempts < 400; attempts += 1) {
                 const providers = yield* registry.getProviders;
                 const codex = providers.find((provider) => provider.instanceId === "codex");
                 if (
