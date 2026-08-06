@@ -81,6 +81,29 @@ export class DesktopEnvironment extends Context.Service<
 
 const APP_BASE_NAME = "Pylon";
 
+/**
+ * Which installed Pylon this process is.
+ *
+ * Dev, nightly, and stable are separate products that must run side by side, so
+ * every identity that could collide between them — bundle id, Electron profile,
+ * window class, desktop entry, runtime home — is derived from this one value.
+ * Deriving them independently is how two builds end up quietly sharing one
+ * database.
+ */
+type DesktopChannel = "dev" | "nightly" | "stable";
+
+function resolveDesktopChannel(input: {
+  readonly isDevelopment: boolean;
+  readonly appVersion: string;
+}): DesktopChannel {
+  if (input.isDevelopment) return "dev";
+  return isNightlyDesktopVersion(input.appVersion) ? "nightly" : "stable";
+}
+
+/** Per-channel value, written so adding a channel forces every site to answer. */
+const byChannel = <T>(channel: DesktopChannel, values: Record<DesktopChannel, T>): T =>
+  values[channel];
+
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
   readonly appVersion: string;
@@ -150,10 +173,12 @@ const make = Effect.fn("desktop.environment.make")(function* (
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
+  const channel = resolveDesktopChannel({ isDevelopment, appVersion: input.appVersion });
   const baseDir = resolveDesktopBaseDir({
     homeDirectory,
     joinPath: path.join,
     t3Home: config.t3Home,
+    isNightly: channel === "nightly",
   });
   const rootDir = path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
@@ -168,8 +193,16 @@ const make = Effect.fn("desktop.environment.make")(function* (
     joinPath: path.join,
     t3Home: config.t3Home,
   });
-  const userDataDirName = isDevelopment ? "pylon-code-dev" : "pylon-code";
-  const legacyUserDataDirName = isDevelopment ? "Pylon (Dev)" : "Pylon (Alpha)";
+  const userDataDirName = byChannel(channel, {
+    dev: "pylon-code-dev",
+    nightly: "pylon-code-nightly",
+    stable: "pylon-code",
+  });
+  const legacyUserDataDirName = byChannel(channel, {
+    dev: "Pylon (Dev)",
+    nightly: "Pylon (Nightly)",
+    stable: "Pylon (Alpha)",
+  });
   const linuxApplicationsDir = path.join(
     Option.getOrElse(config.xdgDataHome, () => path.join(homeDirectory, ".local", "share")),
     "applications",
@@ -213,10 +246,22 @@ const make = Effect.fn("desktop.environment.make")(function* (
     branding,
     displayName,
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.pylon.code.dev" : "com.pylon.code",
+      byChannel(channel, {
+        dev: "com.pylon.code.dev",
+        nightly: "com.pylon.code.nightly",
+        stable: "com.pylon.code",
+      }),
     ),
-    linuxDesktopEntryName: isDevelopment ? "pylon-code-dev.desktop" : "pylon-code.desktop",
-    linuxWmClass: isDevelopment ? "pylon-code-dev" : "pylon-code",
+    linuxDesktopEntryName: byChannel(channel, {
+      dev: "pylon-code-dev.desktop",
+      nightly: "pylon-code-nightly.desktop",
+      stable: "pylon-code.desktop",
+    }),
+    linuxWmClass: byChannel(channel, {
+      dev: "pylon-code-dev",
+      nightly: "pylon-code-nightly",
+      stable: "pylon-code",
+    }),
     linuxApplicationsDir,
     appImagePath: config.appImagePath,
     userDataDirName,

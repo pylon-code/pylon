@@ -16,13 +16,29 @@ function normalizeConfiguredBaseDir(t3Home: Option.Option<string>): Option.Optio
  */
 export const DESKTOP_RUNTIME_HOME_DIR_NAME = ".pylon-code";
 
+/**
+ * Nightly's runtime home.
+ *
+ * A nightly build is a separate product from the stable one — it installs
+ * alongside it under its own name — so it needs its own database. Sharing one
+ * would mean trying a release candidate writes to the data the daily driver is
+ * using, and its migrations would run there too. The default has to be the safe
+ * one: nobody remembers to set an override before double-clicking an app.
+ */
+export const DESKTOP_NIGHTLY_RUNTIME_HOME_DIR_NAME = ".pylon-code-nightly";
+
+export function resolveDesktopRuntimeHomeDirName(isNightly: boolean): string {
+  return isNightly ? DESKTOP_NIGHTLY_RUNTIME_HOME_DIR_NAME : DESKTOP_RUNTIME_HOME_DIR_NAME;
+}
+
 export function resolveDesktopBaseDir(input: {
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
   readonly t3Home: Option.Option<string>;
+  readonly isNightly: boolean;
 }): string {
   return Option.getOrElse(normalizeConfiguredBaseDir(input.t3Home), () =>
-    input.joinPath(input.homeDirectory, DESKTOP_RUNTIME_HOME_DIR_NAME),
+    input.joinPath(input.homeDirectory, resolveDesktopRuntimeHomeDirName(input.isNightly)),
   );
 }
 
