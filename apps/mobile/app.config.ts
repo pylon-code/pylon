@@ -22,7 +22,7 @@ if (
     !IOS_BUNDLE_IDENTIFIER_PATTERN.test(personalTeamBundleIdentifier))
 ) {
   throw new Error(
-    "T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID must be a reverse-DNS identifier such as com.example.t3code when T3CODE_IOS_PERSONAL_TEAM=1.",
+    "T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID must be a reverse-DNS identifier such as com.example.pylon when T3CODE_IOS_PERSONAL_TEAM=1.",
   );
 }
 
@@ -59,29 +59,52 @@ const RELEASE_ASSETS = {
   androidNotificationColor: "#FFFFFF",
 } as const;
 
+// Mobile shares the desktop's `com.pylon.code` App ID: one Apple App ID can
+// serve both platforms in the same team, which is what keeps passkeys and
+// associated domains consistent between the two apps.
+//
+// `relyingParty` is the Clerk passkey domain, and Pylon does not own one yet.
+// It stays overridable so a Pylon Clerk instance can be pointed at without
+// another release, and defaults to empty rather than to T3's domain — passkeys
+// that silently authenticate against someone else's tenant are worse than
+// passkeys that are plainly unconfigured.
+const PASSKEY_RELYING_PARTY = repoEnv.PYLON_CLERK_PASSKEY_RP_DOMAIN?.trim() ?? "";
+
+// The Apple Developer team that signs the app. Inherited builds pinned T3's
+// team, which no other account can sign against; Pylon reads it from the
+// environment so a build either signs with your team or does not claim one.
+const appleTeamId = repoEnv.PYLON_APPLE_TEAM_ID?.trim() || repoEnv.APPLE_TEAM_ID?.trim() || "";
+
+// The Expo account and project that own builds and over-the-air updates.
+// These were pinned to T3's EAS project, which would have served T3's
+// JavaScript bundles to Pylon installs — so they are configuration now, and
+// over-the-air updates stay off until a Pylon project is configured.
+const easProjectId = repoEnv.PYLON_EAS_PROJECT_ID?.trim() ?? "";
+const easOwner = repoEnv.PYLON_EAS_OWNER?.trim() ?? "";
+
 const VARIANT_CONFIG = {
   development: {
-    appName: "T3 Code Dev",
-    scheme: "t3code-dev",
-    iosBundleIdentifier: "com.t3tools.t3code.dev",
-    androidPackage: "com.t3tools.t3code.dev",
-    relyingParty: "clerk.t3.codes",
+    appName: "Pylon Dev",
+    scheme: "pylon-code-dev",
+    iosBundleIdentifier: "com.pylon.code.dev",
+    androidPackage: "com.pylon.code.dev",
+    relyingParty: PASSKEY_RELYING_PARTY,
     assets: DEVELOPMENT_ASSETS,
   },
   preview: {
-    appName: "T3 Code Preview",
-    scheme: "t3code-preview",
-    iosBundleIdentifier: "com.t3tools.t3code.preview",
-    androidPackage: "com.t3tools.t3code.preview",
-    relyingParty: "clerk.t3.codes",
+    appName: "Pylon Preview",
+    scheme: "pylon-code-preview",
+    iosBundleIdentifier: "com.pylon.code.preview",
+    androidPackage: "com.pylon.code.preview",
+    relyingParty: PASSKEY_RELYING_PARTY,
     assets: PREVIEW_ASSETS,
   },
   production: {
-    appName: "T3 Code",
-    scheme: "t3code",
-    iosBundleIdentifier: "com.t3tools.t3code",
-    androidPackage: "com.t3tools.t3code",
-    relyingParty: "clerk.t3.codes",
+    appName: "Pylon",
+    scheme: "pylon-code",
+    iosBundleIdentifier: "com.pylon.code",
+    androidPackage: "com.pylon.code",
+    relyingParty: PASSKEY_RELYING_PARTY,
     assets: RELEASE_ASSETS,
   },
 } as const;
@@ -121,7 +144,7 @@ const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
       {
         name: "AgentActivity",
         displayName: "Agent Activity",
-        description: "Shows the current state of active T3 Code agents.",
+        description: "Shows the current state of active Pylon agents.",
         supportedFamilies: ["systemSmall", "systemMedium", "accessoryRectangular"],
       },
     ],
@@ -158,7 +181,7 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
 
 const config: ExpoConfig = {
   name: variant.appName,
-  slug: "t3-code",
+  slug: "pylon",
   platforms: ["ios", "android"],
   scheme: variant.scheme,
   version: "1.0.1",
@@ -172,12 +195,17 @@ const config: ExpoConfig = {
   orientation: "portrait",
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
-  updates: {
-    enabled: true,
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-    checkAutomatically: "ON_LOAD",
-    fallbackToCacheTimeout: 0,
-  },
+  // Over-the-air updates follow the configured EAS project. Off until one is
+  // set: an update URL is a remote code channel, and inheriting T3's would let
+  // their bundles run inside Pylon.
+  updates: easProjectId
+    ? {
+        enabled: true,
+        url: `https://u.expo.dev/${easProjectId}`,
+        checkAutomatically: "ON_LOAD",
+        fallbackToCacheTimeout: 0,
+      }
+    : { enabled: false },
   ios: {
     icon: variant.assets.iosIcon,
     supportsTablet: true,
@@ -185,20 +213,27 @@ const config: ExpoConfig = {
     // showcase capture build requires full screen (see infoPlist below).
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
-    // Pin code signing to the T3 Tools team so non-interactive `expo run:ios`
-    // does not fall back to a personal team (which cannot sign app groups,
-    // Sign in with Apple, or push notification entitlements).
-    appleTeamId: "ARK85ZXQ4Z",
-    associatedDomains: [
-      `applinks:${variant.relyingParty}`,
-      `webcredentials:${variant.relyingParty}`,
-    ],
+    // Pin code signing to a real team so non-interactive `expo run:ios` does
+    // not fall back to a personal team (which cannot sign app groups, Sign in
+    // with Apple, or push notification entitlements).
+    ...(appleTeamId ? { appleTeamId } : {}),
+    // Only claimed when a passkey domain is configured. An `applinks:` entry
+    // with no domain is invalid, and claiming a domain Pylon does not own
+    // would hand association to someone else's site.
+    ...(variant.relyingParty
+      ? {
+          associatedDomains: [
+            `applinks:${variant.relyingParty}`,
+            `webcredentials:${variant.relyingParty}`,
+          ],
+        }
+      : {}),
     infoPlist: {
       NSAppTransportSecurity: {
         NSAllowsArbitraryLoads: true,
       },
       NSLocalNetworkUsageDescription:
-        "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
+        "Allow Pylon to connect to Pylon servers on your local network or tailnet.",
       ITSAppUsesNonExemptEncryption: false,
       // The App Store screenshot harness rotates the iPad interface from
       // inside the app (CI denies osascript the Accessibility access that
@@ -292,7 +327,7 @@ const config: ExpoConfig = {
     [
       "expo-camera",
       {
-        cameraPermission: "Allow T3 Code to access your camera so you can scan pairing QR codes.",
+        cameraPermission: "Allow Pylon to access your camera so you can scan pairing QR codes.",
         microphonePermission: false,
         barcodeScannerEnabled: true,
         recordAudioAndroid: false,
@@ -364,11 +399,9 @@ const config: ExpoConfig = {
       tracesDataset: repoEnv.EXPO_PUBLIC_OTLP_TRACES_DATASET ?? null,
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
-    eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-    },
+    ...(easProjectId ? { eas: { projectId: easProjectId } } : {}),
   },
-  owner: "pingdotgg",
+  ...(easOwner ? { owner: easOwner } : {}),
 };
 
 export default config;
