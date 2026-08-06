@@ -3138,8 +3138,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // A resume re-enters this path for the same task_id and rebuilds the
         // record, so a model already refined from the subagent's own
         // assistant snapshot has to survive it — the same reason runHandles
-        // is carried across below. An explicit launch override still wins, so
-        // a resume that genuinely changes model is honoured.
+        // is carried across below. An explicit launch override still wins.
+        // Without one, a resume after the parent's model changed keeps
+        // advertising the prior run's refined model until the next assistant
+        // snapshot corrects it.
         const previousAgent = context.taskAgents.get(message.task_id);
         const model =
           trimmedString(launchInput?.model) ??

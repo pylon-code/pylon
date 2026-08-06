@@ -506,7 +506,7 @@ export function foldSubagentActivities(
           // A genuine resume: same task_id, new tool_use_id. A late duplicate
           // start repeats the current run's id and so fails this check, which
           // keeps the ordering guard above intact (a late start must not
-          // reopen a failed child). Upstream t3code#5529.
+          // reopen a failed child). Reported upstream as t3code#5529; unfixed there.
           applyStatus(agent, "running", at);
           activationToolUseIds.set(taskId, toolUseId);
         }

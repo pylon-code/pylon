@@ -1761,6 +1761,103 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("an explicit launch override on a resume beats the previously refined model", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const taskEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.started"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-6",
+        ),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "spawn an agent",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-override",
+        description: "Agent O",
+        task_type: "local_agent",
+        tool_use_id: "toolu_override_one",
+        uuid: "task-override-uuid-1",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      // The subagent's own assistant snapshot refines the seeded model.
+      harness.query.emit({
+        type: "assistant",
+        parent_tool_use_id: "toolu_override_one",
+        message: { model: "claude-sonnet-5[1m]", content: [] },
+        uuid: "task-override-snapshot-uuid",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+      // The resume's Agent tool call carries an explicit model override,
+      // which must win over run 1's refined model.
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session",
+        uuid: "stream-override-task-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "toolu_override_two",
+            name: "Task",
+            input: {
+              description: "Agent O",
+              prompt: "Resume with a different model",
+              subagent_type: "code-reviewer",
+              model: "claude-haiku-4-5",
+            },
+          },
+        },
+      } as unknown as SDKMessage);
+      // A resume is a new Agent tool call: same task_id, new tool_use_id.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-override",
+        description: "Agent O",
+        task_type: "local_agent",
+        tool_use_id: "toolu_override_two",
+        uuid: "task-override-uuid-2",
+        session_id: "sdk-session",
+      } as unknown as SDKMessage);
+
+      const taskEvents = Array.from(yield* Fiber.join(taskEventsFiber));
+      const first = taskEvents[0];
+      assert.equal(first?.type, "task.started");
+      if (first?.type === "task.started") {
+        assert.equal(first.payload.model, "claude-opus-4-6");
+      }
+      const resumed = taskEvents[1];
+      assert.equal(resumed?.type, "task.started");
+      if (resumed?.type === "task.started") {
+        assert.equal(resumed.payload.model, "claude-haiku-4-5");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("closes the session when the Claude stream aborts after a turn starts", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

@@ -93,16 +93,6 @@ reporting there.
 | C15        | `9d9a872bc` / `#5382`                     | adopted  | `730caefc6`              | Terminal link hover underline and pointer feedback, lost in the Ghostty canvas migration, are restored.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | C16        | `9697b765e` / `#5394`                     | adopted  | `a28fef062`              | Release publishing uses the job-scoped `GITHUB_TOKEN` instead of the Release App quota. Taken for drift reduction; Pylon's `release.yml` is still upstream's and the shared-quota problem it solves is T3's, not Pylon's.                                                                                                                                                                                                                                                                                                                                                    |
 
-For each completed batch, append a section in this form:
-
-```markdown
-## YYYY-MM-DD — `<previous-cursor>..<reviewed-head>`
-
-| Change set | Upstream      | Decision                      | Pylon reference        | Rationale or revisit condition |
-| ---------- | ------------- | ----------------------------- | ---------------------- | ------------------------------ |
-| A1         | `sha` / `#pr` | adopted, skipped, or deferred | branch, commit, or `—` | concise reason                 |
-```
-
 ## 2026-08-06 — Pylon-local fixes on top of `#5219`
 
 First Pylon changes in two files that were byte-identical to upstream
@@ -119,3 +109,13 @@ Known remaining gap, not fixed: a subagent that settles before emitting any
 assistant snapshot never refines its model, so a short first run keeps the
 session-model placeholder. That is a UX decision on upstream's
 placeholder-then-refine strategy, not a defect in it.
+
+For each completed batch, append a section in this form:
+
+```markdown
+## YYYY-MM-DD — `<previous-cursor>..<reviewed-head>`
+
+| Change set | Upstream      | Decision                      | Pylon reference        | Rationale or revisit condition |
+| ---------- | ------------- | ----------------------------- | ---------------------- | ------------------------------ |
+| A1         | `sha` / `#pr` | adopted, skipped, or deferred | branch, commit, or `—` | concise reason                 |
+```

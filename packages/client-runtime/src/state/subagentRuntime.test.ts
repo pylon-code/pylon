@@ -593,7 +593,7 @@ describe("terminal robustness", () => {
   });
 
   it("a resume carrying a new toolUseId reopens the run", () => {
-    const agents = fold([
+    const activities = [
       activity("task.started", {
         taskId: "resume-1",
         taskType: "local_agent",
@@ -607,13 +607,18 @@ describe("terminal robustness", () => {
         toolUseId: "toolu_run_two",
         title: "Analyze math.js",
       }),
-    ]);
+    ];
+    const resumeStart = activities[2]!;
+    const agents = fold(activities);
     expect(agents).toHaveLength(1);
     const agent = agents[0]!;
     expect(agent.status).toBe("running");
     expect(agent.activationCount).toBe(2);
     expect(agent.completedAt).toBeNull();
     expect(agent.result).toBeNull();
+    // The user-reported symptom was a frozen elapsed time: a resume must
+    // reset startedAt to its own start, not keep run 1's.
+    expect(agent.startedAt).toBe(resumeStart.createdAt);
   });
 
   it("a duplicate start repeating the current toolUseId does not reopen the run", () => {
