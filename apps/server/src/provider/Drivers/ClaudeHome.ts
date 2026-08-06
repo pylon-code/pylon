@@ -11,7 +11,16 @@ export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function
 ): Effect.fn.Return<string, never, Path.Path> {
   const path = yield* Path.Path;
   const homePath = config.homePath.trim();
-  return path.resolve(homePath.length > 0 ? expandHomePath(homePath) : NodeOS.homedir());
+  if (homePath.length === 0) return path.resolve(NodeOS.homedir());
+  const expanded = expandHomePath(homePath);
+  // A relative path is anchored to the user's home, never the server's working
+  // directory. Someone typing ".claude-alt" means the one beside their other
+  // dotfiles; resolving against the cwd silently points the account at a
+  // different directory in the dev server than in the packaged app, and then
+  // creates an empty config dir there rather than failing.
+  return path.isAbsolute(expanded)
+    ? path.resolve(expanded)
+    : path.resolve(NodeOS.homedir(), expanded);
 });
 
 export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function* (
