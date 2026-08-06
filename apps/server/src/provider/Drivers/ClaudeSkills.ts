@@ -18,7 +18,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { parse as parseYamlDocument } from "yaml";
 
-import { expandHomePath } from "../../pathExpansion.ts";
+import { resolveProviderHomePath } from "../../pathExpansion.ts";
 
 type ClaudeSkillScope = "user" | "project";
 
@@ -69,7 +69,7 @@ const resolveClaudeConfigDirPath = Effect.fn("resolveClaudeConfigDirPath")(funct
   const path = yield* Path.Path;
   const homePath = config.homePath.trim();
   if (homePath.length > 0) {
-    return path.resolve(expandHomePath(homePath));
+    return resolveProviderHomePath(homePath);
   }
   // No tilde expansion here: the spawned CLI receives this env var verbatim
   // (env vars are never shell-expanded), so a literal `~` must stay literal

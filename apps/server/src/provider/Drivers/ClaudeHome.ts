@@ -4,23 +4,14 @@ import type { ClaudeSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 
-import { expandHomePath } from "../../pathExpansion.ts";
+import { resolveProviderHomePath } from "../../pathExpansion.ts";
 
 export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function* (
   config: Pick<ClaudeSettings, "homePath">,
 ): Effect.fn.Return<string, never, Path.Path> {
   const path = yield* Path.Path;
   const homePath = config.homePath.trim();
-  if (homePath.length === 0) return path.resolve(NodeOS.homedir());
-  const expanded = expandHomePath(homePath);
-  // A relative path is anchored to the user's home, never the server's working
-  // directory. Someone typing ".claude-alt" means the one beside their other
-  // dotfiles; resolving against the cwd silently points the account at a
-  // different directory in the dev server than in the packaged app, and then
-  // creates an empty config dir there rather than failing.
-  return path.isAbsolute(expanded)
-    ? path.resolve(expanded)
-    : path.resolve(NodeOS.homedir(), expanded);
+  return homePath.length === 0 ? path.resolve(NodeOS.homedir()) : resolveProviderHomePath(homePath);
 });
 
 export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function* (

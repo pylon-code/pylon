@@ -22,3 +22,21 @@ export function expandHomePath(value: string): string {
   }
   return value;
 }
+
+/**
+ * Resolve a user-supplied provider home directory to an absolute path.
+ *
+ * Expands a leading `~`, then anchors anything still relative to the user's
+ * home rather than the server's working directory. Someone typing
+ * `.claude-alt` in settings means the directory beside their other dotfiles;
+ * resolving that against the cwd points the same account at a different place
+ * depending on how Pylon was started — the dev server, the packaged app, a
+ * relaunch from elsewhere — and the provider CLI then creates an empty config
+ * directory there rather than failing, so the account simply looks signed out.
+ */
+export function resolveProviderHomePath(value: string): string {
+  const expanded = expandHomePath(value.trim());
+  return NodePath.isAbsolute(expanded)
+    ? NodePath.resolve(expanded)
+    : NodePath.resolve(NodeOS.homedir(), expanded);
+}

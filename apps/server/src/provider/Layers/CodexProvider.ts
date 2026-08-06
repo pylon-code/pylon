@@ -32,7 +32,7 @@ import {
   buildServerProvider,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
-import { expandHomePath } from "../../pathExpansion.ts";
+import { resolveProviderHomePath } from "../../pathExpansion.ts";
 import { usageLimitsFromCodexRateLimits } from "../providerUsageLimits.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
@@ -334,7 +334,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   // so `CODEX_HOME=~/.codex_work` would reach codex verbatim and trip
   // "CODEX_HOME points to '~/.codex_work', but that path does not exist".
   // Expand here for parity with `CodexTextGeneration`/`CodexSessionRuntime`.
-  const resolvedHomePath = input.homePath ? expandHomePath(input.homePath) : undefined;
+  const resolvedHomePath = input.homePath ? resolveProviderHomePath(input.homePath) : undefined;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const environment = {
     ...input.environment,

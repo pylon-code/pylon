@@ -38,7 +38,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
-import { expandHomePath } from "../pathExpansion.ts";
+import { resolveProviderHomePath } from "../pathExpansion.ts";
 import { spawnAndCollect } from "./providerSnapshot.ts";
 
 const OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -87,7 +87,7 @@ export const resolveClaudeCredentialConfigDir = Effect.fn("resolveClaudeCredenti
     const defaultConfigDir = path.resolve(path.join(NodeOS.homedir(), ".claude"));
     const homePath = config.homePath.trim();
     return {
-      configDir: homePath.length > 0 ? path.resolve(expandHomePath(homePath)) : defaultConfigDir,
+      configDir: homePath.length > 0 ? resolveProviderHomePath(homePath) : defaultConfigDir,
       defaultConfigDir,
     };
   },
