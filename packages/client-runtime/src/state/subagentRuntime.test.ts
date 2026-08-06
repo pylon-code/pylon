@@ -592,6 +592,60 @@ describe("terminal robustness", () => {
     expect(agents[0]!.title).toBe("Late");
   });
 
+  it("a resume carrying a new toolUseId reopens the run", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "resume-1",
+        taskType: "local_agent",
+        toolUseId: "toolu_run_one",
+        title: "Analyze math.js",
+      }),
+      activity("task.completed", { taskId: "resume-1", status: "completed", summary: "run 1" }),
+      activity("task.started", {
+        taskId: "resume-1",
+        taskType: "local_agent",
+        toolUseId: "toolu_run_two",
+        title: "Analyze math.js",
+      }),
+    ]);
+    expect(agents).toHaveLength(1);
+    const agent = agents[0]!;
+    expect(agent.status).toBe("running");
+    expect(agent.activationCount).toBe(2);
+    expect(agent.completedAt).toBeNull();
+    expect(agent.result).toBeNull();
+  });
+
+  it("a duplicate start repeating the current toolUseId does not reopen the run", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "dup-1",
+        taskType: "local_agent",
+        toolUseId: "toolu_only_run",
+      }),
+      activity("task.updated", { taskId: "dup-1", status: "failed" }),
+      activity("task.started", {
+        taskId: "dup-1",
+        taskType: "local_agent",
+        toolUseId: "toolu_only_run",
+      }),
+    ]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.status).toBe("failed");
+    expect(agents[0]!.activationCount).toBe(1);
+  });
+
+  it("a start with no toolUseId never reopens a terminal run", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "noid-1", taskType: "local_agent" }),
+      activity("task.completed", { taskId: "noid-1", status: "completed", summary: "done" }),
+      activity("task.started", { taskId: "noid-1", taskType: "local_agent", title: "Late" }),
+    ]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.status).toBe("completed");
+    expect(agents[0]!.activationCount).toBe(1);
+  });
+
   it("a completion after a terminal task.updated still enriches result and usage", () => {
     // Claude commonly emits terminal task.updated before task.completed;
     // the completion carries the summary and final usage the update lacked.
