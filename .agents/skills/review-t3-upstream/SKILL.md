@@ -11,7 +11,7 @@ Treat upstream review as a product decision workflow, not a synchronization comm
 
 Read `AGENTS.md`, `.agents/upstream-review.md`, and [references/decision-framework.md](references/decision-framework.md) before reviewing candidates.
 
-- Keep `origin` pointed at the private `rynfar/pylon` repository and `pylon` as its product branch.
+- Keep `origin` pointed at the private `pylon-code/pylon` repository and `pylon` as its product branch.
 - Keep `t3code-upstream` and `t3code-fork` fetch-only. Never push to them or re-enable their push URLs.
 - Never hard-reset Pylon, replace it with upstream, or merge all of upstream by default.
 - Preserve visible Pylon identity and Pylon-specific product behavior. Compatibility identifiers may remain T3-named until deliberately migrated.
@@ -30,7 +30,7 @@ git rev-parse --verify pylon
 
 Confirm:
 
-- `origin` fetches and pushes `rynfar/pylon`;
+- `origin` fetches and pushes `pylon-code/pylon`;
 - `t3code-upstream` fetches `pingdotgg/t3code` and has a disabled push URL;
 - `.agents/upstream-review.md` contains a `reviewed-through` commit;
 - the current checkout belongs to Pylon.

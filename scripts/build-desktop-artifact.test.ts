@@ -144,7 +144,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
-                PYLON_DESKTOP_UPDATE_REPOSITORY: "rynfar/pylon",
+                PYLON_DESKTOP_UPDATE_REPOSITORY: "pylon-code/pylon",
               },
             }),
           ),
@@ -155,7 +155,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
-                GITHUB_REPOSITORY: "rynfar/pylon",
+                GITHUB_REPOSITORY: "pylon-code/pylon",
               },
             }),
           ),
@@ -164,13 +164,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       assert.deepStrictEqual(latestConfig, {
         provider: "github",
-        owner: "rynfar",
+        owner: "pylon-code",
         repo: "pylon",
         releaseType: "release",
       });
       assert.deepStrictEqual(nightlyConfig, {
         provider: "github",
-        owner: "rynfar",
+        owner: "pylon-code",
         repo: "pylon",
         releaseType: "prerelease",
         channel: "nightly",

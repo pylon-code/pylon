@@ -30,7 +30,7 @@ jobs:
   check_changes:
     name: Check for changes since last nightly
     if: github.event_name == 'schedule'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     outputs:
       has_changes: ${{ steps.check.outputs.has_changes }}
     steps:
@@ -70,8 +70,8 @@ jobs:
     if: |
       !failure() && !cancelled() &&
       (github.event_name != 'schedule' || needs.check_changes.outputs.has_changes == 'true')
-    runs-on: ubuntu-24.04
-    # Runs the whole repo's check, typecheck, and test suites on 4 cores.
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    # Runs the whole repo's check, typecheck, and test suites.
     timeout-minutes: 30
     outputs:
       release_channel: ${{ steps.release_meta.outputs.release_channel }}
@@ -179,7 +179,7 @@ jobs:
     name: Resolve T3 Connect public config
     needs: preflight
     if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 5
     environment:
       name: production
@@ -296,7 +296,7 @@ jobs:
     name: Build WSL node-pty (linux-x64)
     needs: [preflight]
     if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -350,8 +350,9 @@ jobs:
     needs: [preflight, relay_public_config, build_wsl_node_pty]
     if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' }}
     runs-on: ${{ matrix.runner }}
-    # Electron packaging plus a Rust target on 3-4 core hosted runners; the
-    # macOS legs also cross-build the second architecture.
+    # Electron packaging plus a Rust target; the macOS legs also cross-build
+    # the second architecture. Generous on purpose: a ceiling costs nothing on
+    # a fast runner, and a run that dies at the limit wastes the whole matrix.
     timeout-minutes: 90
     env:
       T3CODE_CLERK_PUBLISHABLE_KEY: ${{ needs.relay_public_config.outputs.clerk_publishable_key }}
@@ -363,28 +364,28 @@ jobs:
       matrix:
         include:
           - label: macOS arm64
-            runner: macos-26
+            runner: blacksmith-6vcpu-macos-26
             platform: mac
             target: dmg
             arch: arm64
             rust_target: aarch64-apple-darwin
             resource_key: darwin-arm64
           - label: macOS x64
-            runner: macos-26
+            runner: blacksmith-6vcpu-macos-26
             platform: mac
             target: dmg
             arch: x64
             rust_target: x86_64-apple-darwin
             resource_key: darwin-x64
           - label: Linux x64
-            runner: ubuntu-24.04
+            runner: blacksmith-8vcpu-ubuntu-2404
             platform: linux
             target: AppImage
             arch: x64
             rust_target: x86_64-unknown-linux-gnu
             resource_key: linux-x64
           - label: Windows x64
-            runner: windows-2025
+            runner: blacksmith-8vcpu-windows-2025
             platform: win
             target: nsis
             arch: x64
@@ -701,7 +702,7 @@ jobs:
     # trusted publishing configured for it. Set the PUBLISH_CLI_TO_NPM
     # repository variable to "true" once both exist.
     if: ${{ !failure() && !cancelled() && vars.PUBLISH_CLI_TO_NPM == 'true' && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
       contents: read
@@ -790,7 +791,7 @@ jobs:
     # The desktop release is the point of this workflow, so a skipped CLI
     # publish must not withhold it. A failed one still does.
     if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.publish_cli.result == 'success' || needs.publish_cli.result == 'skipped') }}
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
       contents: write
@@ -907,7 +908,7 @@ jobs:
     # Opt-in: the hosted web app needs a Vercel project and its domains. Set
     # the DEPLOY_HOSTED_WEB repository variable to "true" once they exist.
     if: ${{ !failure() && !cancelled() && vars.DEPLOY_HOSTED_WEB == 'true' && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.release.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 10
     env:
       T3CODE_CLERK_PUBLISHABLE_KEY: ${{ needs.relay_public_config.outputs.clerk_publishable_key }}
@@ -1037,7 +1038,7 @@ jobs:
     # once the app is installed and its credentials are stored.
     if: ${{ !failure() && !cancelled() && vars.FINALIZE_RELEASE_COMMIT == 'true' && needs.preflight.result == 'success' && needs.release.result == 'success' && needs.preflight.outputs.release_channel == 'stable' }}
     needs: [preflight, release]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - id: app_token
@@ -1124,7 +1125,7 @@ jobs:
       (needs.deploy_web.result == 'success' || needs.deploy_web.result == 'skipped') &&
       (needs.finalize.result == 'success' || needs.finalize.result == 'skipped')
     needs: [preflight, relay_public_config, release, deploy_web, finalize]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Checkout
