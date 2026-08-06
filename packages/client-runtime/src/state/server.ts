@@ -706,6 +706,21 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    startProviderLogin: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:start-provider-login",
+      tag: WS_METHODS.serverStartProviderLogin,
+      scheduler: configScheduler,
+    }),
+    submitProviderLoginCode: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:submit-provider-login-code",
+      tag: WS_METHODS.serverSubmitProviderLoginCode,
+      scheduler: configScheduler,
+    }),
+    cancelProviderLogin: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:cancel-provider-login",
+      tag: WS_METHODS.serverCancelProviderLogin,
+      scheduler: configScheduler,
+    }),
     updateServer,
     upsertKeybinding: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:upsert-keybinding",

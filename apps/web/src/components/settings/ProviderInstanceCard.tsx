@@ -28,6 +28,8 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { cn } from "../../lib/utils";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { normalizeProviderAccentColor } from "../../providerInstances";
+import { ProviderSignInDialog } from "./ProviderSignInDialog";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -323,6 +325,12 @@ function ProviderEnvironmentSection(props: {
 
 interface ProviderInstanceCardProps {
   readonly instanceId: ProviderInstanceId;
+  /**
+   * Enables the sign-in affordance. Optional because a card can render before
+   * an environment is known, and an in-app sign-in needs a server to run the
+   * provider CLI on.
+   */
+  readonly environmentId?: EnvironmentId | undefined;
   readonly instance: ProviderInstanceConfig;
   readonly driverOption: DriverOption | undefined;
   readonly liveProvider: ServerProvider | undefined;
@@ -395,6 +403,7 @@ interface ProviderInstanceCardProps {
  */
 export function ProviderInstanceCard({
   instanceId,
+  environmentId,
   instance,
   driverOption,
   liveProvider,
@@ -429,6 +438,14 @@ export function ProviderInstanceCard({
     ? (liveProvider?.auth.label ?? liveProvider?.auth.type ?? null)
     : null;
   const summary = rawSummary;
+  const [isSignInOpen, setIsSignInOpen] = useState(false);
+  // Only offered when the account genuinely reads as signed out. "Unknown"
+  // means the probe could not tell, and a sign-in would not fix that.
+  const canSignIn =
+    environmentId !== undefined &&
+    enabled &&
+    liveProvider?.auth.status === "unauthenticated" &&
+    instance.driver === "claudeAgent";
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
@@ -652,6 +669,16 @@ export function ProviderInstanceCard({
         </>
       )}
       {summary.detail ? <span>- {summary.detail}</span> : null}
+      {canSignIn ? (
+        <Button
+          variant="outline"
+          size="sm"
+          className="ms-1 h-6 px-2 text-xs"
+          onClick={() => setIsSignInOpen(true)}
+        >
+          Sign in
+        </Button>
+      ) : null}
     </p>
   );
 
@@ -873,6 +900,16 @@ export function ProviderInstanceCard({
           </div>
         </CollapsibleContent>
       </Collapsible>
+      {environmentId !== undefined ? (
+        <ProviderSignInDialog
+          open={isSignInOpen}
+          onOpenChange={setIsSignInOpen}
+          environmentId={environmentId}
+          instanceId={instanceId}
+          accountLabel={displayName}
+          knownEmail={authEmail ?? undefined}
+        />
+      ) : null}
     </div>
   );
 }

@@ -255,3 +255,23 @@ If the preset needs different Claude files, give it a different `CLAUDE_CONFIG_D
 different API keys, base URLs, or router settings, use Environment variables.
 
 Do not put environment variable assignments in `Launch arguments`.
+
+## Adding A Second Account Without A Terminal
+
+Pylon can sign a Claude account in for you.
+
+1. **Settings → Providers → Add provider**, pick Claude, name it (for example "Personal"),
+   and give it its own **CLAUDE_CONFIG_DIR path** such as `~/.claude_personal_home`. The path
+   is what keeps the two accounts apart — two providers sharing one directory are one account.
+2. The new provider will show as not signed in, with a **Sign in** button.
+3. Choose how that account signs in — Claude subscription, Anthropic Console for API billing,
+   or single sign-on. These are not interchangeable, and picking the wrong one fails only after
+   you have already signed in to a browser.
+4. Pylon opens the Claude sign-in page and waits. Complete it, then paste the code back into
+   Pylon.
+
+The card then shows the account's own email and usage.
+
+If your browser is already signed in to your other account, watch the email on the login page —
+signing in twice as the same account is the usual mistake, and it leaves two providers that
+share one subscription's limits.

@@ -2709,6 +2709,7 @@ export function ProviderSettingsPanel() {
             <ProviderInstanceCard
               key={row.instanceId}
               instanceId={row.instanceId}
+              {...(primaryEnvironment ? { environmentId: primaryEnvironment.environmentId } : {})}
               instance={row.instance}
               driverOption={driverOption}
               liveProvider={liveProvider}
