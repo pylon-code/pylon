@@ -179,6 +179,7 @@ import {
 } from "./chat/ThreadHandoff.logic";
 import { ThreadContinuationBanner } from "./chat/ThreadContinuationBanner";
 import { deriveLatestContextWindowSnapshot } from "../lib/contextWindow";
+import { deriveProviderUsageAccounts } from "../providerUsageAccounts";
 import { useCheckpointDiff } from "../lib/checkpointDiffState";
 import { useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -4067,6 +4068,24 @@ function ChatViewContent(props: ChatViewProps) {
     [threadHandoffDiff.data?.diff],
   );
   const [isContinuingThreadOnAccount, setIsContinuingThreadOnAccount] = useState(false);
+  // Capacity for every account of this thread's driver, for the composer
+  // strip's popover. Deciding where the next thread goes needs the comparison,
+  // not just the account in front of you.
+  const activeProviderUsageAccounts = useMemo(
+    () =>
+      deriveProviderUsageAccounts({
+        providerStatuses,
+        activeInstanceId:
+          activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection?.instanceId,
+        enabled: settings.showProviderUsageInContextPopover,
+      }),
+    [
+      activeThread?.modelSelection?.instanceId,
+      activeThread?.session?.providerInstanceId,
+      providerStatuses,
+      settings.showProviderUsageInContextPopover,
+    ],
+  );
   // Both ends of the seam, read from shells the client already holds. Keyed on
   // the two ids rather than the thread object so a streaming turn does not
   // rescan every shell on each token.
@@ -6359,6 +6378,8 @@ function ChatViewContent(props: ChatViewProps) {
                                   : {})}
                                 {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
                                 providerStatus={activeProviderStatus}
+                                providerUsageAccounts={activeProviderUsageAccounts}
+                                timestampFormat={settings.timestampFormat}
                                 availableEnvironments={logicalProjectEnvironments}
                               />
                             </div>

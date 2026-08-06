@@ -500,7 +500,6 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         <ContextWindowMeter
           usage={props.activeContextWindow}
           providerDisplayName={props.activeThreadProviderDisplayName}
-          providerUsageAccounts={props.activeProviderUsageAccounts}
           timestampFormat={props.timestampFormat}
         />
       ) : null}

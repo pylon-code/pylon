@@ -15,6 +15,8 @@ import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useProject, useThread, useThreadShellsForProjectRefs } from "../state/entities";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { ComposerUsageIndicator } from "./ComposerUsageIndicator";
+import type { ProviderUsageAccount } from "./providerUsage/ProviderUsageAccounts";
+import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   type EnvMode,
   type EnvironmentOption,
@@ -59,6 +61,9 @@ interface BranchToolbarProps {
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
   /** Snapshot for the account this thread runs on; drives the usage readout. */
   providerStatus?: ServerProvider | null;
+  /** All accounts for the thread's driver, for the capacity popover. */
+  providerUsageAccounts?: readonly ProviderUsageAccount[] | undefined;
+  timestampFormat: TimestampFormat;
 }
 
 interface MobileRunContextSelectorProps {
@@ -325,6 +330,8 @@ export const BranchToolbar = memo(function BranchToolbar({
   availableEnvironments,
   onEnvironmentChange,
   providerStatus,
+  providerUsageAccounts,
+  timestampFormat,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -467,7 +474,12 @@ export const BranchToolbar = memo(function BranchToolbar({
         />
       </div>
 
-      <ComposerUsageIndicator className="ml-auto" provider={providerStatus} />
+      <ComposerUsageIndicator
+        className="ml-auto"
+        provider={providerStatus}
+        usageAccounts={providerUsageAccounts}
+        timestampFormat={timestampFormat}
+      />
     </div>
   );
 });

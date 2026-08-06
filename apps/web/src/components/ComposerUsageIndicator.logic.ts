@@ -15,9 +15,17 @@ const DAY_MINS = 24 * 60;
 const WEEK_MINS = 7 * DAY_MINS;
 
 export interface ComposerUsageEntry {
-  /** Short enough to sit in the strip without crowding the branch selector. */
+  /**
+   * Time until this window resets ("1h 45m"), falling back to the window's
+   * length ("5h") when the provider reports no reset.
+   *
+   * The countdown is the number worth glancing at: how long the window is says
+   * nothing about whether to keep working, and when it comes back says
+   * everything.
+   */
   readonly label: string;
-  readonly usedPercent: number;
+  /** What is left, matching the bar, which drains. */
+  readonly remainingPercent: number;
   readonly detail: string;
   readonly resetsAt?: string | undefined;
 }
@@ -39,9 +47,45 @@ const isSessionWindow = (window: ServerProviderUsageWindow): boolean =>
 const isWeeklyWindow = (window: ServerProviderUsageWindow): boolean =>
   window.windowDurationMins !== undefined && window.windowDurationMins >= WEEK_MINS;
 
-const entryFrom = (window: ServerProviderUsageWindow, label: string): ComposerUsageEntry => ({
-  label,
-  usedPercent: Math.round(window.usedPercent),
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Coarse countdown to a reset.
+ *
+ * Deliberately never finer than a minute: this sits in a strip a user stares
+ * at all day, and a ticking seconds display would repaint forever for no
+ * decision it could change. Returns `undefined` once the reset has passed or
+ * cannot be read, so the caller falls back to the window's length.
+ */
+export function formatTimeUntilReset(resetsAt: string, nowMs: number): string | undefined {
+  const resetsAtMs = Date.parse(resetsAt);
+  if (!Number.isFinite(resetsAtMs)) return undefined;
+  const remaining = resetsAtMs - nowMs;
+  if (remaining <= 0) return undefined;
+
+  if (remaining >= DAY_MS) {
+    const days = Math.floor(remaining / DAY_MS);
+    const hours = Math.floor((remaining % DAY_MS) / HOUR_MS);
+    return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  }
+  if (remaining >= HOUR_MS) {
+    const hours = Math.floor(remaining / HOUR_MS);
+    const minutes = Math.floor((remaining % HOUR_MS) / MINUTE_MS);
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  return `${Math.max(1, Math.floor(remaining / MINUTE_MS))}m`;
+}
+
+const entryFrom = (
+  window: ServerProviderUsageWindow,
+  fallbackLabel: string,
+  nowMs: number,
+): ComposerUsageEntry => ({
+  label:
+    (window.resetsAt ? formatTimeUntilReset(window.resetsAt, nowMs) : undefined) ?? fallbackLabel,
+  remainingPercent: Math.max(0, Math.min(100, Math.round(100 - window.usedPercent))),
   detail: window.label,
   ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
 });
@@ -54,17 +98,18 @@ const entryFrom = (window: ServerProviderUsageWindow, label: string): ComposerUs
  */
 export function getComposerUsageView(
   provider: ServerProvider | null | undefined,
+  nowMs: number,
 ): ComposerUsageView | null {
   const windows = provider?.usageLimits?.windows;
   if (!windows || windows.length === 0) return null;
 
   const entries: ComposerUsageEntry[] = [];
   const session = windows.find(isSessionWindow);
-  if (session) entries.push(entryFrom(session, "5h"));
+  if (session) entries.push(entryFrom(session, "5h", nowMs));
   // The first weekly is the account-wide one; model-scoped weeklies follow it
   // and are left to the popover.
   const weekly = windows.find(isWeeklyWindow);
-  if (weekly) entries.push(entryFrom(weekly, "7d"));
+  if (weekly) entries.push(entryFrom(weekly, "7d", nowMs));
   if (entries.length === 0) return null;
 
   return {

@@ -1,12 +1,7 @@
 import { cn } from "~/lib/utils";
-import { useNowMinute } from "../../hooks/useNowMinute";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import {
-  ProviderUsageAccounts,
-  type ProviderUsageAccount,
-} from "../providerUsage/ProviderUsageAccounts";
 
 function formatPercentage(value: number | null): string | null {
   if (value === null || !Number.isFinite(value)) {
@@ -21,13 +16,9 @@ function formatPercentage(value: number | null): string | null {
 export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot;
   providerDisplayName?: string | null;
-  providerUsageAccounts?: readonly ProviderUsageAccount[] | undefined;
   timestampFormat: TimestampFormat;
 }) {
   const { usage, providerDisplayName } = props;
-  // Minute resolution is plenty: this only decides whether to say a reading is
-  // no longer current, and it reuses the app's one shared clock.
-  const nowMs = Date.parse(`${useNowMinute()}:00.000Z`);
   const usedPercentage = formatPercentage(usage.usedPercentage);
   const normalizedPercentage = Math.max(0, Math.min(100, usage.usedPercentage ?? 0));
   const radius = 9.75;
@@ -142,16 +133,6 @@ export function ContextWindowMeter(props: {
           {usage.compactsAutomatically ? (
             <div className="mt-1 text-pretty text-[11px] font-medium text-muted-foreground/70">
               {providerDisplayName ?? "It"} automatically compacts its context when needed.
-            </div>
-          ) : null}
-          {props.providerUsageAccounts && props.providerUsageAccounts.length > 0 ? (
-            <div className="mt-1 grid gap-2.5 border-t border-border/60 pt-2.5">
-              <div className="font-medium text-muted-foreground text-xs">Provider limits</div>
-              <ProviderUsageAccounts
-                accounts={props.providerUsageAccounts}
-                timestampFormat={props.timestampFormat}
-                nowMs={nowMs}
-              />
             </div>
           ) : null}
         </div>
