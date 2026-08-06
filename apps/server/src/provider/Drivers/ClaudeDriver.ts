@@ -12,7 +12,12 @@
  *
  * @module provider/Drivers/ClaudeDriver
  */
-import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import {
+  ClaudeSettings,
+  ProviderDriverKind,
+  type ServerProvider,
+  type ServerProviderUsageLimits,
+} from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
@@ -20,10 +25,12 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { retainUsageLimits } from "../providerUsageRetention.ts";
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
@@ -165,6 +172,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           ),
       });
       const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(effectiveConfig, cwd);
+      const lastKnownUsage = yield* Ref.make<ServerProviderUsageLimits | undefined>(undefined);
       const usageProbeCache = yield* Cache.makeWith(
         () =>
           probeClaudeUsageLimits(effectiveConfig, processEnv, cwd).pipe(
@@ -208,6 +216,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
                 ? undefined
                 : result.usageLimits;
             }),
+            Effect.flatMap((usageLimits) => retainUsageLimits(lastKnownUsage, usageLimits)),
           ),
       ).pipe(
         Effect.map(stampIdentity),

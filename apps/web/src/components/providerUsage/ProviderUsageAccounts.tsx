@@ -1,8 +1,8 @@
 import type { ServerProviderUsageLimits } from "@t3tools/contracts";
 
-import { cn } from "~/lib/utils";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { ProviderUsageRows } from "./ProviderUsageRows";
+import { ProviderUsageMatrix } from "./ProviderUsageMatrix";
 
 /**
  * One configured provider instance's usage, as the popover renders it.
@@ -19,24 +19,6 @@ export interface ProviderUsageAccount {
   readonly isActive: boolean;
 }
 
-function AccountHeader(props: { readonly account: ProviderUsageAccount }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span
-        aria-hidden
-        className="size-1.5 shrink-0 rounded-full"
-        style={{ background: props.account.accentColor ?? "var(--muted-foreground)" }}
-      />
-      <span className="min-w-0 truncate font-medium text-foreground text-xs">
-        {props.account.displayName}
-      </span>
-      {props.account.isActive ? (
-        <span className="shrink-0 text-[11px] text-muted-foreground/70">this thread</span>
-      ) : null}
-    </div>
-  );
-}
-
 /**
  * Renders subscription usage for every configured instance of one driver.
  *
@@ -48,6 +30,7 @@ function AccountHeader(props: { readonly account: ProviderUsageAccount }) {
 export function ProviderUsageAccounts(props: {
   readonly accounts: readonly ProviderUsageAccount[];
   readonly timestampFormat: TimestampFormat;
+  readonly nowMs: number;
 }) {
   if (props.accounts.length === 0) return null;
 
@@ -62,21 +45,14 @@ export function ProviderUsageAccounts(props: {
     );
   }
 
+  // Two or more accounts is a comparison, not two lists. Dimming the inactive
+  // one is dropped with it: knowing where the work goes next is exactly why
+  // both are shown.
   return (
-    <div className="grid gap-3">
-      {props.accounts.map((account) => (
-        <div
-          key={account.instanceId}
-          className={cn("grid gap-1.5", account.isActive ? null : "opacity-70")}
-        >
-          <AccountHeader account={account} />
-          <ProviderUsageRows
-            usageLimits={account.usageLimits}
-            timestampFormat={props.timestampFormat}
-            compact
-          />
-        </div>
-      ))}
-    </div>
+    <ProviderUsageMatrix
+      accounts={props.accounts}
+      timestampFormat={props.timestampFormat}
+      nowMs={props.nowMs}
+    />
   );
 }

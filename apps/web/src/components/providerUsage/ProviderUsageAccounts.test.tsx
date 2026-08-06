@@ -17,10 +17,12 @@ function account(overrides: Partial<ProviderUsageAccount> = {}): ProviderUsageAc
   };
 }
 
+const NOW = Date.parse("2026-08-06T12:00:00.000Z");
+
 describe("ProviderUsageAccounts", () => {
   it("renders nothing when no account reports usage", () => {
     const markup = renderToStaticMarkup(
-      <ProviderUsageAccounts accounts={[]} timestampFormat="24-hour" />,
+      <ProviderUsageAccounts accounts={[]} timestampFormat="24-hour" nowMs={NOW} />,
     );
 
     expect(markup).toBe("");
@@ -30,7 +32,7 @@ describe("ProviderUsageAccounts", () => {
   // should read exactly as upstream's single-instance list — no account header.
   it("omits the account header when only one account is configured", () => {
     const markup = renderToStaticMarkup(
-      <ProviderUsageAccounts accounts={[account()]} timestampFormat="24-hour" />,
+      <ProviderUsageAccounts accounts={[account()]} timestampFormat="24-hour" nowMs={NOW} />,
     );
 
     expect(markup).toContain("70% remaining");
@@ -42,6 +44,7 @@ describe("ProviderUsageAccounts", () => {
     const markup = renderToStaticMarkup(
       <ProviderUsageAccounts
         timestampFormat="24-hour"
+        nowMs={NOW}
         accounts={[
           account({ instanceId: "claude_personal", displayName: "Personal", isActive: true }),
           account({
@@ -70,6 +73,7 @@ describe("ProviderUsageAccounts", () => {
     const markup = renderToStaticMarkup(
       <ProviderUsageAccounts
         timestampFormat="24-hour"
+        nowMs={NOW}
         accounts={[
           account({ instanceId: "claude_personal", accentColor: "#2563eb", isActive: true }),
           account({ instanceId: "claude_work", displayName: "Work", isActive: false }),

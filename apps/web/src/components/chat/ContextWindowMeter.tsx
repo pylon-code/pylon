@@ -1,4 +1,5 @@
 import { cn } from "~/lib/utils";
+import { useNowMinute } from "../../hooks/useNowMinute";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -24,6 +25,9 @@ export function ContextWindowMeter(props: {
   timestampFormat: TimestampFormat;
 }) {
   const { usage, providerDisplayName } = props;
+  // Minute resolution is plenty: this only decides whether to say a reading is
+  // no longer current, and it reuses the app's one shared clock.
+  const nowMs = Date.parse(`${useNowMinute()}:00.000Z`);
   const usedPercentage = formatPercentage(usage.usedPercentage);
   const normalizedPercentage = Math.max(0, Math.min(100, usage.usedPercentage ?? 0));
   const radius = 9.75;
@@ -146,6 +150,7 @@ export function ContextWindowMeter(props: {
               <ProviderUsageAccounts
                 accounts={props.providerUsageAccounts}
                 timestampFormat={props.timestampFormat}
+                nowMs={nowMs}
               />
             </div>
           ) : null}
