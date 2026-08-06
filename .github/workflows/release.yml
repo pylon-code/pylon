@@ -551,6 +551,10 @@ jobs:
       - name: Build desktop artifact
         shell: bash
         env:
+          # Where installed apps look for updates. Must match wherever the
+          # release job actually publishes, or builds go looking in the wrong
+          # place forever. Falls back to this repository when unset.
+          PYLON_DESKTOP_UPDATE_REPOSITORY: ${{ vars.PYLON_DESKTOP_UPDATE_REPOSITORY }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -861,8 +865,11 @@ jobs:
       #       exit 1
       #     fi
 
+      # Same-repository publication. Used when no separate releases repository
+      # is configured, and the only path that can generate release notes:
+      # note generation compares tags, which only exist alongside the source.
       - name: Publish release
-        if: needs.preflight.outputs.previous_tag != ''
+        if: vars.PYLON_DESKTOP_UPDATE_REPOSITORY == '' && needs.preflight.outputs.previous_tag != ''
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.preflight.outputs.tag }}
@@ -883,7 +890,7 @@ jobs:
           token: ${{ github.token }}
 
       - name: Publish first release
-        if: needs.preflight.outputs.previous_tag == ''
+        if: vars.PYLON_DESKTOP_UPDATE_REPOSITORY == '' && needs.preflight.outputs.previous_tag == ''
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.preflight.outputs.tag }}
@@ -901,6 +908,50 @@ jobs:
             release-assets/*.yml
           fail_on_unmatched_files: true
           token: ${{ github.token }}
+
+      # Cross-repository publication. Auto-update reads release assets over the
+      # public GitHub API, which cannot see a private repository's releases, so
+      # the artifacts are published to a public repository instead.
+      #
+      # Release notes are not generated here: the tag and the commit history
+      # they would be derived from live in the source repository, not this one.
+      # Generating them would also republish private commit subjects in public.
+      - name: Check releases repository credentials
+        if: vars.PYLON_DESKTOP_UPDATE_REPOSITORY != ''
+        shell: bash
+        env:
+          RELEASES_REPO_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASES_REPO_TOKEN:-}" ]]; then
+            echo "PYLON_DESKTOP_UPDATE_REPOSITORY is set to '${{ vars.PYLON_DESKTOP_UPDATE_REPOSITORY }}' but the RELEASES_REPO_TOKEN secret is missing." >&2
+            echo "Builds already embed that repository as their update feed, so publishing anywhere else would strand them." >&2
+            exit 1
+          fi
+
+      - name: Publish release to the releases repository
+        if: vars.PYLON_DESKTOP_UPDATE_REPOSITORY != ''
+        uses: softprops/action-gh-release@v3
+        with:
+          repository: ${{ vars.PYLON_DESKTOP_UPDATE_REPOSITORY }}
+          tag_name: ${{ needs.preflight.outputs.tag }}
+          name: ${{ needs.preflight.outputs.release_name }}
+          body: |
+            Pylon ${{ needs.preflight.outputs.version }} (${{ needs.preflight.outputs.release_channel }}), built from `${{ needs.preflight.outputs.short_sha || needs.preflight.outputs.ref }}`.
+
+            Download the file for your platform below. Installed apps on this
+            channel update themselves.
+          prerelease: ${{ needs.preflight.outputs.is_prerelease }}
+          make_latest: ${{ needs.preflight.outputs.make_latest }}
+          files: |
+            release-assets/*.dmg
+            release-assets/*.zip
+            release-assets/*.AppImage
+            release-assets/*.exe
+            release-assets/*.blockmap
+            release-assets/*.yml
+          fail_on_unmatched_files: true
+          token: ${{ secrets.RELEASES_REPO_TOKEN }}
 
   deploy_web:
     name: Deploy hosted web app

@@ -259,26 +259,37 @@ desktop-managed guidance when those environments are available.
   - `PYLON_DESKTOP_UPDATE_REPOSITORY` (format `owner/repo`), if set.
   - otherwise `GITHUB_REPOSITORY` from GitHub Actions.
 
-### Auto-update while this repository is private
+### The public releases repository
 
 Auto-update reads release assets over the public GitHub API. A private
 repository's releases are not readable without a credential, and there is no
-safe credential to ship inside a distributed app, so **auto-update does not work
-for anyone but you while releases live in a private repository.** Installed apps
-simply never see a new version; nothing fails loudly.
+safe credential to ship inside a distributed app, so auto-update cannot work for
+anyone but you while releases live in a private repository — installed apps
+simply never see a new version, and nothing fails loudly.
 
-Two ways out:
+Pylon therefore publishes artifacts to **`pylon-code/pylon-releases`**, a public
+repository holding builds and update manifests but no source. Two pieces wire
+this together, and they must agree:
 
-1. **Publish assets to a separate public repository.** Set
-   `PYLON_DESKTOP_UPDATE_REPOSITORY` to that repository so builds embed the
-   right feed, and give the release job a token that can write to it. Keeps the
-   source private, keeps release notes and download counts, and needs no change
-   when the source repository later opens up.
-2. **Make this repository public.** Then the default `GITHUB_REPOSITORY` feed
-   works with no extra configuration.
+- the `PYLON_DESKTOP_UPDATE_REPOSITORY` repository variable, which the build job
+  passes into the desktop build so installed apps embed that feed;
+- the `RELEASES_REPO_TOKEN` secret, which the release job uses to publish there.
 
-Until one of these is done, treat builds as install-once artifacts and expect to
-hand out new downloads by other means.
+The release job refuses to run when the variable is set and the token is not,
+rather than falling back to publishing here: builds already embed the public
+feed by then, so publishing anywhere else would strand every installed app.
+
+`RELEASES_REPO_TOKEN` is a fine-grained personal access token scoped to
+`pylon-code/pylon-releases` with **Contents: read and write**. Fine-grained
+tokens expire, so a release that suddenly fails authentication usually means the
+token lapsed rather than anything changing in this workflow.
+
+Cross-repository releases carry a short written body instead of generated notes.
+Note generation derives from tags and commit history that live in the source
+repository, and running it against a public repository would republish private
+commit subjects. If the source repository later becomes public, clearing
+`PYLON_DESKTOP_UPDATE_REPOSITORY` returns everything to same-repository
+publication with generated notes and no token.
 
 - Required release assets for updater:
   - platform installers (`.exe`, `.dmg`, `.AppImage`, plus macOS `.zip` for Squirrel.Mac update payloads)
