@@ -1987,40 +1987,29 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         ),
       );
 
-      it.effect("includes best-effort Claude subscription usage", () =>
+      // "Signed out" and "could not tell" need opposite responses from the
+      // user — a sign-in versus a diagnostic — so reporting the first as the
+      // second leaves them with no idea what to do.
+      it.effect("reports a signed-out account as unauthenticated, not unknown", () =>
         Effect.gen(function* () {
-          yield* TestClock.setTime(Date.parse("2026-07-22T12:00:00.000Z"));
           const status = yield* checkClaudeProviderStatus(
             defaultClaudeSettings,
-            claudeCapabilities({ email: "claude@example.com" }),
+            noClaudeCapabilities,
           );
-          assert.strictEqual(status.status, "ready");
-          assert.deepStrictEqual(status.usageLimits?.windows, [
-            {
-              label: "Session",
-              usedPercent: 30,
-              windowDurationMins: 300,
-              resetsAt: "2026-07-23T06:30:00.000Z",
-            },
-          ]);
+          assert.strictEqual(status.auth.status, "unauthenticated");
+          assert.match(status.message ?? "", /not signed in/iu);
         }).pipe(
           Effect.provide(
             mockSpawnerLayer((args) => {
               const joined = args.join(" ");
-              if (joined === "--version") return { stdout: "2.1.218\n", stderr: "", code: 0 };
-              if (joined.startsWith("--print /usage --output-format json")) {
-                return {
-                  stdout: JSON.stringify({
-                    result:
-                      "Current session: 30% used \u00b7 resets Jul 23, 1:30am (America/Chicago)",
-                  }),
-                  stderr: "",
-                  code: 0,
-                };
-              }
+              if (joined === "--version") return { stdout: "2.1.220\n", stderr: "", code: 0 };
               if (joined === "auth status --json") {
                 return {
-                  stdout: JSON.stringify({ email: "claude@example.com" }),
+                  stdout: JSON.stringify({
+                    loggedIn: false,
+                    authMethod: "none",
+                    apiProvider: "firstParty",
+                  }),
                   stderr: "",
                   code: 0,
                 };
@@ -2031,20 +2020,69 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         ),
       );
 
-      it.effect("runs the Claude usage probe from the configured workspace cwd", () => {
+      // A CLI that cannot answer must stay "unknown". Claiming a confident
+      // "signed out" would offer a sign-in that fixes nothing.
+      it.effect("keeps an unreadable auth status as unknown", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            noClaudeCapabilities,
+          );
+          assert.strictEqual(status.auth.status, "unknown");
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.220\n", stderr: "", code: 0 };
+              if (joined === "auth status --json") {
+                return { stdout: "not json at all", stderr: "", code: 0 };
+              }
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      // Usage now comes from the OAuth endpoint, which needs credentials this
+      // test deliberately does not have. Absent usage must leave the provider
+      // fully usable \u2014 a missing gauge is not a broken provider.
+      // Window parsing itself is covered in claudeOAuthUsage.test.ts.
+      it.effect("stays ready when subscription usage cannot be read", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({ email: "claude@example.com" }),
+          );
+          assert.strictEqual(status.status, "ready");
+          assert.strictEqual(status.auth.status, "authenticated");
+          assert.strictEqual(status.usageLimits, undefined);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.218\n", stderr: "", code: 0 };
+              if (joined === "auth status --json") {
+                return {
+                  stdout: JSON.stringify({ loggedIn: true, email: "claude@example.com" }),
+                  stderr: "",
+                  code: 0,
+                };
+              }
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      // The probe reads the account identity that guards usage against being
+      // attributed to the wrong account, and must do it in the workspace the
+      // provider is configured for \u2014 a different cwd can select a different
+      // Claude config.
+      it.effect("reads the account identity from the configured workspace cwd", () => {
         const recorded = recordingMockSpawnerLayer((args) => {
-          if (args.join(" ").startsWith("--print /usage --output-format json")) {
-            return {
-              stdout: JSON.stringify({
-                result: "Current session: 30% used \u00b7 resets Jul 23, 1:30am (America/Chicago)",
-              }),
-              stderr: "",
-              code: 0,
-            };
-          }
           if (args.join(" ") === "auth status --json") {
             return {
-              stdout: JSON.stringify({ email: "claude@example.com" }),
+              stdout: JSON.stringify({ loggedIn: true, email: "claude@example.com" }),
               stderr: "",
               code: 0,
             };
@@ -2053,33 +2091,29 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         });
 
         return Effect.gen(function* () {
-          const usageLimits = yield* probeClaudeUsageLimits(
+          const probed = yield* probeClaudeUsageLimits(
             defaultClaudeSettings,
             undefined,
             "/tmp/provider-usage-workspace",
           );
-          assert.strictEqual(usageLimits?.usageLimits?.windows[0]?.usedPercent, 30);
-          assert.strictEqual(usageLimits?.accountIdentity, "claude@example.com");
+          assert.strictEqual(probed?.accountIdentity, "claude@example.com");
+          // Filtered to the auth-status call: the concurrent OAuth usage read
+          // also spawns (the platform keychain), and that one has no workspace.
           assert.deepStrictEqual(
-            recorded.commands.map((command) => command.cwd),
-            ["/tmp/provider-usage-workspace", "/tmp/provider-usage-workspace"],
+            recorded.commands
+              .filter((command) => command.args.join(" ") === "auth status --json")
+              .map((command) => command.cwd),
+            ["/tmp/provider-usage-workspace"],
           );
         }).pipe(Effect.provide(recorded.layer));
       });
 
-      it.effect("keeps successful Claude usage when live identity is unavailable", () => {
+      // A failing identity check is a reason to distrust usage, not a reason to
+      // call an authenticated provider broken.
+      it.effect("stays authenticated when the identity check fails", () => {
         const spawner = mockSpawnerLayer((args) => {
           const joined = args.join(" ");
           if (joined === "--version") return { stdout: "2.1.218\n", stderr: "", code: 0 };
-          if (joined.startsWith("--print /usage --output-format json")) {
-            return {
-              stdout: JSON.stringify({
-                result: "Current session: 30% used \u00b7 resets Jul 23, 1:30am (America/Chicago)",
-              }),
-              stderr: "",
-              code: 0,
-            };
-          }
           if (joined === "auth status --json") {
             return { stdout: "", stderr: "temporary auth status failure", code: 1 };
           }
@@ -2091,7 +2125,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             defaultClaudeSettings,
             claudeCapabilities({ email: "claude@example.com" }),
           );
-          assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 30);
+          assert.strictEqual(status.status, "ready");
+          assert.strictEqual(status.auth.status, "authenticated");
         }).pipe(Effect.provide(spawner));
       });
 
@@ -2664,10 +2699,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             mockSpawnerLayer((args) => {
               const joined = args.join(" ");
               if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
-              if (joined === "auth status")
+              // A CLI that cannot answer leaves the state genuinely unknown.
+              if (joined === "auth status --json")
                 return {
-                  stdout: '{"loggedIn":false}\n',
-                  stderr: "",
+                  stdout: "",
+                  stderr: "not logged in",
                   code: 1,
                 };
               throw new Error(`Unexpected args: ${joined}`);

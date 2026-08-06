@@ -796,18 +796,37 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
 
-function accountIdentityFromAuthStatus(result: CommandResult): string | undefined {
+interface ClaudeAuthStatus {
+  /** `undefined` when the CLI did not report it, which is not the same as `false`. */
+  readonly loggedIn: boolean | undefined;
+  readonly email: string | undefined;
+}
+
+/**
+ * Parse `claude auth status --json`.
+ *
+ * The CLI exits 0 whether or not anybody is signed in, so `loggedIn` is the
+ * only field that distinguishes the two. It is read separately from the email
+ * so a CLI that omits it still yields an account identity, and so a missing
+ * field is never mistaken for a confident "signed out".
+ */
+function claudeAuthStatusFromResult(result: CommandResult): ClaudeAuthStatus | undefined {
   if (result.code !== 0) return undefined;
   try {
     const decoded: unknown = JSON.parse(result.stdout);
-    const email =
-      typeof decoded === "object" && decoded !== null
-        ? (decoded as { email?: unknown }).email
-        : undefined;
-    return typeof email === "string" ? email.trim() || undefined : undefined;
+    if (typeof decoded !== "object" || decoded === null) return undefined;
+    const record = decoded as { loggedIn?: unknown; email?: unknown };
+    return {
+      loggedIn: typeof record.loggedIn === "boolean" ? record.loggedIn : undefined,
+      email: typeof record.email === "string" ? record.email.trim() || undefined : undefined,
+    };
   } catch {
     return undefined;
   }
+}
+
+function accountIdentityFromAuthStatus(result: CommandResult): string | undefined {
+  return claudeAuthStatusFromResult(result)?.email;
 }
 
 /**
@@ -987,6 +1006,20 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 
   if (!capabilities) {
+    // The init probe cannot tell "signed out" from "could not tell", and the
+    // two need opposite responses from the user: one is a sign-in, the other is
+    // a diagnostic. Ask the CLI directly rather than reporting the ambiguity.
+    // A command that cannot run leaves the state unknown, which is already the
+    // fallback — the point of asking is only to upgrade to a confident "no".
+    const authStatusResult = yield* runClaudeCommand(
+      claudeSettings,
+      ["auth", "status", "--json"],
+      resolvedEnvironment,
+      { closeStdin: true, ...(cwd ? { cwd } : {}) },
+    ).pipe(Effect.option);
+    const authStatus = Option.isSome(authStatusResult)
+      ? claudeAuthStatusFromResult(authStatusResult.value)
+      : undefined;
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -998,8 +1031,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         installed: true,
         version: parsedVersion,
         status: "warning",
-        auth: { status: "unknown" },
-        message: "Could not verify Claude authentication status from initialization result.",
+        auth:
+          authStatus?.loggedIn === false ? { status: "unauthenticated" } : { status: "unknown" },
+        message:
+          authStatus?.loggedIn === false
+            ? "Claude is not signed in on this account."
+            : "Could not verify Claude authentication status from initialization result.",
       },
     });
   }
