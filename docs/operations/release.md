@@ -1,8 +1,31 @@
 # Release Checklist
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using Pylon? See [docs/user](../user/).
 
 This document covers the unified release workflow for stable and nightly desktop releases.
+
+## Optional publishing surfaces
+
+Desktop releases are the workflow's core and need no paid service: with no
+variables or secrets configured at all, a run still builds and publishes
+unsigned macOS, Linux, and Windows artifacts with working auto-update metadata.
+
+Everything beyond that is opt-in, gated on a repository variable, and off by
+default. Each entry below says what turning it on requires and what staying off
+costs.
+
+| Variable                      | Turns on                  | Requires                                               | Cost while off                                     |
+| ----------------------------- | ------------------------- | ------------------------------------------------------ | -------------------------------------------------- |
+| `PUBLISH_CLI_TO_NPM`          | Publishing the CLI to npm | An npm package this repo owns, with trusted publishing | Remote **Update server** breaks — see below        |
+| `DEPLOY_HOSTED_WEB`           | The hosted web app deploy | A Vercel project and its three domains                 | No hosted web app; desktop is unaffected           |
+| `FINALIZE_RELEASE_COMMIT`     | The version-bump commit   | A GitHub App with push rights                          | Package versions are not bumped back on the branch |
+| `ANNOUNCE_RELEASE_ON_DISCORD` | The release announcement  | A Discord webhook and role IDs                         | No announcement                                    |
+
+T3 Connect is separate and needs no variable of its own: the workflow detects
+whether Cloudflare and Clerk configuration is present and builds without cloud
+sign-in when it is not. Partial configuration counts as none.
+
+Set a variable to the literal string `true` to enable it.
 
 ## What the workflow does
 
@@ -34,15 +57,26 @@ This document covers the unified release workflow for stable and nightly desktop
 
 ## Required release credentials
 
-Stable releases require these GitHub Actions secrets in addition to the platform and deployment
-credentials documented below:
+None. GitHub Release publication uses the repository-scoped workflow token, so publishing desktop
+artifacts needs no app, no token, and no third-party account.
+
+The finalize job is the one exception, and it is opt-in via `FINALIZE_RELEASE_COMMIT`. When enabled
+it commits and pushes aligned package versions to the `pylon` product branch as the Release App, and
+requires these GitHub Actions secrets:
 
 - `RELEASE_APP_ID`
 - `RELEASE_APP_PRIVATE_KEY`
 
-The finalize job uses them to commit and push aligned package versions to `main` as the Release App.
-GitHub Release publication uses the repository-scoped workflow token so it has a rate-limit quota
-independent from the shared Release App installation.
+Keeping release publication on the workflow token gives it a rate-limit quota independent from the
+Release App installation.
+
+## Runners
+
+Every job runs on GitHub-hosted runners. These are smaller than the private runners the workflow was
+originally written for, so job timeouts are set accordingly — the preflight job runs the whole
+repository's check, typecheck, and test suites, and the build matrix packages Electron plus a Rust
+target on three to four cores. Note that macOS and Windows minutes bill at a multiple of Linux on
+private repositories.
 
 ## T3 Connect relay deployment
 
@@ -169,7 +203,7 @@ One-time Vercel dashboard setup:
 - Uses the next stable patch version as the nightly base. For example, `0.0.17` produces nightlies on `0.0.18-nightly.*`.
 - Publishes Electron auto-update metadata to the dedicated `nightly` updater channel, so desktop users can opt into that track independently from stable.
 - Publishes the CLI package (`apps/server`, npm package `t3`) to the `nightly` npm dist-tag using the same nightly version.
-- Does not commit version bumps back to `main`.
+- Does not commit version bumps back to the product branch.
 
 ## Server self-update release invariant
 
@@ -177,14 +211,22 @@ Connected servers update to the client's exact version, not to an npm dist-tag. 
 desktop or hosted client version must therefore have a matching `t3@<version>` package available on
 npm before users can receive that client.
 
-The workflow enforces this ordering:
+**This is the cost of leaving `PUBLISH_CLI_TO_NPM` off.** Desktop builds, installs, and auto-updates
+all work without an npm package, because the desktop app bundles its own server. What does not work
+is updating a _remote_ environment from the app: the **Update server** action resolves a package
+version that was never published, so a user pointing the desktop app at another machine cannot
+update that machine from the UI. They must update it themselves. Turn the variable on once this
+repository owns a package with a matching version for every release.
+
+When the variable is on, the workflow enforces this ordering:
 
 1. `publish_cli` publishes the exact stable or nightly version to npm.
 2. `release` depends on `publish_cli` before exposing desktop artifacts in GitHub Releases.
 3. `deploy_web` depends on `release` before moving the hosted channel to the new client.
 
 Preserve these dependencies when changing the release graph. Publishing a client first would leave
-the **Update server** action targeting a package version that does not exist yet.
+the **Update server** action targeting a package version that does not exist yet. The release job
+accepts a _skipped_ CLI publish, which is the opt-out above; it still refuses a _failed_ one.
 
 For a release smoke test, confirm `npm view t3@<version> version` returns the expected version, then
 connect the new client to a server on the previous version and verify that the update action
@@ -206,6 +248,28 @@ desktop-managed guidance when those environments are available.
 - Repository slug source:
   - `PYLON_DESKTOP_UPDATE_REPOSITORY` (format `owner/repo`), if set.
   - otherwise `GITHUB_REPOSITORY` from GitHub Actions.
+
+### Auto-update while this repository is private
+
+Auto-update reads release assets over the public GitHub API. A private
+repository's releases are not readable without a credential, and there is no
+safe credential to ship inside a distributed app, so **auto-update does not work
+for anyone but you while releases live in a private repository.** Installed apps
+simply never see a new version; nothing fails loudly.
+
+Two ways out:
+
+1. **Publish assets to a separate public repository.** Set
+   `PYLON_DESKTOP_UPDATE_REPOSITORY` to that repository so builds embed the
+   right feed, and give the release job a token that can write to it. Keeps the
+   source private, keeps release notes and download counts, and needs no change
+   when the source repository later opens up.
+2. **Make this repository public.** Then the default `GITHUB_REPOSITORY` feed
+   works with no extra configuration.
+
+Until one of these is done, treat builds as install-once artifacts and expect to
+hand out new downloads by other means.
+
 - Required release assets for updater:
   - platform installers (`.exe`, `.dmg`, `.AppImage`, plus macOS `.zip` for Squirrel.Mac update payloads)
   - channel metadata: `latest*.yml` for stable releases, `nightly*.yml` for nightly releases
@@ -240,14 +304,14 @@ Checklist:
 There is no dry-run tag path. Pushing any accepted non-nightly tag, including
 `v0.0.0-test.1`, classifies the run as the stable channel. It publishes `t3` with npm dist-tag
 `latest`, creates a real GitHub Release, aliases the hosted app to `latest.app.t3.codes` and
-`app.t3.codes`, and can commit a version bump to `main` in the finalize job. Do not push a test tag
+`app.t3.codes`, and can commit a version bump to the `pylon` branch in the finalize job when it is enabled. Do not push a test tag
 to validate the workflow.
 
 The workflow has no non-publishing `workflow_dispatch` mode. Use normal CI or local quality gates to
 validate checks and builds without shipping. To exercise the complete release graph at lower stable
 risk, manually dispatch `channel=nightly`; this still publishes a real nightly npm package, GitHub
 prerelease, desktop updater release, and hosted nightly alias, but it does not update stable aliases or
-commit a version bump to `main`. Only run it when a real nightly release is acceptable.
+commit a version bump to the product branch. Only run it when a real nightly release is acceptable.
 
 Manual `channel=stable` with a version input is also a real stable-channel release. Omitting signing
 secrets only makes platform artifacts unsigned; it does not prevent publication.
