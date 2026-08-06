@@ -129,7 +129,7 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
           </button>
         }
       />
-      <PopoverPopup align="end" side="top" className="w-80 p-3">
+      <PopoverPopup align="end" side="top" className="w-[22rem] p-3">
         <div className="grid gap-2.5">
           <div className="text-xs font-medium text-muted-foreground">Subscription capacity</div>
           {accounts.length > 0 ? (

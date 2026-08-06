@@ -87,24 +87,6 @@ describe("buildProviderUsageMatrix", () => {
     expect(matrix.rows.map((row) => row.label)).toContain("Weekly (Fable)");
   });
 
-  // The soonest reset is the one that changes the answer first.
-  it("uses the earliest reset across a row", () => {
-    const matrix = buildProviderUsageMatrix([
-      account({
-        id: "a",
-        name: "A",
-        windows: [{ label: "Session", usedPercent: 5, resetsAt: "2026-08-06T18:00:00.000Z" }],
-      }),
-      account({
-        id: "b",
-        name: "B",
-        windows: [{ label: "Session", usedPercent: 5, resetsAt: "2026-08-06T15:00:00.000Z" }],
-      }),
-    ]);
-
-    expect(matrix.rows[0]?.resetsAt).toBe("2026-08-06T15:00:00.000Z");
-  });
-
   it("returns no rows when nothing reports usage", () => {
     expect(buildProviderUsageMatrix([]).rows).toEqual([]);
   });

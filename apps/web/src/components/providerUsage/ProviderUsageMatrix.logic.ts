@@ -25,8 +25,6 @@ export interface ProviderUsageCell {
 export interface ProviderUsageMatrixRow {
   readonly label: string;
   readonly cells: ReadonlyArray<ProviderUsageCell>;
-  /** Earliest reset across the row, so one line can stand for the row. */
-  readonly resetsAt: string | undefined;
 }
 
 export interface ProviderUsageMatrix {
@@ -65,12 +63,9 @@ export function buildProviderUsageMatrix(
         remainingPercent: remainingFrom(window),
       };
     });
-    // The soonest reset is the one that changes the answer first.
-    const resetsAt = cells
-      .flatMap((cell) => (cell.window?.resetsAt ? [cell.window.resetsAt] : []))
-      .toSorted()
-      .at(0);
-    return { label, cells, ...(resetsAt ? { resetsAt } : { resetsAt: undefined }) };
+    // Reset times live in the cells: each account resets on its own schedule,
+    // so a single time for the row would misreport one of them.
+    return { label, cells };
   });
 
   return { accounts, rows };
