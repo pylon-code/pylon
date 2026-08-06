@@ -9,18 +9,7 @@ import {
   type ProviderUsageCell,
 } from "./ProviderUsageMatrix.logic";
 import { formatTimeUntilReset } from "./usageTime";
-
-/**
- * Colour follows how little is left, not how much is used.
- *
- * The label says "remaining" and the bar drains, so the warning has to key off
- * the same direction or the three cues disagree.
- */
-function remainingColor(remainingPercent: number): string {
-  if (remainingPercent <= 10) return "bg-red-500";
-  if (remainingPercent <= 30) return "bg-amber-500";
-  return "bg-sky-500";
-}
+import { usageBarClassName, usageEmphasisClassName } from "./usageEmphasis";
 
 function formatResetTimestamp(resetsAt: string, timestampFormat: TimestampFormat): string {
   const date = parseTimestampDate(resetsAt);
@@ -51,7 +40,7 @@ function UsageCell({
   readonly nowMs: number;
   readonly timestampFormat: TimestampFormat;
 }) {
-  if (cell.remainingPercent === undefined) {
+  if (cell.usedPercent === undefined) {
     return (
       <div
         className="flex flex-col gap-1"
@@ -64,7 +53,7 @@ function UsageCell({
     );
   }
 
-  const remaining = cell.remainingPercent;
+  const used = cell.usedPercent;
   const resetsAt = cell.window?.resetsAt;
   const countdown = resetsAt ? formatTimeUntilReset(resetsAt, nowMs) : undefined;
 
@@ -76,7 +65,7 @@ function UsageCell({
         : {})}
     >
       <span className="flex items-baseline gap-1.5">
-        <span className="text-xs tabular-nums text-foreground">{remaining}%</span>
+        <span className={cn("text-xs tabular-nums", usageEmphasisClassName(used))}>{used}%</span>
         {countdown ? (
           <span className="text-[11px] tabular-nums text-muted-foreground/60">{countdown}</span>
         ) : null}
@@ -84,19 +73,19 @@ function UsageCell({
       <div
         className="h-1 w-full overflow-hidden rounded-full bg-muted/60"
         role="progressbar"
-        aria-label={`${label} remaining`}
+        aria-label={`${label} used`}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={remaining}
-        aria-valuetext={`${remaining}% remaining${countdown ? `, resets in ${countdown}` : ""}`}
+        aria-valuenow={used}
+        aria-valuetext={`${used}% used${countdown ? `, resets in ${countdown}` : ""}`}
       >
-        {/* Drains left to right: the bar and the number say the same thing. */}
+        {/* Fills as the window is spent, matching the number beside it. */}
         <div
           className={cn(
             "h-full rounded-full transition-[width,background-color] duration-500 ease-out motion-reduce:transition-none",
-            remainingColor(remaining),
+            usageBarClassName(used),
           )}
-          style={{ width: `${remaining}%` }}
+          style={{ width: `${used}%` }}
         />
       </div>
     </div>

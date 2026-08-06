@@ -1,14 +1,9 @@
 import type { ServerProviderUsageLimits } from "@t3tools/contracts";
 
 import { cn } from "~/lib/utils";
+import { usageBarClassName, usageEmphasisClassName } from "./usageEmphasis";
 import { getTimestampFormatOptions, parseTimestampDate } from "~/timestampFormat";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
-
-function usageColor(usedPercent: number): string {
-  if (usedPercent >= 90) return "bg-red-500";
-  if (usedPercent >= 70) return "bg-amber-500";
-  return "bg-blue-500";
-}
 
 function formatResetTimestamp(resetsAt: string, timestampFormat: TimestampFormat): string {
   const date = parseTimestampDate(resetsAt);
@@ -28,8 +23,7 @@ export function ProviderUsageRows(props: {
   return (
     <div className={cn("grid", props.compact ? "gap-2.5" : "gap-3")}>
       {props.usageLimits.windows.map((window) => {
-        const usedPercent = Math.max(0, Math.min(100, window.usedPercent));
-        const remainingPercent = Math.max(0, Math.round(100 - usedPercent));
+        const usedPercent = Math.max(0, Math.min(100, Math.round(window.usedPercent)));
         const resetLabel = window.resetsAt
           ? formatResetTimestamp(window.resetsAt, props.timestampFormat)
           : "";
@@ -40,8 +34,8 @@ export function ProviderUsageRows(props: {
           >
             <div className="flex items-center justify-between gap-3 text-xs">
               <span className="min-w-0 truncate font-medium text-foreground">{window.label}</span>
-              <span className="shrink-0 tabular-nums text-muted-foreground">
-                {remainingPercent}% remaining
+              <span className={cn("shrink-0 tabular-nums", usageEmphasisClassName(usedPercent))}>
+                {usedPercent}% used
               </span>
             </div>
             <div
@@ -50,13 +44,13 @@ export function ProviderUsageRows(props: {
               aria-label={`${window.label} usage`}
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-valuenow={Math.round(usedPercent)}
-              aria-valuetext={`${remainingPercent}% remaining`}
+              aria-valuenow={usedPercent}
+              aria-valuetext={`${usedPercent}% used`}
             >
               <div
                 className={cn(
                   "h-full rounded-full transition-[width,background-color] duration-500 ease-out motion-reduce:transition-none",
-                  usageColor(usedPercent),
+                  usageBarClassName(usedPercent),
                 )}
                 style={{ width: `${usedPercent}%` }}
               />
@@ -75,7 +69,7 @@ export function ProviderUsageSummary(props: { readonly usageLimits: ServerProvid
   const summaryItems = props.usageLimits.windows.map((window) => ({
     key: `${window.label}:${window.windowDurationMins ?? "unknown"}:${window.resetsAt ?? "unknown"}`,
     label: window.label,
-    remainingPercent: Math.max(0, Math.round(100 - window.usedPercent)),
+    usedPercent: Math.max(0, Math.min(100, Math.round(window.usedPercent))),
   }));
   return (
     <p className="min-w-0 text-[11px] text-muted-foreground/80">
@@ -83,10 +77,10 @@ export function ProviderUsageSummary(props: { readonly usageLimits: ServerProvid
         <span key={item.key} className="whitespace-nowrap">
           {index > 0 ? <span className="mx-1.5 text-muted-foreground/40">·</span> : null}
           <span>{item.label}</span>{" "}
-          <span className="tabular-nums text-muted-foreground">{item.remainingPercent}%</span>
+          <span className="tabular-nums text-muted-foreground">{item.usedPercent}%</span>
         </span>
       ))}
-      <span className="text-muted-foreground/60"> remaining</span>
+      <span className="text-muted-foreground/60"> used</span>
     </p>
   );
 }

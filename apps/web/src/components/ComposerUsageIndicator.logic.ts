@@ -28,8 +28,8 @@ export interface ComposerUsageEntry {
    * everything.
    */
   readonly label: string;
-  /** What is left, matching the bar, which drains. */
-  readonly remainingPercent: number;
+  /** How much of the window is spent. High means nearly out. */
+  readonly usedPercent: number;
   readonly detail: string;
   readonly resetsAt?: string | undefined;
 }
@@ -58,7 +58,7 @@ const entryFrom = (
 ): ComposerUsageEntry => ({
   label:
     (window.resetsAt ? formatTimeUntilReset(window.resetsAt, nowMs) : undefined) ?? fallbackLabel,
-  remainingPercent: Math.max(0, Math.min(100, Math.round(100 - window.usedPercent))),
+  usedPercent: Math.max(0, Math.min(100, Math.round(window.usedPercent))),
   detail: window.label,
   ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
 });

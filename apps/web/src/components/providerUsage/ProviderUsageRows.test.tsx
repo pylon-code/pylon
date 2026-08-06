@@ -4,7 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { ProviderUsageRows, ProviderUsageSummary } from "./ProviderUsageRows";
 
 describe("ProviderUsageRows", () => {
-  it("renders dynamic windows with explicit remaining percentages", () => {
+  it("renders dynamic windows with explicit used percentages", () => {
     const markup = renderToStaticMarkup(
       <ProviderUsageRows
         timestampFormat="24-hour"
@@ -20,12 +20,12 @@ describe("ProviderUsageRows", () => {
     );
 
     expect(markup).toContain("Session");
-    expect(markup).toContain("70% remaining");
+    expect(markup).toContain("30% used");
     expect(markup).toContain("Weekly (Fable)");
-    expect(markup).toContain("74% remaining");
+    expect(markup).toContain("26% used");
   });
 
-  it("renders multiple windows as one compact remaining summary", () => {
+  it("renders multiple windows as one compact used summary", () => {
     const markup = renderToStaticMarkup(
       <ProviderUsageSummary
         usageLimits={{
@@ -41,12 +41,12 @@ describe("ProviderUsageRows", () => {
     );
 
     expect(markup).toContain("Session");
-    expect(markup).toContain("16%");
+    expect(markup).toContain("84%");
     expect(markup).toContain("Weekly (all models)");
-    expect(markup).toContain("80%");
+    expect(markup).toContain("20%");
     expect(markup).toContain("Weekly (Fable)");
-    expect(markup).toContain("68%");
-    expect(markup).toContain("remaining");
+    expect(markup).toContain("32%");
+    expect(markup).toContain("used");
     expect(markup).toContain("·");
   });
 });

@@ -53,12 +53,12 @@ describe("buildProviderUsageMatrix", () => {
     expect(matrix.rows[0]?.cells).toHaveLength(2);
   });
 
-  // "% remaining" is the number people act on; the bar drains to match.
-  it("reports what is left rather than what is spent", () => {
+  // Reports what is spent, which is what the colour warns on.
+  it("reports what each account has spent", () => {
     const matrix = buildProviderUsageMatrix([PERSONAL, WORK]);
 
-    expect(matrix.rows[0]?.cells[0]?.remainingPercent).toBe(83);
-    expect(matrix.rows[0]?.cells[1]?.remainingPercent).toBe(77);
+    expect(matrix.rows[0]?.cells[0]?.usedPercent).toBe(17);
+    expect(matrix.rows[0]?.cells[1]?.usedPercent).toBe(23);
   });
 
   // Team and API accounts genuinely report different windows, so a missing one
@@ -73,7 +73,7 @@ describe("buildProviderUsageMatrix", () => {
 
     const weeklyRow = matrix.rows.find((row) => row.label === "Weekly (all models)");
     expect(weeklyRow?.cells[1]?.window).toBeUndefined();
-    expect(weeklyRow?.cells[1]?.remainingPercent).toBeUndefined();
+    expect(weeklyRow?.cells[1]?.usedPercent).toBeUndefined();
   });
 
   it("keeps a window only the second account reports", () => {

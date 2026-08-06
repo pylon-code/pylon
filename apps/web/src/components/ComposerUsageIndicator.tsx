@@ -7,59 +7,25 @@ import { useNowMinute } from "../hooks/useNowMinute";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { ProviderUsageAccounts } from "./providerUsage/ProviderUsageAccounts";
 import type { ProviderUsageAccount } from "./providerUsage/ProviderUsageAccounts";
+import { usageEmphasisClassName } from "./providerUsage/usageEmphasis";
 import { getComposerUsageView } from "./ComposerUsageIndicator.logic";
-
-/**
- * Below this the number stops being background information and starts being
- * something to act on, so it picks up emphasis. Deliberately not one of the
- * thread-status colors — this is account capacity, not thread state.
- */
-const LOW_REMAINING_PERCENT = 20;
-
-/**
- * A nearly-spent window still shows a sliver rather than an empty track, so
- * the bar reads as "almost gone" instead of as a rendering failure.
- */
-const MIN_VISIBLE_FILL_PERCENT = 3;
-
-/**
- * Fixed-width gauge for one window.
- *
- * Drains rather than fills: the number beside it says how much is *left*, and
- * a bar that grew as capacity shrank would make the eye read the opposite of
- * the label. Decorative, so hidden from assistive tech; colors come from
- * `currentColor` so the low-capacity emphasis reaches the bar from one
- * decision.
- */
-function UsageBar({ remainingPercent }: { readonly remainingPercent: number }) {
-  return (
-    <span
-      aria-hidden="true"
-      className="inline-block h-1 w-5 shrink-0 overflow-hidden rounded-full bg-current/15"
-    >
-      <span
-        className="block h-full rounded-full bg-current"
-        style={{
-          width: `${Math.max(MIN_VISIBLE_FILL_PERCENT, Math.min(100, remainingPercent))}%`,
-        }}
-      />
-    </span>
-  );
-}
 
 /**
  * Subscription capacity for the account the current thread runs on, at the
  * right of the composer context strip.
  *
- * Shows the account by name, then how long until each window resets and how
- * much is left. The countdown rather than the window length is what a glance
- * is actually asking: "5h" never changes and settles nothing, while "1h 45m"
- * answers whether to keep going or wait.
+ * Carries only what a glance can act on: which account, how much of each
+ * window is spent, and how long until it resets. No bars — a coloured number
+ * and a 20px bar encode the same value twice, and the colour is the part that
+ * registers without being read.
+ *
+ * The account name stays because it is the one thing here that cannot be
+ * inferred. A coloured dot identifies an account only if you remember which
+ * colour is which, and not at all if you cannot separate the colours.
  *
  * Clicking opens the full per-account breakdown. That lives here rather than
- * in the context popover because capacity is a property of the account and
- * context is a property of the thread; sharing one popover made the reader
- * hunt for whichever half they wanted.
+ * in the context popover because capacity belongs to the account and context
+ * belongs to the thread.
  */
 export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
   provider,
@@ -88,42 +54,36 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
             type="button"
             aria-label={`Subscription capacity for ${view.accountName ?? "this account"}`}
             className={cn(
-              "inline-flex shrink-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-sm font-medium text-muted-foreground/70 tabular-nums",
-              "hover:bg-muted/40 hover:text-muted-foreground",
+              "inline-flex shrink-0 items-center gap-2 rounded-md px-1 py-0.5 text-sm tabular-nums",
+              "hover:bg-muted/40",
               className,
             )}
           >
-            {view.accentColor ? (
-              <span
-                aria-hidden="true"
-                className="size-1.5 shrink-0 rounded-full"
-                style={{ backgroundColor: view.accentColor }}
-              />
-            ) : null}
-            {view.accountName ? (
-              <span className="max-w-24 truncate text-muted-foreground/80">{view.accountName}</span>
-            ) : null}
-            {view.entries.map((entry, index) => (
-              <span key={entry.detail} className="inline-flex items-center gap-1">
-                {index > 0 ? (
-                  <span aria-hidden="true" className="text-muted-foreground/40">
-                    ·
-                  </span>
-                ) : null}
-                <span className="text-muted-foreground/50">{entry.label}</span>
-                {/*
-                  Bar and number share one element so the low-capacity color
-                  applies to both from a single decision.
-                */}
+            <span className="inline-flex min-w-0 items-center gap-1">
+              {view.accentColor ? (
                 <span
-                  className={cn(
-                    "inline-flex items-center gap-1",
-                    entry.remainingPercent <= LOW_REMAINING_PERCENT && "text-warning",
-                  )}
-                >
-                  <UsageBar remainingPercent={entry.remainingPercent} />
-                  {entry.remainingPercent}%
+                  aria-hidden="true"
+                  className="size-1.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: view.accentColor }}
+                />
+              ) : null}
+              {view.accountName ? (
+                <span className="max-w-24 truncate text-xs text-muted-foreground/50">
+                  {view.accountName}
                 </span>
+              ) : null}
+            </span>
+            {/*
+              Spacing separates the two windows rather than punctuation: with
+              the bars gone there is little enough here that a gap reads more
+              cleanly than another glyph.
+            */}
+            {view.entries.map((entry) => (
+              <span key={entry.detail} className="inline-flex items-baseline gap-1">
+                <span className={cn("font-medium", usageEmphasisClassName(entry.usedPercent))}>
+                  {entry.usedPercent}%
+                </span>
+                <span className="text-xs text-muted-foreground/45">{entry.label}</span>
               </span>
             ))}
           </button>

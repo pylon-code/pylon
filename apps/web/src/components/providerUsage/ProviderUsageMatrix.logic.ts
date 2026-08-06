@@ -19,7 +19,7 @@ export interface ProviderUsageCell {
   readonly accountId: string;
   /** `undefined` when this account does not report the row's window at all. */
   readonly window: ServerProviderUsageWindow | undefined;
-  readonly remainingPercent: number | undefined;
+  readonly usedPercent: number | undefined;
 }
 
 export interface ProviderUsageMatrixRow {
@@ -32,8 +32,8 @@ export interface ProviderUsageMatrix {
   readonly rows: ReadonlyArray<ProviderUsageMatrixRow>;
 }
 
-const remainingFrom = (window: ServerProviderUsageWindow | undefined): number | undefined =>
-  window === undefined ? undefined : Math.max(0, Math.round(100 - window.usedPercent));
+const usedFrom = (window: ServerProviderUsageWindow | undefined): number | undefined =>
+  window === undefined ? undefined : Math.max(0, Math.min(100, Math.round(window.usedPercent)));
 
 /**
  * Build the shared-row view of several accounts.
@@ -60,7 +60,7 @@ export function buildProviderUsageMatrix(
       return {
         accountId: account.instanceId,
         window,
-        remainingPercent: remainingFrom(window),
+        usedPercent: usedFrom(window),
       };
     });
     // Reset times live in the cells: each account resets on its own schedule,

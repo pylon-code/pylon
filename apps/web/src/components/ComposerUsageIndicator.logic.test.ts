@@ -73,13 +73,13 @@ describe("getComposerUsageView", () => {
         // Reset already passed, so it falls back to the window's length
         // rather than showing a countdown that has run out.
         label: "5h",
-        remainingPercent: 86,
+        usedPercent: 14,
         detail: "Session",
         resetsAt: "2026-08-05T01:00:00.000Z",
       },
       {
         label: "3d 5h",
-        remainingPercent: 60,
+        usedPercent: 40,
         detail: "Weekly (all models)",
         resetsAt: "2026-08-09T17:00:00.000Z",
       },
@@ -106,9 +106,9 @@ describe("getComposerUsageView", () => {
     );
 
     // No reset reported, so the label falls back to the window's length.
-    expect(view?.entries.map((entry) => `${entry.label} ${entry.remainingPercent}`)).toEqual([
-      "5h 75",
-      "7d 18",
+    expect(view?.entries.map((entry) => `${entry.label} ${entry.usedPercent}`)).toEqual([
+      "5h 25",
+      "7d 82",
     ]);
   });
 
@@ -118,7 +118,7 @@ describe("getComposerUsageView", () => {
       NOW,
     );
 
-    expect(view?.entries[0]?.remainingPercent).toBe(85);
+    expect(view?.entries[0]?.usedPercent).toBe(15);
   });
 
   it("carries the account name and accent for the tooltip and dot", () => {

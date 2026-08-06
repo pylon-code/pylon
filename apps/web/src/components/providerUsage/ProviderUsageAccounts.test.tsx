@@ -35,7 +35,7 @@ describe("ProviderUsageAccounts", () => {
       <ProviderUsageAccounts accounts={[account()]} timestampFormat="24-hour" nowMs={NOW} />,
     );
 
-    expect(markup).toContain("70% remaining");
+    expect(markup).toContain("30% used");
     expect(markup).not.toContain("Personal");
     expect(markup).not.toContain("this thread");
   });
@@ -63,8 +63,8 @@ describe("ProviderUsageAccounts", () => {
 
     expect(markup).toContain("Personal");
     expect(markup).toContain("Work");
-    expect(markup).toContain("70% remaining");
-    expect(markup).toContain("95% remaining");
+    expect(markup).toContain("30% used");
+    expect(markup).toContain("5% used");
     // Only the bound account carries the marker.
     expect(markup.match(/this thread/g)).toHaveLength(1);
   });
