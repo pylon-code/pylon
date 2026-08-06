@@ -20,7 +20,7 @@ Verified on 2026-08-04 rather than assumed. These findings shape every decision 
 | `--resume` works across config dirs                 | A session created on account A, its transcript copied to account B's config dir, resumed on B and recalled a token from the prior turn. Lossless.                                                                                   |
 | `rate_limit_event` omits `utilization` at low usage | Real event carried `{status, resetsAt, rateLimitType, overageStatus}` only. `utilization` is optional in the SDK type and was absent. Re-verified on 2.1.220 at 12% session / 16% weekly — still absent.                            |
 | `GET /api/oauth/usage` returns structured usage     | Private OAuth endpoint (`Authorization: Bearer <token>`, `anthropic-beta: oauth-2025-04-20`) returns continuous percentages and reset times for every window as JSON — what claude.ai's own UI renders. Answers 429 under load.     |
-| `claude --print "/usage"` reports *local* figures   | Costs nothing (`total_cost_usd: 0`, zero tokens) but its output is human text, and its percentages derive from this machine's sessions: 17% weekly against the endpoint's 40% for the same account, seconds apart.                  |
+| `claude --print "/usage"` reports _local_ figures   | Costs nothing (`total_cost_usd: 0`, zero tokens) but its output is human text, and its percentages derive from this machine's sessions: 17% weekly against the endpoint's 40% for the same account, seconds apart.                  |
 | Prompt caches never cross organizations             | Anthropic: "Caches are isolated between organizations. Different organizations never share caches, even if they use identical prompts."                                                                                             |
 
 Two consequences follow directly:
@@ -61,7 +61,7 @@ Pylon adaptations:
 - **`showProviderUsageInContextPopover` defaults on.** Upstream defaults it off as a niche
   readout; with account routing it is routine information.
 
-The context popover is the deliberate home for the *full* gauge — every window with its reset
+The context popover is the deliberate home for the _full_ gauge — every window with its reset
 time. It is a lookup, it sits beside the context-window meter that answers the structurally
 identical "how much room do I have" question, and it costs no resting screen real estate.
 
@@ -133,10 +133,10 @@ Originally three branches, one concern each. A and B shipped together on
 `feat/2026-08-04-account-drain-routing` so the drain-and-swap workflow could be exercised
 end to end in one build; C remains separate.
 
-| Branch | Concern                               | Depends on                                        | State    |
-| ------ | ------------------------------------- | ------------------------------------------------- | -------- |
-| A      | Adopt #4326 + multi-account popover   | —                                                 | Shipped  |
-| B      | Priority, ledger, routing, drain pill | A                                                 | Shipped  |
+| Branch | Concern                               | Depends on                                        | State       |
+| ------ | ------------------------------------- | ------------------------------------------------- | ----------- |
+| A      | Adopt #4326 + multi-account popover   | —                                                 | Shipped     |
+| B      | Priority, ledger, routing, drain pill | A                                                 | Shipped     |
 | C      | Thread handoff                        | B for the auto-trigger; manual form needs nothing | Not started |
 
 Deferred: mobile surfaces (upstream touches no mobile files), Grok/Cursor/OpenCode usage,

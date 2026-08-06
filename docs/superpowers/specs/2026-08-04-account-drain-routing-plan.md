@@ -11,7 +11,7 @@ this shape — volatile, per-instance, snapshot-projected, change-streamed:
 
 - `setProviderMaintenanceActionState` applies volatile per-instance state that is never
   persisted and is projected onto `ServerProvider.updateState`. Its own doc comment invites
-  extension: *"install/auth actions can extend this action map without adding driver-scoped APIs."*
+  extension: _"install/auth actions can extend this action map without adding driver-scoped APIs."_
 - `streamChanges` already pushes full snapshot arrays to every connected client.
 
 So rate-limit state follows `updateState`'s path exactly. This removes an entire service, a

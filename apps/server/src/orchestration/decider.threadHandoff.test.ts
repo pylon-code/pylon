@@ -11,7 +11,9 @@ import * as Effect from "effect/Effect";
 
 import type { OrchestrationEvent } from "@t3tools/contracts";
 
-type PlannedResult = Omit<OrchestrationEvent, "sequence"> | ReadonlyArray<Omit<OrchestrationEvent, "sequence">>;
+type PlannedResult =
+  | Omit<OrchestrationEvent, "sequence">
+  | ReadonlyArray<Omit<OrchestrationEvent, "sequence">>;
 
 import { decideOrchestrationCommand } from "./decider.ts";
 import { projectEvent } from "./projector.ts";
@@ -69,29 +71,27 @@ const createContinuation = (continuedFromThreadId: ThreadId | null | undefined) 
   createdAt: NOW,
 });
 
-it.effect(
-  "carries the handoff link from command through event to the projected thread",
-  () =>
-    Effect.gen(function* () {
-      const event = sequenced(
-        yield* decideOrchestrationCommand({
-          readModel: emptyReadModel,
-          command: createContinuation(PARENT),
-        }),
-      );
+it.effect("carries the handoff link from command through event to the projected thread", () =>
+  Effect.gen(function* () {
+    const event = sequenced(
+      yield* decideOrchestrationCommand({
+        readModel: emptyReadModel,
+        command: createContinuation(PARENT),
+      }),
+    );
 
-      expect(event.type).toBe("thread.created");
-      expect((event.payload as { continuedFromThreadId?: string }).continuedFromThreadId).toBe(
-        PARENT,
-      );
+    expect(event.type).toBe("thread.created");
+    expect((event.payload as { continuedFromThreadId?: string }).continuedFromThreadId).toBe(
+      PARENT,
+    );
 
-      // The link is only real once it survives projection — that is what the
-      // UI reads to show the seam.
-      const projected = yield* projectEvent(emptyReadModel, event);
-      const thread = projected.threads.find((candidate) => candidate.id === CONTINUATION);
+    // The link is only real once it survives projection — that is what the
+    // UI reads to show the seam.
+    const projected = yield* projectEvent(emptyReadModel, event);
+    const thread = projected.threads.find((candidate) => candidate.id === CONTINUATION);
 
-      expect(thread?.continuedFromThreadId).toBe(PARENT);
-    }).pipe(Effect.provide(NodeServices.layer)),
+    expect(thread?.continuedFromThreadId).toBe(PARENT);
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 // The overwhelming majority of threads are not continuations, and their
