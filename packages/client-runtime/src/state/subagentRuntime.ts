@@ -458,6 +458,13 @@ export function foldSubagentActivities(
 ): ReadonlyArray<RuntimeSubagent> {
   const agents = new Map<string, MutableAgent>();
 
+  // The tool_use_id that opened each agent's current run. A resume is a new
+  // Agent tool call so it carries a new one; a late/out-of-order duplicate
+  // start repeats the id of the run it belongs to. Fold-local because
+  // MutableAgent and the public RuntimeSubagent are 1:1 (the fold returns
+  // `{ ...agent }`), and no consumer reads this.
+  const activationToolUseIds = new Map<string, string>();
+
   for (const activity of activities) {
     if (typeof activity.payload !== "object" || activity.payload === null) {
       continue;
@@ -482,12 +489,26 @@ export function foldSubagentActivities(
         // status itself, not activationCount: a task first seen via a
         // terminal task.updated has zero activations but is still settled
         // (review finding: a late start reopened a failed child).
+        const toolUseId = asString(payload.toolUseId);
         if (agent.activationCount === 0 && !isTerminalSubagentStatus(agent.status)) {
           agent.activationCount = 1;
           agent.startedAt = agent.startedAt ?? at;
           agent.status = "running";
+          if (toolUseId) activationToolUseIds.set(taskId, toolUseId);
         } else if (agent.status === "idle") {
           applyStatus(agent, "running", at);
+          if (toolUseId) activationToolUseIds.set(taskId, toolUseId);
+        } else if (
+          isTerminalSubagentStatus(agent.status) &&
+          toolUseId &&
+          toolUseId !== activationToolUseIds.get(taskId)
+        ) {
+          // A genuine resume: same task_id, new tool_use_id. A late duplicate
+          // start repeats the current run's id and so fails this check, which
+          // keeps the ordering guard above intact (a late start must not
+          // reopen a failed child). Upstream t3code#5529.
+          applyStatus(agent, "running", at);
+          activationToolUseIds.set(taskId, toolUseId);
         }
         const detail = asString(payload.detail);
         if (detail && agent.title === agent.id) agent.title = detail;
