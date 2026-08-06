@@ -102,3 +102,20 @@ For each completed batch, append a section in this form:
 | ---------- | ------------- | ----------------------------- | ---------------------- | ------------------------------ |
 | A1         | `sha` / `#pr` | adopted, skipped, or deferred | branch, commit, or `—` | concise reason                 |
 ```
+
+## 2026-08-06 — Pylon-local fixes on top of `#5219`
+
+First Pylon changes in two files that were byte-identical to upstream
+`a2ca89aa1`. Expect conflicts in both on the next upstream sync, and check
+whether upstream has landed its own fix in a different shape before
+resolving.
+
+| File                                                   | Change                                                                                                                                                                                | Upstream status                                                                                             |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `packages/client-runtime/src/state/subagentRuntime.ts` | `task.started` gains a third branch: a terminal agent reopens when the payload's `toolUseId` differs from the one that opened the current run. Fold-local `activationToolUseIds` map. | Reported on [#5529](https://github.com/pingdotgg/t3code/issues/5529) with the wire evidence; open, unfixed. |
+| `apps/server/src/provider/Layers/ClaudeAdapter.ts`     | `task_started` preserves an already-refined `model` when re-seeding `taskAgents` for the same `task_id`, mirroring the existing `runHandles` carry-across.                            | Not yet filed.                                                                                              |
+
+Known remaining gap, not fixed: a subagent that settles before emitting any
+assistant snapshot never refines its model, so a short first run keeps the
+session-model placeholder. That is a UX decision on upstream's
+placeholder-then-refine strategy, not a defect in it.
