@@ -57,10 +57,10 @@ jobs:
           head_sha=$(git rev-parse HEAD)
 
           if [[ "$last_nightly_sha" == "$head_sha" ]]; then
-            echo "No changes on main since last nightly release ($last_nightly_tag). Skipping."
+            echo "No changes since last nightly release ($last_nightly_tag). Skipping."
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Changes detected on main since $last_nightly_tag ($last_nightly_sha → $head_sha). Proceeding."
+            echo "Changes detected since $last_nightly_tag ($last_nightly_sha → $head_sha). Proceeding."
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -697,7 +697,10 @@ jobs:
   publish_cli:
     name: Publish CLI to npm
     needs: [preflight, relay_public_config, build]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build.result == 'success' }}
+    # Opt-in: publishing the CLI needs an npm package this repository owns and
+    # trusted publishing configured for it. Set the PUBLISH_CLI_TO_NPM
+    # repository variable to "true" once both exist.
+    if: ${{ !failure() && !cancelled() && vars.PUBLISH_CLI_TO_NPM == 'true' && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -784,7 +787,9 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [preflight, build, publish_cli]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && needs.publish_cli.result == 'success' }}
+    # The desktop release is the point of this workflow, so a skipped CLI
+    # publish must not withhold it. A failed one still does.
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.publish_cli.result == 'success' || needs.publish_cli.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -899,7 +904,9 @@ jobs:
   deploy_web:
     name: Deploy hosted web app
     needs: [preflight, relay_public_config, release]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.release.result == 'success' }}
+    # Opt-in: the hosted web app needs a Vercel project and its domains. Set
+    # the DEPLOY_HOSTED_WEB repository variable to "true" once they exist.
+    if: ${{ !failure() && !cancelled() && vars.DEPLOY_HOSTED_WEB == 'true' && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.release.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -1025,7 +1032,10 @@ jobs:
 
   finalize:
     name: Finalize release
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' && needs.preflight.outputs.release_channel == 'stable' }}
+    # Opt-in: pushes a version-bump commit back to the product branch through a
+    # GitHub App. Set the FINALIZE_RELEASE_COMMIT repository variable to "true"
+    # once the app is installed and its credentials are stored.
+    if: ${{ !failure() && !cancelled() && vars.FINALIZE_RELEASE_COMMIT == 'true' && needs.preflight.result == 'success' && needs.release.result == 'success' && needs.preflight.outputs.release_channel == 'stable' }}
     needs: [preflight, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -1041,7 +1051,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: main
+          # Pylon's product branch. The inherited `main` is not it.
+          ref: pylon
           fetch-depth: 0
           token: ${{ steps.app_token.outputs.token }}
           persist-credentials: true
@@ -1100,7 +1111,7 @@ jobs:
 
           git add apps/server/package.json apps/desktop/package.json apps/web/package.json packages/contracts/package.json pnpm-lock.yaml
           git commit -m "chore(release): prepare $RELEASE_TAG"
-          git push origin HEAD:main
+          git push origin HEAD:pylon
 
   announce_discord:
     name: Announce release on Discord
@@ -1109,7 +1120,8 @@ jobs:
       needs.preflight.result == 'success' &&
       needs.relay_public_config.result == 'success' &&
       needs.release.result == 'success' &&
-      needs.deploy_web.result == 'success' &&
+      vars.ANNOUNCE_RELEASE_ON_DISCORD == 'true' &&
+      (needs.deploy_web.result == 'success' || needs.deploy_web.result == 'skipped') &&
       (needs.finalize.result == 'success' || needs.finalize.result == 'skipped')
     needs: [preflight, relay_public_config, release, deploy_web, finalize]
     runs-on: ubuntu-24.04
