@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "2a04db134c2d88f06e5b8d61a8410cb51ea07430"
-reviewed-through-date: "2026-08-05"
+reviewed-through: "a2ca89aa10f13a2222e08afd98c66285121d5ba2"
+reviewed-through-date: "2026-08-06"
 ---
 
 # T3 upstream review log
@@ -119,3 +119,29 @@ For each completed batch, append a section in this form:
 | ---------- | ------------- | ----------------------------- | ---------------------- | ------------------------------ |
 | A1         | `sha` / `#pr` | adopted, skipped, or deferred | branch, commit, or `—` | concise reason                 |
 ```
+
+## 2026-08-06 — `2a04db134c2d88f06e5b8d61a8410cb51ea07430..a2ca89aa10f13a2222e08afd98c66285121d5ba2`
+
+All five candidates adopted. D1–D4 landed on `upstream/2026-08-06-terminal-and-reconnect`; D5 was
+integrated separately on `upstream/2026-08-06-subagent-observability` because its reconciliation with
+Pylon's dot-matrix status language is a design decision rather than a merge.
+
+D5 is the largest upstream change adopted so far. It ships with gaps upstream acknowledges: Claude and
+Codex only, with no path for Cursor, Grok, or OpenCode; mobile receives the quiet timeline fold but no
+Agents surface; the `getWorkflowScript` RPC does not yet verify its path against the requesting
+thread's own run handles. It also bumps `RIGHT_PANEL_STORAGE_VERSION` from 7 to 8, which resets every
+user's persisted right-panel layout once. **Not yet verified in a real client** — the Agents panel,
+spawn CTA rows, and the Monitoring status have had no browser pass.
+
+Verification note for this batch: `ProviderRuntimeIngestion.test.ts` cannot run in this environment.
+Its 45 sqlite-backed tests fail with `UnsupportedNodeSqliteVersionError` on Node 22.15.1 while the repo
+requires `^24.13.1`, and they fail identically on `pylon` without any of these commits. Pre-existing
+toolchain breakage, not adoption fallout, but it means that file's coverage of D5 is unproven locally.
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                           |
+| ---------- | --------------------- | -------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1         | `de592a00e` / `#5428` | adopted  | `26006f524`     | Terminal font previews exercise bold, dim, underline, the six accent colors, and a background cell. The sample prompt's project segment was rebranded from `t3code` to `pylon` on both web and mobile. `scripts/mobile-showcase-environment.ts` keeps its T3-named fixture; that is pre-existing branding debt, tracked separately.      |
+| D2         | `30e471530` / `#5444` | adopted  | `c6a51a199`     | Splitting a terminal halved the configured font size. Removes `fittedTerminalFontSize`, which Pylon had picked up with C3 in `294162a47`; pane width now changes the grid, not the glyphs.                                                                                                                                               |
+| D3         | `7251f1a1f` / `#5432` | adopted  | `e248af7df`     | The opaque canvas backing store flashed black for the whole font and WASM setup window; it is now painted with the theme background up front.                                                                                                                                                                                            |
+| D4         | `990bb0b68` / `#5404` | adopted  | `62b5474db`     | A ~15s update restart read as a ~33s "Resuming" because reconnect nudged once and then climbed the backoff ladder. Serves the remote-ready pillar and pairs with C9 (`72da243e6`).                                                                                                                                                       |
+| D5         | `a2ca89aa1` / `#5219` | adopted  | `dc4dc1f6e`     | Native subagent and workflow observability. Status reads through Pylon's DotMatrix language rather than upstream's plain dots, and the new Monitoring state is the calm sibling of Working — same primary hue, steady `live` glyph instead of the spinner. Revisit the Monitoring treatment if the dot-matrix language grows a real one. |
