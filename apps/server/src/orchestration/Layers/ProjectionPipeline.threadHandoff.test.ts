@@ -11,6 +11,7 @@ import { OrchestrationEventStore } from "../../persistence/Services/Orchestratio
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
@@ -21,6 +22,7 @@ import { ServerConfig } from "../../config.ts";
  * that actually serves them.
  */
 const TestLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
+  Layer.provide(ThreadBackgroundLiveness.layer),
   Layer.provideMerge(OrchestrationProjectionPipelineLive),
   Layer.provideMerge(OrchestrationEventStoreLive),
   Layer.provideMerge(RepositoryIdentityResolver.layer),
