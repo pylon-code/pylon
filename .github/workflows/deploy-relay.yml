@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - pylon
+  # Infrastructure drifts and deploys fail for reasons unrelated to a commit,
+  # so the stack can be reapplied without pushing one.
+  workflow_dispatch:
 
 permissions:
   contents: read
