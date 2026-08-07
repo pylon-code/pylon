@@ -59,8 +59,8 @@ with the deployed HTTPS relay URL. The relay still requires
 `CLERK_SECRET_KEY` as an Alchemy secret. Never put `CLERK_SECRET_KEY` in a client application
 environment or commit it to the repository.
 
-The `prod` Alchemy stage owns the retained PlanetScale database. Non-production stages reference
-that database and provision isolated PlanetScale branches, so deploy `prod` before creating a
+The `prod` Alchemy stage owns the retained Neon project. Non-production stages reference
+that project and fork isolated Neon branches, so deploy `prod` before creating a
 personal developer stage.
 
 ## Headless CLI OAuth Application
