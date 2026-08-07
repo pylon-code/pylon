@@ -17,6 +17,10 @@ concurrency:
 jobs:
   deploy_relay:
     name: Deploy production relay
+    # Opt-in: the relay needs Neon, Cloudflare, Axiom, Clerk, and APNs
+    # credentials. Set the DEPLOY_RELAY repository variable to "true" once they
+    # exist, so merges to pylon do not fail on a stack that cannot deploy.
+    if: ${{ vars.DEPLOY_RELAY == 'true' }}
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 15
     environment:
