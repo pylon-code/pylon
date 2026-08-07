@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "72d673a855c730536f0cf3bb964ba523e0af9e2e"
+reviewed-through: "45d9aa90baab8f2d6b13c7ae3cf2f97128edaf7b"
 reviewed-through-date: "2026-08-07"
 ---
 
@@ -331,3 +331,32 @@ Clerk catalog bump in `F18` resolves identically, so no regeneration diff.
 | F23        | `be1a83674`           | skipped  | `—`             | Upstream v0.0.32 release prep. Pylon versions independently.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | F24        | `e2cd2383c` / `#5637` | skipped  | `—`             | Vouches a T3 contributor in `.github/VOUCHED.td`. T3 contributor governance, no Pylon meaning.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | F25        | `220efad62` / `#4511` | adopted  | `76dcb165f`     | Missing space before a link on the marketing download page.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+
+## 2026-08-07 (third batch) — `72d673a855c730536f0cf3bb964ba523e0af9e2e..45d9aa90baab8f2d6b13c7ae3cf2f97128edaf7b`
+
+Four upstream commits landed within hours of the second batch. Three adopted
+onto `upstream/2026-08-07-batch-3`, one skipped. All four cherry-picked clean —
+no adaptation was needed, which is expected this soon after the batch that
+introduced the code they build on.
+
+Verification: web typecheck clean; 2100 web tests pass, up from 2092 as these
+commits bring 8 of their own. `vp fmt --check` clean over all ten changed files.
+
+One pre-existing lint warning was surfaced and deliberately left alone — see the
+note below the table.
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                         |
+| ---------- | --------------------- | -------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1         | `f0fb406ac` / `#5636` | adopted  | `f6134f8dc`     | Sidebar stage artwork becomes theme-aware. Its fixed Dev/Nightly colors clash with palette themes, so a palette theme now falls back to the theme-aware pill unless the theme opts in with `sidebarArtwork: true`; an explicit "none" is still honored. Extends F10 directly. Pylon's one-line `branding.ts` divergence is the stage label, which this does not touch. |
+| G2         | `7a84f6cf1` / `#5633` | adopted  | `226bfa7e5`     | Locked composer context labels carry the `h-7 sm:h-6` control height. The context strip has no min-height of its own and the glass seam joining it to the composer assumes a fixed strip height, so a shorter label dragged the seam out of line on remote non-Git projects. Follows E16.                                                                              |
+| G3         | `45d9aa90b` / `#5554` | adopted  | `cf6dc7c60`     | The Stop button stays visible while a provider input question is pending. Previously the pending-action branch returned early, so a running turn awaiting input had no stop affordance at all — a missing reverse state.                                                                                                                                               |
+| G4         | `82406bce9` / `#5641` | skipped  | `—`             | Vouches a T3 contributor in `.github/VOUCHED.td`. T3 contributor governance, no Pylon meaning. Same class as F24.                                                                                                                                                                                                                                                      |
+
+Left alone: `ThemeEditorPanel.tsx` carries an `oxlint-disable-next-line
+exhaustive-deps` directive that `vp lint --report-unused-disable-directives`
+reports as unused — the only such warning in `apps/web/src`. It arrived with F10
+as upstream's own code and is untouched by this batch. It is inert here because
+Pylon does not enable the React hooks rule it suppresses, which is also why
+deleting it would be wrong: the directive becomes load-bearing the moment that
+rule is turned on, and removing it now would silently hide a real dependency
+bug later.
