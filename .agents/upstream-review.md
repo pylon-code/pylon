@@ -228,9 +228,26 @@ correct 144px gap, which is why it only shows while streaming.
 `maintainScrollAtEnd` configuration are byte-identical on `origin/pylon`;
 E13's only change was adding `|| !liveFollowEnabled`, which _disables_ pinning
 in more cases and cannot make it overshoot. Confirming beyond that inference
-needs an `origin/pylon` A/B, which was not run. Fix belongs on its own branch
-off `pylon` — likely growing the end spacer during live follow — and is worth
-reporting upstream.
+needs an `origin/pylon` A/B, which was not run.
+
+**Resolved on `fix/2026-08-07-timeline-positioning`.** Upstream had already
+fixed the gross case in `b792ed9f7` / `#5449` ("stabilize chat timeline
+positioning"), which landed just past this cursor. It moves web from
+`@legendapp/list` 3.2.0 to 3.3.3 — Pylon's `apps/mobile` was already on 3.3.3,
+so only web was running the older engine — and hands positioning to the
+library, deleting 136 lines from `ChatView`. Cherry-picked clean; Pylon's
+DotMatrix working row, plan-step markers and E10 `loadEarlier` wiring all
+survived the rewrite.
+
+That left a 5px residue: live follow lags the growing content by roughly
+50 pixels while streaming, and the working row is both last and taller than a
+text line, so its marker still touched the composer. `9c714b651` gives the row
+its own bottom padding, taking measured clearance from -5px to a steady +13px.
+
+Note for a later batch: bumping web to 3.3.3 means
+`patches/@legendapp__list@3.3.3.patch` now applies to web as well as mobile.
+It only touches `keyboard.*` and `react-native.*` entry points, which the web
+build does not import, so it should be inert there.
 
 Verification that did run: 495 targeted tests pass (187 web, 181 server, 112
 client-runtime, 15 shared) plus the 6 Node tests for the new CI publisher;
