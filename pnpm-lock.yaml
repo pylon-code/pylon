@@ -52,6 +52,7 @@ overrides:
   '@effect/platform-bun': 4.0.0-beta.103
   '@effect/platform-node': 4.0.0-beta.103
   '@effect/platform-node-shared': 4.0.0-beta.103
+  '@effect/sql-mysql2': 4.0.0-beta.103
   '@effect/sql-pg': 4.0.0-beta.103
   '@effect/sql-sqlite-bun': 4.0.0-beta.103
   '@effect/vitest': 4.0.0-beta.103
@@ -672,6 +673,9 @@ importers:
       '@clerk/backend':
         specifier: 3.14.0
         version: 3.14.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      '@effect/sql-mysql2':
+        specifier: 4.0.0-beta.103
+        version: 4.0.0-beta.103(@types/node@24.12.4)(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))
       '@effect/sql-pg':
         specifier: 4.0.0-beta.103
         version: 4.0.0-beta.103(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))
@@ -692,10 +696,10 @@ importers:
         version: link:../../packages/shared
       alchemy:
         specifier: 2.0.0-beta.70
-        version: 2.0.0-beta.70(c61241dfb466427c589a5bc0a676db29)
+        version: 2.0.0-beta.70(1af3273dcd41cca0db129dc01138030a)
       drizzle-orm:
         specifier: 1.0.0-rc.4
-        version: 1.0.0-rc.4(92d52d121d7296303181991e116f11ba)
+        version: 1.0.0-rc.4(b7cde3fef16c825e82583644507839e0)
       effect:
         specifier: 4.0.0-beta.103
         version: 4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6)
@@ -1989,6 +1993,11 @@ packages:
 
   '@effect/sql-d1@4.0.0-beta.104':
     resolution: {integrity: sha512-ri1pQpjRtIyp1xhAQ7d6V7ugWK7w+ByevRVEMtKZC/cXY5v9CwT7LebpS6WjlNaceIdd691SVlaMIB8F5huaDA==}
+    peerDependencies:
+      effect: 4.0.0-beta.103
+
+  '@effect/sql-mysql2@4.0.0-beta.103':
+    resolution: {integrity: sha512-jbz/fo68XmDcua1TQe0jaR6sa3P0PcZxxls3/T5JFziBOSr7tD0F4bdMA9OfuQMMbEGgR9vAdTcy6bn9NrUuOA==}
     peerDependencies:
       effect: 4.0.0-beta.103
 
@@ -5378,7 +5387,7 @@ packages:
       '@aws/durable-execution-sdk-js': ^2.1.0
       '@effect/platform-bun': 4.0.0-beta.103
       '@effect/platform-node': 4.0.0-beta.103
-      '@effect/sql-mysql2': '>=4.0.0-beta.102 || >=4.0.0'
+      '@effect/sql-mysql2': 4.0.0-beta.103
       '@effect/sql-pg': 4.0.0-beta.103
       '@vercel/nft': ^1.10.2
       drizzle-kit: 1.0.0-rc.4
@@ -6319,7 +6328,7 @@ packages:
       '@cloudflare/workers-types': '>=4'
       '@effect/sql-d1': '>=4.0.0-beta.83 || >=4.0.0'
       '@effect/sql-libsql': '>=4.0.0-beta.83 || >=4.0.0'
-      '@effect/sql-mysql2': '>=4.0.0-beta.83 || >=4.0.0'
+      '@effect/sql-mysql2': 4.0.0-beta.103
       '@effect/sql-pg': 4.0.0-beta.103
       '@effect/sql-pglite': '>=4.0.0-beta.83 || >=4.0.0'
       '@effect/sql-sqlite-bun': 4.0.0-beta.103
@@ -8483,8 +8492,8 @@ packages:
     resolution: {integrity: sha512-WWdIxpyjEn+FhQJQQv9aQAYlHoNVdzIzUySNV1gHUPDSdZJ3yZn7pAAbQcV7B56Mvu881q9FZV+0Vx2xC44VWA==}
     engines: {node: ^18.17.0 || >=20.5.0}
 
-  mysql2@3.22.4:
-    resolution: {integrity: sha512-CtXYlmL7ZamiYKbmqkamQHWJROUHSfm+f3kByzGfknw7kW51mcB2ouMUqYq1XfYxbXmnWo6RhPydx6OCqdgcmQ==}
+  mysql2@3.23.2:
+    resolution: {integrity: sha512-fxh3HpQ8vJtu/Mmnd4Xsur19jGjHGzRLMxptiDtOkbX7EVBgnafGSGDx1WGGVmJLClVh2LeeBMMo24IFv8wCyQ==}
     engines: {node: '>= 8.0'}
     peerDependencies:
       '@types/node': 24.12.4
@@ -9762,8 +9771,8 @@ packages:
   sprintf-js@1.1.3:
     resolution: {integrity: sha512-Oo+0REFV59/rz3gfJNKQiBlwfHaSESl1pcGyABQsnnIfWOFt6JNj5gCog2U6MLZ//IGYD+nA8nI+mTShREReaA==}
 
-  sql-escaper@1.3.3:
-    resolution: {integrity: sha512-BsTCV265VpTp8tm1wyIm1xqQCS+Q9NHx2Sr+WcnUrgLrQ6yiDIvHYJV5gHxsj1lMBy2zm5twLaZao8Jd+S8JJw==}
+  sql-escaper@1.5.1:
+    resolution: {integrity: sha512-4toX5E1fQbBrpfXidaHnF0669nkAdETeIPTs2SUjxxD7RRIs9ICG4gtpmfc68JCEKehsdwLFqBu9VlQqZ1P1gg==}
     engines: {bun: '>=1.0.0', deno: '>=2.0.0', node: '>=12.0.0'}
 
   stack-utils@2.0.6:
@@ -12125,6 +12134,13 @@ snapshots:
     dependencies:
       '@cloudflare/workers-types': 5.20260726.1
       effect: 4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6)
+
+  '@effect/sql-mysql2@4.0.0-beta.103(@types/node@24.12.4)(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))':
+    dependencies:
+      effect: 4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6)
+      mysql2: 3.23.2(@types/node@24.12.4)
+    transitivePeerDependencies:
+      - '@types/node'
 
   '@effect/sql-pg@4.0.0-beta.103(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))':
     dependencies:
@@ -15794,7 +15810,7 @@ snapshots:
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
 
-  alchemy@2.0.0-beta.70(c61241dfb466427c589a5bc0a676db29):
+  alchemy@2.0.0-beta.70(1af3273dcd41cca0db129dc01138030a):
     dependencies:
       '@alchemy.run/node-utils': 0.0.5
       '@aws-sdk/credential-providers': 3.1062.0
@@ -15836,11 +15852,12 @@ snapshots:
     optionalDependencies:
       '@effect/platform-bun': 4.0.0-beta.103(bufferutil@4.1.0)(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))(utf-8-validate@6.0.6)
       '@effect/platform-node': 4.0.0-beta.103(bufferutil@4.1.0)(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))(ioredis@5.11.0)(utf-8-validate@6.0.6)
+      '@effect/sql-mysql2': 4.0.0-beta.103(@types/node@24.12.4)(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))
       '@effect/sql-pg': 4.0.0-beta.103(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))
       drizzle-kit: 1.0.0-rc.4
-      drizzle-orm: 1.0.0-rc.4(92d52d121d7296303181991e116f11ba)
+      drizzle-orm: 1.0.0-rc.4(b7cde3fef16c825e82583644507839e0)
       mongodb: 6.21.0(@aws-sdk/credential-providers@3.1062.0)(socks@2.8.9)
-      mysql2: 3.22.4(@types/node@24.12.4)
+      mysql2: 3.23.2(@types/node@24.12.4)
       pg: 8.22.0
       vite: '@voidzero-dev/vite-plus-core@0.2.2(@types/node@24.12.4)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(typescript@6.0.3)(unrun@0.2.39)(yaml@2.9.0)'
       ws: 8.21.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
@@ -16093,8 +16110,7 @@ snapshots:
 
   await-lock@2.2.2: {}
 
-  aws-ssl-profiles@1.1.2:
-    optional: true
+  aws-ssl-profiles@1.1.2: {}
 
   aws4@1.13.2: {}
 
@@ -16917,10 +16933,11 @@ snapshots:
       get-tsconfig: 4.14.0
       jiti: 2.7.0
 
-  drizzle-orm@1.0.0-rc.4(92d52d121d7296303181991e116f11ba):
+  drizzle-orm@1.0.0-rc.4(b7cde3fef16c825e82583644507839e0):
     optionalDependencies:
       '@cloudflare/workers-types': 4.20260604.1
       '@effect/sql-d1': 4.0.0-beta.104(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))
+      '@effect/sql-mysql2': 4.0.0-beta.103(@types/node@24.12.4)(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))
       '@effect/sql-pg': 4.0.0-beta.103(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))
       '@effect/sql-sqlite-bun': 4.0.0-beta.103(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))
       '@effect/sql-sqlite-do': 4.0.0-beta.104(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))
@@ -16929,7 +16946,7 @@ snapshots:
       bun-types: 1.3.14
       effect: 4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6)
       expo-sqlite: 56.0.5(expo@56.0.12)(react-native@0.85.3(@babel/core@7.29.7)(@react-native/metro-config@0.85.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.2.16)(bufferutil@4.1.0)(react@19.2.6)(utf-8-validate@6.0.6))(react@19.2.6)
-      mysql2: 3.22.4(@types/node@24.12.4)
+      mysql2: 3.23.2(@types/node@24.12.4)
       pg: 8.22.0
       valibot: 1.2.0(typescript@6.0.3)
       zod: 4.4.3
@@ -18072,7 +18089,6 @@ snapshots:
   generate-function@2.3.1:
     dependencies:
       is-property: 1.0.2
-    optional: true
 
   gensync@1.0.0-beta.2: {}
 
@@ -18547,8 +18563,7 @@ snapshots:
 
   is-promise@4.0.0: {}
 
-  is-property@1.0.2:
-    optional: true
+  is-property@1.0.2: {}
 
   is-unicode-supported@2.1.0: {}
 
@@ -18902,8 +18917,7 @@ snapshots:
       is-unicode-supported: 2.1.0
       yoctocolors: 2.1.2
 
-  long@5.3.2:
-    optional: true
+  long@5.3.2: {}
 
   longest-streak@3.1.0: {}
 
@@ -18927,8 +18941,7 @@ snapshots:
 
   lru-cache@7.18.3: {}
 
-  lru.min@1.1.4:
-    optional: true
+  lru.min@1.1.4: {}
 
   lru_map@0.4.1: {}
 
@@ -19651,7 +19664,7 @@ snapshots:
 
   mute-stream@2.0.0: {}
 
-  mysql2@3.22.4(@types/node@24.12.4):
+  mysql2@3.23.2(@types/node@24.12.4):
     dependencies:
       '@types/node': 24.12.4
       aws-ssl-profiles: 1.1.2
@@ -19661,13 +19674,11 @@ snapshots:
       long: 5.3.2
       lru.min: 1.1.4
       named-placeholders: 1.1.6
-      sql-escaper: 1.3.3
-    optional: true
+      sql-escaper: 1.5.1
 
   named-placeholders@1.1.6:
     dependencies:
       lru.min: 1.1.4
-    optional: true
 
   nanoid@3.3.12: {}
 
@@ -21357,8 +21368,7 @@ snapshots:
   sprintf-js@1.1.3:
     optional: true
 
-  sql-escaper@1.3.3:
-    optional: true
+  sql-escaper@1.5.1: {}
 
   stack-utils@2.0.6:
     dependencies:
