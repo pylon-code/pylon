@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -1671,6 +1672,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const firstMissing = `t3code_codex_first_`;
           const secondMissing = `t3code_codex_second_`;
           const spawnedCommands: Array<string> = [];
+          // The spawner is the boundary this test is about: a reprobe has
+          // happened exactly when the new executable reaches it. Completing a
+          // latch there lets the test wait for that fact instead of sampling
+          // for it, so there is no iteration budget to exhaust on a slow
+          // machine and no wall-clock assumption to get wrong.
+          const secondProbeSpawned = yield* Deferred.make<void>();
           const serverSettings = yield* makeMutableServerSettingsService(
             decodeServerSettings(
               deepMerge(encodedDefaultServerSettings, {
@@ -1706,7 +1713,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
             Layer.updateService(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
               ChildProcessSpawner.make((command) => {
-                spawnedCommands.push((command as { readonly command: string }).command);
+                const commandPath = (command as { readonly command: string }).command;
+                spawnedCommands.push(commandPath);
+                if (commandPath === secondMissing) {
+                  Deferred.doneUnsafe(secondProbeSpawned, Effect.void);
+                }
                 return spawner.spawn(command);
               }),
             ),
@@ -1755,31 +1766,26 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               },
             });
 
-            // Poll until the injected process boundary observes the new
-            // executable. This verifies the public settings-to-probe behavior
-            // without depending on timestamps assigned by TestClock.
-            // FIXME: this polls rather than waiting on a receipt, which the
-            // repository guidance rightly calls wrong. Sixty iterations was
-            // enough on a developer machine and flaked on a four-core CI
-            // runner, blocking a release; the budget is raised to stop that
-            // while the real fix — observing the reprobe's own completion
-            // signal — is done separately.
-            const refreshed = yield* Effect.gen(function* () {
-              for (let attempts = 0; attempts < 400; attempts += 1) {
-                const providers = yield* registry.getProviders;
-                const codex = providers.find((provider) => provider.instanceId === "codex");
-                if (
-                  codex !== undefined &&
-                  codex.status === "error" &&
-                  spawnedCommands.includes(secondMissing)
-                ) {
-                  return providers;
-                }
-                yield* TestClock.adjust("50 millis");
-                yield* Effect.yieldNow;
-              }
-              return yield* registry.getProviders;
-            });
+            // Wait for the reprobe itself rather than sampling for its
+            // after-effects. The settings change propagates through the
+            // registry's change subscription, so this needs fibres to run,
+            // not time to pass.
+            yield* Deferred.await(secondProbeSpawned);
+
+            // The latch fires when the spawn is requested, not when the probe
+            // finishes, so the snapshot it produces lands a little later. This
+            // yields until the authoritative state agrees rather than sampling
+            // on a clock: it has no iteration budget to run out of, so a loaded
+            // machine makes it slower and never makes it fail. Dropping it
+            // passes on a fast machine and reintroduces the original flake on a
+            // slow one.
+            let refreshed = yield* registry.getProviders;
+            while (
+              refreshed.find((provider) => provider.instanceId === "codex")?.status !== "error"
+            ) {
+              yield* Effect.yieldNow;
+              refreshed = yield* registry.getProviders;
+            }
 
             const reprobedCodex = refreshed.find((provider) => provider.instanceId === "codex");
             assert.deepStrictEqual(spawnedCommands, [firstMissing, secondMissing]);
