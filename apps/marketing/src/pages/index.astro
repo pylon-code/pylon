@@ -1,4 +1,5 @@
 ---
+import PylonMark from "../components/PylonMark.astro";
 import Layout from "../layouts/Layout.astro";
 import { RELEASES_URL } from "../lib/releases";
 ---
@@ -27,6 +28,10 @@ import { RELEASES_URL } from "../lib/releases";
     </div>
 
     <div class="container hero-inner">
+      <div class="hero-mark" aria-hidden="true">
+        <PylonMark size={46} />
+      </div>
+
       <h1 class="hero-title display">
         The control plane<br />for coding agents.
       </h1>
@@ -409,9 +414,25 @@ import { RELEASES_URL } from "../lib/releases";
     text-align: center;
   }
 
+  .hero-mark {
+    display: grid;
+    place-items: center;
+    width: 84px;
+    height: 84px;
+    margin: 40px auto 0;
+    border-radius: 22px;
+    color: var(--fg);
+    border: 1px solid var(--border-strong);
+    background:
+      radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.10), rgba(20, 20, 24, 0.94) 68%);
+    box-shadow:
+      0 24px 56px -18px rgba(0, 0, 0, 0.75),
+      0 2px 0 0 rgba(255, 255, 255, 0.05) inset;
+  }
+
   .hero-title {
     font-size: clamp(38px, 5.6vw, 76px);
-    margin: 48px auto 22px;
+    margin: 28px auto 22px;
     max-width: 20ch;
     text-wrap: balance;
   }
@@ -551,9 +572,16 @@ import { RELEASES_URL } from "../lib/releases";
       padding-top: 132px;
     }
 
+    .hero-mark {
+      width: 66px;
+      height: 66px;
+      border-radius: 18px;
+      margin-top: 0;
+    }
+
     .hero-title {
       font-size: clamp(40px, 11vw, 56px);
-      margin-top: 14px;
+      margin-top: 18px;
     }
 
     .hero-actions {
