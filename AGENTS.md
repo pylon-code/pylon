@@ -107,8 +107,8 @@ The most common defect in this repo is a change that works on the path you teste
 - `vp i` installs. Worktrees get this from the compatibility-named `t3.json` setup script; if module resolution looks broken, it probably did not run.
 - `vp run dev` starts server and web. In a worktree, state defaults to that worktree's gitignored `.t3`, which deliberately outranks an ambient `T3CODE_HOME` so you cannot land on shared state by accident. An explicit `--home-dir` still wins.
 - Ports derive from the worktree path and are stable across restarts, but read the real ones from the `[dev-runner]` line since occupied ports shift.
-- `--share` publishes over the tailnet. Do not open the complete pairing URL yourself; hand it to the user with its pairing token intact.
-- The web app requires pairing. For an explicit human handoff, provide the pairing URL rather than the bare origin. Treat its token as a secret everywhere else: never commit it, capture it in screenshots, or reuse it.
+- Sharing over the tailnet is three steps: run `vp run dev --share` in the background, wait for the `pairingUrl:` line in its output, then hand that full URL to the user with its pairing token intact. Do not wire up `tailscale serve` by hand for this, and do not open the complete pairing URL yourself.
+- The web app requires pairing. For an explicit human handoff, provide the pairing URL rather than the bare origin — a URL without its token is useless to whoever you gave it to. Treat the token as a secret everywhere else: never commit it, capture it in screenshots, or reuse it. If a token got consumed, mint a fresh one with `node apps/server/src/bin.ts pair`; it carries standard scopes, while the startup URL carries admin scopes (needed for Settings → Connections management).
 - Stop what you started, by the PID you tracked. See rule 1.
 
 ## Test data
