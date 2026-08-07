@@ -59,6 +59,16 @@ jobs:
             args:
               - --filter=t3code-relay...
 
+      # Alchemy keeps its resource state in a Cloudflare Worker that has to
+      # exist before the first apply. Without `force` this adopts an existing
+      # store and refreshes its credentials, so running it every deploy is a
+      # no-op after the first and survives the store being deleted.
+      - name: Bootstrap Alchemy state store
+        working-directory: infra/relay
+        run: node node_modules/alchemy/bin/cli.js cloudflare bootstrap
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
       - name: Deploy production relay stage
         id: deploy
         run: vp run --filter t3code-relay deploy --stage prod --yes --github-output
