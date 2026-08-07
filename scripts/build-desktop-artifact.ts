@@ -804,7 +804,11 @@ export function resolveMacPasskeySigningConfiguration(
   const provisioningProfilePath = env.T3CODE_MACOS_PROVISIONING_PROFILE?.trim() ?? "";
   const configuredRpDomains = env.T3CODE_CLERK_PASSKEY_RP_DOMAINS?.trim();
   const configuredPublishableKey = env.T3CODE_CLERK_PUBLISHABLE_KEY?.trim();
-  if (!provisioningProfilePath && !configuredRpDomains && !configuredPublishableKey) {
+  // A publishable key means Connect is configured, not that passkeys are — it
+  // is only a fallback source for the RP domain once a provisioning profile
+  // exists. Treating it as passkey intent made every Connect-enabled build
+  // demand an Apple Team ID and fail signing outright.
+  if (!provisioningProfilePath && !configuredRpDomains) {
     return undefined;
   }
 

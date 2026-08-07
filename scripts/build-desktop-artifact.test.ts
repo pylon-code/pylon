@@ -479,6 +479,18 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.isUndefined(resolveMacPasskeySigningConfiguration({}, "0.0.31"));
   });
 
+  // Enabling Connect sets a publishable key on every release build. That alone
+  // is not a request for passkeys, and treating it as one broke macOS signing
+  // the first time Connect was configured.
+  it("signs without passkey entitlements when only Connect is configured", () => {
+    assert.isUndefined(
+      resolveMacPasskeySigningConfiguration(
+        { T3CODE_CLERK_PUBLISHABLE_KEY: `pk_live_${btoa("clerk.pylon-code.com$")}` },
+        "0.0.31",
+      ),
+    );
+  });
+
   // Half-configured passkeys produce an app that looks capable and fails at
   // authentication, so that stays an error rather than degrading.
   it("rejects passkey configuration that is missing a provisioning profile", () => {
