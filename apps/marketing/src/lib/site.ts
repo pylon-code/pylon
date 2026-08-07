@@ -1,12 +1,11 @@
-export const GITHUB_REPOSITORY_URL = "https://github.com/pingdotgg/t3code";
+export const SITE_URL = "https://pylon-code.com";
 
-export const IOS_APP_STORE_URL =
-  "https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824";
+export const SITE_NAME = "Pylon";
 
-export const ANDROID_PLAY_STORE_URL =
-  "https://play.google.com/store/apps/details?id=com.t3tools.t3code";
+export const SITE_DESCRIPTION =
+  "Pylon — the control plane for coding agents. Orchestrate Claude Code, Codex, Cursor, Grok, and OpenCode from one surface.";
 
-export const MARKETING_STATS = {
-  githubStars: "14k+",
-  users: "100,000",
-} as const;
+// Pylon Mobile has not shipped to either store yet. Until it does, the hero
+// line, footer, and download page render non-linked "Coming soon" placeholders
+// rather than pointing at another product's listings.
+export const MOBILE_APPS_PUBLISHED = false;

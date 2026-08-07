@@ -1,9 +1,14 @@
-const REPO = "pingdotgg/t3code";
+const REPO = "pylon-code/pylon-releases";
 
-export const RELEASES_URL = `https://github.com/${REPO}/releases`;
+export const REPOSITORY_URL = `https://github.com/${REPO}`;
 
+export const RELEASES_URL = `${REPOSITORY_URL}/releases`;
+
+// Only plain stable X.Y.Z tags are marked as the repository's latest release;
+// nightlies are always prereleases and are excluded here. Callers fall back to
+// RELEASES_URL when this 404s, which it does until the first stable tag.
 const API_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
-const CACHE_KEY = "t3code-latest-release";
+const CACHE_KEY = "pylon-latest-release";
 
 export interface ReleaseAsset {
   name: string;
