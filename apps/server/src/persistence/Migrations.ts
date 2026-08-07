@@ -50,6 +50,7 @@ import Migration0034 from "./Migrations/034_ProjectionThreadsSnoozed.ts";
 import Migration0035 from "./Migrations/035_ProjectionThreadTitleRegeneration.ts";
 import Migration0037 from "./Migrations/037_ProjectionThreadsPinned.ts";
 import Migration0038 from "./Migrations/038_ProjectionThreadsContinuedFrom.ts";
+import Migration0039 from "./Migrations/039_ProjectionTurnsKeysetIndex.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -102,6 +103,7 @@ export const migrationEntries = [
   // as applied and would silently skip a new migration with the same id.
   [37, "ProjectionThreadsPinned", Migration0037],
   [38, "ProjectionThreadsContinuedFrom", Migration0038],
+  [39, "ProjectionTurnsKeysetIndex", Migration0039],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
