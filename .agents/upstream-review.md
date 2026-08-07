@@ -180,15 +180,29 @@ reviewed the inline chip against real seeded threads and preferred it to the
 sidebar. The open question is no longer the design; it is only whether the
 one-time layout reset bothers anyone.
 
-**Partly verified in a real client.** A web pass ran against a copy of the
-real database (3 projects, 9 threads, 68 turns, 6,254 activities, 39k events):
-the app paired and loaded, migration 039 applied over an existing 37/38
-database, and the developer reviewed and approved E15's inline plan chip.
-Still unproven: **E14's agent rows** (and with them D5's Agents panel, which
-the previous batch also never verified), **E10's pagination against a client**,
-and **E3's in-flight update status**, which needs a real update to observe.
-**No mobile pass ran at all**, so E19's card opacity, E13's `ThreadFeed` scroll
-anchoring, and E10's mobile pagination wiring are unverified on that surface.
+**Partly verified in a real client.** Two web passes ran against a copy of the
+real database (3 projects, 9 threads, 68 turns, 6,254 activities, 39k events).
+Migration 039 applied over an existing 37/38 database, and three change sets
+were confirmed against real data rather than only by test:
+
+- **E1** — thread `3fbd40f6` holds 238 `tool.updated` rows; the snapshot ships
+  **54**. 184 superseded rows (77%) dropped, all 119 `tool.completed` retained.
+- **E10** — the full snapshot of thread `4ca33c5c` is 1,491,779 bytes with no
+  `page`; `?turnLimit=10` returns 656,559 bytes (**56% smaller**) with
+  `hasMore: true` and a cursor decoding to `{thread, requested_at, turn_id}`.
+  In the UI the "Load earlier turns" header appears, pages on click, and
+  correctly disappears once 10 + 20 covers the thread's 26 user turns.
+- **E15** — an expanded plan chip renders five DotMatrix step markers
+  (`data-state="done"`) and **zero** of upstream's `✓ ● ○` glyphs, confirming
+  the Pylon-first marker conversion. Developer reviewed and preferred it.
+
+Still unproven, with the reason: **E14's agent rows** cannot be exercised by
+this seed at all — it carries 2 `task.started` rows and no workflow or subagent
+runs, so the panel has nothing to render; this also leaves D5's Agents panel
+unverified a second batch running. **E3's in-flight status** needs a real
+update (`start:mock-update-server`). **E13's scroll anchoring** needs a live
+running turn. **No mobile pass ran**, so E19's card opacity, E13's `ThreadFeed`
+anchoring, and E10's mobile wiring are untested on that surface.
 
 Verification that did run: 495 targeted tests pass (187 web, 181 server, 112
 client-runtime, 15 shared) plus the 6 Node tests for the new CI publisher;
