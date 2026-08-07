@@ -172,6 +172,7 @@ import {
   projectScriptIdFromCommand,
 } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
+import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import {
   applyProviderInstanceSettings,
@@ -188,7 +189,11 @@ import { ThreadContinuationBanner } from "./chat/ThreadContinuationBanner";
 import { deriveLatestContextWindowSnapshot } from "../lib/contextWindow";
 import { deriveProviderUsageAccounts } from "../providerUsageAccounts";
 import { useCheckpointDiff } from "../lib/checkpointDiffState";
-import { useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
+import {
+  useClientSettings,
+  useClientSettingsHydrated,
+  useEnvironmentSettings,
+} from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
@@ -196,9 +201,11 @@ import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { preventRepeatedTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
 import {
+  derivePhysicalProjectKey,
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
 } from "../logicalProject";
+import { buildPhysicalToLogicalProjectKeyMap } from "../sidebarProjectGrouping";
 import { buildDraftThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerImageAttachment,
@@ -1502,6 +1509,7 @@ function ChatViewContent(props: ChatViewProps) {
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const activeThreadId = activeThread?.id ?? null;
+  const activeThreadEnvironmentId = activeThread?.environmentId ?? null;
   const runningTerminalIds = useThreadRunningTerminalIds({
     environmentId: activeThread?.environmentId ?? null,
     threadId: activeThreadId,
@@ -1537,8 +1545,11 @@ function ChatViewContent(props: ChatViewProps) {
     return labels;
   }, [activeThreadKnownSessions]);
   const activeThreadRef = useMemo(
-    () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
-    [activeThread],
+    () =>
+      activeThreadEnvironmentId && activeThreadId
+        ? scopeThreadRef(activeThreadEnvironmentId, activeThreadId)
+        : null,
+    [activeThreadEnvironmentId, activeThreadId],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   const [timelineAnchor, setTimelineAnchor] = useState<{
@@ -1615,6 +1626,24 @@ function ChatViewContent(props: ChatViewProps) {
     return openTerminalThreadKeys.filter((nextThreadKey) => existingThreadKeys.has(nextThreadKey));
   }, [draftThreadKeys, openTerminalThreadKeys, serverThreadKeys]);
   const activeLatestTurn = activeThread?.latestTurn ?? null;
+  // Reading a finished thread clears the sidebar's Done badge. The visit is
+  // stamped at the turn's completion time — not now/updatedAt — so it clears
+  // exactly the completion the user is looking at: a wake or completion that
+  // lands later still gets its signal (markThreadVisited never moves the
+  // timestamp backwards).
+  useEffect(() => {
+    const completedAt = serverThread?.latestTurn?.completedAt;
+    if (!serverThread?.id || !completedAt) return;
+    markThreadVisited(
+      scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id)),
+      completedAt,
+    );
+  }, [
+    markThreadVisited,
+    serverThread?.environmentId,
+    serverThread?.id,
+    serverThread?.latestTurn?.completedAt,
+  ]);
   useEffect(() => {
     setMountedTerminalThreadKeys((currentThreadIds) => {
       const nextThreadIds = reconcileMountedTerminalThreadIds({
@@ -1645,6 +1674,8 @@ function ChatViewContent(props: ChatViewProps) {
   const activeProjectKey = activeProject
     ? `${activeProject.environmentId}:${activeProject.workspaceRoot}`
     : null;
+  const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const clientSettingsHydrated = useClientSettingsHydrated();
   const [pendingFileSurfaceIdsByProject, setPendingFileSurfaceIdsByProject] = useState<
     ReadonlyMap<string, ReadonlySet<string>>
   >(() => new Map());
@@ -1683,6 +1714,31 @@ function ChatViewContent(props: ChatViewProps) {
   // drive the environment picker in BranchToolbar.
   const allProjects = useProjects();
   const primaryEnvironmentId = primaryEnvironment?.environmentId ?? null;
+  useEffect(() => {
+    if (!clientSettingsHydrated || !activeThreadRef || !activeProject) return;
+    // Reuse the sidebar's grouping so history follows the project rows the user
+    // sees. Deriving the key from the active project alone would miss the
+    // identity a duplicate row borrows from its siblings.
+    const logicalKeyByPhysicalKey = buildPhysicalToLogicalProjectKeyMap({
+      projects: allProjects,
+      settings: projectGroupingSettings,
+      primaryEnvironmentId,
+    });
+    useBrowserHistoryStore
+      .getState()
+      .registerThreadProject(
+        activeThreadRef,
+        logicalKeyByPhysicalKey.get(derivePhysicalProjectKey(activeProject)) ??
+          deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings),
+      );
+  }, [
+    activeProject,
+    activeThreadRef,
+    allProjects,
+    clientSettingsHydrated,
+    primaryEnvironmentId,
+    projectGroupingSettings,
+  ]);
   const activeEnvironment =
     activeThread == null ? null : (environmentById.get(activeThread.environmentId) ?? null);
   const activeEnvironmentConnectionPhase = activeEnvironment?.connection.phase ?? "available";
@@ -1716,7 +1772,6 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [retryEnvironment],
   );
-  const projectGroupingSettings = selectProjectGroupingSettings(settings);
   const logicalProjectEnvironments = useMemo(() => {
     if (!activeProject) return [];
     const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings);
@@ -1927,6 +1982,8 @@ function ChatViewContent(props: ChatViewProps) {
         items.push({
           id: `environment-unavailable:${activeEnvironmentUnavailableState.environmentId}`,
           variant: "default",
+          // Live connection status: calm styling, but it must front the stack.
+          urgent: true,
           icon: <DotMatrix aria-hidden state="connecting" className="size-3.5 text-foreground" />,
           title: `${unavailableConnection.phase === "connecting" ? "Connecting" : "Reconnecting"} to ${activeEnvironmentUnavailableState.label}`,
           description: "It may be finishing an update. One moment.",
@@ -1976,6 +2033,9 @@ function ChatViewContent(props: ChatViewProps) {
       items.push({
         id: `server-version:${serverUpdateEnvironmentId}`,
         variant: updateFailed ? "error" : "default",
+        // A running update is live progress the user is waiting on; only the
+        // idle "update available" offer is calm enough to stack behind.
+        urgent: updateInProgress,
         // In-flight and failed states carry their own DotMatrix marker inside
         // ServerUpdateProgress; only the idle offer needs an icon, and it is
         // a resting one — an available update is a notice, not a warning.
@@ -3979,6 +4039,37 @@ function ChatViewContent(props: ChatViewProps) {
     if (activeThreadRef === null || activeThreadWokeAt === null) return;
     markThreadVisited(scopedThreadKey(activeThreadRef), activeThreadWokeAt);
   }, [activeThreadRef, activeThreadWokeAt, markThreadVisited]);
+  // Mirror of the sidebar's Woke pill for the open thread: same visit
+  // comparison, same merged/closed-PR suppression (finished work needs no
+  // wake-up call). Drives the dismissible composer banner below.
+  const activeThreadLastVisitedAt = useUiStateStore((store) =>
+    activeThreadKey === null ? undefined : store.threadLastVisitedAtById[activeThreadKey],
+  );
+  const activeThreadWokeVisible = useMemo(() => {
+    if (activeThreadWokeAt === null) return false;
+    if (activeThreadPr?.state === "merged" || activeThreadPr?.state === "closed") return false;
+    const wokeAtMs = Date.parse(activeThreadWokeAt);
+    if (Number.isNaN(wokeAtMs)) return false;
+    // Having the thread open counts as a visit at completedAt (the effect
+    // above stamps it); folding that floor in here keeps a completion-
+    // triggered wake from flashing a banner for one frame before the stamp
+    // lands. An unparseable stored visit counts as never-visited: corrupt
+    // local data must not eat the wake signal.
+    const storedVisitMs = activeThreadLastVisitedAt ? Date.parse(activeThreadLastVisitedAt) : NaN;
+    const completedAtMs = activeLatestTurn?.completedAt
+      ? Date.parse(activeLatestTurn.completedAt)
+      : NaN;
+    const lastVisitedMs = Math.max(
+      Number.isNaN(storedVisitMs) ? -Infinity : storedVisitMs,
+      Number.isNaN(completedAtMs) ? -Infinity : completedAtMs,
+    );
+    return lastVisitedMs < wokeAtMs;
+  }, [
+    activeLatestTurn?.completedAt,
+    activeThreadLastVisitedAt,
+    activeThreadPr?.state,
+    activeThreadWokeAt,
+  ]);
   const activeThreadSettled = useMemo(() => {
     if (activeThreadShell === null || !supportsSettlement) return false;
     return effectiveSettled(activeThreadShell, {
@@ -4334,9 +4425,30 @@ function ChatViewContent(props: ChatViewProps) {
     handleStopBackgroundWork,
     isStoppingBackgroundWork,
   ]);
+  // A woken thread announces itself in the open view, not just the sidebar
+  // pill. Dismissing marks the wake as seen (same acknowledgment as the
+  // pill); sending a message clears it as a side effect of the send path.
+  const wokeThreadBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
+    if (!activeThreadWokeVisible) {
+      return null;
+    }
+    return {
+      id: `thread-woke:${activeThread?.id ?? "unknown"}`,
+      variant: "info",
+      icon: <AlarmClockIcon />,
+      title: "This thread woke from snooze",
+      description: "Dismiss to clear the Woke indicator, or send a message to keep going.",
+      dismissLabel: "Dismiss Woke notification",
+      onDismiss: acknowledgeActiveThreadWoke,
+    };
+  }, [acknowledgeActiveThreadWoke, activeThread?.id, activeThreadWokeVisible]);
   // The stack renders items[0] front-most and tucks the rest behind hover, so
-  // ordering is priority: system banners, then the branch-mismatch notice,
-  // and the informational parked-thread banner last — it must never cover another.
+  // ordering is priority: urgent system banners (error/warning variants plus
+  // calm-styled live states flagged `urgent`, like update progress), then
+  // background liveness — its Stop button is the only stop affordance for
+  // settled turns, so a passive "update available" notice must not cover it —
+  // then calm system banners, the woke and branch-mismatch notices, and the
+  // informational parked-thread banner last — it must never cover another.
   const parkedThreadBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     if (!activeThreadSnoozed && !activeThreadSettled) {
       return null;
@@ -4386,15 +4498,28 @@ function ChatViewContent(props: ChatViewProps) {
     void handleSwitchCheckoutToThread();
   }, [gitStatusQuery.data?.hasWorkingTreeChanges, handleSwitchCheckoutToThread]);
   const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
+    const isUrgentSystemItem = (item: ComposerBannerStackItem) =>
+      item.urgent === true || item.variant === "error" || item.variant === "warning";
+    const urgentSystemItems = systemComposerBannerItems.filter(isUrgentSystemItem);
+    const calmSystemItems = systemComposerBannerItems.filter((item) => !isUrgentSystemItem(item));
     const backgroundLivenessItems =
       backgroundLivenessBannerItem === null ? [] : [backgroundLivenessBannerItem];
+    const wokeThreadItems = wokeThreadBannerItem === null ? [] : [wokeThreadBannerItem];
     const parkedThreadItems = parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
-      return [...systemComposerBannerItems, ...backgroundLivenessItems, ...parkedThreadItems];
+      return [
+        ...urgentSystemItems,
+        ...backgroundLivenessItems,
+        ...calmSystemItems,
+        ...wokeThreadItems,
+        ...parkedThreadItems,
+      ];
     }
     return [
-      ...systemComposerBannerItems,
+      ...urgentSystemItems,
       ...backgroundLivenessItems,
+      ...calmSystemItems,
+      ...wokeThreadItems,
       {
         id: `branch-mismatch:${activeBranchMismatchKey}`,
         variant: "info",
@@ -4445,6 +4570,7 @@ function ChatViewContent(props: ChatViewProps) {
     parkedThreadBannerItem,
     showBranchMismatchBanner,
     systemComposerBannerItems,
+    wokeThreadBannerItem,
   ]);
 
   useEffect(() => {
@@ -6058,10 +6184,10 @@ function ChatViewContent(props: ChatViewProps) {
   const panelLayoutControls = (
     <div
       className={cn(
-        "workspace-titlebar-controls z-50 gap-1 [-webkit-app-region:no-drag]",
-        rightPanelOpen && !shouldUseRightPanelSheet
-          ? "right-2 wco:right-[var(--workspace-controls-right)]"
-          : "mr-px",
+        // One inset in both states: the controls move between containers when
+        // the right panel opens, and a different right offset made them jump
+        // sideways on every toggle.
+        "workspace-titlebar-controls z-50 mr-px gap-1 [-webkit-app-region:no-drag]",
       )}
     >
       {rightPanelOpen && !shouldUseRightPanelSheet ? (
@@ -6177,6 +6303,8 @@ function ChatViewContent(props: ChatViewProps) {
             activeThreadId={activeThread.id}
             {...(routeKind === "draft" && draftId ? { draftId } : {})}
             activeThreadTitle={activeThread.title}
+            isServerThread={isServerThread}
+            changeRequestState={activeThreadPr?.state ?? null}
             activeProjectName={activeProject?.title}
             activeProjectCwd={activeProject?.workspaceRoot ?? null}
             openInCwd={gitCwd}
