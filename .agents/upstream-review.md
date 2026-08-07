@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "a2ca89aa10f13a2222e08afd98c66285121d5ba2"
-reviewed-through-date: "2026-08-06"
+reviewed-through: "a8cd2ad2ebb32ad789e8e0ecd2fc713c2edc38f4"
+reviewed-through-date: "2026-08-07"
 ---
 
 # T3 upstream review log
@@ -156,3 +156,111 @@ toolchain breakage, not adoption fallout, but it means that file's coverage of D
 | D3         | `7251f1a1f` / `#5432` | adopted  | `e248af7df`     | The opaque canvas backing store flashed black for the whole font and WASM setup window; it is now painted with the theme background up front.                                                                                                                                                                                            |
 | D4         | `990bb0b68` / `#5404` | adopted  | `62b5474db`     | A ~15s update restart read as a ~33s "Resuming" because reconnect nudged once and then climbed the backoff ladder. Serves the remote-ready pillar and pairs with C9 (`72da243e6`).                                                                                                                                                       |
 | D5         | `a2ca89aa1` / `#5219` | adopted  | `dc4dc1f6e`     | Native subagent and workflow observability. Status reads through Pylon's DotMatrix language rather than upstream's plain dots, and the new Monitoring state is the calm sibling of Working — same primary hue, steady `live` glyph instead of the spinner. Revisit the Monitoring treatment if the dot-matrix language grows a real one. |
+
+## 2026-08-07 — `a2ca89aa10f13a2222e08afd98c66285121d5ba2..a8cd2ad2ebb32ad789e8e0ecd2fc713c2edc38f4`
+
+Thirty-five upstream commits, twenty-one change sets. Twenty adopted onto
+`upstream/2026-08-07-batch`; only E21 skipped. Upstream is mid-stabilization —
+24 of the 35 commits are `fix` — so most of this batch is inherited-defect
+repair rather than new product surface.
+
+Two Pylon-only follow-up commits close the batch: `ee2d74665` regenerates the
+lockfile and rebrands the transfer-budget report, and `89f71f4d3` repairs a
+fork-only test that E15 broke.
+
+**E15 is a product-direction change, not a fix.** Plans stop being a
+right-panel surface and fold inline into the transcript: `PlanSidebar.tsx` is
+gone, the `autoOpenPlanSidebar` setting is removed with no replacement, and
+`RIGHT_PANEL_STORAGE_VERSION` goes 8 → 9. That is the **second persisted
+right-panel layout reset in two batches** — D5 already took users 7 → 8, so
+anyone who reshaped their panel after D5 loses it again. Adopted on the
+developer's explicit call ("I think I like the direction, if I hate it we can
+always adjust after"), then **confirmed in a browser pass** — the developer
+reviewed the inline chip against real seeded threads and preferred it to the
+sidebar. The open question is no longer the design; it is only whether the
+one-time layout reset bothers anyone.
+
+**Partly verified in a real client.** Two web passes ran against a copy of the
+real database (3 projects, 9 threads, 68 turns, 6,254 activities, 39k events).
+Migration 039 applied over an existing 37/38 database, and four change sets
+were confirmed against real data rather than only by test:
+
+- **E1** — thread `3fbd40f6` holds 238 `tool.updated` rows; the snapshot ships
+  **54**. 184 superseded rows (77%) dropped, all 119 `tool.completed` retained.
+- **E10** — the full snapshot of thread `4ca33c5c` is 1,491,779 bytes with no
+  `page`; `?turnLimit=10` returns 656,559 bytes (**56% smaller**) with
+  `hasMore: true` and a cursor decoding to `{thread, requested_at, turn_id}`.
+  In the UI the "Load earlier turns" header appears, pages on click, and
+  correctly disappears once 10 + 20 covers the thread's 26 user turns.
+- **E15** — an expanded plan chip renders five DotMatrix step markers
+  (`data-state="done"`) and **zero** of upstream's `✓ ● ○` glyphs, confirming
+  the Pylon-first marker conversion. Developer reviewed and preferred it.
+- **E14** — a live Haiku 4.5 run in a throwaway `/tmp` project spawned three
+  real subagents, which the seeded database could not supply. The Agents panel
+  rendered three rows at exactly **62px** (`3.875rem`, the fixed-height
+  guarantee) with the marker's right edge at 769px against a title starting at
+  777px — an 8px gutter, no bleed. This confirms the Pylon-first track
+  widening; upstream's `0.375rem` would have consumed the whole `gap-x-2`
+  gutter. It is also the first real exercise of D5's Agents panel.
+
+Still unproven, with the reason: **E3's in-flight status** needs a real update,
+and `start:mock-update-server` cannot supply one without a prebuilt
+`release-mock` release tree. **E13's scroll anchoring** was never cleanly
+isolated — see the defect note below, which sits in the same code path. **No
+mobile pass ran**, so E19's card opacity, E13's `ThreadFeed` anchoring, and
+E10's mobile wiring are untested on that surface. Desktop was never launched.
+
+### Open defect found during verification — pre-existing, not from this batch
+
+While streaming, the newest transcript content and the working row render
+**underneath the chat composer**. Measured mid-stream with a healthy
+connection and no reconnect banner: the composer overlay starts at y=604 and
+the working indicator sat at y=669, 65px behind it, with the last text row
+sliced at the composer's edge.
+
+Cause: the composer inset is consulted for _whether_ the view is at the end
+(`resolveTimelineIsAtEnd(state, endInset)`) but not for _where_ the list stops.
+`maintainScrollAtEnd` pins to the raw scroll-viewport end, driving past the
+clearance the end spacer provides. With follow inactive the spacer yields a
+correct 144px gap, which is why it only shows while streaming.
+
+**Not caused by this batch.** `contentInsetEndAdjustment` and the
+`maintainScrollAtEnd` configuration are byte-identical on `origin/pylon`;
+E13's only change was adding `|| !liveFollowEnabled`, which _disables_ pinning
+in more cases and cannot make it overshoot. Confirming beyond that inference
+needs an `origin/pylon` A/B, which was not run. Fix belongs on its own branch
+off `pylon` — likely growing the end spacer during live follow — and is worth
+reporting upstream.
+
+Verification that did run: 495 targeted tests pass (187 web, 181 server, 112
+client-runtime, 15 shared) plus the 6 Node tests for the new CI publisher;
+lint clean over all 105 changed TypeScript files; typecheck clean across `t3`,
+web, mobile, client-runtime, contracts, and shared. Note that `vp test run`
+from the repository root resolves a **global** vitest and reports
+`Tests no tests` with every file failing while still exiting 0 — it also
+substring-matches test paths into sibling worktrees under `.claude/worktrees`.
+Run `node_modules/.bin/vitest run` from the package directory instead.
+
+| Change set | Upstream                                                                | Decision | Pylon reference                                                              | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------- | ----------------------------------------------------------------------- | -------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| E1         | `3da315e7b`+`b7d1981b5`+`e4abc31f1` / `#5482`                           | adopted  | `2a6867f83`, `63bce307b`, `892033d46`                                        | Thread snapshots stop shipping full MCP tool results and superseded `tool.updated` rows — 47k such rows in one real database, 3,291 in a single thread. Straight at the performance pillar; `ActivityPayloadProjection.ts` had no Pylon divergence. The third commit pins the interleaved-collapse tradeoff (1.5% of dropped rows) with a test.                                                                                                                                                                                      |
+| E2         | `808d68535`,`8f341f20c`,`f9e823689`,`df2f1273e`,`8b2ea5721`,`64a3cd6d7` | adopted  | `ea530e1cb`, `67dadf1d4`, `775ee911d`, `243a0eb95`, `5f231daac`, `e7c27ebd3` | The managed tunnel survives update restarts: releasing it forced the replacement hostname through 1–2 minutes of edge propagation, so a server back in ~9s stayed unreachable ~96s. A launcher stop marker keeps `service stop`/`systemctl stop` releasing it properly. Extends C9 (`72da243e6`); serves the remote-ready pillar.                                                                                                                                                                                                    |
+| E3         | `80720ad59`+`48e2c27f2`                                                 | adopted  | `fdb572601`, `667e8f198`                                                     | The update rail collapses to one status row ("Downloading…" then "Restarting…") and the skew banner stops being an amber warning. **Resolved Pylon-first:** upstream's bespoke `animate-status-pulse` dot is replaced by DotMatrix `spinner`/`error`, and the idle offer uses DotMatrix `idle` rather than a hollow dot — Pylon forbids continuously repainting animations, and status reads one way here. Pylon's step rail is retired with it.                                                                                     |
+| E4         | `a483337a0`,`4f5834ba7`,`6da92244c` / `#4438`,`#5486`,`#5560`           | adopted  | `7fbf4492a`, `764df498c`, `aa7499061`                                        | Snooze respects the 12/24h format, the Woke badge becomes a dismiss button, and bulk snooze shows one toast instead of N. **Kept Pylon's `text-warning` token over upstream's amber literals and Pylon's full DotMatrix status switch** — upstream's lucide `CircleDashedIcon`/`CircleCheckIcon` were dropped. Zero user impact until `sidebarV2Enabled` stops defaulting false; taken for drift reduction.                                                                                                                          |
+| E5         | `0ec4fbc4a`,`c471145e9`,`6fa457607` / `#5559`,`#5557`,`#5568`           | adopted  | `4f5489025`, `86191f7e1`, `ddc8c9605`                                        | Three Claude adapter fixes: commit/push/PR notices stop rendering as work-log errors, stopping a thread no longer surfaces an `ede_diagnostic` error, and stopped subagents settle. All three auto-merged despite `ClaudeAdapter.ts` carrying +598 lines of Pylon multi-account work. Claude is Pylon's primary provider, so this was the highest-value cluster in the batch.                                                                                                                                                        |
+| E6         | `99d91ddaa` / `#5430`                                                   | adopted  | `e94cbe944`                                                                  | ACP approvals with unknown kinds stay actionable instead of rendering inert. Reaches Cursor and OpenCode.                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| E7         | `ab3b55e29` / `#5431`                                                   | adopted  | `fb547c77f`                                                                  | Auto-permission copy now reads "Supported providers approve routine actions" instead of claiming an AI reviewer — more accurate for Pylon's five providers than upstream's. Landed inside `ChatComposer.tsx`, a deliberate Pylon divergence since C14.                                                                                                                                                                                                                                                                               |
+| E8         | `331c6dce7` / `#5556`                                                   | adopted  | `26481d46a`                                                                  | Worktree creation skips the origin fetch in repos with no origin remote, which previously failed outright.                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| E9         | `7aad7911f` / `#5553`                                                   | adopted  | `cad2747bf`                                                                  | Stopped threads settle immediately instead of waiting out the projection debounce.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| E10        | `6b73b3def` / `#5493`                                                   | adopted  | `3dc19b24a`                                                                  | Thread pagination with user-anchored turn windows: opt-in per request, gated behind a `threadSnapshotPagination` server capability so version skew is safe. **Upstream's migration `037_ProjectionTurnsKeysetIndex` was renumbered to 039** — Pylon already holds 037 (`ProjectionThreadsPinned`, itself renumbered in C5) and 038 (`ProjectionThreadsContinuedFrom`), and id 36 stays retired. Reusing 037 would have let those environments silently skip the keyset index.                                                        |
+| E11        | `ae7b27de8`+`9547cf246` / `#5561`,`#5572`                               | adopted  | `5eb4f756b`, `4b368a83f`                                                     | Reconnect stops looping during server stalls (the vendored Effect patch gains 3-missed-pong tolerance plus ping/pong hooks) and one disconnecting client no longer blocks every other client's reconnect. **The patch was taken but the lockfile was regenerated with Pylon's pinned pnpm** (`ee2d74665`), not adopted from upstream; the resulting hash `af36b79…` matches because the hash is over the patch content. Pairs with D4.                                                                                               |
+| E12        | `2288d416a` / `#5570`                                                   | adopted  | `3dc05ad02`                                                                  | The "requests are slow" warning stops firing on every provider update — a lying warning, which Pylon's taste rules single out.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| E13        | `1c7d059f5` / `#5566`                                                   | adopted  | `ce4e1a41f`                                                                  | Scrolling up during a running thread no longer snaps back to the bottom, on web and mobile.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| E14        | `cf5c9948c` / `#5569`                                                   | adopted  | `935a084b9`                                                                  | Agent panel rows stop reordering and changing height; the server ingestion change came along cleanly. Only the header doc comment conflicted, but **the marker grid track was widened from `0.375rem` to `0.875rem`** — upstream sized it for a 6px dot and Pylon's `StatusDot` is a 14px DotMatrix, which would have bled into the title column and defeated the fixed-height guarantee the grid exists for. Depends on D5.                                                                                                         |
+| E15        | `1ffba7093`+`a8cd2ad2e` / `#5484`,`#5558`                               | adopted  | `37f6b60c5`, `fdfa7e220`                                                     | Plans fold into the transcript; see the note above for the storage-version and settings-removal consequences. `1ffba7093` is superseded by `a8cd2ad2e` and was taken only as its cherry-pick base. **Pylon's DotMatrix plan-step icons were carried from the deleted sidebar into the new inline `TurnPlanTimelineRow`** (done/spinner/idle), and the working row keeps DotMatrix `working` instead of upstream's three `animate-status-pulse` dots.                                                                                 |
+| E16        | `64a991ad4` / `#5555`                                                   | adopted  | `763e8ca8d`                                                                  | Non-Git projects keep their environment selector instead of losing the whole toolbar. **Took upstream's `showGitControls` gating but kept Pylon's left-run layout and `ComposerUsageIndicator` placement**, including the branch selector's `justify-start`.                                                                                                                                                                                                                                                                         |
+| E17        | `aa16c180e` / `#5495`                                                   | adopted  | `33150d526`                                                                  | Composer inline chips align with prompt text.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| E18        | `ea50b695a` / `#5547`                                                   | adopted  | `202257cc3`                                                                  | The update tooltip stops dismissing when you scroll the release notes.                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| E19        | `470d4eb99` / `#5450`                                                   | adopted  | `d14d8aefe`                                                                  | Mobile pending approval and input cards stop letting thread messages read through them.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| E20        | `ddfe45c66` / `#5350`                                                   | adopted  | `420c81e43`, `ee2d74665`                                                     | CI transfer-budget harness measuring per-thread network transfer — the natural guard for E1's win. The report heading was rebranded to Pylon since it renders into step summaries and PR comments; `T3CODE_TRANSFER_BUDGET_*` and the temp filename stay compatibility-named. **`thread-transfer-report.yml` is inert until it reaches `pylon`**: it checks out the publisher script from the default branch by design, so fork-PR runs never execute PR code. Revisit if its PR comments prove noisy at Pylon's contributor volume. |
+| E21        | `4a07c1ca9` / `#5573`                                                   | skipped  | `—`                                                                          | Ships T3's production Clerk publishable key, `t3-relay` JWT template, and `relay.t3.codes` in `.env.example` so `cp .env.example .env` turns on T3 Connect. That points every fresh Pylon clone at T3 infrastructure; Pylon's cloud model is not T3's. Revisit only as a Pylon-owned equivalent with Pylon's own identifiers.                                                                                                                                                                                                        |

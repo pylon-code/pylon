@@ -101,10 +101,9 @@ describe("ServerUpdateAction", () => {
 });
 
 describe("ServerUpdateProgress", () => {
-  it("renders the monochrome step rail with only the active step highlighted", () => {
+  it("shows one calm status row for the restart wait", () => {
     const markup = renderToStaticMarkup(
       <ServerUpdateProgress
-        fromVersion="0.0.30"
         state={{
           status: "running",
           stage: "resuming",
@@ -114,29 +113,40 @@ describe("ServerUpdateProgress", () => {
       />,
     );
 
-    expect(markup).toContain("0.0.30");
-    expect(markup).toContain("0.0.31");
-    expect(markup).toContain("Download");
-    expect(markup).toContain("Install");
-    expect(markup).toContain("Resuming");
-    // The rail's text labels stay monochrome and calm: no status sentence,
-    // and the active step's marker (not its text label) carries the shared
-    // DotMatrix "spinner" indicator (blue, from its canonical tone) instead
-    // of a breathing-text pulse. The two completed steps (download, install)
-    // precede "resuming" and each carry a green DotMatrix "done" marker so
-    // completion reads clearly.
-    expect(markup).toContain("text-success");
+    expect(markup).toContain("Restarting…");
+    // One row, no versions and no step rail. The wait carries the shared
+    // DotMatrix "spinner" marker (blue, from its canonical tone) rather than
+    // a bespoke breathing dot, so there is nothing green to read as "done"
+    // and no second pulse animation to own.
+    expect(markup).not.toContain("0.0.30");
+    expect(markup).not.toContain("Resum");
+    expect(markup).not.toContain("text-success");
     expect(markup).toContain("text-primary");
     expect(markup).toContain('data-state="spinner"');
-    expect(markup).toContain('data-state="done"');
+    expect(markup).not.toContain('data-state="done"');
     expect(markup).not.toContain("animate-status-pulse");
     expect(markup).not.toContain("animate-spin");
   });
 
-  it("keeps the failed stage visible with its retryable error", () => {
+  it("folds the sub-second installing handoff into the download phase", () => {
     const markup = renderToStaticMarkup(
       <ServerUpdateProgress
-        fromVersion="0.0.30"
+        state={{
+          status: "running",
+          stage: "installing",
+          fromVersion: "0.0.30",
+          targetVersion: "0.0.31",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Downloading…");
+    expect(markup).not.toContain("Install");
+  });
+
+  it("keeps the failure visible with its retryable error", () => {
+    const markup = renderToStaticMarkup(
+      <ServerUpdateProgress
         state={{
           status: "failed",
           stage: "installing",

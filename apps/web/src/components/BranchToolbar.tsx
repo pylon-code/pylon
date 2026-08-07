@@ -47,6 +47,7 @@ import { Separator } from "./ui/separator";
 interface BranchToolbarProps {
   environmentId: EnvironmentId;
   threadId: ThreadId;
+  showGitControls: boolean;
   draftId?: DraftId;
   onEnvModeChange: (mode: EnvMode) => void;
   effectiveEnvModeOverride?: EnvMode;
@@ -317,6 +318,7 @@ function useLabelsOverflow(element: HTMLDivElement | null): boolean {
 export const BranchToolbar = memo(function BranchToolbar({
   environmentId,
   threadId,
+  showGitControls,
   draftId,
   onEnvModeChange,
   effectiveEnvModeOverride,
@@ -417,10 +419,12 @@ export const BranchToolbar = memo(function BranchToolbar({
       {/*
         Workspace controls and the branch share the left run: they describe the
         same thing — where this thread's work happens. Usage is about the
-        account rather than the workspace, so it sits opposite them.
+        account rather than the workspace, so it sits opposite them. A non-Git
+        project keeps the environment selector and drops everything downstream
+        of a repository.
       */}
       <div className="flex min-w-0 flex-1 items-center gap-1">
-        {isMobile ? (
+        {isMobile && showGitControls ? (
           <MobileRunContextSelector
             envLocked={envLocked}
             envModeLocked={envModeLocked}
@@ -445,33 +449,39 @@ export const BranchToolbar = memo(function BranchToolbar({
                   availableEnvironments={availableEnvironments}
                   {...(showEnvironmentPicker && onEnvironmentChange ? { onEnvironmentChange } : {})}
                 />
-                <Separator orientation="vertical" className="mx-0.5 h-3.5!" />
+                {showGitControls ? (
+                  <Separator orientation="vertical" className="mx-0.5 h-3.5!" />
+                ) : null}
               </>
             )}
-            <BranchToolbarEnvModeSelector
-              envLocked={envModeLocked}
-              effectiveEnvMode={effectiveEnvMode}
-              activeWorktreePath={activeWorktreePath}
-              onEnvModeChange={onEnvModeChange}
-              previousWorktreeLabel={previousWorktreeLabel}
-              onUsePreviousWorktree={onUsePreviousWorktree}
-            />
+            {showGitControls ? (
+              <BranchToolbarEnvModeSelector
+                envLocked={envModeLocked}
+                effectiveEnvMode={effectiveEnvMode}
+                activeWorktreePath={activeWorktreePath}
+                onEnvModeChange={onEnvModeChange}
+                previousWorktreeLabel={previousWorktreeLabel}
+                onUsePreviousWorktree={onUsePreviousWorktree}
+              />
+            ) : null}
           </>
         )}
-        <BranchToolbarBranchSelector
-          className="min-w-0 justify-start"
-          environmentId={environmentId}
-          threadId={threadId}
-          {...(draftId ? { draftId } : {})}
-          envLocked={envLocked}
-          {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
-          {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
-          {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
-          startFromOrigin={startFromOrigin}
-          onStartFromOriginChange={onStartFromOriginChange}
-          {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
-          {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
-        />
+        {showGitControls ? (
+          <BranchToolbarBranchSelector
+            className="min-w-0 justify-start"
+            environmentId={environmentId}
+            threadId={threadId}
+            {...(draftId ? { draftId } : {})}
+            envLocked={envLocked}
+            {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
+            {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
+            {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
+            startFromOrigin={startFromOrigin}
+            onStartFromOriginChange={onStartFromOriginChange}
+            {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
+            {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
+          />
+        ) : null}
       </div>
 
       <ComposerUsageIndicator
