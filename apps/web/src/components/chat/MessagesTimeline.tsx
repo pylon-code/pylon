@@ -1290,7 +1290,11 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
   const { workingStepLabel } = use(TimelineRowActivityCtx);
   return (
-    <div className="py-0.5 pl-1.5">
+    // Extra bottom padding, not just py-0.5: live follow lags the growing
+    // content by a few dozen pixels while streaming, and this row is both the
+    // last one and taller than a text line, so without the gap its marker ends
+    // up behind the composer overlay.
+    <div className="pt-0.5 pb-5 pl-1.5">
       <div className="flex min-w-0 items-center gap-2 pt-1 text-[11px] text-muted-foreground/70 tabular-nums">
         <DotMatrix aria-hidden state="working" className="size-4" />
         <span className="shrink-0">
