@@ -12,6 +12,7 @@ import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityRes
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
@@ -23,6 +24,7 @@ import { ServerConfig } from "../../config.ts";
  */
 const TestLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
   Layer.provide(ThreadBackgroundLiveness.layer),
+  Layer.provide(ThreadPlanProgress.layer),
   Layer.provideMerge(OrchestrationProjectionPipelineLive),
   Layer.provideMerge(OrchestrationEventStoreLive),
   Layer.provideMerge(RepositoryIdentityResolver.layer),
