@@ -45,6 +45,7 @@ export const ProjectionThread = Schema.Struct({
   // Absent on rows written before cross-account handoff existed, which is the
   // same thing as "this thread started its own work".
   continuedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  pinOrderKey: Schema.optional(Schema.NullOr(Schema.String)),
   titleRegenerationRequestId: Schema.optional(Schema.NullOr(CommandId)),
   titleRegenerationStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
