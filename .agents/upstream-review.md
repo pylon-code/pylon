@@ -182,7 +182,7 @@ one-time layout reset bothers anyone.
 
 **Partly verified in a real client.** Two web passes ran against a copy of the
 real database (3 projects, 9 threads, 68 turns, 6,254 activities, 39k events).
-Migration 039 applied over an existing 37/38 database, and three change sets
+Migration 039 applied over an existing 37/38 database, and four change sets
 were confirmed against real data rather than only by test:
 
 - **E1** — thread `3fbd40f6` holds 238 `tool.updated` rows; the snapshot ships
@@ -195,14 +195,42 @@ were confirmed against real data rather than only by test:
 - **E15** — an expanded plan chip renders five DotMatrix step markers
   (`data-state="done"`) and **zero** of upstream's `✓ ● ○` glyphs, confirming
   the Pylon-first marker conversion. Developer reviewed and preferred it.
+- **E14** — a live Haiku 4.5 run in a throwaway `/tmp` project spawned three
+  real subagents, which the seeded database could not supply. The Agents panel
+  rendered three rows at exactly **62px** (`3.875rem`, the fixed-height
+  guarantee) with the marker's right edge at 769px against a title starting at
+  777px — an 8px gutter, no bleed. This confirms the Pylon-first track
+  widening; upstream's `0.375rem` would have consumed the whole `gap-x-2`
+  gutter. It is also the first real exercise of D5's Agents panel.
 
-Still unproven, with the reason: **E14's agent rows** cannot be exercised by
-this seed at all — it carries 2 `task.started` rows and no workflow or subagent
-runs, so the panel has nothing to render; this also leaves D5's Agents panel
-unverified a second batch running. **E3's in-flight status** needs a real
-update (`start:mock-update-server`). **E13's scroll anchoring** needs a live
-running turn. **No mobile pass ran**, so E19's card opacity, E13's `ThreadFeed`
-anchoring, and E10's mobile wiring are untested on that surface.
+Still unproven, with the reason: **E3's in-flight status** needs a real update,
+and `start:mock-update-server` cannot supply one without a prebuilt
+`release-mock` release tree. **E13's scroll anchoring** was never cleanly
+isolated — see the defect note below, which sits in the same code path. **No
+mobile pass ran**, so E19's card opacity, E13's `ThreadFeed` anchoring, and
+E10's mobile wiring are untested on that surface. Desktop was never launched.
+
+### Open defect found during verification — pre-existing, not from this batch
+
+While streaming, the newest transcript content and the working row render
+**underneath the chat composer**. Measured mid-stream with a healthy
+connection and no reconnect banner: the composer overlay starts at y=604 and
+the working indicator sat at y=669, 65px behind it, with the last text row
+sliced at the composer's edge.
+
+Cause: the composer inset is consulted for _whether_ the view is at the end
+(`resolveTimelineIsAtEnd(state, endInset)`) but not for _where_ the list stops.
+`maintainScrollAtEnd` pins to the raw scroll-viewport end, driving past the
+clearance the end spacer provides. With follow inactive the spacer yields a
+correct 144px gap, which is why it only shows while streaming.
+
+**Not caused by this batch.** `contentInsetEndAdjustment` and the
+`maintainScrollAtEnd` configuration are byte-identical on `origin/pylon`;
+E13's only change was adding `|| !liveFollowEnabled`, which _disables_ pinning
+in more cases and cannot make it overshoot. Confirming beyond that inference
+needs an `origin/pylon` A/B, which was not run. Fix belongs on its own branch
+off `pylon` — likely growing the end spacer during live follow — and is worth
+reporting upstream.
 
 Verification that did run: 495 targeted tests pass (187 web, 181 server, 112
 client-runtime, 15 shared) plus the 6 Node tests for the new CI publisher;
