@@ -1,9 +1,15 @@
 import { matchers, routes, type Transform, type VercelConfig } from "@vercel/config/v1";
 
-const ROUTER_HOST = "app.t3.codes";
+// Pylon's own hosted origins. These drive the channel routing rules, so they
+// must agree with the domains the release workflow aliases each deployment to
+// (T3CODE_WEB_ROUTER_URL, T3CODE_WEB_LATEST_DOMAIN, T3CODE_WEB_NIGHTLY_DOMAIN)
+// — a mismatch leaves the router matching a host it never serves, and the
+// channel switch silently stops working. Kept flat rather than nested under
+// the router host so every name stays one label deep.
+const ROUTER_HOST = "app.pylon-code.com";
 const HOSTED_WEB_CHANNEL_COOKIE = "t3code_web_channel";
-const LATEST_ORIGIN = "https://latest.app.t3.codes";
-const NIGHTLY_ORIGIN = "https://nightly.app.t3.codes";
+const LATEST_ORIGIN = "https://latest.pylon-code.com";
+const NIGHTLY_ORIGIN = "https://nightly.pylon-code.com";
 const CLEAN_CHANNEL_QUERY_TRANSFORMS = [
   {
     type: "request.query",

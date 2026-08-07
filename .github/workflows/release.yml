@@ -1066,9 +1066,10 @@ jobs:
             exit 1
           fi
 
-          router_url="${T3CODE_WEB_ROUTER_URL:-https://app.t3.codes}"
-          latest_domain="${T3CODE_WEB_LATEST_DOMAIN:-latest.app.t3.codes}"
-          nightly_domain="${T3CODE_WEB_NIGHTLY_DOMAIN:-nightly.app.t3.codes}"
+          # Defaults must match the routing hosts in apps/web/vercel.ts.
+          router_url="${T3CODE_WEB_ROUTER_URL:-https://app.pylon-code.com}"
+          latest_domain="${T3CODE_WEB_LATEST_DOMAIN:-latest.pylon-code.com}"
+          nightly_domain="${T3CODE_WEB_NIGHTLY_DOMAIN:-nightly.pylon-code.com}"
           router_domain="${router_url#http://}"
           router_domain="${router_domain#https://}"
           router_domain="${router_domain%%/*}"
