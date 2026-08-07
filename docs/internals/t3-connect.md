@@ -1,8 +1,8 @@
-# T3 Connect
+# Pylon Connect
 
 > For maintainers. Using T3 Code? See [docs/user](../user/).
 
-T3 Connect uses one Clerk application for web, desktop, and mobile authentication. The relay verifies
+Pylon Connect uses one Clerk application for web, desktop, and mobile authentication. The relay verifies
 two kinds of bearer credential: template JWTs generated from the `t3-relay` template with the shared
 `t3-code-relay` audience, and Clerk OAuth tokens issued to the CLI. `verifyRelayClientBearerToken` in
 `infra/relay/src/http/Api.ts` tries the template/session path first and falls back to OAuth
@@ -14,7 +14,7 @@ For the wider system diagram, see
 
 ## Application Keys
 
-T3 Connect is disabled in a fresh clone. To enable it for source builds, add a repository-root `.env`
+Pylon Connect is disabled in a fresh clone. To enable it for source builds, add a repository-root `.env`
 or `.env.local` file:
 
 ```dotenv
@@ -232,9 +232,9 @@ flow uses a custom redirect URI, add that exact URI to the same allowlist.
 
 ## Sign-in Surfaces
 
-Signed-in users manage T3 Connect under **Connections**. The settings sidebar also has dedicated
+Signed-in users manage Pylon Connect under **Connections**. The settings sidebar also has dedicated
 controls, rendered by `SettingsSidebarNav.tsx`: `T3ConnectSidebarSignIn` in the footer shows a
-**Sign in to T3 Connect** button while signed out, and `T3ConnectSidebarAvatar` shows a Clerk
+**Sign in to Pylon Connect** button while signed out, and `T3ConnectSidebarAvatar` shows a Clerk
 `UserButton` account control while signed in. Both are gated on cloud public configuration.
 Desktop renders the same web bundle, so it has them too. The waitlist enrollment flow from the
 private beta was removed when Connect went GA; sign-up is open unless a Clerk restriction below is

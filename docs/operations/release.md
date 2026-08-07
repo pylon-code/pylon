@@ -21,7 +21,7 @@ costs.
 | `FINALIZE_RELEASE_COMMIT`     | The version-bump commit   | A GitHub App with push rights                          | Package versions are not bumped back on the branch |
 | `ANNOUNCE_RELEASE_ON_DISCORD` | The release announcement  | A Discord webhook and role IDs                         | No announcement                                    |
 
-T3 Connect is separate and needs no variable of its own: the workflow detects
+Pylon Connect is separate and needs no variable of its own: the workflow detects
 whether Cloudflare and Clerk configuration is present and builds without cloud
 sign-in when it is not. Partial configuration counts as none.
 
@@ -35,7 +35,7 @@ Set a variable to the literal string `true` to enable it.
   - scheduled nightly check every three hours
   - manual `workflow_dispatch` for either channel
 - Runs quality gates first: lint, typecheck, test.
-- Reads the shared production T3 Connect relay URL and Clerk client configuration before packaging clients.
+- Reads the shared production Pylon Connect relay URL and Clerk client configuration before packaging clients.
 - Builds four artifacts in parallel for both channels:
   - macOS `arm64` DMG
   - macOS `x64` DMG
@@ -88,7 +88,7 @@ target with the macOS legs cross-building a second architecture.
 Switching back to GitHub-hosted runners is a pure label swap — `ubuntu-24.04`, `windows-2025`,
 `macos-26` — with no other change required.
 
-## T3 Connect relay deployment
+## Pylon Connect relay deployment
 
 The relay is a shared control plane versioned separately from client releases. Stable and nightly
 client builds must point at the same relay so users see the same linked environments when switching
@@ -372,7 +372,7 @@ Checklist:
    - `APPLE_API_KEY`: contents of the downloaded `.p8`
    - `APPLE_API_KEY_ID`: Key ID
    - `APPLE_API_ISSUER`: Issuer ID
-10. Complete the Clerk Native API and AASA setup in [T3 Connect Clerk Setup](../internals/t3-connect.md#desktop-passkeys).
+10. Complete the Clerk Native API and AASA setup in [Pylon Connect Clerk Setup](../internals/t3-connect.md#desktop-passkeys).
 11. Re-run a tag release and confirm macOS artifacts are signed/notarized and contain the expected
     `com.apple.developer.associated-domains` entitlement.
 

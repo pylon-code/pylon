@@ -20,7 +20,7 @@ import { servicePreflightCommand } from "./cli/servicePreflight.ts";
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
 const connectPublicConfigMissingMessage =
-  "T3 Connect commands are unavailable: this build is missing T3 Connect public configuration.";
+  "Pylon Connect commands are unavailable: this build is missing Pylon Connect public configuration.";
 
 class ConnectPublicConfigMissingError extends CliError.UserError {
   override get message() {
@@ -31,7 +31,7 @@ class ConnectPublicConfigMissingError extends CliError.UserError {
 const connectUnavailableCommand = Command.make("connect", {
   command: Argument.string("command").pipe(Argument.variadic),
 }).pipe(
-  Command.withDescription("T3 Connect is unavailable in builds without public configuration."),
+  Command.withDescription("Pylon Connect is unavailable in builds without public configuration."),
   Command.withHidden,
   Command.withHandler(() =>
     Effect.fail(

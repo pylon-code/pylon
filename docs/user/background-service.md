@@ -38,12 +38,12 @@ launcher snapshots the database before a remote candidate starts, so database up
 with the server version. An older launcher may require one local `service update` before this is
 available.
 
-## Using It with T3 Connect
+## Using It with Pylon Connect
 
-T3 Connect may offer to install the service during setup so the host stays reachable after you log
-out. This is only an onboarding shortcut: the service and T3 Connect are managed separately.
+Pylon Connect may offer to install the service during setup so the host stays reachable after you log
+out. This is only an onboarding shortcut: the service and Pylon Connect are managed separately.
 
-Signing out of T3 Connect does not remove the service. Use `t3 service uninstall` when you no longer
+Signing out of Pylon Connect does not remove the service. Use `t3 service uninstall` when you no longer
 want Pylon to start in the background.
 
 The background service currently requires Linux with systemd.

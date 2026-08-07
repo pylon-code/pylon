@@ -55,7 +55,7 @@ function ConfiguredT3ConnectSidebarSignIn() {
         <SidebarMenuItem>
           <SidebarMenuButton onClick={openAuthPrompt}>
             <LogInIcon />
-            <span>Sign in to T3 Connect</span>
+            <span>Sign in to Pylon Connect</span>
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>

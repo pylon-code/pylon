@@ -69,8 +69,8 @@ export function RelayClientInstallDialog() {
           </DialogTitle>
           <DialogDescription>
             {isInstalling
-              ? "Pylon is preparing this environment for secure access through T3 Connect."
-              : "Pylon needs the relay client to make this environment available through T3 Connect."}
+              ? "Pylon is preparing this environment for secure access through Pylon Connect."
+              : "Pylon needs the relay client to make this environment available through Pylon Connect."}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel scrollFade={false}>

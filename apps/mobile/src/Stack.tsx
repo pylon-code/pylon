@@ -310,7 +310,7 @@ function RootStackLayout(props: {
   const { pendingShare } = useIncomingShare();
   const sharePresentationRef = useRef(EMPTY_INCOMING_SHARE_PRESENTATION_STATE);
   useAgentNotificationNavigation();
-  // Presents the T3 Connect onboarding sheet after an in-session sign-in.
+  // Presents the Pylon Connect onboarding sheet after an in-session sign-in.
   useConnectOnboardingNavigation();
   // Launcher app shortcuts: routes shortcut taps and tracks opened threads.
   useAppShortcuts(props.state);
@@ -515,7 +515,7 @@ export const RootStack = createNativeStackNavigator({
         // A root-level Android formSheet does not host the native stack bar;
         // the route renders an embedded AndroidSheetHeader instead.
         ...(Platform.OS === "android" ? { headerShown: false } : SHEET_SOLID_HEADER_OPTIONS),
-        title: "Set up T3 Connect",
+        title: "Set up Pylon Connect",
         gestureEnabled: true,
         presentation: "formSheet",
         sheetAllowedDetents: [0.6, 0.95],

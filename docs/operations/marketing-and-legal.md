@@ -58,7 +58,7 @@ so. This is a hard gate on shipping mobile, not a judgement call — it is worth
 starting before the rest of the App Store work rather than discovering it at
 submission.
 
-**Hosted web app, or T3 Connect enabled.** Sign-in means processing personal
+**Hosted web app, or Pylon Connect enabled.** Sign-in means processing personal
 data — at minimum email addresses and IP addresses — which brings real
 obligations under GDPR and CCPA depending on where users are. Both a privacy
 policy and terms of service belong here, and they need to describe Pylon's
