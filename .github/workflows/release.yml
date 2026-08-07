@@ -6,7 +6,11 @@ on:
       - "v*.*.*"
       - "!v*-nightly.*"
   schedule:
-    - cron: "0 */3 * * *"
+    # Once a day, which is what "nightly" means. The inherited every-three-hours
+    # cadence suits a project with constant contributor traffic; here it just
+    # rebuilds four platforms up to eight times on any day with a push, and
+    # each rebuild is billable. Dispatch manually when a build is needed sooner.
+    - cron: "0 9 * * *"
   workflow_dispatch:
     inputs:
       channel:
