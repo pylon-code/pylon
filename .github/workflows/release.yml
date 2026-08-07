@@ -957,6 +957,30 @@ jobs:
           fail_on_unmatched_files: true
           token: ${{ secrets.RELEASES_REPO_TOKEN }}
 
+      # Cross-repository publication creates the tag in the releases repository,
+      # so this one never gains it. The nightly change check looks for those
+      # tags here to decide whether anything has changed, finds none, and
+      # therefore rebuilds all four platforms on every scheduled run forever —
+      # even when the commit is identical to the last release. Recording the tag
+      # restores that check.
+      - name: Record the release tag in this repository
+        if: vars.PYLON_DESKTOP_UPDATE_REPOSITORY != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.ref }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Tag $RELEASE_TAG already recorded."
+            exit 0
+          fi
+          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f "ref=refs/tags/$RELEASE_TAG" \
+            -f "sha=$RELEASE_SHA" >/dev/null
+          echo "Recorded $RELEASE_TAG at $RELEASE_SHA."
+
   deploy_web:
     name: Deploy hosted web app
     needs: [preflight, relay_public_config, release]
