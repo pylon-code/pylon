@@ -115,7 +115,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "0.0.17-nightly.20260413.42",
     );
 
-    assert.equal(configuration.appId, "com.pylon.code.nightly");
+    assert.equal(configuration?.appId, "com.pylon.code.nightly");
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -472,6 +472,27 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
   });
 
+  // Signing is what makes macOS auto-update work: Squirrel silently refuses to
+  // replace a bundle without a valid signature. Requiring passkey setup to sign
+  // would mean no Mac user could receive an update until Connect existed.
+  it("signs without passkey entitlements when no passkey configuration exists", () => {
+    assert.isUndefined(resolveMacPasskeySigningConfiguration({}, "0.0.31"));
+  });
+
+  // Half-configured passkeys produce an app that looks capable and fails at
+  // authentication, so that stays an error rather than degrading.
+  it("rejects passkey configuration that is missing a provisioning profile", () => {
+    assert.throws(() =>
+      resolveMacPasskeySigningConfiguration(
+        {
+          T3CODE_APPLE_TEAM_ID: "ABC1234567",
+          T3CODE_CLERK_PASSKEY_RP_DOMAINS: "example.clerk.accounts.dev",
+        },
+        "0.0.31",
+      ),
+    );
+  });
+
   it("normalizes explicit macOS passkey RP domains and renders required entitlements", () => {
     const configuration = resolveMacPasskeySigningConfiguration(
       {
@@ -482,6 +503,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       },
       "0.0.31",
     );
+    assert.isDefined(configuration);
     const entitlements = renderMacPasskeyEntitlements(configuration);
 
     assert.deepStrictEqual(configuration.rpDomains, [

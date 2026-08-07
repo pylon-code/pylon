@@ -594,20 +594,27 @@ jobs:
 
           if [[ "${{ matrix.platform }}" == "mac" ]]; then
             if has_all "$CSC_LINK" "$CSC_KEY_PASSWORD" "$APPLE_API_KEY" "$APPLE_API_KEY_ID" "$APPLE_API_ISSUER"; then
-              if ! has_all "$APPLE_TEAM_ID" "$MACOS_PROVISIONING_PROFILE"; then
-                echo "macOS signing is configured, but APPLE_TEAM_ID or MACOS_PROVISIONING_PROFILE is missing." >&2
-                exit 1
-              fi
-
               key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
               printf '%s' "$APPLE_API_KEY" > "$key_path"
               export APPLE_API_KEY="$key_path"
 
-              profile_path="$RUNNER_TEMP/t3code.provisionprofile"
-              printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 -D > "$profile_path"
-              security cms -D -i "$profile_path" >/dev/null
-              export T3CODE_APPLE_TEAM_ID="$APPLE_TEAM_ID"
-              export T3CODE_MACOS_PROVISIONING_PROFILE="$profile_path"
+              # Passkeys are a separate, optional capability. Signing must not
+              # depend on them: an unsigned macOS build cannot auto-update at
+              # all, because Squirrel refuses to replace a bundle without a
+              # valid signature — and it fails silently when it does.
+              if has_all "$APPLE_TEAM_ID" "$MACOS_PROVISIONING_PROFILE"; then
+                profile_path="$RUNNER_TEMP/pylon.provisionprofile"
+                printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 -D > "$profile_path"
+                security cms -D -i "$profile_path" >/dev/null
+                export T3CODE_APPLE_TEAM_ID="$APPLE_TEAM_ID"
+                export T3CODE_MACOS_PROVISIONING_PROFILE="$profile_path"
+                echo "macOS passkey entitlements enabled."
+              elif has_all "$APPLE_TEAM_ID" || has_all "$MACOS_PROVISIONING_PROFILE"; then
+                echo "macOS passkey signing needs both APPLE_TEAM_ID and MACOS_PROVISIONING_PROFILE; only one is set." >&2
+                exit 1
+              else
+                echo "macOS passkey entitlements disabled (no provisioning profile configured)."
+              fi
 
               echo "macOS signing enabled."
               args+=(--signed)

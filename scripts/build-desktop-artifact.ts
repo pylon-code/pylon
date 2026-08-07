@@ -784,32 +784,49 @@ function normalizePasskeyRpDomain(value: string): string {
   return parsed.hostname;
 }
 
+/**
+ * Passkey signing configuration, or `undefined` when passkeys are not set up.
+ *
+ * Passkeys need an Associated Domains entitlement, which needs a provisioning
+ * profile and a relying-party domain. A build with neither is not misconfigured
+ * — it is a build without cloud sign-in, and it still signs and notarizes with
+ * a plain Developer ID identity. That distinction matters because code signing
+ * is what makes macOS auto-update work at all: requiring passkey setup to sign
+ * would mean no Mac user could ever receive an update until Connect existed.
+ *
+ * Partial configuration is still an error. Asking for passkeys and omitting a
+ * piece produces an app that looks capable and fails at authentication.
+ */
 export function resolveMacPasskeySigningConfiguration(
   env: Readonly<Record<string, string | undefined>>,
   version: string,
-): MacPasskeySigningConfiguration {
+): MacPasskeySigningConfiguration | undefined {
+  const provisioningProfilePath = env.T3CODE_MACOS_PROVISIONING_PROFILE?.trim() ?? "";
+  const configuredRpDomains = env.T3CODE_CLERK_PASSKEY_RP_DOMAINS?.trim();
+  const configuredPublishableKey = env.T3CODE_CLERK_PUBLISHABLE_KEY?.trim();
+  if (!provisioningProfilePath && !configuredRpDomains && !configuredPublishableKey) {
+    return undefined;
+  }
+
   const teamId = env.T3CODE_APPLE_TEAM_ID?.trim().toUpperCase() ?? "";
   if (!APPLE_TEAM_ID_PATTERN.test(teamId)) {
     throw new InvalidAppleTeamIdError({ teamId });
   }
 
-  const provisioningProfilePath = env.T3CODE_MACOS_PROVISIONING_PROFILE?.trim() ?? "";
   if (provisioningProfilePath.length === 0) {
     throw new MissingMacPasskeyProvisioningProfileError();
   }
 
-  const configuredRpDomains = env.T3CODE_CLERK_PASSKEY_RP_DOMAINS?.trim();
   let rpDomains: readonly string[];
   if (configuredRpDomains) {
     rpDomains = configuredRpDomains.split(",").map(normalizePasskeyRpDomain);
   } else {
-    const publishableKey = env.T3CODE_CLERK_PUBLISHABLE_KEY?.trim();
-    if (!publishableKey) {
+    if (!configuredPublishableKey) {
       throw new MissingMacPasskeyDomainConfigurationError();
     }
     let hostname: string;
     try {
-      hostname = clerkFrontendApiHostnameFromPublishableKey(publishableKey);
+      hostname = clerkFrontendApiHostnameFromPublishableKey(configuredPublishableKey);
     } catch (cause) {
       throw new InvalidMacPasskeyPublishableKeyError({ cause });
     }
