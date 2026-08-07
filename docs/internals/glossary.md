@@ -29,6 +29,16 @@ The root filesystem path for a project. In [the orchestration model][1], it is t
 
 A Git worktree used as an isolated workspace for a thread. If a thread has a `worktreePath` in [the contracts][1], it runs there instead of in the main working tree. Git operations live behind the VCS driver contract in `apps/server/src/vcs/VcsDriver.ts`, implemented by [GitVcsDriverCore.ts][3].
 
+### Planning
+
+#### Thread plan
+
+The ordered steps an agent commits to for a turn, derived from the provider's own todo or plan output. [ThreadPlanProgress.ts][25] folds those steps into per-turn progress that the read model carries, so a plan is thread state rather than a client-side view. Plans render inline in the transcript; there is no separate plan panel.
+
+#### Plan step
+
+One entry in a thread plan, in one of three states: `pending`, `inProgress`, or `completed`. The transcript shows the in-progress step as the plan's headline and expands to the full list on demand.
+
 ### Thread timeline
 
 #### Thread
@@ -42,6 +52,10 @@ A single user-to-assistant work cycle inside a thread. It starts with user input
 #### Activity
 
 A user-visible log item attached to a thread. In [the contracts][1], activities cover important non-message events like approvals, tool actions, and failures. They are projected into thread state in [projector.ts][4].
+
+#### Turn window
+
+A bounded slice of a thread's turns, so a long thread does not have to load whole. A read asks for the last `turnLimit` turns that carry a user message — subagent and fan-out turns ride along with their anchor — and pages backward with the opaque, exclusive `beforeCursor`. Cursors are keyset-encoded over `(requested_at, turn_id)` by [threadDetailCursor.ts][26]. Windowing is opt-in per request and gated on the `threadSnapshotPagination` server capability, so a request without it still gets the full thread. See [ProjectionSnapshotQuery.ts][10].
 
 ### Orchestration
 
@@ -180,3 +194,5 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [22]: ../../apps/server/src/checkpointing/Utils.ts
 [23]: ../../apps/server/src/checkpointing/Diffs.ts
 [24]: ./overview.md
+[25]: ../../apps/server/src/orchestration/ThreadPlanProgress.ts
+[26]: ../../apps/server/src/orchestration/threadDetailCursor.ts

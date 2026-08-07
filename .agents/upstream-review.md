@@ -175,14 +175,20 @@ gone, the `autoOpenPlanSidebar` setting is removed with no replacement, and
 right-panel layout reset in two batches** — D5 already took users 7 → 8, so
 anyone who reshaped their panel after D5 loses it again. Adopted on the
 developer's explicit call ("I think I like the direction, if I hate it we can
-always adjust after"); revisit if the inline chip proves too quiet for plans
-users actually track.
+always adjust after"), then **confirmed in a browser pass** — the developer
+reviewed the inline chip against real seeded threads and preferred it to the
+sidebar. The open question is no longer the design; it is only whether the
+one-time layout reset bothers anyone.
 
-**Not verified in a real client.** No browser or mobile pass ran on this
-batch. That leaves E15's inline plan chip, E14's agent rows, E10's pagination,
-and E3's one-row update status unproven against real data — and E14 is still
-the first thing that would exercise D5's Agents panel, which the previous
-batch also never browser-verified.
+**Partly verified in a real client.** A web pass ran against a copy of the
+real database (3 projects, 9 threads, 68 turns, 6,254 activities, 39k events):
+the app paired and loaded, migration 039 applied over an existing 37/38
+database, and the developer reviewed and approved E15's inline plan chip.
+Still unproven: **E14's agent rows** (and with them D5's Agents panel, which
+the previous batch also never verified), **E10's pagination against a client**,
+and **E3's in-flight update status**, which needs a real update to observe.
+**No mobile pass ran at all**, so E19's card opacity, E13's `ThreadFeed` scroll
+anchoring, and E10's mobile pagination wiring are unverified on that surface.
 
 Verification that did run: 495 targeted tests pass (187 web, 181 server, 112
 client-runtime, 15 shared) plus the 6 Node tests for the new CI publisher;
