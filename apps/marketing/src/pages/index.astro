@@ -29,7 +29,8 @@ import { RELEASES_URL } from "../lib/releases";
 
     <div class="container hero-inner">
       <div class="hero-mark" aria-hidden="true">
-        <PylonMark size={46} />
+        {/* CSS scales this to 92% of the tile; the attribute is the fallback. */}
+        <PylonMark size={121} />
       </div>
 
       <h1 class="hero-title display">
@@ -414,20 +415,31 @@ import { RELEASES_URL } from "../lib/releases";
     text-align: center;
   }
 
+  /* Deliberately larger than .hero-float-mark — Pylon is the hub the provider
+     marks orbit, so it should read as the biggest thing in the hero. The glyph
+     is sized in percentages so it stays proportional at every breakpoint. */
   .hero-mark {
     display: grid;
     place-items: center;
-    width: 84px;
-    height: 84px;
-    margin: 40px auto 0;
-    border-radius: 22px;
+    width: 132px;
+    height: 132px;
+    margin: 32px auto 0;
+    border-radius: 32px;
     color: var(--fg);
     border: 1px solid var(--border-strong);
     background:
       radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.10), rgba(20, 20, 24, 0.94) 68%);
     box-shadow:
-      0 24px 56px -18px rgba(0, 0, 0, 0.75),
+      0 28px 64px -18px rgba(0, 0, 0, 0.8),
       0 2px 0 0 rgba(255, 255, 255, 0.05) inset;
+  }
+
+  /* The source viewBox carries app-icon padding — the mark itself spans only
+     ~64% of its 1024 box — so this percentage runs high to land a glyph about
+     60% of the tile. It is not the visual size of the mark. */
+  .hero-mark svg {
+    width: 92%;
+    height: 92%;
   }
 
   .hero-title {
@@ -573,15 +585,15 @@ import { RELEASES_URL } from "../lib/releases";
     }
 
     .hero-mark {
-      width: 66px;
-      height: 66px;
-      border-radius: 18px;
+      width: 104px;
+      height: 104px;
+      border-radius: 26px;
       margin-top: 0;
     }
 
     .hero-title {
       font-size: clamp(40px, 11vw, 56px);
-      margin-top: 18px;
+      margin-top: 20px;
     }
 
     .hero-actions {
