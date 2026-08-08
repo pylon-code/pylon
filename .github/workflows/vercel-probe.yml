@@ -19,7 +19,7 @@ jobs:
       - name: Probe token
         shell: bash
         run: |
-          set -uo pipefail
+          set +e
           echo "token length: ${#VERCEL_TOKEN}"
           echo "org id: $VERCEL_ORG_ID"
           echo "team slug: ${VERCEL_TEAM_SLUG:-<unset>}"
