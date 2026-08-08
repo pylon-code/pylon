@@ -49,7 +49,9 @@ function isStaleRequestFailureDetail(payload: Record<string, unknown> | null): b
     detail.includes("stale pending user-input request") ||
     detail.includes("unknown pending user-input request") ||
     detail.includes("unknown pending user input request") ||
-    detail.includes("unknown pending codex user input request")
+    detail.includes("unknown pending codex user input request") ||
+    detail.includes("stale pending interaction request") ||
+    detail.includes("unknown pending interaction request")
   );
 }
 
@@ -71,13 +73,22 @@ function hasOpenBlockingRequest(thread: {
         : null;
     const requestId = typeof payload?.requestId === "string" ? payload.requestId : null;
     if (requestId === null) continue;
-    if (activity.kind === "approval.requested" || activity.kind === "user-input.requested") {
+    if (
+      activity.kind === "approval.requested" ||
+      activity.kind === "user-input.requested" ||
+      activity.kind === "interaction.requested"
+    ) {
       openRequestIds.add(requestId);
-    } else if (activity.kind === "approval.resolved" || activity.kind === "user-input.resolved") {
+    } else if (
+      activity.kind === "approval.resolved" ||
+      activity.kind === "user-input.resolved" ||
+      activity.kind === "interaction.resolved"
+    ) {
       openRequestIds.delete(requestId);
     } else if (
       (activity.kind === "provider.approval.respond.failed" ||
-        activity.kind === "provider.user-input.respond.failed") &&
+        activity.kind === "provider.user-input.respond.failed" ||
+        activity.kind === "provider.interaction.respond.failed") &&
       isStaleRequestFailureDetail(payload)
     ) {
       openRequestIds.delete(requestId);
@@ -477,7 +488,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* Effect.fail(
           new OrchestrationCommandInvariantError({
             commandType: command.type,
-            detail: `thread ${command.threadId} has a pending approval or user-input request and cannot be settled`,
+            detail: `thread ${command.threadId} has a pending approval, user-input, or interaction request and cannot be settled`,
           }),
         );
       }
@@ -1101,6 +1112,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.interaction.respond": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {},
+        })),
+        type: "thread.interaction-response-requested",
+        payload: {
+          threadId: command.threadId,
+          requestId: command.requestId,
+          response: command.response,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.checkpoint.revert": {
       yield* requireThread({
         readModel,
@@ -1371,7 +1406,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // never stay hidden inside a settled slim row.
       const wakesSettledThread =
         command.activity.kind === "approval.requested" ||
-        command.activity.kind === "user-input.requested";
+        command.activity.kind === "user-input.requested" ||
+        command.activity.kind === "interaction.requested";
       // Real activity resets ANY override (settled wakes, active unpins).
       if (thread.settledOverride === null || !wakesSettledThread) {
         return activityAppendedEvent;

@@ -16,6 +16,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionStartInput,
+  SessionInteractionRequestId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -156,6 +157,10 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     ): Effect.Effect<void, ProviderAdapterError> => Effect.void,
   );
 
+  const respondToInteraction = vi.fn<
+    NonNullable<ProviderAdapterShape<ProviderAdapterError>["respondToInteraction"]>
+  >(() => Effect.void);
+
   const stopSession = vi.fn(
     (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
       Effect.sync(() => {
@@ -213,6 +218,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     interruptTurn,
     respondToRequest,
     respondToUserInput,
+    respondToInteraction,
     stopSession,
     listSessions,
     hasSession,
@@ -245,6 +251,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     updateSession,
     startSession,
     sendTurn,
+    respondToInteraction,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -903,6 +910,19 @@ routing.layer("ProviderServiceLive routing", (it) => {
           {
             sandbox_mode: "workspace-write",
           },
+        ],
+      ]);
+
+      yield* provider.respondToInteraction({
+        threadId: session.threadId,
+        requestId: SessionInteractionRequestId.make("interaction-1"),
+        response: { kind: "confirmed", confirmed: true },
+      });
+      assert.deepEqual(routing.codex.respondToInteraction.mock.calls, [
+        [
+          session.threadId,
+          SessionInteractionRequestId.make("interaction-1"),
+          { kind: "confirmed", confirmed: true },
         ],
       ]);
 

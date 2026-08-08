@@ -151,23 +151,26 @@ function derivePendingUserInputCountFromActivities(
         : null;
     const detail = typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
 
-    if (activity.kind === "user-input.requested") {
+    if (activity.kind === "user-input.requested" || activity.kind === "interaction.requested") {
       openRequestIds.add(requestId);
       continue;
     }
 
-    if (activity.kind === "user-input.resolved") {
+    if (activity.kind === "user-input.resolved" || activity.kind === "interaction.resolved") {
       openRequestIds.delete(requestId);
       continue;
     }
 
     if (
-      activity.kind === "provider.user-input.respond.failed" &&
+      (activity.kind === "provider.user-input.respond.failed" ||
+        activity.kind === "provider.interaction.respond.failed") &&
       detail !== null &&
       (detail.includes("stale pending user-input request") ||
         detail.includes("unknown pending user-input request") ||
         detail.includes("unknown pending user input request") ||
-        detail.includes("unknown pending codex user input request"))
+        detail.includes("unknown pending codex user input request") ||
+        detail.includes("stale pending interaction request") ||
+        detail.includes("unknown pending interaction request"))
     ) {
       openRequestIds.delete(requestId);
     }
@@ -855,7 +858,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
         case "thread.approval-response-requested":
-        case "thread.user-input-response-requested": {
+        case "thread.user-input-response-requested":
+        case "thread.interaction-response-requested": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });

@@ -4,6 +4,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   MessageId,
   ProjectId,
+  SessionInteractionRequestId,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
@@ -1166,6 +1167,61 @@ describe("OrchestrationEngine", () => {
     ).rejects.toThrow("Thread 'thread-missing' does not exist");
 
     await system.dispose();
+  });
+
+  it("deduplicates interaction responses by command id", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const createdAt = now();
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-interaction-idempotence-project"),
+          projectId: asProjectId("project-interaction-idempotence"),
+          title: "Interactions",
+          workspaceRoot: "/tmp/project-interaction-idempotence",
+          createdAt,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-interaction-idempotence-thread"),
+          threadId: ThreadId.make("thread-interaction-idempotence"),
+          projectId: asProjectId("project-interaction-idempotence"),
+          title: "Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          },
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      const command = {
+        type: "thread.interaction.respond" as const,
+        commandId: CommandId.make("cmd-interaction-idempotent"),
+        threadId: ThreadId.make("thread-interaction-idempotence"),
+        requestId: SessionInteractionRequestId.make("interaction-idempotent"),
+        response: { kind: "cancelled" as const },
+        createdAt,
+      };
+      const first = await system.run(system.engine.dispatch(command));
+      const duplicate = await system.run(system.engine.dispatch(command));
+      expect(duplicate).toEqual(first);
+
+      const events = await system.run(Stream.runCollect(system.engine.readEvents(0, 100)));
+      expect(
+        Array.from(events).filter(
+          (event) => event.type === "thread.interaction-response-requested",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await system.dispose();
+    }
   });
 
   it("rejects duplicate thread creation", async () => {

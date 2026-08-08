@@ -16,6 +16,7 @@ import type {
   ProviderInstanceId,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
+  ProviderRespondToInteractionInput,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
@@ -70,6 +71,13 @@ export interface ProviderServiceShape {
    */
   readonly respondToUserInput: (
     input: ProviderRespondToUserInputInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Respond to a provider-neutral session interaction.
+   */
+  readonly respondToInteraction: (
+    input: ProviderRespondToInteractionInput,
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**

@@ -13,6 +13,8 @@ import type {
   ProviderDriverKind,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
+  SessionInteractionRequestId,
+  SessionInteractionResponse,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -90,6 +92,16 @@ export interface ProviderAdapterShape<TError> {
     threadId: ThreadId,
     requestId: ApprovalRequestId,
     answers: ProviderUserInputAnswers,
+  ) => Effect.Effect<void, TError>;
+
+  /**
+   * Respond to a provider-neutral blocking session interaction. Optional so
+   * adapters can explicitly surface unsupported interaction responses.
+   */
+  readonly respondToInteraction?: (
+    threadId: ThreadId,
+    requestId: SessionInteractionRequestId,
+    response: SessionInteractionResponse,
   ) => Effect.Effect<void, TError>;
 
   /**
