@@ -118,6 +118,10 @@ const primeLikeCapabilities = {
     support: "read-only",
     operations: ["token-usage", "cost", "rate-limits"],
   },
+  sessionUi: {
+    support: "read-write",
+    operations: ["dialog", "notification", "status", "widget"],
+  },
 };
 
 describe("ProviderFeatureCapabilities", () => {
@@ -136,6 +140,7 @@ describe("ProviderFeatureCapabilities", () => {
     ]);
     expect(decoded.resources?.operations).toContain("mcp");
     expect(decoded.resources?.operations).toContain("commands");
+    expect(decoded.sessionUi?.operations).toEqual(["dialog", "notification", "status", "widget"]);
   });
 
   it("represents Prime-like native capabilities without provider-specific fields", () => {
@@ -160,6 +165,7 @@ describe("ProviderFeatureCapabilities", () => {
     expect(provider.featureCapabilities?.history?.operations).toContain("clone");
     expect(provider.featureCapabilities?.reasoning?.operations).toContain("stream");
     expect(provider.featureCapabilities?.usage?.operations).toContain("cost");
+    expect(provider.featureCapabilities?.sessionUi?.operations).toContain("dialog");
     expect(encodeProvider(provider).featureCapabilities).toEqual(primeLikeCapabilities);
   });
 
@@ -198,6 +204,10 @@ describe("ProviderFeatureCapabilities", () => {
         operations: ["observe", "teleport"],
         futureAgentMetadata: { protocol: 2 },
       },
+      sessionUi: {
+        support: "read-write",
+        operations: ["dialog", "canvas"],
+      },
       futureFeatureGroup: {
         support: "read-write",
       },
@@ -205,6 +215,7 @@ describe("ProviderFeatureCapabilities", () => {
 
     expect(decoded.version).toBe(2);
     expect(decoded.agents?.operations).toEqual(["observe"]);
+    expect(decoded.sessionUi?.operations).toEqual(["dialog"]);
   });
 
   it("bounds human-readable unavailability reasons", () => {

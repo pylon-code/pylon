@@ -14,6 +14,12 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import {
+  SessionInteractionRequest,
+  SessionInteractionRequestId,
+  SessionInteractionResponse,
+  SessionPresentation,
+} from "./sessionInteraction.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -27,6 +33,7 @@ const RuntimeEventRawSource = Schema.Union([
   Schema.Literal("codex.sdk.thread-event"),
   Schema.Literal("opencode.sdk.event"),
   Schema.Literal("acp.jsonrpc"),
+  Schema.Literal("prime-agent.daemon"),
   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
 ]);
 export type RuntimeEventRawSource = typeof RuntimeEventRawSource.Type;
@@ -174,6 +181,9 @@ const ProviderRuntimeEventType = Schema.Literals([
   "request.resolved",
   "user-input.requested",
   "user-input.resolved",
+  "interaction.requested",
+  "interaction.resolved",
+  "session-presentation.updated",
   "task.started",
   "task.progress",
   "task.updated",
@@ -225,6 +235,9 @@ const RequestOpenedType = Schema.Literal("request.opened");
 const RequestResolvedType = Schema.Literal("request.resolved");
 const UserInputRequestedType = Schema.Literal("user-input.requested");
 const UserInputResolvedType = Schema.Literal("user-input.resolved");
+const InteractionRequestedType = Schema.Literal("interaction.requested");
+const InteractionResolvedType = Schema.Literal("interaction.resolved");
+const SessionPresentationUpdatedType = Schema.Literal("session-presentation.updated");
 const TaskStartedType = Schema.Literal("task.started");
 const TaskProgressType = Schema.Literal("task.progress");
 const TaskUpdatedType = Schema.Literal("task.updated");
@@ -260,6 +273,10 @@ const ProviderRuntimeEventBase = Schema.Struct({
   itemId: Schema.optional(RuntimeItemId),
   requestId: Schema.optional(RuntimeRequestId),
   providerRefs: Schema.optional(ProviderRefs),
+  /**
+   * Provider-local diagnostic envelope. Adapters must omit `raw` from events
+   * carrying remote-sensitive interaction or presentation content.
+   */
   raw: Schema.optional(RuntimeEventRaw),
 });
 export type ProviderRuntimeEventBase = typeof ProviderRuntimeEventBase.Type;
@@ -467,6 +484,21 @@ const UserInputResolvedPayload = Schema.Struct({
   answers: UnknownRecordSchema,
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
+
+const InteractionRequestedPayload = Schema.Struct({
+  request: SessionInteractionRequest,
+});
+export type InteractionRequestedPayload = typeof InteractionRequestedPayload.Type;
+
+const InteractionResolvedPayload = Schema.Struct({
+  response: SessionInteractionResponse,
+});
+export type InteractionResolvedPayload = typeof InteractionResolvedPayload.Type;
+
+const SessionPresentationUpdatedPayload = Schema.Struct({
+  presentation: SessionPresentation,
+});
+export type SessionPresentationUpdatedPayload = typeof SessionPresentationUpdatedPayload.Type;
 
 /**
  * Typed per-task usage rollup. Field names match the orchestration-v2 subagent
@@ -986,6 +1018,32 @@ const ProviderRuntimeUserInputResolvedEvent = Schema.Struct({
 export type ProviderRuntimeUserInputResolvedEvent =
   typeof ProviderRuntimeUserInputResolvedEvent.Type;
 
+const ProviderRuntimeInteractionRequestedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  requestId: SessionInteractionRequestId,
+  type: InteractionRequestedType,
+  payload: InteractionRequestedPayload,
+});
+export type ProviderRuntimeInteractionRequestedEvent =
+  typeof ProviderRuntimeInteractionRequestedEvent.Type;
+
+const ProviderRuntimeInteractionResolvedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  requestId: SessionInteractionRequestId,
+  type: InteractionResolvedType,
+  payload: InteractionResolvedPayload,
+});
+export type ProviderRuntimeInteractionResolvedEvent =
+  typeof ProviderRuntimeInteractionResolvedEvent.Type;
+
+const ProviderRuntimeSessionPresentationUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionPresentationUpdatedType,
+  payload: SessionPresentationUpdatedPayload,
+});
+export type ProviderRuntimeSessionPresentationUpdatedEvent =
+  typeof ProviderRuntimeSessionPresentationUpdatedEvent.Type;
+
 const ProviderRuntimeTaskStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TaskStartedType,
@@ -1165,6 +1223,9 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeRequestResolvedEvent,
   ProviderRuntimeUserInputRequestedEvent,
   ProviderRuntimeUserInputResolvedEvent,
+  ProviderRuntimeInteractionRequestedEvent,
+  ProviderRuntimeInteractionResolvedEvent,
+  ProviderRuntimeSessionPresentationUpdatedEvent,
   ProviderRuntimeTaskStartedEvent,
   ProviderRuntimeTaskProgressEvent,
   ProviderRuntimeTaskUpdatedEvent,
