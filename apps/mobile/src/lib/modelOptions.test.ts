@@ -5,11 +5,71 @@ import { ProviderInstanceId, type ServerConfig } from "@t3tools/contracts";
 import {
   buildModelMenuActions,
   buildModelOptions,
+  getModelSelectionSupportedRuntimeModes,
   groupByProvider,
+  resolveModelSelectionRuntimeMode,
   resolveSelectableModelSelection,
+  showModelSelectionInteractionModeToggle,
 } from "./modelOptions";
 
 describe("mobile model options", () => {
+  it("presents the default Prime Agent instance with its product name", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "primeAgent",
+          driver: "primeAgent",
+          enabled: true,
+          installed: true,
+          auth: { status: "unknown" },
+          models: [
+            {
+              slug: "default",
+              name: "Prime Agent Default",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    expect(buildModelOptions(config, null)).toMatchObject([
+      {
+        providerLabel: "Prime Agent",
+        providerDriver: "primeAgent",
+        label: "Prime Agent Default",
+      },
+    ]);
+  });
+
+  it("honors provider runtime and interaction presentation capabilities", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "primeAgent",
+          driver: "primeAgent",
+          enabled: true,
+          installed: true,
+          auth: { status: "unknown" },
+          supportedRuntimeModes: ["full-access"],
+          showInteractionModeToggle: false,
+          models: [],
+        },
+      ],
+    } as unknown as ServerConfig;
+    const selection = {
+      instanceId: ProviderInstanceId.make("primeAgent"),
+      model: "default",
+    };
+
+    expect(getModelSelectionSupportedRuntimeModes(config, selection)).toEqual(["full-access"]);
+    expect(resolveModelSelectionRuntimeMode(config, selection, "approval-required")).toBe(
+      "full-access",
+    );
+    expect(showModelSelectionInteractionModeToggle(config, selection)).toBe(false);
+  });
+
   it("folds legacy models into a provider-scoped menu", () => {
     const config = {
       providers: [
@@ -52,6 +112,39 @@ describe("mobile model options", () => {
         subactions: [{ id: "model:codex:gpt-5.4", title: "GPT-5.4" }],
       },
     ]);
+  });
+
+  it("disables existing-thread model choices with an explanation", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "primeAgent",
+          driver: "primeAgent",
+          displayName: "Prime Agent",
+          enabled: true,
+          installed: true,
+          auth: { status: "unknown" },
+          models: [
+            { slug: "default", name: "Default", isCustom: false, capabilities: null },
+            { slug: "anthropic/fable", name: "Fable", isCustom: false, capabilities: null },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+    const selection = {
+      instanceId: ProviderInstanceId.make("primeAgent"),
+      model: "default",
+    };
+    const actions = buildModelMenuActions(
+      groupByProvider(buildModelOptions(config, selection)),
+      selection,
+      (option) => (option.selection.model === "default" ? undefined : "Start a new task"),
+    );
+
+    expect(actions[0]?.subactions?.[1]).toMatchObject({
+      subtitle: "Start a new task",
+      attributes: { disabled: true },
+    });
   });
 
   it("omits an empty provider menu when every model is legacy", () => {

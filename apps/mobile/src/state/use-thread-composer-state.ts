@@ -21,6 +21,10 @@ import {
 } from "../lib/composerImages";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
+import {
+  resolveModelSelectionRuntimeMode,
+  showModelSelectionInteractionModeToggle,
+} from "../lib/modelOptions";
 import { buildThreadFeed } from "../lib/threadActivity";
 import { appAtomRegistry } from "../state/atom-registry";
 import {
@@ -37,6 +41,7 @@ import {
   useComposerDraft,
 } from "./use-composer-drafts";
 import { setPendingConnectionError } from "../state/use-remote-environment-registry";
+import { useEnvironmentServerConfig } from "../state/entities";
 import { useSelectedThreadDetail } from "../state/use-thread-detail";
 import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
@@ -76,6 +81,9 @@ export function useThreadDraftForThread(input: {
 export function useThreadComposerState() {
   const { selectedThread: selectedThreadShell } = useThreadSelection();
   const selectedThreadDetail = useSelectedThreadDetail();
+  const selectedThreadServerConfig = useEnvironmentServerConfig(
+    selectedThreadShell?.environmentId ?? null,
+  );
   const composerDrafts = useAtomValue(composerDraftsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
 
@@ -101,8 +109,22 @@ export function useThreadComposerState() {
   const selectedThreadQueueCount = selectedThreadQueuedMessages.length;
   const selectedThread = selectedThreadDetail ?? selectedThreadShell;
   const modelSelection = selectedDraft?.modelSelection ?? selectedThread?.modelSelection ?? null;
-  const runtimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
-  const interactionMode = selectedDraft?.interactionMode ?? selectedThread?.interactionMode ?? null;
+  const selectedRuntimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
+  const runtimeMode = selectedRuntimeMode
+    ? resolveModelSelectionRuntimeMode(
+        selectedThreadServerConfig,
+        modelSelection,
+        selectedRuntimeMode,
+      )
+    : null;
+  const selectedInteractionMode =
+    selectedDraft?.interactionMode ?? selectedThread?.interactionMode ?? null;
+  const interactionMode = showModelSelectionInteractionModeToggle(
+    selectedThreadServerConfig,
+    modelSelection,
+  )
+    ? selectedInteractionMode
+    : "default";
 
   const selectedThreadSessionActivity = useMemo(() => {
     const selectedThread = selectedThreadDetail ?? selectedThreadShell;
@@ -149,6 +171,18 @@ export function useThreadComposerState() {
 
     const metadata = makeQueuedMessageMetadata();
     const messageId = MessageId.make(metadata.messageId);
+    const modelSelection = draft.modelSelection ?? thread.modelSelection;
+    const runtimeMode = resolveModelSelectionRuntimeMode(
+      selectedThreadServerConfig,
+      modelSelection,
+      draft.runtimeMode ?? thread.runtimeMode,
+    );
+    const interactionMode = showModelSelectionInteractionModeToggle(
+      selectedThreadServerConfig,
+      modelSelection,
+    )
+      ? (draft.interactionMode ?? thread.interactionMode)
+      : "default";
     // Enqueue publishes the queued atom synchronously (the durable write
     // happens behind it), so clearing the draft here gives send feedback on
     // the tap frame instead of after file I/O. If the write fails the message
@@ -161,9 +195,9 @@ export function useThreadComposerState() {
       commandId: CommandId.make(metadata.commandId),
       text,
       attachments,
-      modelSelection: draft.modelSelection ?? thread.modelSelection,
-      runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
-      interactionMode: draft.interactionMode ?? thread.interactionMode,
+      modelSelection,
+      runtimeMode,
+      interactionMode,
       createdAt: metadata.createdAt,
     });
     clearComposerDraftContent(threadKey);
@@ -179,7 +213,7 @@ export function useThreadComposerState() {
       );
     });
     return messageId;
-  }, [selectedThreadDetail, selectedThreadShell]);
+  }, [selectedThreadDetail, selectedThreadServerConfig, selectedThreadShell]);
 
   const onChangeDraftMessage = useCallback(
     (value: string) => {
@@ -274,9 +308,35 @@ export function useThreadComposerState() {
       if (!selectedThreadKey) {
         return;
       }
-      updateComposerDraftSettings(selectedThreadKey, { modelSelection: value });
+      const thread = selectedThreadDetail ?? selectedThreadShell;
+      const currentRuntimeMode = selectedDraft?.runtimeMode ?? thread?.runtimeMode;
+      const currentInteractionMode = selectedDraft?.interactionMode ?? thread?.interactionMode;
+      updateComposerDraftSettings(selectedThreadKey, {
+        modelSelection: value,
+        ...(currentRuntimeMode
+          ? {
+              runtimeMode: resolveModelSelectionRuntimeMode(
+                selectedThreadServerConfig,
+                value,
+                currentRuntimeMode,
+              ),
+            }
+          : {}),
+        ...(!showModelSelectionInteractionModeToggle(selectedThreadServerConfig, value)
+          ? { interactionMode: "default" as const }
+          : currentInteractionMode
+            ? { interactionMode: currentInteractionMode }
+            : {}),
+      });
     },
-    [selectedThreadKey],
+    [
+      selectedDraft?.interactionMode,
+      selectedDraft?.runtimeMode,
+      selectedThreadDetail,
+      selectedThreadKey,
+      selectedThreadServerConfig,
+      selectedThreadShell,
+    ],
   );
 
   const onUpdateRuntimeMode = useCallback(

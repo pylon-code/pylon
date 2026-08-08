@@ -12,6 +12,7 @@ import {
   sortProviderInstanceEntries,
 } from "../../providerInstances";
 import {
+  getBackgroundTextGenerationProviders,
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
 } from "../../modelSelection";
@@ -59,13 +60,23 @@ export function SourceControlWritingSettingsSection() {
   const activeSelection =
     resolvedSourceControlWriterSelection === settings.textGenerationModelSelection
       ? defaultModelSelection
-      : resolvedSourceControlWriterSelection;
+      : resolveAppModelSelectionState(
+          {
+            ...settings,
+            textGenerationModelSelection: resolvedSourceControlWriterSelection,
+          },
+          serverProviders,
+        );
+  const backgroundTextGenerationProviders = getBackgroundTextGenerationProviders(serverProviders);
   const instanceEntries = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(deriveProviderInstanceEntries(serverProviders), settings),
+    applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(backgroundTextGenerationProviders),
+      settings,
+    ),
   );
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
-    serverProviders,
+    backgroundTextGenerationProviders,
     activeSelection.instanceId,
     activeSelection.model,
   );

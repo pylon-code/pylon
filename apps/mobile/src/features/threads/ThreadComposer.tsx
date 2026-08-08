@@ -54,7 +54,14 @@ import {
 import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
-import { buildModelMenuActions, buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import {
+  buildModelMenuActions,
+  buildModelOptions,
+  getModelSelectionSupportedRuntimeModes,
+  groupByProvider,
+  resolveModelSelectionRuntimeMode,
+  showModelSelectionInteractionModeToggle,
+} from "../../lib/modelOptions";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import {
@@ -315,8 +322,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ? "Queue"
       : "Send";
   const currentModelSelection = props.selectedThread.modelSelection;
-  const currentRuntimeMode = props.selectedThread.runtimeMode;
-  const currentInteractionMode = props.selectedThread.interactionMode ?? "default";
+  const currentRuntimeMode = resolveModelSelectionRuntimeMode(
+    props.serverConfig,
+    currentModelSelection,
+    props.selectedThread.runtimeMode,
+  );
+  const supportedRuntimeModes = getModelSelectionSupportedRuntimeModes(
+    props.serverConfig,
+    currentModelSelection,
+  );
+  const showInteractionModeToggle = showModelSelectionInteractionModeToggle(
+    props.serverConfig,
+    currentModelSelection,
+  );
+  const currentInteractionMode = showInteractionModeToggle
+    ? (props.selectedThread.interactionMode ?? "default")
+    : "default";
   const connectionStatus = composerConnectionStatus({
     connectionError: props.connectionError,
     connectionState: props.connectionState,
@@ -380,20 +401,24 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           label: "/model",
           description: "Switch model",
         },
-        {
-          id: "cmd:plan",
-          type: "slash-command" as const,
-          command: "plan",
-          label: "/plan",
-          description: "Switch to plan mode",
-        },
-        {
-          id: "cmd:default",
-          type: "slash-command" as const,
-          command: "default",
-          label: "/default",
-          description: "Switch to default mode",
-        },
+        ...(showInteractionModeToggle
+          ? [
+              {
+                id: "cmd:plan",
+                type: "slash-command" as const,
+                command: "plan" as const,
+                label: "/plan",
+                description: "Switch to plan mode",
+              },
+              {
+                id: "cmd:default",
+                type: "slash-command" as const,
+                command: "default" as const,
+                label: "/default",
+                description: "Switch to default mode",
+              },
+            ]
+          : []),
       ];
       const builtIn = allBuiltIn.filter((item) => item.command.includes(q));
 
@@ -510,7 +535,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }
 
     return [];
-  }, [composerTrigger, pathSearch.entries, selectedProviderStatus]);
+  }, [composerTrigger, pathSearch.entries, selectedProviderStatus, showInteractionModeToggle]);
 
   // ── Handle command selection ──────────────────────────────
   const { onChangeDraftMessage, onUpdateInteractionMode, draftMessage, onSendMessage } = props;
@@ -606,10 +631,23 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     () => providerOptionsConfigurationLabel(providerOptionDescriptors),
     [providerOptionDescriptors],
   );
-  const modelMenuActions = useMemo(
-    () => buildModelMenuActions(providerGroups, currentModelSelection),
-    [providerGroups, currentModelSelection],
-  );
+  const modelMenuActions = useMemo(() => {
+    const currentProviderRequiresNewThread =
+      selectedProviderStatus?.requiresNewThreadForModelChange === true;
+    return buildModelMenuActions(providerGroups, currentModelSelection, (option) => {
+      const isCurrent =
+        option.selection.instanceId === currentModelSelection.instanceId &&
+        option.selection.model === currentModelSelection.model;
+      if (isCurrent) return undefined;
+      const nextProviderRequiresNewThread =
+        props.serverConfig?.providers.find(
+          (provider) => provider.instanceId === option.selection.instanceId,
+        )?.requiresNewThreadForModelChange === true;
+      return currentProviderRequiresNewThread || nextProviderRequiresNewThread
+        ? "Start a new task to use this model"
+        : undefined;
+    });
+  }, [currentModelSelection, props.serverConfig, providerGroups, selectedProviderStatus]);
 
   // ── Options menu ─────────────────────────────────────────
   const optionsMenuActions = useMemo(
@@ -631,33 +669,49 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           { id: "options:runtime:auto-accept-edits", title: "Auto-accept edits" },
           { id: "options:runtime:auto", title: "Auto" },
           { id: "options:runtime:full-access", title: "Full access" },
-        ].map((option) => {
-          const value = option.id.replace("options:runtime:", "");
-          return {
-            id: option.id,
-            title: option.title,
-            state: currentRuntimeMode === value ? ("on" as const) : undefined,
-          };
-        }),
+        ]
+          .filter((option) =>
+            supportedRuntimeModes.includes(
+              option.id.replace("options:runtime:", "") as RuntimeMode,
+            ),
+          )
+          .map((option) => {
+            const value = option.id.replace("options:runtime:", "");
+            return {
+              id: option.id,
+              title: option.title,
+              state: currentRuntimeMode === value ? ("on" as const) : undefined,
+            };
+          }),
       },
-      {
-        id: "options-interaction",
-        title: "Interaction",
-        subtitle: currentInteractionMode === "plan" ? "Plan" : "Default",
-        subactions: [
-          { id: "options:interaction:default", title: "Default" },
-          { id: "options:interaction:plan", title: "Plan" },
-        ].map((option) => {
-          const value = option.id.replace("options:interaction:", "");
-          return {
-            id: option.id,
-            title: option.title,
-            state: currentInteractionMode === value ? ("on" as const) : undefined,
-          };
-        }),
-      },
+      ...(showInteractionModeToggle
+        ? [
+            {
+              id: "options-interaction",
+              title: "Interaction",
+              subtitle: currentInteractionMode === "plan" ? "Plan" : "Default",
+              subactions: [
+                { id: "options:interaction:default", title: "Default" },
+                { id: "options:interaction:plan", title: "Plan" },
+              ].map((option) => {
+                const value = option.id.replace("options:interaction:", "");
+                return {
+                  id: option.id,
+                  title: option.title,
+                  state: currentInteractionMode === value ? ("on" as const) : undefined,
+                };
+              }),
+            },
+          ]
+        : []),
     ],
-    [currentInteractionMode, currentRuntimeMode, providerOptionDescriptors],
+    [
+      currentInteractionMode,
+      currentRuntimeMode,
+      providerOptionDescriptors,
+      showInteractionModeToggle,
+      supportedRuntimeModes,
+    ],
   );
 
   // ── Menu handlers ────────────────────────────────────────

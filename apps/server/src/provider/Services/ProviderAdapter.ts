@@ -24,12 +24,18 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
+export type ProviderConversationRollbackMode = "supported" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
   /**
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+  /**
+   * Optional for adapter compatibility. Absence preserves the legacy behavior
+   * where provider conversation rollback is assumed to be supported.
+   */
+  readonly conversationRollback?: ProviderConversationRollbackMode;
 }
 
 export interface ProviderThreadTurnSnapshot {

@@ -1,5 +1,7 @@
 import { useColorScheme } from "react-native";
-import { Path, Svg } from "react-native-svg";
+import { Circle, Path, Rect, Svg } from "react-native-svg";
+
+import { providerIconKind } from "./providerIconKind";
 
 type ProviderIconProps = {
   readonly provider: string | null | undefined;
@@ -10,8 +12,9 @@ export function ProviderIcon(props: ProviderIconProps) {
   const isDarkMode = useColorScheme() === "dark";
   const size = props.size ?? 16;
   const mono = isDarkMode ? "#e5e5e5" : "#171717";
+  const iconKind = providerIconKind(props.provider);
 
-  if (props.provider === "claudeAgent") {
+  if (iconKind === "claude") {
     return (
       <Svg width={size} height={size} viewBox="0 0 256 257" fill="none">
         <Path
@@ -22,7 +25,7 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  if (props.provider === "grok") {
+  if (iconKind === "grok") {
     const fill = isDarkMode ? "#F5F5F5" : "#0F0F0F";
     return (
       <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
@@ -38,7 +41,7 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  if (props.provider === "cursor") {
+  if (iconKind === "cursor") {
     return (
       <Svg width={size} height={size} viewBox="0 0 466.73 532.09" fill="none">
         <Path
@@ -49,7 +52,7 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  if (props.provider === "opencode") {
+  if (iconKind === "opencode") {
     return (
       <Svg width={size} height={size} viewBox="0 0 32 40" fill="none">
         <Path d="M24 32H8V16H24V32Z" fill={isDarkMode ? "#4B4646" : "#CFCECD"} />
@@ -58,7 +61,36 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  // codex (and unknown drivers)
+  if (iconKind === "primeAgent") {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 800 800" fill="none">
+        <Rect width="800" height="800" rx="160" fill="#000" />
+        <Path
+          fill="#fff"
+          fillRule="evenodd"
+          d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
+        />
+        <Path fill="#fff" d="M517.36 400H634.72V634.72H517.36Z" />
+      </Svg>
+    );
+  }
+
+  if (iconKind === "unknown") {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <Circle cx="12" cy="12" r="9" stroke={mono} strokeWidth="2" />
+        <Path
+          d="M9.75 9a2.25 2.25 0 1 1 3.23 2.03c-.63.31-.98.72-.98 1.47v.25"
+          stroke={mono}
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+        <Circle cx="12" cy="16.75" r="1" fill={mono} />
+      </Svg>
+    );
+  }
+
+  // Codex has its own explicit branch so an unknown driver can never inherit its mark.
   return (
     <Svg width={size} height={size} viewBox="0 0 256 260" fill="none">
       <Path

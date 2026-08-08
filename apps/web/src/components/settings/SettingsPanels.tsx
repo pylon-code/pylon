@@ -64,6 +64,7 @@ import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSet
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import {
+  getBackgroundTextGenerationProviders,
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
 } from "../../modelSelection";
@@ -1546,8 +1547,12 @@ export function GeneralSettingsPanel() {
   const textGenInstanceId = textGenerationModelSelection.instanceId;
   const textGenModel = textGenerationModelSelection.model;
   const textGenModelOptions = textGenerationModelSelection.options;
+  const backgroundTextGenerationProviders = getBackgroundTextGenerationProviders(serverProviders);
   const textGenerationModelInstanceEntries = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(deriveProviderInstanceEntries(serverProviders), settings),
+    applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(backgroundTextGenerationProviders),
+      settings,
+    ),
   );
   const textGenInstanceEntry = textGenerationModelInstanceEntries.find(
     (entry) => entry.instanceId === textGenInstanceId,
@@ -1556,7 +1561,7 @@ export function GeneralSettingsPanel() {
     textGenInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND;
   const textGenerationModelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
-    serverProviders,
+    backgroundTextGenerationProviders,
     textGenInstanceId,
     textGenModel,
   );

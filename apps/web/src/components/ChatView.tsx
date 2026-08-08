@@ -2,6 +2,7 @@ import {
   type ApprovalRequestId,
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
+  supportsServerProviderConversationRollback,
   type EnvironmentId,
   type MessageId,
   type ModelSelection,
@@ -6365,6 +6366,12 @@ function ChatViewContent(props: ChatViewProps) {
                 onOpenTurnDiff={onOpenTurnDiff}
                 revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
                 onRevertUserMessage={onRevertUserMessage}
+                {...(supportsServerProviderConversationRollback(activeProviderStatus)
+                  ? {}
+                  : {
+                      revertDisabledReason:
+                        "This provider cannot restore its conversation. Start a new thread to continue from an earlier checkpoint.",
+                    })}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
                 markdownCwd={gitCwd ?? undefined}

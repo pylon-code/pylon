@@ -19,6 +19,7 @@ import {
 } from "./keybindings.ts";
 import { EditorId } from "./editor.ts";
 import { ModelCapabilities } from "./model.ts";
+import { RuntimeMode } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerSettings } from "./settings.ts";
 
@@ -229,6 +230,9 @@ export const ServerProvider = Schema.Struct({
   continuation: Schema.optional(ServerProviderContinuation),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),
   requiresNewThreadForModelChange: Schema.optional(Schema.Boolean),
+  supportedRuntimeModes: Schema.optional(Schema.Array(RuntimeMode)),
+  supportsBackgroundTextGeneration: Schema.optional(Schema.Boolean),
+  supportsConversationRollback: Schema.optional(Schema.Boolean),
   enabled: Schema.Boolean,
   installed: Schema.Boolean,
   version: Schema.NullOr(TrimmedNonEmptyString),
@@ -272,6 +276,34 @@ export type ServerProviders = typeof ServerProviders.Type;
  */
 export const isProviderAvailable = (snapshot: ServerProvider): boolean =>
   snapshot.availability !== "unavailable";
+
+export const DEFAULT_SERVER_PROVIDER_RUNTIME_MODES: ReadonlyArray<RuntimeMode> = [
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+];
+
+export const getServerProviderSupportedRuntimeModes = (
+  snapshot: Pick<ServerProvider, "supportedRuntimeModes"> | null | undefined,
+): ReadonlyArray<RuntimeMode> =>
+  snapshot?.supportedRuntimeModes ?? DEFAULT_SERVER_PROVIDER_RUNTIME_MODES;
+
+export const resolveServerProviderRuntimeMode = (
+  snapshot: Pick<ServerProvider, "supportedRuntimeModes"> | null | undefined,
+  runtimeMode: RuntimeMode,
+): RuntimeMode => {
+  const supported = getServerProviderSupportedRuntimeModes(snapshot);
+  return supported.includes(runtimeMode) ? runtimeMode : (supported[0] ?? runtimeMode);
+};
+
+export const supportsServerProviderBackgroundTextGeneration = (
+  snapshot: Pick<ServerProvider, "supportsBackgroundTextGeneration"> | null | undefined,
+): boolean => snapshot?.supportsBackgroundTextGeneration !== false;
+
+export const supportsServerProviderConversationRollback = (
+  snapshot: Pick<ServerProvider, "supportsConversationRollback"> | null | undefined,
+): boolean => snapshot?.supportsConversationRollback !== false;
 
 export const ServerObservability = Schema.Struct({
   logsDirectoryPath: TrimmedNonEmptyString,

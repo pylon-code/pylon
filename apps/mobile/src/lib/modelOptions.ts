@@ -1,7 +1,12 @@
 import type {
   ModelCapabilities,
   ModelSelection,
+  RuntimeMode,
   ServerConfig as T3ServerConfig,
+} from "@t3tools/contracts";
+import {
+  getServerProviderSupportedRuntimeModes,
+  resolveServerProviderRuntimeMode,
 } from "@t3tools/contracts";
 import type { MenuAction } from "@react-native-menu/menu";
 import {
@@ -36,6 +41,7 @@ function providerDisplayLabel(provider: {
   if (provider.displayName) return provider.displayName;
   if (provider.driver === "codex") return "Codex";
   if (provider.driver === "claudeAgent") return "Claude";
+  if (provider.driver === "primeAgent") return "Prime Agent";
   return provider.instanceId;
 }
 
@@ -83,6 +89,40 @@ export function resolveSelectableModelSelection(
     provider.auth.status !== "unauthenticated"
     ? selection
     : null;
+}
+
+export function getModelSelectionProvider(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection | null | undefined,
+) {
+  return (
+    config?.providers.find((provider) => provider.instanceId === selection?.instanceId) ?? null
+  );
+}
+
+export function getModelSelectionSupportedRuntimeModes(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection | null | undefined,
+): ReadonlyArray<RuntimeMode> {
+  return getServerProviderSupportedRuntimeModes(getModelSelectionProvider(config, selection));
+}
+
+export function resolveModelSelectionRuntimeMode(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection | null | undefined,
+  runtimeMode: RuntimeMode,
+): RuntimeMode {
+  return resolveServerProviderRuntimeMode(
+    getModelSelectionProvider(config, selection),
+    runtimeMode,
+  );
+}
+
+export function showModelSelectionInteractionModeToggle(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection | null | undefined,
+): boolean {
+  return getModelSelectionProvider(config, selection)?.showInteractionModeToggle ?? true;
 }
 
 export function buildModelOptions(
@@ -169,10 +209,17 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
   }));
 }
 
-function modelMenuAction(option: ModelOption, selectedModel: ModelSelection | null): MenuAction {
+function modelMenuAction(
+  option: ModelOption,
+  selectedModel: ModelSelection | null,
+  disabledReason?: string,
+): MenuAction {
   return {
     id: `model:${option.key}`,
     title: option.label,
+    ...(disabledReason
+      ? { subtitle: disabledReason, attributes: { disabled: true as const } }
+      : {}),
     state:
       option.selection.instanceId === selectedModel?.instanceId &&
       option.selection.model === selectedModel.model
@@ -184,6 +231,7 @@ function modelMenuAction(option: ModelOption, selectedModel: ModelSelection | nu
 export function buildModelMenuActions(
   groups: ReadonlyArray<ProviderGroup>,
   selectedModel: ModelSelection | null,
+  getDisabledReason?: (option: ModelOption) => string | undefined,
 ): MenuAction[] {
   return groups.flatMap((group) => {
     const currentModels = group.models.filter((model) => !model.isLegacy);
@@ -201,7 +249,9 @@ export function buildModelMenuActions(
               id: `provider:${group.providerKey}`,
               title: group.providerLabel,
               subtitle: selected && !selected.isLegacy ? selected.label : undefined,
-              subactions: currentModels.map((option) => modelMenuAction(option, selectedModel)),
+              subactions: currentModels.map((option) =>
+                modelMenuAction(option, selectedModel, getDisabledReason?.(option)),
+              ),
             },
           ]
         : []),
@@ -211,7 +261,9 @@ export function buildModelMenuActions(
               id: `legacy-models:${group.providerKey}`,
               title: `${group.providerLabel} legacy models`,
               subtitle: selected?.isLegacy ? selected.label : undefined,
-              subactions: legacyModels.map((option) => modelMenuAction(option, selectedModel)),
+              subactions: legacyModels.map((option) =>
+                modelMenuAction(option, selectedModel, getDisabledReason?.(option)),
+              ),
             },
           ]
         : []),

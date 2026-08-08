@@ -576,33 +576,51 @@ export function NewTaskDraftScreen(props: {
           { id: "options:runtime:auto-accept-edits", title: "Auto-accept edits" },
           { id: "options:runtime:auto", title: "Auto" },
           { id: "options:runtime:full-access", title: "Full access" },
-        ].map((option) => {
-          const value = option.id.replace("options:runtime:", "");
-          return {
-            id: option.id,
-            title: option.title,
-            state: flow.runtimeMode === value ? ("on" as const) : undefined,
-          };
-        }),
+        ]
+          .filter((option) =>
+            flow.supportedRuntimeModes.includes(
+              option.id.replace("options:runtime:", "") as Parameters<
+                typeof flow.setRuntimeMode
+              >[0],
+            ),
+          )
+          .map((option) => {
+            const value = option.id.replace("options:runtime:", "");
+            return {
+              id: option.id,
+              title: option.title,
+              state: flow.runtimeMode === value ? ("on" as const) : undefined,
+            };
+          }),
       },
-      {
-        id: "options-interaction",
-        title: "Interaction",
-        subtitle: flow.interactionMode === "plan" ? "Plan" : "Default",
-        subactions: [
-          { id: "options:interaction:default", title: "Default" },
-          { id: "options:interaction:plan", title: "Plan" },
-        ].map((option) => {
-          const value = option.id.replace("options:interaction:", "");
-          return {
-            id: option.id,
-            title: option.title,
-            state: flow.interactionMode === value ? ("on" as const) : undefined,
-          };
-        }),
-      },
+      ...(flow.showInteractionModeToggle
+        ? [
+            {
+              id: "options-interaction",
+              title: "Interaction",
+              subtitle: flow.interactionMode === "plan" ? "Plan" : "Default",
+              subactions: [
+                { id: "options:interaction:default", title: "Default" },
+                { id: "options:interaction:plan", title: "Plan" },
+              ].map((option) => {
+                const value = option.id.replace("options:interaction:", "");
+                return {
+                  id: option.id,
+                  title: option.title,
+                  state: flow.interactionMode === value ? ("on" as const) : undefined,
+                };
+              }),
+            },
+          ]
+        : []),
     ],
-    [flow.interactionMode, flow.runtimeMode, providerOptionDescriptors],
+    [
+      flow.interactionMode,
+      flow.runtimeMode,
+      flow.showInteractionModeToggle,
+      flow.supportedRuntimeModes,
+      providerOptionDescriptors,
+    ],
   );
 
   const workspaceMenuActions = useMemo(() => {

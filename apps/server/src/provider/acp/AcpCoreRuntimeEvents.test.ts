@@ -170,7 +170,32 @@ describe("AcpCoreRuntimeEvents", () => {
       type: "content.delta",
       itemId: "assistant:session-1:segment:0",
       payload: {
+        streamKind: "assistant_text",
         delta: "hello",
+      },
+    });
+
+    expect(
+      makeAcpContentDeltaEvent({
+        stamp,
+        provider: ProviderDriverKind.make("cursor"),
+        threadId: "thread-1" as never,
+        turnId,
+        itemId: "assistant:session-1:segment:0",
+        text: "reasoning",
+        rawPayload: {
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            content: { type: "text", text: "reasoning" },
+          },
+        },
+      }),
+    ).toMatchObject({
+      type: "content.delta",
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "reasoning",
       },
     });
 
