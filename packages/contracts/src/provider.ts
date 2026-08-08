@@ -22,6 +22,7 @@ import {
   RuntimeMode,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import { SessionInteractionRequestId, SessionInteractionResponse } from "./sessionInteraction.ts";
 
 const ProviderSessionStatus = Schema.Literals([
   "connecting",
@@ -108,6 +109,13 @@ export const ProviderRespondToUserInputInput = Schema.Struct({
   answers: ProviderUserInputAnswers,
 });
 export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputInput.Type;
+
+export const ProviderRespondToInteractionInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SessionInteractionRequestId,
+  response: SessionInteractionResponse,
+});
+export type ProviderRespondToInteractionInput = typeof ProviderRespondToInteractionInput.Type;
 
 const ProviderEventKind = Schema.Literals(["session", "notification", "request", "error"]);
 
