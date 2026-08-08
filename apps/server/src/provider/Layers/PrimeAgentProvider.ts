@@ -16,6 +16,7 @@ import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { makePrimeAgentEnvironment } from "../acp/PrimeAgentAcpSupport.ts";
+import { makePrimeAgentFeatureCapabilities } from "../prime/PrimeAgentFeatureCapabilities.ts";
 import {
   buildServerProvider,
   collectStreamAsString,
@@ -45,6 +46,24 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 const MODEL_DISCOVERY_REQUEST_ID = "pylon-prime-agent-models";
+
+export function stampPrimeAgentBackendSnapshot(
+  snapshot: ServerProviderDraft,
+  backend: { readonly runtime: "daemon" | "acp"; readonly fallbackMessage?: string },
+): ServerProviderDraft {
+  const fallbackMessage = backend.fallbackMessage?.trim();
+  const message = [snapshot.message, fallbackMessage].filter(Boolean).join(" ");
+  return {
+    ...snapshot,
+    featureCapabilities: makePrimeAgentFeatureCapabilities({
+      runtime: backend.runtime,
+      // The daemon adapter currently auto-cancels extension UI requests.
+      sessionUi: false,
+    }),
+    requiresNewThreadForModelChange: backend.runtime === "acp",
+    ...(message.length > 0 ? { message } : {}),
+  };
+}
 
 const PRIME_AGENT_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {

@@ -15,6 +15,7 @@ import {
   checkPrimeAgentProviderStatus,
   parsePrimeAgentModelDiscoveryOutput,
   primeAgentModelsFromSettings,
+  stampPrimeAgentBackendSnapshot,
 } from "./PrimeAgentProvider.ts";
 
 const decodeSettings = Schema.decodeSync(PrimeAgentSettings);
@@ -223,6 +224,39 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
       expect(snapshot.showInteractionModeToggle).toBe(false);
       expect(snapshot.supportsBackgroundTextGeneration).toBe(false);
       expect(snapshot.supportsConversationRollback).toBe(false);
+    }),
+  );
+
+  it.effect("stamps authoritative daemon capabilities and in-session model changes", () =>
+    Effect.gen(function* () {
+      const initial = yield* buildInitialPrimeAgentProviderSnapshot(decodeSettings({}));
+      const snapshot = stampPrimeAgentBackendSnapshot(initial, { runtime: "daemon" });
+
+      expect(snapshot.featureCapabilities?.version).toBe(1);
+      expect(snapshot.featureCapabilities?.agents?.support).toBe("read-only");
+      expect(snapshot.featureCapabilities?.reasoning?.support).toBe("unavailable");
+      expect(snapshot.featureCapabilities?.sessionUi?.support).toBe("unavailable");
+      expect(snapshot.requiresNewThreadForModelChange).toBe(false);
+      expect(snapshot.message).toBe("Checking Prime Agent CLI availability...");
+    }),
+  );
+
+  it.effect("stamps ACP capabilities and combines the visible fallback message", () =>
+    Effect.gen(function* () {
+      const initial = yield* buildInitialPrimeAgentProviderSnapshot(decodeSettings({}));
+      const snapshot = stampPrimeAgentBackendSnapshot(initial, {
+        runtime: "acp",
+        fallbackMessage:
+          "Prime Agent daemon integration is unavailable; using ACP compatibility mode.",
+      });
+
+      expect(snapshot.featureCapabilities?.version).toBe(1);
+      expect(snapshot.featureCapabilities?.agents?.support).toBe("unavailable");
+      expect(snapshot.featureCapabilities?.sessionUi?.support).toBe("unavailable");
+      expect(snapshot.requiresNewThreadForModelChange).toBe(true);
+      expect(snapshot.message).toBe(
+        "Checking Prime Agent CLI availability... Prime Agent daemon integration is unavailable; using ACP compatibility mode.",
+      );
     }),
   );
 

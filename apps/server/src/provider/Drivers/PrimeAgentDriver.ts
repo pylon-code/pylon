@@ -1,4 +1,5 @@
 import { PrimeAgentSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -17,9 +18,13 @@ import {
   buildInitialPrimeAgentProviderSnapshot,
   checkPrimeAgentProviderStatus,
   enrichPrimeAgentSnapshot,
+  stampPrimeAgentBackendSnapshot,
 } from "../Layers/PrimeAgentProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
+import { makePrimeAgentDaemonAdapter } from "../prime/PrimeAgentDaemonAdapter.ts";
+import { negotiatePrimeAgentBackend } from "../prime/PrimeAgentBackendSelection.ts";
+import { makePrimeAgentDaemonManager } from "../prime/PrimeAgentDaemonManager.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -87,6 +92,7 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const httpClient = yield* HttpClient.HttpClient;
       const serverSettings = yield* ServerSettingsService;
+      const serverConfig = yield* ServerConfig;
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
@@ -105,15 +111,47 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         env: processEnv,
       });
 
-      const adapter = yield* makePrimeAgentAdapter(effectiveConfig, {
+      const backend = yield* negotiatePrimeAgentBackend(
+        {
+          enabled: effectiveConfig.enabled,
+          binaryPath: effectiveConfig.binaryPath,
+          launchArgs: effectiveConfig.launchArgs,
+          settings: effectiveConfig,
+          environment: processEnv,
+          stateDir: serverConfig.stateDir,
+          providerInstanceId: instanceId,
+        },
+        {
+          resolveExecutable: (command, resolvedEnvironment) =>
+            resolveCommandPath(command, { env: resolvedEnvironment }),
+          makeManager: makePrimeAgentDaemonManager,
+        },
+      );
+      const adapterOptions = {
         environment: processEnv,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,
-      });
+      } as const;
+      const adapter =
+        backend.runtime === "daemon"
+          ? yield* makePrimeAgentDaemonAdapter(effectiveConfig, backend.manager, adapterOptions)
+          : yield* makePrimeAgentAdapter(effectiveConfig, {
+              ...adapterOptions,
+              ...(backend.fallbackMessage ? { startupWarning: backend.fallbackMessage } : {}),
+            });
+      const stampBackendSnapshot = (snapshot: ServerProviderDraft) =>
+        stampPrimeAgentBackendSnapshot(snapshot, {
+          runtime: backend.runtime,
+          ...(backend.runtime === "acp" && backend.fallbackMessage
+            ? { fallbackMessage: backend.fallbackMessage }
+            : {}),
+        });
+      const stampSnapshot = (snapshot: ServerProviderDraft) =>
+        stampIdentity(stampBackendSnapshot(snapshot));
       const textGeneration = makePrimeAgentTextGeneration();
 
       const checkProvider = checkPrimeAgentProviderStatus(effectiveConfig, processEnv).pipe(
-        Effect.map(stampIdentity),
+        Effect.map(stampSnapshot),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       );
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
@@ -125,7 +163,7 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         streamSettings: snapshotSettings.streamSettings,
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
         initialSnapshot: (settings) =>
-          buildInitialPrimeAgentProviderSnapshot(settings.provider).pipe(Effect.map(stampIdentity)),
+          buildInitialPrimeAgentProviderSnapshot(settings.provider).pipe(Effect.map(stampSnapshot)),
         checkProvider,
         enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
           enrichPrimeAgentSnapshot({
