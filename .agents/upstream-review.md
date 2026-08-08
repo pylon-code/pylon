@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "45d9aa90baab8f2d6b13c7ae3cf2f97128edaf7b"
-reviewed-through-date: "2026-08-07"
+reviewed-through: "2c7267ad43a05cf3e30343400c76fd9ac47698e7"
+reviewed-through-date: "2026-08-08"
 ---
 
 # T3 upstream review log
@@ -360,3 +360,40 @@ Pylon does not enable the React hooks rule it suppresses, which is also why
 deleting it would be wrong: the directive becomes load-bearing the moment that
 rule is turned on, and removing it now would silently hide a real dependency
 bug later.
+
+## 2026-08-08 — `45d9aa90baab8f2d6b13c7ae3cf2f97128edaf7b..2c7267ad43a05cf3e30343400c76fd9ac47698e7`
+
+Six upstream commits, six change sets, all adopted onto
+`upstream/2026-08-08-batch`. Four cherry-picked clean; `H1` and `H2` are
+manual ports because both carry upstream's plan-mode retirement, which Pylon
+declined in `F6` and declines again here.
+
+Verification: typecheck clean across contracts, web, mobile, and desktop.
+Tests pass — web 2093 (226 files), server 130 across the three touched
+suites, contracts 33, mobile 37, desktop 7. `vp fmt --check` clean.
+
+Two lint warnings were surfaced and deliberately left alone: the
+`ThemeEditorPanel.tsx` unused-disable directive already documented under the
+third 2026-08-07 batch, and an unused `pathname` in `SidebarChrome.tsx`.
+Both are pre-existing and present upstream too; neither file is touched by
+this batch.
+
+Tooling note for the next session: run `vp` from the workspace, never from a
+global vite-plus install. The global install ships its own vitest, so
+entering through it puts two vitest instances in one run and every suite
+collects zero tests with "Vitest failed to find the current suite" —
+including tests that use no Effect layers. Which `vp` you enter through
+decides this, and it propagates in-process through `vp run` into package
+scripts, so prepending `node_modules/.bin` to `PATH` does not rescue an
+invocation that already started global. A broken run does exit non-zero;
+piping it through `tail` is what hides that, so read the summary line rather
+than trusting a pipeline's status.
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---------- | --------------------- | -------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| H1         | `31891a1a0` / `#5664` | adopted  | `b77af56b3`     | Token-by-token assistant output moves into a new collapsed "Legacy features" section with a confirmation dialog, and `enableAssistantStreaming` becomes `enableLegacyTokenStreaming`. The rename is deliberate: decoding drops the old key, so prior opt-ins reset to buffered. Streaming costs one orchestration command, one websocket message, and one repaint per token, which is worst exactly where Pylon cares most. **Upstream's plan-mode row was dropped** — Pylon has no `planModeEnabled` flag and keeps plan mode first-class in the composer (extends F6).                                                                                                                                                                                                                                                                                                                                                                                                      |
+| H2         | `0de954073` / `#5672` | adopted  | `366193827`     | The flat sidebar becomes the default; the per-project tree survives as `LegacySidebar` behind Settings → General → Legacy features. `sidebarV2Enabled`/`sidebarV2ConfiguredByUser` give way to a fresh `legacySidebarEnabled`, deleting the stage-based default from `branding.logic.ts`; Settings → Beta is gone and auto-settle moves to General; mobile mirrors it with `legacyThreadListEnabled`. **Reproduced as a three-way merge rather than a cherry-pick** so Pylon's DotMatrix status system carried across the `SidebarV2.tsx` → `Sidebar.tsx` rename instead of reverting to upstream's amber/indigo/sky hues; both resulting files differ from upstream by exactly Pylon's prior DotMatrix divergence and nothing else. `index.css` collapses the `[data-sidebar-version]` selectors onto `[data-app-sidebar]`, which Pylon's F10 theme rules already keyed on. Note both key drops are silent: prior opt-outs land on the new sidebar with no migration notice. |
+| H3         | `4eaf5ef8b` / `#5673` | adopted  | `bf31b864e`     | PR status lookups stop amplifying GitHub rate limits. A throttled request is rejected immediately, so the flat 20s failure TTL made a rate-limited poller re-ask _faster_ than a healthy one and turned a transient 429 into sustained pressure; failures now back off per branch. Also skips the lookup entirely for branches with no remote-tracking ref, where the answer is a guaranteed-empty API call.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| H4         | `ed886fe18` / `#5670` | adopted  | `7b8611ab7`     | A 2s grace before the "environment unavailable" banner, so a reconnect blip no longer flashes a hard failure. Version-skew reconnects still surface immediately, keeping the Reconnect action reachable. Matters more for Pylon than upstream: relay and tunnel connections blip routinely.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| H5         | `daf8ee0b2` / `#5628` | adopted  | `2616a55d8`     | In simple typography mode the terminal inherits the code font size. It already inherited the code font _family_, so changing the code size silently left the terminal behind.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| H6         | `2c7267ad4` / `#5677` | adopted  | `f58000f1a`     | The session reaper stops silently killing live background work. It only skipped threads with an active turn, but subagent fleets, workflow runs, and Monitor loops run on after the turn settles and nothing bumps `lastSeenAt` between turns — thirty idle minutes later `stopSession` tore down the provider process and everything inside it. Now skips threads with non-null `backgroundLiveness`. The liveness registry is in-memory, so orphaned bindings after a restart still get reaped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
