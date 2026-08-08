@@ -15,23 +15,15 @@ import {
 } from "./PrimeAgentDaemonBridge.ts";
 import { decodePrimeAgentDaemonEvent, type PrimeDaemonEvent } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import {
+  isPrimeAgentCompatibleResumeCursor,
+  PRIME_AGENT_DAEMON_RESUME_CURSOR,
+  type PrimeAgentDaemonResumeCursor,
+} from "./PrimeAgentResumeCursor.ts";
+
+export { PRIME_AGENT_DAEMON_RESUME_CURSOR } from "./PrimeAgentResumeCursor.ts";
 
 const COMMAND_TIMEOUT_MS = 30_000;
-const PRIME_AGENT_DAEMON_RESUME_VERSION = 2 as const;
-const PRIME_AGENT_DAEMON_RESUME_KIND = "prime-agent-daemon-continue" as const;
-
-export const PrimeAgentDaemonResumeCursor = Schema.Struct({
-  schemaVersion: Schema.Literal(PRIME_AGENT_DAEMON_RESUME_VERSION),
-  kind: Schema.Literal(PRIME_AGENT_DAEMON_RESUME_KIND),
-  continue: Schema.Literal(true),
-});
-export type PrimeAgentDaemonResumeCursor = typeof PrimeAgentDaemonResumeCursor.Type;
-
-export const PRIME_AGENT_DAEMON_RESUME_CURSOR: PrimeAgentDaemonResumeCursor = {
-  schemaVersion: PRIME_AGENT_DAEMON_RESUME_VERSION,
-  kind: PRIME_AGENT_DAEMON_RESUME_KIND,
-  continue: true,
-};
 
 const thinkingLevelSchema = Schema.Literals([
   "off",
@@ -75,7 +67,6 @@ const modelSchema = Schema.Struct({
   provider: Schema.String,
 });
 
-const decodeResumeCursor = Schema.decodeUnknownOption(PrimeAgentDaemonResumeCursor);
 const decodeThinkingLevel = Schema.decodeUnknownOption(thinkingLevelSchema);
 const decodeServiceTier = Schema.decodeUnknownOption(serviceTierSchema);
 const decodeImage = Schema.decodeUnknownOption(imageSchema);
@@ -273,7 +264,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     const cwd = yield* validateNonEmpty("create-session", "cwd", input.cwd);
     const sessionDir = yield* validateNonEmpty("create-session", "sessionDir", input.sessionDir);
     const shouldContinue = input.resumeCursor !== undefined;
-    if (shouldContinue && Option.isNone(decodeResumeCursor(input.resumeCursor))) {
+    if (shouldContinue && !isPrimeAgentCompatibleResumeCursor(input.resumeCursor)) {
       return yield* runtimeError(
         "create-session",
         "invalid-input",
