@@ -1,7 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ApprovalRequestId, type ProviderApprovalDecision } from "@t3tools/contracts";
+import {
+  ApprovalRequestId,
+  type ProviderApprovalDecision,
+  type SessionInteractionRequestId,
+  type SessionInteractionResponse,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import { Atom } from "effect/unstable/reactivity";
 
 import { threadEnvironment } from "../state/threads";
@@ -14,6 +20,20 @@ import {
   sortThreadActivities,
   type PendingUserInputDraftAnswer,
 } from "../lib/threadActivity";
+import {
+  acquireInteractionSubmissionLock,
+  beginInteractionSubmission,
+  interactionCommandAccepted,
+  interactionCommandFailed,
+  reconcileInteractionSubmission,
+  releaseInteractionSubmissionLock,
+  type InteractionSubmissionState,
+} from "../lib/interactionSubmission";
+import {
+  buildSessionInteractionCommandInput,
+  compactSessionPresentationText,
+  foldSessionInteractionActivities,
+} from "../lib/sessionInteractions";
 import { appAtomRegistry } from "./atom-registry";
 import { useSelectedThreadDetail } from "./use-thread-detail";
 import { useThreadSelection } from "./use-thread-selection";
@@ -54,6 +74,13 @@ function setUserInputDraftCustomAnswer(
   });
 }
 
+function interactionResponseError(cause: Cause.Cause<unknown>): string {
+  const error = Cause.squash(cause);
+  return error instanceof Error && error.message.trim().length > 0
+    ? compactSessionPresentationText(error.message)
+    : "The response could not be sent. Try again.";
+}
+
 export function useSelectedThreadRequests() {
   const respondToApproval = useAtomCommand(
     threadEnvironment.respondToApproval,
@@ -63,6 +90,10 @@ export function useSelectedThreadRequests() {
     threadEnvironment.respondToUserInput,
     "thread user input response",
   );
+  const respondToInteraction = useAtomCommand(threadEnvironment.respondToInteraction, {
+    label: "thread interaction response",
+    reportFailure: false,
+  });
   const { selectedThread: selectedThreadShell } = useThreadSelection();
   const selectedThread = useSelectedThreadDetail();
   const userInputDraftsByRequestKey = useAtomValue(userInputDraftsByRequestKeyAtom);
@@ -70,12 +101,28 @@ export function useSelectedThreadRequests() {
   const [respondingUserInputId, setRespondingUserInputId] = useState<ApprovalRequestId | null>(
     null,
   );
+  const [interactionSubmission, setInteractionSubmission] =
+    useState<InteractionSubmissionState | null>(null);
+  const interactionSubmissionLockRef = useRef<SessionInteractionRequestId | null>(null);
+  const interactionSubmissionAttemptRef = useRef(0);
 
   // Sort once; both derivations expect the same lifecycle ordering.
   const sortedActivities = useMemo(
     () => (selectedThread ? sortThreadActivities(selectedThread.activities) : []),
     [selectedThread],
   );
+  const sessionInteractionState = useMemo(
+    () =>
+      foldSessionInteractionActivities(sortedActivities, {
+        terminalSession: selectedThreadShell?.session?.status === "stopped",
+      }),
+    [selectedThreadShell?.session?.status, sortedActivities],
+  );
+  const activePendingInteraction = sessionInteractionState.pending[0] ?? null;
+  const activeInteractionFailure =
+    sessionInteractionState.failures.find(
+      (failure) => failure.requestId === activePendingInteraction?.requestId,
+    ) ?? null;
   const activePendingApprovals = useMemo(
     () => derivePendingApprovals(sortedActivities),
     [sortedActivities],
@@ -166,16 +213,117 @@ export function useSelectedThreadRequests() {
     selectedThreadShell,
   ]);
 
+  useEffect(() => {
+    setInteractionSubmission((current) => {
+      if (current === null) {
+        return null;
+      }
+      const next = reconcileInteractionSubmission(
+        current,
+        activePendingInteraction?.requestId ?? null,
+        activeInteractionFailure,
+      );
+      if (next === null || (current.phase === "submitting" && next.phase === "error")) {
+        interactionSubmissionAttemptRef.current += 1;
+        releaseInteractionSubmissionLock(interactionSubmissionLockRef, current.requestId);
+      }
+      return next;
+    });
+  }, [activeInteractionFailure, activePendingInteraction?.requestId]);
+
+  const onRespondToInteraction = useCallback(
+    async (requestId: SessionInteractionRequestId, response: SessionInteractionResponse) => {
+      if (
+        !selectedThreadShell ||
+        !acquireInteractionSubmissionLock(interactionSubmissionLockRef, requestId)
+      ) {
+        return;
+      }
+
+      const attempt = interactionSubmissionAttemptRef.current + 1;
+      interactionSubmissionAttemptRef.current = attempt;
+      setInteractionSubmission(
+        beginInteractionSubmission(
+          requestId,
+          response,
+          activeInteractionFailure?.requestId === requestId ? activeInteractionFailure.id : null,
+        ),
+      );
+      try {
+        const result = await respondToInteraction({
+          environmentId: selectedThreadShell.environmentId,
+          input: buildSessionInteractionCommandInput(selectedThreadShell.id, requestId, response),
+        });
+        if (interactionSubmissionAttemptRef.current !== attempt) {
+          return result;
+        }
+        if (result._tag === "Failure") {
+          releaseInteractionSubmissionLock(interactionSubmissionLockRef, requestId);
+        }
+        setInteractionSubmission((current) => {
+          if (current?.requestId !== requestId) {
+            return current;
+          }
+          return result._tag === "Failure"
+            ? interactionCommandFailed(current, interactionResponseError(result.cause))
+            : interactionCommandAccepted(current);
+        });
+        // Success only means the event-sourced command was accepted. Keep the
+        // controls disabled until interaction.resolved or a matching provider
+        // failure arrives, otherwise a fast second tap can race the reactor.
+        return result;
+      } catch (error) {
+        if (interactionSubmissionAttemptRef.current !== attempt) {
+          return undefined;
+        }
+        releaseInteractionSubmissionLock(interactionSubmissionLockRef, requestId);
+        setInteractionSubmission((current) =>
+          current?.requestId === requestId
+            ? interactionCommandFailed(
+                current,
+                error instanceof Error && error.message.trim().length > 0
+                  ? compactSessionPresentationText(error.message)
+                  : "The response could not be sent. Try again.",
+              )
+            : current,
+        );
+        return undefined;
+      }
+    },
+    [activeInteractionFailure, respondToInteraction, selectedThreadShell],
+  );
+
+  const onRetryInteraction = useCallback(async () => {
+    if (interactionSubmission?.phase !== "error") {
+      return;
+    }
+    return onRespondToInteraction(interactionSubmission.requestId, interactionSubmission.response);
+  }, [interactionSubmission, onRespondToInteraction]);
+
   return {
     activePendingApproval,
     activePendingUserInput,
     activePendingUserInputDrafts,
     activePendingUserInputAnswers,
+    activePendingInteraction,
+    sessionInteractionPresentation: sessionInteractionState,
+    interactionSubmitting:
+      interactionSubmission?.requestId === activePendingInteraction?.requestId &&
+      interactionSubmission.phase === "submitting",
+    interactionError:
+      interactionSubmission?.requestId === activePendingInteraction?.requestId
+        ? interactionSubmission.error
+        : (activeInteractionFailure?.message ?? null),
+    interactionCanRetry:
+      interactionSubmission?.requestId === activePendingInteraction?.requestId &&
+      interactionSubmission.phase === "error",
     respondingApprovalId,
     respondingUserInputId,
     onRespondToApproval,
     onSelectUserInputOption,
     onChangeUserInputCustomAnswer,
     onSubmitUserInput,
+    onRespondToInteraction,
+    onRetryInteraction,
   };
 }
