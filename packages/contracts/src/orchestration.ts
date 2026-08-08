@@ -22,6 +22,12 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import {
+  SessionInteractionRequest,
+  SessionInteractionRequestId,
+  SessionInteractionResponse,
+  SessionPresentation,
+} from "./sessionInteraction.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -324,6 +330,58 @@ export const OrchestrationThreadActivity = Schema.Struct({
   createdAt: IsoDateTime,
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
+
+export const SessionInteractionRequestedActivityPayload = Schema.Struct({
+  requestId: SessionInteractionRequestId,
+  request: SessionInteractionRequest,
+});
+export type SessionInteractionRequestedActivityPayload =
+  typeof SessionInteractionRequestedActivityPayload.Type;
+
+export const SessionInteractionResolvedActivityPayload = Schema.Struct({
+  requestId: SessionInteractionRequestId,
+  response: SessionInteractionResponse,
+});
+export type SessionInteractionResolvedActivityPayload =
+  typeof SessionInteractionResolvedActivityPayload.Type;
+
+export const SessionPresentationUpdatedActivityPayload = Schema.Struct({
+  presentation: SessionPresentation,
+});
+export type SessionPresentationUpdatedActivityPayload =
+  typeof SessionPresentationUpdatedActivityPayload.Type;
+
+const SessionActivityBaseFields = {
+  id: EventId,
+  tone: OrchestrationThreadActivityTone,
+  summary: TrimmedNonEmptyString,
+  turnId: Schema.NullOr(TurnId),
+  sequence: Schema.optional(NonNegativeInt),
+  createdAt: IsoDateTime,
+} as const;
+
+/** Strict decoder for the provider-neutral interaction activities carried in the generic timeline. */
+export const OrchestrationSessionActivity = Schema.Union([
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("interaction.requested"),
+    payload: SessionInteractionRequestedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("interaction.resolved"),
+    payload: SessionInteractionResolvedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("session-presentation.updated"),
+    payload: SessionPresentationUpdatedActivityPayload,
+  }),
+]);
+export type OrchestrationSessionActivity = typeof OrchestrationSessionActivity.Type;
+export const decodeOrchestrationSessionActivity = Schema.decodeUnknownOption(
+  OrchestrationSessionActivity,
+);
 
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
@@ -877,6 +935,15 @@ const ThreadUserInputRespondCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadInteractionRespondCommand = Schema.Struct({
+  type: Schema.Literal("thread.interaction.respond"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SessionInteractionRequestId,
+  response: SessionInteractionResponse,
+  createdAt: IsoDateTime,
+});
+
 const ThreadCheckpointRevertCommand = Schema.Struct({
   type: Schema.Literal("thread.checkpoint.revert"),
   commandId: CommandId,
@@ -914,6 +981,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
+  ThreadInteractionRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
 ]);
@@ -942,6 +1010,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
+  ThreadInteractionRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
 ]);
@@ -1061,6 +1130,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-interrupt-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
+  "thread.interaction-response-requested",
   "thread.checkpoint-revert-requested",
   "thread.reverted",
   "thread.session-stop-requested",
@@ -1257,6 +1327,15 @@ const ThreadUserInputResponseRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadInteractionResponseRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SessionInteractionRequestId,
+  response: SessionInteractionResponse,
+  createdAt: IsoDateTime,
+});
+export type ThreadInteractionResponseRequestedPayload =
+  typeof ThreadInteractionResponseRequestedPayload.Type;
+
 export const ThreadCheckpointRevertRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnCount: NonNegativeInt,
@@ -1430,6 +1509,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.user-input-response-requested"),
     payload: ThreadUserInputResponseRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.interaction-response-requested"),
+    payload: ThreadInteractionResponseRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
