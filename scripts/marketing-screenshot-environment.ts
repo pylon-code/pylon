@@ -546,7 +546,9 @@ export async function seedMarketingEnvironment(baseDir: string): Promise<string>
       title: project.title,
       repositoryUrl: project.repositoryUrl,
       favicon: project.favicon,
-      branch: project.id === HERO_PROJECT_ID ? "perf/stream-provider-output" : undefined,
+      // Spread rather than pass `undefined`: `branch` is an optional property,
+      // and exactOptionalPropertyTypes rejects an explicit undefined for it.
+      ...(project.id === HERO_PROJECT_ID ? { branch: "perf/stream-provider-output" } : {}),
     });
   }
   const dbPath = NodePath.join(baseDir, "userdata", "state.sqlite");
@@ -559,9 +561,9 @@ const invokedDirectly = process.argv[1]?.endsWith("marketing-screenshot-environm
 if (invokedDirectly) {
   const baseDir = process.argv[2];
   if (!baseDir) {
-    console.error("Usage: node scripts/marketing-screenshot-environment.ts <base-dir>");
+    process.stderr.write("Usage: node scripts/marketing-screenshot-environment.ts <base-dir>\n");
     process.exit(1);
   }
   const dbPath = await seedMarketingEnvironment(NodePath.resolve(baseDir));
-  console.log(`Seeded marketing fixture into ${dbPath}`);
+  process.stdout.write(`Seeded marketing fixture into ${dbPath}\n`);
 }
