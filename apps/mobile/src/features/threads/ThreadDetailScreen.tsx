@@ -13,6 +13,8 @@ import type {
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
+  SessionInteractionRequestId,
+  SessionInteractionResponse,
   ThreadId,
   UserInputQuestion,
 } from "@t3tools/contracts";
@@ -64,8 +66,14 @@ import type {
   PendingUserInputDraftAnswer,
   ThreadFeedEntry,
 } from "../../lib/threadActivity";
+import type {
+  PendingSessionInteraction,
+  SessionInteractionPresentationState,
+} from "../../lib/sessionInteractions";
 import { PendingApprovalCard } from "./PendingApprovalCard";
 import { PendingUserInputCard } from "./PendingUserInputCard";
+import { PendingSessionInteractionCard } from "./PendingSessionInteractionCard";
+import { SessionPresentationSurface } from "./SessionPresentationSurface";
 import {
   derivePendingUserInputMaxHeight,
   ESTIMATED_KEYBOARD_HEIGHT,
@@ -93,6 +101,11 @@ export interface ThreadDetailScreenProps {
   readonly activePendingUserInputDrafts: Record<string, PendingUserInputDraftAnswer>;
   readonly activePendingUserInputAnswers: Record<string, string | ReadonlyArray<string>> | null;
   readonly respondingUserInputId: ApprovalRequestId | null;
+  readonly activePendingInteraction: PendingSessionInteraction | null;
+  readonly sessionInteractionPresentation: SessionInteractionPresentationState;
+  readonly interactionSubmitting: boolean;
+  readonly interactionError: string | null;
+  readonly interactionCanRetry: boolean;
   readonly draftMessage: string;
   readonly draftAttachments: ReadonlyArray<DraftComposerImageAttachment>;
   readonly connectionStateLabel: EnvironmentConnectionPhase;
@@ -135,6 +148,11 @@ export interface ThreadDetailScreenProps {
     customAnswer: string,
   ) => void;
   readonly onSubmitUserInput: () => Promise<unknown>;
+  readonly onRespondToInteraction: (
+    requestId: SessionInteractionRequestId,
+    response: SessionInteractionResponse,
+  ) => Promise<unknown>;
+  readonly onRetryInteraction: () => Promise<unknown>;
   readonly showContent?: boolean;
 }
 
@@ -451,6 +469,25 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
         ?.skills ?? [],
     [props.serverConfig, selectedInstanceId],
   );
+  const aboveEditorWidgets = useMemo(
+    () =>
+      props.sessionInteractionPresentation.widgets.filter(
+        (widget) => widget.placement === "aboveEditor",
+      ),
+    [props.sessionInteractionPresentation.widgets],
+  );
+  const belowEditorWidgets = useMemo(
+    () =>
+      props.sessionInteractionPresentation.widgets.filter(
+        (widget) => widget.placement === "belowEditor",
+      ),
+    [props.sessionInteractionPresentation.widgets],
+  );
+  const hasBelowEditorWidgets = belowEditorWidgets.length > 0;
+  const hasAboveEditorPresentation =
+    props.sessionInteractionPresentation.notification !== null ||
+    props.sessionInteractionPresentation.statuses.length > 0 ||
+    aboveEditorWidgets.length > 0;
 
   useLayoutEffect(() => {
     selectedThreadKeyRef.current = selectedThreadKey;
@@ -668,7 +705,19 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               </Animated.View>
             ) : null}
             <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
-              {props.activePendingApproval || props.activePendingUserInput ? (
+              {hasAboveEditorPresentation ? (
+                <View className="px-4">
+                  <SessionPresentationSurface
+                    notification={props.sessionInteractionPresentation.notification}
+                    statuses={props.sessionInteractionPresentation.statuses}
+                    widgets={aboveEditorWidgets}
+                  />
+                </View>
+              ) : null}
+
+              {props.activePendingApproval ||
+              props.activePendingUserInput ||
+              props.activePendingInteraction ? (
                 <Animated.View
                   className="shrink-0 gap-3 px-4 pb-3"
                   // The questionnaire replaces the composer, so it must pad
@@ -706,6 +755,17 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       onSubmit={props.onSubmitUserInput}
                     />
                   ) : null}
+                  {props.activePendingInteraction ? (
+                    <PendingSessionInteractionCard
+                      key={props.activePendingInteraction.requestId}
+                      interaction={props.activePendingInteraction}
+                      submitting={props.interactionSubmitting}
+                      error={props.interactionError}
+                      canRetry={props.interactionCanRetry}
+                      onRespond={props.onRespondToInteraction}
+                      onRetry={props.onRetryInteraction}
+                    />
+                  ) : null}
                 </Animated.View>
               ) : null}
             </View>
@@ -729,7 +789,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 activeThreadBusy={props.activeThreadBusy}
                 environmentId={props.environmentId}
                 projectCwd={props.projectWorkspaceRoot}
-                bottomInset={composerBottomInset}
+                bottomInset={hasBelowEditorWidgets ? 0 : composerBottomInset}
                 onChangeDraftMessage={props.onChangeDraftMessage}
                 onPickDraftImages={props.onPickDraftImages}
                 onNativePasteImages={props.onNativePasteImages}
@@ -744,6 +804,15 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onEditorFocusChange={handleOwnedInputFocusChange}
               />
             </View>
+
+            {hasBelowEditorWidgets ? (
+              <View
+                className="w-full self-center px-4"
+                style={{ maxWidth: contentMaxWidth, paddingBottom: composerBottomInset }}
+              >
+                <SessionPresentationSurface widgets={belowEditorWidgets} />
+              </View>
+            ) : null}
           </View>
         </KeyboardStickyView>
       ) : null}

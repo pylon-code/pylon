@@ -780,6 +780,11 @@ function ThreadRouteContent(
           activePendingUserInputDrafts={requests.activePendingUserInputDrafts}
           activePendingUserInputAnswers={requests.activePendingUserInputAnswers}
           respondingUserInputId={requests.respondingUserInputId}
+          activePendingInteraction={requests.activePendingInteraction}
+          sessionInteractionPresentation={requests.sessionInteractionPresentation}
+          interactionSubmitting={requests.interactionSubmitting}
+          interactionError={requests.interactionError}
+          interactionCanRetry={requests.interactionCanRetry}
           draftMessage={composer.draftMessage}
           draftAttachments={composer.draftAttachments}
           connectionStateLabel={routeConnectionState}
@@ -808,6 +813,8 @@ function ThreadRouteContent(
           onSelectUserInputOption={requests.onSelectUserInputOption}
           onChangeUserInputCustomAnswer={requests.onChangeUserInputCustomAnswer}
           onSubmitUserInput={requests.onSubmitUserInput}
+          onRespondToInteraction={requests.onRespondToInteraction}
+          onRetryInteraction={requests.onRetryInteraction}
         />
       </View>
     </>
