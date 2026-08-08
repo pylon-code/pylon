@@ -14,6 +14,8 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 
+import type { SessionNotificationActivity } from "./sessionInteraction";
+
 import type {
   ChatMessage,
   ProposedPlan,
@@ -89,6 +91,8 @@ export interface WorkLogEntry {
   taskId?: string;
   /** Agent role (subagent_type) for labeled timeline rows. */
   agentRole?: string;
+  /** Strictly decoded provider-neutral notification rendered as a dedicated timeline leaf. */
+  sessionNotification?: SessionNotificationActivity;
   /**
    * Present on agent-spawn CTA rows: one per workflow run or per-turn batch
    * of direct spawns. The row renders as a call-to-action ("Kicked off N
@@ -754,6 +758,13 @@ export function deriveWorkLogEntries(
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
+    if (
+      activity.kind === "interaction.requested" ||
+      activity.kind === "interaction.resolved" ||
+      activity.kind === "session-presentation.updated"
+    ) {
+      continue;
+    }
     if (activity.kind === "tool.started") continue;
     // Agent task.started rows are CTA seeds: they carry the true spawn turn,
     // which is the batch key (completions of background subagents arrive

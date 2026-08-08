@@ -14,6 +14,7 @@ import {
   type ServerProvider,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
+  type SessionInteractionResponse,
   type ThreadId,
   type TurnId,
   type KeybindingCommand,
@@ -266,6 +267,11 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import {
+  ComposerSessionInteractionPanel,
+  SessionPresentationArea,
+  type SessionInteractionSubmissionState,
+} from "./chat/ComposerSessionInteractionPanel";
 import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
@@ -362,6 +368,11 @@ import {
   serverUpdateGuidance,
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
+import {
+  buildSessionInteractionCommandInput,
+  foldSessionInteractionActivities,
+  reconcileSessionInteractionSubmission,
+} from "../sessionInteraction";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -1250,6 +1261,9 @@ function ChatViewContent(props: ChatViewProps) {
   const respondToThreadUserInput = useAtomCommand(threadEnvironment.respondToUserInput, {
     reportFailure: false,
   });
+  const respondToThreadInteraction = useAtomCommand(threadEnvironment.respondToInteraction, {
+    reportFailure: false,
+  });
   const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
     reportFailure: false,
   });
@@ -1372,6 +1386,10 @@ function ChatViewContent(props: ChatViewProps) {
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
+  const [sessionInteractionSubmission, setSessionInteractionSubmission] =
+    useState<SessionInteractionSubmissionState | null>(null);
+  const sessionInteractionSubmissionLockRef = useRef<string | null>(null);
+  const sessionInteractionSubmissionAttemptRef = useRef(0);
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -2195,7 +2213,61 @@ function ChatViewContent(props: ChatViewProps) {
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
-  const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
+  const sessionInteractionState = useMemo(
+    () =>
+      foldSessionInteractionActivities(threadActivities, {
+        terminalSession: activeThread?.session?.status === "stopped",
+      }),
+    [activeThread?.session?.status, threadActivities],
+  );
+  const activeSessionInteraction = sessionInteractionState.pending[0] ?? null;
+  const activeSessionInteractionFailure = activeSessionInteraction
+    ? (sessionInteractionState.responseFailures.find(
+        (failure) => failure.requestId === activeSessionInteraction.requestId,
+      ) ?? null)
+    : null;
+  useEffect(() => {
+    if (sessionInteractionSubmission === null) return;
+    const reconciliation = reconcileSessionInteractionSubmission({
+      submission: sessionInteractionSubmission,
+      state: sessionInteractionState,
+    });
+    if (reconciliation.kind === "clear") {
+      sessionInteractionSubmissionAttemptRef.current += 1;
+      sessionInteractionSubmissionLockRef.current = null;
+      setSessionInteractionSubmission(null);
+      return;
+    }
+    if (reconciliation.kind === "failed") {
+      sessionInteractionSubmissionAttemptRef.current += 1;
+      sessionInteractionSubmissionLockRef.current = null;
+      setSessionInteractionSubmission({
+        ...sessionInteractionSubmission,
+        ignoredFailureActivityId: reconciliation.failure.activityId,
+        status: "error",
+        error: reconciliation.failure.error,
+      });
+    }
+  }, [
+    sessionInteractionState.pending,
+    sessionInteractionState.responseFailures,
+    sessionInteractionSubmission,
+  ]);
+  const workLogEntries = useMemo(
+    () => [
+      ...deriveWorkLogEntries(threadActivities),
+      ...sessionInteractionState.notifications.map((notification) => ({
+        id: notification.activityId,
+        createdAt: notification.createdAt,
+        turnId: notification.turnId,
+        label: notification.message,
+        tone: notification.level === "error" ? ("error" as const) : ("info" as const),
+        sourceActivityKind: "session-presentation.updated",
+        sessionNotification: notification,
+      })),
+    ],
+    [sessionInteractionState.notifications, threadActivities],
+  );
   const turnPlans = useMemo(() => deriveTurnPlans(threadActivities), [threadActivities]);
   // Native subagent fold: memoized by activity-list identity, shared by the
   // Agents surface, live strip, and workflow cards. v2Projection is null
@@ -5492,6 +5564,65 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadId, environmentId, respondToThreadUserInput, setThreadError],
   );
 
+  const onRespondToSessionInteraction = useCallback(
+    async (response: SessionInteractionResponse) => {
+      if (!activeThreadId || !activeSessionInteraction) return;
+      if (sessionInteractionSubmissionLockRef.current !== null) return;
+
+      const requestId = activeSessionInteraction.requestId;
+      const ignoredFailureActivityId = sessionInteractionState.responseFailures.find(
+        (failure) => failure.requestId === requestId,
+      )?.activityId;
+      const attempt = sessionInteractionSubmissionAttemptRef.current + 1;
+      sessionInteractionSubmissionAttemptRef.current = attempt;
+      sessionInteractionSubmissionLockRef.current = requestId;
+      setSessionInteractionSubmission({
+        requestId,
+        response,
+        status: "submitting",
+        ...(ignoredFailureActivityId === undefined ? {} : { ignoredFailureActivityId }),
+      });
+      const result = await respondToThreadInteraction({
+        environmentId,
+        input: buildSessionInteractionCommandInput({
+          threadId: activeThreadId,
+          requestId,
+          response,
+        }),
+      });
+      if (sessionInteractionSubmissionAttemptRef.current !== attempt) return result;
+      if (result._tag === "Failure") {
+        sessionInteractionSubmissionLockRef.current = null;
+        if (isAtomCommandInterrupted(result)) {
+          setSessionInteractionSubmission(null);
+          return result;
+        }
+        setSessionInteractionSubmission({
+          requestId,
+          response,
+          status: "error",
+          ...(ignoredFailureActivityId === undefined ? {} : { ignoredFailureActivityId }),
+          error: "Could not send the session response. Check the connection and try again.",
+        });
+        return result;
+      }
+      setSessionInteractionSubmission({
+        requestId,
+        response,
+        status: "submitted",
+        ...(ignoredFailureActivityId === undefined ? {} : { ignoredFailureActivityId }),
+      });
+      return result;
+    },
+    [
+      activeSessionInteraction,
+      activeThreadId,
+      environmentId,
+      respondToThreadInteraction,
+      sessionInteractionState.responseFailures,
+    ],
+  );
+
   const setActivePendingUserInputQuestionIndex = useCallback(
     (nextQuestionIndex: number) => {
       if (!activePendingUserInput) {
@@ -6631,6 +6762,28 @@ function ChatViewContent(props: ChatViewProps) {
                     >
                       <div className="chat-composer-glass-host relative z-10 w-full rounded-[22px]">
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
+                          <SessionPresentationArea
+                            statuses={sessionInteractionState.statuses}
+                            widgets={sessionInteractionState.widgets}
+                            placement="aboveEditor"
+                          />
+                          <ComposerSessionInteractionPanel
+                            interaction={activeSessionInteraction}
+                            pendingCount={sessionInteractionState.pending.length}
+                            submission={sessionInteractionSubmission}
+                            activityError={
+                              sessionInteractionSubmission === null
+                                ? (activeSessionInteractionFailure?.error ?? null)
+                                : null
+                            }
+                            otherSubmissionInFlight={
+                              sessionInteractionSubmission !== null &&
+                              sessionInteractionSubmission.status !== "error" &&
+                              sessionInteractionSubmission.requestId !==
+                                activeSessionInteraction?.requestId
+                            }
+                            onRespond={onRespondToSessionInteraction}
+                          />
                           <ChatComposer
                             composerRef={composerRef}
                             composerDraftTarget={composerDraftTarget}
@@ -6648,7 +6801,13 @@ function ChatViewContent(props: ChatViewProps) {
                             phase={phase}
                             isConnecting={isConnecting}
                             isSendBusy={isSendBusy}
-                            sendDisabledReason={threadDetailLoading ? "Messages loading" : null}
+                            sendDisabledReason={
+                              threadDetailLoading
+                                ? "Messages loading"
+                                : activeSessionInteraction
+                                  ? "Resolve the session request to continue"
+                                  : null
+                            }
                             isPreparingWorktree={isPreparingWorktree}
                             environmentUnavailable={activeEnvironmentUnavailableState}
                             activePendingApproval={activePendingApproval}
@@ -6706,6 +6865,11 @@ function ChatViewContent(props: ChatViewProps) {
                             scheduleComposerFocus={scheduleComposerFocus}
                             setThreadError={setThreadError}
                             onExpandImage={onExpandTimelineImage}
+                          />
+                          <SessionPresentationArea
+                            statuses={sessionInteractionState.statuses}
+                            widgets={sessionInteractionState.widgets}
+                            placement="belowEditor"
                           />
                         </div>
                       </div>
