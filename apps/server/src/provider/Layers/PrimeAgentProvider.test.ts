@@ -235,7 +235,13 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
       expect(snapshot.featureCapabilities?.version).toBe(1);
       expect(snapshot.featureCapabilities?.agents?.support).toBe("read-only");
       expect(snapshot.featureCapabilities?.reasoning?.support).toBe("unavailable");
-      expect(snapshot.featureCapabilities?.sessionUi?.support).toBe("unavailable");
+      expect(snapshot.featureCapabilities?.sessionUi?.support).toBe("read-write");
+      expect(snapshot.featureCapabilities?.sessionUi?.operations).toEqual([
+        "dialog",
+        "notification",
+        "status",
+        "widget",
+      ]);
       expect(snapshot.requiresNewThreadForModelChange).toBe(false);
       expect(snapshot.message).toBe("Checking Prime Agent CLI availability...");
     }),

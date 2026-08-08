@@ -57,8 +57,7 @@ export function stampPrimeAgentBackendSnapshot(
     ...snapshot,
     featureCapabilities: makePrimeAgentFeatureCapabilities({
       runtime: backend.runtime,
-      // The daemon adapter currently auto-cancels extension UI requests.
-      sessionUi: false,
+      sessionUi: backend.runtime === "daemon",
     }),
     requiresNewThreadForModelChange: backend.runtime === "acp",
     ...(message.length > 0 ? { message } : {}),

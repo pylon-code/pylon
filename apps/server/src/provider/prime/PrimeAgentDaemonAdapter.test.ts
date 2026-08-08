@@ -7,6 +7,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  SessionInteractionRequestId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -15,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
@@ -174,6 +176,7 @@ function fakeRuntimeFactory(
                 }),
               )
             : Effect.sync(() => {
+                captures.order.push(`extension:${id}`);
                 captures.extensions.push({ id, response });
               }),
         dispose: Effect.sync(() => {
@@ -260,7 +263,7 @@ describe("PrimeAgentDaemonAdapter", () => {
   );
 
   it.effect(
-    "publishes the stamped canonical sequence, switches models, sends images, and auto-cancels extensions",
+    "publishes the stamped canonical sequence, switches models, sends images, and resolves extensions",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -353,10 +356,41 @@ describe("PrimeAgentDaemonAdapter", () => {
             _tag: "ExtensionRequest",
             request: {
               id: "native-request-secret",
-              method: "native/dialog",
-              title: "/native/private/path",
+              method: "select",
+              title: " Choose a client ",
+              options: ["web", "desktop"],
+              timeoutMs: 10_000,
               text: "native payload secret",
             },
+          });
+          const requested = yield* awaitObservedType(
+            subscription.observed,
+            "interaction.requested",
+          );
+          expect(requested).toMatchObject({
+            turnId: subscription.events.findLast((event) => event.type === "turn.started")!.turnId,
+            payload: {
+              request: {
+                kind: "select",
+                title: "Choose a client",
+                options: ["web", "desktop"],
+                timeout: 10_000,
+              },
+            },
+          });
+          expect(requested.requestId).toMatch(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+          );
+          expect(captures.extensions).toEqual([]);
+          yield* adapter.respondToInteraction!(threadId, requested.requestId!, {
+            kind: "selected",
+            value: "desktop",
+          });
+          const resolved = yield* awaitObservedType(subscription.observed, "interaction.resolved");
+          expect(resolved).toMatchObject({
+            requestId: requested.requestId,
+            turnId: requested.turnId,
+            payload: { response: { kind: "selected", value: "desktop" } },
           });
           yield* offer(captures, {
             _tag: "TurnCompleted",
@@ -373,7 +407,7 @@ describe("PrimeAgentDaemonAdapter", () => {
             images: [{ type: "image", data: "AQID", mimeType: "image/png" }],
           });
           expect(captures.extensions).toEqual([
-            { id: "native-request-secret", response: { cancelled: true } },
+            { id: "native-request-secret", response: { value: "desktop" } },
           ]);
 
           const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
@@ -388,7 +422,8 @@ describe("PrimeAgentDaemonAdapter", () => {
             "item.updated",
             "item.completed",
             "item.completed",
-            "runtime.warning",
+            "interaction.requested",
+            "interaction.resolved",
             "turn.completed",
             "thread.token-usage.updated",
           ]);
@@ -420,6 +455,181 @@ describe("PrimeAgentDaemonAdapter", () => {
           expect(captures.disposeCount).toBe(1);
           expect(captures.order.at(-1)).toBe("dispose");
           expect(subscription.events.at(-1)?.type).toBe("session.exited");
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "validates interaction responses, retains failed native requests, and rejects stale ids",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: {
+              id: "native-select-secret",
+              method: "select",
+              title: "Target",
+              options: ["web", "desktop"],
+            },
+          });
+          const requested = yield* awaitObservedType(
+            subscription.observed,
+            "interaction.requested",
+          );
+          const requestId = requested.requestId!;
+
+          const wrongKind = yield* adapter.respondToInteraction!(threadId, requestId, {
+            kind: "confirmed",
+            confirmed: true,
+          }).pipe(Effect.result);
+          const wrongValue = yield* adapter.respondToInteraction!(threadId, requestId, {
+            kind: "selected",
+            value: "mobile",
+          }).pipe(Effect.result);
+          expect(wrongKind._tag).toBe("Failure");
+          expect(wrongValue._tag).toBe("Failure");
+          expect(captures.extensions).toEqual([]);
+
+          captures.extensionFailure = true;
+          const nativeFailure = yield* adapter.respondToInteraction!(threadId, requestId, {
+            kind: "selected",
+            value: "desktop",
+          }).pipe(Effect.result);
+          expect(nativeFailure._tag).toBe("Failure");
+          captures.extensionFailure = false;
+          yield* adapter.respondToInteraction!(threadId, requestId, {
+            kind: "selected",
+            value: "desktop",
+          });
+          yield* awaitObservedType(subscription.observed, "interaction.resolved");
+          expect(captures.extensions).toEqual([
+            { id: "native-select-secret", response: { value: "desktop" } },
+          ]);
+
+          const duplicate = yield* adapter.respondToInteraction!(threadId, requestId, {
+            kind: "cancelled",
+          }).pipe(Effect.result);
+          const unknown = yield* adapter.respondToInteraction!(
+            threadId,
+            SessionInteractionRequestId.make("00000000-0000-4000-8000-000000000099"),
+            { kind: "cancelled" },
+          ).pipe(Effect.result);
+          expect(duplicate._tag).toBe("Failure");
+          expect(unknown._tag).toBe("Failure");
+
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: {
+              id: "native-confirm-secret",
+              method: "confirm",
+              title: "Continue?",
+              message: "Proceed now",
+            },
+          });
+          const confirm = yield* awaitObservedType(subscription.observed, "interaction.requested");
+          yield* adapter.respondToInteraction!(threadId, confirm.requestId!, {
+            kind: "confirmed",
+            confirmed: false,
+          });
+          yield* awaitObservedType(subscription.observed, "interaction.resolved");
+
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: {
+              id: "native-input-secret",
+              method: "input",
+              title: "Branch",
+              placeholder: "feature/name",
+            },
+          });
+          const input = yield* awaitObservedType(subscription.observed, "interaction.requested");
+          yield* adapter.respondToInteraction!(threadId, input.requestId!, {
+            kind: "submitted",
+            value: "feature/safe",
+          });
+          yield* awaitObservedType(subscription.observed, "interaction.resolved");
+
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: {
+              id: "native-editor-secret",
+              method: "editor",
+              title: "Plan",
+              prefill: "# Draft",
+            },
+          });
+          const editor = yield* awaitObservedType(subscription.observed, "interaction.requested");
+          yield* adapter.respondToInteraction!(threadId, editor.requestId!, {
+            kind: "submitted",
+            value: "# Final",
+          });
+          yield* awaitObservedType(subscription.observed, "interaction.resolved");
+
+          expect(captures.extensions.slice(1)).toEqual([
+            { id: "native-confirm-secret", response: { confirmed: false } },
+            { id: "native-input-secret", response: { value: "feature/safe" } },
+            { id: "native-editor-secret", response: { value: "# Final" } },
+          ]);
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "expires blocking interactions without replying to an already-timed-out native dialog",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: {
+              id: "native-timeout-secret",
+              method: "input",
+              title: "Short-lived input",
+              timeoutMs: 1_000,
+            },
+          });
+          const requested = yield* awaitObservedType(
+            subscription.observed,
+            "interaction.requested",
+          );
+
+          yield* TestClock.adjust("1 second");
+          const resolved = yield* awaitObservedType(subscription.observed, "interaction.resolved");
+          expect(resolved).toMatchObject({
+            requestId: requested.requestId,
+            payload: { response: { kind: "cancelled" } },
+          });
+          expect(captures.extensions).toEqual([]);
+          const stale = yield* adapter.respondToInteraction!(threadId, requested.requestId!, {
+            kind: "cancelled",
+          }).pipe(Effect.result);
+          expect(stale._tag).toBe("Failure");
+          expect(
+            subscription.events.filter(
+              (event) =>
+                event.type === "interaction.resolved" && event.requestId === requested.requestId,
+            ),
+          ).toHaveLength(1);
           yield* Fiber.interrupt(subscription.fiber);
         }),
       ).pipe(Effect.provide(testLayer)),
@@ -462,6 +672,133 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("publishes safe nonblocking presentation updates and ignores malformed requests", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: {
+            id: "native-notify-secret",
+            method: "notify",
+            message: "Saved",
+            notifyType: "warning",
+            text: "native notification payload",
+          },
+        });
+        const notification = yield* awaitObservedType(
+          subscription.observed,
+          "session-presentation.updated",
+        );
+        expect(notification).toMatchObject({
+          payload: {
+            presentation: { kind: "notification", message: "Saved", level: "warning" },
+          },
+        });
+
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: {
+            id: "native-status-secret",
+            method: "setStatus",
+            statusKey: " build ",
+            statusText: "Running",
+            text: "native status payload",
+          },
+        });
+        const status = yield* awaitObservedType(
+          subscription.observed,
+          "session-presentation.updated",
+        );
+        expect(status).toMatchObject({
+          payload: { presentation: { kind: "status", key: "build", text: "Running" } },
+        });
+
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: {
+            id: "native-widget-secret",
+            method: "setWidget",
+            widgetKey: "plan",
+            widgetLines: ["1. Test", "2. Ship"],
+            widgetPlacement: "belowEditor",
+            text: "native widget payload",
+          },
+        });
+        const widget = yield* awaitObservedType(
+          subscription.observed,
+          "session-presentation.updated",
+        );
+        expect(widget).toMatchObject({
+          payload: {
+            presentation: {
+              kind: "widget",
+              key: "plan",
+              lines: ["1. Test", "2. Ship"],
+              placement: "belowEditor",
+            },
+          },
+        });
+
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: {
+            id: "native-fire-and-forget-secret",
+            method: "setTitle",
+            title: "New title",
+          },
+        });
+        yield* awaitObservedType(subscription.observed, "runtime.warning");
+        expect(captures.extensions).toEqual([]);
+        expect(captures.order).toEqual([]);
+
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: { id: "native-malformed-notify", method: "notify", message: "   " },
+        });
+        const presentationWarning = yield* awaitObservedType(
+          subscription.observed,
+          "runtime.warning",
+        );
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: {
+            id: "native-malformed-select",
+            method: "select",
+            title: "Choose",
+            options: [],
+          },
+        });
+        const blockingWarning = yield* awaitObservedType(subscription.observed, "runtime.warning");
+
+        expect(captures.extensions).toEqual([
+          { id: "native-malformed-select", response: { cancelled: true } },
+        ]);
+        expect(encodeUnknownJson([notification, status, widget])).not.toContain("native");
+        expect(presentationWarning).toMatchObject({
+          payload: {
+            message: "Prime Agent sent an unsupported interaction update; it was ignored.",
+          },
+        });
+        expect(blockingWarning).toMatchObject({
+          payload: { message: "Prime Agent sent a malformed interaction request; it was ignored." },
+        });
+        expect(encodeUnknownJson([presentationWarning, blockingWarning])).not.toContain(
+          "malformed-select",
+        );
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("fails closed when extension cancellation cannot be delivered", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -483,7 +820,8 @@ describe("PrimeAgentDaemonAdapter", () => {
           _tag: "ExtensionRequest",
           request: {
             id: "native-extension-secret",
-            method: "native/secret-method",
+            method: "confirm",
+            title: "   ",
             text: "native secret payload",
           },
         });
@@ -504,6 +842,51 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "cancels pending interactions before stop disposal and resolves each exactly once",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: { id: "native-stop-secret", method: "input", title: "Pending input" },
+          });
+          const requested = yield* awaitObservedType(
+            subscription.observed,
+            "interaction.requested",
+          );
+
+          yield* adapter.stopSession(threadId);
+          const resolved = yield* awaitObservedType(subscription.observed, "interaction.resolved");
+          yield* awaitObservedType(subscription.observed, "session.exited");
+
+          expect(resolved).toMatchObject({
+            requestId: requested.requestId,
+            payload: { response: { kind: "cancelled" } },
+          });
+          expect(
+            subscription.events.filter(
+              (event) =>
+                event.type === "interaction.resolved" && event.requestId === requested.requestId,
+            ),
+          ).toHaveLength(1);
+          expect(captures.extensions).toEqual([
+            { id: "native-stop-secret", response: { cancelled: true } },
+          ]);
+          expect(captures.order).toEqual(["extension:native-stop-secret", "dispose"]);
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
   );
 
   it.effect("treats SessionClosed as terminal cleanup without duplicate exit or completion", () =>
@@ -530,12 +913,29 @@ describe("PrimeAgentDaemonAdapter", () => {
           .pipe(Effect.forkChild);
         yield* awaitObservedType(subscription.observed, "turn.started");
         yield* Queue.take(captures.promptObserved!);
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: { id: "native-close-secret", method: "confirm", title: "Still pending?" },
+        });
+        const requested = yield* awaitObservedType(subscription.observed, "interaction.requested");
         yield* offer(captures, { _tag: "SessionClosed", error: "daemon closed" });
+        const resolved = yield* awaitObservedType(subscription.observed, "interaction.resolved");
         yield* awaitObservedType(subscription.observed, "turn.completed");
         yield* awaitObservedType(subscription.observed, "session.exited");
         const result = yield* Fiber.join(turnFiber);
 
         expect(captures.disposeCount).toBe(1);
+        expect(captures.extensions).toEqual([]);
+        expect(resolved).toMatchObject({
+          requestId: requested.requestId,
+          payload: { response: { kind: "cancelled" } },
+        });
+        expect(
+          subscription.events.filter(
+            (event) =>
+              event.type === "interaction.resolved" && event.requestId === requested.requestId,
+          ),
+        ).toHaveLength(1);
         expect(yield* adapter.hasSession(threadId)).toBe(false);
         expect(yield* adapter.listSessions()).toEqual([]);
         expect(

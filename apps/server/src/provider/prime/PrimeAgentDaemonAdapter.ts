@@ -5,6 +5,10 @@ import {
   type ProviderSession,
   ProviderDriverKind,
   ProviderInstanceId,
+  SessionInteractionRequest,
+  SessionInteractionRequestId,
+  SessionInteractionResponse,
+  SessionPresentation,
   type ProviderTurnStartResult,
   type ThreadId,
   TurnId,
@@ -20,6 +24,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
@@ -72,6 +77,115 @@ interface PrimeAgentDaemonActiveTurn {
   assistantTextStreamed: boolean;
 }
 
+type PrimeAgentDaemonBlockingInteractionMethod = "select" | "confirm" | "input" | "editor";
+
+interface PrimeAgentDaemonPendingInteraction {
+  readonly nativeId: string;
+  readonly method: PrimeAgentDaemonBlockingInteractionMethod;
+  readonly selectOptions: ReadonlySet<string> | undefined;
+}
+
+type PrimeAgentDaemonExtensionProjection =
+  | {
+      readonly _tag: "Blocking";
+      readonly method: PrimeAgentDaemonBlockingInteractionMethod;
+      readonly request: SessionInteractionRequest;
+    }
+  | { readonly _tag: "Presentation"; readonly presentation: SessionPresentation };
+
+const decodeSessionInteractionRequest = Schema.decodeUnknownOption(SessionInteractionRequest);
+const decodeSessionInteractionResponse = Schema.decodeUnknownOption(SessionInteractionResponse);
+const decodeSessionPresentation = Schema.decodeUnknownOption(SessionPresentation);
+
+function projectExtensionRequest(
+  request: Extract<PrimeDaemonEvent, { readonly _tag: "ExtensionRequest" }>["request"],
+): Option.Option<PrimeAgentDaemonExtensionProjection> {
+  switch (request.method) {
+    case "select": {
+      const decoded = decodeSessionInteractionRequest({
+        kind: "select",
+        title: request.title,
+        options: request.options,
+        ...(request.timeoutMs === undefined ? {} : { timeout: request.timeoutMs }),
+      });
+      return Option.map(decoded, (value) => ({
+        _tag: "Blocking",
+        method: "select",
+        request: value,
+      }));
+    }
+    case "confirm": {
+      const decoded = decodeSessionInteractionRequest({
+        kind: "confirm",
+        title: request.title,
+        ...(request.message === undefined ? {} : { message: request.message }),
+        ...(request.timeoutMs === undefined ? {} : { timeout: request.timeoutMs }),
+      });
+      return Option.map(decoded, (value) => ({
+        _tag: "Blocking",
+        method: "confirm",
+        request: value,
+      }));
+    }
+    case "input": {
+      const decoded = decodeSessionInteractionRequest({
+        kind: "input",
+        title: request.title,
+        ...(request.placeholder === undefined ? {} : { placeholder: request.placeholder }),
+        ...(request.timeoutMs === undefined ? {} : { timeout: request.timeoutMs }),
+      });
+      return Option.map(decoded, (value) => ({
+        _tag: "Blocking",
+        method: "input",
+        request: value,
+      }));
+    }
+    case "editor": {
+      const decoded = decodeSessionInteractionRequest({
+        kind: "editor",
+        title: request.title,
+        ...(request.prefill === undefined ? {} : { prefill: request.prefill }),
+        ...(request.timeoutMs === undefined ? {} : { timeout: request.timeoutMs }),
+      });
+      return Option.map(decoded, (value) => ({
+        _tag: "Blocking",
+        method: "editor",
+        request: value,
+      }));
+    }
+    case "notify":
+      return Option.map(
+        decodeSessionPresentation({
+          kind: "notification",
+          message: request.message,
+          level: request.notifyType ?? "info",
+        }),
+        (presentation) => ({ _tag: "Presentation", presentation }),
+      );
+    case "setStatus":
+      return Option.map(
+        decodeSessionPresentation({
+          kind: "status",
+          key: request.statusKey,
+          ...(request.statusText === undefined ? {} : { text: request.statusText }),
+        }),
+        (presentation) => ({ _tag: "Presentation", presentation }),
+      );
+    case "setWidget":
+      return Option.map(
+        decodeSessionPresentation({
+          kind: "widget",
+          key: request.widgetKey,
+          ...(request.widgetLines === undefined ? {} : { lines: request.widgetLines }),
+          ...(request.widgetPlacement === undefined ? {} : { placement: request.widgetPlacement }),
+        }),
+        (presentation) => ({ _tag: "Presentation", presentation }),
+      );
+    default:
+      return Option.none();
+  }
+}
+
 interface PrimeAgentDaemonSessionContext {
   readonly threadId: ThreadId;
   session: ProviderSession;
@@ -79,6 +193,10 @@ interface PrimeAgentDaemonSessionContext {
   readonly runtime: PrimeAgentDaemonSessionRuntime;
   eventFiber: Fiber.Fiber<void, never> | undefined;
   readonly turns: Array<{ readonly id: TurnId; readonly items: Array<unknown> }>;
+  readonly pendingInteractions: Map<
+    SessionInteractionRequestId,
+    PrimeAgentDaemonPendingInteraction
+  >;
   activeTurn: PrimeAgentDaemonActiveTurn | undefined;
   stopRequested: boolean;
   stopped: boolean;
@@ -313,72 +431,216 @@ export function makePrimeAgentDaemonAdapter(
         withThreadLock(context.threadId, settleActiveTurnLocked(context, turn, outcome)),
       );
 
+    /** Must be called with the thread lock held. */
+    const clearPendingInteractionsLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      cancelNative: boolean,
+    ) =>
+      Effect.gen(function* () {
+        for (const [requestId, pending] of context.pendingInteractions) {
+          if (cancelNative) {
+            yield* context.runtime
+              .respondToExtensionUiRequest(pending.nativeId, { cancelled: true })
+              .pipe(Effect.ignore);
+          }
+          if (!context.pendingInteractions.delete(requestId)) continue;
+          yield* offerRuntimeEvent({
+            type: "interaction.resolved",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: context.threadId,
+            ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
+            requestId,
+            payload: { response: { kind: "cancelled" } },
+          });
+        }
+      });
+
     const consumeEvent = (context: PrimeAgentDaemonSessionContext, event: PrimeDaemonEvent) =>
       Effect.gen(function* () {
         yield* logNativeKind(context.threadId, event);
         if (event._tag === "SessionResynced" || event._tag === "SessionReplaced") return;
 
         if (event._tag === "ExtensionRequest") {
-          const responseExit = yield* context.runtime
-            .respondToExtensionUiRequest(event.request.id, { cancelled: true })
-            .pipe(Effect.exit);
-          if (Exit.isFailure(responseExit)) {
-            yield* withThreadLock(
-              context.threadId,
-              Effect.sync(() => {
-                const turn = context.activeTurn;
-                if (sessions.get(context.threadId) !== context || turn === undefined) return;
-                turn.cancellationRequested = true;
-                turn.controller.abort();
-              }),
-            );
-            const abortExit = yield* context.runtime.abort.pipe(Effect.exit);
+          const projection = projectExtensionRequest(event.request);
+          const isBlocking =
+            event.request.method === "select" ||
+            event.request.method === "confirm" ||
+            event.request.method === "input" ||
+            event.request.method === "editor";
+          const validNativeId = event.request.id.trim().length > 0;
+
+          if (
+            Option.isNone(projection) ||
+            (projection.value._tag === "Blocking" && !validNativeId)
+          ) {
+            if (isBlocking) {
+              const responseExit = yield* context.runtime
+                .respondToExtensionUiRequest(event.request.id, { cancelled: true })
+                .pipe(Effect.exit);
+              if (Exit.isFailure(responseExit)) {
+                yield* withThreadLock(
+                  context.threadId,
+                  Effect.sync(() => {
+                    const turn = context.activeTurn;
+                    if (sessions.get(context.threadId) !== context || turn === undefined) return;
+                    turn.cancellationRequested = true;
+                    turn.controller.abort();
+                  }),
+                );
+                const abortExit = yield* context.runtime.abort.pipe(Effect.exit);
+                yield* withThreadLock(
+                  context.threadId,
+                  Effect.gen(function* () {
+                    if (sessions.get(context.threadId) !== context || context.stopped) return;
+                    const turn = context.activeTurn;
+                    if (turn !== undefined) {
+                      yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+                    }
+                    yield* offerRuntimeEvent({
+                      type: "runtime.error",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      providerInstanceId: boundInstanceId,
+                      threadId: context.threadId,
+                      payload: {
+                        message:
+                          "Prime Agent interaction cancellation failed; the active run was aborted.",
+                        class: "provider_error",
+                      },
+                    });
+                  }),
+                );
+                if (Exit.isFailure(abortExit)) {
+                  yield* Effect.logError("Prime Agent fail-closed abort also failed.", {
+                    threadId: context.threadId,
+                  });
+                }
+                return;
+              }
+            }
+
             yield* withThreadLock(
               context.threadId,
               Effect.gen(function* () {
-                if (sessions.get(context.threadId) !== context || context.stopped) return;
-                const turn = context.activeTurn;
-                if (turn !== undefined) {
-                  yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+                if (
+                  sessions.get(context.threadId) !== context ||
+                  context.stopped ||
+                  context.stopRequested
+                ) {
+                  return;
                 }
                 yield* offerRuntimeEvent({
-                  type: "runtime.error",
+                  type: "runtime.warning",
                   ...(yield* makeEventStamp()),
                   provider: PROVIDER,
                   providerInstanceId: boundInstanceId,
                   threadId: context.threadId,
+                  ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
                   payload: {
-                    message:
-                      "Prime Agent interaction cancellation failed; the active run was aborted.",
-                    class: "provider_error",
+                    message: isBlocking
+                      ? "Prime Agent sent a malformed interaction request; it was ignored."
+                      : "Prime Agent sent an unsupported interaction update; it was ignored.",
                   },
                 });
               }),
             );
-            if (Exit.isFailure(abortExit)) {
-              yield* Effect.logError("Prime Agent fail-closed abort also failed.", {
-                threadId: context.threadId,
-              });
-            }
             return;
           }
 
+          const normalized = projection.value;
+          if (normalized._tag === "Presentation") {
+            const presentation = normalized.presentation;
+            yield* withThreadLock(
+              context.threadId,
+              Effect.gen(function* () {
+                if (
+                  sessions.get(context.threadId) !== context ||
+                  context.stopped ||
+                  context.stopRequested
+                ) {
+                  return;
+                }
+                yield* offerRuntimeEvent({
+                  type: "session-presentation.updated",
+                  ...(yield* makeEventStamp()),
+                  provider: PROVIDER,
+                  providerInstanceId: boundInstanceId,
+                  threadId: context.threadId,
+                  ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
+                  payload: { presentation },
+                });
+              }),
+            );
+            return;
+          }
+
+          const blocking = normalized;
           yield* withThreadLock(
             context.threadId,
             Effect.gen(function* () {
-              if (sessions.get(context.threadId) !== context || context.stopped) return;
+              if (
+                sessions.get(context.threadId) !== context ||
+                context.stopped ||
+                context.stopRequested
+              ) {
+                return;
+              }
+              const requestId = SessionInteractionRequestId.make(yield* randomUUIDv4);
+              const stamp = yield* makeEventStamp();
+              const pending: PrimeAgentDaemonPendingInteraction = {
+                nativeId: event.request.id,
+                method: blocking.method,
+                selectOptions:
+                  blocking.request.kind === "select"
+                    ? new Set(blocking.request.options)
+                    : undefined,
+              };
+              context.pendingInteractions.set(requestId, pending);
+              const timeoutPublished =
+                blocking.request.timeout === undefined ? undefined : yield* Deferred.make<void>();
+              if (blocking.request.timeout !== undefined && timeoutPublished !== undefined) {
+                yield* Effect.sleep(blocking.request.timeout).pipe(
+                  Effect.andThen(Deferred.await(timeoutPublished)),
+                  Effect.andThen(
+                    withThreadLock(
+                      context.threadId,
+                      Effect.gen(function* () {
+                        if (context.pendingInteractions.get(requestId) !== pending) return;
+                        context.pendingInteractions.delete(requestId);
+                        yield* offerRuntimeEvent({
+                          type: "interaction.resolved",
+                          ...(yield* makeEventStamp()),
+                          provider: PROVIDER,
+                          providerInstanceId: boundInstanceId,
+                          threadId: context.threadId,
+                          ...(context.activeTurn === undefined
+                            ? {}
+                            : { turnId: context.activeTurn.id }),
+                          requestId,
+                          payload: { response: { kind: "cancelled" } },
+                        });
+                      }),
+                    ),
+                  ),
+                  Effect.forkScoped({ startImmediately: true }),
+                  Effect.provideService(Scope.Scope, context.scope),
+                );
+              }
               yield* offerRuntimeEvent({
-                type: "runtime.warning",
-                ...(yield* makeEventStamp()),
+                type: "interaction.requested",
+                ...stamp,
                 provider: PROVIDER,
                 providerInstanceId: boundInstanceId,
                 threadId: context.threadId,
                 ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
-                payload: {
-                  message:
-                    "Prime Agent requested an interaction that Pylon does not support yet; it was cancelled.",
-                },
+                requestId,
+                payload: { request: blocking.request },
               });
+              if (timeoutPublished !== undefined) {
+                yield* Deferred.succeed(timeoutPublished, undefined).pipe(Effect.ignore);
+              }
             }),
           );
           return;
@@ -401,6 +663,7 @@ export function makePrimeAgentDaemonAdapter(
             context.threadId,
             Effect.gen(function* () {
               if (sessions.get(context.threadId) !== context || context.stopped) return;
+              yield* clearPendingInteractionsLocked(context, false);
               const turn = context.activeTurn;
               if (turn !== undefined) {
                 yield* settleActiveTurnLocked(
@@ -468,6 +731,7 @@ export function makePrimeAgentDaemonAdapter(
       Effect.gen(function* () {
         if (sessions.get(context.threadId) !== context || context.stopped) return;
         context.stopRequested = true;
+        yield* clearPendingInteractionsLocked(context, true);
         const turn = context.activeTurn;
         if (turn !== undefined) {
           turn.cancellationRequested = true;
@@ -599,6 +863,7 @@ export function makePrimeAgentDaemonAdapter(
             runtime,
             eventFiber: undefined,
             turns: [],
+            pendingInteractions: new Map(),
             activeTurn: undefined,
             stopRequested: false,
             stopped: false,
@@ -856,6 +1121,100 @@ export function makePrimeAgentDaemonAdapter(
           detail: `Prime Agent daemon interactions are not wired for request '${requestId}' on thread '${threadId}'.`,
         }),
       );
+    const respondToInteraction: NonNullable<PrimeAgentAdapterShape["respondToInteraction"]> = (
+      threadId,
+      requestId,
+      response,
+    ) =>
+      withThreadLock(
+        threadId,
+        Effect.gen(function* () {
+          const context = yield* requireSession(threadId);
+          const pending = context.pendingInteractions.get(requestId);
+          if (pending === undefined) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/interaction-response",
+              detail: `Unknown or stale Prime Agent interaction '${requestId}' for thread '${threadId}'.`,
+            });
+          }
+          const decodedResponse = decodeSessionInteractionResponse(response);
+          if (Option.isNone(decodedResponse)) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/interaction-response",
+              detail: `The response is invalid for interaction '${requestId}'.`,
+            });
+          }
+          const normalizedResponse = decodedResponse.value;
+          if (
+            normalizedResponse.kind === "selected" &&
+            (response.kind !== "selected" || response.value !== normalizedResponse.value)
+          ) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/interaction-response",
+              detail: `The selected value is not an exact offered option for interaction '${requestId}'.`,
+            });
+          }
+
+          let safeResponse: SessionInteractionResponse;
+          let nativeResponse:
+            | { readonly value: string }
+            | { readonly confirmed: boolean }
+            | {
+                readonly cancelled: true;
+              };
+          if (normalizedResponse.kind === "cancelled") {
+            safeResponse = { kind: "cancelled" };
+            nativeResponse = { cancelled: true };
+          } else if (pending.method === "select" && normalizedResponse.kind === "selected") {
+            if (pending.selectOptions?.has(normalizedResponse.value) !== true) {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "session/interaction-response",
+                detail: `The selected value is not offered by interaction '${requestId}'.`,
+              });
+            }
+            safeResponse = { kind: "selected", value: normalizedResponse.value };
+            nativeResponse = { value: normalizedResponse.value };
+          } else if (pending.method === "confirm" && normalizedResponse.kind === "confirmed") {
+            safeResponse = { kind: "confirmed", confirmed: normalizedResponse.confirmed };
+            nativeResponse = { confirmed: normalizedResponse.confirmed };
+          } else if (
+            (pending.method === "input" || pending.method === "editor") &&
+            normalizedResponse.kind === "submitted"
+          ) {
+            safeResponse = { kind: "submitted", value: normalizedResponse.value };
+            nativeResponse = { value: normalizedResponse.value };
+          } else {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/interaction-response",
+              detail: `The response kind does not match interaction '${requestId}'.`,
+            });
+          }
+
+          yield* context.runtime
+            .respondToExtensionUiRequest(pending.nativeId, nativeResponse)
+            .pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/interaction-response", error),
+              ),
+            );
+          context.pendingInteractions.delete(requestId);
+          yield* offerRuntimeEvent({
+            type: "interaction.resolved",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId,
+            ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
+            requestId,
+            payload: { response: safeResponse },
+          });
+        }),
+      );
     const readThread: PrimeAgentAdapterShape["readThread"] = (threadId) =>
       Effect.map(requireSession(threadId), (context) => ({
         threadId,
@@ -934,6 +1293,7 @@ export function makePrimeAgentDaemonAdapter(
       interruptTurn,
       respondToRequest,
       respondToUserInput,
+      respondToInteraction,
       readThread,
       rollbackThread,
       stopSession,
