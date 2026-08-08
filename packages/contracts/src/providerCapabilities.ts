@@ -109,6 +109,9 @@ const ReasoningOperations = ForwardCompatibleArray(Schema.Literals(["final", "st
 const UsageOperations = ForwardCompatibleArray(
   Schema.Literals(["token-usage", "cost", "rate-limits"]),
 );
+const SessionUiOperations = ForwardCompatibleArray(
+  Schema.Literals(["dialog", "notification", "status", "widget"]),
+);
 
 export const ProviderAuthenticationCapability = Schema.Struct({
   ...providerFeatureSupportFields,
@@ -203,6 +206,12 @@ export const ProviderUsageCapability = Schema.Struct({
 });
 export type ProviderUsageCapability = typeof ProviderUsageCapability.Type;
 
+export const ProviderSessionUiCapability = Schema.Struct({
+  ...providerFeatureSupportFields,
+  operations: SessionUiOperations,
+});
+export type ProviderSessionUiCapability = typeof ProviderSessionUiCapability.Type;
+
 /**
  * Provider-neutral feature inventory attached to `ServerProvider` snapshots.
  *
@@ -228,5 +237,6 @@ export const ProviderFeatureCapabilities = Schema.Struct({
   history: Schema.optionalKey(ProviderHistoryCapability),
   reasoning: Schema.optionalKey(ProviderReasoningCapability),
   usage: Schema.optionalKey(ProviderUsageCapability),
+  sessionUi: Schema.optionalKey(ProviderSessionUiCapability),
 });
 export type ProviderFeatureCapabilities = typeof ProviderFeatureCapabilities.Type;
