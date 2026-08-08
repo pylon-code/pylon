@@ -30,6 +30,18 @@ const sharp = createRequire(NodePath.join(repoRoot, "package.json"))("sharp");
 const VIEWPORT = { width: 1254, height: 841 };
 const DEVICE_SCALE_FACTOR = 2;
 const THREAD_ID = "stream-provider-output";
+
+// Client settings live in localStorage, so a fresh browser context starts on
+// defaults no matter what was clicked in a human's session. Seed them here so
+// the hero is reproducible instead of depending on somebody's saved UI state.
+// Every ClientSettings field has a decoding default, so a partial object is valid.
+const CLIENT_SETTINGS_STORAGE_KEY = "t3code:client-settings:v1";
+const CLIENT_SETTINGS = {
+  // The default "artwork" mode paints a per-environment colour field in the
+  // sidebar header. It identifies a dev environment, which is exactly what a
+  // marketing still must not look like.
+  environmentIdentificationMode: "none",
+};
 const OUTPUT = NodePath.join(repoRoot, "apps/marketing/public/app-preview.webp");
 
 const baseDir = process.argv[2];
@@ -62,6 +74,12 @@ try {
     deviceScaleFactor: DEVICE_SCALE_FACTOR,
     colorScheme: "dark",
   });
+  await context.addInitScript(
+    ([key, value]) => {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    },
+    [CLIENT_SETTINGS_STORAGE_KEY, CLIENT_SETTINGS],
+  );
   const page = await context.newPage();
 
   await page.goto(`${webOrigin}/pair#token=${token}`, { waitUntil: "load" });
@@ -103,6 +121,7 @@ try {
     [/Update Available/i, "an update toast is visible"],
     [/No provider available|Enable a provider/i, "the composer has no provider"],
     [/Stream provider output/i, "the hero thread did not render", true],
+    [/Failed to connect|Reconnecting|could not establish/i, "the environment is disconnected"],
   ].flatMap(([pattern, message, expected]) =>
     pattern.test(body) === Boolean(expected) ? [] : [message],
   );
