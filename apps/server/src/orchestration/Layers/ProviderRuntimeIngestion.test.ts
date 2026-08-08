@@ -19,6 +19,7 @@ import {
   MessageId,
   ProjectId,
   ProviderItemId,
+  SessionInteractionRequestId,
   type ServerSettings,
   ThreadId,
   TurnId,
@@ -108,6 +109,7 @@ function createProviderServiceHarness() {
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
+    respondToInteraction: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
@@ -282,6 +284,7 @@ describe("ProviderRuntimeIngestion", () => {
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
+    const runEffect = <A, E>(effect: Effect.Effect<A, E>) => runtime!.runPromise(effect);
 
     const createdAt = "2026-01-01T00:00:00.000Z";
     await Effect.runPromise(
@@ -348,6 +351,7 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       setProviderSession: provider.setSession,
       rateLimitCalls: providerRegistry.rateLimitCalls,
+      runEffect,
       drain,
     };
   }
@@ -3589,6 +3593,101 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resolvedPayload?.answers).toEqual({
       sandbox_mode: "workspace-write",
     });
+  });
+
+  it("wakes settled threads for blocking interactions but not presentation updates", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("cmd-settle-before-session-presentation"),
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+
+    harness.emit({
+      type: "session-presentation.updated",
+      eventId: asEventId("evt-session-presentation-nonblocking"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        presentation: { kind: "widget", key: "build", lines: ["Running"] },
+      },
+    });
+    await harness.drain();
+    let thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.settledOverride).toBe("settled");
+    expect(
+      thread?.activities.some((activity) => activity.kind === "session-presentation.updated"),
+    ).toBe(true);
+
+    harness.emit({
+      type: "interaction.requested",
+      eventId: asEventId("evt-interaction-wakes-settled"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      requestId: SessionInteractionRequestId.make("interaction-wake-1"),
+      payload: {
+        request: { kind: "confirm", title: "Continue?" },
+      },
+    });
+    await harness.drain();
+    thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.settledOverride).toBeNull();
+    expect(thread?.activities.some((activity) => activity.kind === "interaction.requested")).toBe(
+      true,
+    );
+  });
+
+  it("flushes and finalizes buffered assistant text before a blocking interaction", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-interaction-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interaction-flush"),
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-interaction-assistant-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interaction-flush"),
+      itemId: asItemId("item-interaction-flush"),
+      payload: { streamKind: "assistant_text", delta: "visible before interaction" },
+    });
+    harness.emit({
+      type: "interaction.requested",
+      eventId: asEventId("evt-interaction-requested-flush"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interaction-flush"),
+      requestId: SessionInteractionRequestId.make("interaction-flush-1"),
+      payload: { request: { kind: "input", title: "Add detail" } },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    const message = thread?.messages.find(
+      (entry) => entry.id === "assistant:item-interaction-flush",
+    );
+    expect(message).toMatchObject({ text: "visible before interaction", streaming: false });
   });
 
   it("continues processing runtime events after a single event handler failure", async () => {

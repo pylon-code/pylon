@@ -538,6 +538,69 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "interaction.requested": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "interaction.requested",
+          summary: event.payload.request.title,
+          payload: {
+            requestId: event.requestId,
+            request: event.payload.request,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "interaction.resolved": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "interaction.resolved",
+          summary: "Interaction resolved",
+          payload: {
+            requestId: event.requestId,
+            response: event.payload.response,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "session-presentation.updated": {
+      const summary =
+        event.payload.presentation.kind === "notification"
+          ? event.payload.presentation.message
+          : event.payload.presentation.kind === "status"
+            ? event.payload.presentation.text?.trim() || "Status cleared"
+            : "Session widget updated";
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone:
+            event.payload.presentation.kind === "notification" &&
+            event.payload.presentation.level === "error"
+              ? "error"
+              : "info",
+          kind: "session-presentation.updated",
+          summary,
+          payload: {
+            presentation: event.payload.presentation,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "task.started": {
       return [
         {
@@ -1714,7 +1777,9 @@ const make = Effect.gen(function* () {
       }
 
       const pauseForUserTurnId =
-        event.type === "request.opened" || event.type === "user-input.requested"
+        event.type === "request.opened" ||
+        event.type === "user-input.requested" ||
+        event.type === "interaction.requested"
           ? toTurnId(event.turnId)
           : undefined;
       if (pauseForUserTurnId) {
@@ -1733,7 +1798,9 @@ const make = Effect.gen(function* () {
                 commandTag:
                   event.type === "request.opened"
                     ? "assistant-delta-flush-on-request-opened"
-                    : "assistant-delta-flush-on-user-input-requested",
+                    : event.type === "user-input.requested"
+                      ? "assistant-delta-flush-on-user-input-requested"
+                      : "assistant-delta-flush-on-interaction-requested",
               })
             : new Set<MessageId>();
         yield* finalizeActiveAssistantSegmentForTurn({
@@ -1744,11 +1811,15 @@ const make = Effect.gen(function* () {
           commandTag:
             event.type === "request.opened"
               ? "assistant-complete-on-request-opened"
-              : "assistant-complete-on-user-input-requested",
+              : event.type === "user-input.requested"
+                ? "assistant-complete-on-user-input-requested"
+                : "assistant-complete-on-interaction-requested",
           finalDeltaCommandTag:
             event.type === "request.opened"
               ? "assistant-delta-finalize-on-request-opened"
-              : "assistant-delta-finalize-on-user-input-requested",
+              : event.type === "user-input.requested"
+                ? "assistant-delta-finalize-on-user-input-requested"
+                : "assistant-delta-finalize-on-interaction-requested",
           hasProjectedMessage:
             detailedThread !== null &&
             hasAssistantMessageForTurn(detailedThread.messages, pauseForUserTurnId, {
