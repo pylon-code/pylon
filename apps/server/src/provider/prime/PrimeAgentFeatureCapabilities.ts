@@ -62,13 +62,11 @@ export function makePrimeAgentFeatureCapabilities(input: {
       support: "read-write",
       operations: ["select"],
     },
-    reasoning: {
-      support: "read-only",
-      operations: ["final", "stream"],
-    },
+    reasoning: unavailable("Prime Agent reasoning is not projected into Pylon yet."),
     usage: {
       support: "read-only",
-      operations: ["token-usage", "cost"],
+      reason: "Prime Agent cost reporting is not projected into Pylon yet.",
+      operations: ["token-usage"],
     },
     sessionUi: input.sessionUi
       ? {
