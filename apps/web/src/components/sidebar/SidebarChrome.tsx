@@ -1,4 +1,4 @@
-import { SettingsIcon } from "lucide-react";
+import { ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
 import { memo, useCallback, useId } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 
@@ -136,12 +136,25 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
     void navigate({ to: "/settings" });
   }, [isMobile, navigate, setOpenMobile]);
 
+  const handleUsageClick = useCallback(() => {
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+    void navigate({ to: "/usage" });
+  }, [isMobile, navigate, setOpenMobile]);
+
   return (
     <SidebarFooter className="p-[var(--sidebar-content-inset)]">
       <SidebarAccountDrainPill />
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
       <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton onClick={handleUsageClick}>
+            <ChartNoAxesColumnIcon />
+            <span>Usage</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
         <SidebarMenuItem>
           <SidebarMenuButton onClick={handleSettingsClick}>
             <SettingsIcon />
