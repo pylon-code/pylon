@@ -12,7 +12,7 @@ const CONNECT_CALLBACK_PATH = "/connect/callback";
  * decide whether it is the hosted deployment — the two must agree, so the
  * default lives here.
  */
-export const DEFAULT_HOSTED_APP_URL = "https://app.t3.codes";
+export const DEFAULT_HOSTED_APP_URL = "https://app.pylon-code.com";
 
 /**
  * Requested at authorize time by the hosted page and honored by the CLI's

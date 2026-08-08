@@ -1106,16 +1106,33 @@ jobs:
               --build-env "VITE_HOSTED_APP_CHANNEL=$channel_name"
           )"
 
-          echo "Aliasing $deployment_url to $channel_domain."
-          vp dlx vercel@53.1.1 alias set "$deployment_url" "$channel_domain" \
-            --token "$VERCEL_TOKEN" \
-            "${vercel_scope_args[@]}"
+          # `vercel alias set` resolves the target against account-level domains
+          # and reports "You don't have access to the domain" for a domain that
+          # is attached to the project instead — which is how these are held.
+          # The REST alias endpoint accepts project domains directly.
+          alias_deployment() {
+            local url="${1#https://}"
+            local domain="$2"
+            local dep_id
+            dep_id="$(
+              curl -sS --fail-with-body \
+                -H "Authorization: Bearer $VERCEL_TOKEN" \
+                "https://api.vercel.com/v13/deployments/${url}?teamId=${VERCEL_ORG_ID}" |
+                node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const j=JSON.parse(s);if(!j.id){console.error(j.error?.message??"deployment id missing");process.exit(1)}process.stdout.write(j.id)})'
+            )"
+            echo "Aliasing $url ($dep_id) to $domain."
+            curl -sS --fail-with-body -X POST \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"alias\":\"${domain}\"}" \
+              "https://api.vercel.com/v2/deployments/${dep_id}/aliases?teamId=${VERCEL_ORG_ID}" |
+              node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const j=JSON.parse(s);if(j.error){console.error("alias failed:",j.error.message??j.error.code);process.exit(1)}console.log("aliased ->",j.alias)})'
+          }
+
+          alias_deployment "$deployment_url" "$channel_domain"
 
           if [[ "$channel_name" == "latest" && -n "$router_domain" && "$router_domain" != "$channel_domain" ]]; then
-            echo "Aliasing $deployment_url to router domain $router_domain."
-            vp dlx vercel@53.1.1 alias set "$deployment_url" "$router_domain" \
-              --token "$VERCEL_TOKEN" \
-              "${vercel_scope_args[@]}"
+            alias_deployment "$deployment_url" "$router_domain"
           fi
 
   finalize:
