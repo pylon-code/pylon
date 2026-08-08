@@ -9,21 +9,21 @@
 //
 // Pairing tokens are single-use, so this mints a fresh one per run. Never put a
 // pairing URL in a committed file or a screenshot.
-import { createRequire } from "node:module";
+import * as NodeModule from "node:module";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import * as NodeUrl from "node:url";
+import * as NodeURL from "node:url";
 import * as NodeUtil from "node:util";
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
-const repoRoot = NodePath.resolve(NodePath.dirname(NodeUrl.fileURLToPath(import.meta.url)), "..");
+const repoRoot = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 
 // playwright-core is a direct dependency of apps/desktop, not of the root, so
 // resolve it from that package rather than guessing a pnpm store path.
-const require = createRequire(NodePath.join(repoRoot, "apps/desktop/package.json"));
+const require = NodeModule.createRequire(NodePath.join(repoRoot, "apps/desktop/package.json"));
 const { chromium } = require("playwright-core");
-const sharp = createRequire(NodePath.join(repoRoot, "package.json"))("sharp");
+const sharp = NodeModule.createRequire(NodePath.join(repoRoot, "package.json"))("sharp");
 
 // 1254x841 CSS at deviceScaleFactor 2 lands exactly on the 2508x1682 the hero
 // <img> declares. Capturing at 1x and upscaling visibly softens the type.
