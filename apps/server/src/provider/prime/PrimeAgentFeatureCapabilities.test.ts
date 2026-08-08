@@ -14,8 +14,8 @@ describe("PrimeAgentFeatureCapabilities", () => {
     });
     expect(capabilities.agents?.operations).toEqual(["observe", "hierarchy"]);
     expect(capabilities.model?.operations).toEqual(["select"]);
-    expect(capabilities.reasoning?.operations).toEqual(["final", "stream"]);
-    expect(capabilities.usage?.operations).toEqual(["token-usage", "cost"]);
+    expect(capabilities.reasoning?.support).toBe("unavailable");
+    expect(capabilities.usage?.operations).toEqual(["token-usage"]);
     expect(capabilities.sessionUi?.operations).toEqual([
       "dialog",
       "notification",
