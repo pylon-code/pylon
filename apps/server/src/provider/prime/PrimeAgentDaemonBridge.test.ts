@@ -1,0 +1,205 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
+import * as Effect from "effect/Effect";
+import { afterEach, describe, expect, it } from "@effect/vitest";
+
+import {
+  loadPrimeAgentDaemonBridge,
+  PRIME_AGENT_DAEMON_PROTOCOL_NAME,
+  PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION,
+  sanitizePrimeAgentDaemonEnvironment,
+} from "./PrimeAgentDaemonBridge.ts";
+
+const temporaryDirectories: Array<string> = [];
+
+function makeTemporaryDirectory(): string {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "pylon-prime-bridge-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+function daemonModuleSource(options?: {
+  readonly protocolName?: string;
+  readonly protocolVersion?: number;
+  readonly version?: string;
+  readonly omitConnection?: boolean;
+}): string {
+  return `
+export const VERSION = ${JSON.stringify(options?.version ?? "0.7.1")};
+export const DAEMON_PROTOCOL_NAME = ${JSON.stringify(
+    options?.protocolName ?? PRIME_AGENT_DAEMON_PROTOCOL_NAME,
+  )};
+export const DAEMON_PROTOCOL_VERSION = ${options?.protocolVersion ?? PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION};
+export class DaemonClient {
+  constructor(socketPath) { this.socketPath = socketPath; this.isConnected = false; }
+  async connect() { this.isConnected = true; }
+  async waitForHello() { return {}; }
+  async request() { return {}; }
+  close() { this.isConnected = false; }
+}
+${
+  options?.omitConnection
+    ? ""
+    : `export class DaemonAgentConnection {
+  constructor(client, activeSessionId) { this.client = client; this.activeSessionId = activeSessionId; }
+  static async attach(client, activeSessionId) { return new DaemonAgentConnection(client, activeSessionId); }
+  subscribe() { return () => {}; }
+  async getInitialSnapshot() { return {}; }
+  async promptAndWait() {}
+  async abort() {}
+  async dispose() {}
+}`
+}
+export function defaultDaemonSocketPath() { return "/tmp/prime-agent-test.sock"; }
+`;
+}
+
+function makePackage(options?: { readonly name?: string; readonly moduleSource?: string }): {
+  readonly root: string;
+  readonly cliPath: string;
+  readonly entryPath: string;
+} {
+  const root = makeTemporaryDirectory();
+  const dist = NodePath.join(root, "dist");
+  NodeFS.mkdirSync(dist, { recursive: true });
+  const cliPath = NodePath.join(dist, "cli.js");
+  const entryPath = NodePath.join(dist, "index.js");
+  NodeFS.writeFileSync(cliPath, "#!/usr/bin/env node\n");
+  NodeFS.writeFileSync(entryPath, options?.moduleSource ?? daemonModuleSource());
+  NodeFS.writeFileSync(
+    NodePath.join(root, "package.json"),
+    JSON.stringify({
+      name: options?.name ?? "prime-agent",
+      version: "0.7.1",
+      type: "module",
+      bin: { "prime-agent": "dist/cli.js" },
+      exports: { ".": { import: "./dist/index.js" } },
+    }),
+  );
+  return { root, cliPath, entryPath };
+}
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    NodeFS.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+describe("PrimeAgentDaemonBridge", () => {
+  it.effect("reports a missing configured executable", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        loadPrimeAgentDaemonBridge(NodePath.join(makeTemporaryDirectory(), "missing")),
+      );
+
+      expect(error.reason).toBe("path-not-found");
+    }),
+  );
+
+  it.effect("rejects an executable belonging to a different package", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({ name: "not-prime-agent" });
+
+      const error = yield* Effect.flip(loadPrimeAgentDaemonBridge(pkg.cliPath));
+
+      expect(error.reason).toBe("wrong-package");
+      expect(error.message).toContain("not-prime-agent");
+    }),
+  );
+
+  it.effect("follows an executable symlink into an npm-style package", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage();
+      const binDirectory = NodePath.join(makeTemporaryDirectory(), "bin");
+      NodeFS.mkdirSync(binDirectory);
+      const linkedBinary = NodePath.join(binDirectory, "prime-agent");
+      NodeFS.symlinkSync(pkg.cliPath, linkedBinary, "file");
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(linkedBinary);
+
+      expect(bridge.packageRoot).toBe(NodeFS.realpathSync(pkg.root));
+      expect(bridge.moduleEntryPath).toBe(NodeFS.realpathSync(pkg.entryPath));
+    }),
+  );
+
+  it.effect("loads the public API from a direct dist/cli.js executable", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage();
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+      const client = new bridge.DaemonClient("/tmp/test.sock");
+
+      expect(bridge.version).toBe("0.7.1");
+      expect(bridge.protocolName).toBe(PRIME_AGENT_DAEMON_PROTOCOL_NAME);
+      expect(bridge.protocolVersion).toBe(PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION);
+      expect(bridge.defaultDaemonSocketPath()).toBe("/tmp/prime-agent-test.sock");
+      expect(client.isConnected).toBe(false);
+    }),
+  );
+
+  it.effect("rejects public VERSION metadata that disagrees with package.json", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({ version: "0.8.0" }),
+      });
+
+      const error = yield* Effect.flip(loadPrimeAgentDaemonBridge(pkg.cliPath));
+
+      expect(error.reason).toBe("incompatible-version");
+    }),
+  );
+
+  it.effect("accepts a newer daemon protocol exposed by the installed client", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({ protocolVersion: 8 }),
+      });
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+
+      expect(bridge.protocolVersion).toBe(8);
+    }),
+  );
+
+  it.effect("makes an incompatible daemon protocol explicit", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({ protocolVersion: 6 }),
+      });
+
+      const error = yield* Effect.flip(loadPrimeAgentDaemonBridge(pkg.cliPath));
+
+      expect(error.reason).toBe("incompatible-protocol");
+      expect(error.message).toContain("requires prime-agent.daemon v7 or newer");
+    }),
+  );
+
+  it.effect("rejects a public API missing the connection export", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({ omitConnection: true }),
+      });
+
+      const error = yield* Effect.flip(loadPrimeAgentDaemonBridge(pkg.cliPath));
+
+      expect(error.reason).toBe("incompatible-exports");
+    }),
+  );
+
+  it("strips every inherited Prime Agent internal daemon variable", () => {
+    const input = {
+      PATH: "/usr/bin",
+      PRIME_AGENT_INTERNAL_DAEMON_WORKER: "1",
+      PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN: "secret",
+      PRIME_AGENT_INTERNAL_FUTURE_COORDINATION_FIELD: "future",
+    };
+
+    const sanitized = sanitizePrimeAgentDaemonEnvironment(input);
+
+    expect(sanitized).toEqual({ PATH: "/usr/bin" });
+    expect(input.PRIME_AGENT_INTERNAL_DAEMON_WORKER).toBe("1");
+  });
+});
