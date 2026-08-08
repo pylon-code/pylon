@@ -34,7 +34,7 @@ That changes as surfaces come online.
 
 **Desktop app distributed from GitHub Releases, no accounts, no telemetry.**
 The `LICENSE` file is the only document strictly needed. Pylon collects nothing
-in this configuration: agent credentials stay on the user's machine, and T3
+in this configuration: agent credentials stay on the user's machine, and Pylon
 Connect — the only component that would process personal data — is off unless
 deliberately configured. This is the configuration the site describes today.
 
