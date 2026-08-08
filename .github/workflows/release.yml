@@ -388,7 +388,11 @@ jobs:
             rust_target: x86_64-apple-darwin
             resource_key: darwin-x64
           - label: Linux x64
-            runner: blacksmith-8vcpu-ubuntu-2404
+            # GitHub-hosted deliberately. Every stuck job so far has been on a
+            # blacksmith ubuntu runner, including this build sitting unassigned
+            # for 43 minutes while the macOS and Windows jobs queued after it
+            # ran and finished. Slower here, but it actually starts.
+            runner: ubuntu-latest
             platform: linux
             target: AppImage
             arch: x64
