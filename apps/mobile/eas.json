@@ -25,6 +25,17 @@
       "environment": "preview",
       "distribution": "internal"
     },
+    "preview:local": {
+      "corepack": true,
+      "env": {
+        "APP_VARIANT": "preview",
+        "MOBILE_VERSION_POLICY": "appVersion",
+        "NODE_OPTIONS": "--max-old-space-size=4096"
+      },
+      "channel": "preview",
+      "environment": "preview",
+      "distribution": "internal"
+    },
     "preview:dev": {
       "corepack": true,
       "env": {
