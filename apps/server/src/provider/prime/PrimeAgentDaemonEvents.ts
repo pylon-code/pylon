@@ -281,6 +281,15 @@ const agentSessionEvent = Schema.Union([
     isError: Schema.Boolean,
   }),
   Schema.Struct({
+    type: Schema.Literal("ipython_sent_agent_message"),
+    toolCallId: Schema.String,
+    message: Schema.Unknown,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("session_info_changed"),
+    name: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
     type: Schema.Literal("session_action_update"),
     actions: sessionActions,
   }),
@@ -375,6 +384,16 @@ const sessionSnapshot = Schema.Struct({
   lastEventSequence: Schema.optional(Schema.Number),
 });
 
+const extensionMethod = Schema.Literals([
+  "select",
+  "confirm",
+  "input",
+  "editor",
+  "notify",
+  "setStatus",
+  "setWidget",
+]);
+
 const extensionPayload = Schema.Struct({
   title: Schema.optional(Schema.String),
   message: Schema.optional(Schema.String),
@@ -414,7 +433,7 @@ export const PrimeAgentDaemonConnectionEvent = Schema.Union([
     type: Schema.Literal("extension_ui_request"),
     request: Schema.Struct({
       id: Schema.String,
-      method: Schema.String,
+      method: extensionMethod,
       payload: extensionPayload,
     }),
   }),
@@ -461,6 +480,8 @@ const knownSessionEventTypes = new Set([
   "tool_execution_start",
   "tool_execution_update",
   "tool_execution_end",
+  "ipython_sent_agent_message",
+  "session_info_changed",
   "session_action_update",
   "thinking_level_changed",
   "service_tier_changed",
@@ -610,6 +631,12 @@ export type PrimeDaemonEvent =
       readonly isError: boolean;
     }
   | {
+      readonly _tag: "AgentMessageSent";
+      readonly toolCallId: string;
+      readonly receipt?: Readonly<Record<string, PrimeDaemonScalar>> | undefined;
+    }
+  | { readonly _tag: "SessionInfoChanged"; readonly name?: string | undefined }
+  | {
       readonly _tag: "QueueChanged";
       readonly queuedCount: number;
       readonly steering: ReadonlyArray<string>;
@@ -756,6 +783,12 @@ export type PrimeDaemonEvent =
         readonly placeholder?: string | undefined;
         readonly prefill?: string | undefined;
         readonly notifyType?: "info" | "warning" | "error" | undefined;
+        readonly statusKey?: string | undefined;
+        readonly statusText?: string | undefined;
+        readonly widgetKey?: string | undefined;
+        readonly widgetLines?: ReadonlyArray<string> | undefined;
+        readonly widgetPlacement?: "aboveEditor" | "belowEditor" | undefined;
+        readonly text?: string | undefined;
       };
     }
   | {
@@ -1069,6 +1102,17 @@ function mapSessionEvent(event: typeof agentSessionEvent.Type): PrimeDaemonEvent
         text: mapToolText(event.result),
         isError: event.isError,
       };
+    case "ipython_sent_agent_message":
+      return {
+        _tag: "AgentMessageSent",
+        toolCallId: bounded(event.toolCallId, MAX_PREVIEW_LENGTH),
+        receipt: safeScalarFields(event.message),
+      };
+    case "session_info_changed":
+      return {
+        _tag: "SessionInfoChanged",
+        name: optionalBounded(event.name, MAX_PREVIEW_LENGTH),
+      };
     case "session_action_update":
       return {
         _tag: "QueueChanged",
@@ -1233,6 +1277,14 @@ export function mapPrimeAgentDaemonConnectionEvent(
           placeholder: optionalBounded(event.request.payload.placeholder, MAX_PREVIEW_LENGTH),
           prefill: optionalBounded(event.request.payload.prefill),
           notifyType: event.request.payload.notifyType,
+          statusKey: optionalBounded(event.request.payload.statusKey, MAX_PREVIEW_LENGTH),
+          statusText: optionalBounded(event.request.payload.statusText, MAX_PREVIEW_LENGTH),
+          widgetKey: optionalBounded(event.request.payload.widgetKey, MAX_PREVIEW_LENGTH),
+          widgetLines: event.request.payload.widgetLines
+            ?.slice(0, MAX_LIST_ITEMS)
+            .map((item) => bounded(item, MAX_PREVIEW_LENGTH)),
+          widgetPlacement: event.request.payload.widgetPlacement,
+          text: optionalBounded(event.request.payload.text),
         },
       };
     case "extension_error":

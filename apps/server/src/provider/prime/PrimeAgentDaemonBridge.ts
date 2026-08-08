@@ -45,19 +45,70 @@ export interface PrimeAgentDaemonClient {
     command: Readonly<Record<string, unknown>>,
     timeoutMs?: number,
   ) => Promise<unknown>;
+  readonly enableRequestRecovery?: () => void;
+  readonly enableAutoReconnect?: (options: {
+    readonly recoverDaemon: () => Promise<void>;
+    readonly timeoutMs?: number;
+  }) => void;
   readonly close: () => void;
 }
+
+export interface PrimeAgentDaemonImage {
+  readonly type: "image";
+  readonly data: string;
+  readonly mimeType: string;
+}
+
+export interface PrimeAgentDaemonPromptOptions {
+  readonly images?: ReadonlyArray<PrimeAgentDaemonImage>;
+  readonly queueIfBusy?: boolean;
+  readonly signal?: AbortSignal;
+}
+
+export type PrimeAgentDaemonExtensionUiResponse =
+  | { readonly value: string }
+  | { readonly confirmed: boolean }
+  | { readonly cancelled: true };
+
+export type PrimeAgentDaemonThinkingLevel =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+
+export type PrimeAgentDaemonServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | null;
 
 export interface PrimeAgentDaemonClientConstructor {
   new (socketPath: string): PrimeAgentDaemonClient;
 }
 
 export interface PrimeAgentDaemonAgentConnection {
-  readonly subscribe: (listener: (event: unknown) => void) => () => void;
+  readonly subscribe: (listener: (event: unknown) => void | Promise<void>) => () => void;
   readonly getInitialSnapshot: () => Promise<unknown>;
-  readonly promptAndWait: (message: string) => Promise<void>;
-  readonly abort: () => Promise<void>;
-  readonly dispose: () => Promise<void>;
+  readonly promptAndWait: (
+    message: string,
+    options?: PrimeAgentDaemonPromptOptions,
+  ) => Promise<unknown>;
+  readonly steer?: (
+    message: string,
+    images?: ReadonlyArray<PrimeAgentDaemonImage>,
+  ) => Promise<unknown>;
+  readonly followUp?: (
+    message: string,
+    images?: ReadonlyArray<PrimeAgentDaemonImage>,
+  ) => Promise<unknown>;
+  readonly abort: () => Promise<unknown>;
+  readonly setModel?: (provider: string, modelId: string) => Promise<unknown>;
+  readonly setThinkingLevel?: (level: PrimeAgentDaemonThinkingLevel) => Promise<unknown>;
+  readonly setServiceTier?: (tier: PrimeAgentDaemonServiceTier) => Promise<unknown>;
+  readonly respondToExtensionUiRequest?: (
+    requestId: string,
+    response: PrimeAgentDaemonExtensionUiResponse,
+  ) => Promise<unknown>;
+  readonly dispose: () => Promise<unknown>;
 }
 
 export interface PrimeAgentDaemonAgentConnectionConstructor {

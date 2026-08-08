@@ -300,6 +300,24 @@ describe("PrimeAgentDaemonEvents", () => {
       decodePrimeAgentDaemonEvent(sessionEvent({ type: "recap_update", recap: "Working" })),
     ).toEqual({ _tag: "RecapUpdated", recap: "Working" });
     expect(
+      decodePrimeAgentDaemonEvent(
+        sessionEvent({
+          type: "ipython_sent_agent_message",
+          toolCallId: "call-message",
+          message: { target: "child-1", delivered: true, nested: { private: "discarded" } },
+        }),
+      ),
+    ).toEqual({
+      _tag: "AgentMessageSent",
+      toolCallId: "call-message",
+      receipt: { target: "child-1", delivered: true },
+    });
+    expect(
+      decodePrimeAgentDaemonEvent(
+        sessionEvent({ type: "session_info_changed", name: "renamed-session" }),
+      ),
+    ).toEqual({ _tag: "SessionInfoChanged", name: "renamed-session" });
+    expect(
       decodePrimeAgentDaemonEvent(sessionEvent({ type: "thinking_level_changed", level: "xhigh" })),
     ).toEqual({ _tag: "ThinkingLevelChanged", level: "xhigh" });
     expect(
@@ -407,6 +425,32 @@ describe("PrimeAgentDaemonEvents", () => {
       },
     });
     expect(JSON.stringify(event)).not.toContain("secret");
+
+    expect(
+      decodePrimeAgentDaemonEvent({
+        type: "extension_ui_request",
+        request: {
+          id: "widget-1",
+          method: "setWidget",
+          payload: {
+            widgetKey: "progress",
+            widgetLines: ["Indexing", "42%"],
+            widgetPlacement: "aboveEditor",
+            text: "bounded status detail",
+            privateContext: { token: "secret" },
+          },
+        },
+      }),
+    ).toMatchObject({
+      _tag: "ExtensionRequest",
+      request: {
+        method: "setWidget",
+        widgetKey: "progress",
+        widgetLines: ["Indexing", "42%"],
+        widgetPlacement: "aboveEditor",
+        text: "bounded status detail",
+      },
+    });
   });
 
   it("maps resync, replacement, side questions, connection, heartbeat, and close events", () => {
@@ -463,6 +507,17 @@ describe("PrimeAgentDaemonEvents", () => {
       _tag: "Ignored",
       reason: "unknown-event",
       sourceType: "session_event/telepathy_delta",
+    });
+
+    expect(
+      decodePrimeAgentDaemonEvent({
+        type: "extension_ui_request",
+        request: { id: "future-1", method: "openBrowser", payload: { url: "https://example.com" } },
+      }),
+    ).toEqual({
+      _tag: "Ignored",
+      reason: "malformed-event",
+      sourceType: "extension_ui_request",
     });
 
     expect(
