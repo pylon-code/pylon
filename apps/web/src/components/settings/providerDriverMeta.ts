@@ -15,7 +15,7 @@ import {
   type Icon,
   OpenAI,
   OpenCodeIcon,
-  PiAgentIcon,
+  PrimeAgentIcon,
 } from "../Icons";
 
 type ProviderSettingsSchema = {
@@ -79,7 +79,7 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
   {
     value: ProviderDriverKind.make("primeAgent"),
     label: "Prime Agent",
-    icon: PiAgentIcon,
+    icon: PrimeAgentIcon,
     badgeLabel: "Early Access",
     settingsSchema: PrimeAgentSettings,
   },

@@ -1,7 +1,7 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { PiAgentIcon } from "../Icons";
+import { PrimeAgentIcon } from "../Icons";
 import { PROVIDER_ICON_BY_PROVIDER, AVAILABLE_PROVIDER_OPTIONS } from "./providerIconUtils";
 
 describe("Prime Agent provider presentation", () => {
@@ -16,7 +16,7 @@ describe("Prime Agent provider presentation", () => {
     });
   });
 
-  it("uses the existing agent mark", () => {
-    expect(PROVIDER_ICON_BY_PROVIDER[primeAgent]).toBe(PiAgentIcon);
+  it("uses the official Prime Agent butterfly mark", () => {
+    expect(PROVIDER_ICON_BY_PROVIDER[primeAgent]).toBe(PrimeAgentIcon);
   });
 });
