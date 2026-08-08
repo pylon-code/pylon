@@ -148,6 +148,13 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     yield* Deferred.await(startupWarning);
     yield* Fiber.interrupt(startupWarningFiber);
     assert.isTrue(parsePrimeAgentResumeMarker(session.resumeCursor));
+    assert.isTrue(
+      parsePrimeAgentResumeMarker({
+        schemaVersion: 2,
+        kind: "prime-agent-daemon-continue",
+        continue: true,
+      }),
+    );
     assert.isFalse(
       parsePrimeAgentResumeMarker({
         schemaVersion: 0,

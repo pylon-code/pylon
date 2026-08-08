@@ -18,7 +18,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -48,11 +47,13 @@ import {
   primeAgentLaunchArgsIssue,
 } from "../acp/PrimeAgentAcpSupport.ts";
 import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
+import {
+  isPrimeAgentCompatibleResumeCursor,
+  PRIME_AGENT_ACP_RESUME_CURSOR,
+} from "../prime/PrimeAgentResumeCursor.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = ProviderDriverKind.make("primeAgent");
-const PRIME_AGENT_RESUME_VERSION = 1 as const;
-const PRIME_AGENT_RESUME_KIND = "prime-agent-cli-continue" as const;
 
 export interface PrimeAgentAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
@@ -82,16 +83,8 @@ interface PrimeAgentSessionContext {
   stopped: boolean;
 }
 
-const decodePrimeAgentResumeMarker = Schema.decodeUnknownOption(
-  Schema.Struct({
-    schemaVersion: Schema.Literal(PRIME_AGENT_RESUME_VERSION),
-    kind: Schema.Literal(PRIME_AGENT_RESUME_KIND),
-    continue: Schema.Literal(true),
-  }),
-);
-
 export function parsePrimeAgentResumeMarker(raw: unknown): boolean {
-  return Option.isSome(decodePrimeAgentResumeMarker(raw));
+  return isPrimeAgentCompatibleResumeCursor(raw);
 }
 
 function safePathSegment(value: string): string {
@@ -449,11 +442,7 @@ export function makePrimeAgentAdapter(
             );
 
           const now = yield* nowIso;
-          const resumeCursor = {
-            schemaVersion: PRIME_AGENT_RESUME_VERSION,
-            kind: PRIME_AGENT_RESUME_KIND,
-            continue: true,
-          } as const;
+          const resumeCursor = PRIME_AGENT_ACP_RESUME_CURSOR;
           const session: ProviderSession = {
             provider: PROVIDER,
             providerInstanceId: boundInstanceId,

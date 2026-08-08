@@ -19,6 +19,7 @@ import {
   PRIME_AGENT_DAEMON_RESUME_CURSOR,
   type PrimeAgentDaemonSessionRuntime,
 } from "./PrimeAgentDaemonSessionRuntime.ts";
+import { PRIME_AGENT_ACP_RESUME_CURSOR } from "./PrimeAgentResumeCursor.ts";
 
 const actions = {
   queuedCount: 0,
@@ -334,11 +335,14 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     }),
   );
 
-  it.effect("cold-resumes by creating with continueRecent in the same isolated directory", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
+  it.effect("cold-resumes either Prime backend cursor in the same isolated directory", () =>
+    Effect.gen(function* () {
+      for (const resumeCursor of [
+        PRIME_AGENT_DAEMON_RESUME_CURSOR,
+        PRIME_AGENT_ACP_RESUME_CURSOR,
+      ]) {
         const { captures, make } = fixture();
-        yield* make(PRIME_AGENT_DAEMON_RESUME_CURSOR);
+        yield* Effect.scoped(make(resumeCursor));
         expect(captures.commands[0]).toMatchObject({
           type: "create",
           lifecycle: "client_owned",
@@ -347,8 +351,8 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         });
         expect(captures.commands[0]).not.toHaveProperty("sessionPath");
         expect(captures.commands[0]).not.toHaveProperty("activeSessionId");
-      }),
-    ),
+      }
+    }),
   );
 
   it.effect(
