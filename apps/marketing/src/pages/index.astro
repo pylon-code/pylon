@@ -412,6 +412,10 @@ import { RELEASES_URL } from "../lib/releases";
 
   .hero-inner {
     position: relative;
+    /* Above .hero-float. The provider marks are decoration and must never
+       paint over the headline — at narrow widths they overlap it, and without
+       this the tile clipped the first glyph of "The control plane". */
+    z-index: 2;
     text-align: center;
   }
 
@@ -576,7 +580,9 @@ import { RELEASES_URL } from "../lib/releases";
     .hero-float-mark.hf-codex    { top: 2%;  right: 3%; }
     .hero-float-mark.hf-opencode { top: 26%; left: 2%; }
     .hero-float-mark.hf-cursor   { top: 24%; right: 2%; }
-    .hero-float-mark.hf-grok     { top: 48%; left: 2%;  transform: rotate(3deg); }
+    /* Sits between the OpenCode mark and the headline. Lower than this and it
+       crowds the title once the heading wraps to two lines. */
+    .hero-float-mark.hf-grok     { top: 38%; left: 2%;  transform: rotate(3deg); }
   }
 
   @media (max-width: 820px) {
