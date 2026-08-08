@@ -95,6 +95,7 @@ exec ${process.execPath} ${mockAgentPath} "$@"
           T3_ACP_PROMPT_DELAY_MS: "250",
           T3_ACP_REQUEST_LOG_PATH: requestLogPath,
         },
+        startupWarning: "Prime daemon unavailable; using ACP compatibility fallback.",
       },
     );
     const rejectedMode = yield* adapter
@@ -122,6 +123,17 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     assert.equal(rejectedLaunchArgs._tag, "Failure");
 
     const threadId = ThreadId.make("resume/thread");
+    const startupWarning = yield* Deferred.make<void>();
+    const startupWarningFiber = yield* adapter.streamEvents.pipe(
+      Stream.runForEach((event) =>
+        event.type === "runtime.warning" &&
+        event.payload.message === "Prime daemon unavailable; using ACP compatibility fallback."
+          ? Deferred.succeed(startupWarning, undefined).pipe(Effect.ignore)
+          : Effect.void,
+      ),
+      Effect.forkChild,
+    );
+    yield* Effect.yieldNow;
     const session = yield* adapter.startSession({
       threadId,
       provider: ProviderDriverKind.make("primeAgent"),
@@ -133,6 +145,8 @@ exec ${process.execPath} ${mockAgentPath} "$@"
         model: "openai/gpt-5.4",
       },
     });
+    yield* Deferred.await(startupWarning);
+    yield* Fiber.interrupt(startupWarningFiber);
     assert.isTrue(parsePrimeAgentResumeMarker(session.resumeCursor));
     assert.isFalse(
       parsePrimeAgentResumeMarker({

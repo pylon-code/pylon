@@ -59,6 +59,8 @@ export interface PrimeAgentAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: ProviderInstanceId;
+  /** Generic, user-visible explanation when this adapter is an explicit compatibility fallback. */
+  readonly startupWarning?: string;
 }
 
 interface PrimeAgentActiveTurn {
@@ -587,6 +589,15 @@ export function makePrimeAgentAdapter(
             threadId: input.threadId,
             payload: { providerThreadId: started.sessionId },
           });
+          if (options?.startupWarning) {
+            yield* offerRuntimeEvent({
+              type: "runtime.warning",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              payload: { message: options.startupWarning },
+            });
+          }
           return session;
         }).pipe(Effect.scoped),
       );
