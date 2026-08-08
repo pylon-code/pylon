@@ -1,0 +1,471 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodePath from "node:path";
+
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { describe, expect, it } from "@effect/vitest";
+import { ProviderInstanceId } from "@t3tools/contracts";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import { ChildProcessSpawner } from "effect/unstable/process";
+
+import {
+  type PrimeAgentDaemonAgentConnection,
+  type PrimeAgentDaemonBridge,
+  type PrimeAgentDaemonClient,
+} from "./PrimeAgentDaemonBridge.ts";
+import {
+  derivePrimeAgentDaemonPaths,
+  makePrimeAgentDaemonEnvironment,
+  makePrimeAgentDaemonManager,
+  PRIME_AGENT_REQUIRED_DAEMON_CAPABILITIES,
+} from "./PrimeAgentDaemonManager.ts";
+
+interface CapturedCommand {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+  readonly options: {
+    readonly env?: NodeJS.ProcessEnv;
+    readonly extendEnv?: boolean;
+  };
+}
+
+interface FakeProcess {
+  handle: ChildProcessSpawner.ChildProcessHandle;
+  running: boolean;
+  kills: number;
+  readonly complete: () => void;
+}
+
+function fakeProcess(pid: number): Effect.Effect<FakeProcess> {
+  return Effect.sync(() => {
+    let exitCompleted = false;
+    let exitResume: ((effect: Effect.Effect<ChildProcessSpawner.ExitCode>) => void) | undefined;
+    const process: FakeProcess = {
+      running: true,
+      kills: 0,
+      complete: () => {
+        process.running = false;
+        exitCompleted = true;
+        exitResume?.(Effect.succeed(ChildProcessSpawner.ExitCode(0)));
+      },
+      handle: undefined as never,
+    };
+    const exitCode = Effect.callback<ChildProcessSpawner.ExitCode>((resume) => {
+      if (exitCompleted) resume(Effect.succeed(ChildProcessSpawner.ExitCode(0)));
+      else exitResume = resume;
+    });
+    process.handle = ChildProcessSpawner.makeHandle({
+      pid: ChildProcessSpawner.ProcessId(pid),
+      exitCode,
+      isRunning: Effect.sync(() => process.running),
+      kill: () =>
+        Effect.sync(() => {
+          process.kills += 1;
+          process.complete();
+        }),
+      unref: Effect.succeed(Effect.void),
+      stdin: Sink.drain,
+      stdout: Stream.empty,
+      stderr: Stream.empty,
+      all: Stream.empty,
+      getInputFd: () => Sink.drain,
+      getOutputFd: () => Stream.empty,
+    });
+    return process;
+  });
+}
+
+function fakeBridge(input: {
+  readonly socket: string;
+  readonly processes: FakeProcess[];
+  readonly hello?: unknown;
+  readonly failConnect?: boolean;
+  readonly connectionAvailable?: { value: boolean };
+  readonly shutdownRequests: string[];
+  readonly events?: string[];
+  readonly existingLive?: { value: boolean };
+  readonly readinessFailures?: { value: number };
+}): PrimeAgentDaemonBridge {
+  const hello =
+    input.hello ??
+    ({
+      type: "daemon_hello",
+      socketPath: input.socket,
+      protocol: { name: "prime-agent.daemon", version: 7 },
+      serverCapabilities: [...PRIME_AGENT_REQUIRED_DAEMON_CAPABILITIES],
+    } satisfies Record<string, unknown>);
+
+  class FakeClient implements PrimeAgentDaemonClient {
+    isConnected = false;
+    readonly socketPath: string;
+
+    constructor(socketPath: string) {
+      this.socketPath = socketPath;
+    }
+
+    connect(): Promise<void> {
+      if (input.failConnect || input.connectionAvailable?.value === false) {
+        return Promise.reject(new Error("not ready"));
+      }
+      const spawnedProcessRunning = input.processes.some((process) => process.running);
+      if (!spawnedProcessRunning && input.existingLive?.value !== true) {
+        return Promise.reject(new Error("socket unavailable"));
+      }
+      if (spawnedProcessRunning && (input.readinessFailures?.value ?? 0) > 0) {
+        input.readinessFailures!.value -= 1;
+        return Promise.reject(new Error("daemon starting"));
+      }
+      this.isConnected = true;
+      return Promise.resolve();
+    }
+
+    waitForHello(): Promise<unknown> {
+      return Promise.resolve(hello);
+    }
+
+    request(command: Readonly<Record<string, unknown>>): Promise<unknown> {
+      if (command.type === "shutdown") {
+        input.shutdownRequests.push(this.socketPath);
+        input.events?.push(input.existingLive?.value === true ? "existing-shutdown" : "shutdown");
+        if (input.existingLive) input.existingLive.value = false;
+        input.processes.at(-1)?.complete();
+      }
+      return Promise.resolve({ type: "response", success: true });
+    }
+
+    close(): void {
+      this.isConnected = false;
+    }
+  }
+
+  class FakeAgentConnection implements PrimeAgentDaemonAgentConnection {
+    static attach(): Promise<PrimeAgentDaemonAgentConnection> {
+      return Promise.resolve(new FakeAgentConnection());
+    }
+    subscribe(): () => void {
+      return () => undefined;
+    }
+    getInitialSnapshot(): Promise<unknown> {
+      return Promise.resolve({});
+    }
+    promptAndWait(): Promise<void> {
+      return Promise.resolve();
+    }
+    abort(): Promise<void> {
+      return Promise.resolve();
+    }
+    dispose(): Promise<void> {
+      return Promise.resolve();
+    }
+  }
+
+  return {
+    packageRoot: "/fake/prime-agent",
+    moduleEntryPath: "/fake/prime-agent/dist/index.js",
+    version: "0.7.1",
+    protocolName: "prime-agent.daemon",
+    protocolVersion: 7,
+    DaemonClient: FakeClient,
+    DaemonAgentConnection: FakeAgentConnection,
+    defaultDaemonSocketPath: () => "/tmp/user-prime-agent.sock",
+  };
+}
+
+function managerFixture(options?: {
+  readonly hello?: unknown;
+  readonly failConnect?: boolean;
+  readonly existingLive?: boolean;
+  readonly readinessFailures?: number;
+  readonly restoreConnectionOnSpawn?: boolean;
+}) {
+  const commands: CapturedCommand[] = [];
+  const processes: FakeProcess[] = [];
+  const shutdownRequests: string[] = [];
+  const events: string[] = [];
+  const existingLive = { value: options?.existingLive ?? false };
+  const readinessFailures = { value: options?.readinessFailures ?? 0 };
+  const connectionAvailable = { value: true };
+  const paths = derivePrimeAgentDaemonPaths({
+    stateDir: "/tmp/pylon-state",
+    providerInstanceId: ProviderInstanceId.make("prime-work"),
+    platform: "linux",
+    tempDir: "/tmp",
+  });
+  const bridge = fakeBridge({
+    socket: paths.socket,
+    processes,
+    shutdownRequests,
+    events,
+    existingLive,
+    readinessFailures,
+    connectionAvailable,
+    ...(options?.hello === undefined ? {} : { hello: options.hello }),
+    ...(options?.failConnect === undefined ? {} : { failConnect: options.failConnect }),
+  });
+  const spawner = Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) =>
+      Effect.gen(function* () {
+        commands.push(command as unknown as CapturedCommand);
+        events.push("spawn");
+        if (processes.length > 0 && options?.restoreConnectionOnSpawn) {
+          connectionAvailable.value = true;
+        }
+        const process = yield* fakeProcess(processes.length + 1);
+        processes.push(process);
+        return process.handle;
+      }),
+    ),
+  );
+  const make = makePrimeAgentDaemonManager({
+    executablePath: "/resolved/bin/prime-agent",
+    settings: { agentHomePath: "~/.prime/pylon" },
+    environment: {
+      PATH: "/usr/bin",
+      PRIME_AGENT_INTERNAL_ROLE: "worker",
+      PRIME_AGENT_INTERNAL_TOKEN: "secret",
+      KEEP_ME: "yes",
+    },
+    stateDir: "/tmp/pylon-state",
+    providerInstanceId: ProviderInstanceId.make("prime-work"),
+    platform: "linux",
+    tempDir: "/tmp",
+    readinessRetryDelay: Duration.zero,
+    readinessRetries: 4,
+    shutdownTimeout: Duration.zero,
+    bridge,
+  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, spawner)));
+  return {
+    make,
+    commands,
+    processes,
+    shutdownRequests,
+    events,
+    paths,
+    connectionAvailable,
+  };
+}
+
+describe("PrimeAgentDaemonManager paths and environment", () => {
+  it("derives stable short Unix sockets and Windows private pipes", () => {
+    const input = {
+      stateDir: "/a/very/long/pylon/state/directory/that/must/not/appear/in/the/socket",
+      providerInstanceId: "work-prime",
+      tempDir: "/tmp",
+    } as const;
+    const unix = derivePrimeAgentDaemonPaths({ ...input, platform: "linux" });
+    const windows = derivePrimeAgentDaemonPaths({ ...input, platform: "win32" });
+
+    expect(unix.socket).toMatch(/^\/tmp\/pylon-prime-agent-[a-f0-9]{20}\.sock$/);
+    expect(unix.socket.length).toBeLessThan(80);
+    expect(windows.socket).toMatch(/^\\\\\.\\pipe\\pylon-prime-agent-[a-f0-9]{20}$/);
+    expect(windows.sessionDir).toBe(unix.sessionDir);
+    expect(derivePrimeAgentDaemonPaths({ ...input, platform: "linux" })).toEqual(unix);
+  });
+
+  it("strips every inherited internal variable and applies the configured agent home", () => {
+    const environment = makePrimeAgentDaemonEnvironment({
+      settings: { agentHomePath: "/private/pylon-prime-home" },
+      environment: {
+        PRIME_AGENT_INTERNAL_ROLE: "daemon-worker",
+        PRIME_AGENT_INTERNAL_NEW_FIELD: "future-private-value",
+        PRIME_AGENT_CODING_AGENT_DIR: "/ambient/home",
+        KEEP: "yes",
+      },
+    });
+
+    expect(environment).toEqual({
+      PRIME_AGENT_CODING_AGENT_DIR: "/private/pylon-prime-home",
+      KEEP: "yes",
+    });
+  });
+});
+
+describe("PrimeAgentDaemonManager lifecycle", () => {
+  it.effect("does not touch a stable socket when the lazy manager was never opened", () => {
+    const fixture = managerFixture({ existingLive: true });
+    return Effect.scoped(Effect.asVoid(fixture.make)).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(fixture.commands).toHaveLength(0);
+          expect(fixture.shutdownRequests).toHaveLength(0);
+        }),
+      ),
+    );
+  });
+
+  it.effect(
+    "serializes concurrent opens, spawns once, and uses the isolated daemon command",
+    () => {
+      const fixture = managerFixture();
+      return Effect.gen(function* () {
+        const manager = yield* fixture.make;
+        const clients = yield* Effect.all(
+          [manager.openClient(), manager.openClient(), manager.openClient()],
+          { concurrency: "unbounded" },
+        );
+        for (const client of clients) client.close();
+
+        expect(fixture.commands).toHaveLength(1);
+        const command = fixture.commands[0]!;
+        expect(command.command).toBe("/resolved/bin/prime-agent");
+        expect(command.args).toEqual([
+          "--mode",
+          "daemon",
+          "--daemon-socket",
+          manager.socket,
+          "--offline",
+          "--session-dir",
+          manager.sessionDir,
+        ]);
+        expect(command.options.extendEnv).toBe(false);
+        expect(command.options.env).toMatchObject({
+          PATH: "/usr/bin",
+          KEEP_ME: "yes",
+          PRIME_AGENT_CODING_AGENT_DIR: NodePath.resolve(process.env.HOME!, ".prime/pylon"),
+        });
+        expect(command.options.env).not.toHaveProperty("PRIME_AGENT_INTERNAL_ROLE");
+        expect(command.options.env).not.toHaveProperty("PRIME_AGENT_INTERNAL_TOKEN");
+      }).pipe(Effect.scoped);
+    },
+  );
+
+  it.effect(
+    "fails readiness without publishing a daemon and interrupts only its captured handle",
+    () => {
+      const fixture = managerFixture({ failConnect: true });
+      return Effect.gen(function* () {
+        const manager = yield* fixture.make;
+        const error = yield* Effect.flip(manager.openClient());
+        expect(error.reason).toBe("readiness-failed");
+        expect(fixture.commands).toHaveLength(1);
+        expect(fixture.processes[0]!.kills).toBe(1);
+      }).pipe(Effect.scoped);
+    },
+  );
+
+  it.effect("rejects an incompatible daemon_hello before readiness", () => {
+    const fixture = managerFixture({
+      hello: {
+        type: "daemon_hello",
+        socketPath: derivePrimeAgentDaemonPaths({
+          stateDir: "/tmp/pylon-state",
+          providerInstanceId: "prime-work",
+          platform: "linux",
+          tempDir: "/tmp",
+        }).socket,
+        protocol: { name: "prime-agent.daemon", version: 6 },
+        serverCapabilities: [...PRIME_AGENT_REQUIRED_DAEMON_CAPABILITIES],
+      },
+    });
+    return Effect.gen(function* () {
+      const manager = yield* fixture.make;
+      const error = yield* Effect.flip(manager.openClient());
+      expect(error.reason).toBe("incompatible-hello");
+      expect(error.detail).toContain("v7+");
+    }).pipe(Effect.scoped);
+  });
+
+  it.effect("retries validated bridge readiness without filesystem polling", () => {
+    const fixture = managerFixture({ readinessFailures: 2 });
+    return Effect.gen(function* () {
+      const manager = yield* fixture.make;
+      const client = yield* manager.openClient();
+      client.close();
+      expect(fixture.commands).toHaveLength(1);
+    }).pipe(Effect.scoped);
+  });
+
+  it.effect("does not unlink or replace an incompatible live socket listener", () => {
+    const paths = derivePrimeAgentDaemonPaths({
+      stateDir: "/tmp/pylon-state",
+      providerInstanceId: "prime-work",
+      platform: "linux",
+      tempDir: "/tmp",
+    });
+    const fixture = managerFixture({
+      existingLive: true,
+      hello: {
+        type: "daemon_hello",
+        socketPath: paths.socket,
+        protocol: { name: "other-daemon", version: 7 },
+        serverCapabilities: [...PRIME_AGENT_REQUIRED_DAEMON_CAPABILITIES],
+      },
+    });
+    return Effect.gen(function* () {
+      const manager = yield* fixture.make;
+      const error = yield* Effect.flip(manager.openClient());
+      expect(error.reason).toBe("incompatible-hello");
+      expect(fixture.commands).toHaveLength(0);
+      expect(fixture.shutdownRequests).toHaveLength(0);
+    }).pipe(Effect.scoped);
+  });
+
+  it.effect(
+    "retires a compatible daemon on the live stable socket before unlinking and spawning",
+    () => {
+      const fixture = managerFixture({ existingLive: true });
+      return Effect.gen(function* () {
+        const manager = yield* fixture.make;
+        const client = yield* manager.openClient();
+        client.close();
+        expect(fixture.events.slice(0, 2)).toEqual(["existing-shutdown", "spawn"]);
+        expect(fixture.commands).toHaveLength(1);
+      }).pipe(Effect.scoped);
+    },
+  );
+
+  it.effect("restarts an exited captured daemon through the recovery callback", () => {
+    const fixture = managerFixture();
+    return Effect.gen(function* () {
+      const manager = yield* fixture.make;
+      const client = yield* manager.openClient();
+      client.close();
+      fixture.processes[0]!.complete();
+
+      yield* Effect.promise(() => manager.recover());
+      expect(fixture.commands).toHaveLength(2);
+      expect(fixture.processes[0]!.kills).toBe(0);
+    }).pipe(Effect.scoped);
+  });
+
+  it.effect("restarts a captured daemon that is alive but no longer reachable", () => {
+    const fixture = managerFixture({ restoreConnectionOnSpawn: true });
+    return Effect.gen(function* () {
+      const manager = yield* fixture.make;
+      const client = yield* manager.openClient();
+      client.close();
+      fixture.connectionAvailable.value = false;
+
+      yield* Effect.promise(() => manager.recover());
+      expect(fixture.commands).toHaveLength(2);
+      expect(fixture.processes[0]!.kills).toBe(1);
+    }).pipe(Effect.scoped);
+  });
+
+  it.effect(
+    "requests public graceful shutdown and awaits the captured child without killing it",
+    () => {
+      const fixture = managerFixture();
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const manager = yield* fixture.make;
+          const client = yield* manager.openClient();
+          client.close();
+        }),
+      ).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            expect(fixture.shutdownRequests).toEqual([fixture.paths.socket]);
+            expect(fixture.processes).toHaveLength(1);
+            expect(fixture.processes[0]!.running).toBe(false);
+            expect(fixture.processes[0]!.kills).toBe(0);
+          }),
+        ),
+      );
+    },
+  );
+});
