@@ -136,6 +136,7 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
+  revertDisabledReason?: string;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
@@ -215,6 +216,7 @@ interface MessagesTimelineProps {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
+  revertDisabledReason?: string;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   activeThreadEnvironmentId: EnvironmentId;
@@ -261,6 +263,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
+  revertDisabledReason,
   isRevertingCheckpoint,
   onImageExpand,
   activeThreadEnvironmentId,
@@ -509,6 +512,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      ...(revertDisabledReason ? { revertDisabledReason } : {}),
       onImageExpand,
       onOpenTurnDiff,
       onToggleTurnFold,
@@ -525,6 +529,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      revertDisabledReason,
       onImageExpand,
       onOpenTurnDiff,
       onToggleTurnFold,
@@ -1066,15 +1071,19 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
             type="button"
             size="xs"
             variant="ghost"
-            disabled={activity.isRevertingCheckpoint || activity.isWorking}
+            disabled={
+              activity.isRevertingCheckpoint ||
+              activity.isWorking ||
+              Boolean(ctx.revertDisabledReason)
+            }
             onClick={() => ctx.onRevertUserMessage(messageId)}
-            aria-label="Revert to this message"
+            aria-label={ctx.revertDisabledReason ?? "Revert to this message"}
           />
         }
       >
         <Undo2Icon className="size-3" />
       </TooltipTrigger>
-      <TooltipPopup side="top">Revert to this message</TooltipPopup>
+      <TooltipPopup side="top">{ctx.revertDisabledReason ?? "Revert to this message"}</TooltipPopup>
     </Tooltip>
   );
 }

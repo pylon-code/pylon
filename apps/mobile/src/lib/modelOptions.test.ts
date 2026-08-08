@@ -5,11 +5,57 @@ import { ProviderInstanceId, type ServerConfig } from "@t3tools/contracts";
 import {
   buildModelOptions,
   groupByProvider,
+  getModelSelectionSupportedRuntimeModes,
   resolveDefaultableModelSelection,
+  resolveModelSelectionRuntimeMode,
+  showModelSelectionInteractionModeToggle,
   resolveSelectableModelSelection,
 } from "./modelOptions";
 
 describe("mobile model options", () => {
+
+  it("presents the default Prime Agent instance with its product name", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "primeAgent",
+          driver: "primeAgent",
+          enabled: true,
+          installed: true,
+          auth: { status: "unknown" },
+          models: [{ slug: "default", name: "Prime Agent Default", isCustom: false, capabilities: null }],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    expect(buildModelOptions(config, null)).toMatchObject([
+      { providerLabel: "Prime Agent", providerDriver: "primeAgent", label: "Prime Agent Default" },
+    ]);
+  });
+
+  it("honors provider runtime and interaction presentation capabilities", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "primeAgent",
+          driver: "primeAgent",
+          enabled: true,
+          installed: true,
+          auth: { status: "unknown" },
+          supportedRuntimeModes: ["full-access"],
+          showInteractionModeToggle: false,
+          models: [],
+        },
+      ],
+    } as unknown as ServerConfig;
+    const selection = { instanceId: ProviderInstanceId.make("primeAgent"), model: "default" };
+
+    expect(getModelSelectionSupportedRuntimeModes(config, selection)).toEqual(["full-access"]);
+    expect(resolveModelSelectionRuntimeMode(config, selection, "approval-required")).toBe(
+      "full-access",
+    );
+    expect(showModelSelectionInteractionModeToggle(config, selection)).toBe(false);
+  });
   it("groups models by provider and flags legacy entries", () => {
     const config = {
       providers: [

@@ -2,10 +2,15 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
+  getServerProviderSupportedRuntimeModes,
+  resolveServerProviderRuntimeMode,
   ServerConfig,
   ServerProvider,
   ServerProviders,
   ServerUpsertKeybindingResult,
+  supportsServerProviderBackgroundTextGeneration,
+  supportsServerProviderConversationRollback,
 } from "./server.ts";
 
 const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
@@ -45,6 +50,25 @@ describe("ServerProvider", () => {
     expect(parsed.skills).toEqual([]);
     expect(parsed.versionAdvisory).toBeUndefined();
     expect(parsed.updateState).toBeUndefined();
+    expect(getServerProviderSupportedRuntimeModes(parsed)).toEqual(
+      DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
+    );
+    expect(supportsServerProviderBackgroundTextGeneration(parsed)).toBe(true);
+    expect(supportsServerProviderConversationRollback(parsed)).toBe(true);
+  });
+
+  it("decodes provider presentation capability restrictions", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      supportedRuntimeModes: ["full-access"],
+      supportsBackgroundTextGeneration: false,
+      supportsConversationRollback: false,
+    });
+
+    expect(getServerProviderSupportedRuntimeModes(parsed)).toEqual(["full-access"]);
+    expect(resolveServerProviderRuntimeMode(parsed, "approval-required")).toBe("full-access");
+    expect(supportsServerProviderBackgroundTextGeneration(parsed)).toBe(false);
+    expect(supportsServerProviderConversationRollback(parsed)).toBe(false);
   });
 
   it("defaults one-click update support when decoding older advisory snapshots", () => {

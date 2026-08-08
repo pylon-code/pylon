@@ -55,7 +55,13 @@ import {
 import { ControlPill } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
-import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import {
+  buildModelOptions,
+  getModelSelectionSupportedRuntimeModes,
+  groupByProvider,
+  resolveModelSelectionRuntimeMode,
+  showModelSelectionInteractionModeToggle,
+} from "../../lib/modelOptions";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import {
@@ -331,7 +337,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ? "Queue"
       : "Send";
   const currentModelSelection = props.selectedThread.modelSelection;
-  const currentRuntimeMode = props.selectedThread.runtimeMode;
+  const currentRuntimeMode = resolveModelSelectionRuntimeMode(
+    props.serverConfig,
+    currentModelSelection,
+    props.selectedThread.runtimeMode,
+  );
+  const supportedRuntimeModes = getModelSelectionSupportedRuntimeModes(
+    props.serverConfig,
+    currentModelSelection,
+  );
+  const showInteractionModeToggle = showModelSelectionInteractionModeToggle(
+    props.serverConfig,
+    currentModelSelection,
+  );
+  const currentInteractionMode = showInteractionModeToggle
+    ? (props.selectedThread.interactionMode ?? "default")
+    : "default";
   const connectionStatus = composerConnectionStatus({
     connectionError: props.connectionError,
     connectionState: props.connectionState,
@@ -395,20 +416,24 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           label: "/model",
           description: "Switch model",
         },
-        {
-          id: "cmd:plan",
-          type: "slash-command" as const,
-          command: "plan",
-          label: "/plan",
-          description: "Switch to plan mode",
-        },
-        {
-          id: "cmd:default",
-          type: "slash-command" as const,
-          command: "default",
-          label: "/default",
-          description: "Switch to default mode",
-        },
+        ...(showInteractionModeToggle
+          ? [
+              {
+                id: "cmd:plan",
+                type: "slash-command" as const,
+                command: "plan" as const,
+                label: "/plan",
+                description: "Switch to plan mode",
+              },
+              {
+                id: "cmd:default",
+                type: "slash-command" as const,
+                command: "default" as const,
+                label: "/default",
+                description: "Switch to default mode",
+              },
+            ]
+          : []),
       ];
       const builtIn = allBuiltIn.filter((item) => item.command.includes(q));
 
@@ -525,7 +550,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }
 
     return [];
-  }, [composerTrigger, pathSearch.entries, selectedProviderStatus]);
+  }, [composerTrigger, pathSearch.entries, selectedProviderStatus, showInteractionModeToggle]);
 
   // ── Handle command selection ──────────────────────────────
   const { onChangeDraftMessage, onUpdateInteractionMode, draftMessage, onSendMessage } = props;

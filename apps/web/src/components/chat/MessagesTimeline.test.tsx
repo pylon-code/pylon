@@ -432,6 +432,21 @@ describe("MessagesTimeline", () => {
     expect(onAnchorReady).toHaveBeenCalledWith(secondEntry.message.id, 1);
   });
 
+  it("disables checkpoint revert with a provider capability explanation", () => {
+    const messageId = MessageId.make("message-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildUserTimelineEntry("Hello")]}
+        revertTurnCountByUserMessageId={new Map([[messageId, 0]])}
+        revertDisabledReason="This provider cannot restore its conversation."
+      />,
+    );
+
+    expect(markup).toContain('aria-label="This provider cannot restore its conversation."');
+    expect(markup).toContain("disabled");
+  });
+
   it("renders collapse controls for long user messages", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline

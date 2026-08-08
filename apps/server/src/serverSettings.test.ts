@@ -505,6 +505,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             serverUrl: "  http://127.0.0.1:4096  ",
             serverPassword: "  secret-password  ",
           },
+          primeAgent: {
+            binaryPath: "  /opt/homebrew/bin/prime-agent  ",
+            agentHomePath: "  ~/.prime/agent-work  ",
+            launchArgs: "  --model custom  ",
+          },
         },
       });
 
@@ -528,6 +533,13 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         binaryPath: "/opt/homebrew/bin/opencode",
         serverUrl: "http://127.0.0.1:4096",
         serverPassword: "secret-password",
+        customModels: [],
+      });
+      assert.deepEqual(next.providers.primeAgent, {
+        enabled: true,
+        binaryPath: "/opt/homebrew/bin/prime-agent",
+        agentHomePath: "~/.prime/agent-work",
+        launchArgs: "--model custom",
         customModels: [],
       });
     }).pipe(Effect.provide(makeServerSettingsLayer())),
@@ -565,11 +577,15 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           claudeAgent: {
             binaryPath: "",
           },
+          primeAgent: {
+            binaryPath: "   ",
+          },
         },
       });
 
       assert.equal(next.providers.codex.binaryPath, "codex");
       assert.equal(next.providers.claudeAgent.binaryPath, "claude");
+      assert.equal(next.providers.primeAgent.binaryPath, "prime-agent");
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 

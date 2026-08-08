@@ -6,6 +6,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  supportsServerProviderBackgroundTextGeneration,
 } from "@t3tools/contracts";
 import {
   createModelSelection,
@@ -277,6 +278,12 @@ export function getCustomModelOptionsByInstance(
   return out;
 }
 
+export function getBackgroundTextGenerationProviders(
+  providers: ReadonlyArray<ServerProvider>,
+): ReadonlyArray<ServerProvider> {
+  return providers.filter(supportsServerProviderBackgroundTextGeneration);
+}
+
 export function resolveAppModelSelectionState(
   settings: UnifiedSettings,
   providers: ReadonlyArray<ServerProvider>,
@@ -285,7 +292,8 @@ export function resolveAppModelSelectionState(
     instanceId: DEFAULT_TEXT_GENERATION_INSTANCE_ID,
     model: DEFAULT_TEXT_GENERATION_MODEL,
   };
-  const entries = deriveProviderInstanceEntries(providers);
+  const selectableProviders = getBackgroundTextGenerationProviders(providers);
+  const entries = deriveProviderInstanceEntries(selectableProviders);
   const selectedEntry = entries.find(
     (entry) => entry.instanceId === selection.instanceId && entry.enabled && entry.isAvailable,
   );
@@ -296,7 +304,12 @@ export function resolveAppModelSelectionState(
     // don't carry over the old instance's model — use the fallback instance's default.
     const selectedModel = selectedEntry ? selection.model : null;
     const model =
-      resolveAppModelSelectionForInstance(entry.instanceId, settings, providers, selectedModel) ??
+      resolveAppModelSelectionForInstance(
+        entry.instanceId,
+        settings,
+        selectableProviders,
+        selectedModel,
+      ) ??
       entry.models[0]?.slug ??
       DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[entry.driverKind];
     if (!model) {
@@ -313,17 +326,17 @@ export function resolveAppModelSelectionState(
     return createModelSelection(entry.instanceId, model, modelOptionsForDispatch);
   }
 
-  const provider = resolveSelectableProvider(providers, null);
+  const provider = resolveSelectableProvider(selectableProviders, null);
   const keptSelectedProvider = false;
 
   // When the provider changed due to fallback (e.g. selected provider was disabled),
   // don't carry over the old provider's model — use the fallback provider's default.
   const selectedModel = keptSelectedProvider ? selection.model : null;
-  const model = resolveAppModelSelection(provider, settings, providers, selectedModel);
+  const model = resolveAppModelSelection(provider, settings, selectableProviders, selectedModel);
   const { modelOptionsForDispatch } = getComposerProviderState({
     provider,
     model,
-    models: getProviderModels(providers, provider),
+    models: getProviderModels(selectableProviders, provider),
     modelOptions: keptSelectedProvider ? selection.options : undefined,
   });
 
