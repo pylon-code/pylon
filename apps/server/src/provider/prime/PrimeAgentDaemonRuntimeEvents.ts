@@ -306,15 +306,8 @@ function compactionItemId(input: RuntimeEventContext): RuntimeItemId {
   return RuntimeItemId.make(`compaction:${input.turnId ?? input.threadId}`);
 }
 
-function refinementData(
-  event: Extract<PrimeDaemonEvent, { readonly _tag: "RefinementCompleted" }>,
-) {
-  return boundedScalarData({
-    appliedCount: event.appliedCount,
-    failedCount: event.failedCount,
-    ...(event.scope === undefined ? {} : { scope: event.scope }),
-    ...(event.rollbackOf === undefined ? {} : { rollbackOf: event.rollbackOf }),
-  });
+function retryItemId(input: RuntimeEventContext): RuntimeItemId {
+  return RuntimeItemId.make(`retry:${input.turnId ?? input.threadId}`);
 }
 
 /**
@@ -539,38 +532,34 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
       return [
         {
           ...base,
-          type: "runtime.warning",
+          type: "item.started",
+          itemId: retryItemId(context),
           payload: {
-            message: `Prime Agent retry ${event.attempt} of ${event.maxAttempts}`,
-            detail: {
+            itemType: "retry",
+            status: "inProgress",
+            title: "Provider retry",
+            data: {
               attempt: event.attempt,
               maxAttempts: event.maxAttempts,
               delayMs: event.delayMs,
-              errorMessage: bounded(event.errorMessage, MAX_SCALAR_LENGTH),
             },
           },
         },
       ];
     case "RetryCompleted":
-      return event.success
-        ? [
-            {
-              ...base,
-              type: "session.state.changed",
-              payload: { state: "running", reason: `retry ${event.attempt} succeeded` },
-            },
-          ]
-        : [
-            {
-              ...base,
-              type: "runtime.error",
-              payload: {
-                message:
-                  boundedNonEmpty(event.finalError) ?? `Prime Agent retry ${event.attempt} failed`,
-                class: "provider_error",
-              },
-            },
-          ];
+      return [
+        {
+          ...base,
+          type: "item.completed",
+          itemId: retryItemId(context),
+          payload: {
+            itemType: "retry",
+            status: event.success ? "completed" : "failed",
+            title: "Provider retry",
+            data: { attempt: event.attempt },
+          },
+        },
+      ];
     case "AuthStale":
       return [
         {
@@ -586,21 +575,20 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
       return draft === undefined ? [] : [draft];
     }
     case "RefinementCompleted": {
-      const id = boundedNonEmpty(event.id, MAX_SCALAR_LENGTH);
-      if (id === undefined) return [];
-      const detail = boundedNonEmpty(event.summary, MAX_SCALAR_LENGTH);
-      const data = refinementData(event);
+      const partial = event.appliedCount > 0 && event.failedCount > 0;
       return [
         {
           ...base,
           type: "item.completed",
-          itemId: RuntimeItemId.make(`refinement:${id}`),
           payload: {
-            itemType: "dynamic_tool_call",
-            status: event.failedCount > 0 ? "failed" : "completed",
+            itemType: "refinement",
+            status: event.appliedCount === 0 && event.failedCount > 0 ? "failed" : "completed",
             title: "Harness refinement",
-            ...(detail === undefined ? {} : { detail }),
-            ...(data === undefined ? {} : { data }),
+            data: {
+              appliedCount: event.appliedCount,
+              failedCount: event.failedCount,
+              outcome: partial ? "partial" : event.failedCount > 0 ? "failed" : "completed",
+            },
           },
         },
       ];
@@ -609,11 +597,8 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
       return [
         {
           ...base,
-          type: "runtime.error",
-          payload: {
-            message: boundedNonEmpty(event.error) ?? "Prime Agent refinement failed",
-            class: "provider_error",
-          },
+          type: "item.completed",
+          payload: { itemType: "refinement", status: "failed", title: "Harness refinement" },
         },
       ];
     case "ConnectionStatus": {

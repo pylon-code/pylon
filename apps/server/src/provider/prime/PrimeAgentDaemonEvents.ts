@@ -678,13 +678,11 @@ export type PrimeDaemonEvent =
       readonly attempt: number;
       readonly maxAttempts: number;
       readonly delayMs: number;
-      readonly errorMessage: string;
     }
   | {
       readonly _tag: "RetryCompleted";
       readonly success: boolean;
       readonly attempt: number;
-      readonly finalError?: string | undefined;
     }
   | { readonly _tag: "AuthStale"; readonly provider: string; readonly sourceCount: number }
   | {
@@ -746,14 +744,10 @@ export type PrimeDaemonEvent =
     }
   | {
       readonly _tag: "RefinementCompleted";
-      readonly id: string;
-      readonly summary: string;
       readonly appliedCount: number;
       readonly failedCount: number;
-      readonly scope?: "local" | "global" | undefined;
-      readonly rollbackOf?: string | undefined;
     }
-  | { readonly _tag: "RefinementFailed"; readonly error: string }
+  | { readonly _tag: "RefinementFailed" }
   | {
       readonly _tag: "SideQuestionUpdated";
       readonly id: string;
@@ -1158,14 +1152,12 @@ function mapSessionEvent(event: typeof agentSessionEvent.Type): PrimeDaemonEvent
         attempt: event.attempt,
         maxAttempts: event.maxAttempts,
         delayMs: event.delayMs,
-        errorMessage: bounded(event.errorMessage),
       };
     case "auto_retry_end":
       return {
         _tag: "RetryCompleted",
         success: event.success,
         attempt: event.attempt,
-        finalError: optionalBounded(event.finalError),
       };
     case "auth_stale":
       return {
@@ -1216,15 +1208,11 @@ function mapSessionEvent(event: typeof agentSessionEvent.Type): PrimeDaemonEvent
     case "refine_complete":
       return {
         _tag: "RefinementCompleted",
-        id: bounded(event.result.id, MAX_PREVIEW_LENGTH),
-        summary: bounded(event.result.summary, MAX_PREVIEW_LENGTH),
         appliedCount: event.result.appliedEdits.filter((item) => item.applied).length,
         failedCount: event.result.appliedEdits.filter((item) => !item.applied).length,
-        scope: event.result.scope,
-        rollbackOf: optionalBounded(event.result.rollbackOf, MAX_PREVIEW_LENGTH),
       };
     case "refine_failed":
-      return { _tag: "RefinementFailed", error: bounded(event.error) };
+      return { _tag: "RefinementFailed" };
   }
 }
 

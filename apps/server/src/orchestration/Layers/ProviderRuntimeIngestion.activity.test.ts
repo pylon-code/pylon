@@ -223,3 +223,71 @@ describe("runtimeEventToActivities reported turn cost", () => {
     ).toEqual([]);
   });
 });
+
+describe("runtimeEventToActivities retry and refinement lifecycle", () => {
+  it("replaces retry lifecycle with constant terminal state", () => {
+    const itemId = RuntimeItemId.make("retry:turn-1");
+    const start = runtimeEventToActivities({
+      ...base,
+      type: "item.started",
+      eventId: EventId.make("retry-start"),
+      turnId: TurnId.make("turn-1"),
+      itemId,
+      payload: { itemType: "retry", status: "inProgress", detail: "PRIVATE ERROR" },
+    })[0];
+    const end = runtimeEventToActivities({
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("retry-end"),
+      turnId: TurnId.make("turn-1"),
+      itemId,
+      payload: { itemType: "retry", status: "completed", detail: "PRIVATE ERROR" },
+    })[0];
+    expect(start).toMatchObject({
+      id: "provider-retry:codex:thread-1:retry:turn-1",
+      summary: "Retrying provider request",
+    });
+    expect(end).toMatchObject({
+      id: start?.id,
+      summary: "Provider retry succeeded",
+      payload: { status: "completed" },
+    });
+    expect(JSON.stringify([start, end])).not.toContain("PRIVATE");
+  });
+
+  it("preserves partial refinement counts without native content", () => {
+    const [activity] = runtimeEventToActivities({
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("refine-end"),
+      turnId: TurnId.make("turn-1"),
+      itemId: RuntimeItemId.make("refinement:turn-1"),
+      payload: {
+        itemType: "refinement",
+        status: "completed",
+        detail: "PRIVATE SUMMARY",
+        data: { appliedCount: 2, failedCount: 1, native: "PRIVATE" },
+      },
+    });
+    expect(activity).toMatchObject({
+      id: "harness-refinement:codex:thread-1:refine-end",
+      summary: "Harness refinement partially applied",
+      payload: { status: "partial", appliedCount: 2, failedCount: 1 },
+    });
+    expect(JSON.stringify(activity)).not.toContain("PRIVATE");
+
+    const [second] = runtimeEventToActivities({
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("refine-end-2"),
+      turnId: TurnId.make("turn-1"),
+      payload: {
+        itemType: "refinement",
+        status: "completed",
+        data: { appliedCount: 1, failedCount: 0 },
+      },
+    });
+    expect(second?.id).toBe("harness-refinement:codex:thread-1:refine-end-2");
+    expect(second?.id).not.toBe(activity?.id);
+  });
+});

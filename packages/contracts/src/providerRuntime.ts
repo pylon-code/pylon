@@ -134,6 +134,8 @@ export const CanonicalItemType = Schema.Literals([
   "review_entered",
   "review_exited",
   "context_compaction",
+  "retry",
+  "refinement",
   "error",
   "unknown",
 ]);

@@ -410,6 +410,10 @@ describe("PrimeAgentDaemonEvents", () => {
       if (input.type.startsWith("compaction_")) {
         expect(JSON.stringify(decoded)).not.toContain("PRIVATE COMPACTION");
       }
+      if (input.type.startsWith("refine_")) {
+        expect(JSON.stringify(decoded)).not.toContain("/tmp/harness.json");
+        expect(JSON.stringify(decoded)).not.toContain("invalid proposal");
+      }
     }
 
     expect(

@@ -65,6 +65,11 @@ instructions, generated summary, and native errors are not copied into Pylon's e
 remote clients. Prime still keeps the native compaction record in its private transcript for exact
 resume.
 
+Automatic provider retries and Prime harness refinements also appear as provider-neutral work rows.
+Retry error text and refinement proposals, summaries, native IDs, paths, and edit details are not
+copied to Pylon. A refinement that applies some changes and rejects others is shown as partially
+applied rather than wholly failed.
+
 Completed daemon turns can show a **Reported cost** beside the terminal reply. This is Prime's
 model-pricing estimate for that turn as reported at completion, not an invoice or account-wide
 billing total. Very small estimates remain visible instead of rounding to zero; a reported zero can
