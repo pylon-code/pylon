@@ -120,7 +120,9 @@ describe("PrimeAgentProvider models", () => {
                 provider: "prime-inference",
                 id: "anthropic/claude-fable-5",
                 name: "Claude Fable 5",
+                api: "anthropic-messages",
                 reasoning: true,
+                thinkingLevelMap: { minimal: null, max: "max" },
                 contextWindow: 200_000,
               },
               {
@@ -160,6 +162,10 @@ describe("PrimeAgentProvider models", () => {
         isCustom: false,
       },
     ]);
+    expect(
+      models?.[0]?.capabilities?.optionDescriptors?.map((descriptor) => descriptor.id),
+    ).toEqual(["thinkingLevel"]);
+    expect(models?.[1]?.capabilities?.optionDescriptors).toEqual([]);
   });
 
   it("rejects a matching response whose configured model records fail the schema", () => {
@@ -250,15 +256,29 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
   it.effect("stamps ACP capabilities and combines the visible fallback message", () =>
     Effect.gen(function* () {
       const initial = yield* buildInitialPrimeAgentProviderSnapshot(decodeSettings({}));
-      const snapshot = stampPrimeAgentBackendSnapshot(initial, {
-        runtime: "acp",
-        fallbackMessage:
-          "Prime Agent daemon integration is unavailable; using ACP compatibility mode.",
-      });
+      const controlledModels = parsePrimeAgentModelDiscoveryOutput(
+        [
+          '{"id":"pylon-prime-agent-models","type":"response",',
+          '"command":"get_available_models","success":true,"data":{"models":[',
+          '{"provider":"openai-codex","id":"gpt-5.6-luna","name":"GPT-5.6 Luna",',
+          '"api":"openai-codex-responses","reasoning":true,',
+          '"thinkingLevelMap":{"xhigh":"xhigh","max":"max"}}]}}',
+        ].join(""),
+      );
+      expect(controlledModels?.[0]?.capabilities?.optionDescriptors).not.toEqual([]);
+      const snapshot = stampPrimeAgentBackendSnapshot(
+        { ...initial, models: controlledModels ?? [] },
+        {
+          runtime: "acp",
+          fallbackMessage:
+            "Prime Agent daemon integration is unavailable; using ACP compatibility mode.",
+        },
+      );
 
       expect(snapshot.featureCapabilities?.version).toBe(1);
       expect(snapshot.featureCapabilities?.agents?.support).toBe("unavailable");
       expect(snapshot.featureCapabilities?.sessionUi?.support).toBe("unavailable");
+      expect(snapshot.models[0]?.capabilities?.optionDescriptors).toEqual([]);
       expect(snapshot.requiresNewThreadForModelChange).toBe(true);
       expect(snapshot.message).toBe(
         "Checking Prime Agent CLI availability... Prime Agent daemon integration is unavailable; using ACP compatibility mode.",

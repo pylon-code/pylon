@@ -42,8 +42,17 @@ import {
 import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 import { primeAgentSessionDirectory } from "../Layers/PrimeAgentAdapter.ts";
-import type { PrimeDaemonEvent } from "./PrimeAgentDaemonEvents.ts";
+import type {
+  PrimeAgentDaemonServiceTier,
+  PrimeAgentDaemonThinkingLevel,
+} from "./PrimeAgentDaemonBridge.ts";
+import type { PrimeDaemonEvent, PrimeDaemonMessage } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import {
+  PRIME_AGENT_INHERIT_MODEL_OPTION,
+  type PrimeAgentTurnControlsResult,
+  resolvePrimeAgentTurnControls,
+} from "./PrimeAgentModelOptions.ts";
 import { mapPrimeAgentDaemonRuntimeEventDrafts } from "./PrimeAgentDaemonRuntimeEvents.ts";
 import {
   makePrimeAgentDaemonSessionRuntime,
@@ -75,6 +84,10 @@ interface PrimeAgentDaemonActiveTurn {
   readonly completed: Deferred.Deferred<void>;
   cancellationRequested: boolean;
   assistantTextStreamed: boolean;
+  queuedInputCount: number;
+  awaitingQueuedRun: boolean;
+  queuedActionObserved: boolean;
+  readonly completedRunMessages: Array<PrimeDaemonMessage>;
 }
 
 type PrimeAgentDaemonBlockingInteractionMethod = "select" | "confirm" | "input" | "editor";
@@ -191,6 +204,10 @@ interface PrimeAgentDaemonSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly runtime: PrimeAgentDaemonSessionRuntime;
+  readonly defaultThinkingLevel: PrimeAgentDaemonThinkingLevel;
+  readonly defaultServiceTier: PrimeAgentDaemonServiceTier;
+  currentThinkingLevel: PrimeAgentDaemonThinkingLevel;
+  currentServiceTier: PrimeAgentDaemonServiceTier;
   eventFiber: Fiber.Fiber<void, never> | undefined;
   readonly turns: Array<{ readonly id: TurnId; readonly items: Array<unknown> }>;
   readonly pendingInteractions: Map<
@@ -487,21 +504,16 @@ export function makePrimeAgentDaemonAdapter(
                 .respondToExtensionUiRequest(event.request.id, { cancelled: true })
                 .pipe(Effect.exit);
               if (Exit.isFailure(responseExit)) {
-                yield* withThreadLock(
-                  context.threadId,
-                  Effect.sync(() => {
-                    const turn = context.activeTurn;
-                    if (sessions.get(context.threadId) !== context || turn === undefined) return;
-                    turn.cancellationRequested = true;
-                    turn.controller.abort();
-                  }),
-                );
-                const abortExit = yield* context.runtime.abort.pipe(Effect.exit);
-                yield* withThreadLock(
+                const abortFailed = yield* withThreadLock(
                   context.threadId,
                   Effect.gen(function* () {
-                    if (sessions.get(context.threadId) !== context || context.stopped) return;
+                    if (sessions.get(context.threadId) !== context || context.stopped) return false;
                     const turn = context.activeTurn;
+                    if (turn !== undefined) {
+                      turn.cancellationRequested = true;
+                      turn.controller.abort();
+                    }
+                    const abortExit = yield* context.runtime.abortAndClearQueue.pipe(Effect.exit);
                     if (turn !== undefined) {
                       yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
                     }
@@ -517,9 +529,10 @@ export function makePrimeAgentDaemonAdapter(
                         class: "provider_error",
                       },
                     });
+                    return Exit.isFailure(abortExit);
                   }),
                 );
-                if (Exit.isFailure(abortExit)) {
+                if (abortFailed) {
                   yield* Effect.logError("Prime Agent fail-closed abort also failed.", {
                     threadId: context.threadId,
                   });
@@ -659,7 +672,23 @@ export function makePrimeAgentDaemonAdapter(
             Effect.gen(function* () {
               const turn = context.activeTurn;
               if (turn === undefined) return;
-              yield* settleActiveTurnLocked(context, turn, { state: "completed", event });
+              if (turn.queuedInputCount > 0) {
+                turn.completedRunMessages.push(...event.messages);
+                turn.awaitingQueuedRun = true;
+                turn.queuedActionObserved = false;
+                return;
+              }
+              const completionEvent =
+                turn.completedRunMessages.length === 0
+                  ? event
+                  : {
+                      ...event,
+                      messages: [...turn.completedRunMessages, ...event.messages],
+                    };
+              yield* settleActiveTurnLocked(context, turn, {
+                state: "completed",
+                event: completionEvent,
+              });
             }),
           );
           return;
@@ -708,6 +737,38 @@ export function makePrimeAgentDaemonAdapter(
           context.threadId,
           Effect.gen(function* () {
             if (sessions.get(context.threadId) !== context || context.stopped) return;
+            const turn = context.activeTurn;
+            if (event._tag === "ThinkingLevelChanged") {
+              context.currentThinkingLevel = event.level;
+            } else if (event._tag === "ServiceTierChanged") {
+              context.currentServiceTier = event.serviceTier;
+            }
+            if (event._tag === "RunStarted" && turn?.awaitingQueuedRun === true) {
+              turn.awaitingQueuedRun = false;
+              turn.queuedActionObserved = false;
+            }
+            if (event._tag === "QueueChanged" && turn !== undefined) {
+              turn.queuedInputCount = event.queuedCount;
+              if (turn.awaitingQueuedRun && event.active !== undefined) {
+                turn.queuedActionObserved = true;
+              } else if (turn.awaitingQueuedRun && turn.queuedActionObserved) {
+                const clearExit = yield* context.runtime.abortAndClearQueue.pipe(Effect.exit);
+                yield* settleActiveTurnLocked(context, turn, {
+                  state: "failed",
+                  errorMessage: "Prime Agent could not start a queued input.",
+                });
+                if (Exit.isFailure(clearExit)) {
+                  context.stopRequested = true;
+                  yield* Effect.forkDetach(
+                    Effect.yieldNow.pipe(
+                      Effect.andThen(
+                        withThreadLock(context.threadId, stopSessionInternal(context)),
+                      ),
+                    ),
+                  );
+                }
+              }
+            }
             if (event._tag === "ConnectionStatus") {
               context.session = {
                 ...context.session,
@@ -743,7 +804,7 @@ export function makePrimeAgentDaemonAdapter(
         if (turn !== undefined) {
           turn.cancellationRequested = true;
           turn.controller.abort();
-          yield* context.runtime.abort.pipe(Effect.ignore);
+          yield* context.runtime.abortAndClearQueue.pipe(Effect.ignore);
           yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
         }
 
@@ -868,6 +929,10 @@ export function makePrimeAgentDaemonAdapter(
             session,
             scope: sessionScope,
             runtime,
+            defaultThinkingLevel: runtime.initialSnapshot.state.thinkingLevel,
+            defaultServiceTier: runtime.initialSnapshot.state.serviceTier,
+            currentThinkingLevel: runtime.initialSnapshot.state.thinkingLevel,
+            currentServiceTier: runtime.initialSnapshot.state.serviceTier,
             eventFiber: undefined,
             turns: [],
             pendingInteractions: new Map(),
@@ -911,6 +976,59 @@ export function makePrimeAgentDaemonAdapter(
         }).pipe(Effect.scoped),
       );
 
+    const applyTurnSelection = (
+      context: PrimeAgentDaemonSessionContext,
+      threadId: ThreadId,
+      requestedModel: string | undefined,
+      turnControls: Extract<PrimeAgentTurnControlsResult, { readonly _tag: "Valid" }>,
+    ) =>
+      Effect.gen(function* () {
+        if (
+          requestedModel !== undefined &&
+          requestedModel.length > 0 &&
+          requestedModel !== context.session.model
+        ) {
+          yield* context.runtime
+            .setModel(requestedModel)
+            .pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/set-model", error),
+              ),
+            );
+          context.session = {
+            ...context.session,
+            model: requestedModel,
+            updatedAt: yield* nowIso,
+          };
+        }
+        const thinkingLevel =
+          turnControls.thinkingLevel === PRIME_AGENT_INHERIT_MODEL_OPTION
+            ? context.defaultThinkingLevel
+            : turnControls.thinkingLevel;
+        if (thinkingLevel !== undefined) {
+          yield* context.runtime
+            .setThinkingLevel(thinkingLevel)
+            .pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/set-thinking-level", error),
+              ),
+            );
+        }
+        const serviceTier =
+          turnControls.serviceTier === PRIME_AGENT_INHERIT_MODEL_OPTION
+            ? context.defaultServiceTier
+            : turnControls.serviceTier;
+        if (serviceTier !== undefined) {
+          yield* context.runtime
+            .setServiceTier(serviceTier)
+            .pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/set-service-tier", error),
+              ),
+            );
+        }
+      });
+
     const sendTurn: PrimeAgentAdapterShape["sendTurn"] = (input) =>
       Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
@@ -918,13 +1036,19 @@ export function makePrimeAgentDaemonAdapter(
             input.threadId,
             Effect.gen(function* () {
               const context = yield* requireSession(input.threadId);
-              if (context.activeTurn !== undefined) {
+              const modelSelection =
+                input.modelSelection?.instanceId === boundInstanceId
+                  ? input.modelSelection
+                  : undefined;
+              const turnControls = resolvePrimeAgentTurnControls(modelSelection);
+              if (turnControls._tag === "Invalid") {
                 return yield* new ProviderAdapterValidationError({
                   provider: PROVIDER,
                   operation: "sendTurn",
-                  issue: "Prime Agent does not support concurrent turns.",
+                  issue: turnControls.issue,
                 });
               }
+              const activeTurn = context.activeTurn;
               if (input.interactionMode !== undefined && input.interactionMode !== "default") {
                 return yield* new ProviderAdapterValidationError({
                   provider: PROVIDER,
@@ -972,6 +1096,48 @@ export function makePrimeAgentDaemonAdapter(
                 });
               }
 
+              const requestedModel = modelSelection?.model.trim();
+              if (activeTurn !== undefined) {
+                const thinkingLevel =
+                  turnControls.thinkingLevel === PRIME_AGENT_INHERIT_MODEL_OPTION
+                    ? context.defaultThinkingLevel
+                    : turnControls.thinkingLevel;
+                const serviceTier =
+                  turnControls.serviceTier === PRIME_AGENT_INHERIT_MODEL_OPTION
+                    ? context.defaultServiceTier
+                    : turnControls.serviceTier;
+                if (
+                  (requestedModel !== undefined &&
+                    requestedModel.length > 0 &&
+                    requestedModel !== context.session.model) ||
+                  (thinkingLevel !== undefined && thinkingLevel !== context.currentThinkingLevel) ||
+                  (serviceTier !== undefined && serviceTier !== context.currentServiceTier)
+                ) {
+                  return yield* new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "sendTurn",
+                    issue: "Prime Agent cannot change model controls while a run is active.",
+                  });
+                }
+                yield* context.runtime
+                  .steer({ text, ...(images.length === 0 ? {} : { images }) })
+                  .pipe(
+                    Effect.mapError((error) =>
+                      runtimeOperationError(input.threadId, "session/steer", error),
+                    ),
+                  );
+                activeTurn.queuedInputCount += 1;
+                return {
+                  _tag: "Steered" as const,
+                  result: {
+                    threadId: input.threadId,
+                    turnId: activeTurn.id,
+                    resumeCursor: context.session.resumeCursor,
+                  } satisfies ProviderTurnStartResult,
+                };
+              }
+
+              yield* applyTurnSelection(context, input.threadId, requestedModel, turnControls);
               const turnId = TurnId.make(yield* randomUUIDv4);
               const turn: PrimeAgentDaemonActiveTurn = {
                 id: turnId,
@@ -979,11 +1145,11 @@ export function makePrimeAgentDaemonAdapter(
                 completed: yield* Deferred.make<void>(),
                 cancellationRequested: false,
                 assistantTextStreamed: false,
+                queuedInputCount: 0,
+                awaitingQueuedRun: false,
+                queuedActionObserved: false,
+                completedRunMessages: [],
               };
-              const requestedModel =
-                input.modelSelection?.instanceId === boundInstanceId
-                  ? input.modelSelection.model.trim()
-                  : undefined;
               context.activeTurn = turn;
               context.session = {
                 ...context.session,
@@ -991,9 +1157,18 @@ export function makePrimeAgentDaemonAdapter(
                 status: "running",
                 updatedAt: yield* nowIso,
               };
-              return { context, turn, text, images, requestedModel };
+              return {
+                _tag: "Started" as const,
+                context,
+                turn,
+                text,
+                images,
+                requestedModel,
+                turnControls,
+              };
             }),
           );
+          if (prepared._tag === "Steered") return prepared.result;
           const { context, turn, text, images, requestedModel } = prepared;
           const result: ProviderTurnStartResult = {
             threadId: input.threadId,
@@ -1012,24 +1187,6 @@ export function makePrimeAgentDaemonAdapter(
               turnId: turn.id,
               payload: { model: turnModel },
             });
-            if (
-              requestedModel !== undefined &&
-              requestedModel.length > 0 &&
-              requestedModel !== context.session.model
-            ) {
-              yield* context.runtime
-                .setModel(requestedModel)
-                .pipe(
-                  Effect.mapError((error) =>
-                    runtimeOperationError(input.threadId, "session/set-model", error),
-                  ),
-                );
-              context.session = {
-                ...context.session,
-                model: requestedModel,
-                updatedAt: yield* nowIso,
-              };
-            }
             yield* context.runtime
               .prompt({
                 text,
@@ -1061,53 +1218,53 @@ export function makePrimeAgentDaemonAdapter(
               }),
             ),
             Effect.onInterrupt(() =>
-              Effect.gen(function* () {
-                turn.cancellationRequested = true;
-                turn.controller.abort();
-                yield* context.runtime.abort.pipe(Effect.ignore);
-                yield* settleActiveTurn(context, turn, { state: "cancelled" });
-              }),
+              withThreadLock(
+                context.threadId,
+                Effect.gen(function* () {
+                  if (context.activeTurn !== turn) return;
+                  turn.cancellationRequested = true;
+                  turn.controller.abort();
+                  yield* context.runtime.abortAndClearQueue.pipe(Effect.ignore);
+                  yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+                }),
+              ),
             ),
           );
         }),
       );
 
     const interruptTurn: PrimeAgentAdapterShape["interruptTurn"] = (threadId, turnId) =>
-      Effect.gen(function* () {
-        const observed = yield* Effect.sync(() => {
+      withThreadLock(
+        threadId,
+        Effect.gen(function* () {
           const context = sessions.get(threadId);
           if (context === undefined || context.stopped || context.stopRequested) {
-            return { _tag: "Missing" as const };
+            return yield* new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId });
           }
           const turn = context.activeTurn;
           if (turnId !== undefined && turn?.id !== turnId) {
-            return { _tag: "WrongTurn" as const };
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "interruptTurn",
+              issue: `Turn '${turnId}' is not active.`,
+            });
           }
           if (turn !== undefined) {
             turn.cancellationRequested = true;
             turn.controller.abort();
           }
-          return { _tag: "Found" as const, context, turn };
-        });
-        if (observed._tag === "Missing") {
-          return yield* new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId });
-        }
-        if (observed._tag === "WrongTurn") {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "interruptTurn",
-            issue: `Turn '${turnId}' is not active.`,
-          });
-        }
-        const abortExit = yield* observed.context.runtime.abort.pipe(
-          Effect.mapError((error) => runtimeOperationError(threadId, "session/abort", error)),
-          Effect.exit,
-        );
-        if (observed.turn !== undefined) {
-          yield* settleActiveTurn(observed.context, observed.turn, { state: "cancelled" });
-        }
-        if (Exit.isFailure(abortExit)) return yield* Effect.failCause(abortExit.cause);
-      });
+          const abortExit = yield* context.runtime.abortAndClearQueue.pipe(
+            Effect.mapError((error) =>
+              runtimeOperationError(threadId, "session/abort-and-clear-queue", error),
+            ),
+            Effect.exit,
+          );
+          if (turn !== undefined) {
+            yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+          }
+          if (Exit.isFailure(abortExit)) return yield* Effect.failCause(abortExit.cause);
+        }),
+      );
 
     const respondToRequest: PrimeAgentAdapterShape["respondToRequest"] = (threadId, requestId) =>
       Effect.fail(

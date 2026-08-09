@@ -101,6 +101,7 @@ export interface PrimeAgentDaemonAgentConnection {
     images?: ReadonlyArray<PrimeAgentDaemonImage>,
   ) => Promise<unknown>;
   readonly abort: () => Promise<unknown>;
+  readonly abortAndClearQueue?: () => Promise<unknown>;
   readonly setModel?: (provider: string, modelId: string) => Promise<unknown>;
   readonly setThinkingLevel?: (level: PrimeAgentDaemonThinkingLevel) => Promise<unknown>;
   readonly setServiceTier?: (tier: PrimeAgentDaemonServiceTier) => Promise<unknown>;

@@ -17,6 +17,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { makePrimeAgentEnvironment } from "../acp/PrimeAgentAcpSupport.ts";
 import { makePrimeAgentFeatureCapabilities } from "../prime/PrimeAgentFeatureCapabilities.ts";
+import { makePrimeAgentModelCapabilities } from "../prime/PrimeAgentModelOptions.ts";
 import {
   buildServerProvider,
   collectStreamAsString,
@@ -59,6 +60,10 @@ export function stampPrimeAgentBackendSnapshot(
       runtime: backend.runtime,
       sessionUi: backend.runtime === "daemon",
     }),
+    models:
+      backend.runtime === "daemon"
+        ? snapshot.models
+        : snapshot.models.map((model) => ({ ...model, capabilities: EMPTY_CAPABILITIES })),
     requiresNewThreadForModelChange: backend.runtime === "acp",
     ...(message.length > 0 ? { message } : {}),
   };
@@ -77,7 +82,9 @@ const PrimeAgentRpcModel = Schema.Struct({
   provider: Schema.String,
   id: Schema.String,
   name: Schema.String,
+  api: Schema.optional(Schema.String),
   reasoning: Schema.optional(Schema.Boolean),
+  thinkingLevelMap: Schema.optional(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
   contextWindow: Schema.optional(Schema.Number),
 });
 
@@ -134,7 +141,15 @@ export function parsePrimeAgentModelDiscoveryOutput(
         name: model.name.trim() || slug,
         subProvider: provider,
         isCustom: false,
-        capabilities: EMPTY_CAPABILITIES,
+        capabilities: makePrimeAgentModelCapabilities({
+          provider,
+          id,
+          ...(model.api === undefined ? {} : { api: model.api }),
+          ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
+          ...(model.thinkingLevelMap === undefined
+            ? {}
+            : { thinkingLevelMap: model.thinkingLevelMap }),
+        }),
       });
     }
     return models;
