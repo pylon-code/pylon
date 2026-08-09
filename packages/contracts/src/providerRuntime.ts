@@ -266,6 +266,7 @@ const SessionResourcesUpdatedType = Schema.Literal("session.resources.updated");
 const SessionAgentDepthUpdatedType = Schema.Literal("session.agent-depth.updated");
 const SessionInputQueueUpdatedType = Schema.Literal("session.input-queue.updated");
 const SessionCompactionUpdatedType = Schema.Literal("session.compaction.updated");
+const SessionGoalUpdatedType = Schema.Literal("session.goal.updated");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 
@@ -927,6 +928,39 @@ export const SessionCompactionUpdatedPayload = Schema.Struct({
 });
 export type SessionCompactionUpdatedPayload = typeof SessionCompactionUpdatedPayload.Type;
 
+export const PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
+
+export const SessionGoalStatus = Schema.Literals([
+  "idle",
+  "active",
+  "paused",
+  "budget-limited",
+  "complete",
+  "error",
+]);
+export type SessionGoalStatus = typeof SessionGoalStatus.Type;
+
+const SessionGoalObjective = TrimmedNonEmptyStringSchema.check(
+  Schema.makeFilter(
+    (value) =>
+      [...value].length <= PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS ||
+      `Goal objective must be at most ${PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS} characters`,
+  ),
+);
+
+/** Read-only goal state; native ids, timestamps, reasons, and errors stay private. */
+export const SessionGoalUpdatedPayload = Schema.Struct({
+  available: Schema.Boolean,
+  active: Schema.Boolean,
+  status: SessionGoalStatus,
+  objective: Schema.optional(SessionGoalObjective),
+  tokenBudget: Schema.optional(PositiveInt),
+  tokensUsed: NonNegativeInt,
+  timeUsedSeconds: NonNegativeInt,
+  continuationsUsed: NonNegativeInt,
+});
+export type SessionGoalUpdatedPayload = typeof SessionGoalUpdatedPayload.Type;
+
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(Schema.Unknown),
@@ -1361,6 +1395,16 @@ const ProviderRuntimeSessionCompactionUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionCompactionUpdatedEvent =
   typeof ProviderRuntimeSessionCompactionUpdatedEvent.Type;
 
+const ProviderRuntimeSessionGoalUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionGoalUpdatedType,
+  payload: SessionGoalUpdatedPayload,
+});
+export type ProviderRuntimeSessionGoalUpdatedEvent =
+  typeof ProviderRuntimeSessionGoalUpdatedEvent.Type;
+
 const ProviderRuntimeWarningEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: RuntimeWarningType,
@@ -1431,6 +1475,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionAgentDepthUpdatedEvent,
   ProviderRuntimeSessionInputQueueUpdatedEvent,
   ProviderRuntimeSessionCompactionUpdatedEvent,
+  ProviderRuntimeSessionGoalUpdatedEvent,
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,
 ]);

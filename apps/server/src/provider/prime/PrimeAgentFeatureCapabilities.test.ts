@@ -14,6 +14,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       agentMessage: true,
       compaction: true,
       autoCompaction: true,
+      goals: true,
     });
 
     expect(capabilities.executionPolicy).toMatchObject({
@@ -25,6 +26,10 @@ describe("PrimeAgentFeatureCapabilities", () => {
     expect(capabilities.agents).toMatchObject({
       support: "read-write",
       operations: ["observe", "hierarchy", "message", "cancel", "set-depth"],
+    });
+    expect(capabilities.goals).toMatchObject({
+      support: "read-only",
+      operations: ["observe"],
     });
     expect(capabilities.resources).toMatchObject({
       support: "read-write",
@@ -66,11 +71,13 @@ describe("PrimeAgentFeatureCapabilities", () => {
       agentMessage: false,
       compaction: false,
       autoCompaction: false,
+      goals: false,
     });
     expect(capabilities.inputQueue).toMatchObject({
       support: "unavailable",
       operations: [],
     });
+    expect(capabilities.goals).toMatchObject({ support: "unavailable", operations: [] });
   });
 
   it("keeps ACP fallback capabilities narrow and explicit", () => {
@@ -83,6 +90,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       agentMessage: false,
       compaction: false,
       autoCompaction: false,
+      goals: true,
     });
 
     expect(capabilities.executionPolicy).toMatchObject({
@@ -92,6 +100,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
     });
     expect(capabilities.model?.operations).toEqual(["select"]);
     expect(capabilities.agents?.support).toBe("unavailable");
+    expect(capabilities.goals?.support).toBe("unavailable");
     expect(capabilities.reasoning?.support).toBe("unavailable");
     expect(capabilities.usage?.support).toBe("unavailable");
     expect(capabilities.sessionUi?.support).toBe("unavailable");

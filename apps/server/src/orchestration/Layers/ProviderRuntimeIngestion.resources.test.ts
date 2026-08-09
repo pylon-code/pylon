@@ -133,3 +133,83 @@ describe("session agent depth activity projection", () => {
     assert.equal(decodeSessionActivity(replacement).kind, "session.agent-depth.updated");
   });
 });
+
+describe("session goal activity projection", () => {
+  it("uses one provider-and-thread-scoped privacy-safe replacement identity", () => {
+    const makeEvent = (
+      eventId: string,
+      status: "active" | "complete",
+    ): Extract<ProviderRuntimeEvent, { readonly type: "session.goal.updated" }> => ({
+      type: "session.goal.updated",
+      eventId: EventId.make(eventId),
+      provider,
+      providerInstanceId,
+      threadId,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      payload: {
+        available: true,
+        active: status === "active",
+        status,
+        objective: "Finish the integration",
+        tokenBudget: 5_000,
+        tokensUsed: status === "active" ? 1_000 : 4_500,
+        timeUsedSeconds: 120,
+        continuationsUsed: 2,
+      },
+    });
+    const [first] = runtimeEventToActivities(makeEvent("goal-1", "active"));
+    const [replacement] = runtimeEventToActivities(makeEvent("goal-2", "complete"));
+
+    assert.equal(first?.id, "session-goal:prime-work:thread-1");
+    assert.equal(replacement?.id, first?.id);
+    assert.equal(replacement?.kind, "session.goal.updated");
+    assert.equal(replacement?.turnId, null);
+    assert.deepStrictEqual(replacement?.payload, {
+      provider: "primeAgent",
+      providerInstanceId: "prime-work",
+      available: true,
+      active: false,
+      status: "complete",
+      objective: "Finish the integration",
+      tokenBudget: 5_000,
+      tokensUsed: 4_500,
+      timeUsedSeconds: 120,
+      continuationsUsed: 2,
+    });
+    assert.equal(decodeSessionActivity(replacement).kind, "session.goal.updated");
+  });
+
+  it("copies only allowlisted provider-neutral goal fields", () => {
+    const event = {
+      type: "session.goal.updated",
+      eventId: EventId.make("goal-private"),
+      provider,
+      providerInstanceId,
+      threadId,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      payload: {
+        available: true,
+        active: true,
+        status: "active",
+        objective: "Safe objective",
+        tokenBudget: 500,
+        tokensUsed: 100,
+        timeUsedSeconds: 20,
+        continuationsUsed: 1,
+        goalId: "native-goal-secret",
+        createdAt: 123,
+        updatedAt: 456,
+        lastReason: "private reason",
+        lastError: "private error",
+      },
+    } as unknown as ProviderRuntimeEvent;
+    const [activity] = runtimeEventToActivities(event);
+    const encoded = JSON.stringify(activity?.payload);
+
+    assert.equal(encoded.includes("native-goal-secret"), false);
+    assert.equal(encoded.includes("private reason"), false);
+    assert.equal(encoded.includes("private error"), false);
+    assert.equal(encoded.includes("createdAt"), false);
+    assert.equal(encoded.includes("updatedAt"), false);
+  });
+});

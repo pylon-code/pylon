@@ -101,6 +101,14 @@ function initialSnapshot(): Extract<PrimeDaemonEvent, { readonly _tag: "SessionR
         steeringMode: "one-at-a-time",
         followUpMode: "one-at-a-time",
       },
+      goal: {
+        available: true,
+        active: false,
+        status: "idle",
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        continuationsUsed: 0,
+      },
     },
     messages: [],
     children: [],
@@ -758,6 +766,104 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(
           subscription.events.filter((candidate) => candidate.type === "session.resources.updated"),
         ).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("publishes the initial goal before buffered daemon goal updates", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.startupEvents.push({
+          _tag: "GoalUpdated",
+          goal: {
+            available: true,
+            active: false,
+            status: "complete",
+            objective: "Finish the provider integration",
+            tokenBudget: 5_000,
+            tokensUsed: 4_000,
+            timeUsedSeconds: 120,
+            continuationsUsed: 2,
+          },
+        });
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const initial = yield* awaitObservedType(subscription.observed, "session.goal.updated");
+        const buffered = yield* awaitObservedType(subscription.observed, "session.goal.updated");
+
+        expect(initial.payload).toEqual({
+          available: true,
+          active: false,
+          status: "idle",
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          continuationsUsed: 0,
+        });
+        expect(buffered.payload).toMatchObject({
+          available: true,
+          status: "complete",
+          objective: "Finish the provider integration",
+          tokensUsed: 4_000,
+        });
+        expect(buffered).not.toHaveProperty("providerRefs");
+        expect(buffered).not.toHaveProperty("raw");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps supervised goal observation unavailable and ignores native updates", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.startupEvents.push(
+          {
+            _tag: "GoalUpdated",
+            goal: {
+              available: true,
+              active: true,
+              status: "active",
+              objective: "PRIVATE SUPERVISED GOAL",
+              tokensUsed: 99,
+              timeUsedSeconds: 10,
+              continuationsUsed: 1,
+            },
+          },
+          { _tag: "ConnectionStatus", status: "reconnecting" },
+        );
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const goalEvent = yield* awaitObservedType(subscription.observed, "session.goal.updated");
+        yield* awaitObservedType(subscription.observed, "session.state.changed");
+        yield* awaitObservedType(subscription.observed, "session.state.changed");
+
+        expect(goalEvent.payload).toEqual({
+          available: false,
+          active: false,
+          status: "idle",
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          continuationsUsed: 0,
+        });
+        const goalEvents = subscription.events.filter(
+          (candidate) => candidate.type === "session.goal.updated",
+        );
+        expect(goalEvents).toHaveLength(1);
+        expect(encodeUnknownJson(goalEvents)).not.toContain("PRIVATE SUPERVISED GOAL");
       }),
     ).pipe(Effect.provide(testLayer)),
   );
@@ -2642,6 +2748,7 @@ describe("PrimeAgentDaemonAdapter", () => {
           "session.resources.updated",
           "session.agent-depth.updated",
           "session.compaction.updated",
+          "session.goal.updated",
           "session.input-queue.updated",
           "session.state.changed",
           "thread.started",

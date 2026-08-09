@@ -16,6 +16,7 @@ import {
   SessionPresentation,
   type SessionAgentDepthUpdatedPayload,
   type SessionCompactionUpdatedPayload,
+  type SessionGoalUpdatedPayload,
   type SessionInputQueueUpdatedPayload,
   type ProviderTurnStartResult,
   type ThreadId,
@@ -92,6 +93,14 @@ import {
 
 const PROVIDER = ProviderDriverKind.make("primeAgent");
 const SESSION_STATS_TIMEOUT_MS = 1_000;
+const unavailableSessionGoal: SessionGoalUpdatedPayload = {
+  available: false,
+  active: false,
+  status: "idle",
+  tokensUsed: 0,
+  timeUsedSeconds: 0,
+  continuationsUsed: 0,
+};
 
 export interface PrimeAgentDaemonAdapterLiveOptions {
   /** Kept at the provider boundary because the manager is normally built from this environment. */
@@ -246,6 +255,7 @@ interface PrimeAgentDaemonSessionContext {
   currentServiceTier: PrimeAgentDaemonServiceTier;
   autoCompactionEnabled: boolean;
   compaction: SessionCompactionUpdatedPayload;
+  goal: SessionGoalUpdatedPayload;
   agentDepth: SessionAgentDepthUpdatedPayload;
   inputQueue: SessionInputQueueUpdatedPayload;
   inputQueueClearPending: boolean;
@@ -494,6 +504,18 @@ export function makePrimeAgentDaemonAdapter(
         });
       });
 
+    const publishSessionGoal = (threadId: ThreadId, payload: SessionGoalUpdatedPayload) =>
+      Effect.gen(function* () {
+        yield* offerRuntimeEvent({
+          type: "session.goal.updated",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          providerInstanceId: boundInstanceId,
+          threadId,
+          payload,
+        });
+      });
+
     const publishSessionInputQueue = (
       threadId: ThreadId,
       payload: SessionInputQueueUpdatedPayload,
@@ -534,6 +556,25 @@ export function makePrimeAgentDaemonAdapter(
           context.inputQueue.followUpMode !== resolved.followUpMode;
         context.inputQueue = resolved;
         if (changed) yield* publishSessionInputQueue(context.threadId, resolved);
+      });
+
+    /** Must be called with the thread lock held. */
+    const updateGoalProjection = (
+      context: PrimeAgentDaemonSessionContext,
+      next: SessionGoalUpdatedPayload,
+    ) =>
+      Effect.gen(function* () {
+        const changed =
+          context.goal.available !== next.available ||
+          context.goal.active !== next.active ||
+          context.goal.status !== next.status ||
+          context.goal.objective !== next.objective ||
+          context.goal.tokenBudget !== next.tokenBudget ||
+          context.goal.tokensUsed !== next.tokensUsed ||
+          context.goal.timeUsedSeconds !== next.timeUsedSeconds ||
+          context.goal.continuationsUsed !== next.continuationsUsed;
+        context.goal = next;
+        if (changed) yield* publishSessionGoal(context.threadId, next);
       });
 
     const isAgentDepthSettable = (context: PrimeAgentDaemonSessionContext): boolean =>
@@ -910,6 +951,12 @@ export function makePrimeAgentDaemonAdapter(
                 );
                 context.nativeQueueActionActive = event.state.inputQueue.activeAction;
                 yield* updateInputQueueProjection(context, event.state.inputQueue);
+                yield* updateGoalProjection(
+                  context,
+                  context.session.runtimeMode === "full-access"
+                    ? event.state.goal
+                    : unavailableSessionGoal,
+                );
                 yield* updateCompactionProjectionLocked(context, {
                   status:
                     (context.manualCompactionRequestActive &&
@@ -1421,6 +1468,12 @@ export function makePrimeAgentDaemonAdapter(
               context.nativeBashActive = true;
             } else if (event._tag === "BashCompleted") {
               context.nativeBashActive = false;
+            } else if (event._tag === "GoalUpdated") {
+              publishEvent = false;
+              yield* updateGoalProjection(
+                context,
+                context.session.runtimeMode === "full-access" ? event.goal : unavailableSessionGoal,
+              );
             } else if (event._tag === "ChildUpdated") {
               const previous = context.knownNativeChildren.get(event.child.id);
               const previousSettled =
@@ -1924,6 +1977,10 @@ export function makePrimeAgentDaemonAdapter(
                 ? { autoCompactionScope: "session-and-provider-default" as const }
                 : {}),
             },
+            goal:
+              input.runtimeMode === "full-access"
+                ? runtime.initialSnapshot.state.goal
+                : unavailableSessionGoal,
             agentDepth: runtime.initialAgentDepth,
             inputQueue: runtime.initialInputQueue,
             inputQueueClearPending: false,
@@ -1978,6 +2035,7 @@ export function makePrimeAgentDaemonAdapter(
           yield* publishSessionResources(input.threadId, runtime.initialResources);
           yield* publishSessionAgentDepth(input.threadId, context.agentDepth);
           yield* publishSessionCompaction(input.threadId, context.compaction);
+          yield* publishSessionGoal(input.threadId, context.goal);
           yield* publishSessionInputQueue(input.threadId, context.inputQueue);
           yield* offerRuntimeEvent({
             type: "session.state.changed",

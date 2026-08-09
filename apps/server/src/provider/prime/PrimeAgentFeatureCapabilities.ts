@@ -35,6 +35,7 @@ export function makePrimeAgentFeatureCapabilities(input: {
   readonly agentMessage: boolean;
   readonly compaction: boolean;
   readonly autoCompaction: boolean;
+  readonly goals: boolean;
 }): ProviderFeatureCapabilities {
   if (input.runtime === "acp") {
     return {
@@ -85,6 +86,14 @@ export function makePrimeAgentFeatureCapabilities(input: {
         "set-depth",
       ],
     },
+    goals: input.goals
+      ? {
+          support: "read-only",
+          reason:
+            "Pylon can observe privacy-safe Prime Agent goal state in compatible full-access daemon sessions; goal mutation and supervised-session observation are unavailable.",
+          operations: ["observe"],
+        }
+      : unavailable("The loaded Prime Agent runtime does not expose compatible goal state."),
     resources: {
       support: "read-write",
       reason:

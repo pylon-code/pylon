@@ -244,10 +244,15 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         agentMessage: true,
         compaction: true,
         autoCompaction: true,
+        goals: true,
       });
 
       expect(snapshot.featureCapabilities?.version).toBe(1);
       expect(snapshot.featureCapabilities?.agents?.support).toBe("read-write");
+      expect(snapshot.featureCapabilities?.goals).toMatchObject({
+        support: "read-only",
+        operations: ["observe"],
+      });
       expect(snapshot.featureCapabilities?.agents?.operations).toContain("message");
       expect(snapshot.featureCapabilities?.reasoning?.support).toBe("read-only");
       expect(snapshot.featureCapabilities?.sessionUi?.support).toBe("read-write");

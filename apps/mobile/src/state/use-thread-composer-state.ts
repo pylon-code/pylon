@@ -25,6 +25,7 @@ import {
   supportsSessionCompaction,
   type SessionCompactionControlSnapshot,
 } from "@t3tools/client-runtime/state/context-compaction";
+import { deriveActiveSessionGoal } from "@t3tools/client-runtime/state/session-goal";
 import { deriveLatestSessionAgentDepth } from "@t3tools/client-runtime/state/session-agent-depth";
 import {
   deriveLatestSessionInputQueue,
@@ -208,6 +209,19 @@ export function useThreadComposerState() {
       ? deriveLatestSessionInputQueue(selectedThreadDetail.activities, instanceId)
       : null;
   }, [selectedThreadDetail]);
+  const selectedThreadGoal = useMemo(() => {
+    const session = selectedThreadDetail?.session;
+    const provider = selectedThreadServerConfig?.providers.find(
+      (candidate) => candidate.instanceId === session?.providerInstanceId,
+    );
+    return deriveActiveSessionGoal({
+      activities: selectedThreadDetail?.activities ?? [],
+      provider,
+      providerInstanceId: session?.providerInstanceId,
+      runtimeMode: session?.runtimeMode,
+      sessionStatus: session?.status,
+    });
+  }, [selectedThreadDetail, selectedThreadServerConfig]);
   const sessionCompactionScope = useMemo(() => {
     const session = selectedThreadDetail?.session;
     const instanceId = session?.providerInstanceId;
@@ -869,6 +883,7 @@ export function useThreadComposerState() {
     selectedThreadResources,
     selectedThreadAgentDepth,
     selectedThreadInputQueue,
+    selectedThreadGoal,
     selectedThreadCompaction,
     sessionCompactionScopeKey: sessionCompactionScope?.key ?? null,
     sessionCompactionPendingAction:

@@ -1,6 +1,7 @@
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import type { SessionCompactionControlSnapshot } from "@t3tools/client-runtime/state/context-compaction";
+import type { SessionGoalSnapshot } from "@t3tools/client-runtime/state/session-goal";
 import type { SessionAgentDepthSnapshot } from "@t3tools/client-runtime/state/session-agent-depth";
 import type { SessionInputQueueSnapshot } from "@t3tools/client-runtime/state/session-input-queue";
 import type { SessionResourcesSnapshot } from "@t3tools/client-runtime/state/session-resources";
@@ -69,6 +70,7 @@ export interface ThreadDetailScreenProps {
   readonly sessionResources: SessionResourcesSnapshot | null;
   readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
   readonly sessionInputQueue: SessionInputQueueSnapshot | null;
+  readonly sessionGoal: SessionGoalSnapshot | null;
   readonly sessionCompaction: SessionCompactionControlSnapshot | null;
   readonly sessionCompactionScopeKey: string | null;
   readonly sessionCompactionPendingAction: SessionCompactionMenuAction | null;
@@ -526,6 +528,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               sessionAgentDepth={props.sessionAgentDepth}
               sessionAgents={props.sessionAgents}
               sessionInputQueue={props.sessionInputQueue}
+              sessionGoal={props.sessionGoal}
               sessionCompaction={props.sessionCompaction}
               sessionCompactionScopeKey={props.sessionCompactionScopeKey}
               sessionCompactionPendingAction={props.sessionCompactionPendingAction}

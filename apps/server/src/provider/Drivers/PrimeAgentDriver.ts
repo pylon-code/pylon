@@ -175,6 +175,9 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
                       method as "getState" | "setAutoCompactionEnabled"
                     ] === "function",
                 ),
+                // GoalState is part of the public daemon session snapshot/event baseline
+                // accepted by the negotiated daemon protocol.
+                goals: true,
               }
             : {
                 runtime: "acp",

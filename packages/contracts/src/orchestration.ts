@@ -25,6 +25,7 @@ import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
   SessionAgentDepthUpdatedPayload,
   SessionCompactionUpdatedPayload,
+  SessionGoalUpdatedPayload,
   SessionInputQueueUpdatedPayload,
   SessionResourcesUpdatedPayload,
 } from "./providerRuntime.ts";
@@ -390,6 +391,13 @@ export const SessionCompactionUpdatedActivityPayload = Schema.Struct({
 export type SessionCompactionUpdatedActivityPayload =
   typeof SessionCompactionUpdatedActivityPayload.Type;
 
+export const SessionGoalUpdatedActivityPayload = Schema.Struct({
+  ...SessionGoalUpdatedPayload.fields,
+  provider: ProviderDriverKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+});
+export type SessionGoalUpdatedActivityPayload = typeof SessionGoalUpdatedActivityPayload.Type;
+
 const SessionActivityBaseFields = {
   id: EventId,
   tone: OrchestrationThreadActivityTone,
@@ -435,6 +443,11 @@ export const OrchestrationSessionActivity = Schema.Union([
     ...SessionActivityBaseFields,
     kind: Schema.Literal("session.compaction.updated"),
     payload: SessionCompactionUpdatedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("session.goal.updated"),
+    payload: SessionGoalUpdatedActivityPayload,
   }),
 ]);
 export type OrchestrationSessionActivity = typeof OrchestrationSessionActivity.Type;

@@ -71,6 +71,10 @@
       "types": "./src/state/sessionInputQueue.ts",
       "default": "./src/state/sessionInputQueue.ts"
     },
+    "./state/session-goal": {
+      "types": "./src/state/sessionGoal.ts",
+      "default": "./src/state/sessionGoal.ts"
+    },
     "./state/entities": {
       "types": "./src/state/entities.ts",
       "default": "./src/state/entities.ts"
