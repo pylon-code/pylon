@@ -113,6 +113,8 @@ function createProviderServiceHarness(
     respondToUserInput: () => unsupported(),
     respondToInteraction: () => unsupported(),
     reloadSessionResources: () => unsupported(),
+    getSessionAgentDepth: () => unsupported(),
+    setSessionAgentDepth: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions,
     getCapabilities: () =>

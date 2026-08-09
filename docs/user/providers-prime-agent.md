@@ -66,6 +66,11 @@ the composer. The meter is separate from per-turn token totals and hides when Pr
 post-compaction context as unknown; it returns after the next successful model response. Pylon uses
 the session's native automatic-compaction setting rather than assuming compaction is enabled.
 
+Daemon-backed sessions also expose an **Agent spawn depth** control while the session is idle. Depth
+0 disables recursive child-agent spawning; depths 1 through 4 bound how many nested levels Prime may
+create. The choice applies only to that native session and never changes Prime's global setting.
+Supervised sessions show the policy-fixed depth 0 and cannot change it.
+
 When Prime compacts a daemon-backed thread, Pylon shows one provider-neutral lifecycle row. Pylon
 stores only constant started, completed, skipped, or failed presentation state; Prime's compaction
 instructions, generated summary, and native errors are not copied into Pylon's event store or

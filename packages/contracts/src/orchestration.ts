@@ -22,7 +22,10 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
-import { SessionResourcesUpdatedPayload } from "./providerRuntime.ts";
+import {
+  SessionAgentDepthUpdatedPayload,
+  SessionResourcesUpdatedPayload,
+} from "./providerRuntime.ts";
 import {
   SessionInteractionRequest,
   SessionInteractionRequestId,
@@ -361,6 +364,14 @@ export const SessionResourcesUpdatedActivityPayload = Schema.Struct({
 export type SessionResourcesUpdatedActivityPayload =
   typeof SessionResourcesUpdatedActivityPayload.Type;
 
+export const SessionAgentDepthUpdatedActivityPayload = Schema.Struct({
+  ...SessionAgentDepthUpdatedPayload.fields,
+  provider: ProviderDriverKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+});
+export type SessionAgentDepthUpdatedActivityPayload =
+  typeof SessionAgentDepthUpdatedActivityPayload.Type;
+
 const SessionActivityBaseFields = {
   id: EventId,
   tone: OrchestrationThreadActivityTone,
@@ -391,6 +402,11 @@ export const OrchestrationSessionActivity = Schema.Union([
     ...SessionActivityBaseFields,
     kind: Schema.Literal("session.resources.updated"),
     payload: SessionResourcesUpdatedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("session.agent-depth.updated"),
+    payload: SessionAgentDepthUpdatedActivityPayload,
   }),
 ]);
 export type OrchestrationSessionActivity = typeof OrchestrationSessionActivity.Type;

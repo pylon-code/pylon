@@ -50,6 +50,7 @@ import {
   AssetWorkspaceContextResolutionError,
   RpcClientId,
   EnvironmentAuthorizationError,
+  ProviderSessionAgentDepthError,
   ProviderSessionResourcesReloadError,
   ThreadId,
   type TerminalAttachStreamEvent,
@@ -1440,6 +1441,56 @@ const makeWsRpcLayer = (
                         ? "busy"
                         : "reload-failed";
                 return new ProviderSessionResourcesReloadError({ reason });
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerGetSessionAgentDepth]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerGetSessionAgentDepth,
+            providerService.getSessionAgentDepth(input).pipe(
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderUnsupportedError" ||
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "unsupported"
+                    : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                        error._tag === "ProviderAdapterSessionClosedError" ||
+                        error._tag === "ProviderSessionNotFoundError" ||
+                        error._tag === "ProviderValidationError"
+                      ? "session-not-ready"
+                      : error._tag === "ProviderAdapterValidationError"
+                        ? "busy"
+                        : "request-failed";
+                return new ProviderSessionAgentDepthError({ reason });
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerSetSessionAgentDepth]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerSetSessionAgentDepth,
+            providerService.setSessionAgentDepth(input).pipe(
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "policy-forbidden"
+                    : error._tag === "ProviderUnsupportedError"
+                      ? "unsupported"
+                      : error._tag === "ProviderValidationError"
+                        ? error.reason === "invalid-input"
+                          ? "invalid-depth"
+                          : "session-not-ready"
+                        : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                            error._tag === "ProviderAdapterSessionClosedError" ||
+                            error._tag === "ProviderSessionNotFoundError"
+                          ? "session-not-ready"
+                          : error._tag === "ProviderAdapterValidationError"
+                            ? error.reason === "invalid-input"
+                              ? "invalid-depth"
+                              : "busy"
+                            : "request-failed";
+                return new ProviderSessionAgentDepthError({ reason });
               }),
             ),
             { "rpc.aggregate": "provider" },

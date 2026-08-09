@@ -30,6 +30,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("separates session agent depth observation from mutation", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerGetSessionAgentDepth)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerSetSessionAgentDepth)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,

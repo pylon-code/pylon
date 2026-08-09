@@ -1,7 +1,10 @@
 import {
   RUNTIME_RESOURCE_CATALOG_MAX_ITEMS,
   RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS,
+  PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   RUNTIME_RESOURCE_NAME_MAX_CHARS,
+  type ProviderSessionAgentDepthSource,
+  type SessionAgentDepthUpdatedPayload,
   type SessionResourcesUpdatedPayload,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -136,7 +139,10 @@ const sessionStatsSchema = Schema.Struct({
     }),
   ),
 });
-const rlmMaxDepthStatusSchema = Schema.Struct({ maxDepth: Schema.Number });
+const rlmMaxDepthStatusSchema = Schema.Struct({
+  maxDepth: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  source: Schema.Literals(["chat", "default", "env", "global", "inherited"]),
+});
 
 const decodeThinkingLevel = Schema.decodeUnknownOption(thinkingLevelSchema);
 const decodeServiceTier = Schema.decodeUnknownOption(serviceTierSchema);
@@ -150,6 +156,34 @@ const decodeResourceSnapshot = Schema.decodeUnknownOption(resourceSnapshotSchema
 const decodeCommands = Schema.decodeUnknownOption(commandsSchema);
 const decodeSessionStats = Schema.decodeUnknownOption(sessionStatsSchema);
 const decodeRlmMaxDepthStatus = Schema.decodeUnknownOption(rlmMaxDepthStatusSchema);
+
+function providerAgentDepthSource(
+  source: (typeof rlmMaxDepthStatusSchema.Type)["source"],
+): Exclude<ProviderSessionAgentDepthSource, "policy"> {
+  switch (source) {
+    case "chat":
+      return "session";
+    case "env":
+      return "environment";
+    case "default":
+    case "global":
+    case "inherited":
+      return source;
+  }
+}
+
+function safeAgentDepth(
+  status: typeof rlmMaxDepthStatusSchema.Type,
+  writable: boolean,
+): SessionAgentDepthUpdatedPayload {
+  return {
+    maxDepth: status.maxDepth,
+    source: writable ? providerAgentDepthSource(status.source) : "policy",
+    writable,
+    settable: writable,
+    maxSettableDepth: PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
+  };
+}
 
 function resourceText(value: string | undefined, maxChars: number): string | undefined {
   const trimmed = value?.replaceAll("\u0000", "").trim();
@@ -224,6 +258,8 @@ const runtimeErrorOperation = Schema.Literals([
   "initial-snapshot",
   "verify-extension",
   "reload-resources",
+  "get-agent-depth",
+  "set-agent-depth",
   "prompt",
   "steer",
   "follow-up",
@@ -294,6 +330,13 @@ export interface PrimeAgentDaemonSafeModel {
 
 export type PrimeAgentDaemonSessionResources = SessionResourcesUpdatedPayload;
 
+export type PrimeAgentDaemonAgentDepth = SessionAgentDepthUpdatedPayload;
+
+export interface PrimeAgentDaemonReloadResourcesResult {
+  readonly resources: PrimeAgentDaemonSessionResources;
+  readonly agentDepth: PrimeAgentDaemonAgentDepth;
+}
+
 /** Provider-neutral session usage fields projected from Prime's private daemon response. */
 export interface PrimeAgentDaemonSessionStats {
   readonly contextUsage?:
@@ -318,11 +361,19 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly activeSessionId: string;
   readonly initialSnapshot: PrimeAgentDaemonCanonicalSnapshot;
   readonly initialResources: PrimeAgentDaemonSessionResources;
-  /** Reload the native runtime, then return one sanitized post-reload catalog. */
+  readonly initialAgentDepth: PrimeAgentDaemonAgentDepth;
+  /** Reload the native runtime, then return sanitized post-reload session state. */
   readonly reloadResources: Effect.Effect<
-    PrimeAgentDaemonSessionResources,
+    PrimeAgentDaemonReloadResourcesResult,
     PrimeAgentDaemonSessionRuntimeError
   >;
+  readonly getAgentDepth: Effect.Effect<
+    PrimeAgentDaemonAgentDepth,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
+  readonly setAgentDepth: (
+    maxDepth: number,
+  ) => Effect.Effect<PrimeAgentDaemonAgentDepth, PrimeAgentDaemonSessionRuntimeError>;
   readonly events: Stream.Stream<PrimeDaemonEvent, never>;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
@@ -629,6 +680,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let verifiedInventory:
       | readonly [typeof resourceSnapshotSchema.Type, typeof commandsSchema.Type]
       | undefined;
+    let verifiedAgentDepth: PrimeAgentDaemonAgentDepth | undefined;
     if (input.requiredExtension !== undefined) {
       if (
         !Predicate.isFunction(connection?.setRlmMaxDepth) ||
@@ -674,6 +726,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             (diagnostic) => diagnostic.type !== "warning",
           );
           verifiedInventory = [resources.value, commands.value];
+          verifiedAgentDepth = safeAgentDepth(depth.value, false);
           if (
             !extensionLoaded ||
             !markerLoaded ||
@@ -799,6 +852,36 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             }),
           );
 
+    const initialAgentDepth =
+      verifiedAgentDepth ??
+      (yield* Effect.gen(function* () {
+        if (!Predicate.isFunction(connection?.getRlmMaxDepthStatus)) {
+          return yield* runtimeError(
+            "get-agent-depth",
+            "incompatible-api",
+            "The installed Prime Agent connection does not expose agent depth.",
+          );
+        }
+        const rawDepth = yield* Effect.tryPromise({
+          try: () => connection!.getRlmMaxDepthStatus!(),
+          catch: () =>
+            runtimeError(
+              "get-agent-depth",
+              "request-failed",
+              "Could not read the Prime Agent session agent depth.",
+            ),
+        });
+        const depth = decodeRlmMaxDepthStatus(rawDepth);
+        if (Option.isNone(depth)) {
+          return yield* runtimeError(
+            "get-agent-depth",
+            "invalid-response",
+            "Prime Agent returned an invalid session agent depth.",
+          );
+        }
+        return safeAgentDepth(depth.value, true);
+      }).pipe(Effect.onError(() => closeAttachedSession)));
+
     const ensureOpen = (
       operation: PrimeAgentDaemonSessionRuntimeError["operation"],
     ): Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError> =>
@@ -843,6 +926,74 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               "The installed Prime Agent connection does not support this operation.",
             ),
           );
+
+    const getAgentDepth = Effect.gen(function* () {
+      yield* ensureOpen("get-agent-depth");
+      if (input.requiredExtension !== undefined) return initialAgentDepth;
+      const method = yield* requireMethod("get-agent-depth", connection!.getRlmMaxDepthStatus);
+      const output = yield* Effect.tryPromise({
+        try: () => method.call(connection),
+        catch: () =>
+          runtimeError(
+            "get-agent-depth",
+            "request-failed",
+            "Could not read the Prime Agent session agent depth.",
+          ),
+      });
+      const depth = decodeRlmMaxDepthStatus(output);
+      if (Option.isNone(depth)) {
+        return yield* runtimeError(
+          "get-agent-depth",
+          "invalid-response",
+          "Prime Agent returned an invalid session agent depth.",
+        );
+      }
+      return safeAgentDepth(depth.value, true);
+    });
+
+    const setAgentDepth = Effect.fn("PrimeAgentDaemonSessionRuntime.setAgentDepth")(function* (
+      maxDepth: number,
+    ) {
+      yield* ensureOpen("set-agent-depth");
+      if (
+        !Number.isInteger(maxDepth) ||
+        maxDepth < 0 ||
+        maxDepth > PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE
+      ) {
+        return yield* runtimeError(
+          "set-agent-depth",
+          "invalid-input",
+          `Agent depth must be an integer from 0 to ${PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE}.`,
+        );
+      }
+      if (input.requiredExtension !== undefined) {
+        return yield* runtimeError(
+          "set-agent-depth",
+          "invalid-input",
+          "Agent depth is fixed by the supervised execution policy.",
+        );
+      }
+      const method = yield* requireMethod("set-agent-depth", connection!.setRlmMaxDepth);
+      const output = yield* Effect.tryPromise({
+        // Per-session only. Never pass Prime's global persistence option.
+        try: () => method.call(connection, maxDepth),
+        catch: () =>
+          runtimeError(
+            "set-agent-depth",
+            "request-failed",
+            "Could not update the Prime Agent session agent depth.",
+          ),
+      });
+      const depth = decodeRlmMaxDepthStatus(output);
+      if (Option.isNone(depth) || depth.value.maxDepth !== maxDepth) {
+        return yield* runtimeError(
+          "set-agent-depth",
+          "invalid-response",
+          "Prime Agent did not confirm the requested session agent depth.",
+        );
+      }
+      return safeAgentDepth(depth.value, true);
+    });
 
     const prompt = Effect.fn("PrimeAgentDaemonSessionRuntime.prompt")(function* (
       promptInput: PrimeAgentDaemonPromptInput,
@@ -917,25 +1068,35 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       const reload = yield* requireMethod("reload-resources", connection!.reload);
       yield* callVoid("reload-resources", () => reload.call(connection));
       yield* ensureOpen("reload-resources");
-      const rawInventory = yield* Effect.tryPromise({
-        try: () => Promise.all([connection!.getResourceSnapshot(), connection!.getCommands()]),
+      const getDepth = yield* requireMethod("reload-resources", connection!.getRlmMaxDepthStatus);
+      const rawState = yield* Effect.tryPromise({
+        try: () =>
+          Promise.all([
+            connection!.getResourceSnapshot(),
+            connection!.getCommands(),
+            getDepth.call(connection),
+          ]),
         catch: () =>
           runtimeError(
             "reload-resources",
             "request-failed",
-            "The daemon resource catalog could not be read after reload.",
+            "The daemon session state could not be read after reload.",
           ),
       });
-      const resources = decodeResourceSnapshot(rawInventory[0]);
-      const commands = decodeCommands(rawInventory[1]);
-      if (Option.isNone(resources) || Option.isNone(commands)) {
+      const resources = decodeResourceSnapshot(rawState[0]);
+      const commands = decodeCommands(rawState[1]);
+      const agentDepth = decodeRlmMaxDepthStatus(rawState[2]);
+      if (Option.isNone(resources) || Option.isNone(commands) || Option.isNone(agentDepth)) {
         return yield* runtimeError(
           "reload-resources",
           "invalid-response",
-          "The daemon returned an invalid resource catalog after reload.",
+          "The daemon returned invalid session state after reload.",
         );
       }
-      return safeSessionResources(resources.value, commands.value, false);
+      return {
+        resources: safeSessionResources(resources.value, commands.value, false),
+        agentDepth: safeAgentDepth(agentDepth.value, true),
+      };
     });
 
     const setModel = Effect.fn("PrimeAgentDaemonSessionRuntime.setModel")(function* (
@@ -1083,7 +1244,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       activeSessionId,
       initialSnapshot: initialEvent,
       initialResources,
+      initialAgentDepth,
       reloadResources,
+      getAgentDepth,
+      setAgentDepth,
       events: Stream.fromQueue(eventQueue),
       prompt,
       steer,

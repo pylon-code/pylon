@@ -13,7 +13,10 @@ describe("PrimeAgentFeatureCapabilities", () => {
       runtimeModes: ["approval-required", "full-access"],
       enforcement: "host-gated",
     });
-    expect(capabilities.agents?.operations).toEqual(["observe", "hierarchy"]);
+    expect(capabilities.agents).toMatchObject({
+      support: "read-write",
+      operations: ["observe", "hierarchy", "set-depth"],
+    });
     expect(capabilities.resources).toMatchObject({
       support: "read-write",
       operations: ["commands", "reload"],

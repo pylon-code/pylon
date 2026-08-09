@@ -62,9 +62,10 @@ export function makePrimeAgentFeatureCapabilities(input: {
       enforcement: "host-gated",
     },
     agents: {
-      support: "read-only",
-      reason: "Pylon can observe Prime Agent subagents; control operations are not wired yet.",
-      operations: ["observe", "hierarchy"],
+      support: "read-write",
+      reason:
+        "Pylon can observe Prime Agent subagents and configure bounded per-session spawn depth; supervised sessions remain fixed at depth zero.",
+      operations: ["observe", "hierarchy", "set-depth"],
     },
     resources: {
       support: "read-write",

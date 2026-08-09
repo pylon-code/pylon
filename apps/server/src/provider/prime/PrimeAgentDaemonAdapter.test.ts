@@ -135,6 +135,19 @@ interface FakeCaptures {
   reloadCount: number;
   reloadObserved: Queue.Queue<void> | undefined;
   reloadRelease: Deferred.Deferred<void> | undefined;
+  agentDepth: {
+    maxDepth: number;
+    source: "session";
+    writable: boolean;
+    settable: boolean;
+    maxSettableDepth: number;
+  };
+  agentDepthCalls: Array<number>;
+  agentDepthFailure: boolean;
+  agentDepthFailureAfterMutation: boolean;
+  agentDepthReadFailure: boolean;
+  agentDepthObserved: Queue.Queue<void> | undefined;
+  agentDepthRelease: Deferred.Deferred<void> | undefined;
   sessionStats: PrimeAgentDaemonSessionStats;
   promptObserved: Queue.Queue<void> | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
@@ -159,6 +172,19 @@ function makeCaptures(): FakeCaptures {
     reloadCount: 0,
     reloadObserved: undefined,
     reloadRelease: undefined,
+    agentDepth: {
+      maxDepth: 2,
+      source: "session",
+      writable: true,
+      settable: true,
+      maxSettableDepth: 4,
+    },
+    agentDepthCalls: [],
+    agentDepthFailure: false,
+    agentDepthFailureAfterMutation: false,
+    agentDepthReadFailure: false,
+    agentDepthObserved: undefined,
+    agentDepthRelease: undefined,
     sessionStats: {
       contextUsage: { usedTokens: 320, maxTokens: 200_000 },
     },
@@ -187,6 +213,16 @@ function fakeRuntimeFactory(
         activeSessionId: "native-active-secret",
         initialSnapshot: initialSnapshot(),
         initialResources: { available: true, skills: [], prompts: [], commands: [] },
+        initialAgentDepth:
+          input.requiredExtension === undefined
+            ? captures.agentDepth
+            : {
+                maxDepth: 0,
+                source: "policy",
+                writable: false,
+                settable: false,
+                maxSettableDepth: 4,
+              },
         reloadResources: Effect.suspend(() =>
           captures.reloadFailure
             ? Effect.fail(
@@ -206,13 +242,48 @@ function fakeRuntimeFactory(
                   yield* Deferred.await(captures.reloadRelease);
                 }
                 return {
-                  available: true,
-                  skills: [],
-                  prompts: [],
-                  commands: [{ name: "skill:review", source: "skill" as const }],
+                  resources: {
+                    available: true,
+                    skills: [],
+                    prompts: [],
+                    commands: [{ name: "skill:review", source: "skill" as const }],
+                  },
+                  agentDepth: captures.agentDepth,
                 };
               }),
         ),
+        getAgentDepth: Effect.gen(function* () {
+          if (captures.agentDepthReadFailure) {
+            return yield* new PrimeAgentDaemonSessionRuntimeError({
+              operation: "get-agent-depth",
+              reason: "request-failed",
+              detail: "depth read failed",
+            });
+          }
+          return captures.agentDepth;
+        }),
+        setAgentDepth: (maxDepth) =>
+          Effect.gen(function* () {
+            captures.agentDepthCalls.push(maxDepth);
+            if (captures.agentDepthObserved !== undefined) {
+              yield* Queue.offer(captures.agentDepthObserved, undefined);
+            }
+            if (captures.agentDepthRelease !== undefined) {
+              yield* Deferred.await(captures.agentDepthRelease);
+            }
+            if (captures.agentDepthFailureAfterMutation) {
+              captures.agentDepth = { ...captures.agentDepth, maxDepth, source: "session" };
+            }
+            if (captures.agentDepthFailure || captures.agentDepthFailureAfterMutation) {
+              return yield* new PrimeAgentDaemonSessionRuntimeError({
+                operation: "set-agent-depth",
+                reason: "request-failed",
+                detail: "depth update failed",
+              });
+            }
+            captures.agentDepth = { ...captures.agentDepth, maxDepth, source: "session" };
+            return captures.agentDepth;
+          }),
         events: Stream.fromQueue(queue),
         prompt: (prompt) =>
           Effect.sync(() => {
@@ -412,6 +483,266 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("publishes and updates bounded session agent depth", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.resources.updated");
+        const initial = yield* awaitObservedType(
+          subscription.observed,
+          "session.agent-depth.updated",
+        );
+
+        expect(initial).toMatchObject({
+          provider: "primeAgent",
+          providerInstanceId: instanceId,
+          threadId,
+          payload: {
+            maxDepth: 2,
+            source: "session",
+            writable: true,
+            settable: true,
+            maxSettableDepth: 4,
+          },
+        });
+        expect(yield* adapter.getSessionAgentDepth!(threadId)).toEqual(initial.payload);
+
+        const updated = yield* adapter.setSessionAgentDepth!(threadId, 3);
+        const event = yield* awaitObservedType(
+          subscription.observed,
+          "session.agent-depth.updated",
+        );
+        expect(updated).toEqual({
+          maxDepth: 3,
+          source: "session",
+          writable: true,
+          settable: true,
+          maxSettableDepth: 4,
+        });
+        expect(event.payload).toEqual(updated);
+        expect(captures.agentDepthCalls).toEqual([3]);
+
+        const error = yield* adapter.setSessionAgentDepth!(threadId, 5).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          operation: "setSessionAgentDepth",
+        });
+        expect(captures.agentDepthCalls).toEqual([3]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps the authoritative agent depth unchanged when the daemon write fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.agentDepthFailure = true;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.resources.updated");
+        yield* awaitObservedType(subscription.observed, "session.agent-depth.updated");
+        const eventCount = subscription.events.length;
+
+        const error = yield* adapter.setSessionAgentDepth!(threadId, 3).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterRequestError",
+          method: "session/set-agent-depth",
+        });
+        expect(yield* adapter.getSessionAgentDepth!(threadId)).toMatchObject({ maxDepth: 2 });
+        expect(subscription.events).toHaveLength(eventCount);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("reconciles an ambiguously committed daemon depth write", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.agentDepthFailureAfterMutation = true;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.resources.updated");
+        yield* awaitObservedType(subscription.observed, "session.agent-depth.updated");
+
+        const error = yield* adapter.setSessionAgentDepth!(threadId, 3).pipe(Effect.flip);
+        const reconciled = yield* awaitObservedType(
+          subscription.observed,
+          "session.agent-depth.updated",
+        );
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterRequestError",
+          method: "session/set-agent-depth",
+        });
+        expect(reconciled).toMatchObject({ payload: { maxDepth: 3 } });
+        expect(yield* adapter.getSessionAgentDepth!(threadId)).toMatchObject({ maxDepth: 3 });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("closes a session when an ambiguous depth write cannot be reconciled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.agentDepthFailure = true;
+        captures.agentDepthReadFailure = true;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        const error = yield* adapter.setSessionAgentDepth!(threadId, 3).pipe(Effect.flip);
+        expect(error).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+        expect(yield* adapter.hasSession(threadId)).toBe(false);
+        expect(captures.disposeCount).toBe(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("refreshes authoritative native depth on explicit reads", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.resources.updated");
+        yield* awaitObservedType(subscription.observed, "session.agent-depth.updated");
+        captures.agentDepth = { ...captures.agentDepth, maxDepth: 4 };
+
+        const refreshed = yield* adapter.getSessionAgentDepth!(threadId);
+        const event = yield* awaitObservedType(
+          subscription.observed,
+          "session.agent-depth.updated",
+        );
+        expect(refreshed.maxDepth).toBe(4);
+        expect(event).toMatchObject({ payload: { maxDepth: 4 } });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("finishes an admitted depth write before honoring interruption", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.agentDepthObserved = yield* Queue.unbounded<void>();
+        captures.agentDepthRelease = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.resources.updated");
+        yield* awaitObservedType(subscription.observed, "session.agent-depth.updated");
+
+        const updateFiber = yield* adapter.setSessionAgentDepth!(threadId, 3).pipe(
+          Effect.forkChild,
+        );
+        yield* Queue.take(captures.agentDepthObserved);
+        const interruptFiber = yield* Fiber.interrupt(updateFiber).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(captures.agentDepth.maxDepth).toBe(2);
+        yield* Deferred.succeed(captures.agentDepthRelease, undefined);
+        yield* Fiber.join(interruptFiber);
+
+        const event = yield* awaitObservedType(
+          subscription.observed,
+          "session.agent-depth.updated",
+        );
+        expect(event).toMatchObject({ payload: { maxDepth: 3 } });
+        expect(yield* adapter.getSessionAgentDepth!(threadId)).toMatchObject({ maxDepth: 3 });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("publishes native busy state for background child-agent activity", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.resources.updated");
+        yield* awaitObservedType(subscription.observed, "session.agent-depth.updated");
+
+        yield* Queue.offer(captures.queue!, {
+          _tag: "ChildUpdated",
+          child: { id: "child-background", label: "child", status: "running" },
+        });
+        const busy = yield* awaitObservedType(subscription.observed, "session.agent-depth.updated");
+        expect(busy).toMatchObject({ payload: { writable: true, settable: false } });
+        expect(yield* adapter.getSessionAgentDepth!(threadId)).toMatchObject({
+          writable: true,
+          settable: false,
+        });
+        const error = yield* adapter.setSessionAgentDepth!(threadId, 3).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          reason: "busy",
+        });
+
+        yield* Queue.offer(captures.queue!, {
+          _tag: "ChildUpdated",
+          child: { id: "child-background", label: "child", status: "done" },
+        });
+        const idle = yield* awaitObservedType(subscription.observed, "session.agent-depth.updated");
+        expect(idle).toMatchObject({ payload: { writable: true, settable: true } });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps supervised session agent depth fixed at policy zero", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+
+        expect(yield* adapter.getSessionAgentDepth!(threadId)).toEqual({
+          maxDepth: 0,
+          source: "policy",
+          writable: false,
+          settable: false,
+          maxSettableDepth: 4,
+        });
+        const error = yield* adapter.setSessionAgentDepth!(threadId, 1).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterUnsupportedOperationError",
+          operation: "setSessionAgentDepth",
+        });
+        expect(captures.agentDepthCalls).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("reloads idle full-access resources and publishes one replacement catalog", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -435,6 +766,61 @@ describe("PrimeAgentDaemonAdapter", () => {
           payload,
         });
         expect(event).not.toHaveProperty("turnId");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("waits for resource reload completion before mutating agent depth", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.reloadObserved = yield* Queue.unbounded<void>();
+        captures.reloadRelease = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        const reloadFiber = yield* adapter.reloadSessionResources!(threadId).pipe(Effect.forkChild);
+        yield* Queue.take(captures.reloadObserved);
+        const updateFiber = yield* adapter.setSessionAgentDepth!(threadId, 3).pipe(
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        expect(captures.agentDepthCalls).toEqual([]);
+
+        yield* Deferred.succeed(captures.reloadRelease, undefined);
+        yield* Fiber.join(reloadFiber);
+        expect((yield* Fiber.join(updateFiber)).maxDepth).toBe(3);
+        expect(captures.agentDepthCalls).toEqual([3]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects agent depth updates while a turn is active", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "keep working" })
+          .pipe(Effect.forkChild);
+        yield* Queue.take(captures.promptObserved!);
+
+        const error = yield* adapter.setSessionAgentDepth!(threadId, 3).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          operation: "setSessionAgentDepth",
+        });
+        expect(captures.agentDepthCalls).toEqual([]);
+
+        yield* Queue.offer(captures.queue!, { _tag: "RunCompleted", messages: [] });
+        yield* Fiber.join(turnFiber);
       }),
     ).pipe(Effect.provide(testLayer)),
   );
@@ -845,13 +1231,14 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(subscription.events.map((event) => event.type)).toEqual([
           "session.started",
           "session.resources.updated",
+          "session.agent-depth.updated",
           "session.state.changed",
           "thread.started",
         ]);
         expect(encodeUnknownJson(subscription.events)).not.toContain("native-active-secret");
         expect(encodeUnknownJson(subscription.events)).not.toContain("native-session-secret");
         expect(encodeUnknownJson(subscription.events)).not.toContain("/native/secret/path");
-        expect(new Set(subscription.events.map((event) => event.eventId)).size).toBe(4);
+        expect(new Set(subscription.events.map((event) => event.eventId)).size).toBe(5);
         expect(subscription.events.every((event) => event.createdAt.length > 0)).toBe(true);
         const identitySource = yield* Effect.promise(() =>
           NodeFSP.readFile(

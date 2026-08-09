@@ -15,6 +15,7 @@ import type {
   ProviderRuntimeEvent,
   SessionInteractionRequestId,
   SessionInteractionResponse,
+  SessionAgentDepthUpdatedPayload,
   SessionResourcesUpdatedPayload,
   ProviderSendTurnInput,
   ProviderSession,
@@ -112,6 +113,17 @@ export interface ProviderAdapterShape<TError> {
   readonly reloadSessionResources?: (
     threadId: ThreadId,
   ) => Effect.Effect<SessionResourcesUpdatedPayload, TError>;
+
+  /** Read one active session's recursive agent-spawn depth. */
+  readonly getSessionAgentDepth?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<SessionAgentDepthUpdatedPayload, TError>;
+
+  /** Set one active session's recursive agent-spawn depth. */
+  readonly setSessionAgentDepth?: (
+    threadId: ThreadId,
+    maxDepth: number,
+  ) => Effect.Effect<SessionAgentDepthUpdatedPayload, TError>;
 
   /**
    * Stop one provider session.

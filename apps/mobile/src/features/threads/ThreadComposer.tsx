@@ -1,6 +1,11 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import {
+  canSetSessionAgentDepth,
+  supportsSessionAgentDepth,
+  type SessionAgentDepthSnapshot,
+} from "@t3tools/client-runtime/state/session-agent-depth";
+import {
   formatProviderSlashCommandDescription,
   resolveSessionSlashCommands,
   supportsSessionResourceReload,
@@ -118,6 +123,7 @@ export interface ThreadComposerProps {
   readonly queueCount: number;
   readonly contextWindow: ContextWindowSnapshot | null;
   readonly sessionResources: SessionResourcesSnapshot | null;
+  readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
@@ -128,6 +134,7 @@ export interface ThreadComposerProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onReloadSessionResources: () => Promise<void>;
+  readonly onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -427,6 +434,51 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       setIsReloadingSessionResources(false);
     }
   }, [isReloadingSessionResources, props.onReloadSessionResources, sessionResourceReloadDisabled]);
+
+  const showSessionAgentDepth =
+    props.sessionAgentDepth !== null && supportsSessionAgentDepth(activeSessionProviderStatus);
+  const [isSettingSessionAgentDepth, setIsSettingSessionAgentDepth] = useState(false);
+  const sessionAgentDepthDisabled =
+    !canSetSessionAgentDepth(activeSessionProviderStatus, props.sessionAgentDepth) ||
+    props.connectionState !== "connected" ||
+    props.activeThreadBusy ||
+    props.queueCount > 0 ||
+    props.selectedThread.session?.status !== "ready" ||
+    isReloadingSessionResources ||
+    isSettingSessionAgentDepth;
+  const sessionAgentDepthActions = useMemo(
+    () =>
+      Array.from(
+        { length: (props.sessionAgentDepth?.maxSettableDepth ?? -1) + 1 },
+        (_, maxDepth) => ({
+          id: `agent-depth:${maxDepth}`,
+          title: `Depth ${maxDepth}`,
+          subtitle:
+            maxDepth === 0
+              ? "Do not spawn recursive agents"
+              : maxDepth === 1
+                ? "Allow direct child agents"
+                : `Allow up to ${maxDepth} recursive levels`,
+          state: props.sessionAgentDepth?.maxDepth === maxDepth ? ("on" as const) : undefined,
+          attributes: sessionAgentDepthDisabled ? ({ disabled: true } as const) : undefined,
+        }),
+      ),
+    [props.sessionAgentDepth, sessionAgentDepthDisabled],
+  );
+  const setSessionAgentDepth = useCallback(
+    async (eventId: string) => {
+      if (sessionAgentDepthDisabled || !eventId.startsWith("agent-depth:")) return;
+      const maxDepth = Number(eventId.slice("agent-depth:".length));
+      if (!Number.isInteger(maxDepth)) return;
+      setIsSettingSessionAgentDepth(true);
+      try {
+        await props.onSetSessionAgentDepth(maxDepth);
+      } finally {
+        setIsSettingSessionAgentDepth(false);
+      }
+    },
+    [props.onSetSessionAgentDepth, sessionAgentDepthDisabled],
+  );
 
   const providerSlashCommands = useMemo(
     () =>
@@ -1036,6 +1088,28 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 </ControlPillMenu>
                 {props.contextWindow ? (
                   <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                ) : null}
+                {showSessionAgentDepth && props.sessionAgentDepth !== null ? (
+                  <ControlPillMenu
+                    title="Agent spawn depth"
+                    actions={sessionAgentDepthActions}
+                    onPressAction={({ nativeEvent }) =>
+                      void setSessionAgentDepth(nativeEvent.event)
+                    }
+                  >
+                    <ComposerToolbarTrigger
+                      accessibilityLabel={
+                        !props.sessionAgentDepth.writable
+                          ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, fixed by session policy`
+                          : props.sessionAgentDepth.settable
+                            ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}`
+                            : `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, unavailable until the session is idle`
+                      }
+                      icon="person.crop.circle"
+                      label={`Depth ${props.sessionAgentDepth.maxDepth}`}
+                      disabled={sessionAgentDepthDisabled}
+                    />
+                  </ControlPillMenu>
                 ) : null}
                 {showSessionResourceReload ? (
                   <ComposerToolbarButton

@@ -108,6 +108,29 @@ export class ProviderSessionResourcesReloadError extends Schema.TaggedErrorClass
   },
 ) {}
 
+export const ProviderGetSessionAgentDepthInput = Schema.Struct({ threadId: ThreadId });
+export type ProviderGetSessionAgentDepthInput = typeof ProviderGetSessionAgentDepthInput.Type;
+
+export const ProviderSetSessionAgentDepthInput = Schema.Struct({
+  threadId: ThreadId,
+  maxDepth: Schema.Number,
+});
+export type ProviderSetSessionAgentDepthInput = typeof ProviderSetSessionAgentDepthInput.Type;
+
+export class ProviderSessionAgentDepthError extends Schema.TaggedErrorClass<ProviderSessionAgentDepthError>()(
+  "ProviderSessionAgentDepthError",
+  {
+    reason: Schema.Literals([
+      "session-not-ready",
+      "unsupported",
+      "policy-forbidden",
+      "busy",
+      "invalid-depth",
+      "request-failed",
+    ]),
+  },
+) {}
+
 export const ProviderRespondToRequestInput = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,

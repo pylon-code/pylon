@@ -111,6 +111,8 @@ function createProviderServiceHarness() {
     respondToUserInput: () => unsupported(),
     respondToInteraction: () => unsupported(),
     reloadSessionResources: () => unsupported(),
+    getSessionAgentDepth: () => unsupported(),
+    setSessionAgentDepth: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),

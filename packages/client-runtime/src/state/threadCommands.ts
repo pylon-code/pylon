@@ -213,6 +213,18 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    getSessionAgentDepth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:get-session-agent-depth",
+      tag: WS_METHODS.providerGetSessionAgentDepth,
+      scheduler,
+      concurrency,
+    }),
+    setSessionAgentDepth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:set-session-agent-depth",
+      tag: WS_METHODS.providerSetSessionAgentDepth,
+      scheduler,
+      concurrency,
+    }),
     stopSession: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:stop-session",
       execute: (input: StopThreadSessionInput) => stopThreadSession(input),

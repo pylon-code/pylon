@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   EventId,
+  PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   type PrimeAgentSettings,
   type ProviderRuntimeEvent,
   type ProviderSession,
@@ -11,6 +12,7 @@ import {
   SessionInteractionRequestId,
   SessionInteractionResponse,
   SessionPresentation,
+  type SessionAgentDepthUpdatedPayload,
   type ProviderTurnStartResult,
   type ThreadId,
   TurnId,
@@ -237,6 +239,7 @@ interface PrimeAgentDaemonSessionContext {
   currentThinkingLevel: PrimeAgentDaemonThinkingLevel;
   currentServiceTier: PrimeAgentDaemonServiceTier;
   autoCompactionEnabled: boolean;
+  agentDepth: SessionAgentDepthUpdatedPayload;
   lifecycleStarted: boolean;
   usageRefreshSequence: number;
   eventFiber: Fiber.Fiber<void, never> | undefined;
@@ -446,6 +449,42 @@ export function makePrimeAgentDaemonAdapter(
         });
       });
 
+    const publishSessionAgentDepth = (
+      threadId: ThreadId,
+      payload: SessionAgentDepthUpdatedPayload,
+    ) =>
+      Effect.gen(function* () {
+        yield* offerRuntimeEvent({
+          type: "session.agent-depth.updated",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          providerInstanceId: boundInstanceId,
+          threadId,
+          payload,
+        });
+      });
+
+    const isAgentDepthSettable = (context: PrimeAgentDaemonSessionContext): boolean =>
+      context.agentDepth.writable &&
+      context.resourceReloadCompletion === undefined &&
+      context.session.status === "ready" &&
+      context.activeTurn === undefined &&
+      !context.nativeRunActive &&
+      !context.nativeBashActive &&
+      context.activeNativeChildren.size === 0 &&
+      context.activeCompactionScope === undefined &&
+      context.pendingApprovals.size === 0 &&
+      context.pendingInteractions.size === 0;
+
+    /** Must be called with the thread lock held. */
+    const syncAgentDepthSettableLocked = (context: PrimeAgentDaemonSessionContext) =>
+      Effect.gen(function* () {
+        const settable = isAgentDepthSettable(context);
+        if (context.agentDepth.settable === settable) return;
+        context.agentDepth = { ...context.agentDepth, settable };
+        yield* publishSessionAgentDepth(context.threadId, context.agentDepth);
+      });
+
     const publishDrafts = (
       context: PrimeAgentDaemonSessionContext,
       event: PrimeDaemonEvent,
@@ -598,6 +637,7 @@ export function makePrimeAgentDaemonAdapter(
             payload: { response: { kind: "cancelled" } },
           });
         }
+        yield* syncAgentDepthSettableLocked(context);
       });
 
     /** Must be called with the thread lock held. */
@@ -624,6 +664,7 @@ export function makePrimeAgentDaemonAdapter(
             payload: { requestType: pending.requestType, decision: "cancel" },
           });
         }
+        yield* syncAgentDepthSettableLocked(context);
       });
 
     /** Must be called with the thread lock held. */
@@ -770,6 +811,7 @@ export function makePrimeAgentDaemonAdapter(
                         Effect.gen(function* () {
                           if (context.pendingApprovals.get(requestId) !== pending) return;
                           context.pendingApprovals.delete(requestId);
+                          yield* syncAgentDepthSettableLocked(context);
                           yield* offerRuntimeEvent({
                             type: "request.resolved",
                             ...(yield* makeEventStamp()),
@@ -956,6 +998,7 @@ export function makePrimeAgentDaemonAdapter(
                       Effect.gen(function* () {
                         if (context.pendingInteractions.get(requestId) !== pending) return;
                         context.pendingInteractions.delete(requestId);
+                        yield* syncAgentDepthSettableLocked(context);
                         yield* offerRuntimeEvent({
                           type: "interaction.resolved",
                           ...(yield* makeEventStamp()),
@@ -1182,6 +1225,15 @@ export function makePrimeAgentDaemonAdapter(
           yield* refreshContextUsage(context).pipe(Effect.forkDetach);
         }
       }).pipe(
+        Effect.ensuring(
+          withThreadLock(
+            context.threadId,
+            Effect.gen(function* () {
+              if (sessions.get(context.threadId) !== context || context.stopped) return;
+              yield* syncAgentDepthSettableLocked(context);
+            }),
+          ).pipe(Effect.ignore),
+        ),
         Effect.catchCause((cause) =>
           Effect.logError("Failed to consume a Prime Agent daemon event.", {
             cause,
@@ -1552,6 +1604,7 @@ export function makePrimeAgentDaemonAdapter(
             currentThinkingLevel: runtime.initialSnapshot.state.thinkingLevel,
             currentServiceTier: runtime.initialSnapshot.state.serviceTier,
             autoCompactionEnabled: runtime.initialSnapshot.state.autoCompactionEnabled,
+            agentDepth: runtime.initialAgentDepth,
             lifecycleStarted: false,
             usageRefreshSequence: 0,
             eventFiber: undefined,
@@ -1574,6 +1627,10 @@ export function makePrimeAgentDaemonAdapter(
             stopped: false,
             exitEmitted: false,
           };
+          context.agentDepth = {
+            ...context.agentDepth,
+            settable: isAgentDepthSettable(context),
+          };
           sessions.set(input.threadId, context);
           scopeTransferred = true;
           context.eventFiber = yield* runtime.events.pipe(
@@ -1590,6 +1647,7 @@ export function makePrimeAgentDaemonAdapter(
             payload: { resume: input.resumeCursor !== undefined },
           });
           yield* publishSessionResources(input.threadId, runtime.initialResources);
+          yield* publishSessionAgentDepth(input.threadId, context.agentDepth);
           yield* offerRuntimeEvent({
             type: "session.state.changed",
             ...(yield* makeEventStamp()),
@@ -1955,6 +2013,7 @@ export function makePrimeAgentDaemonAdapter(
             });
           }
           if (decision === "acceptForSession") context.approvalsAcceptedForSession = true;
+          yield* syncAgentDepthSettableLocked(context);
           yield* offerRuntimeEvent({
             type: "request.resolved",
             ...(yield* makeEventStamp()),
@@ -2077,6 +2136,7 @@ export function makePrimeAgentDaemonAdapter(
               ),
             );
           context.pendingInteractions.delete(requestId);
+          yield* syncAgentDepthSettableLocked(context);
           yield* offerRuntimeEvent({
             type: "interaction.resolved",
             ...(yield* makeEventStamp()),
@@ -2110,6 +2170,108 @@ export function makePrimeAgentDaemonAdapter(
           issue: "Prime Agent daemon conversation rollback is unsupported.",
         });
       });
+    const updateAgentDepthProjection = (
+      context: PrimeAgentDaemonSessionContext,
+      next: SessionAgentDepthUpdatedPayload,
+    ) =>
+      Effect.gen(function* () {
+        const projected = {
+          ...next,
+          settable: next.writable && isAgentDepthSettable(context),
+        };
+        const changed =
+          context.agentDepth.maxDepth !== projected.maxDepth ||
+          context.agentDepth.source !== projected.source ||
+          context.agentDepth.writable !== projected.writable ||
+          context.agentDepth.settable !== projected.settable ||
+          context.agentDepth.maxSettableDepth !== projected.maxSettableDepth;
+        context.agentDepth = projected;
+        if (changed) yield* publishSessionAgentDepth(context.threadId, projected);
+      });
+
+    const getSessionAgentDepth: NonNullable<PrimeAgentAdapterShape["getSessionAgentDepth"]> = (
+      threadId,
+    ) =>
+      withThreadMutationLock(
+        threadId,
+        Effect.gen(function* () {
+          const context = yield* requireSession(threadId);
+          if (!context.agentDepth.writable) return context.agentDepth;
+          const next = yield* context.runtime.getAgentDepth.pipe(
+            Effect.mapError((error) =>
+              runtimeOperationError(threadId, "session/get-agent-depth", error),
+            ),
+          );
+          yield* updateAgentDepthProjection(context, next);
+          return context.agentDepth;
+        }),
+      );
+
+    const setSessionAgentDepth: NonNullable<PrimeAgentAdapterShape["setSessionAgentDepth"]> = (
+      threadId,
+      maxDepth,
+    ) =>
+      withThreadMutationLock(
+        threadId,
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            const context = yield* requireSession(threadId);
+            if (!context.agentDepth.writable) {
+              return yield* new ProviderAdapterUnsupportedOperationError({
+                provider: PROVIDER,
+                operation: "setSessionAgentDepth",
+              });
+            }
+            if (
+              !Number.isInteger(maxDepth) ||
+              maxDepth < 0 ||
+              maxDepth > PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE
+            ) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "setSessionAgentDepth",
+                reason: "invalid-input",
+                issue: `Agent depth must be an integer from 0 to ${PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE}.`,
+              });
+            }
+            if (!isAgentDepthSettable(context)) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "setSessionAgentDepth",
+                reason: "busy",
+                issue: "Agent depth can only be changed while the session is idle.",
+              });
+            }
+            const outcome = yield* context.runtime.setAgentDepth(maxDepth).pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/set-agent-depth", error),
+              ),
+              Effect.exit,
+            );
+            if (Exit.isSuccess(outcome)) {
+              yield* updateAgentDepthProjection(context, outcome.value);
+              return outcome.value;
+            }
+
+            const reconciled = yield* context.runtime.getAgentDepth.pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/get-agent-depth", error),
+              ),
+              Effect.exit,
+            );
+            if (Exit.isSuccess(reconciled)) {
+              yield* updateAgentDepthProjection(context, reconciled.value);
+            } else {
+              yield* stopSessionInternal(
+                context,
+                "Prime Agent session closed after its agent depth could not be reconciled safely.",
+              ).pipe(Effect.ignore);
+            }
+            return yield* Effect.failCause(outcome.cause);
+          }),
+        ),
+      );
+
     const reloadSessionResources: NonNullable<PrimeAgentAdapterShape["reloadSessionResources"]> = (
       threadId,
     ) =>
@@ -2144,6 +2306,7 @@ export function makePrimeAgentDaemonAdapter(
               }
               const completion = yield* Deferred.make<void>();
               context.resourceReloadCompletion = completion;
+              yield* syncAgentDepthSettableLocked(context);
               return { context, completion };
             }),
           );
@@ -2169,9 +2332,12 @@ export function makePrimeAgentDaemonAdapter(
                   });
                 }
                 const payload = Exit.isSuccess(outcome)
-                  ? outcome.value
+                  ? outcome.value.resources
                   : { available: false as const, skills: [], prompts: [], commands: [] };
                 yield* publishSessionResources(threadId, payload);
+                if (Exit.isSuccess(outcome)) {
+                  yield* updateAgentDepthProjection(context, outcome.value.agentDepth);
+                }
                 if (Exit.isFailure(outcome)) {
                   yield* stopSessionInternal(
                     context,
@@ -2189,10 +2355,11 @@ export function makePrimeAgentDaemonAdapter(
                 Effect.gen(function* () {
                   if (context.resourceReloadCompletion === completion) {
                     context.resourceReloadCompletion = undefined;
+                    yield* syncAgentDepthSettableLocked(context);
                   }
                   yield* Deferred.succeed(completion, undefined).pipe(Effect.ignore);
                 }),
-              ),
+              ).pipe(Effect.ignore),
             ),
           );
         }),
@@ -2268,6 +2435,8 @@ export function makePrimeAgentDaemonAdapter(
       respondToUserInput,
       respondToInteraction,
       reloadSessionResources,
+      getSessionAgentDepth,
+      setSessionAgentDepth,
       readThread,
       rollbackThread,
       stopSession,
