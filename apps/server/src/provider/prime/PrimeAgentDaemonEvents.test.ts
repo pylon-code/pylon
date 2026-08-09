@@ -64,6 +64,8 @@ const state = {
   sessionName: "daemon-events",
   messageCount: 3,
   autoCompactionEnabled: true,
+  steeringMode: "all",
+  followUpMode: "one-at-a-time",
   sessionActions: actions,
   goal,
   recap: "Implementing the daemon adapter",
@@ -574,7 +576,16 @@ describe("PrimeAgentDaemonEvents", () => {
       }),
     ).toMatchObject({
       _tag: "SessionResynced",
-      state: { sessionId: "session-1" },
+      state: {
+        sessionId: "session-1",
+        inputQueue: {
+          steeringCount: 1,
+          followUpCount: 1,
+          activeAction: true,
+          steeringMode: "all-at-once",
+          followUpMode: "one-at-a-time",
+        },
+      },
       messages: [{ role: "user", text: "Hello" }],
       children: [{ id: "child-1" }],
       lastEventSequence: 42,

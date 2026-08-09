@@ -143,6 +143,10 @@ export interface ThreadDetailScreenProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onQueueFollowUp: () => Promise<MessageId | null>;
   readonly onClearSessionInputQueue: () => Promise<boolean>;
+  readonly onSetSessionInputQueueMode: (
+    queue: "steering" | "follow-up",
+    mode: "all-at-once" | "one-at-a-time",
+  ) => Promise<boolean>;
   readonly onCancelSessionAgent: (agentId: string) => Promise<boolean>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
@@ -825,6 +829,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onSendMessage={handleSendMessage}
                 onQueueFollowUp={props.onQueueFollowUp}
                 onClearSessionInputQueue={props.onClearSessionInputQueue}
+                onSetSessionInputQueueMode={props.onSetSessionInputQueueMode}
                 onCancelSessionAgent={props.onCancelSessionAgent}
                 onReconnectEnvironment={props.onReconnectEnvironment}
                 onUpdateModelSelection={props.onUpdateThreadModelSelection}

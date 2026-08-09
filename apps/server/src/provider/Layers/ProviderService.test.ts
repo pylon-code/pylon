@@ -9,6 +9,7 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderTurnStartResult,
+  SessionInputQueueUpdatedPayload,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -199,6 +200,36 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       }),
   );
 
+  let inputQueue: SessionInputQueueUpdatedPayload = {
+    steeringCount: 0,
+    followUpCount: 0,
+    steeringMode: "one-at-a-time" as const,
+    followUpMode: "one-at-a-time" as const,
+  };
+  const getSessionInputQueue = vi.fn((_threadId: ThreadId) => Effect.sync(() => inputQueue));
+  const clearSessionInputQueue = vi.fn((_threadId: ThreadId) =>
+    Effect.sync(() => {
+      inputQueue = { ...inputQueue, steeringCount: 0, followUpCount: 0 };
+      return inputQueue;
+    }),
+  );
+  const setSessionInputQueueMode = vi.fn(
+    (input: {
+      readonly threadId: ThreadId;
+      readonly queue: "steering" | "follow-up";
+      readonly mode: "all-at-once" | "one-at-a-time";
+    }) =>
+      Effect.sync(() => {
+        inputQueue = {
+          ...inputQueue,
+          ...(input.queue === "steering"
+            ? { steeringMode: input.mode }
+            : { followUpMode: input.mode }),
+        };
+        return inputQueue;
+      }),
+  );
+
   const stopSession = vi.fn(
     (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
       Effect.sync(() => {
@@ -261,6 +292,9 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     cancelSessionAgent,
     getSessionAgentDepth,
     setSessionAgentDepth,
+    getSessionInputQueue,
+    clearSessionInputQueue,
+    setSessionInputQueueMode,
     stopSession,
     listSessions,
     hasSession,
@@ -298,6 +332,9 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     cancelSessionAgent,
     getSessionAgentDepth,
     setSessionAgentDepth,
+    getSessionInputQueue,
+    clearSessionInputQueue,
+    setSessionInputQueueMode,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -1003,6 +1040,25 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.equal(updatedDepth.maxDepth, 3);
       assert.deepEqual(routing.codex.getSessionAgentDepth.mock.calls, [[session.threadId]]);
       assert.deepEqual(routing.codex.setSessionAgentDepth.mock.calls, [[session.threadId, 3]]);
+
+      const queue = yield* provider.getSessionInputQueue({ threadId: session.threadId });
+      const updatedQueue = yield* provider.setSessionInputQueueMode({
+        threadId: session.threadId,
+        queue: "steering",
+        mode: "all-at-once",
+      });
+      assert.equal(queue.steeringMode, "one-at-a-time");
+      assert.equal(updatedQueue.steeringMode, "all-at-once");
+      assert.deepEqual(routing.codex.getSessionInputQueue.mock.calls, [[session.threadId]]);
+      assert.deepEqual(routing.codex.setSessionInputQueueMode.mock.calls, [
+        [
+          {
+            threadId: session.threadId,
+            queue: "steering",
+            mode: "all-at-once",
+          },
+        ],
+      ]);
 
       yield* provider.rollbackConversation({
         threadId: session.threadId,

@@ -45,6 +45,12 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("requires orchestration operate access for input delivery changes", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerSetSessionInputQueueMode)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,

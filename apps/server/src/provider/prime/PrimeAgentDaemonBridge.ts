@@ -81,6 +81,8 @@ export type PrimeAgentDaemonThinkingLevel =
 
 export type PrimeAgentDaemonServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | null;
 
+export type PrimeAgentDaemonQueueMode = "all" | "one-at-a-time";
+
 export interface PrimeAgentDaemonClientConstructor {
   new (socketPath: string): PrimeAgentDaemonClient;
 }
@@ -88,6 +90,7 @@ export interface PrimeAgentDaemonClientConstructor {
 export interface PrimeAgentDaemonAgentConnection {
   readonly subscribe: (listener: (event: unknown) => void | Promise<void>) => () => void;
   readonly getInitialSnapshot: () => Promise<unknown>;
+  readonly getState?: () => Promise<unknown>;
   readonly promptAndWait: (
     message: string,
     options?: PrimeAgentDaemonPromptOptions,
@@ -105,6 +108,8 @@ export interface PrimeAgentDaemonAgentConnection {
   readonly cancelRlmChild?: (childId: string) => Promise<unknown>;
   readonly getQueue?: () => Promise<unknown>;
   readonly clearQueue?: () => Promise<unknown>;
+  readonly setSteeringMode?: (mode: PrimeAgentDaemonQueueMode) => Promise<unknown>;
+  readonly setFollowUpMode?: (mode: PrimeAgentDaemonQueueMode) => Promise<unknown>;
   readonly setModel?: (provider: string, modelId: string) => Promise<unknown>;
   readonly setThinkingLevel?: (level: PrimeAgentDaemonThinkingLevel) => Promise<unknown>;
   readonly setServiceTier?: (tier: PrimeAgentDaemonServiceTier) => Promise<unknown>;

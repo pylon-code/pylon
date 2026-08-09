@@ -29,7 +29,7 @@ export function deriveLatestSessionInputQueue(
 
 function supportsOperation(
   provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
-  operation: "observe" | "follow-up" | "clear",
+  operation: "observe" | "follow-up" | "clear" | "set-modes",
   write: boolean,
 ): boolean {
   const queue = provider?.featureCapabilities?.inputQueue;
@@ -51,6 +51,19 @@ export const supportsSessionInputQueueFollowUp = (
 export const supportsSessionInputQueueClear = (
   provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
 ): boolean => supportsOperation(provider, "clear", true);
+
+export const supportsSessionInputQueueSetModes = (
+  provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
+): boolean => supportsOperation(provider, "set-modes", true);
+
+export function hasSessionInputQueueModes(
+  snapshot: SessionInputQueueSnapshot | null,
+): snapshot is SessionInputQueueSnapshot & {
+  readonly steeringMode: NonNullable<SessionInputQueueSnapshot["steeringMode"]>;
+  readonly followUpMode: NonNullable<SessionInputQueueSnapshot["followUpMode"]>;
+} {
+  return snapshot?.steeringMode !== undefined && snapshot.followUpMode !== undefined;
+}
 
 export function sessionInputQueueCount(snapshot: SessionInputQueueSnapshot | null): number {
   return snapshot === null ? 0 : snapshot.steeringCount + snapshot.followUpCount;

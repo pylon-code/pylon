@@ -93,7 +93,13 @@ function initialSnapshot(): Extract<PrimeDaemonEvent, { readonly _tag: "SessionR
       serviceTier: null,
       messageCount: 0,
       autoCompactionEnabled: true,
-      inputQueue: { steeringCount: 0, followUpCount: 0, activeAction: false },
+      inputQueue: {
+        steeringCount: 0,
+        followUpCount: 0,
+        activeAction: false,
+        steeringMode: "one-at-a-time",
+        followUpMode: "one-at-a-time",
+      },
     },
     messages: [],
     children: [],
@@ -152,7 +158,21 @@ interface FakeCaptures {
   agentDepthReadFailure: boolean;
   agentDepthObserved: Queue.Queue<void> | undefined;
   agentDepthRelease: Deferred.Deferred<void> | undefined;
-  inputQueue: { steeringCount: number; followUpCount: number };
+  inputQueue: {
+    steeringCount: number;
+    followUpCount: number;
+    steeringMode: "all-at-once" | "one-at-a-time";
+    followUpMode: "all-at-once" | "one-at-a-time";
+  };
+  inputQueueModesAvailable: boolean;
+  inputQueueModeCalls: Array<{
+    readonly queue: "steering" | "follow-up";
+    readonly mode: "all-at-once" | "one-at-a-time";
+  }>;
+  inputQueueModeFailure: boolean;
+  inputQueueModeFailureAfterMutation: boolean;
+  inputQueueModeTimedOut: boolean;
+  inputQueueStatusFailure: boolean;
   agentRoster: Array<Extract<PrimeDaemonEvent, { readonly _tag: "ChildUpdated" }>["child"]>;
   cancelAgentCalls: Array<string>;
   cancelAgentResult: boolean;
@@ -197,7 +217,18 @@ function makeCaptures(): FakeCaptures {
     agentDepthReadFailure: false,
     agentDepthObserved: undefined,
     agentDepthRelease: undefined,
-    inputQueue: { steeringCount: 0, followUpCount: 0 },
+    inputQueue: {
+      steeringCount: 0,
+      followUpCount: 0,
+      steeringMode: "one-at-a-time",
+      followUpMode: "one-at-a-time",
+    },
+    inputQueueModesAvailable: true,
+    inputQueueModeCalls: [],
+    inputQueueModeFailure: false,
+    inputQueueModeFailureAfterMutation: false,
+    inputQueueModeTimedOut: false,
+    inputQueueStatusFailure: false,
     agentRoster: [],
     cancelAgentCalls: [],
     cancelAgentResult: true,
@@ -232,6 +263,7 @@ function fakeRuntimeFactory(
         initialSnapshot: { ...initialSnapshot(), children: captures.agentRoster },
         initialResources: { available: true, skills: [], prompts: [], commands: [] },
         initialInputQueue: captures.inputQueue,
+        inputQueueModesAvailable: captures.inputQueueModesAvailable,
         initialAgentDepth:
           input.requiredExtension === undefined
             ? captures.agentDepth
@@ -362,15 +394,61 @@ function fakeRuntimeFactory(
                 };
               }),
         getInputQueue: Effect.sync(() => captures.inputQueue),
-        getInputQueueStatus: Effect.sync(() => ({
-          queue: captures.inputQueue,
-          activeAction: false,
-          isStreaming: false,
-        })),
+        getInputQueueStatus: Effect.suspend(() =>
+          captures.inputQueueStatusFailure
+            ? Effect.fail(
+                new PrimeAgentDaemonSessionRuntimeError({
+                  operation: "get-input-queue",
+                  reason: "request-failed",
+                  detail: "queue status failed",
+                }),
+              )
+            : Effect.succeed({
+                queue: captures.inputQueue,
+                activeAction: false,
+                isStreaming: false,
+              }),
+        ),
         clearInputQueue: Effect.sync(() => {
-          captures.inputQueue = { steeringCount: 0, followUpCount: 0 };
+          captures.inputQueue = {
+            ...captures.inputQueue,
+            steeringCount: 0,
+            followUpCount: 0,
+          };
           return { queue: captures.inputQueue, activeAction: false, isStreaming: false };
         }),
+        setInputQueueMode: (mode) =>
+          Effect.suspend(() => {
+            captures.inputQueueModeCalls.push(mode);
+            if (captures.inputQueueModeFailureAfterMutation) {
+              captures.inputQueue = {
+                ...captures.inputQueue,
+                ...(mode.queue === "steering"
+                  ? { steeringMode: mode.mode }
+                  : { followUpMode: mode.mode }),
+              };
+            }
+            if (
+              captures.inputQueueModeFailure ||
+              captures.inputQueueModeFailureAfterMutation ||
+              captures.inputQueueModeTimedOut
+            ) {
+              return Effect.fail(
+                new PrimeAgentDaemonSessionRuntimeError({
+                  operation: "set-input-queue-mode",
+                  reason: captures.inputQueueModeTimedOut ? "request-timed-out" : "request-failed",
+                  detail: "queue mode failed",
+                }),
+              );
+            }
+            captures.inputQueue = {
+              ...captures.inputQueue,
+              ...(mode.queue === "steering"
+                ? { steeringMode: mode.mode }
+                : { followUpMode: mode.mode }),
+            };
+            return Effect.void;
+          }),
         abort: Effect.sync(() => {
           captures.order.push("abort");
           expect(captures.prompts.at(-1)?.signal?.aborted).toBe(true);
@@ -625,14 +703,24 @@ describe("PrimeAgentDaemonAdapter", () => {
             subscription.observed,
             "session.input-queue.updated",
           );
-          expect(initial.payload).toEqual({ steeringCount: 0, followUpCount: 0 });
+          expect(initial.payload).toEqual({
+            steeringCount: 0,
+            followUpCount: 0,
+            steeringMode: "one-at-a-time",
+            followUpMode: "one-at-a-time",
+          });
 
           const running = yield* adapter
             .sendTurn({ threadId, input: "base run" })
             .pipe(Effect.forkChild);
           yield* Queue.take(captures.promptObserved!);
           const queued = yield* adapter.followUp!({ threadId, input: "private follow-up" });
-          expect(queued).toEqual({ steeringCount: 0, followUpCount: 1 });
+          expect(queued).toEqual({
+            steeringCount: 0,
+            followUpCount: 1,
+            steeringMode: "one-at-a-time",
+            followUpMode: "one-at-a-time",
+          });
           const queuedEvent = yield* awaitObservedType(
             subscription.observed,
             "session.input-queue.updated",
@@ -648,7 +736,12 @@ describe("PrimeAgentDaemonAdapter", () => {
           });
 
           const cleared = yield* adapter.clearSessionInputQueue!(threadId);
-          expect(cleared).toEqual({ steeringCount: 0, followUpCount: 0 });
+          expect(cleared).toEqual({
+            steeringCount: 0,
+            followUpCount: 0,
+            steeringMode: "one-at-a-time",
+            followUpMode: "one-at-a-time",
+          });
           const clearedEvent = yield* awaitObservedType(
             subscription.observed,
             "session.input-queue.updated",
@@ -668,6 +761,151 @@ describe("PrimeAgentDaemonAdapter", () => {
       ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("sets and reconciles authoritative session input delivery modes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+
+        const steering = yield* adapter.setSessionInputQueueMode!({
+          threadId,
+          queue: "steering",
+          mode: "all-at-once",
+        });
+        expect(steering).toMatchObject({
+          steeringMode: "all-at-once",
+          followUpMode: "one-at-a-time",
+        });
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.input-queue.updated")).payload,
+        ).toEqual(steering);
+        expect(
+          yield* adapter.setSessionInputQueueMode!({
+            threadId,
+            queue: "steering",
+            mode: "all-at-once",
+          }),
+        ).toEqual(steering);
+        expect(captures.inputQueueModeCalls).toEqual([{ queue: "steering", mode: "all-at-once" }]);
+
+        captures.inputQueueModeFailureAfterMutation = true;
+        const reconciled = yield* adapter.setSessionInputQueueMode!({
+          threadId,
+          queue: "follow-up",
+          mode: "all-at-once",
+        });
+        expect(reconciled).toMatchObject({
+          steeringMode: "all-at-once",
+          followUpMode: "all-at-once",
+        });
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.input-queue.updated")).payload,
+        ).toEqual(reconciled);
+        expect(captures.inputQueueModeCalls).toEqual([
+          { queue: "steering", mode: "all-at-once" },
+          { queue: "follow-up", mode: "all-at-once" },
+        ]);
+        expect(captures.disposeCount).toBe(0);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "rejects unavailable or reconnecting input delivery mutations before native calls",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const unavailableCaptures = makeCaptures();
+          unavailableCaptures.inputQueueModesAvailable = false;
+          const unavailableAdapter = yield* makePrimeAgentDaemonAdapter(
+            decodeSettings({}),
+            manager,
+            {
+              instanceId,
+              runtimeFactory: fakeRuntimeFactory(unavailableCaptures),
+            },
+          );
+          yield* unavailableAdapter.startSession({
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          });
+          expect(
+            yield* unavailableAdapter.setSessionInputQueueMode!({
+              threadId,
+              queue: "steering",
+              mode: "all-at-once",
+            }).pipe(Effect.flip),
+          ).toMatchObject({ _tag: "ProviderAdapterUnsupportedOperationError" });
+          expect(unavailableCaptures.inputQueueModeCalls).toEqual([]);
+
+          const captures = makeCaptures();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+          yield* offer(captures, { _tag: "ConnectionStatus", status: "reconnecting" });
+          yield* awaitObservedType(subscription.observed, "session.state.changed");
+          expect(
+            yield* adapter.setSessionInputQueueMode!({
+              threadId,
+              queue: "steering",
+              mode: "all-at-once",
+            }).pipe(Effect.flip),
+          ).toMatchObject({ _tag: "ProviderAdapterValidationError" });
+          expect(captures.inputQueueModeCalls).toEqual([]);
+          expect(captures.disposeCount).toBe(0);
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps reconciled failures live but closes timed-out mode mutations", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        captures.inputQueueModeFailure = true;
+        expect(
+          yield* adapter.setSessionInputQueueMode!({
+            threadId,
+            queue: "steering",
+            mode: "all-at-once",
+          }).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+        expect(captures.disposeCount).toBe(0);
+        expect((yield* adapter.listSessions()).length).toBe(1);
+
+        captures.inputQueueModeFailure = false;
+        captures.inputQueueModeTimedOut = true;
+        expect(
+          yield* adapter.setSessionInputQueueMode!({
+            threadId,
+            queue: "follow-up",
+            mode: "all-at-once",
+          }).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+        expect(captures.disposeCount).toBe(1);
+        expect(yield* adapter.listSessions()).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("fails closed when a rejected follow-up cannot be attributed from queue counts", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -685,7 +923,7 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* Queue.take(captures.promptObserved!);
 
         // The native count is ahead of Pylon's projection because another producer queued work.
-        captures.inputQueue = { steeringCount: 0, followUpCount: 1 };
+        captures.inputQueue = { ...captures.inputQueue, steeringCount: 0, followUpCount: 1 };
         captures.followUpFailure = true;
         const error = yield* adapter.followUp!({
           threadId,
@@ -699,7 +937,10 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(subscription.events).toContainEqual(
           expect.objectContaining({
             type: "session.input-queue.updated",
-            payload: { steeringCount: 0, followUpCount: 0 },
+            payload: {
+              steeringCount: 0,
+              followUpCount: 0,
+            },
           }),
         );
         yield* Fiber.join(running);

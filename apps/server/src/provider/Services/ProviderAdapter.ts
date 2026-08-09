@@ -21,6 +21,7 @@ import type {
   SessionInputQueueUpdatedPayload,
   SessionResourcesUpdatedPayload,
   ProviderSendTurnInput,
+  ProviderSetSessionInputQueueModeInput,
   ProviderSession,
   ProviderSessionStartInput,
   ThreadId,
@@ -148,6 +149,11 @@ export interface ProviderAdapterShape<TError> {
   /** Clear queued inputs without interrupting the active provider run. */
   readonly clearSessionInputQueue?: (
     threadId: ThreadId,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, TError>;
+
+  /** Configure how one category of queued inputs is delivered to the active session. */
+  readonly setSessionInputQueueMode?: (
+    input: ProviderSetSessionInputQueueModeInput,
   ) => Effect.Effect<SessionInputQueueUpdatedPayload, TError>;
 
   /**

@@ -30,6 +30,7 @@ export function makePrimeAgentFeatureCapabilities(input: {
   readonly runtime: "daemon" | "acp";
   readonly sessionUi: boolean;
   readonly inputQueue: boolean;
+  readonly inputQueueModes: boolean;
   readonly agentCancel: boolean;
 }): ProviderFeatureCapabilities {
   if (input.runtime === "acp") {
@@ -81,9 +82,12 @@ export function makePrimeAgentFeatureCapabilities(input: {
     inputQueue: input.inputQueue
       ? {
           support: "read-write",
-          reason:
-            "Pylon can observe privacy-safe queue counts, steer the active run, admit explicit follow-ups, and clear pending inputs without interrupting current work.",
-          operations: ["observe", "follow-up", "steer", "clear"],
+          reason: input.inputQueueModes
+            ? "Pylon can observe privacy-safe queue counts, configure delivery, steer the active run, admit explicit follow-ups, and clear pending inputs without interrupting current work."
+            : "Pylon can observe privacy-safe queue counts, steer the active run, admit explicit follow-ups, and clear pending inputs without interrupting current work; delivery-mode controls are unavailable with the loaded daemon.",
+          operations: input.inputQueueModes
+            ? ["observe", "follow-up", "steer", "clear", "set-modes"]
+            : ["observe", "follow-up", "steer", "clear"],
         }
       : unavailable("The loaded Prime Agent daemon does not expose compatible input queue APIs."),
     context: {

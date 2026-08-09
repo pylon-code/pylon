@@ -151,6 +151,12 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
                       method as "followUp" | "getQueue" | "clearQueue"
                     ] === "function",
                 ),
+                inputQueueModes: ["setSteeringMode", "setFollowUpMode"].every(
+                  (method) =>
+                    typeof backend.manager.bridge.DaemonAgentConnection.prototype[
+                      method as "setSteeringMode" | "setFollowUpMode"
+                    ] === "function",
+                ),
                 agentCancel:
                   typeof backend.manager.bridge.DaemonAgentConnection.prototype.cancelRlmChild ===
                   "function",

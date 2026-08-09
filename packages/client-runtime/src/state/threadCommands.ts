@@ -252,6 +252,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    setSessionInputQueueMode: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:set-session-input-queue-mode",
+      tag: WS_METHODS.providerSetSessionInputQueueMode,
+      scheduler,
+      concurrency,
+    }),
     stopSession: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:stop-session",
       execute: (input: StopThreadSessionInput) => stopThreadSession(input),

@@ -1,4 +1,7 @@
-import { PROVIDER_AGENT_CONTROL_ID_MAX_CHARS } from "@t3tools/contracts";
+import {
+  PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
+  type SessionInputQueueDeliveryMode,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -7,6 +10,7 @@ const thinkingLevel = Schema.Literals(["off", "minimal", "low", "medium", "high"
 const serviceTier = Schema.NullOr(
   Schema.Literals(["auto", "default", "flex", "scale", "priority"]),
 );
+const queueMode = Schema.Literals(["all", "one-at-a-time"]);
 const stopReason = Schema.Literals(["stop", "length", "toolUse", "error", "aborted"]);
 
 const textContent = Schema.Struct({
@@ -381,6 +385,8 @@ const sessionState = Schema.Struct({
   sessionName: Schema.optional(Schema.String),
   messageCount: Schema.Number,
   autoCompactionEnabled: Schema.Boolean,
+  steeringMode: Schema.optional(queueMode),
+  followUpMode: Schema.optional(queueMode),
   contextUsage: Schema.optional(contextUsage),
   sessionActions,
   goal: goalState,
@@ -601,6 +607,8 @@ export interface PrimeDaemonSessionState {
     readonly steeringCount: number;
     readonly followUpCount: number;
     readonly activeAction: boolean;
+    readonly steeringMode?: SessionInputQueueDeliveryMode | undefined;
+    readonly followUpMode?: SessionInputQueueDeliveryMode | undefined;
   };
   readonly contextUsage?:
     | {
@@ -970,6 +978,19 @@ function mapChild(
   };
 }
 
+function mapQueueMode(
+  mode: typeof queueMode.Type | undefined,
+): SessionInputQueueDeliveryMode | undefined {
+  return mode === undefined ? undefined : mode === "all" ? "all-at-once" : "one-at-a-time";
+}
+
+export function decodePrimeAgentDaemonSessionState(
+  value: unknown,
+): PrimeDaemonSessionState | undefined {
+  const decoded = Schema.decodeUnknownOption(sessionState)(value);
+  return Option.isSome(decoded) ? mapState(decoded.value) : undefined;
+}
+
 function mapState(value: typeof sessionState.Type): PrimeDaemonSessionState {
   return {
     activeSessionId: optionalBounded(value.activeSessionId, MAX_PREVIEW_LENGTH),
@@ -988,6 +1009,8 @@ function mapState(value: typeof sessionState.Type): PrimeDaemonSessionState {
       steeringCount: value.sessionActions.steering.length,
       followUpCount: value.sessionActions.followUps.length,
       activeAction: value.sessionActions.active !== undefined,
+      steeringMode: mapQueueMode(value.steeringMode),
+      followUpMode: mapQueueMode(value.followUpMode),
     },
     contextUsage: value.contextUsage,
     recap: optionalBounded(value.recap, MAX_PREVIEW_LENGTH),

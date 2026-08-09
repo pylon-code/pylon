@@ -23,6 +23,7 @@ import {
   RuntimeMode,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import { SessionInputQueueDeliveryMode } from "./providerRuntime.ts";
 import { SessionInteractionRequestId, SessionInteractionResponse } from "./sessionInteraction.ts";
 
 const ProviderSessionStatus = Schema.Literals([
@@ -174,6 +175,14 @@ export type ProviderGetSessionInputQueueInput = typeof ProviderGetSessionInputQu
 
 export const ProviderClearSessionInputQueueInput = Schema.Struct({ threadId: ThreadId });
 export type ProviderClearSessionInputQueueInput = typeof ProviderClearSessionInputQueueInput.Type;
+
+export const ProviderSetSessionInputQueueModeInput = Schema.Struct({
+  threadId: ThreadId,
+  queue: Schema.Literals(["steering", "follow-up"]),
+  mode: SessionInputQueueDeliveryMode,
+});
+export type ProviderSetSessionInputQueueModeInput =
+  typeof ProviderSetSessionInputQueueModeInput.Type;
 
 export class ProviderSessionInputQueueError extends Schema.TaggedErrorClass<ProviderSessionInputQueueError>()(
   "ProviderSessionInputQueueError",

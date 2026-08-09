@@ -6,10 +6,12 @@ import {
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
+  hasSessionInputQueueModes,
   sessionInputQueueCount,
   supportsSessionInputQueue,
   supportsSessionInputQueueClear,
   supportsSessionInputQueueFollowUp,
+  supportsSessionInputQueueSetModes,
   type SessionInputQueueSnapshot,
 } from "@t3tools/client-runtime/state/session-input-queue";
 import {
@@ -107,6 +109,10 @@ import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
 } from "./use-thread-settings-sheet-presentation";
+import {
+  buildSessionInputQueueMenuActions,
+  parseSessionInputQueueModeAction,
+} from "./sessionInputQueueMenu";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -158,6 +164,10 @@ export interface ThreadComposerProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onQueueFollowUp: () => Promise<MessageId | null>;
   readonly onClearSessionInputQueue: () => Promise<boolean>;
+  readonly onSetSessionInputQueueMode: (
+    queue: "steering" | "follow-up",
+    mode: "all-at-once" | "one-at-a-time",
+  ) => Promise<boolean>;
   readonly onCancelSessionAgent: (agentId: string) => Promise<boolean>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -465,7 +475,21 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session.activeTurnId != null &&
     sessionQueueCount > 0 &&
     supportsSessionInputQueueClear(activeSessionProviderStatus);
-  const [isMutatingSessionInputQueue, setIsMutatingSessionInputQueue] = useState(false);
+  const showSessionInputQueueModes =
+    hasSessionInputQueueModes(props.sessionInputQueue) &&
+    supportsSessionInputQueueSetModes(activeSessionProviderStatus);
+  const sessionInputQueueScopeKey = `${scopedThreadKey(props.environmentId, props.selectedThread.id)}:${props.selectedThread.session?.providerInstanceId ?? "none"}`;
+  const [sessionInputQueueMutation, setSessionInputQueueMutation] = useState<{
+    readonly scopeKey: string;
+  } | null>(null);
+  const isMutatingSessionInputQueue =
+    sessionInputQueueMutation?.scopeKey === sessionInputQueueScopeKey;
+  const canSetSessionInputQueueModes =
+    showSessionInputQueueModes &&
+    props.connectionState === "connected" &&
+    (props.selectedThread.session?.status === "ready" ||
+      props.selectedThread.session?.status === "running") &&
+    !isMutatingSessionInputQueue;
   const sendLabel = canQueueFollowUp
     ? "Queue follow-up"
     : props.connectionState !== "connected" || props.activeThreadBusy || props.localOutboxCount > 0
@@ -883,11 +907,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey) || isMutatingSessionInputQueue) return;
     inFlightThreadIdsRef.current.add(threadKey);
-    setIsMutatingSessionInputQueue(true);
+    const mutation = { scopeKey: sessionInputQueueScopeKey };
+    setSessionInputQueueMutation(mutation);
     try {
       await props.onQueueFollowUp();
     } finally {
-      setIsMutatingSessionInputQueue(false);
+      setSessionInputQueueMutation((current) => (current === mutation ? null : current));
       inFlightThreadIdsRef.current.delete(threadKey);
     }
   }, [
@@ -895,6 +920,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.environmentId,
     props.onQueueFollowUp,
     props.selectedThread.id,
+    sessionInputQueueScopeKey,
   ]);
 
   const confirmClearSessionInputQueue = useCallback(() => {
@@ -908,15 +934,72 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           text: "Clear all",
           style: "destructive",
           onPress: () => {
-            setIsMutatingSessionInputQueue(true);
+            const mutation = { scopeKey: sessionInputQueueScopeKey };
+            setSessionInputQueueMutation(mutation);
             void props.onClearSessionInputQueue().finally(() => {
-              setIsMutatingSessionInputQueue(false);
+              setSessionInputQueueMutation((current) => (current === mutation ? null : current));
             });
           },
         },
       ],
     );
-  }, [canClearSessionInputQueue, isMutatingSessionInputQueue, props.onClearSessionInputQueue]);
+  }, [
+    canClearSessionInputQueue,
+    isMutatingSessionInputQueue,
+    props.onClearSessionInputQueue,
+    sessionInputQueueScopeKey,
+  ]);
+
+  const sessionInputQueueActions = useMemo(
+    () =>
+      hasSessionInputQueueModes(props.sessionInputQueue)
+        ? buildSessionInputQueueMenuActions({
+            snapshot: props.sessionInputQueue,
+            count: sessionQueueCount,
+            canSetModes: canSetSessionInputQueueModes,
+            canClear: canClearSessionInputQueue,
+            mutating: isMutatingSessionInputQueue,
+          })
+        : [],
+    [
+      canClearSessionInputQueue,
+      canSetSessionInputQueueModes,
+      isMutatingSessionInputQueue,
+      props.sessionInputQueue,
+      sessionQueueCount,
+    ],
+  );
+
+  const handleSessionInputQueueAction = useCallback(
+    (eventId: string) => {
+      if (eventId === "session-input-clear") {
+        confirmClearSessionInputQueue();
+        return;
+      }
+      const action = parseSessionInputQueueModeAction(eventId);
+      if (!action || !canSetSessionInputQueueModes || isMutatingSessionInputQueue) return;
+      const { queue, mode } = action;
+      const currentMode =
+        queue === "steering"
+          ? props.sessionInputQueue?.steeringMode
+          : props.sessionInputQueue?.followUpMode;
+      if (currentMode === mode) return;
+      const mutation = { scopeKey: sessionInputQueueScopeKey };
+      setSessionInputQueueMutation(mutation);
+      void props.onSetSessionInputQueueMode(queue, mode).finally(() => {
+        setSessionInputQueueMutation((current) => (current === mutation ? null : current));
+      });
+    },
+    [
+      canSetSessionInputQueueModes,
+      confirmClearSessionInputQueue,
+      isMutatingSessionInputQueue,
+      props.onSetSessionInputQueueMode,
+      props.sessionInputQueue?.followUpMode,
+      props.sessionInputQueue?.steeringMode,
+      sessionInputQueueScopeKey,
+    ],
+  );
 
   const handleCommandSelect = useCallback(
     (item: ComposerCommandItem) => {
@@ -1266,6 +1349,21 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       icon="person.2"
                       label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
                       disabled={!canCancelSessionAgents}
+                    />
+                  </ControlPillMenu>
+                ) : null}
+                {showSessionInputQueueModes && props.sessionInputQueue ? (
+                  <ControlPillMenu
+                    title="Session input delivery"
+                    actions={sessionInputQueueActions}
+                    onPressAction={({ nativeEvent }) =>
+                      handleSessionInputQueueAction(nativeEvent.event)
+                    }
+                  >
+                    <ComposerToolbarTrigger
+                      accessibilityLabel={`Session input delivery. ${sessionQueueCount} pending. Steering ${props.sessionInputQueue.steeringMode === "all-at-once" ? "all at once" : "one at a time"}. Follow-ups ${props.sessionInputQueue.followUpMode === "all-at-once" ? "all at once" : "one at a time"}.`}
+                      icon="text.badge.plus"
+                      label={sessionQueueCount > 0 ? `Inputs ${sessionQueueCount}` : "Inputs"}
                     />
                   </ControlPillMenu>
                 ) : null}

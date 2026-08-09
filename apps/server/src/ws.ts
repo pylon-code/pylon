@@ -52,7 +52,6 @@ import {
   EnvironmentAuthorizationError,
   ProviderCancelSessionAgentError,
   ProviderSessionAgentDepthError,
-  ProviderSessionInputQueueError,
   ProviderSessionResourcesReloadError,
   ThreadId,
   type TerminalAttachStreamEvent,
@@ -85,6 +84,7 @@ import {
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
+import { toProviderSessionInputQueueError } from "./provider/providerSessionInputQueueRpcError.ts";
 import {
   ProviderLoginCoordinator,
   ProviderLoginCoordinatorLive,
@@ -1556,43 +1556,28 @@ const makeWsRpcLayer = (
         [WS_METHODS.providerGetSessionInputQueue]: (input) =>
           observeRpcEffect(
             WS_METHODS.providerGetSessionInputQueue,
-            providerService.getSessionInputQueue(input).pipe(
-              Effect.mapError((error) => {
-                const reason =
-                  error._tag === "ProviderUnsupportedError" ||
-                  error._tag === "ProviderAdapterUnsupportedOperationError"
-                    ? "unsupported"
-                    : error._tag === "ProviderAdapterSessionNotFoundError" ||
-                        error._tag === "ProviderAdapterSessionClosedError" ||
-                        error._tag === "ProviderSessionNotFoundError" ||
-                        error._tag === "ProviderValidationError"
-                      ? "session-not-ready"
-                      : "request-failed";
-                return new ProviderSessionInputQueueError({ reason });
-              }),
-            ),
+            providerService
+              .getSessionInputQueue(input)
+              .pipe(Effect.mapError(toProviderSessionInputQueueError)),
             { "rpc.aggregate": "provider" },
           ),
         [WS_METHODS.providerClearSessionInputQueue]: (input) =>
           observeRpcEffect(
             WS_METHODS.providerClearSessionInputQueue,
-            providerService.clearSessionInputQueue(input).pipe(
-              Effect.mapError((error) => {
-                const reason =
-                  error._tag === "ProviderUnsupportedError" ||
-                  error._tag === "ProviderAdapterUnsupportedOperationError"
-                    ? "unsupported"
-                    : error._tag === "ProviderAdapterSessionNotFoundError" ||
-                        error._tag === "ProviderAdapterSessionClosedError" ||
-                        error._tag === "ProviderSessionNotFoundError" ||
-                        error._tag === "ProviderValidationError"
-                      ? "session-not-ready"
-                      : "request-failed";
-                return new ProviderSessionInputQueueError({ reason });
-              }),
-            ),
+            providerService
+              .clearSessionInputQueue(input)
+              .pipe(Effect.mapError(toProviderSessionInputQueueError)),
             { "rpc.aggregate": "provider" },
           ),
+        [WS_METHODS.providerSetSessionInputQueueMode]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerSetSessionInputQueueMode,
+            providerService
+              .setSessionInputQueueMode(input)
+              .pipe(Effect.mapError(toProviderSessionInputQueueError)),
+            { "rpc.aggregate": "provider" },
+          ),
+
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,

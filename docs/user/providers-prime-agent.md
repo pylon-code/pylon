@@ -50,8 +50,11 @@ when the next message starts; they cannot be changed by a steering message after
 While a daemon-backed turn is working, sending another message steers the same turn. The separate
 **Queue follow-up** action admits the current draft for the next native run instead. Pylon shows only
 privacy-safe steering and follow-up counts; it never sends queued prompt previews to clients. The
-**Session inputs** control clears pending inputs without interrupting current work, while stopping the
-turn aborts current work and clears the native queue atomically. A queued follow-up remains in the
+**Session inputs** control also lets you choose whether steering inputs and follow-ups are delivered
+**All at once** or **One at a time**. Those choices are shared with every client connected to the
+session and survive reconnects for as long as the native session does. The same control clears pending
+inputs without interrupting current work, while stopping the turn aborts current work and clears the
+native queue atomically. A queued follow-up remains in the
 conversation as your durable intent; if admission fails, Pylon marks it as not queued. Clearing session
 inputs does not erase conversation history. On mobile, these shared session inputs
 remain separate from pending sends saved on that device. Native select, confirm, input, and editor dialogs appear in

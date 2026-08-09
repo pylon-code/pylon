@@ -7,6 +7,7 @@ import {
   RUNTIME_RESOURCE_NAME_MAX_CHARS,
   type ProviderSessionAgentDepthSource,
   type SessionAgentDepthUpdatedPayload,
+  type SessionInputQueueDeliveryMode,
   type SessionInputQueueUpdatedPayload,
   type SessionResourcesUpdatedPayload,
 } from "@t3tools/contracts";
@@ -22,10 +23,15 @@ import {
   type PrimeAgentDaemonAgentConnection,
   type PrimeAgentDaemonExtensionUiResponse,
   type PrimeAgentDaemonImage,
+  type PrimeAgentDaemonQueueMode,
   type PrimeAgentDaemonServiceTier,
   type PrimeAgentDaemonThinkingLevel,
 } from "./PrimeAgentDaemonBridge.ts";
-import { decodePrimeAgentDaemonEvent, type PrimeDaemonEvent } from "./PrimeAgentDaemonEvents.ts";
+import {
+  decodePrimeAgentDaemonEvent,
+  decodePrimeAgentDaemonSessionState,
+  type PrimeDaemonEvent,
+} from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import { primeAgentSessionFileName } from "./PrimeAgentSessionIdentity.ts";
 import {
@@ -281,6 +287,7 @@ const runtimeErrorOperation = Schema.Literals([
   "follow-up",
   "get-input-queue",
   "clear-input-queue",
+  "set-input-queue-mode",
   "abort",
   "abort-and-clear-queue",
   "set-model",
@@ -294,6 +301,7 @@ const runtimeErrorReason = Schema.Literals([
   "invalid-input",
   "incompatible-api",
   "request-failed",
+  "request-timed-out",
   "invalid-response",
   "disposed",
 ]);
@@ -394,6 +402,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly initialResources: PrimeAgentDaemonSessionResources;
   readonly initialAgentDepth: PrimeAgentDaemonAgentDepth;
   readonly initialInputQueue: PrimeAgentDaemonInputQueue;
+  readonly inputQueueModesAvailable: boolean;
   /** Reload the native runtime, then return sanitized post-reload session state. */
   readonly reloadResources: Effect.Effect<
     PrimeAgentDaemonReloadResourcesResult,
@@ -435,6 +444,10 @@ export interface PrimeAgentDaemonSessionRuntime {
     PrimeAgentDaemonInputQueueStatus,
     PrimeAgentDaemonSessionRuntimeError
   >;
+  readonly setInputQueueMode: (input: {
+    readonly queue: "steering" | "follow-up";
+    readonly mode: SessionInputQueueDeliveryMode;
+  }) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly abort: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly abortAndClearQueue: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly setModel: (
@@ -935,26 +948,49 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }).pipe(Effect.onError(() => closeAttachedSession)));
 
     const readInputQueueStatus = (
-      operation: "get-input-queue" | "clear-input-queue",
+      operation: "get-input-queue" | "clear-input-queue" | "set-input-queue-mode",
     ): Effect.Effect<PrimeAgentDaemonInputQueueStatus, PrimeAgentDaemonSessionRuntimeError> =>
       Effect.gen(function* () {
-        const statusSnapshot = yield* Effect.tryPromise({
-          try: () => connection!.getInitialSnapshot(),
+        const getState = connection!.getState;
+        const statusOutput = yield* Effect.tryPromise({
+          try: async () =>
+            typeof getState === "function"
+              ? { kind: "state" as const, value: await getState.call(connection) }
+              : {
+                  kind: "snapshot" as const,
+                  value: await connection!.getInitialSnapshot(),
+                },
           catch: () =>
             runtimeError(
               operation,
               "request-failed",
               "Could not read the Prime Agent session action state.",
             ),
-        });
-        const event = decodePrimeAgentDaemonEvent({
-          type: "session_resynced",
-          snapshot: statusSnapshot,
-        });
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: COMMAND_TIMEOUT_MS,
+            orElse: () =>
+              runtimeError(
+                operation,
+                "request-timed-out",
+                "Timed out while reading the Prime Agent session action state.",
+              ),
+          }),
+        );
+        const state =
+          statusOutput.kind === "state"
+            ? decodePrimeAgentDaemonSessionState(statusOutput.value)
+            : (() => {
+                const event = decodePrimeAgentDaemonEvent({
+                  type: "session_resynced",
+                  snapshot: statusOutput.value,
+                });
+                return event._tag === "SessionResynced" ? event.state : undefined;
+              })();
         if (
-          event._tag !== "SessionResynced" ||
-          event.state.activeSessionId !== initialEvent.state.activeSessionId ||
-          event.state.sessionId !== sessionId
+          state === undefined ||
+          state.activeSessionId !== initialEvent.state.activeSessionId ||
+          state.sessionId !== sessionId
         ) {
           return yield* runtimeError(
             operation,
@@ -964,11 +1000,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         return {
           queue: {
-            steeringCount: event.state.inputQueue.steeringCount,
-            followUpCount: event.state.inputQueue.followUpCount,
+            steeringCount: state.inputQueue.steeringCount,
+            followUpCount: state.inputQueue.followUpCount,
+            steeringMode: state.inputQueue.steeringMode,
+            followUpMode: state.inputQueue.followUpMode,
           },
-          activeAction: event.state.inputQueue.activeAction,
-          isStreaming: event.state.isStreaming,
+          activeAction: state.inputQueue.activeAction,
+          isStreaming: state.isStreaming,
         };
       });
 
@@ -976,6 +1014,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       const safeQueue = {
         steeringCount: initialEvent.state.inputQueue.steeringCount,
         followUpCount: initialEvent.state.inputQueue.followUpCount,
+        steeringMode: initialEvent.state.inputQueue.steeringMode,
+        followUpMode: initialEvent.state.inputQueue.followUpMode,
       };
       if (
         input.requiredExtension === undefined ||
@@ -1308,6 +1348,47 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return status;
     });
 
+    const setInputQueueMode = Effect.fn("PrimeAgentDaemonSessionRuntime.setInputQueueMode")(
+      function* (input: {
+        readonly queue: "steering" | "follow-up";
+        readonly mode: SessionInputQueueDeliveryMode;
+      }) {
+        yield* ensureOpen("set-input-queue-mode");
+        const nativeMode: PrimeAgentDaemonQueueMode =
+          input.mode === "all-at-once" ? "all" : "one-at-a-time";
+        const method = yield* requireMethod(
+          "set-input-queue-mode",
+          input.queue === "steering" ? connection!.setSteeringMode : connection!.setFollowUpMode,
+        );
+        const output = yield* Effect.tryPromise({
+          try: () => method.call(connection, nativeMode),
+          catch: () =>
+            runtimeError(
+              "set-input-queue-mode",
+              "request-failed",
+              "Could not update the Prime Agent session input delivery mode.",
+            ),
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: COMMAND_TIMEOUT_MS,
+            orElse: () =>
+              runtimeError(
+                "set-input-queue-mode",
+                "request-timed-out",
+                "Timed out while updating the Prime Agent session input delivery mode.",
+              ),
+          }),
+        );
+        if (output !== undefined) {
+          return yield* runtimeError(
+            "set-input-queue-mode",
+            "invalid-response",
+            "Prime Agent returned an invalid input delivery mode response.",
+          );
+        }
+      },
+    );
+
     const abort = Effect.gen(function* () {
       yield* ensureOpen("abort");
       yield* callVoid("abort", () => connection!.abort());
@@ -1524,6 +1605,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       initialResources,
       initialAgentDepth,
       initialInputQueue,
+      inputQueueModesAvailable:
+        typeof connection.setSteeringMode === "function" &&
+        typeof connection.setFollowUpMode === "function",
       reloadResources,
       getAgentDepth,
       setAgentDepth,
@@ -1536,6 +1620,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       getInputQueue,
       getInputQueueStatus,
       clearInputQueue,
+      setInputQueueMode,
       abort,
       abortAndClearQueue,
       setModel,

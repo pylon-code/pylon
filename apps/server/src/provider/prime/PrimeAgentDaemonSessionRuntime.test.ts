@@ -54,6 +54,8 @@ function snapshot(sequence = 4) {
       sessionFile: "/daemon/private/session.jsonl",
       messageCount: 0,
       autoCompactionEnabled: true,
+      steeringMode: "one-at-a-time",
+      followUpMode: "one-at-a-time",
       sessionActions: actions,
       goal,
     },
@@ -103,6 +105,9 @@ function fixture(options?: {
   readonly sessionStats?: unknown;
   readonly getQueueImpl?: () => Promise<unknown>;
   readonly clearQueueImpl?: () => Promise<unknown>;
+  readonly getStateImpl?: () => Promise<unknown>;
+  readonly setSteeringModeImpl?: (mode: "all" | "one-at-a-time") => Promise<unknown>;
+  readonly setFollowUpModeImpl?: (mode: "all" | "one-at-a-time") => Promise<unknown>;
 }) {
   const captures: Captures = {
     order: [],
@@ -189,6 +194,16 @@ function fixture(options?: {
       }
       return options?.rawSnapshotImpl?.() ?? options?.rawSnapshot ?? snapshot();
     }
+    getState(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getState", args: [] });
+      if (options?.getStateImpl !== undefined) return options.getStateImpl();
+      const current = options?.rawSnapshotImpl?.() ?? options?.rawSnapshot ?? snapshot();
+      return Promise.resolve(
+        typeof current === "object" && current !== null && "state" in current
+          ? current.state
+          : undefined,
+      );
+    }
     promptAndWait(
       message: string,
       promptOptions?: PrimeAgentDaemonPromptOptions,
@@ -219,6 +234,14 @@ function fixture(options?: {
     clearQueue(): Promise<unknown> {
       captures.connectionCalls.push({ method: "clearQueue", args: [] });
       return options?.clearQueueImpl?.() ?? Promise.resolve({ steering: [], followUp: [] });
+    }
+    setSteeringMode(mode: "all" | "one-at-a-time"): Promise<unknown> {
+      captures.connectionCalls.push({ method: "setSteeringMode", args: [mode] });
+      return options?.setSteeringModeImpl?.(mode) ?? Promise.resolve(undefined);
+    }
+    setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<unknown> {
+      captures.connectionCalls.push({ method: "setFollowUpMode", args: [mode] });
+      return options?.setFollowUpModeImpl?.(mode) ?? Promise.resolve(undefined);
     }
     setModel(provider: string, modelId: string): Promise<unknown> {
       captures.connectionCalls.push({ method: "setModel", args: [provider, modelId] });
@@ -1171,10 +1194,20 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           });
           const runtime = yield* test.make();
 
-          expect(runtime.initialInputQueue).toEqual({ steeringCount: 1, followUpCount: 2 });
+          expect(runtime.initialInputQueue).toEqual({
+            steeringCount: 1,
+            followUpCount: 2,
+            steeringMode: "one-at-a-time",
+            followUpMode: "one-at-a-time",
+          });
           expect(yield* runtime.getInputQueue).toEqual({ steeringCount: 1, followUpCount: 2 });
           expect(yield* runtime.clearInputQueue).toEqual({
-            queue: { steeringCount: 0, followUpCount: 0 },
+            queue: {
+              steeringCount: 0,
+              followUpCount: 0,
+              steeringMode: "one-at-a-time",
+              followUpMode: "one-at-a-time",
+            },
             activeAction: false,
             isStreaming: false,
           });
@@ -1182,6 +1215,85 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           expect(test.captures.connectionCalls.map((call) => call.method)).not.toContain("abort");
         }),
       ),
+  );
+
+  it.effect("maps and bounds authoritative session input delivery modes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let steeringMode: "all" | "one-at-a-time" = "one-at-a-time";
+        let followUpMode: "all" | "one-at-a-time" = "one-at-a-time";
+        const { captures, make } = fixture({
+          rawSnapshotImpl: () => {
+            const current = snapshot();
+            return {
+              ...current,
+              state: { ...current.state, steeringMode, followUpMode },
+            };
+          },
+          setSteeringModeImpl: (mode) => {
+            steeringMode = mode;
+            return Promise.resolve(undefined);
+          },
+          setFollowUpModeImpl: (mode) => {
+            followUpMode = mode;
+            return Promise.resolve(undefined);
+          },
+        });
+        const runtime = yield* make();
+        expect(runtime.initialInputQueue).toMatchObject({
+          steeringMode: "one-at-a-time",
+          followUpMode: "one-at-a-time",
+        });
+        expect(runtime.inputQueueModesAvailable).toBe(true);
+
+        yield* runtime.setInputQueueMode({ queue: "steering", mode: "all-at-once" });
+        yield* runtime.setInputQueueMode({ queue: "follow-up", mode: "all-at-once" });
+        expect((yield* runtime.getInputQueueStatus).queue).toMatchObject({
+          steeringMode: "all-at-once",
+          followUpMode: "all-at-once",
+        });
+        expect(captures.connectionCalls).toContainEqual({
+          method: "setSteeringMode",
+          args: ["all"],
+        });
+        expect(captures.connectionCalls).toContainEqual({
+          method: "setFollowUpMode",
+          args: ["all"],
+        });
+        expect(captures.connectionCalls).toContainEqual({ method: "getState", args: [] });
+        expect(captures.order.filter((entry) => entry === "snapshot")).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("rejects malformed and timed-out input delivery mode mutations", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const malformed = fixture({
+          setSteeringModeImpl: () => Promise.resolve({ native: "secret" }),
+        });
+        const malformedRuntime = yield* malformed.make();
+        expect(
+          yield* malformedRuntime
+            .setInputQueueMode({ queue: "steering", mode: "all-at-once" })
+            .pipe(Effect.flip),
+        ).toMatchObject({ operation: "set-input-queue-mode", reason: "invalid-response" });
+
+        const timedOut = fixture({
+          setFollowUpModeImpl: () => new Promise<unknown>(() => undefined),
+        });
+        const timedOutRuntime = yield* timedOut.make();
+        const fiber = yield* timedOutRuntime
+          .setInputQueueMode({ queue: "follow-up", mode: "all-at-once" })
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("30 seconds");
+        expect(yield* Fiber.join(fiber).pipe(Effect.flip)).toMatchObject({
+          operation: "set-input-queue-mode",
+          reason: "request-timed-out",
+        });
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
   );
 
   it.effect("allows image-only prompts and rejects empty prompt, steer, and follow-up inputs", () =>
@@ -1222,7 +1334,12 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           getQueueImpl: () => Promise.resolve({ steering, followUp }),
         });
         const runtime = yield* make();
-        expect(runtime.initialInputQueue).toEqual({ steeringCount: 600, followUpCount: 600 });
+        expect(runtime.initialInputQueue).toEqual({
+          steeringCount: 600,
+          followUpCount: 600,
+          steeringMode: "one-at-a-time",
+          followUpMode: "one-at-a-time",
+        });
         expect(yield* runtime.getInputQueue).toEqual({ steeringCount: 600, followUpCount: 600 });
       }),
     ),
