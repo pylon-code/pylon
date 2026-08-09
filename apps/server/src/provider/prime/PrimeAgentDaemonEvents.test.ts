@@ -62,6 +62,7 @@ const state = {
   sessionId: "session-1",
   sessionName: "daemon-events",
   messageCount: 3,
+  autoCompactionEnabled: true,
   sessionActions: actions,
   goal,
   recap: "Implementing the daemon adapter",

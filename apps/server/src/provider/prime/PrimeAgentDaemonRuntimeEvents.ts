@@ -14,6 +14,7 @@ import type {
   PrimeDaemonMessage,
   PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
+import type { PrimeAgentDaemonSessionStats } from "./PrimeAgentDaemonSessionRuntime.ts";
 
 type RuntimeEventDraft<Event> = Event extends ProviderRuntimeEvent
   ? Omit<Event, "eventId" | "createdAt">
@@ -66,6 +67,41 @@ function runtimeBase(input: RuntimeEventContext) {
       : { providerInstanceId: input.providerInstanceId }),
     threadId: input.threadId,
     ...(input.turnId === undefined ? {} : { turnId: input.turnId }),
+  };
+}
+
+export function mapPrimeAgentContextUsageDraft(input: {
+  readonly provider: ProviderDriverKind;
+  readonly providerInstanceId?: ProviderInstanceId | undefined;
+  readonly threadId: ThreadId;
+  readonly stats: PrimeAgentDaemonSessionStats;
+  readonly compactsAutomatically: boolean;
+}): PrimeAgentRuntimeEventDraft {
+  const base = runtimeBase(input);
+  if (input.stats.contextUsage === undefined) {
+    return {
+      ...base,
+      type: "thread.token-usage.cleared",
+      payload: { reason: "unavailable" },
+    };
+  }
+  if (input.stats.contextUsage.usedTokens === null) {
+    return {
+      ...base,
+      type: "thread.token-usage.cleared",
+      payload: { reason: "unknown" },
+    };
+  }
+  return {
+    ...base,
+    type: "thread.token-usage.updated",
+    payload: {
+      usage: {
+        usedTokens: input.stats.contextUsage.usedTokens,
+        maxTokens: input.stats.contextUsage.maxTokens,
+        compactsAutomatically: input.compactsAutomatically,
+      },
+    },
   };
 }
 
@@ -177,32 +213,6 @@ function aggregateAssistantUsage(
       totalCostUsd: 0,
     },
   );
-}
-
-function tokenUsageDraft(
-  input: RuntimeEventContext,
-  usage: PrimeDaemonUsage,
-): PrimeAgentRuntimeEventDraft | undefined {
-  const usedTokens = validCount(usage.totalTokens);
-  if (usedTokens === undefined) return undefined;
-  const inputTokens = validCount(usage.inputTokens);
-  const cachedInputTokens = validCount(usage.cachedInputTokens);
-  const outputTokens = validCount(usage.outputTokens);
-  return {
-    ...runtimeBase(input),
-    type: "thread.token-usage.updated",
-    payload: {
-      usage: {
-        usedTokens,
-        ...(inputTokens === undefined ? {} : { inputTokens, lastInputTokens: inputTokens }),
-        ...(cachedInputTokens === undefined
-          ? {}
-          : { cachedInputTokens, lastCachedInputTokens: cachedInputTokens }),
-        ...(outputTokens === undefined ? {} : { outputTokens, lastOutputTokens: outputTokens }),
-        lastUsedTokens: usedTokens,
-      },
-    },
-  };
 }
 
 function childUsage(child: Extract<PrimeDaemonEvent, { readonly _tag: "ChildUpdated" }>["child"]) {
@@ -369,8 +379,7 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
           ...(errorMessage === undefined ? {} : { errorMessage }),
         },
       };
-      const tokenDraft = tokenUsageDraft(context, message.usage);
-      return tokenDraft === undefined ? [completed, ready] : [completed, tokenDraft, ready];
+      return [completed, ready];
     }
     case "TurnStarted":
       return [];

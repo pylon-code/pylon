@@ -359,6 +359,12 @@ const agentSessionEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("refine_failed"), error: Schema.String }),
 ]);
 
+const contextUsage = Schema.Struct({
+  tokens: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  contextWindow: Schema.Int.check(Schema.isGreaterThan(0)),
+  percent: Schema.NullOr(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+});
+
 const sessionState = Schema.Struct({
   activeSessionId: Schema.optional(Schema.String),
   cwd: Schema.String,
@@ -371,6 +377,8 @@ const sessionState = Schema.Struct({
   sessionId: Schema.String,
   sessionName: Schema.optional(Schema.String),
   messageCount: Schema.Number,
+  autoCompactionEnabled: Schema.Boolean,
+  contextUsage: Schema.optional(contextUsage),
   sessionActions,
   goal: goalState,
   recap: Schema.optional(Schema.String),
@@ -585,6 +593,14 @@ export interface PrimeDaemonSessionState {
   readonly thinkingLevel: typeof thinkingLevel.Type;
   readonly serviceTier: typeof serviceTier.Type;
   readonly messageCount: number;
+  readonly autoCompactionEnabled: boolean;
+  readonly contextUsage?:
+    | {
+        readonly tokens: number | null;
+        readonly contextWindow: number;
+        readonly percent: number | null;
+      }
+    | undefined;
   readonly recap?: string | undefined;
 }
 
@@ -959,6 +975,8 @@ function mapState(value: typeof sessionState.Type): PrimeDaemonSessionState {
     thinkingLevel: value.thinkingLevel,
     serviceTier: value.serviceTier,
     messageCount: value.messageCount,
+    autoCompactionEnabled: value.autoCompactionEnabled,
+    contextUsage: value.contextUsage,
     recap: optionalBounded(value.recap, MAX_PREVIEW_LENGTH),
   };
 }

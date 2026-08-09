@@ -26,6 +26,7 @@ function daemonModuleSource(options?: {
   readonly protocolVersion?: number;
   readonly version?: string;
   readonly omitConnection?: boolean;
+  readonly omitSessionStats?: boolean;
 }): string {
   return `
 export const VERSION = ${JSON.stringify(options?.version ?? "0.7.1")};
@@ -48,6 +49,7 @@ ${
   static async attach(client, activeSessionId) { return new DaemonAgentConnection(client, activeSessionId); }
   subscribe() { return () => {}; }
   async getInitialSnapshot() { return {}; }
+  ${options?.omitSessionStats ? "" : "async getSessionStats() { return {}; }"}
   async promptAndWait() {}
   async abort() {}
   async dispose() {}
@@ -174,6 +176,18 @@ describe("PrimeAgentDaemonBridge", () => {
 
       expect(error.reason).toBe("incompatible-protocol");
       expect(error.message).toContain("requires prime-agent.daemon v7 or newer");
+    }),
+  );
+
+  it.effect("rejects a daemon connection missing session usage", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({ omitSessionStats: true }),
+      });
+
+      const error = yield* Effect.flip(loadPrimeAgentDaemonBridge(pkg.cliPath));
+
+      expect(error.reason).toBe("incompatible-exports");
     }),
   );
 

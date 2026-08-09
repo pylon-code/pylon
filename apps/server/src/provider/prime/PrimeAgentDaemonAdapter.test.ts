@@ -36,6 +36,7 @@ import {
 import {
   PRIME_AGENT_DAEMON_RESUME_CURSOR,
   type PrimeAgentDaemonSessionRuntime,
+  type PrimeAgentDaemonSessionStats,
   PrimeAgentDaemonSessionRuntimeError,
   type PrimeAgentDaemonSessionRuntimeInput,
 } from "./PrimeAgentDaemonSessionRuntime.ts";
@@ -88,6 +89,7 @@ function initialSnapshot(): Extract<PrimeDaemonEvent, { readonly _tag: "SessionR
       thinkingLevel: "medium",
       serviceTier: null,
       messageCount: 0,
+      autoCompactionEnabled: true,
     },
     messages: [],
     children: [],
@@ -125,6 +127,9 @@ interface FakeCaptures {
   disposeCount: number;
   extensionFailure: boolean;
   abortClearFailure: boolean;
+  sessionStatsFailure: boolean;
+  sessionStatsCount: number;
+  sessionStats: PrimeAgentDaemonSessionStats;
   promptObserved: Queue.Queue<void> | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
 }
@@ -142,6 +147,11 @@ function makeCaptures(): FakeCaptures {
     disposeCount: 0,
     extensionFailure: false,
     abortClearFailure: false,
+    sessionStatsFailure: false,
+    sessionStatsCount: 0,
+    sessionStats: {
+      contextUsage: { usedTokens: 320, maxTokens: 200_000 },
+    },
     promptObserved: undefined,
     queue: undefined,
   };
@@ -231,6 +241,18 @@ function fakeRuntimeFactory(
                 captures.order.push(`extension:${id}`);
                 captures.extensions.push({ id, response });
               }),
+        getSessionStats: captures.sessionStatsFailure
+          ? Effect.fail(
+              new PrimeAgentDaemonSessionRuntimeError({
+                operation: "session-stats",
+                reason: "request-failed",
+                detail: "stats failed",
+              }),
+            )
+          : Effect.sync(() => {
+              captures.sessionStatsCount += 1;
+              return captures.sessionStats;
+            }),
         dispose: Effect.sync(() => {
           captures.order.push("dispose");
           captures.disposeCount += 1;
@@ -315,6 +337,92 @@ describe("PrimeAgentDaemonAdapter", () => {
           detail:
             "Prime Agent loaded an execution policy extension whose source integrity could not be verified.",
         });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("publishes authoritative context usage and clears unknown post-compaction state", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+
+        const initialUsage = yield* awaitObservedType(
+          subscription.observed,
+          "thread.token-usage.updated",
+        );
+        expect(initialUsage).toMatchObject({
+          payload: {
+            usage: {
+              usedTokens: 320,
+              maxTokens: 200_000,
+              compactsAutomatically: true,
+            },
+          },
+        });
+        expect(initialUsage).not.toHaveProperty("turnId");
+
+        captures.sessionStats = {
+          contextUsage: { usedTokens: null, maxTokens: 200_000 },
+        };
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "compact", interactionMode: "default" })
+          .pipe(Effect.forkChild);
+        yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        yield* offer(captures, { _tag: "RunStarted" });
+        yield* offer(captures, {
+          _tag: "RunCompleted",
+          messages: [assistantMessage("done")],
+        });
+
+        const cleared = yield* awaitObservedType(
+          subscription.observed,
+          "thread.token-usage.cleared",
+        );
+        expect(cleared).toMatchObject({ payload: { reason: "unknown" } });
+        expect(cleared).not.toHaveProperty("turnId");
+        expect(captures.sessionStatsCount).toBe(2);
+        yield* Fiber.join(turnFiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps usage telemetry failures ancillary to completed turns", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.sessionStatsFailure = true;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "hello", interactionMode: "default" })
+          .pipe(Effect.forkChild);
+        yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        yield* offer(captures, { _tag: "RunStarted" });
+        yield* offer(captures, {
+          _tag: "RunCompleted",
+          messages: [assistantMessage("done")],
+        });
+
+        const completed = yield* awaitObservedType(subscription.observed, "turn.completed");
+        expect(completed).toMatchObject({ payload: { state: "completed" } });
+        expect(subscription.events.some((event) => event.type === "runtime.error")).toBe(false);
+        yield* Fiber.join(turnFiber);
       }),
     ).pipe(Effect.provide(testLayer)),
   );
@@ -669,6 +777,7 @@ describe("PrimeAgentDaemonAdapter", () => {
             _tag: "AssistantStream",
             phase: "end",
             kind: "thinking",
+            content: "because",
           });
           yield* offer(captures, {
             _tag: "AssistantStream",
@@ -791,8 +900,6 @@ describe("PrimeAgentDaemonAdapter", () => {
           expect(turnEvents.map((event) => event.type)).toEqual([
             "turn.started",
             "item.started",
-            "item.started",
-            "content.delta",
             "item.completed",
             "content.delta",
             "item.started",
@@ -807,7 +914,6 @@ describe("PrimeAgentDaemonAdapter", () => {
             "item.completed",
             "thread.metadata.updated",
             "turn.completed",
-            "thread.token-usage.updated",
             "session.state.changed",
           ]);
           expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
@@ -823,11 +929,6 @@ describe("PrimeAgentDaemonAdapter", () => {
               },
               totalCostUsd: 0.024,
             },
-          });
-          expect(
-            turnEvents.find((event) => event.type === "thread.token-usage.updated"),
-          ).toMatchObject({
-            payload: { usage: { usedTokens: 23, lastUsedTokens: 23 } },
           });
           expect(new Set(turnEvents.map((event) => event.eventId)).size).toBe(turnEvents.length);
           expect(turnEvents.every((event) => event.createdAt.length > 0)).toBe(true);
@@ -871,6 +972,8 @@ describe("PrimeAgentDaemonAdapter", () => {
         const subscription = yield* subscribe(adapter);
         yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
         yield* awaitObservedType(subscription.observed, "thread.started");
+        yield* awaitObservedType(subscription.observed, "thread.token-usage.updated");
+        expect(captures.sessionStatsCount).toBe(1);
 
         const running = yield* adapter
           .sendTurn({ threadId, input: "first" })
@@ -938,6 +1041,7 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(subscription.events.filter((event) => event.type === "turn.completed")).toHaveLength(
           0,
         );
+        expect(captures.sessionStatsCount).toBe(1);
 
         yield* offer(captures, { _tag: "RunStarted" });
         const finalMessage = assistantMessage("done");
@@ -948,6 +1052,8 @@ describe("PrimeAgentDaemonAdapter", () => {
         });
         yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
         yield* Fiber.join(running);
+        yield* awaitObservedType(subscription.observed, "thread.token-usage.updated");
+        expect(captures.sessionStatsCount).toBe(2);
         const completed = subscription.events.filter((event) => event.type === "turn.completed");
         expect(completed).toHaveLength(1);
         expect(completed[0]?.payload.usage).toEqual({

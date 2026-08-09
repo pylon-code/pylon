@@ -3170,6 +3170,43 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("replaces a context snapshot with an authoritative clear barrier", async () => {
+    const harness = await createHarness();
+    const provider = ProviderDriverKind.make("primeAgent");
+    const threadId = asThreadId("thread-1");
+
+    harness.emit({
+      type: "thread.token-usage.updated",
+      eventId: asEventId("evt-context-known"),
+      provider,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId,
+      payload: { usage: { usedTokens: 200, maxTokens: 1_000 } },
+    });
+    harness.emit({
+      type: "thread.token-usage.cleared",
+      eventId: asEventId("evt-context-cleared"),
+      provider,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId,
+      payload: { reason: "unknown" },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.cleared",
+      ),
+    );
+    const contextActivities = thread.activities.filter((activity: ProviderRuntimeTestActivity) =>
+      activity.kind.startsWith("context-window."),
+    );
+    expect(contextActivities).toHaveLength(1);
+    expect(contextActivities[0]).toMatchObject({
+      kind: "context-window.cleared",
+      payload: { reason: "unknown" },
+    });
+  });
+
   it("projects Codex camelCase token usage payloads into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
