@@ -1,6 +1,10 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import {
+  formatSessionGoalStatus,
+  type SessionGoalSnapshot,
+} from "@t3tools/client-runtime/state/session-goal";
+import {
   canAbortSessionCompaction,
   canConfigureSessionAutoCompaction,
   canStartSessionCompaction,
@@ -131,6 +135,7 @@ import {
   type SessionCompactionMenuAction,
 } from "./sessionCompactionMenu";
 import { buildSessionAgentMenuActions, parseSessionAgentMenuAction } from "./sessionAgentMenu";
+import { buildSessionGoalMenuActions } from "./sessionGoalMenu";
 
 const AGENT_MESSAGE_UNAVAILABLE_ERROR = "This agent is no longer available for direct messages.";
 
@@ -169,6 +174,7 @@ export interface ThreadComposerProps {
   readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
   readonly sessionAgents: ReadonlyArray<RuntimeSubagent>;
   readonly sessionInputQueue: SessionInputQueueSnapshot | null;
+  readonly sessionGoal: SessionGoalSnapshot | null;
   readonly sessionCompaction: SessionCompactionControlSnapshot | null;
   readonly sessionCompactionScopeKey: string | null;
   readonly sessionCompactionPendingAction: SessionCompactionMenuAction | null;
@@ -853,6 +859,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     canSetAuto: canSetSessionAutoCompaction,
   };
   const contextWindowPresentation = presentMobileContextWindow(props.contextWindow);
+  const sessionGoalActions = useMemo(
+    () => (props.sessionGoal ? buildSessionGoalMenuActions(props.sessionGoal) : []),
+    [props.sessionGoal],
+  );
   const sessionCompactionActions = useMemo(
     () =>
       props.sessionCompaction?.available && sessionCompactionScopeKey
@@ -1592,6 +1602,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   maxWidth={152}
                   onPress={openSettings}
                 />
+                {props.sessionGoal ? (
+                  <ControlPillMenu title="Session goal · Read-only" actions={sessionGoalActions}>
+                    <ComposerToolbarTrigger
+                      accessibilityLabel={`Goal ${formatSessionGoalStatus(props.sessionGoal.status).toLowerCase()}. Read-only.`}
+                      icon="target"
+                      label={`Goal ${formatSessionGoalStatus(props.sessionGoal.status)}`}
+                    />
+                  </ControlPillMenu>
+                ) : null}
                 {props.contextWindow ||
                 (props.sessionCompaction?.available && sessionCompactionScopeKey) ? (
                   props.sessionCompaction?.available && sessionCompactionScopeKey ? (

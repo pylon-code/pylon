@@ -128,6 +128,10 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       yield* Deferred.make<
         Extract<ProviderRuntimeEvent, { readonly type: "session.resources.updated" }>
       >();
+    const unavailableGoal =
+      yield* Deferred.make<
+        Extract<ProviderRuntimeEvent, { readonly type: "session.goal.updated" }>
+      >();
     const startupWarningFiber = yield* adapter.streamEvents.pipe(
       Stream.runForEach((event) =>
         Effect.gen(function* () {
@@ -139,6 +143,9 @@ exec ${process.execPath} ${mockAgentPath} "$@"
           }
           if (event.type === "session.resources.updated") {
             yield* Deferred.succeed(unavailableResources, event).pipe(Effect.ignore);
+          }
+          if (event.type === "session.goal.updated") {
+            yield* Deferred.succeed(unavailableGoal, event).pipe(Effect.ignore);
           }
         }),
       ),
@@ -158,6 +165,7 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     });
     yield* Deferred.await(startupWarning);
     const resourcesEvent = yield* Deferred.await(unavailableResources);
+    const goalEvent = yield* Deferred.await(unavailableGoal);
     yield* Fiber.interrupt(startupWarningFiber);
     assert.deepEqual(resourcesEvent.payload, {
       available: false,
@@ -166,6 +174,15 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       commands: [],
     });
     assert.equal(resourcesEvent.providerInstanceId, ProviderInstanceId.make("primeAgent"));
+    assert.deepEqual(goalEvent.payload, {
+      available: false,
+      active: false,
+      status: "idle",
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      continuationsUsed: 0,
+    });
+    assert.equal(goalEvent.providerInstanceId, ProviderInstanceId.make("primeAgent"));
     assert.isTrue(parsePrimeAgentResumeMarker(session.resumeCursor));
     assert.isTrue(
       parsePrimeAgentResumeMarker({

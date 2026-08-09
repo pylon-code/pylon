@@ -30,6 +30,7 @@ import {
   sessionCompactionScopeKey as makeSessionCompactionScopeKey,
   supportsSessionCompaction,
 } from "@t3tools/client-runtime/state/context-compaction";
+import { deriveActiveSessionGoal } from "@t3tools/client-runtime/state/session-goal";
 import {
   canSetSessionAgentDepth,
   deriveLatestSessionAgentDepth,
@@ -134,6 +135,7 @@ import {
   renderProviderTraitsPicker,
 } from "./composerProviderState";
 import { ContextWindowMeter } from "./ContextWindowMeter";
+import { SessionGoalControl } from "./SessionGoalControl";
 import { SessionInputQueueControl } from "./SessionInputQueueControl";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../pierre-icons";
@@ -472,6 +474,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   activeProviderUsageAccounts: readonly ProviderUsageAccount[];
   timestampFormat: UnifiedSettings["timestampFormat"];
   contextCompaction: import("./ContextWindowMeter").ContextCompactionControlProps | null;
+  sessionGoal: import("@t3tools/client-runtime/state/session-goal").SessionGoalSnapshot | null;
   isPreparingWorktree: boolean;
   pendingAction: {
     questionIndex: number;
@@ -497,6 +500,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
 }) {
   return (
     <>
+      {props.sessionGoal ? <SessionGoalControl snapshot={props.sessionGoal} /> : null}
       {props.activeContextWindow || props.contextCompaction ? (
         <ContextWindowMeter
           usage={props.activeContextWindow}
@@ -989,6 +993,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       providerInstanceEntries.find((entry) => entry.instanceId === instanceId)?.snapshot ?? null
     );
   }, [activeThread?.session?.providerInstanceId, providerInstanceEntries]);
+  const sessionGoal = useMemo(
+    () =>
+      deriveActiveSessionGoal({
+        activities: activeThreadActivities ?? [],
+        provider: activeSessionProviderStatus,
+        providerInstanceId: activeThread?.session?.providerInstanceId,
+        runtimeMode: activeThread?.session?.runtimeMode,
+        sessionStatus: activeThread?.session?.status,
+      }),
+    [activeSessionProviderStatus, activeThread?.session, activeThreadActivities],
+  );
   const showSessionResourceReload =
     activeThreadId !== null &&
     activeThread?.session?.runtimeMode === "full-access" &&
@@ -3848,6 +3863,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   activeProviderUsageAccounts={activeProviderUsageAccounts}
                   timestampFormat={settings.timestampFormat}
                   contextCompaction={contextCompactionControl}
+                  sessionGoal={sessionGoal}
                   pendingAction={pendingPrimaryAction}
                   isRunning={phase === "running"}
                   canQueueFollowUp={canQueueSessionFollowUp}

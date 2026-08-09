@@ -1,5 +1,8 @@
 import {
   PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
+  PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS,
+  type SessionGoalStatus,
+  type SessionGoalUpdatedPayload,
   type SessionInputQueueDeliveryMode,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -174,19 +177,17 @@ const sessionActions = Schema.Struct({
   ),
 });
 
+// Prime's public GoalState is the only native goal surface consumed here. Native
+// identity, timestamps, reasons, and errors are deliberately absent so decoding
+// cannot carry them across the provider boundary.
 const goalState = Schema.Struct({
   active: Schema.Boolean,
-  status: Schema.Literals(["idle", "active", "paused", "budget_limited", "complete", "error"]),
-  goalId: Schema.optional(Schema.String),
+  status: Schema.String,
   objective: Schema.optional(Schema.String),
   tokenBudget: Schema.optional(Schema.Number),
   tokensUsed: Schema.Number,
   timeUsedSeconds: Schema.Number,
   continuationsUsed: Schema.Number,
-  createdAt: Schema.optional(Schema.Number),
-  updatedAt: Schema.optional(Schema.Number),
-  lastReason: Schema.optional(Schema.String),
-  lastError: Schema.optional(Schema.String),
 });
 
 const rlmChild = Schema.Struct({
@@ -389,7 +390,7 @@ const sessionState = Schema.Struct({
   followUpMode: Schema.optional(queueMode),
   contextUsage: Schema.optional(contextUsage),
   sessionActions,
-  goal: goalState,
+  goal: Schema.optional(goalState),
   recap: Schema.optional(Schema.String),
 });
 
@@ -532,6 +533,66 @@ function optionalBounded(value: string | undefined, maximum = MAX_TEXT_LENGTH): 
   return value === undefined ? undefined : bounded(value, maximum);
 }
 
+const unavailableGoalState: SessionGoalUpdatedPayload = {
+  available: false,
+  active: false,
+  status: "idle",
+  tokensUsed: 0,
+  timeUsedSeconds: 0,
+  continuationsUsed: 0,
+};
+
+function safeGoalStatus(status: string): SessionGoalStatus | undefined {
+  switch (status) {
+    case "idle":
+    case "active":
+    case "paused":
+    case "complete":
+    case "error":
+      return status;
+    case "budget_limited":
+      return "budget-limited";
+    default:
+      return undefined;
+  }
+}
+
+function safeGoalInteger(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(value)));
+}
+
+function safeGoalBudget(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.trunc(value)));
+}
+
+function safeGoalState(
+  goal: typeof goalState.Type | undefined,
+): SessionGoalUpdatedPayload | undefined {
+  if (goal === undefined) return undefined;
+  const status = safeGoalStatus(goal.status);
+  if (status === undefined) return undefined;
+  const objective = goal.objective?.replaceAll("\u0000", "").trim();
+  const boundedObjective =
+    objective === undefined
+      ? undefined
+      : [...objective].slice(0, PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS).join("");
+  const tokenBudget = safeGoalBudget(goal.tokenBudget);
+  return {
+    available: true,
+    active: status === "active",
+    status,
+    ...(boundedObjective === undefined || boundedObjective.length === 0
+      ? {}
+      : { objective: boundedObjective }),
+    ...(tokenBudget === undefined ? {} : { tokenBudget }),
+    tokensUsed: safeGoalInteger(goal.tokensUsed),
+    timeUsedSeconds: safeGoalInteger(goal.timeUsedSeconds),
+    continuationsUsed: safeGoalInteger(goal.continuationsUsed),
+  };
+}
+
 function safeScalarFields(value: unknown): Readonly<Record<string, PrimeDaemonScalar>> | undefined {
   if (!Predicate.isObject(value) || Array.isArray(value)) return undefined;
 
@@ -617,6 +678,7 @@ export interface PrimeDaemonSessionState {
         readonly percent: number | null;
       }
     | undefined;
+  readonly goal: SessionGoalUpdatedPayload;
   readonly recap?: string | undefined;
 }
 
@@ -725,21 +787,7 @@ export type PrimeDaemonEvent =
       };
     }
   | { readonly _tag: "RecapUpdated"; readonly recap?: string | undefined }
-  | {
-      readonly _tag: "GoalUpdated";
-      readonly goal: {
-        readonly active: boolean;
-        readonly status: string;
-        readonly goalId?: string | undefined;
-        readonly objective?: string | undefined;
-        readonly tokenBudget?: number | undefined;
-        readonly tokensUsed: number;
-        readonly timeUsedSeconds: number;
-        readonly continuationsUsed: number;
-        readonly lastReason?: string | undefined;
-        readonly lastError?: string | undefined;
-      };
-    }
+  | { readonly _tag: "GoalUpdated"; readonly goal: SessionGoalUpdatedPayload }
   | {
       readonly _tag: "BashStarted";
       readonly command: string;
@@ -864,6 +912,8 @@ const PRIVATE_AGENT_RUNTIME_RESULT_MARKERS = [
   "activeSessionId",
   "sessionDir",
   "rlmChildId",
+  "goal_id",
+  "goalId",
 ] as const;
 
 function safeToolResultText(text: string): string {
@@ -1013,6 +1063,7 @@ function mapState(value: typeof sessionState.Type): PrimeDaemonSessionState {
       followUpMode: mapQueueMode(value.followUpMode),
     },
     contextUsage: value.contextUsage,
+    goal: safeGoalState(value.goal) ?? unavailableGoalState,
     recap: optionalBounded(value.recap, MAX_PREVIEW_LENGTH),
   };
 }
@@ -1219,22 +1270,13 @@ function mapSessionEvent(event: typeof agentSessionEvent.Type): PrimeDaemonEvent
       return { _tag: "ChildUpdated", child: mapChild(event.child) };
     case "recap_update":
       return { _tag: "RecapUpdated", recap: optionalBounded(event.recap, MAX_PREVIEW_LENGTH) };
-    case "goal_update":
+    case "goal_update": {
+      const goal = safeGoalState(event.goal);
       return {
         _tag: "GoalUpdated",
-        goal: {
-          active: event.goal.active,
-          status: event.goal.status,
-          goalId: optionalBounded(event.goal.goalId, MAX_PREVIEW_LENGTH),
-          objective: optionalBounded(event.goal.objective, MAX_PREVIEW_LENGTH),
-          tokenBudget: event.goal.tokenBudget,
-          tokensUsed: event.goal.tokensUsed,
-          timeUsedSeconds: event.goal.timeUsedSeconds,
-          continuationsUsed: event.goal.continuationsUsed,
-          lastReason: optionalBounded(event.goal.lastReason, MAX_PREVIEW_LENGTH),
-          lastError: optionalBounded(event.goal.lastError, MAX_PREVIEW_LENGTH),
-        },
+        goal: goal ?? unavailableGoalState,
       };
+    }
     case "bash_start":
       return {
         _tag: "BashStarted",

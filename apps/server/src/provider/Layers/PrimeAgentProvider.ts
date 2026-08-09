@@ -59,6 +59,7 @@ export function stampPrimeAgentBackendSnapshot(
         readonly agentMessage: boolean;
         readonly compaction: boolean;
         readonly autoCompaction: boolean;
+        readonly goals: boolean;
       }
     | { readonly runtime: "acp"; readonly fallbackMessage?: string },
 ): ServerProviderDraft {
@@ -75,6 +76,7 @@ export function stampPrimeAgentBackendSnapshot(
       agentMessage: backend.runtime === "daemon" && backend.agentMessage,
       compaction: backend.runtime === "daemon" && backend.compaction,
       autoCompaction: backend.runtime === "daemon" && backend.autoCompaction,
+      goals: backend.runtime === "daemon" && backend.goals,
     }),
     models:
       backend.runtime === "daemon"

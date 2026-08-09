@@ -812,6 +812,7 @@ function ThreadRouteContent(
           sessionResources={composer.selectedThreadResources}
           sessionAgentDepth={composer.selectedThreadAgentDepth}
           sessionInputQueue={composer.selectedThreadInputQueue}
+          sessionGoal={composer.selectedThreadGoal}
           sessionCompaction={composer.selectedThreadCompaction}
           sessionCompactionScopeKey={composer.sessionCompactionScopeKey}
           sessionCompactionPendingAction={composer.sessionCompactionPendingAction}

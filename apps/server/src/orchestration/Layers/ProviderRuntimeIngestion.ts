@@ -517,6 +517,42 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "session.goal.updated": {
+      return [
+        {
+          // One provider-scoped goal snapshot per thread. Native goal identities,
+          // timestamps, reasons, and errors never enter the activity projection.
+          id: EventId.make(
+            `session-goal:${event.providerInstanceId ?? event.provider}:${event.threadId}`,
+          ),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "session.goal.updated",
+          summary: "Session goal updated",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId === undefined
+              ? {}
+              : { providerInstanceId: event.providerInstanceId }),
+            available: event.payload.available,
+            active: event.payload.active,
+            status: event.payload.status,
+            ...(event.payload.objective === undefined
+              ? {}
+              : { objective: event.payload.objective }),
+            ...(event.payload.tokenBudget === undefined
+              ? {}
+              : { tokenBudget: event.payload.tokenBudget }),
+            tokensUsed: event.payload.tokensUsed,
+            timeUsedSeconds: event.payload.timeUsedSeconds,
+            continuationsUsed: event.payload.continuationsUsed,
+          },
+          turnId: null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "session.compaction.updated": {
       return [
         {

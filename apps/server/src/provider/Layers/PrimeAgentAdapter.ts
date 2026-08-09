@@ -588,6 +588,21 @@ export function makePrimeAgentAdapter(
             },
           });
           yield* offerRuntimeEvent({
+            type: "session.goal.updated",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: input.threadId,
+            payload: {
+              available: false,
+              active: false,
+              status: "idle",
+              tokensUsed: 0,
+              timeUsedSeconds: 0,
+              continuationsUsed: 0,
+            },
+          });
+          yield* offerRuntimeEvent({
             type: "session.state.changed",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,

@@ -1,4 +1,7 @@
-import { PROVIDER_AGENT_CONTROL_ID_MAX_CHARS } from "@t3tools/contracts";
+import {
+  PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
+  PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS,
+} from "@t3tools/contracts";
 // @ts-expect-error -- Vite Plus provides the Vitest runner transitively to server tests.
 import { describe, expect, it } from "vitest";
 
@@ -292,6 +295,8 @@ describe("PrimeAgentDaemonEvents", () => {
       '{"rlm_child_id":"sub-private","session_dir":"/private/session"}',
       "{'active_session_id': 'native-private', 'session_dir': WindowsPath('C:/private')}",
       "session_dir=/private/session",
+      "{'goal': {'goal_id': 'native-private-goal', 'objective': 'safe objective'}}",
+      '{"goal":{"goalId":"native-private-goal","objective":"safe objective"}}',
     ];
 
     for (const privateHandle of privateHandles) {
@@ -370,9 +375,55 @@ describe("PrimeAgentDaemonEvents", () => {
     });
     expect(JSON.stringify(queueChanged)).not.toContain("Focus on errors");
     expect(JSON.stringify(queueChanged)).not.toContain("Summarize");
-    expect(decodePrimeAgentDaemonEvent(sessionEvent({ type: "goal_update", goal }))).toMatchObject({
+    const goalUpdated = decodePrimeAgentDaemonEvent(
+      sessionEvent({
+        type: "goal_update",
+        goal: {
+          ...goal,
+          active: true,
+          status: "budget_limited",
+          objective: `  \u0000${"🧭".repeat(PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS + 50)}  `,
+          tokenBudget: -8.7,
+          tokensUsed: -1.2,
+          timeUsedSeconds: Number.MAX_SAFE_INTEGER * 2,
+          continuationsUsed: 2.9,
+          goalId: "native-goal-secret",
+          createdAt: 1,
+          updatedAt: 2,
+          lastReason: "private reason",
+          lastError: "private error",
+        },
+      }),
+    );
+    expect(goalUpdated).toEqual({
       _tag: "GoalUpdated",
-      goal: { objective: "Finish the integration" },
+      goal: {
+        available: true,
+        active: false,
+        status: "budget-limited",
+        objective: "🧭".repeat(PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS),
+        tokensUsed: 0,
+        timeUsedSeconds: Number.MAX_SAFE_INTEGER,
+        continuationsUsed: 2,
+      },
+    });
+    expect(JSON.stringify(goalUpdated)).not.toContain("native-goal-secret");
+    expect(JSON.stringify(goalUpdated)).not.toContain("private reason");
+    expect(JSON.stringify(goalUpdated)).not.toContain("private error");
+    expect(
+      decodePrimeAgentDaemonEvent(
+        sessionEvent({ type: "goal_update", goal: { ...goal, status: "future_status" } }),
+      ),
+    ).toEqual({
+      _tag: "GoalUpdated",
+      goal: {
+        available: false,
+        active: false,
+        status: "idle",
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        continuationsUsed: 0,
+      },
     });
     expect(
       decodePrimeAgentDaemonEvent(sessionEvent({ type: "recap_update", recap: "Working" })),
@@ -585,10 +636,38 @@ describe("PrimeAgentDaemonEvents", () => {
           steeringMode: "all-at-once",
           followUpMode: "one-at-a-time",
         },
+        goal: {
+          available: true,
+          active: true,
+          status: "active",
+          objective: "Finish the integration",
+          tokenBudget: 50_000,
+          tokensUsed: 1_200,
+          timeUsedSeconds: 90,
+          continuationsUsed: 2,
+        },
       },
       messages: [{ role: "user", text: "Hello" }],
       children: [{ id: "child-1" }],
       lastEventSequence: 42,
+    });
+    expect(
+      decodePrimeAgentDaemonEvent({
+        type: "session_resynced",
+        snapshot: { state: { ...state, goal: undefined }, messages: [] },
+      }),
+    ).toMatchObject({
+      _tag: "SessionResynced",
+      state: {
+        goal: {
+          available: false,
+          active: false,
+          status: "idle",
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          continuationsUsed: 0,
+        },
+      },
     });
     expect(
       decodePrimeAgentDaemonEvent({ type: "session_replaced", state, messages: [] }),
