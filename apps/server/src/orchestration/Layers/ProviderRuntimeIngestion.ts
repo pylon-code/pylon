@@ -361,6 +361,15 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
   return fields;
 }
 
+function contextCompactionActivityId(
+  event: Extract<ProviderRuntimeEvent, { readonly type: "item.started" | "item.completed" }>,
+): EventId {
+  const scope = event.itemId ?? event.turnId ?? "session";
+  return EventId.make(
+    `context-compaction:${event.providerInstanceId ?? event.provider}:${event.threadId}:${scope}`,
+  );
+}
+
 function contextWindowActivityId(
   event: Extract<
     ProviderRuntimeEvent,
@@ -840,10 +849,7 @@ export function runtimeEventToActivities(
           tone: "info",
           kind: "context-compaction",
           summary: "Context compacted",
-          payload: {
-            state: event.payload.state,
-            ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
-          },
+          payload: { state: event.payload.state },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
         },
@@ -911,6 +917,31 @@ export function runtimeEventToActivities(
     }
 
     case "item.completed": {
+      if (event.payload.itemType === "context_compaction") {
+        const status =
+          event.payload.status === "completed"
+            ? "completed"
+            : event.payload.status === "declined"
+              ? "declined"
+              : "failed";
+        return [
+          {
+            id: contextCompactionActivityId(event),
+            createdAt: event.createdAt,
+            tone: status === "failed" ? "error" : "info",
+            kind: "context-compaction",
+            summary:
+              status === "completed"
+                ? "Context compacted"
+                : status === "declined"
+                  ? "Context compaction skipped"
+                  : "Context compaction failed",
+            payload: { status },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       if (event.payload.itemType === "reasoning") {
         if (event.payload.detail === undefined || event.payload.detail.trim().length === 0) {
           return [];
@@ -957,6 +988,20 @@ export function runtimeEventToActivities(
     }
 
     case "item.started": {
+      if (event.payload.itemType === "context_compaction") {
+        return [
+          {
+            id: contextCompactionActivityId(event),
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "context-compaction",
+            summary: "Compacting context",
+            payload: { status: "inProgress" },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }

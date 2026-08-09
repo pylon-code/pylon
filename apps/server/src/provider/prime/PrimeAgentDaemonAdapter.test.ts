@@ -397,6 +397,114 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("settles an explicit compact command from its terminal lifecycle event", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.token-usage.updated");
+
+        const turnFiber = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "/compact PRIVATE INSTRUCTIONS",
+            interactionMode: "default",
+          })
+          .pipe(Effect.forkChild);
+        yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        yield* offer(captures, { _tag: "CompactionStarted" });
+        const started = yield* awaitObservedType(subscription.observed, "item.started");
+        expect(started).toMatchObject({
+          payload: { itemType: "context_compaction", status: "inProgress" },
+        });
+        const steerError = yield* adapter
+          .sendTurn({ threadId, input: "queued text", interactionMode: "default" })
+          .pipe(Effect.flip);
+        expect(steerError).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          issue: "Prime Agent cannot steer an active context compaction.",
+        });
+
+        yield* offer(captures, {
+          _tag: "CompactionCompleted",
+          outcome: "aborted",
+          willRetry: true,
+        });
+        yield* offer(captures, { _tag: "CompactionStarted" });
+        const retryStarted = yield* awaitObservedType(subscription.observed, "item.started");
+        expect(retryStarted.itemId).toBe(started.itemId);
+        expect(subscription.events.some((event) => event.type === "item.completed")).toBe(false);
+        expect(subscription.events.some((event) => event.type === "turn.completed")).toBe(false);
+
+        captures.sessionStats = {
+          contextUsage: { usedTokens: null, maxTokens: 200_000 },
+        };
+        yield* offer(captures, {
+          _tag: "CompactionCompleted",
+          outcome: "completed",
+          willRetry: false,
+        });
+        const completedItem = yield* awaitObservedType(subscription.observed, "item.completed");
+        expect(completedItem).toMatchObject({
+          itemId: started.itemId,
+          payload: { itemType: "context_compaction", status: "completed" },
+        });
+        expect(started.payload).not.toHaveProperty("detail");
+        expect(started.payload).not.toHaveProperty("data");
+        expect(completedItem.payload).not.toHaveProperty("detail");
+        expect(completedItem.payload).not.toHaveProperty("data");
+        const completedTurn = yield* awaitObservedType(subscription.observed, "turn.completed");
+        expect(completedTurn).toMatchObject({ payload: { state: "completed" } });
+        expect(completedTurn.payload).not.toHaveProperty("errorMessage");
+        yield* awaitObservedType(subscription.observed, "thread.token-usage.cleared");
+        yield* Fiber.join(turnFiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps compaction replacement scope after its active turn is cancelled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.token-usage.updated");
+
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "ordinary turn", interactionMode: "default" })
+          .pipe(Effect.forkChild);
+        yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        yield* offer(captures, { _tag: "CompactionStarted" });
+        const started = yield* awaitObservedType(subscription.observed, "item.started");
+
+        yield* adapter.interruptTurn(threadId);
+        const cancelled = yield* awaitObservedType(subscription.observed, "turn.completed");
+        expect(cancelled).toMatchObject({ payload: { state: "cancelled" } });
+        yield* Fiber.join(turnFiber);
+
+        yield* offer(captures, {
+          _tag: "CompactionCompleted",
+          outcome: "completed",
+          willRetry: false,
+        });
+        const completed = yield* awaitObservedType(subscription.observed, "item.completed");
+        expect(completed.itemId).toBe(started.itemId);
+        expect(completed.turnId).toBe(started.turnId);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("keeps usage telemetry failures ancillary to completed turns", () =>
     Effect.scoped(
       Effect.gen(function* () {

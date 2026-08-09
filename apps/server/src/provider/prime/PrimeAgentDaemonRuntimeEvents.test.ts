@@ -546,6 +546,65 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     });
   });
 
+  it("maps compaction lifecycle without provider instructions, summaries, or error text", () => {
+    expect(
+      mapPrimeAgentDaemonRuntimeEventDrafts({
+        ...context,
+        event: { _tag: "CompactionStarted" },
+      }),
+    ).toEqual([
+      {
+        provider,
+        providerInstanceId,
+        threadId,
+        turnId,
+        type: "item.started",
+        itemId: RuntimeItemId.make(`compaction:${turnId}`),
+        payload: {
+          itemType: "context_compaction",
+          status: "inProgress",
+          title: "Context compaction",
+        },
+      },
+    ]);
+
+    for (const [outcome, status] of [
+      ["completed", "completed"],
+      ["skipped", "declined"],
+      ["aborted", "failed"],
+      ["failed", "failed"],
+    ] as const) {
+      const drafts = mapPrimeAgentDaemonRuntimeEventDrafts({
+        ...context,
+        event: { _tag: "CompactionCompleted", outcome, willRetry: false },
+      });
+      expect(drafts).toEqual([
+        {
+          provider,
+          providerInstanceId,
+          threadId,
+          turnId,
+          type: "item.completed",
+          itemId: RuntimeItemId.make(`compaction:${turnId}`),
+          payload: {
+            itemType: "context_compaction",
+            status,
+            title: "Context compaction",
+          },
+        },
+      ]);
+      expect(JSON.stringify(drafts)).not.toContain("detail");
+      expect(JSON.stringify(drafts)).not.toContain("data");
+    }
+
+    expect(
+      mapPrimeAgentDaemonRuntimeEventDrafts({
+        ...context,
+        event: { _tag: "CompactionCompleted", outcome: "aborted", willRetry: true },
+      }),
+    ).toEqual([]);
+  });
+
   it("never includes native raw payloads and ignores replay, presentation, and duplicate streams", () => {
     const ignoredEvents: ReadonlyArray<PrimeDaemonEvent> = [
       { _tag: "TurnStarted" },

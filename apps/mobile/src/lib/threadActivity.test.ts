@@ -237,6 +237,36 @@ describe("buildThreadFeed", () => {
     });
   });
 
+  it("shows safe context compaction lifecycle without provider detail", () => {
+    const turnId = TurnId.make("turn-compaction");
+    const thread = makeThread({
+      id: ThreadId.make("thread-compaction"),
+      projectId: ProjectId.make("project-1"),
+      title: "Compaction",
+      activities: [
+        makeActivity({
+          id: EventId.make("context-compaction"),
+          kind: "context-compaction",
+          summary: "Context compacted",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId,
+          payload: { status: "completed" },
+        }),
+      ],
+    });
+
+    const group = buildThreadFeed(thread)[0];
+    expect(group).toMatchObject({ type: "activity-group", turnId });
+    if (!group || group.type !== "activity-group") return;
+    expect(group.activities).toHaveLength(1);
+    expect(group.activities[0]).toMatchObject({
+      id: "context-compaction",
+      summary: "Context compacted",
+    });
+    expect(group.activities[0]?.detail).toBeNull();
+    expect(group.activities[0]?.getFullDetail()).toBeNull();
+  });
+
   it("collapses matching tool lifecycle rows like desktop", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-2"),
