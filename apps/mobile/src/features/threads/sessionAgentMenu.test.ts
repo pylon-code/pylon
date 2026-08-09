@@ -35,15 +35,17 @@ const agent = (overrides: Partial<RuntimeSubagent> = {}): RuntimeSubagent => ({
 });
 
 describe("session agent menu", () => {
-  it("offers Message and Stop for a messageable live nested agent", () => {
+  it("offers Live activity, Message, and Stop for a messageable live nested agent", () => {
     const actions = buildSessionAgentMenuActions({
       scopeKey: "remote:thread-1",
       agents: [agent()],
       canMessage: true,
       canCancel: true,
+      canWatchLiveActivity: true,
       cancellingAgentIds: new Set(),
     });
     expect(actions.map((action) => action.title)).toEqual([
+      "Live activity · Nested reviewer",
       "Message Nested reviewer",
       "Stop Nested reviewer",
     ]);
@@ -59,6 +61,7 @@ describe("session agent menu", () => {
       ],
       canMessage: true,
       canCancel: false,
+      canWatchLiveActivity: false,
       cancellingAgentIds: new Set(),
     });
     expect(actions).toEqual([]);
@@ -71,6 +74,7 @@ describe("session agent menu", () => {
       agents: [agent()],
       canMessage: true,
       canCancel: true,
+      canWatchLiveActivity: false,
       cancellingAgentIds: new Set(),
     });
     expect(parseSessionAgentMenuAction(actions[0]?.id ?? "")).toEqual({
@@ -84,5 +88,33 @@ describe("session agent menu", () => {
       agentId: "child:nested",
     });
     expect(parseSessionAgentMenuAction("message-session-agent:bad%ZZ:value")).toBeNull();
+  });
+  it("gates live activity independently and encodes the canonical agent id action", () => {
+    const scopeKey = "provider-a:full-access";
+    const enabled = buildSessionAgentMenuActions({
+      scopeKey,
+      agents: [agent()],
+      canMessage: false,
+      canCancel: false,
+      canWatchLiveActivity: true,
+      cancellingAgentIds: new Set(),
+    });
+    expect(enabled).toHaveLength(1);
+    expect(enabled[0]?.subtitle).toBe("Live only · Assistant updates");
+    expect(parseSessionAgentMenuAction(enabled[0]?.id ?? "")).toEqual({
+      kind: "live-activity",
+      scopeKey,
+      agentId: "child:nested",
+    });
+
+    const settled = buildSessionAgentMenuActions({
+      scopeKey,
+      agents: [agent({ status: "completed" })],
+      canMessage: false,
+      canCancel: false,
+      canWatchLiveActivity: true,
+      cancellingAgentIds: new Set(),
+    });
+    expect(settled).toEqual([]);
   });
 });

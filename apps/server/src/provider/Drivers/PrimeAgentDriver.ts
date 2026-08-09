@@ -163,6 +163,9 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
                 agentMessage:
                   typeof backend.manager.bridge.DaemonAgentConnection.prototype.sendAgentMessage ===
                   "function",
+                agentLiveActivity:
+                  typeof backend.manager.bridge.DaemonAgentConnection.prototype.watchSession ===
+                  "function",
                 compaction: ["getState", "compact", "abortCompaction"].every(
                   (method) =>
                     typeof backend.manager.bridge.DaemonAgentConnection.prototype[

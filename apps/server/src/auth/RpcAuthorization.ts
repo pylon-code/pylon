@@ -35,6 +35,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.providerReloadSessionResources]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerCancelSessionAgent]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerMessageSessionAgent]: AuthOrchestrationOperateScope,
+  [WS_METHODS.providerWatchSessionAgentActivity]: AuthOrchestrationReadScope,
   [WS_METHODS.providerGetSessionAgentDepth]: AuthOrchestrationReadScope,
   [WS_METHODS.providerSetSessionAgentDepth]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerGetSessionInputQueue]: AuthOrchestrationReadScope,

@@ -159,6 +159,7 @@ import {
   supportsSessionAgentCancel,
   supportsSessionAgentMessage,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import { canWatchSessionAgentLiveActivity } from "@t3tools/client-runtime/state/session-agent-live-activity";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -2268,6 +2269,14 @@ function ChatViewContent(props: ChatViewProps) {
     activeThread?.session?.runtimeMode === "full-access" &&
     (activeThread.session.status === "ready" || activeThread.session.status === "running") &&
     supportsSessionAgentMessage(activeSessionProviderStatus);
+  const canWatchSessionAgentActivity =
+    agentSessionLive &&
+    canWatchSessionAgentLiveActivity(activeSessionProviderStatus, activeThread?.session);
+  const sessionAgentLiveActivityScopeKey = JSON.stringify([
+    activeThreadKey,
+    activeThread?.session?.providerInstanceId,
+    activeThread?.session?.runtimeMode,
+  ]);
   const sessionAgentMessageScopeKey = JSON.stringify([
     activeThreadKey,
     activeThread?.session?.providerInstanceId,
@@ -6800,7 +6809,9 @@ function ChatViewContent(props: ChatViewProps) {
         threadId={activeThreadRef?.threadId ?? null}
         canCancelAgents={canCancelSessionAgents}
         canMessageAgents={canMessageSessionAgents}
+        canWatchAgentActivity={canWatchSessionAgentActivity}
         agentMessageScopeKey={sessionAgentMessageScopeKey}
+        agentLiveActivityScopeKey={sessionAgentLiveActivityScopeKey}
         cancellingAgentIds={cancellingAgentIds}
         onCancelAgent={onCancelSessionAgent}
         onMessageAgent={onMessageSessionAgent}

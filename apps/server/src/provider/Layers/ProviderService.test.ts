@@ -180,6 +180,14 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       Effect.succeed({ agentId, disposition: "delivered" as const }),
   );
 
+  const watchSessionAgentActivity = vi.fn((_threadId: ThreadId, agentId: RuntimeTaskId) =>
+    Stream.make({
+      agentId,
+      revision: 1,
+      entries: [{ speaker: "assistant" as const, text: "safe live activity" }],
+    }),
+  );
+
   let agentDepth = {
     maxDepth: 2,
     source: "session" as const,
@@ -328,6 +336,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     reloadSessionResources,
     cancelSessionAgent,
     messageSessionAgent,
+    watchSessionAgentActivity,
     getSessionAgentDepth,
     setSessionAgentDepth,
     getSessionInputQueue,
@@ -373,6 +382,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     reloadSessionResources,
     cancelSessionAgent,
     messageSessionAgent,
+    watchSessionAgentActivity,
     getSessionAgentDepth,
     setSessionAgentDepth,
     getSessionInputQueue,
@@ -1074,6 +1084,25 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
       assert.deepEqual(routing.codex.messageSessionAgent.mock.calls, [
         [session.threadId, RuntimeTaskId.make("agent-1"), "Check the failing test."],
+      ]);
+
+      const activity = Array.from(
+        yield* Stream.runCollect(
+          provider.watchSessionAgentActivity({
+            threadId: session.threadId,
+            agentId: RuntimeTaskId.make("agent-1"),
+          }),
+        ),
+      );
+      assert.deepEqual(activity, [
+        {
+          agentId: RuntimeTaskId.make("agent-1"),
+          revision: 1,
+          entries: [{ speaker: "assistant", text: "safe live activity" }],
+        },
+      ]);
+      assert.deepEqual(routing.codex.watchSessionAgentActivity.mock.calls, [
+        [session.threadId, RuntimeTaskId.make("agent-1")],
       ]);
 
       const invalidDepth = yield* provider

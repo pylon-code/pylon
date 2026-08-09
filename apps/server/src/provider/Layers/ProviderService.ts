@@ -20,6 +20,7 @@ import {
   ProviderCompactSessionInput,
   ProviderFollowUpInput,
   ProviderMessageSessionAgentInput,
+  ProviderWatchSessionAgentActivityInput,
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
   ProviderGetSessionAgentDepthInput,
   ProviderGetSessionCompactionInput,
@@ -1026,6 +1027,41 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* messageAgent(routed.threadId, input.agentId, input.message);
   });
 
+  const watchSessionAgentActivity: ProviderServiceMethod<"watchSessionAgentActivity"> = (
+    rawInput,
+  ) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const input = yield* decodeInputOrValidationError({
+          operation: "ProviderService.watchSessionAgentActivity",
+          schema: ProviderWatchSessionAgentActivityInput,
+          payload: rawInput,
+        });
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.watchSessionAgentActivity",
+          allowRecovery: false,
+        });
+        if (!routed.isActive) {
+          return yield* toValidationError(
+            "ProviderService.watchSessionAgentActivity",
+            `Thread '${input.threadId}' does not have an active provider session.`,
+          );
+        }
+        const watchActivity = routed.adapter.watchSessionAgentActivity;
+        if (watchActivity === undefined) {
+          return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+        }
+        yield* Effect.annotateCurrentSpan({
+          "provider.operation": "watch-session-agent-activity",
+          "provider.kind": routed.adapter.provider,
+          "provider.instance_id": routed.instanceId,
+          "provider.thread_id": input.threadId,
+        });
+        return watchActivity(routed.threadId, input.agentId);
+      }),
+    );
+
   const getSessionAgentDepth: ProviderServiceMethod<"getSessionAgentDepth"> = Effect.fn(
     "getSessionAgentDepth",
   )(function* (rawInput) {
@@ -1608,6 +1644,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     reloadSessionResources,
     cancelSessionAgent,
     messageSessionAgent,
+    watchSessionAgentActivity,
     getSessionAgentDepth,
     setSessionAgentDepth,
     followUp,

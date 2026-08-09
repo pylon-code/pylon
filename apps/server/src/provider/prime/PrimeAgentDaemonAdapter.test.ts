@@ -25,6 +25,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
+import type { ProviderAdapterError } from "../Errors.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import type {
   PrimeAgentDaemonExtensionUiResponse,
@@ -207,6 +208,21 @@ interface FakeCaptures {
   cancelAgentResult: boolean;
   cancelAgentFailure: boolean;
   agentMessageAvailable: boolean;
+  activityWatchAvailable: boolean;
+  activityWatchNever: boolean;
+  readonly activityWatchCalls: Array<string>;
+  activityWatchObserved: Queue.Queue<void> | undefined;
+  activityWatchUpdates:
+    | Queue.Queue<ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>>
+    | undefined;
+  readonly activityWatchUpdatesByEndpoint: Map<
+    string,
+    Queue.Queue<ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>>
+  >;
+  readonly activityWatchFinalizations: Array<string>;
+  activityWatchEntries: Array<
+    ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
+  >;
   agentMessageCalls: Array<{ readonly activeSessionId: string; readonly message: string }>;
   agentMessageDisposition: "delivered" | "queued";
   agentMessageFailureReason:
@@ -297,6 +313,14 @@ function makeCaptures(): FakeCaptures {
     cancelAgentResult: true,
     cancelAgentFailure: false,
     agentMessageAvailable: true,
+    activityWatchAvailable: false,
+    activityWatchNever: false,
+    activityWatchCalls: [],
+    activityWatchObserved: undefined,
+    activityWatchUpdates: undefined,
+    activityWatchUpdatesByEndpoint: new Map(),
+    activityWatchFinalizations: [],
+    activityWatchEntries: [],
     agentMessageCalls: [],
     agentMessageDisposition: "delivered",
     agentMessageFailureReason: undefined,
@@ -475,6 +499,36 @@ function fakeRuntimeFactory(
             }
             return captures.agentMessageDisposition;
           }),
+        watchAgentActivityAvailable: captures.activityWatchAvailable,
+        watchAgentActivity: (activeSessionId) => {
+          const acquired = Stream.fromEffect(
+            Effect.gen(function* () {
+              captures.activityWatchCalls.push(activeSessionId);
+              if (captures.activityWatchObserved !== undefined) {
+                yield* Queue.offer(captures.activityWatchObserved, undefined);
+              }
+            }),
+          ).pipe(Stream.drain);
+          const finalized = Effect.sync(() => {
+            captures.activityWatchFinalizations.push(activeSessionId);
+          });
+          const updates =
+            captures.activityWatchUpdatesByEndpoint.get(activeSessionId) ??
+            captures.activityWatchUpdates;
+          if (updates !== undefined) {
+            return acquired.pipe(
+              Stream.concat(Stream.fromQueue(updates)),
+              Stream.ensuring(finalized),
+            );
+          }
+          if (captures.activityWatchNever) {
+            return acquired.pipe(Stream.concat(Stream.never), Stream.ensuring(finalized));
+          }
+          return acquired.pipe(
+            Stream.concat(Stream.fromIterable(captures.activityWatchEntries)),
+            Stream.ensuring(finalized),
+          );
+        },
         setAgentDepth: (maxDepth) =>
           Effect.gen(function* () {
             captures.agentDepthCalls.push(maxDepth);
@@ -1893,6 +1947,347 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("resolves canonical task ids privately and isolates watcher revisions per client", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.activityWatchAvailable = true;
+        captures.agentRoster = [
+          {
+            id: "canonical-child",
+            activeSessionId: "private-native-active-session",
+            label: "worker",
+            status: "running",
+          },
+        ];
+        captures.activityWatchEntries = [[{ speaker: "assistant", text: "safe live activity" }]];
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        const first = Array.from(
+          yield* Stream.runCollect(
+            adapter.watchSessionAgentActivity!(threadId, RuntimeTaskId.make("canonical-child")),
+          ),
+        );
+        const second = Array.from(
+          yield* Stream.runCollect(
+            adapter.watchSessionAgentActivity!(threadId, RuntimeTaskId.make("canonical-child")),
+          ),
+        );
+
+        expect(first).toEqual([
+          {
+            agentId: "canonical-child",
+            revision: 1,
+            entries: [{ speaker: "assistant", text: "safe live activity" }],
+          },
+        ]);
+        expect(second[0]?.revision).toBe(1);
+        expect(captures.activityWatchCalls).toEqual([
+          "private-native-active-session",
+          "private-native-active-session",
+        ]);
+        expect(encodeUnknownJson(first)).not.toContain("private-native-active-session");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("shares one native watcher until the last same-child subscriber exits", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.activityWatchAvailable = true;
+        captures.activityWatchObserved = yield* Queue.unbounded<void>();
+        const updates =
+          yield* Queue.unbounded<
+            ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
+          >();
+        captures.activityWatchUpdates = updates;
+        captures.agentRoster = [
+          {
+            id: "canonical-child",
+            activeSessionId: "private-native-active-session",
+            label: "worker",
+            status: "running",
+          },
+        ];
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        const first = yield* adapter.watchSessionAgentActivity!(
+          threadId,
+          RuntimeTaskId.make("canonical-child"),
+        ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+        const secondObserved = yield* Queue.unbounded<void>();
+        const second = yield* adapter.watchSessionAgentActivity!(
+          threadId,
+          RuntimeTaskId.make("canonical-child"),
+        ).pipe(
+          Stream.tap(() => Queue.offer(secondObserved, undefined)),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Queue.take(captures.activityWatchObserved);
+        yield* Effect.yieldNow;
+
+        yield* Queue.offer(updates, [{ speaker: "assistant", text: "first replacement" }]);
+        yield* Queue.take(secondObserved);
+        expect(Array.from(yield* Fiber.join(first))).toEqual([
+          {
+            agentId: "canonical-child",
+            revision: 1,
+            entries: [{ speaker: "assistant", text: "first replacement" }],
+          },
+        ]);
+        expect(captures.activityWatchCalls).toEqual(["private-native-active-session"]);
+        expect(captures.activityWatchFinalizations).toEqual([]);
+
+        yield* Queue.offer(updates, [{ speaker: "assistant", text: "later replacement" }]);
+        expect(Array.from(yield* Fiber.join(second))).toEqual([
+          {
+            agentId: "canonical-child",
+            revision: 1,
+            entries: [{ speaker: "assistant", text: "first replacement" }],
+          },
+          {
+            agentId: "canonical-child",
+            revision: 2,
+            entries: [{ speaker: "assistant", text: "later replacement" }],
+          },
+        ]);
+        expect(captures.activityWatchFinalizations).toEqual(["private-native-active-session"]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps shared native activity streams isolated by canonical child and endpoint", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.activityWatchAvailable = true;
+        const firstUpdates =
+          yield* Queue.unbounded<
+            ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
+          >();
+        const secondUpdates =
+          yield* Queue.unbounded<
+            ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
+          >();
+        captures.activityWatchUpdatesByEndpoint.set("native-first", firstUpdates);
+        captures.activityWatchUpdatesByEndpoint.set("native-second", secondUpdates);
+        captures.agentRoster = [
+          { id: "first-child", activeSessionId: "native-first", label: "first", status: "running" },
+          {
+            id: "second-child",
+            activeSessionId: "native-second",
+            label: "second",
+            status: "running",
+          },
+        ];
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        const first = yield* adapter.watchSessionAgentActivity!(
+          threadId,
+          RuntimeTaskId.make("first-child"),
+        ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+        const second = yield* adapter.watchSessionAgentActivity!(
+          threadId,
+          RuntimeTaskId.make("second-child"),
+        ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        yield* Queue.offer(firstUpdates, [{ speaker: "assistant", text: "first only" }]);
+        yield* Queue.offer(secondUpdates, [{ speaker: "assistant", text: "second only" }]);
+
+        expect(Array.from(yield* Fiber.join(first))[0]?.entries).toEqual([
+          { speaker: "assistant", text: "first only" },
+        ]);
+        expect(Array.from(yield* Fiber.join(second))[0]?.entries).toEqual([
+          { speaker: "assistant", text: "second only" },
+        ]);
+        expect(captures.activityWatchCalls.sort()).toEqual(["native-first", "native-second"]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails the old shared stream and replaces it when a child endpoint changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.activityWatchAvailable = true;
+        captures.activityWatchObserved = yield* Queue.unbounded<void>();
+        const oldUpdates =
+          yield* Queue.unbounded<
+            ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
+          >();
+        const newUpdates =
+          yield* Queue.unbounded<
+            ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
+          >();
+        captures.activityWatchUpdatesByEndpoint.set("native-old", oldUpdates);
+        captures.activityWatchUpdatesByEndpoint.set("native-new", newUpdates);
+        captures.agentRoster = [
+          {
+            id: "canonical-child",
+            activeSessionId: "native-old",
+            label: "worker",
+            status: "running",
+          },
+        ];
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        const oldWatcher = yield* adapter.watchSessionAgentActivity!(
+          threadId,
+          RuntimeTaskId.make("canonical-child"),
+        ).pipe(Stream.runDrain, Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Queue.take(captures.activityWatchObserved);
+        captures.agentRoster = [
+          {
+            id: "canonical-child",
+            activeSessionId: "native-new",
+            label: "worker",
+            status: "running",
+          },
+        ];
+        const replacement = yield* adapter.watchSessionAgentActivity!(
+          threadId,
+          RuntimeTaskId.make("canonical-child"),
+        ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        expect(yield* Fiber.join(oldWatcher)).toMatchObject({
+          _tag: "ProviderAdapterRequestError",
+          method: "session/watch-agent-activity",
+        });
+        expect(captures.activityWatchFinalizations).toEqual(["native-old"]);
+
+        yield* Queue.offer(newUpdates, [{ speaker: "assistant", text: "new endpoint" }]);
+        expect(Array.from(yield* Fiber.join(replacement))[0]?.entries).toEqual([
+          { speaker: "assistant", text: "new endpoint" },
+        ]);
+        expect(captures.activityWatchCalls).toEqual(["native-old", "native-new"]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("caps concurrent per-session watchers and releases reservations on cancellation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.activityWatchAvailable = true;
+        captures.activityWatchNever = true;
+        captures.activityWatchObserved = yield* Queue.unbounded<void>();
+        captures.agentRoster = [
+          {
+            id: "canonical-child",
+            activeSessionId: "private-native-active-session",
+            label: "worker",
+            status: "running",
+          },
+        ];
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        const fibers: Array<Fiber.Fiber<void, ProviderAdapterError>> = [];
+        for (let index = 0; index < 4; index += 1) {
+          fibers.push(
+            yield* adapter.watchSessionAgentActivity!(
+              threadId,
+              RuntimeTaskId.make("canonical-child"),
+            ).pipe(Stream.runDrain, Effect.forkChild),
+          );
+        }
+        yield* Queue.take(captures.activityWatchObserved);
+        const excess = yield* adapter.watchSessionAgentActivity!(
+          threadId,
+          RuntimeTaskId.make("canonical-child"),
+        ).pipe(Stream.runDrain, Effect.flip);
+        expect(excess).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          reason: "busy",
+        });
+
+        yield* Fiber.interrupt(fibers.shift()!);
+        const replacement = yield* adapter.watchSessionAgentActivity!(
+          threadId,
+          RuntimeTaskId.make("canonical-child"),
+        ).pipe(Stream.runDrain, Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* Fiber.interrupt(replacement);
+        yield* Effect.forEach(fibers, Fiber.interrupt, { discard: true });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("terminates a watcher when its child settles and rejects supervised sessions", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.activityWatchAvailable = true;
+        captures.activityWatchNever = true;
+        captures.activityWatchObserved = yield* Queue.unbounded<void>();
+        captures.agentRoster = [
+          {
+            id: "canonical-child",
+            activeSessionId: "private-native-active-session",
+            label: "worker",
+            status: "running",
+          },
+        ];
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const watcher = yield* adapter.watchSessionAgentActivity!(
+          threadId,
+          RuntimeTaskId.make("canonical-child"),
+        ).pipe(Stream.runDrain, Effect.forkChild);
+        yield* Queue.take(captures.activityWatchObserved);
+        yield* Queue.offer(captures.queue!, {
+          _tag: "ChildUpdated",
+          child: { id: "canonical-child", label: "worker", status: "done" },
+        });
+        yield* Fiber.join(watcher);
+
+        const supervisedThread = ThreadId.make("prime-daemon/supervised-live-activity");
+        const supervised = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(makeCaptures()),
+        });
+        yield* supervised.startSession({
+          threadId: supervisedThread,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const failure = yield* supervised.watchSessionAgentActivity!(
+          supervisedThread,
+          RuntimeTaskId.make("canonical-child"),
+        ).pipe(Stream.runDrain, Effect.flip);
+        expect(failure).toMatchObject({
+          _tag: "ProviderAdapterUnsupportedOperationError",
+          operation: "watchSessionAgentActivity",
+        });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects unsupported and invalid agent-message preflight without sending", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -2159,6 +2554,140 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(captures.agentMessageCalls).toEqual([
           { activeSessionId: "native-locked", message: "hello" },
         ]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("does not persist private child prose or duplicate preview-only progress", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.resources.updated");
+        yield* awaitObservedType(subscription.observed, "session.agent-depth.updated");
+
+        yield* offer(captures, {
+          _tag: "ChildUpdated",
+          child: {
+            id: "child-private-progress",
+            parentId: "parent",
+            activeSessionId: "native-initial",
+            sessionName: "private-session-initial",
+            model: "child-model",
+            label: "private-safe-label",
+            status: "running",
+            durationMs: 1,
+            tokenCount: 10,
+            toolUseCount: 1,
+            activity: { kind: "executing", toolName: "bash" },
+            answerPreview: "private-answer-0",
+            recap: "private-recap-0",
+          },
+        });
+        yield* awaitObservedType(subscription.observed, "task.progress");
+        yield* awaitObservedType(subscription.observed, "session.agent-depth.updated");
+        const durableStart = subscription.events.length;
+
+        for (let index = 1; index <= 100; index += 1) {
+          yield* offer(captures, {
+            _tag: "ChildUpdated",
+            child: {
+              id: "child-private-progress",
+              parentId: "parent",
+              activeSessionId: `native-private-${index}`,
+              sessionName: `private-session-${index}`,
+              model: "child-model",
+              label: "private-safe-label",
+              status: "running",
+              durationMs: index * 10,
+              tokenCount: 10,
+              toolUseCount: 1,
+              activity: { kind: "executing", toolName: "bash" },
+              answerPreview: `private-answer-${index}`,
+              recap: `private-recap-${index}`,
+              error: `private-transient-error-${index}`,
+            },
+          });
+        }
+        captures.agentRoster = [
+          {
+            id: "child-private-progress",
+            parentId: "parent",
+            activeSessionId: "native-private-roster",
+            sessionName: "private-session-roster",
+            model: "child-model",
+            label: "private-safe-label",
+            status: "running",
+            durationMs: 1_200,
+            tokenCount: 10,
+            toolUseCount: 1,
+            activity: { kind: "executing", toolName: "bash" },
+            answerPreview: "private-answer-roster",
+            recap: "private-recap-roster",
+          },
+        ];
+        expect(
+          yield* adapter.messageSessionAgent!(
+            threadId,
+            RuntimeTaskId.make("child-private-progress"),
+            "continue",
+          ),
+        ).toEqual({ agentId: "child-private-progress", disposition: "delivered" });
+        expect(captures.agentMessageCalls.at(-1)?.activeSessionId).toBe("native-private-roster");
+
+        yield* offer(captures, {
+          _tag: "ChildUpdated",
+          child: {
+            id: "child-private-progress",
+            parentId: "parent",
+            model: "child-model",
+            label: "private-safe-label",
+            status: "error",
+            durationMs: 1_500,
+            tokenCount: 12,
+            toolUseCount: 1,
+            answerPreview: "private-terminal-answer",
+            recap: "private-terminal-recap",
+            error: "private-terminal-error",
+          },
+        });
+        yield* offer(captures, {
+          _tag: "GoalUpdated",
+          goal: {
+            available: true,
+            active: false,
+            status: "complete",
+            objective: "durable child marker",
+            tokensUsed: 1,
+            timeUsedSeconds: 1,
+            continuationsUsed: 0,
+          },
+        });
+        yield* awaitObservedType(subscription.observed, "session.goal.updated");
+
+        const durableEvents = subscription.events.slice(durableStart);
+        expect(durableEvents.filter((event) => event.type === "task.progress")).toEqual([]);
+        const completed = durableEvents.filter((event) => event.type === "task.completed");
+        expect(completed).toHaveLength(1);
+        expect(completed[0]).toMatchObject({
+          payload: {
+            taskId: "child-private-progress",
+            status: "failed",
+            typedUsage: { totalTokens: 12, toolUses: 1, durationMs: 1_500 },
+          },
+        });
+        expect(completed[0]?.payload).not.toHaveProperty("summary");
+        const persisted = encodeUnknownJson(durableEvents);
+        expect(persisted).not.toContain("private-answer");
+        expect(persisted).not.toContain("private-recap");
+        expect(persisted).not.toContain("private-terminal-error");
+        expect(persisted).not.toContain("private-transient-error");
+        expect(persisted).not.toContain("private-session");
       }),
     ).pipe(Effect.provide(testLayer)),
   );

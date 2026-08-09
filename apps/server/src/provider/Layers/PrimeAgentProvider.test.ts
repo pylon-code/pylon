@@ -242,6 +242,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         inputQueueModes: true,
         agentCancel: true,
         agentMessage: true,
+        agentLiveActivity: true,
         compaction: true,
         autoCompaction: true,
         goals: true,

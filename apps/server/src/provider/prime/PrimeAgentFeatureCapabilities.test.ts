@@ -12,6 +12,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       inputQueueModes: true,
       agentCancel: true,
       agentMessage: true,
+      agentLiveActivity: true,
       compaction: true,
       autoCompaction: true,
       goals: true,
@@ -25,7 +26,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
     });
     expect(capabilities.agents).toMatchObject({
       support: "read-write",
-      operations: ["observe", "hierarchy", "message", "cancel", "set-depth"],
+      operations: ["observe", "hierarchy", "live-activity", "message", "cancel", "set-depth"],
     });
     expect(capabilities.goals).toMatchObject({
       support: "read-only",
@@ -69,6 +70,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       inputQueueModes: false,
       agentCancel: false,
       agentMessage: false,
+      agentLiveActivity: false,
       compaction: false,
       autoCompaction: false,
       goals: false,
@@ -78,6 +80,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       operations: [],
     });
     expect(capabilities.goals).toMatchObject({ support: "unavailable", operations: [] });
+    expect(capabilities.agents?.operations).not.toContain("live-activity");
   });
 
   it("keeps ACP fallback capabilities narrow and explicit", () => {
@@ -88,6 +91,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       inputQueueModes: false,
       agentCancel: false,
       agentMessage: false,
+      agentLiveActivity: false,
       compaction: false,
       autoCompaction: false,
       goals: true,

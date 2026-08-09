@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ApprovalRequestId,
   EventId,
@@ -163,6 +163,79 @@ export class ProviderCancelSessionAgentError extends Schema.TaggedErrorClass<Pro
       "session-not-ready",
       "unsupported",
       "agent-not-active",
+      "request-failed",
+    ]),
+  },
+) {}
+
+/**
+ * Hard privacy and resource bounds for ephemeral session-agent live activity.
+ * Character limits count Unicode code points; byte limits count UTF-8 bytes.
+ */
+export const PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS = 4_096;
+export const PROVIDER_SESSION_AGENT_ACTIVITY_MAX_ENTRIES = 32;
+export const PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_CHARS = 16_384;
+export const PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_BYTES = 65_536;
+export const PROVIDER_SESSION_AGENT_ACTIVITY_LIFETIME_MAX_UPDATES = 512;
+export const PROVIDER_SESSION_AGENT_ACTIVITY_LIFETIME_MAX_CHARS = 1_048_576;
+export const PROVIDER_SESSION_AGENT_ACTIVITY_MAX_CONCURRENT_WATCHERS = 4;
+
+const ProviderSessionAgentActivityText = TrimmedNonEmptyString.check(
+  Schema.makeFilter(
+    (value) =>
+      [...value].length <= PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS ||
+      `Live activity text must be at most ${PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS} Unicode characters.`,
+  ),
+);
+
+export const ProviderWatchSessionAgentActivityInput = Schema.Struct({
+  threadId: ThreadId,
+  agentId: RuntimeTaskId.check(Schema.isMaxLength(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS)),
+});
+export type ProviderWatchSessionAgentActivityInput =
+  typeof ProviderWatchSessionAgentActivityInput.Type;
+
+/** Assistant-visible text only. Every other native message/content field is forbidden. */
+export const ProviderSessionAgentActivityEntry = Schema.Struct({
+  speaker: Schema.Literal("assistant"),
+  text: ProviderSessionAgentActivityText,
+});
+export type ProviderSessionAgentActivityEntry = typeof ProviderSessionAgentActivityEntry.Type;
+
+const providerSessionAgentActivitySnapshotBounds = Schema.makeFilter(
+  (snapshot: { readonly entries: ReadonlyArray<{ readonly text: string }> }) => {
+    const text = snapshot.entries.map((entry) => entry.text).join("");
+    if ([...text].length > PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_CHARS) {
+      return `Live activity snapshot text must be at most ${PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_CHARS} Unicode characters.`;
+    }
+    if (
+      new TextEncoder().encode(JSON.stringify(snapshot)).byteLength >
+      PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_BYTES
+    ) {
+      return `Encoded live activity snapshot must be at most ${PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_BYTES} UTF-8 bytes.`;
+    }
+    return true;
+  },
+);
+
+/** A complete replacement snapshot. Revisions are local to one RPC subscription. */
+export const ProviderSessionAgentActivitySnapshot = Schema.Struct({
+  agentId: RuntimeTaskId.check(Schema.isMaxLength(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS)),
+  revision: PositiveInt,
+  entries: Schema.Array(ProviderSessionAgentActivityEntry).check(
+    Schema.isMaxLength(PROVIDER_SESSION_AGENT_ACTIVITY_MAX_ENTRIES),
+  ),
+}).check(providerSessionAgentActivitySnapshotBounds);
+export type ProviderSessionAgentActivitySnapshot = typeof ProviderSessionAgentActivitySnapshot.Type;
+
+export class ProviderWatchSessionAgentActivityError extends Schema.TaggedErrorClass<ProviderWatchSessionAgentActivityError>()(
+  "ProviderWatchSessionAgentActivityError",
+  {
+    reason: Schema.Literals([
+      "session-not-ready",
+      "unsupported",
+      "agent-not-active",
+      "limit-reached",
       "request-failed",
     ]),
   },

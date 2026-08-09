@@ -269,7 +269,6 @@ function childDraft(
           payload: { taskId, status: "waiting", description, ...linkage },
         };
       }
-      const summary = boundedNonEmpty(child.recap ?? child.answerPreview, MAX_SCALAR_LENGTH);
       return {
         ...runtimeBase(input),
         type: "task.progress",
@@ -277,7 +276,6 @@ function childDraft(
           taskId,
           description,
           status: "running",
-          ...(summary === undefined ? {} : { summary }),
           ...(typedUsage === undefined ? {} : { typedUsage }),
           ...(lastToolName === undefined ? {} : { lastToolName }),
           ...linkage,
@@ -287,10 +285,6 @@ function childDraft(
     case "done":
     case "error":
     case "cancelled": {
-      const summary = boundedNonEmpty(
-        child.error ?? child.answerPreview ?? child.recap,
-        MAX_SCALAR_LENGTH,
-      );
       return {
         ...runtimeBase(input),
         type: "task.completed",
@@ -298,7 +292,6 @@ function childDraft(
           taskId,
           status:
             child.status === "done" ? "completed" : child.status === "error" ? "failed" : "stopped",
-          ...(summary === undefined ? {} : { summary }),
           ...(typedUsage === undefined ? {} : { typedUsage }),
           ...linkage,
         },
