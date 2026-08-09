@@ -85,7 +85,7 @@ const primeLikeCapabilities = {
   },
   resources: {
     support: "read-write",
-    operations: ["skills", "prompts", "extensions", "packages", "mcp", "commands"],
+    operations: ["skills", "prompts", "extensions", "packages", "mcp", "commands", "reload"],
   },
   inputQueue: {
     support: "read-write",
@@ -140,6 +140,7 @@ describe("ProviderFeatureCapabilities", () => {
     ]);
     expect(decoded.resources?.operations).toContain("mcp");
     expect(decoded.resources?.operations).toContain("commands");
+    expect(decoded.resources?.operations).toContain("reload");
     expect(decoded.sessionUi?.operations).toEqual(["dialog", "notification", "status", "widget"]);
   });
 

@@ -1256,6 +1256,10 @@ function ChatViewContent(props: ChatViewProps) {
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
+  const reloadThreadSessionResources = useAtomCommand(
+    threadEnvironment.reloadSessionResources,
+    "session resource reload",
+  );
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -5513,6 +5517,28 @@ function ChatViewContent(props: ChatViewProps) {
     }
   };
 
+  const onReloadSessionResources = useCallback(async () => {
+    if (!activeThreadId) return;
+    const result = await reloadThreadSessionResources({
+      environmentId,
+      input: { threadId: activeThreadId },
+    });
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        setThreadError(activeThreadId, "Could not reload session resources.");
+      }
+      return;
+    }
+    setThreadError(activeThreadId, null);
+    toastManager.add({
+      type: "success",
+      title: "Session resources reloaded",
+      description: result.value.available
+        ? `${result.value.commands.length} command${result.value.commands.length === 1 ? "" : "s"} available.`
+        : "The provider did not return a resource catalog.",
+    });
+  }, [activeThreadId, environmentId, reloadThreadSessionResources, setThreadError]);
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
@@ -6847,6 +6873,7 @@ function ChatViewContent(props: ChatViewProps) {
                             composerElementContextsRef={composerElementContextsRef}
                             onSend={onSend}
                             onInterrupt={onInterrupt}
+                            onReloadSessionResources={onReloadSessionResources}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             threadHandoffOffer={threadHandoffOffer}
                             isContinuingThreadOnAccount={isContinuingThreadOnAccount}

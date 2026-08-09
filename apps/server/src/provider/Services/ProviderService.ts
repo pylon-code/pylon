@@ -14,6 +14,8 @@
 import type {
   ProviderInterruptTurnInput,
   ProviderInstanceId,
+  ProviderReloadSessionResourcesInput,
+  SessionResourcesUpdatedPayload,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRespondToInteractionInput,
@@ -79,6 +81,13 @@ export interface ProviderServiceShape {
   readonly respondToInteraction: (
     input: ProviderRespondToInteractionInput,
   ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Explicitly reload an active provider session's resource catalog.
+   */
+  readonly reloadSessionResources: (
+    input: ProviderReloadSessionResourcesInput,
+  ) => Effect.Effect<SessionResourcesUpdatedPayload, ProviderServiceError>;
 
   /**
    * Stop a provider session.

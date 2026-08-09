@@ -11,10 +11,12 @@ import {
   SessionInteractionRequestId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -129,6 +131,10 @@ interface FakeCaptures {
   abortClearFailure: boolean;
   sessionStatsFailure: boolean;
   sessionStatsCount: number;
+  reloadFailure: boolean;
+  reloadCount: number;
+  reloadObserved: Queue.Queue<void> | undefined;
+  reloadRelease: Deferred.Deferred<void> | undefined;
   sessionStats: PrimeAgentDaemonSessionStats;
   promptObserved: Queue.Queue<void> | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
@@ -149,6 +155,10 @@ function makeCaptures(): FakeCaptures {
     abortClearFailure: false,
     sessionStatsFailure: false,
     sessionStatsCount: 0,
+    reloadFailure: false,
+    reloadCount: 0,
+    reloadObserved: undefined,
+    reloadRelease: undefined,
     sessionStats: {
       contextUsage: { usedTokens: 320, maxTokens: 200_000 },
     },
@@ -177,6 +187,32 @@ function fakeRuntimeFactory(
         activeSessionId: "native-active-secret",
         initialSnapshot: initialSnapshot(),
         initialResources: { available: true, skills: [], prompts: [], commands: [] },
+        reloadResources: Effect.suspend(() =>
+          captures.reloadFailure
+            ? Effect.fail(
+                new PrimeAgentDaemonSessionRuntimeError({
+                  operation: "reload-resources",
+                  reason: "request-failed",
+                  detail: "reload failed",
+                }),
+              )
+            : Effect.gen(function* () {
+                captures.reloadCount += 1;
+                captures.order.push("reload-resources");
+                if (captures.reloadObserved !== undefined) {
+                  yield* Queue.offer(captures.reloadObserved, undefined);
+                }
+                if (captures.reloadRelease !== undefined) {
+                  yield* Deferred.await(captures.reloadRelease);
+                }
+                return {
+                  available: true,
+                  skills: [],
+                  prompts: [],
+                  commands: [{ name: "skill:review", source: "skill" as const }],
+                };
+              }),
+        ),
         events: Stream.fromQueue(queue),
         prompt: (prompt) =>
           Effect.sync(() => {
@@ -372,6 +408,217 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(
           subscription.events.filter((candidate) => candidate.type === "session.resources.updated"),
         ).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("reloads idle full-access resources and publishes one replacement catalog", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.resources.updated");
+
+        const payload = yield* adapter.reloadSessionResources!(threadId);
+        const event = yield* awaitObservedType(subscription.observed, "session.resources.updated");
+
+        expect(captures.reloadCount).toBe(1);
+        expect(payload.commands).toEqual([{ name: "skill:review", source: "skill" }]);
+        expect(event).toMatchObject({
+          providerInstanceId: instanceId,
+          threadId,
+          payload,
+        });
+        expect(event).not.toHaveProperty("turnId");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects reload while a turn is active without invoking the runtime", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "keep working" })
+          .pipe(Effect.forkChild);
+        yield* Queue.take(captures.promptObserved!);
+
+        const error = yield* adapter.reloadSessionResources!(threadId).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          operation: "reloadSessionResources",
+        });
+        expect(captures.reloadCount).toBe(0);
+
+        yield* Queue.offer(captures.queue!, { _tag: "RunCompleted", messages: [] });
+        yield* Fiber.join(turnFiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "allows reload lifecycle interactions to resolve without releasing mutation serialization",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          captures.reloadObserved = yield* Queue.unbounded<void>();
+          captures.reloadRelease = yield* Deferred.make<void>();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "session.resources.updated");
+
+          const reloadFiber = yield* adapter.reloadSessionResources!(threadId).pipe(
+            Effect.forkChild,
+          );
+          yield* Queue.take(captures.reloadObserved);
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: {
+              id: "native-reload-request-secret",
+              method: "confirm",
+              title: "Reload extension",
+              message: "Continue reload",
+            },
+          });
+          const requested = yield* awaitObservedType(
+            subscription.observed,
+            "interaction.requested",
+          );
+          yield* adapter.respondToInteraction!(threadId, requested.requestId!, {
+            kind: "confirmed",
+            confirmed: true,
+          });
+          yield* awaitObservedType(subscription.observed, "interaction.resolved");
+          yield* Deferred.succeed(captures.reloadRelease, undefined);
+
+          const result = yield* Fiber.join(reloadFiber);
+          const updated = yield* awaitObservedType(
+            subscription.observed,
+            "session.resources.updated",
+          );
+          expect(result.commands).toEqual([{ name: "skill:review", source: "skill" }]);
+          expect(updated.payload).toEqual(result);
+          expect(captures.extensions).toEqual([
+            { id: "native-reload-request-secret", response: { confirmed: true } },
+          ]);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("finishes an admitted reload before honoring interruption or a queued turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.reloadObserved = yield* Queue.unbounded<void>();
+        captures.reloadRelease = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.resources.updated");
+
+        const reloadFiber = yield* adapter.reloadSessionResources!(threadId).pipe(Effect.forkChild);
+        yield* Queue.take(captures.reloadObserved);
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "after reload" })
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(Option.isNone(yield* Queue.poll(captures.promptObserved!))).toBe(true);
+        const interruptFiber = yield* Fiber.interrupt(reloadFiber).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(Option.isNone(yield* Queue.poll(captures.promptObserved!))).toBe(true);
+
+        yield* Deferred.succeed(captures.reloadRelease, undefined);
+        const updated = yield* awaitObservedType(
+          subscription.observed,
+          "session.resources.updated",
+        );
+        expect(updated.payload).toMatchObject({
+          available: true,
+          commands: [{ name: "skill:review", source: "skill" }],
+        });
+        yield* Queue.take(captures.promptObserved!);
+        yield* offer(captures, { _tag: "RunCompleted", messages: [] });
+        yield* Fiber.join(turnFiber);
+        yield* Fiber.join(interruptFiber);
+        expect(captures.order.indexOf("reload-resources")).toBeLessThan(
+          captures.order.indexOf("prompt"),
+        );
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("invalidates stale resources after a failed reload", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.resources.updated");
+        captures.reloadFailure = true;
+
+        const error = yield* adapter.reloadSessionResources!(threadId).pipe(Effect.flip);
+        const event = yield* awaitObservedType(subscription.observed, "session.resources.updated");
+        const exited = yield* awaitObservedType(subscription.observed, "session.exited");
+
+        expect(error).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+        expect(event).toMatchObject({
+          payload: { available: false, skills: [], prompts: [], commands: [] },
+        });
+        expect(exited).toMatchObject({
+          payload: {
+            exitKind: "error",
+            reason:
+              "Prime Agent session closed after session resources could not be reloaded safely.",
+          },
+        });
+        expect(yield* adapter.hasSession(threadId)).toBe(false);
+        expect(captures.disposeCount).toBe(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects resource reload for supervised sessions before runtime mutation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+
+        const error = yield* adapter.reloadSessionResources!(threadId).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterUnsupportedOperationError",
+          operation: "reloadSessionResources",
+        });
+        expect(captures.reloadCount).toBe(0);
       }),
     ).pipe(Effect.provide(testLayer)),
   );

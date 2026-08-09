@@ -50,6 +50,7 @@ import {
   AssetWorkspaceContextResolutionError,
   RpcClientId,
   EnvironmentAuthorizationError,
+  ProviderSessionResourcesReloadError,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -79,6 +80,7 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import {
   ProviderLoginCoordinator,
@@ -374,6 +376,7 @@ const makeWsRpcLayer = (
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const providerService = yield* ProviderService.ProviderService;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const providerLogin = yield* ProviderLoginCoordinator;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
@@ -1452,6 +1455,28 @@ const makeWsRpcLayer = (
               : providerRegistry.refresh()
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.providerReloadSessionResources]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerReloadSessionResources,
+            providerService.reloadSessionResources(input).pipe(
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderUnsupportedError" ||
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "unsupported"
+                    : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                        error._tag === "ProviderAdapterSessionClosedError" ||
+                        error._tag === "ProviderSessionNotFoundError" ||
+                        error._tag === "ProviderValidationError"
+                      ? "session-not-ready"
+                      : error._tag === "ProviderAdapterValidationError"
+                        ? "busy"
+                        : "reload-failed";
+                return new ProviderSessionResourcesReloadError({ reason });
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
           ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(

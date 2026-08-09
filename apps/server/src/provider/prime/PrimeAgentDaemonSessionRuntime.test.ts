@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 
 import {
@@ -91,6 +92,7 @@ function fixture(options?: {
   readonly attachFailure?: boolean;
   readonly resourceSnapshot?: unknown;
   readonly commands?: unknown;
+  readonly reloadImpl?: () => Promise<unknown>;
   readonly rlmDepth?: number;
   readonly sessionStats?: unknown;
 }) {
@@ -250,7 +252,7 @@ function fixture(options?: {
     }
     reload(): Promise<unknown> {
       captures.connectionCalls.push({ method: "reload", args: [] });
-      return Promise.resolve(undefined);
+      return options?.reloadImpl?.() ?? Promise.resolve(undefined);
     }
     getSessionStats(): Promise<unknown> {
       captures.connectionCalls.push({ method: "getSessionStats", args: [] });
@@ -505,6 +507,102 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         }),
       );
     }),
+  );
+
+  it.effect("awaits reload before reading and sanitizing the replacement catalog", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let releaseReload: (() => void) | undefined;
+        const reloadGate = new Promise<void>((resolve) => {
+          releaseReload = resolve;
+        });
+        const { captures, make } = fixture({
+          reloadImpl: async () => {
+            await reloadGate;
+            return undefined;
+          },
+          resourceSnapshot: {
+            skills: [],
+            prompts: [],
+            extensions: [{ path: "/private/extension.mjs" }],
+            diagnostics: { extensions: [] },
+          },
+          commands: [
+            {
+              name: "skill:review",
+              registeredName: "private-name",
+              source: "skill",
+              sourceInfo: { path: "/private/review/SKILL.md", scope: "project" },
+            },
+          ],
+        });
+        const runtime = yield* make();
+        captures.connectionCalls.splice(0);
+        const fiber = yield* runtime.reloadResources.pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(captures.connectionCalls).toEqual([{ method: "reload", args: [] }]);
+        releaseReload?.();
+        const resources = yield* Fiber.join(fiber);
+        expect(captures.connectionCalls.map((call) => call.method)).toEqual([
+          "reload",
+          "getResourceSnapshot",
+          "getCommands",
+        ]);
+        expect(resources.commands).toEqual([{ name: "skill:review", source: "skill" }]);
+        expect(resources.commands[0]).not.toHaveProperty("registeredName");
+        expect(resources.commands[0]).not.toHaveProperty("sourceInfo");
+      }),
+    ),
+  );
+
+  it.effect("rejects invalid explicit reload results without reading a replacement catalog", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({
+          reloadImpl: () => Promise.resolve({ raw: "secret" }),
+        });
+        const runtime = yield* make();
+        captures.connectionCalls.splice(0);
+        const error = yield* runtime.reloadResources.pipe(Effect.flip);
+        expect(error).toMatchObject({
+          operation: "reload-resources",
+          reason: "invalid-response",
+        });
+        expect(captures.connectionCalls).toEqual([{ method: "reload", args: [] }]);
+        expect(error.detail).not.toContain("secret");
+      }),
+    ),
+  );
+
+  it.effect("rejects resource reload before mutating a supervised session", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({
+          rawSnapshot: { ...snapshot(), children: [] },
+          resourceSnapshot: {
+            skills: [],
+            prompts: [],
+            extensions: [{ path: "/state/pylon/permission.mjs" }],
+            diagnostics: { extensions: [] },
+          },
+          commands: [
+            {
+              name: "pylon-permission-gate-v1",
+              source: "extension",
+              sourceInfo: { path: "/state/pylon/permission.mjs" },
+            },
+          ],
+        });
+        const runtime = yield* make(undefined, ["/state/pylon/permission.mjs"], {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        });
+        captures.connectionCalls.splice(0);
+        const error = yield* runtime.reloadResources.pipe(Effect.flip);
+        expect(error).toMatchObject({ operation: "reload-resources", reason: "invalid-input" });
+        expect(captures.connectionCalls).toEqual([]);
+      }),
+    ),
   );
 
   it.effect("passes only explicitly configured extension paths to session creation", () =>

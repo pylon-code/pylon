@@ -75,7 +75,7 @@ const AutomationOperations = ForwardCompatibleArray(
   ]),
 );
 const ResourceOperations = ForwardCompatibleArray(
-  Schema.Literals(["skills", "prompts", "extensions", "packages", "mcp", "commands"]),
+  Schema.Literals(["skills", "prompts", "extensions", "packages", "mcp", "commands", "reload"]),
 );
 const InputQueueOperations = ForwardCompatibleArray(
   Schema.Literals(["observe", "follow-up", "steer", "remove", "clear", "set-modes", "reorder"]),
