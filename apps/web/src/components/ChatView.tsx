@@ -1260,6 +1260,10 @@ function ChatViewContent(props: ChatViewProps) {
     threadEnvironment.reloadSessionResources,
     "session resource reload",
   );
+  const setThreadSessionAgentDepth = useAtomCommand(
+    threadEnvironment.setSessionAgentDepth,
+    "session agent depth update",
+  );
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -5539,6 +5543,32 @@ function ChatViewContent(props: ChatViewProps) {
     });
   }, [activeThreadId, environmentId, reloadThreadSessionResources, setThreadError]);
 
+  const onSetSessionAgentDepth = useCallback(
+    async (maxDepth: number) => {
+      if (!activeThreadId) return;
+      const result = await setThreadSessionAgentDepth({
+        environmentId,
+        input: { threadId: activeThreadId, maxDepth },
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          setThreadError(activeThreadId, "Could not update the session agent spawn depth.");
+        }
+        return;
+      }
+      setThreadError(activeThreadId, null);
+      toastManager.add({
+        type: "success",
+        title: `Agent spawn depth set to ${result.value.maxDepth}`,
+        description:
+          result.value.maxDepth === 0
+            ? "Future recursive agent spawning is disabled."
+            : "The setting applies to future subagent spawns in this session.",
+      });
+    },
+    [activeThreadId, environmentId, setThreadError, setThreadSessionAgentDepth],
+  );
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
@@ -6874,6 +6904,7 @@ function ChatViewContent(props: ChatViewProps) {
                             onSend={onSend}
                             onInterrupt={onInterrupt}
                             onReloadSessionResources={onReloadSessionResources}
+                            onSetSessionAgentDepth={onSetSessionAgentDepth}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             threadHandoffOffer={threadHandoffOffer}
                             isContinuingThreadOnAccount={isContinuingThreadOnAccount}

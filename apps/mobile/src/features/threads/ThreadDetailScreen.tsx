@@ -1,5 +1,6 @@
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
+import type { SessionAgentDepthSnapshot } from "@t3tools/client-runtime/state/session-agent-depth";
 import type { SessionResourcesSnapshot } from "@t3tools/client-runtime/state/session-resources";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
@@ -98,6 +99,7 @@ export interface ThreadDetailScreenProps {
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
   readonly contextWindow: ContextWindowSnapshot | null;
   readonly sessionResources: SessionResourcesSnapshot | null;
+  readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
   readonly activeWorkStartedAt: string | null;
   readonly activePendingApproval: PendingApproval | null;
   readonly respondingApprovalId: ApprovalRequestId | null;
@@ -133,6 +135,7 @@ export interface ThreadDetailScreenProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onReloadSessionResources: () => Promise<void>;
+  readonly onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
@@ -793,6 +796,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 queueCount={props.selectedThreadQueueCount}
                 contextWindow={props.contextWindow}
                 sessionResources={props.sessionResources}
+                sessionAgentDepth={props.sessionAgentDepth}
                 activeThreadBusy={props.activeThreadBusy}
                 environmentId={props.environmentId}
                 projectCwd={props.projectWorkspaceRoot}
@@ -803,6 +807,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onRemoveDraftImage={props.onRemoveDraftImage}
                 onStopThread={props.onStopThread}
                 onReloadSessionResources={props.onReloadSessionResources}
+                onSetSessionAgentDepth={props.onSetSessionAgentDepth}
                 onSendMessage={handleSendMessage}
                 onReconnectEnvironment={props.onReconnectEnvironment}
                 onUpdateModelSelection={props.onUpdateThreadModelSelection}

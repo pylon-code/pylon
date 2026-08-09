@@ -459,6 +459,33 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "session.agent-depth.updated": {
+      return [
+        {
+          id: EventId.make(
+            `session-agent-depth:${event.providerInstanceId ?? event.provider}:${event.threadId}`,
+          ),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "session.agent-depth.updated",
+          summary: "Agent spawn depth updated",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId === undefined
+              ? {}
+              : { providerInstanceId: event.providerInstanceId }),
+            maxDepth: event.payload.maxDepth,
+            source: event.payload.source,
+            writable: event.payload.writable,
+            settable: event.payload.settable,
+            maxSettableDepth: event.payload.maxSettableDepth,
+          },
+          turnId: null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "session.resources.updated": {
       return [
         {

@@ -263,6 +263,7 @@ const DeprecationNoticeType = Schema.Literal("deprecation.notice");
 const FilesPersistedType = Schema.Literal("files.persisted");
 const ToolDeniedType = Schema.Literal("tool.denied");
 const SessionResourcesUpdatedType = Schema.Literal("session.resources.updated");
+const SessionAgentDepthUpdatedType = Schema.Literal("session.agent-depth.updated");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 
@@ -861,6 +862,29 @@ export const SessionResourcesUpdatedPayload = Schema.Struct({
 });
 export type SessionResourcesUpdatedPayload = typeof SessionResourcesUpdatedPayload.Type;
 
+export const PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE = 4;
+export const ProviderSessionAgentDepthSource = Schema.Literals([
+  "default",
+  "environment",
+  "global",
+  "inherited",
+  "session",
+  "policy",
+]);
+export type ProviderSessionAgentDepthSource = typeof ProviderSessionAgentDepthSource.Type;
+
+/** Safe, provider-neutral recursive-agent depth state for one active session. */
+export const SessionAgentDepthUpdatedPayload = Schema.Struct({
+  maxDepth: NonNegativeInt,
+  source: ProviderSessionAgentDepthSource,
+  writable: Schema.Boolean,
+  settable: Schema.Boolean,
+  maxSettableDepth: NonNegativeInt.check(
+    Schema.isLessThanOrEqualTo(PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE),
+  ),
+});
+export type SessionAgentDepthUpdatedPayload = typeof SessionAgentDepthUpdatedPayload.Type;
+
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(Schema.Unknown),
@@ -1265,6 +1289,16 @@ const ProviderRuntimeSessionResourcesUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionResourcesUpdatedEvent =
   typeof ProviderRuntimeSessionResourcesUpdatedEvent.Type;
 
+const ProviderRuntimeSessionAgentDepthUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionAgentDepthUpdatedType,
+  payload: SessionAgentDepthUpdatedPayload,
+});
+export type ProviderRuntimeSessionAgentDepthUpdatedEvent =
+  typeof ProviderRuntimeSessionAgentDepthUpdatedEvent.Type;
+
 const ProviderRuntimeWarningEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: RuntimeWarningType,
@@ -1332,6 +1366,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeFilesPersistedEvent,
   ProviderRuntimeToolDeniedEvent,
   ProviderRuntimeSessionResourcesUpdatedEvent,
+  ProviderRuntimeSessionAgentDepthUpdatedEvent,
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,
 ]);

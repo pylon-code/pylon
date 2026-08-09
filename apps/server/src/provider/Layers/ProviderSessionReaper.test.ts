@@ -169,6 +169,8 @@ describe("ProviderSessionReaper", () => {
       respondToUserInput: () => unsupported(),
       respondToInteraction: () => unsupported(),
       reloadSessionResources: () => unsupported(),
+      getSessionAgentDepth: () => unsupported(),
+      setSessionAgentDepth: () => unsupported(),
       stopSession,
       listSessions: () => Effect.succeed([]),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),

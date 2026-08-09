@@ -170,6 +170,28 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     > => Effect.succeed({ available: true, skills: [], prompts: [], commands: [] }),
   );
 
+  let agentDepth = {
+    maxDepth: 2,
+    source: "session" as const,
+    writable: true,
+    settable: true,
+    maxSettableDepth: 4,
+  };
+  const getSessionAgentDepth = vi.fn(
+    (_threadId: ThreadId): Effect.Effect<typeof agentDepth, ProviderAdapterError> =>
+      Effect.sync(() => agentDepth),
+  );
+  const setSessionAgentDepth = vi.fn(
+    (
+      _threadId: ThreadId,
+      maxDepth: number,
+    ): Effect.Effect<typeof agentDepth, ProviderAdapterError> =>
+      Effect.sync(() => {
+        agentDepth = { ...agentDepth, maxDepth };
+        return agentDepth;
+      }),
+  );
+
   const stopSession = vi.fn(
     (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
       Effect.sync(() => {
@@ -229,6 +251,8 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     respondToUserInput,
     respondToInteraction,
     reloadSessionResources,
+    getSessionAgentDepth,
+    setSessionAgentDepth,
     stopSession,
     listSessions,
     hasSession,
@@ -263,6 +287,8 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     sendTurn,
     respondToInteraction,
     reloadSessionResources,
+    getSessionAgentDepth,
+    setSessionAgentDepth,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -941,6 +967,22 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.deepEqual(resources, { available: true, skills: [], prompts: [], commands: [] });
       assert.deepEqual(routing.codex.reloadSessionResources.mock.calls, [[session.threadId]]);
 
+      const invalidDepth = yield* provider
+        .setSessionAgentDepth({ threadId: session.threadId, maxDepth: 5 })
+        .pipe(Effect.flip);
+      assert.equal(invalidDepth._tag, "ProviderValidationError");
+      assert.deepEqual(routing.codex.setSessionAgentDepth.mock.calls, []);
+
+      const depth = yield* provider.getSessionAgentDepth({ threadId: session.threadId });
+      const updatedDepth = yield* provider.setSessionAgentDepth({
+        threadId: session.threadId,
+        maxDepth: 3,
+      });
+      assert.equal(depth.maxDepth, 2);
+      assert.equal(updatedDepth.maxDepth, 3);
+      assert.deepEqual(routing.codex.getSessionAgentDepth.mock.calls, [[session.threadId]]);
+      assert.deepEqual(routing.codex.setSessionAgentDepth.mock.calls, [[session.threadId, 3]]);
+
       yield* provider.rollbackConversation({
         threadId: session.threadId,
         numTurns: 0,
@@ -954,6 +996,13 @@ routing.layer("ProviderServiceLive routing", (it) => {
         .reloadSessionResources({ threadId: session.threadId })
         .pipe(Effect.flip);
       assert.equal(reloadError._tag, "ProviderValidationError");
+      const inactiveDepthError = yield* provider
+        .setSessionAgentDepth({ threadId: session.threadId, maxDepth: 1 })
+        .pipe(Effect.flip);
+      assert.equal(inactiveDepthError._tag, "ProviderValidationError");
+      if (inactiveDepthError._tag === "ProviderValidationError") {
+        assert.equal(inactiveDepthError.reason, undefined);
+      }
       assert.equal(routing.codex.startSession.mock.calls.length, 0);
 
       yield* provider.sendTurn({

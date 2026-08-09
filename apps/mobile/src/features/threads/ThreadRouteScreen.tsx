@@ -8,12 +8,13 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
 import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
+import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { Platform, ScrollView, View } from "react-native";
+import { Alert, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { useEnvironmentQuery } from "../../state/query";
@@ -217,6 +218,10 @@ function ThreadRouteContent(
   const reloadThreadSessionResources = useAtomCommand(
     threadEnvironment.reloadSessionResources,
     "session resource reload",
+  );
+  const setThreadSessionAgentDepth = useAtomCommand(
+    threadEnvironment.setSessionAgentDepth,
+    "session agent depth update",
   );
   const navigation = useNavigation();
   const params = props.route.params;
@@ -509,6 +514,23 @@ function ThreadRouteContent(
     });
   }, [reloadThreadSessionResources, selectedThread]);
 
+  const handleSetSessionAgentDepth = useCallback(
+    async (maxDepth: number) => {
+      if (!selectedThread) return;
+      const result = await setThreadSessionAgentDepth({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, maxDepth },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        Alert.alert(
+          "Agent depth not changed",
+          "Pylon could not update this session. Confirm the session is idle and try again.",
+        );
+      }
+    },
+    [selectedThread, setThreadSessionAgentDepth],
+  );
+
   const handleOpenTerminal = useCallback(
     (nextTerminalId?: string | null) => {
       terminalDebugLog("terminal-menu:open-existing", {
@@ -787,6 +809,7 @@ function ThreadRouteContent(
           selectedThreadFeed={composer.selectedThreadFeed}
           contextWindow={composer.selectedThreadContextWindow}
           sessionResources={composer.selectedThreadResources}
+          sessionAgentDepth={composer.selectedThreadAgentDepth}
           activeWorkStartedAt={composer.activeWorkStartedAt}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
@@ -819,6 +842,7 @@ function ThreadRouteContent(
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
           onReloadSessionResources={handleReloadSessionResources}
+          onSetSessionAgentDepth={handleSetSessionAgentDepth}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

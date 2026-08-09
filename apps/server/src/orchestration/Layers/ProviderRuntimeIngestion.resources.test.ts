@@ -93,3 +93,43 @@ describe("session resource activity projection", () => {
     assert.equal(encoded.includes("raw"), false);
   });
 });
+
+describe("session agent depth activity projection", () => {
+  it("uses one provider-and-thread-scoped replacement identity", () => {
+    const makeEvent = (
+      eventId: string,
+      maxDepth: number,
+    ): Extract<ProviderRuntimeEvent, { readonly type: "session.agent-depth.updated" }> => ({
+      type: "session.agent-depth.updated",
+      eventId: EventId.make(eventId),
+      provider,
+      providerInstanceId,
+      threadId,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      payload: {
+        maxDepth,
+        source: "session",
+        writable: true,
+        settable: true,
+        maxSettableDepth: 4,
+      },
+    });
+    const [first] = runtimeEventToActivities(makeEvent("depth-1", 2));
+    const [replacement] = runtimeEventToActivities(makeEvent("depth-2", 3));
+
+    assert.equal(first?.id, "session-agent-depth:prime-work:thread-1");
+    assert.equal(replacement?.id, first?.id);
+    assert.equal(replacement?.kind, "session.agent-depth.updated");
+    assert.equal(replacement?.turnId, null);
+    assert.deepStrictEqual(replacement?.payload, {
+      provider: "primeAgent",
+      providerInstanceId: "prime-work",
+      maxDepth: 3,
+      source: "session",
+      writable: true,
+      settable: true,
+      maxSettableDepth: 4,
+    });
+    assert.equal(decodeSessionActivity(replacement).kind, "session.agent-depth.updated");
+  });
+});

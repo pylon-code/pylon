@@ -67,11 +67,17 @@ import {
   OrchestrationGetWorkflowScriptError,
 } from "./orchestration.ts";
 import {
+  ProviderGetSessionAgentDepthInput,
   ProviderReloadSessionResourcesInput,
+  ProviderSessionAgentDepthError,
   ProviderSessionResourcesReloadError,
+  ProviderSetSessionAgentDepthInput,
 } from "./provider.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
-import { SessionResourcesUpdatedPayload } from "./providerRuntime.ts";
+import {
+  SessionAgentDepthUpdatedPayload,
+  SessionResourcesUpdatedPayload,
+} from "./providerRuntime.ts";
 import {
   PullRequestActionInput,
   PullRequestActivity,
@@ -261,6 +267,8 @@ export const WS_METHODS = {
 
   // Provider session methods
   providerReloadSessionResources: "provider.reloadSessionResources",
+  providerGetSessionAgentDepth: "provider.getSessionAgentDepth",
+  providerSetSessionAgentDepth: "provider.setSessionAgentDepth",
 
   // Server meta
   serverProbe: "server.probe",
@@ -374,6 +382,18 @@ export const WsProviderReloadSessionResourcesRpc = Rpc.make(
     error: Schema.Union([ProviderSessionResourcesReloadError, EnvironmentAuthorizationError]),
   },
 );
+
+export const WsProviderGetSessionAgentDepthRpc = Rpc.make(WS_METHODS.providerGetSessionAgentDepth, {
+  payload: ProviderGetSessionAgentDepthInput,
+  success: SessionAgentDepthUpdatedPayload,
+  error: Schema.Union([ProviderSessionAgentDepthError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderSetSessionAgentDepthRpc = Rpc.make(WS_METHODS.providerSetSessionAgentDepth, {
+  payload: ProviderSetSessionAgentDepthInput,
+  success: SessionAgentDepthUpdatedPayload,
+  error: Schema.Union([ProviderSessionAgentDepthError, EnvironmentAuthorizationError]),
+});
 
 export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
   payload: ServerProviderUpdateInput,
@@ -1030,6 +1050,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
   WsProviderReloadSessionResourcesRpc,
+  WsProviderGetSessionAgentDepthRpc,
+  WsProviderSetSessionAgentDepthRpc,
   WsServerUpdateProviderRpc,
   WsServerStartProviderLoginRpc,
   WsServerSubmitProviderLoginCodeRpc,

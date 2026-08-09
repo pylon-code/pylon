@@ -12,9 +12,12 @@
 import {
   ModelSelection,
   NonNegativeInt,
+  PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   ThreadId,
+  ProviderGetSessionAgentDepthInput,
   ProviderInterruptTurnInput,
   ProviderReloadSessionResourcesInput,
+  ProviderSetSessionAgentDepthInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRespondToInteractionInput,
@@ -964,6 +967,76 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* reload(routed.threadId);
   });
 
+  const getSessionAgentDepth: ProviderServiceMethod<"getSessionAgentDepth"> = Effect.fn(
+    "getSessionAgentDepth",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.getSessionAgentDepth",
+      schema: ProviderGetSessionAgentDepthInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.getSessionAgentDepth",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.getSessionAgentDepth",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const getDepth = routed.adapter.getSessionAgentDepth;
+    if (getDepth === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    return yield* getDepth(routed.threadId);
+  });
+
+  const setSessionAgentDepth: ProviderServiceMethod<"setSessionAgentDepth"> = Effect.fn(
+    "setSessionAgentDepth",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.setSessionAgentDepth",
+      schema: ProviderSetSessionAgentDepthInput,
+      payload: rawInput,
+    });
+    if (
+      !Number.isInteger(input.maxDepth) ||
+      input.maxDepth < 0 ||
+      input.maxDepth > PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE
+    ) {
+      return yield* new ProviderValidationError({
+        operation: "ProviderService.setSessionAgentDepth",
+        reason: "invalid-input",
+        issue: `Agent depth must be an integer from 0 to ${PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE}.`,
+      });
+    }
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.setSessionAgentDepth",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.setSessionAgentDepth",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const setDepth = routed.adapter.setSessionAgentDepth;
+    if (setDepth === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "set-session-agent-depth",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+      "provider.agent_depth": input.maxDepth,
+    });
+    return yield* setDepth(routed.threadId, input.maxDepth);
+  });
+
   const stopSession: ProviderServiceMethod<"stopSession"> = Effect.fn("stopSession")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1214,6 +1287,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToUserInput,
     respondToInteraction,
     reloadSessionResources,
+    getSessionAgentDepth,
+    setSessionAgentDepth,
     stopSession,
     listSessions,
     getCapabilities,

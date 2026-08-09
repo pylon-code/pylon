@@ -113,7 +113,10 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
-import { ProviderAdapterUnsupportedOperationError } from "./provider/Errors.ts";
+import {
+  ProviderAdapterUnsupportedOperationError,
+  ProviderValidationError,
+} from "./provider/Errors.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -4062,6 +4065,140 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         prompts: [],
         commands: [],
       });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes authenticated session agent depth reads and writes", () =>
+    Effect.gen(function* () {
+      let observedDepth: number | undefined;
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            getSessionAgentDepth: ({ threadId }) =>
+              Effect.succeed({
+                maxDepth: threadId === defaultThreadId ? 2 : 0,
+                source: "session" as const,
+                writable: true,
+                settable: true,
+                maxSettableDepth: 4,
+              }),
+            setSessionAgentDepth: ({ maxDepth }) =>
+              Effect.sync(() => {
+                observedDepth = maxDepth;
+                return {
+                  maxDepth,
+                  source: "session" as const,
+                  writable: true,
+                  settable: true,
+                  maxSettableDepth: 4,
+                };
+              }),
+          },
+        },
+      });
+      const { cookie } = yield* bootstrapBrowserSession();
+      assert.isDefined(cookie);
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+
+      const [current, updated] = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.all([
+            client[WS_METHODS.providerGetSessionAgentDepth]({ threadId: defaultThreadId }),
+            client[WS_METHODS.providerSetSessionAgentDepth]({
+              threadId: defaultThreadId,
+              maxDepth: 3,
+            }),
+          ]),
+        ),
+      );
+
+      assert.equal(current.maxDepth, 2);
+      assert.equal(updated.maxDepth, 3);
+      assert.equal(observedDepth, 3);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("maps invalid agent depth writes to the typed RPC reason", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            setSessionAgentDepth: () =>
+              Effect.fail(
+                new ProviderValidationError({
+                  operation: "ProviderService.setSessionAgentDepth",
+                  reason: "invalid-input",
+                  issue: "Agent depth is outside the supported range.",
+                }),
+              ),
+          },
+        },
+      });
+      const { cookie } = yield* bootstrapBrowserSession();
+      assert.isDefined(cookie);
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.providerSetSessionAgentDepth]({
+              threadId: defaultThreadId,
+              maxDepth: 5,
+            }),
+          ),
+        ),
+      );
+
+      assert.equal(error._tag, "ProviderSessionAgentDepthError");
+      if (error._tag === "ProviderSessionAgentDepthError") {
+        assert.equal(error.reason, "invalid-depth");
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("maps policy-fixed agent depth writes to the typed RPC reason", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            setSessionAgentDepth: () =>
+              Effect.fail(
+                new ProviderAdapterUnsupportedOperationError({
+                  provider: "primeAgent",
+                  operation: "setSessionAgentDepth",
+                }),
+              ),
+          },
+        },
+      });
+      const { cookie } = yield* bootstrapBrowserSession();
+      assert.isDefined(cookie);
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.providerSetSessionAgentDepth]({
+              threadId: defaultThreadId,
+              maxDepth: 1,
+            }),
+          ),
+        ),
+      );
+
+      assert.equal(error._tag, "ProviderSessionAgentDepthError");
+      if (error._tag === "ProviderSessionAgentDepthError") {
+        assert.equal(error.reason, "policy-forbidden");
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

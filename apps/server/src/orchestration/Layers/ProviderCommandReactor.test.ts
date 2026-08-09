@@ -320,6 +320,8 @@ describe("ProviderCommandReactor", () => {
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       respondToInteraction,
       reloadSessionResources: () => unsupported(),
+      getSessionAgentDepth: () => unsupported(),
+      setSessionAgentDepth: () => unsupported(),
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       listSessions: () => Effect.succeed(runtimeSessions),
       getCapabilities: (_provider) =>

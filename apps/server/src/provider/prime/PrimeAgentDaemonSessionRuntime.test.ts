@@ -94,6 +94,8 @@ function fixture(options?: {
   readonly commands?: unknown;
   readonly reloadImpl?: () => Promise<unknown>;
   readonly rlmDepth?: number;
+  readonly rlmStatus?: unknown;
+  readonly setRlmImpl?: (maxDepth: number) => Promise<unknown>;
   readonly sessionStats?: unknown;
 }) {
   const captures: Captures = {
@@ -274,11 +276,16 @@ function fixture(options?: {
     }
     getRlmMaxDepthStatus(): Promise<unknown> {
       captures.connectionCalls.push({ method: "getRlmMaxDepthStatus", args: [] });
-      return Promise.resolve({ maxDepth: options?.rlmDepth ?? 0, source: "chat" });
+      return Promise.resolve(
+        options?.rlmStatus ?? { maxDepth: options?.rlmDepth ?? 0, source: "chat" },
+      );
     }
     setRlmMaxDepth(maxDepth: number): Promise<unknown> {
       captures.connectionCalls.push({ method: "setRlmMaxDepth", args: [maxDepth] });
-      return Promise.resolve({ maxDepth, source: "chat", globalSaved: false });
+      return (
+        options?.setRlmImpl?.(maxDepth) ??
+        Promise.resolve({ maxDepth, source: "chat", globalSaved: false })
+      );
     }
     dispose(): Promise<unknown> {
       captures.disposeCount += 1;
@@ -547,10 +554,18 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           "reload",
           "getResourceSnapshot",
           "getCommands",
+          "getRlmMaxDepthStatus",
         ]);
-        expect(resources.commands).toEqual([{ name: "skill:review", source: "skill" }]);
-        expect(resources.commands[0]).not.toHaveProperty("registeredName");
-        expect(resources.commands[0]).not.toHaveProperty("sourceInfo");
+        expect(resources.resources.commands).toEqual([{ name: "skill:review", source: "skill" }]);
+        expect(resources.resources.commands[0]).not.toHaveProperty("registeredName");
+        expect(resources.resources.commands[0]).not.toHaveProperty("sourceInfo");
+        expect(resources.agentDepth).toEqual({
+          maxDepth: 0,
+          source: "session",
+          writable: true,
+          settable: true,
+          maxSettableDepth: 4,
+        });
       }),
     ),
   );
@@ -570,6 +585,63 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         });
         expect(captures.connectionCalls).toEqual([{ method: "reload", args: [] }]);
         expect(error.detail).not.toContain("secret");
+      }),
+    ),
+  );
+
+  it.effect("reads and updates bounded per-session agent depth without global persistence", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({ rlmDepth: 2 });
+        const runtime = yield* make();
+        expect(runtime.initialAgentDepth).toEqual({
+          maxDepth: 2,
+          source: "session",
+          writable: true,
+          settable: true,
+          maxSettableDepth: 4,
+        });
+        captures.connectionCalls.splice(0);
+
+        const current = yield* runtime.getAgentDepth;
+        const updated = yield* runtime.setAgentDepth(4);
+        const invalid = yield* runtime.setAgentDepth(5).pipe(Effect.flip);
+
+        expect(current.maxDepth).toBe(2);
+        expect(updated).toEqual({
+          maxDepth: 4,
+          source: "session",
+          writable: true,
+          settable: true,
+          maxSettableDepth: 4,
+        });
+        expect(invalid).toMatchObject({
+          operation: "set-agent-depth",
+          reason: "invalid-input",
+        });
+        expect(captures.connectionCalls).toEqual([
+          { method: "getRlmMaxDepthStatus", args: [] },
+          { method: "setRlmMaxDepth", args: [4] },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("rejects invalid native agent depth responses", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({
+          setRlmImpl: () => Promise.resolve({ maxDepth: 2, source: "chat", globalSaved: false }),
+        });
+        const runtime = yield* make();
+        captures.connectionCalls.splice(0);
+
+        const error = yield* runtime.setAgentDepth(3).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          operation: "set-agent-depth",
+          reason: "invalid-response",
+        });
+        expect(captures.connectionCalls).toEqual([{ method: "setRlmMaxDepth", args: [3] }]);
       }),
     ),
   );
@@ -645,6 +717,13 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           skills: [{ name: "review", description: "Review changes", scope: "project" }],
           prompts: [],
           commands: [],
+        });
+        expect(runtime.initialAgentDepth).toEqual({
+          maxDepth: 0,
+          source: "policy",
+          writable: false,
+          settable: false,
+          maxSettableDepth: 4,
         });
         expect(captures.commands[0]).toMatchObject({
           config: {
@@ -910,6 +989,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           [
             ["getResourceSnapshot", []],
             ["getCommands", []],
+            ["getRlmMaxDepthStatus", []],
             ["prompt", ["prompt", { queueIfBusy: false, images, signal }]],
             ["steer", ["steer", images]],
             ["followUp", ["follow", images]],

@@ -21,6 +21,11 @@ import {
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import {
+  canSetSessionAgentDepth,
+  deriveLatestSessionAgentDepth,
+  supportsSessionAgentDepth,
+} from "@t3tools/client-runtime/state/session-agent-depth";
+import {
   deriveLatestSessionResources,
   formatProviderSlashCommandDescription,
   resolveSessionSlashCommands,
@@ -631,6 +636,7 @@ export interface ChatComposerProps {
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
   onReloadSessionResources: () => Promise<void>;
+  onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
   onImplementPlanInNewThread: () => void;
   onContinueThreadOnAccount: () => void;
   onRespondToApproval: (
@@ -717,6 +723,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onSend,
     onInterrupt,
     onReloadSessionResources,
+    onSetSessionAgentDepth,
     onImplementPlanInNewThread,
     onContinueThreadOnAccount,
     onRespondToApproval,
@@ -958,6 +965,49 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       setIsReloadingSessionResources(false);
     }
   }, [isReloadingSessionResources, onReloadSessionResources, sessionResourceReloadDisabled]);
+  const activeSessionInstanceId = activeThread?.session?.providerInstanceId;
+  const sessionAgentDepth = useMemo(
+    () =>
+      activeSessionInstanceId === undefined
+        ? null
+        : deriveLatestSessionAgentDepth(activeThreadActivities ?? [], activeSessionInstanceId),
+    [activeSessionInstanceId, activeThreadActivities],
+  );
+  const showSessionAgentDepth =
+    activeThreadId !== null &&
+    sessionAgentDepth !== null &&
+    supportsSessionAgentDepth(activeSessionProviderStatus);
+  const [isSettingSessionAgentDepth, setIsSettingSessionAgentDepth] = useState(false);
+  const sessionAgentDepthAccessibleLabel =
+    sessionAgentDepth === null || (sessionAgentDepth.writable && sessionAgentDepth.settable)
+      ? "Agent spawn depth"
+      : !sessionAgentDepth.writable
+        ? `Agent spawn depth ${sessionAgentDepth.maxDepth}, fixed by session policy`
+        : `Agent spawn depth ${sessionAgentDepth.maxDepth}, unavailable until the session is idle`;
+  const sessionAgentDepthDisabled =
+    !canSetSessionAgentDepth(activeSessionProviderStatus, sessionAgentDepth) ||
+    activeThread?.session?.status !== "ready" ||
+    phase === "running" ||
+    isSendBusy ||
+    isConnecting ||
+    environmentUnavailable !== null ||
+    isReloadingSessionResources ||
+    isSettingSessionAgentDepth;
+  const setSessionAgentDepth = useCallback(
+    async (value: string | null) => {
+      if (value === null || sessionAgentDepthDisabled) return;
+      const maxDepth = Number(value);
+      if (!Number.isInteger(maxDepth)) return;
+      setIsSettingSessionAgentDepth(true);
+      try {
+        await onSetSessionAgentDepth(maxDepth);
+      } finally {
+        setIsSettingSessionAgentDepth(false);
+      }
+    },
+    [onSetSessionAgentDepth, sessionAgentDepthDisabled],
+  );
+
   const sessionResources = useMemo(
     () => deriveLatestSessionResources(activeThreadActivities ?? [], selectedInstanceId),
     [activeThreadActivities, selectedInstanceId],
@@ -3348,6 +3398,75 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     />
                   </>
                 )}
+                {showSessionAgentDepth && sessionAgentDepth !== null ? (
+                  <Tooltip>
+                    <Select
+                      value={String(sessionAgentDepth.maxDepth)}
+                      disabled={sessionAgentDepthDisabled}
+                      onValueChange={(value) => void setSessionAgentDepth(value)}
+                    >
+                      <TooltipTrigger
+                        render={
+                          <ComposerSelectControl
+                            className="font-medium"
+                            aria-label={sessionAgentDepthAccessibleLabel}
+                          />
+                        }
+                      >
+                        <ComposerControlIcon icon={BotIcon} opticalSize="large" />
+                        <SelectValue>Depth {sessionAgentDepth.maxDepth}</SelectValue>
+                      </TooltipTrigger>
+                      <SelectPopup alignItemWithTrigger={false}>
+                        {sessionAgentDepth.maxDepth > sessionAgentDepth.maxSettableDepth ? (
+                          <SelectItem
+                            value={String(sessionAgentDepth.maxDepth)}
+                            disabled
+                            className="min-w-56 py-2"
+                          >
+                            <div className="grid gap-0.5">
+                              <span className="font-medium text-foreground">
+                                Depth {sessionAgentDepth.maxDepth}
+                              </span>
+                              <span className="text-muted-foreground text-xs leading-4">
+                                Current provider setting · choose a bounded value below
+                              </span>
+                            </div>
+                          </SelectItem>
+                        ) : null}
+                        {Array.from(
+                          { length: sessionAgentDepth.maxSettableDepth + 1 },
+                          (_, maxDepth) => (
+                            <SelectItem
+                              key={maxDepth}
+                              value={String(maxDepth)}
+                              className="min-w-56 py-2"
+                            >
+                              <div className="grid gap-0.5">
+                                <span className="font-medium text-foreground">
+                                  Depth {maxDepth}
+                                </span>
+                                <span className="text-muted-foreground text-xs leading-4">
+                                  {maxDepth === 0
+                                    ? "Do not spawn recursive agents"
+                                    : maxDepth === 1
+                                      ? "Allow direct child agents"
+                                      : `Allow up to ${maxDepth} recursive levels`}
+                                </span>
+                              </div>
+                            </SelectItem>
+                          ),
+                        )}
+                      </SelectPopup>
+                    </Select>
+                    <TooltipPopup side="top">
+                      {!sessionAgentDepth.writable
+                        ? `Agent spawn depth ${sessionAgentDepth.maxDepth}, fixed by session policy`
+                        : sessionAgentDepth.settable
+                          ? "Agent spawn depth for future subagents"
+                          : `Agent spawn depth ${sessionAgentDepth.maxDepth}, unavailable until the session is idle`}
+                    </TooltipPopup>
+                  </Tooltip>
+                ) : null}
                 {showSessionResourceReload ? (
                   <Tooltip>
                     <TooltipTrigger

@@ -12,9 +12,12 @@
  * @module ProviderService
  */
 import type {
+  ProviderGetSessionAgentDepthInput,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderReloadSessionResourcesInput,
+  ProviderSetSessionAgentDepthInput,
+  SessionAgentDepthUpdatedPayload,
   SessionResourcesUpdatedPayload,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -88,6 +91,14 @@ export interface ProviderServiceShape {
   readonly reloadSessionResources: (
     input: ProviderReloadSessionResourcesInput,
   ) => Effect.Effect<SessionResourcesUpdatedPayload, ProviderServiceError>;
+
+  readonly getSessionAgentDepth: (
+    input: ProviderGetSessionAgentDepthInput,
+  ) => Effect.Effect<SessionAgentDepthUpdatedPayload, ProviderServiceError>;
+
+  readonly setSessionAgentDepth: (
+    input: ProviderSetSessionAgentDepthInput,
+  ) => Effect.Effect<SessionAgentDepthUpdatedPayload, ProviderServiceError>;
 
   /**
    * Stop a provider session.

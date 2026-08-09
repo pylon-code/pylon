@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import { deriveLatestContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
+import { deriveLatestSessionAgentDepth } from "@t3tools/client-runtime/state/session-agent-depth";
 import { deriveLatestSessionResources } from "@t3tools/client-runtime/state/session-resources";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
@@ -122,6 +123,12 @@ export function useThreadComposerState() {
         : null,
     [modelSelection, selectedThreadDetail],
   );
+  const selectedThreadAgentDepth = useMemo(() => {
+    const instanceId = selectedThreadDetail?.session?.providerInstanceId;
+    return selectedThreadDetail && instanceId
+      ? deriveLatestSessionAgentDepth(selectedThreadDetail.activities, instanceId)
+      : null;
+  }, [selectedThreadDetail]);
   const selectedRuntimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
   const runtimeMode = selectedRuntimeMode
     ? resolveModelSelectionRuntimeMode(
@@ -376,6 +383,7 @@ export function useThreadComposerState() {
     selectedThreadFeed,
     selectedThreadContextWindow,
     selectedThreadResources,
+    selectedThreadAgentDepth,
     selectedThreadQueueCount,
     activeWorkStartedAt,
     draftMessage,

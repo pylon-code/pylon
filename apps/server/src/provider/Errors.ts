@@ -11,6 +11,7 @@ export class ProviderAdapterValidationError extends Schema.TaggedErrorClass<Prov
     provider: Schema.String,
     operation: Schema.String,
     issue: Schema.String,
+    reason: Schema.optional(Schema.Literals(["invalid-input", "busy"])),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -109,6 +110,7 @@ export class ProviderValidationError extends Schema.TaggedErrorClass<ProviderVal
   {
     operation: Schema.String,
     issue: Schema.String,
+    reason: Schema.optional(Schema.Literal("invalid-input")),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

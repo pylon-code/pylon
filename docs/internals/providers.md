@@ -47,7 +47,12 @@ presented. Native request IDs and policy tokens remain adapter-local. Provider-e
 bounded into the shared work-log item shape; incremental deltas and provider-private reasoning
 metadata are discarded at the Prime boundary. Public daemon session statistics are decoded behind
 an identity check and reduced to the active context estimate, current model window, and exact
-automatic-compaction setting. A typed provider-neutral clear barrier retracts stale meters while
+automatic-compaction setting. The adapter also decodes Prime's RLM depth status into a stable
+provider-neutral session activity and accepts only per-session depth writes from 0 through 4 while
+idle. Its authoritative settable-now flag also tracks native runs, bash, child agents, compaction,
+blocking interactions, approvals, and resource reloads so remote clients do not offer a write that
+would only fail as busy. The setter never passes the global persistence option, and supervised
+sessions remain policy-fixed at zero. A typed provider-neutral clear barrier retracts stale meters while
 Prime reports post-compaction context as unknown; aggregate retained-session counts and native
 identity, path, percentage, and cost fields are not conflated with active context usage. Prime
 compaction start and terminal events replace one provider-neutral activity row whose persisted
