@@ -258,6 +258,30 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    getSessionCompaction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:get-session-compaction",
+      tag: WS_METHODS.providerGetSessionCompaction,
+      scheduler,
+      concurrency,
+    }),
+    compactSession: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:compact-session",
+      tag: WS_METHODS.providerCompactSession,
+      scheduler,
+      concurrency,
+    }),
+    abortSessionCompaction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:abort-session-compaction",
+      tag: WS_METHODS.providerAbortSessionCompaction,
+      scheduler,
+      concurrency,
+    }),
+    setSessionAutoCompaction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:set-session-auto-compaction",
+      tag: WS_METHODS.providerSetSessionAutoCompaction,
+      scheduler,
+      concurrency,
+    }),
     stopSession: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:stop-session",
       execute: (input: StopThreadSessionInput) => stopThreadSession(input),

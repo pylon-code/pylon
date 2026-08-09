@@ -84,6 +84,7 @@ import {
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
+import { toProviderSessionCompactionError } from "./provider/providerSessionCompactionRpcError.ts";
 import { toProviderSessionInputQueueError } from "./provider/providerSessionInputQueueRpcError.ts";
 import {
   ProviderLoginCoordinator,
@@ -1541,6 +1542,39 @@ const makeWsRpcLayer = (
             providerService
               .setSessionInputQueueMode(input)
               .pipe(Effect.mapError(toProviderSessionInputQueueError)),
+            { "rpc.aggregate": "provider" },
+          ),
+
+        [WS_METHODS.providerGetSessionCompaction]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerGetSessionCompaction,
+            providerService
+              .getSessionCompaction(input)
+              .pipe(Effect.mapError(toProviderSessionCompactionError)),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerCompactSession]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerCompactSession,
+            providerService
+              .compactSession(input)
+              .pipe(Effect.mapError(toProviderSessionCompactionError)),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerAbortSessionCompaction]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerAbortSessionCompaction,
+            providerService
+              .abortSessionCompaction(input)
+              .pipe(Effect.mapError(toProviderSessionCompactionError)),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerSetSessionAutoCompaction]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerSetSessionAutoCompaction,
+            providerService
+              .setSessionAutoCompaction(input)
+              .pipe(Effect.mapError(toProviderSessionCompactionError)),
             { "rpc.aggregate": "provider" },
           ),
 

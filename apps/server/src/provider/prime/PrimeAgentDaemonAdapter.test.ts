@@ -173,6 +173,25 @@ interface FakeCaptures {
   inputQueueModeFailureAfterMutation: boolean;
   inputQueueModeTimedOut: boolean;
   inputQueueStatusFailure: boolean;
+  compactionAvailable: boolean;
+  autoCompactionWritable: boolean;
+  compactionState: {
+    isCompacting: boolean;
+    autoCompactionEnabled: boolean;
+    isStreaming: boolean;
+    isBashRunning: boolean;
+    inputQueueActive: boolean;
+    steeringCount: number;
+    followUpCount: number;
+  };
+  compactCalls: number;
+  compactObserved: Queue.Queue<void> | undefined;
+  compactRelease: Deferred.Deferred<void> | undefined;
+  abortCompactionCalls: number;
+  autoCompactionCalls: Array<boolean>;
+  compactionFailure: boolean;
+  compactionStateFailure: boolean;
+  compactionStateFailureAfterMutation: boolean;
   agentRoster: Array<Extract<PrimeDaemonEvent, { readonly _tag: "ChildUpdated" }>["child"]>;
   cancelAgentCalls: Array<string>;
   cancelAgentResult: boolean;
@@ -181,6 +200,7 @@ interface FakeCaptures {
   sessionStats: PrimeAgentDaemonSessionStats;
   promptObserved: Queue.Queue<void> | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
+  startupEvents: Array<PrimeDaemonEvent>;
 }
 
 function makeCaptures(): FakeCaptures {
@@ -229,6 +249,25 @@ function makeCaptures(): FakeCaptures {
     inputQueueModeFailureAfterMutation: false,
     inputQueueModeTimedOut: false,
     inputQueueStatusFailure: false,
+    compactionAvailable: true,
+    autoCompactionWritable: true,
+    compactionState: {
+      isCompacting: false,
+      autoCompactionEnabled: true,
+      isStreaming: false,
+      isBashRunning: false,
+      inputQueueActive: false,
+      steeringCount: 0,
+      followUpCount: 0,
+    },
+    compactCalls: 0,
+    compactObserved: undefined,
+    compactRelease: undefined,
+    abortCompactionCalls: 0,
+    autoCompactionCalls: [],
+    compactionFailure: false,
+    compactionStateFailure: false,
+    compactionStateFailureAfterMutation: false,
     agentRoster: [],
     cancelAgentCalls: [],
     cancelAgentResult: true,
@@ -239,6 +278,7 @@ function makeCaptures(): FakeCaptures {
     },
     promptObserved: undefined,
     queue: undefined,
+    startupEvents: [],
   };
 }
 
@@ -255,6 +295,7 @@ function fakeRuntimeFactory(
       const promptObserved = yield* Queue.unbounded<void>();
       captures.queue = queue;
       captures.promptObserved = promptObserved;
+      for (const event of captures.startupEvents) yield* Queue.offer(queue, event);
       const runtime: PrimeAgentDaemonSessionRuntime = {
         resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
         sessionId: "native-session-secret",
@@ -264,6 +305,48 @@ function fakeRuntimeFactory(
         initialResources: { available: true, skills: [], prompts: [], commands: [] },
         initialInputQueue: captures.inputQueue,
         inputQueueModesAvailable: captures.inputQueueModesAvailable,
+        compactionAvailable: captures.compactionAvailable,
+        autoCompactionWritable: captures.autoCompactionWritable,
+        initialCompactionState: captures.compactionState,
+        getCompactionState: Effect.suspend(() =>
+          captures.compactionStateFailure ||
+          (captures.compactionStateFailureAfterMutation && captures.autoCompactionCalls.length > 0)
+            ? Effect.fail(
+                new PrimeAgentDaemonSessionRuntimeError({
+                  operation: "get-compaction-state",
+                  reason: "request-failed",
+                  detail: "state failed",
+                }),
+              )
+            : Effect.succeed({ ...captures.compactionState }),
+        ),
+        compact: Effect.gen(function* () {
+          captures.compactCalls += 1;
+          if (captures.compactObserved !== undefined) {
+            yield* Queue.offer(captures.compactObserved, undefined);
+          }
+          if (captures.compactRelease !== undefined) {
+            yield* Deferred.await(captures.compactRelease);
+          }
+          if (captures.compactionFailure) {
+            return yield* new PrimeAgentDaemonSessionRuntimeError({
+              operation: "compact",
+              reason: "request-failed",
+              detail: "compaction failed",
+            });
+          }
+        }),
+        abortCompaction: Effect.sync(() => {
+          captures.abortCompactionCalls += 1;
+        }),
+        setAutoCompactionEnabled: (enabled) =>
+          Effect.sync(() => {
+            captures.autoCompactionCalls.push(enabled);
+            captures.compactionState = {
+              ...captures.compactionState,
+              autoCompactionEnabled: enabled,
+            };
+          }),
         initialAgentDepth:
           input.requiredExtension === undefined
             ? captures.agentDepth
@@ -813,6 +896,276 @@ describe("PrimeAgentDaemonAdapter", () => {
         ]);
         expect(captures.disposeCount).toBe(0);
         yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("projects and controls native context compaction without private result data", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.compactObserved = yield* Queue.unbounded<void>();
+        captures.compactRelease = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const initial = yield* awaitObservedType(
+          subscription.observed,
+          "session.compaction.updated",
+        );
+        expect(initial.payload).toEqual({
+          available: true,
+          status: "idle",
+          abortable: false,
+          autoCompactionEnabled: true,
+          autoCompactionWritable: true,
+          manualCompactionSettable: true,
+          autoCompactionScope: "session-and-provider-default",
+        });
+
+        const admitted = yield* adapter.compactSession!(threadId);
+        expect(admitted).toMatchObject({ status: "starting", manualCompactionSettable: false });
+        yield* Queue.take(captures.compactObserved);
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.compaction.updated")).payload,
+        ).toMatchObject({ status: "starting", manualCompactionSettable: false });
+        captures.compactionState = { ...captures.compactionState, isCompacting: true };
+        yield* offer(captures, { _tag: "CompactionStarted" });
+        const compacting = yield* awaitObservedType(
+          subscription.observed,
+          "session.compaction.updated",
+        );
+        expect(compacting.payload).toMatchObject({ status: "compacting" });
+        expect(encodeUnknownJson(compacting)).not.toContain("private summary");
+        expect(encodeUnknownJson(compacting)).not.toContain("/Users/");
+
+        const abortRequested = yield* adapter.abortSessionCompaction!(threadId);
+        expect(abortRequested.status).toBe("abort-requested");
+        expect(captures.abortCompactionCalls).toBe(1);
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.compaction.updated")).payload,
+        ).toMatchObject({ status: "abort-requested" });
+
+        captures.compactionState = { ...captures.compactionState, isCompacting: false };
+        yield* offer(captures, {
+          _tag: "CompactionCompleted",
+          outcome: "aborted",
+          willRetry: false,
+        });
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.compaction.updated")).payload,
+        ).toMatchObject({ status: "idle", manualCompactionSettable: false });
+        yield* Deferred.succeed(captures.compactRelease, undefined);
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.compaction.updated")).payload,
+        ).toMatchObject({ status: "idle", manualCompactionSettable: true });
+
+        const configured = yield* adapter.setSessionAutoCompaction!({
+          threadId,
+          enabled: false,
+        });
+        expect(configured).toMatchObject({
+          autoCompactionEnabled: false,
+          autoCompactionScope: "session-and-provider-default",
+        });
+        expect(captures.autoCompactionCalls).toEqual([false]);
+        expect(
+          encodeUnknownJson(
+            yield* awaitObservedType(subscription.observed, "session.compaction.updated"),
+          ),
+        ).not.toContain("native-session-secret");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("publishes buffered startup compaction after the initial idle snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.startupEvents.push({ _tag: "CompactionStarted" });
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const initial = yield* awaitObservedType(
+          subscription.observed,
+          "session.compaction.updated",
+        );
+        const buffered = yield* awaitObservedType(
+          subscription.observed,
+          "session.compaction.updated",
+        );
+        expect(initial.payload).toMatchObject({ status: "idle", abortable: false });
+        expect(buffered.payload).toMatchObject({ status: "compacting", abortable: true });
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("preserves abort acceptance for automatic compaction until terminal state", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.compaction.updated");
+        captures.compactionState = { ...captures.compactionState, isCompacting: true };
+        yield* offer(captures, { _tag: "CompactionStarted" });
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.compaction.updated")).payload,
+        ).toMatchObject({ status: "compacting", abortable: true });
+
+        const requested = yield* adapter.abortSessionCompaction!(threadId);
+        expect(requested).toMatchObject({ status: "abort-requested", abortable: true });
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.compaction.updated")).payload,
+        ).toMatchObject({ status: "abort-requested" });
+        expect(yield* adapter.getSessionCompaction!(threadId)).toMatchObject({
+          status: "abort-requested",
+        });
+
+        captures.compactionState = { ...captures.compactionState, isCompacting: false };
+        yield* offer(captures, {
+          _tag: "CompactionCompleted",
+          outcome: "aborted",
+          willRetry: false,
+        });
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.compaction.updated")).payload,
+        ).toMatchObject({ status: "idle", abortable: false });
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps a starting compaction abort pending until native terminal state", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.compactObserved = yield* Queue.unbounded<void>();
+        captures.compactRelease = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.compaction.updated");
+        yield* adapter.compactSession!(threadId);
+        yield* Queue.take(captures.compactObserved);
+        yield* awaitObservedType(subscription.observed, "session.compaction.updated");
+
+        const requested = yield* adapter.abortSessionCompaction!(threadId);
+        expect(requested).toMatchObject({ status: "abort-requested" });
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.compaction.updated")).payload,
+        ).toMatchObject({ status: "abort-requested" });
+        captures.compactionState = { ...captures.compactionState, isCompacting: true };
+        yield* offer(captures, { _tag: "CompactionStarted" });
+        yield* awaitObservedType(subscription.observed, "item.started");
+        expect(yield* adapter.getSessionCompaction!(threadId)).toMatchObject({
+          status: "abort-requested",
+        });
+
+        captures.compactionState = { ...captures.compactionState, isCompacting: false };
+        yield* offer(captures, {
+          _tag: "CompactionCompleted",
+          outcome: "aborted",
+          willRetry: false,
+        });
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.compaction.updated")).payload,
+        ).toMatchObject({ status: "idle", manualCompactionSettable: false });
+        yield* Deferred.succeed(captures.compactRelease, undefined);
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.compaction.updated")).payload,
+        ).toMatchObject({ status: "idle", manualCompactionSettable: true });
+        const settled = yield* adapter.getSessionCompaction!(threadId);
+        expect(settled).toMatchObject({ status: "idle", manualCompactionSettable: true });
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("admits manual compaction only from authoritative idle state", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.compactionState = { ...captures.compactionState, isStreaming: true };
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        expect(yield* adapter.compactSession!(threadId).pipe(Effect.flip)).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          reason: "busy",
+        });
+        expect(captures.compactCalls).toBe(0);
+
+        const supervisedThread = ThreadId.make("thread-supervised-compaction");
+        const supervised = makeCaptures();
+        const supervisedAdapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(supervised),
+        });
+        yield* supervisedAdapter.startSession({
+          threadId: supervisedThread,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        expect(
+          yield* supervisedAdapter.compactSession!(supervisedThread).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterUnsupportedOperationError" });
+        expect(supervised.compactCalls).toBe(0);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rechecks native compaction before changing the provider default", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        captures.compactionState = { ...captures.compactionState, isCompacting: true };
+        expect(
+          yield* adapter.setSessionAutoCompaction!({ threadId, enabled: false }).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterValidationError", reason: "busy" });
+        expect(captures.autoCompactionCalls).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails closed when automatic compaction cannot be reconciled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        captures.compactionStateFailureAfterMutation = true;
+        expect(
+          yield* adapter.setSessionAutoCompaction!({ threadId, enabled: false }).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+        expect(captures.autoCompactionCalls).toEqual([false]);
+        expect(yield* adapter.hasSession(threadId)).toBe(false);
+        expect(captures.disposeCount).toBe(1);
       }),
     ).pipe(Effect.provide(testLayer)),
   );
@@ -1924,6 +2277,7 @@ describe("PrimeAgentDaemonAdapter", () => {
           "session.started",
           "session.resources.updated",
           "session.agent-depth.updated",
+          "session.compaction.updated",
           "session.input-queue.updated",
           "session.state.changed",
           "thread.started",

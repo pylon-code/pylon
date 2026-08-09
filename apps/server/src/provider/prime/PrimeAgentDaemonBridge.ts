@@ -110,6 +110,9 @@ export interface PrimeAgentDaemonAgentConnection {
   readonly clearQueue?: () => Promise<unknown>;
   readonly setSteeringMode?: (mode: PrimeAgentDaemonQueueMode) => Promise<unknown>;
   readonly setFollowUpMode?: (mode: PrimeAgentDaemonQueueMode) => Promise<unknown>;
+  readonly compact?: () => Promise<unknown>;
+  readonly abortCompaction?: () => Promise<unknown>;
+  readonly setAutoCompactionEnabled?: (enabled: boolean) => Promise<unknown>;
   readonly setModel?: (provider: string, modelId: string) => Promise<unknown>;
   readonly setThinkingLevel?: (level: PrimeAgentDaemonThinkingLevel) => Promise<unknown>;
   readonly setServiceTier?: (tier: PrimeAgentDaemonServiceTier) => Promise<unknown>;

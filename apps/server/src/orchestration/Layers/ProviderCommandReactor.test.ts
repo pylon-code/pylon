@@ -341,6 +341,10 @@ describe("ProviderCommandReactor", () => {
       getSessionInputQueue: () => unsupported(),
       clearSessionInputQueue: () => unsupported(),
       setSessionInputQueueMode: () => unsupported(),
+      getSessionCompaction: () => unsupported(),
+      compactSession: () => unsupported(),
+      abortSessionCompaction: () => unsupported(),
+      setSessionAutoCompaction: () => unsupported(),
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       listSessions: () => Effect.succeed(runtimeSessions),
       getCapabilities: (_provider) =>

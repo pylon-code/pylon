@@ -32,6 +32,8 @@ export function makePrimeAgentFeatureCapabilities(input: {
   readonly inputQueue: boolean;
   readonly inputQueueModes: boolean;
   readonly agentCancel: boolean;
+  readonly compaction: boolean;
+  readonly autoCompaction: boolean;
 }): ProviderFeatureCapabilities {
   if (input.runtime === "acp") {
     return {
@@ -90,12 +92,22 @@ export function makePrimeAgentFeatureCapabilities(input: {
             : ["observe", "follow-up", "steer", "clear"],
         }
       : unavailable("The loaded Prime Agent daemon does not expose compatible input queue APIs."),
-    context: {
-      support: "read-only",
-      reason:
-        "Pylon shows Prime Agent compaction, retry, and refinement lifecycle without persisting native instructions or summaries; controls are not wired yet.",
-      operations: ["observe"],
-    },
+    context: input.compaction
+      ? {
+          support: "read-write",
+          reason: input.autoCompaction
+            ? "Pylon can compact idle full-access sessions, request native compaction cancellation, and configure automatic compaction for the current session and provider default without retaining native contents."
+            : "Pylon can compact idle full-access sessions and request native compaction cancellation without retaining native contents; automatic compaction settings are unavailable with the loaded daemon.",
+          operations: input.autoCompaction
+            ? ["observe", "compact", "abort-compaction", "configure-compaction"]
+            : ["observe", "compact", "abort-compaction"],
+        }
+      : {
+          support: "read-only",
+          reason:
+            "Pylon shows Prime Agent compaction, retry, and refinement lifecycle without persisting native instructions or summaries; the loaded daemon does not expose compatible compaction controls.",
+          operations: ["observe"],
+        },
     model: {
       support: "read-write",
       operations: ["select", "thinking", "service-tier"],

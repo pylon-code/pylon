@@ -288,6 +288,10 @@ const runtimeErrorOperation = Schema.Literals([
   "get-input-queue",
   "clear-input-queue",
   "set-input-queue-mode",
+  "get-compaction-state",
+  "compact",
+  "abort-compaction",
+  "set-auto-compaction",
   "abort",
   "abort-and-clear-queue",
   "set-model",
@@ -371,6 +375,16 @@ export interface PrimeAgentDaemonInputQueueStatus {
   readonly isStreaming: boolean;
 }
 
+export interface PrimeAgentDaemonCompactionState {
+  readonly isCompacting: boolean;
+  readonly autoCompactionEnabled: boolean;
+  readonly isStreaming: boolean;
+  readonly isBashRunning: boolean;
+  readonly inputQueueActive: boolean;
+  readonly steeringCount: number;
+  readonly followUpCount: number;
+}
+
 export interface PrimeAgentDaemonReloadResourcesResult {
   readonly resources: PrimeAgentDaemonSessionResources;
   readonly agentDepth: PrimeAgentDaemonAgentDepth;
@@ -403,6 +417,21 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly initialAgentDepth: PrimeAgentDaemonAgentDepth;
   readonly initialInputQueue: PrimeAgentDaemonInputQueue;
   readonly inputQueueModesAvailable: boolean;
+  readonly compactionAvailable: boolean;
+  readonly autoCompactionWritable: boolean;
+  readonly initialCompactionState: PrimeAgentDaemonCompactionState;
+  readonly getCompactionState: Effect.Effect<
+    PrimeAgentDaemonCompactionState,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
+  /** Starts one argument-free manual compaction and discards every native result field. */
+  readonly compact: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  /** Requests native compaction cancellation without claiming a terminal outcome. */
+  readonly abortCompaction: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  /** Prime persists this as the provider-wide default as well as current session state. */
+  readonly setAutoCompactionEnabled: (
+    enabled: boolean,
+  ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   /** Reload the native runtime, then return sanitized post-reload session state. */
   readonly reloadResources: Effect.Effect<
     PrimeAgentDaemonReloadResourcesResult,
@@ -1101,6 +1130,134 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             ),
           );
 
+    const compactionAvailable =
+      input.requiredExtension === undefined &&
+      Predicate.isFunction(connection!.getState) &&
+      Predicate.isFunction(connection!.compact) &&
+      Predicate.isFunction(connection!.abortCompaction);
+    const autoCompactionWritable =
+      input.requiredExtension === undefined &&
+      Predicate.isFunction(connection!.getState) &&
+      Predicate.isFunction(connection!.setAutoCompactionEnabled);
+    const initialCompactionState: PrimeAgentDaemonCompactionState = {
+      isCompacting: initialEvent.state.isCompacting,
+      autoCompactionEnabled: initialEvent.state.autoCompactionEnabled,
+      isStreaming: initialEvent.state.isStreaming,
+      isBashRunning: initialEvent.state.isBashRunning,
+      inputQueueActive: initialEvent.state.inputQueue.activeAction,
+      steeringCount: initialEvent.state.inputQueue.steeringCount,
+      followUpCount: initialEvent.state.inputQueue.followUpCount,
+    };
+
+    const getCompactionState = Effect.gen(function* () {
+      yield* ensureOpen("get-compaction-state");
+      const getState = yield* requireMethod("get-compaction-state", connection!.getState);
+      const output = yield* Effect.tryPromise({
+        try: () => getState.call(connection),
+        catch: () =>
+          runtimeError(
+            "get-compaction-state",
+            "request-failed",
+            "Could not read Prime Agent context compaction state.",
+          ),
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: COMMAND_TIMEOUT_MS,
+          orElse: () =>
+            runtimeError(
+              "get-compaction-state",
+              "request-timed-out",
+              "Timed out while reading Prime Agent context compaction state.",
+            ),
+        }),
+      );
+      const state = decodePrimeAgentDaemonSessionState(output);
+      if (
+        state === undefined ||
+        state.activeSessionId !== initialEvent.state.activeSessionId ||
+        state.sessionId !== sessionId
+      ) {
+        return yield* runtimeError(
+          "get-compaction-state",
+          "invalid-response",
+          "Prime Agent returned invalid or mismatched context compaction state.",
+        );
+      }
+      return {
+        isCompacting: state.isCompacting,
+        autoCompactionEnabled: state.autoCompactionEnabled,
+        isStreaming: state.isStreaming,
+        isBashRunning: state.isBashRunning,
+        inputQueueActive: state.inputQueue.activeAction,
+        steeringCount: state.inputQueue.steeringCount,
+        followUpCount: state.inputQueue.followUpCount,
+      } satisfies PrimeAgentDaemonCompactionState;
+    });
+
+    const compact = Effect.gen(function* () {
+      yield* ensureOpen("compact");
+      if (!compactionAvailable) {
+        return yield* runtimeError(
+          "compact",
+          "incompatible-api",
+          "The installed Prime Agent connection does not support context compaction.",
+        );
+      }
+      const method = yield* requireMethod("compact", connection!.compact);
+      yield* Effect.tryPromise({
+        // Never pass custom instructions. The entire native CompactionResult is private.
+        try: async () => {
+          await method.call(connection);
+        },
+        catch: () =>
+          runtimeError("compact", "request-failed", "Prime Agent context compaction failed."),
+      });
+    });
+
+    const abortCompaction = Effect.gen(function* () {
+      yield* ensureOpen("abort-compaction");
+      if (!compactionAvailable) {
+        return yield* runtimeError(
+          "abort-compaction",
+          "incompatible-api",
+          "The installed Prime Agent connection does not support compaction cancellation.",
+        );
+      }
+      const method = yield* requireMethod("abort-compaction", connection!.abortCompaction);
+      yield* callVoid("abort-compaction", () => method.call(connection)).pipe(
+        Effect.timeoutOrElse({
+          duration: COMMAND_TIMEOUT_MS,
+          orElse: () =>
+            runtimeError(
+              "abort-compaction",
+              "request-timed-out",
+              "Timed out while requesting Prime Agent compaction cancellation.",
+            ),
+        }),
+      );
+    });
+
+    const setAutoCompactionEnabled = Effect.fn(
+      "PrimeAgentDaemonSessionRuntime.setAutoCompactionEnabled",
+    )(function* (enabled: boolean) {
+      yield* ensureOpen("set-auto-compaction");
+      if (!autoCompactionWritable) {
+        return yield* runtimeError(
+          "set-auto-compaction",
+          "incompatible-api",
+          "The installed Prime Agent connection does not support automatic compaction settings.",
+        );
+      }
+      const method = yield* requireMethod(
+        "set-auto-compaction",
+        connection!.setAutoCompactionEnabled,
+      );
+      // This writes Prime's provider-wide default. Do not impose a local timeout: a timed-out
+      // native promise could persist the setting later, and closing one session cannot reconcile
+      // that provider-global uncertainty.
+      yield* callVoid("set-auto-compaction", () => method.call(connection, enabled));
+    });
+
     const getAgentDepth = Effect.gen(function* () {
       yield* ensureOpen("get-agent-depth");
       if (input.requiredExtension !== undefined) return initialAgentDepth;
@@ -1608,6 +1765,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       inputQueueModesAvailable:
         typeof connection.setSteeringMode === "function" &&
         typeof connection.setFollowUpMode === "function",
+      compactionAvailable,
+      autoCompactionWritable,
+      initialCompactionState,
+      getCompactionState,
+      compact,
+      abortCompaction,
+      setAutoCompactionEnabled,
       reloadResources,
       getAgentDepth,
       setAgentDepth,

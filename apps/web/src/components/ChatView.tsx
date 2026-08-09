@@ -15,6 +15,7 @@ import {
   type ServerProvider,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
+  type SessionCompactionUpdatedPayload,
   type SessionInteractionResponse,
   type ThreadId,
   type TurnId,
@@ -1259,6 +1260,21 @@ function ChatViewContent(props: ChatViewProps) {
   const setThreadSessionAgentDepth = useAtomCommand(
     threadEnvironment.setSessionAgentDepth,
     "session agent depth update",
+  );
+  const getThreadSessionCompaction = useAtomCommand(threadEnvironment.getSessionCompaction, {
+    reportFailure: false,
+  });
+  const compactThreadSession = useAtomCommand(threadEnvironment.compactSession, {
+    reportFailure: false,
+  });
+  const abortThreadSessionCompaction = useAtomCommand(threadEnvironment.abortSessionCompaction, {
+    reportFailure: false,
+  });
+  const setThreadSessionAutoCompaction = useAtomCommand(
+    threadEnvironment.setSessionAutoCompaction,
+    {
+      reportFailure: false,
+    },
   );
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
@@ -5574,6 +5590,72 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadId, environmentId, setThreadError, setThreadSessionAgentDepth],
   );
 
+  const runSessionCompactionCommand = useCallback(
+    async (
+      command: () => Promise<AtomCommandResult<SessionCompactionUpdatedPayload, unknown>>,
+      reportError = true,
+    ): Promise<SessionCompactionUpdatedPayload | null> => {
+      if (!activeThreadId) return null;
+      const result = await command();
+      if (result._tag === "Failure") {
+        if (reportError && !isAtomCommandInterrupted(result)) {
+          setThreadError(activeThreadId, "Could not update context compaction.");
+        }
+        return null;
+      }
+      if (reportError) setThreadError(activeThreadId, null);
+      return result.value;
+    },
+    [activeThreadId, environmentId, setThreadError],
+  );
+  const onGetSessionCompaction = useCallback(
+    () =>
+      activeThreadId
+        ? runSessionCompactionCommand(
+            () =>
+              getThreadSessionCompaction({
+                environmentId,
+                input: { threadId: activeThreadId },
+              }),
+            false,
+          )
+        : Promise.resolve(null),
+    [activeThreadId, environmentId, getThreadSessionCompaction, runSessionCompactionCommand],
+  );
+  const onCompactSession = useCallback(
+    () =>
+      activeThreadId
+        ? runSessionCompactionCommand(() =>
+            compactThreadSession({ environmentId, input: { threadId: activeThreadId } }),
+          )
+        : Promise.resolve(null),
+    [activeThreadId, compactThreadSession, environmentId, runSessionCompactionCommand],
+  );
+  const onAbortSessionCompaction = useCallback(
+    () =>
+      activeThreadId
+        ? runSessionCompactionCommand(() =>
+            abortThreadSessionCompaction({
+              environmentId,
+              input: { threadId: activeThreadId },
+            }),
+          )
+        : Promise.resolve(null),
+    [activeThreadId, abortThreadSessionCompaction, environmentId, runSessionCompactionCommand],
+  );
+  const onSetSessionAutoCompaction = useCallback(
+    (enabled: boolean) =>
+      activeThreadId
+        ? runSessionCompactionCommand(() =>
+            setThreadSessionAutoCompaction({
+              environmentId,
+              input: { threadId: activeThreadId, enabled },
+            }),
+          )
+        : Promise.resolve(null),
+    [activeThreadId, environmentId, runSessionCompactionCommand, setThreadSessionAutoCompaction],
+  );
+
   const onCancelSessionAgent = useCallback(
     async (agentId: string) => {
       const agent = runtimeSubagents.find((candidate) => candidate.id === agentId);
@@ -6954,6 +7036,10 @@ function ChatViewContent(props: ChatViewProps) {
                             onInterrupt={onInterrupt}
                             onReloadSessionResources={onReloadSessionResources}
                             onSetSessionAgentDepth={onSetSessionAgentDepth}
+                            onGetSessionCompaction={onGetSessionCompaction}
+                            onCompactSession={onCompactSession}
+                            onAbortSessionCompaction={onAbortSessionCompaction}
+                            onSetSessionAutoCompaction={onSetSessionAutoCompaction}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             threadHandoffOffer={threadHandoffOffer}
                             isContinuingThreadOnAccount={isContinuingThreadOnAccount}

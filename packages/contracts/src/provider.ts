@@ -197,6 +197,29 @@ export class ProviderSessionInputQueueError extends Schema.TaggedErrorClass<Prov
   },
 ) {}
 
+export const ProviderGetSessionCompactionInput = Schema.Struct({ threadId: ThreadId });
+export type ProviderGetSessionCompactionInput = typeof ProviderGetSessionCompactionInput.Type;
+
+export const ProviderCompactSessionInput = Schema.Struct({ threadId: ThreadId });
+export type ProviderCompactSessionInput = typeof ProviderCompactSessionInput.Type;
+
+export const ProviderAbortSessionCompactionInput = Schema.Struct({ threadId: ThreadId });
+export type ProviderAbortSessionCompactionInput = typeof ProviderAbortSessionCompactionInput.Type;
+
+export const ProviderSetSessionAutoCompactionInput = Schema.Struct({
+  threadId: ThreadId,
+  enabled: Schema.Boolean,
+});
+export type ProviderSetSessionAutoCompactionInput =
+  typeof ProviderSetSessionAutoCompactionInput.Type;
+
+export class ProviderSessionCompactionError extends Schema.TaggedErrorClass<ProviderSessionCompactionError>()(
+  "ProviderSessionCompactionError",
+  {
+    reason: Schema.Literals(["session-not-ready", "unsupported", "busy", "request-failed"]),
+  },
+) {}
+
 export const ProviderRespondToRequestInput = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,

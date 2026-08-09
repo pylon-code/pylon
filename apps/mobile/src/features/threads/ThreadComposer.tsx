@@ -1,6 +1,13 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import {
+  canAbortSessionCompaction,
+  canConfigureSessionAutoCompaction,
+  canStartSessionCompaction,
+  isSessionCompactionInProgress,
+  type SessionCompactionControlSnapshot,
+} from "@t3tools/client-runtime/state/context-compaction";
+import {
   isActiveSubagentStatus,
   supportsSessionAgentCancel,
   type RuntimeSubagent,
@@ -109,6 +116,11 @@ import {
   buildSessionInputQueueMenuActions,
   parseSessionInputQueueModeAction,
 } from "./sessionInputQueueMenu";
+import {
+  buildSessionCompactionMenuActions,
+  parseSessionCompactionMenuAction,
+  type SessionCompactionMenuAction,
+} from "./sessionCompactionMenu";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -145,6 +157,9 @@ export interface ThreadComposerProps {
   readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
   readonly sessionAgents: ReadonlyArray<RuntimeSubagent>;
   readonly sessionInputQueue: SessionInputQueueSnapshot | null;
+  readonly sessionCompaction: SessionCompactionControlSnapshot | null;
+  readonly sessionCompactionScopeKey: string | null;
+  readonly sessionCompactionPendingAction: SessionCompactionMenuAction | null;
   readonly activeThreadBusy: boolean;
   readonly sessionInputBlocked: boolean;
   readonly environmentId: EnvironmentId;
@@ -164,6 +179,7 @@ export interface ThreadComposerProps {
     queue: "steering" | "follow-up",
     mode: "all-at-once" | "one-at-a-time",
   ) => Promise<boolean>;
+  readonly onRunSessionCompactionAction: (action: SessionCompactionMenuAction) => Promise<boolean>;
   readonly onCancelSessionAgent: (agentId: string) => Promise<boolean>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -655,6 +671,118 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       }
     },
     [props.onSetSessionAgentDepth, sessionAgentDepthDisabled],
+  );
+
+  const sessionCompactionScopeKey = props.sessionCompactionScopeKey;
+  const sessionCompactionConnected =
+    props.connectionState === "connected" &&
+    (props.selectedThread.session?.status === "ready" ||
+      props.selectedThread.session?.status === "running");
+  const canCompactSessionContext =
+    sessionCompactionConnected &&
+    props.sessionCompactionPendingAction === null &&
+    canStartSessionCompaction(activeSessionProviderStatus, props.sessionCompaction);
+  const canAbortSessionContext =
+    sessionCompactionConnected &&
+    props.sessionCompactionPendingAction === null &&
+    canAbortSessionCompaction(activeSessionProviderStatus, props.sessionCompaction);
+  const canSetSessionAutoCompaction =
+    sessionCompactionConnected &&
+    props.sessionCompactionPendingAction === null &&
+    canConfigureSessionAutoCompaction(activeSessionProviderStatus, props.sessionCompaction);
+  const sessionCompactionControlRef = useRef({
+    scopeKey: sessionCompactionScopeKey,
+    pendingAction: props.sessionCompactionPendingAction,
+    snapshot: props.sessionCompaction,
+    canCompact: canCompactSessionContext,
+    canAbort: canAbortSessionContext,
+    canSetAuto: canSetSessionAutoCompaction,
+  });
+  sessionCompactionControlRef.current = {
+    scopeKey: sessionCompactionScopeKey,
+    pendingAction: props.sessionCompactionPendingAction,
+    snapshot: props.sessionCompaction,
+    canCompact: canCompactSessionContext,
+    canAbort: canAbortSessionContext,
+    canSetAuto: canSetSessionAutoCompaction,
+  };
+  const contextWindowPresentation = presentMobileContextWindow(props.contextWindow);
+  const sessionCompactionActions = useMemo(
+    () =>
+      props.sessionCompaction?.available && sessionCompactionScopeKey
+        ? buildSessionCompactionMenuActions({
+            scopeKey: sessionCompactionScopeKey,
+            snapshot: props.sessionCompaction,
+            canCompact: canCompactSessionContext,
+            canAbort: canAbortSessionContext,
+            canSetAuto: canSetSessionAutoCompaction,
+            pendingAction: props.sessionCompactionPendingAction,
+          })
+        : [],
+    [
+      canAbortSessionContext,
+      canCompactSessionContext,
+      canSetSessionAutoCompaction,
+      props.sessionCompaction,
+      props.sessionCompactionPendingAction,
+      sessionCompactionScopeKey,
+    ],
+  );
+  const runSessionCompactionAction = useCallback(
+    (action: SessionCompactionMenuAction, expectedScopeKey: string) => {
+      const current = sessionCompactionControlRef.current;
+      if (
+        current.scopeKey !== expectedScopeKey ||
+        current.snapshot === null ||
+        current.pendingAction !== null ||
+        (action === "compact" && !current.canCompact) ||
+        (action === "abort" && !current.canAbort) ||
+        ((action === "auto-enable" || action === "auto-disable") && !current.canSetAuto)
+      ) {
+        return;
+      }
+      void props.onRunSessionCompactionAction(action).then((accepted) => {
+        if (!accepted && sessionCompactionControlRef.current.scopeKey === expectedScopeKey) {
+          Alert.alert(
+            "Could not update compaction",
+            "The provider status was refreshed. Try again.",
+          );
+        }
+      });
+    },
+    [props.onRunSessionCompactionAction],
+  );
+  const handleSessionCompactionAction = useCallback(
+    (eventId: string) => {
+      const current = sessionCompactionControlRef.current;
+      if (!current.scopeKey || !current.snapshot || current.pendingAction !== null) return;
+      const action = parseSessionCompactionMenuAction(eventId, current.scopeKey);
+      if (
+        !action ||
+        (action === "compact" && !current.canCompact) ||
+        (action === "abort" && !current.canAbort) ||
+        ((action === "auto-enable" || action === "auto-disable") && !current.canSetAuto)
+      ) {
+        return;
+      }
+      const expectedScopeKey = current.scopeKey;
+      if (action === "compact") {
+        Alert.alert(
+          "Compact context now?",
+          "This reduces the current provider session's context. The agent may briefly pause.",
+          [
+            { text: "Not now", style: "cancel" },
+            {
+              text: "Compact",
+              onPress: () => runSessionCompactionAction(action, expectedScopeKey),
+            },
+          ],
+        );
+        return;
+      }
+      runSessionCompactionAction(action, expectedScopeKey);
+    },
+    [runSessionCompactionAction],
   );
 
   const providerSlashCommands = useMemo(
@@ -1378,8 +1506,32 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     label={configurationLabel}
                   />
                 </ControlPillMenu>
-                {props.contextWindow ? (
-                  <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                {props.contextWindow ||
+                (props.sessionCompaction?.available && sessionCompactionScopeKey) ? (
+                  props.sessionCompaction?.available && sessionCompactionScopeKey ? (
+                    <ControlPillMenu
+                      title="Context window"
+                      actions={sessionCompactionActions}
+                      onPressAction={({ nativeEvent }) =>
+                        handleSessionCompactionAction(nativeEvent.event)
+                      }
+                    >
+                      <ComposerToolbarTrigger
+                        accessibilityLabel={`${
+                          contextWindowPresentation?.accessibilityText ??
+                          "Context usage unavailable."
+                        } ${
+                          isSessionCompactionInProgress(props.sessionCompaction)
+                            ? "Compaction in progress."
+                            : "Compaction controls."
+                        }`}
+                        icon="gauge.with.dots.needle.50percent"
+                        label={contextWindowPresentation?.compactLabel ?? "Context"}
+                      />
+                    </ControlPillMenu>
+                  ) : props.contextWindow ? (
+                    <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                  ) : null
                 ) : null}
                 {activeSessionAgents.length > 0 &&
                 supportsSessionAgentCancel(activeSessionProviderStatus) ? (

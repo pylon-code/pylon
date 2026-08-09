@@ -121,6 +121,10 @@ function createProviderServiceHarness() {
     getSessionInputQueue: () => unsupported(),
     clearSessionInputQueue: () => unsupported(),
     setSessionInputQueueMode: () => unsupported(),
+    getSessionCompaction: () => unsupported(),
+    compactSession: () => unsupported(),
+    abortSessionCompaction: () => unsupported(),
+    setSessionAutoCompaction: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
@@ -260,6 +264,46 @@ it("maps session input queue counts to one stable privacy-safe activity", () => 
   ]);
   expect(JSON.stringify(activities)).not.toContain("followUps");
   expect(JSON.stringify(activities)).not.toContain("queued prompt");
+});
+
+it("maps session compaction to one stable privacy-safe control snapshot", () => {
+  const activities = runtimeEventToActivities({
+    type: "session.compaction.updated",
+    eventId: EventId.make("evt-compaction"),
+    provider: ProviderDriverKind.make("primeAgent"),
+    providerInstanceId: ProviderInstanceId.make("prime-work"),
+    threadId: ThreadId.make("thread-1"),
+    createdAt: "2026-08-09T00:00:00.000Z",
+    payload: {
+      available: true,
+      status: "abort-requested",
+      abortable: true,
+      autoCompactionEnabled: false,
+      autoCompactionWritable: true,
+      manualCompactionSettable: false,
+      autoCompactionScope: "session-and-provider-default",
+    },
+  });
+  expect(activities).toEqual([
+    expect.objectContaining({
+      id: "session-compaction:prime-work:thread-1",
+      kind: "session.compaction.updated",
+      payload: {
+        provider: "primeAgent",
+        providerInstanceId: "prime-work",
+        available: true,
+        status: "abort-requested",
+        abortable: true,
+        autoCompactionEnabled: false,
+        autoCompactionWritable: true,
+        manualCompactionSettable: false,
+        autoCompactionScope: "session-and-provider-default",
+      },
+    }),
+  ]);
+  expect(JSON.stringify(activities)).not.toContain("private compaction contents");
+  expect(JSON.stringify(activities)).not.toContain("sessionFile");
+  expect(JSON.stringify(activities)).not.toContain("/Users/");
 });
 
 describe("ProviderRuntimeIngestion", () => {

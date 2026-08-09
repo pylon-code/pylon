@@ -516,6 +516,39 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "session.compaction.updated": {
+      return [
+        {
+          id: EventId.make(
+            `session-compaction:${event.providerInstanceId ?? event.provider}:${event.threadId}`,
+          ),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "session.compaction.updated",
+          summary: "Session compaction updated",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId === undefined
+              ? {}
+              : { providerInstanceId: event.providerInstanceId }),
+            available: event.payload.available,
+            status: event.payload.status,
+            abortable: event.payload.abortable,
+            autoCompactionWritable: event.payload.autoCompactionWritable,
+            manualCompactionSettable: event.payload.manualCompactionSettable,
+            ...(event.payload.autoCompactionEnabled === undefined
+              ? {}
+              : { autoCompactionEnabled: event.payload.autoCompactionEnabled }),
+            ...(event.payload.autoCompactionScope === undefined
+              ? {}
+              : { autoCompactionScope: event.payload.autoCompactionScope }),
+          },
+          turnId: null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "session.resources.updated": {
       return [
         {

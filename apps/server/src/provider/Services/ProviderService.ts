@@ -12,18 +12,23 @@
  * @module ProviderService
  */
 import type {
+  ProviderAbortSessionCompactionInput,
   ProviderCancelSessionAgentInput,
   ProviderCancelSessionAgentResult,
   ProviderClearSessionInputQueueInput,
+  ProviderCompactSessionInput,
   ProviderFollowUpInput,
   ProviderGetSessionAgentDepthInput,
+  ProviderGetSessionCompactionInput,
   ProviderGetSessionInputQueueInput,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderReloadSessionResourcesInput,
   ProviderSetSessionAgentDepthInput,
+  ProviderSetSessionAutoCompactionInput,
   ProviderSetSessionInputQueueModeInput,
   SessionAgentDepthUpdatedPayload,
+  SessionCompactionUpdatedPayload,
   SessionInputQueueUpdatedPayload,
   SessionResourcesUpdatedPayload,
   ProviderRespondToRequestInput,
@@ -126,6 +131,22 @@ export interface ProviderServiceShape {
   readonly setSessionInputQueueMode: (
     input: ProviderSetSessionInputQueueModeInput,
   ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
+
+  readonly getSessionCompaction: (
+    input: ProviderGetSessionCompactionInput,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, ProviderServiceError>;
+
+  readonly compactSession: (
+    input: ProviderCompactSessionInput,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, ProviderServiceError>;
+
+  readonly abortSessionCompaction: (
+    input: ProviderAbortSessionCompactionInput,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, ProviderServiceError>;
+
+  readonly setSessionAutoCompaction: (
+    input: ProviderSetSessionAutoCompactionInput,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, ProviderServiceError>;
 
   /**
    * Stop a provider session.

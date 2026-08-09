@@ -56,6 +56,8 @@ export function stampPrimeAgentBackendSnapshot(
         readonly inputQueue: boolean;
         readonly inputQueueModes: boolean;
         readonly agentCancel: boolean;
+        readonly compaction: boolean;
+        readonly autoCompaction: boolean;
       }
     | { readonly runtime: "acp"; readonly fallbackMessage?: string },
 ): ServerProviderDraft {
@@ -69,6 +71,8 @@ export function stampPrimeAgentBackendSnapshot(
       inputQueue: backend.runtime === "daemon" && backend.inputQueue,
       inputQueueModes: backend.runtime === "daemon" && backend.inputQueueModes,
       agentCancel: backend.runtime === "daemon" && backend.agentCancel,
+      compaction: backend.runtime === "daemon" && backend.compaction,
+      autoCompaction: backend.runtime === "daemon" && backend.autoCompaction,
     }),
     models:
       backend.runtime === "daemon"

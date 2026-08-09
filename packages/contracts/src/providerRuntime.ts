@@ -265,6 +265,7 @@ const ToolDeniedType = Schema.Literal("tool.denied");
 const SessionResourcesUpdatedType = Schema.Literal("session.resources.updated");
 const SessionAgentDepthUpdatedType = Schema.Literal("session.agent-depth.updated");
 const SessionInputQueueUpdatedType = Schema.Literal("session.input-queue.updated");
+const SessionCompactionUpdatedType = Schema.Literal("session.compaction.updated");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 
@@ -904,6 +905,26 @@ export const SessionInputQueueUpdatedPayload = Schema.Struct({
 });
 export type SessionInputQueueUpdatedPayload = typeof SessionInputQueueUpdatedPayload.Type;
 
+export const SessionCompactionStatus = Schema.Literals([
+  "idle",
+  "starting",
+  "compacting",
+  "abort-requested",
+]);
+export type SessionCompactionStatus = typeof SessionCompactionStatus.Type;
+
+/** Session-scoped controls only; native summaries, instructions, and errors stay private. */
+export const SessionCompactionUpdatedPayload = Schema.Struct({
+  available: Schema.Boolean,
+  status: SessionCompactionStatus,
+  abortable: Schema.Boolean,
+  autoCompactionEnabled: Schema.optional(Schema.Boolean),
+  autoCompactionWritable: Schema.Boolean,
+  manualCompactionSettable: Schema.Boolean,
+  autoCompactionScope: Schema.optional(Schema.Literal("session-and-provider-default")),
+});
+export type SessionCompactionUpdatedPayload = typeof SessionCompactionUpdatedPayload.Type;
+
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(Schema.Unknown),
@@ -1328,6 +1349,16 @@ const ProviderRuntimeSessionInputQueueUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionInputQueueUpdatedEvent =
   typeof ProviderRuntimeSessionInputQueueUpdatedEvent.Type;
 
+const ProviderRuntimeSessionCompactionUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionCompactionUpdatedType,
+  payload: SessionCompactionUpdatedPayload,
+});
+export type ProviderRuntimeSessionCompactionUpdatedEvent =
+  typeof ProviderRuntimeSessionCompactionUpdatedEvent.Type;
+
 const ProviderRuntimeWarningEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: RuntimeWarningType,
@@ -1397,6 +1428,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionResourcesUpdatedEvent,
   ProviderRuntimeSessionAgentDepthUpdatedEvent,
   ProviderRuntimeSessionInputQueueUpdatedEvent,
+  ProviderRuntimeSessionCompactionUpdatedEvent,
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,
 ]);

@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   CommandId,
@@ -17,6 +17,14 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { deriveLatestContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
+import {
+  deriveLatestSessionCompaction,
+  isAcceptedSessionCompactionMutationResult,
+  isCurrentSessionCompactionRequest,
+  sessionCompactionScopeKey,
+  supportsSessionCompaction,
+  type SessionCompactionControlSnapshot,
+} from "@t3tools/client-runtime/state/context-compaction";
 import { deriveLatestSessionAgentDepth } from "@t3tools/client-runtime/state/session-agent-depth";
 import {
   deriveLatestSessionInputQueue,
@@ -123,6 +131,16 @@ export function useThreadComposerState() {
   const setSessionInputQueueMode = useAtomCommand(threadEnvironment.setSessionInputQueueMode, {
     reportFailure: false,
   });
+  const getSessionCompaction = useAtomCommand(threadEnvironment.getSessionCompaction, {
+    reportFailure: false,
+  });
+  const compactSession = useAtomCommand(threadEnvironment.compactSession, { reportFailure: false });
+  const abortSessionCompaction = useAtomCommand(threadEnvironment.abortSessionCompaction, {
+    reportFailure: false,
+  });
+  const setSessionAutoCompaction = useAtomCommand(threadEnvironment.setSessionAutoCompaction, {
+    reportFailure: false,
+  });
 
   useEffect(() => {
     ensureComposerDraftsLoaded();
@@ -170,6 +188,191 @@ export function useThreadComposerState() {
       ? deriveLatestSessionInputQueue(selectedThreadDetail.activities, instanceId)
       : null;
   }, [selectedThreadDetail]);
+  const sessionCompactionScope = useMemo(() => {
+    const session = selectedThreadDetail?.session;
+    const instanceId = session?.providerInstanceId;
+    if (
+      !selectedThreadShell ||
+      !session ||
+      instanceId === undefined ||
+      (session.status !== "ready" && session.status !== "running")
+    ) {
+      return null;
+    }
+    const provider =
+      selectedThreadServerConfig?.providers.find(
+        (candidate) => candidate.instanceId === instanceId,
+      ) ?? null;
+    if (!supportsSessionCompaction(provider)) return null;
+    return {
+      key: sessionCompactionScopeKey({
+        environmentId: selectedThreadShell.environmentId,
+        threadId: selectedThreadShell.id,
+        providerInstanceId: instanceId,
+      }),
+      environmentId: selectedThreadShell.environmentId,
+      threadId: selectedThreadShell.id,
+      providerInstanceId: instanceId,
+    } as const;
+  }, [
+    selectedThreadDetail?.session?.providerInstanceId,
+    selectedThreadDetail?.session?.status,
+    selectedThreadServerConfig,
+    selectedThreadShell,
+  ]);
+  const activitySessionCompaction = useMemo(() => {
+    if (!selectedThreadDetail || !sessionCompactionScope) return null;
+    return deriveLatestSessionCompaction(
+      selectedThreadDetail.activities,
+      sessionCompactionScope.providerInstanceId,
+    );
+  }, [selectedThreadDetail, sessionCompactionScope]);
+  const [authoritativeSessionCompaction, setAuthoritativeSessionCompaction] = useState<{
+    readonly scopeKey: string;
+    readonly snapshot: SessionCompactionControlSnapshot;
+  } | null>(null);
+  const [sessionCompactionMutation, setSessionCompactionMutation] = useState<{
+    readonly scopeKey: string;
+    readonly id: number;
+    readonly action: "compact" | "abort" | "auto-enable" | "auto-disable";
+  } | null>(null);
+  const sessionCompactionScopeRef = useRef(sessionCompactionScope);
+  sessionCompactionScopeRef.current = sessionCompactionScope;
+  const sessionCompactionMutationRef = useRef(sessionCompactionMutation);
+  sessionCompactionMutationRef.current = sessionCompactionMutation;
+  const sessionCompactionRequestIdRef = useRef(0);
+  const activitySupersededCompactionMutationsRef = useRef<Set<number>>(new Set());
+  const lastCompactionActivityRef = useRef<{ scopeKey: string; updatedAt: string } | null>(null);
+  const selectedThreadCompaction =
+    sessionCompactionScope &&
+    authoritativeSessionCompaction?.scopeKey === sessionCompactionScope.key
+      ? authoritativeSessionCompaction.snapshot
+      : activitySessionCompaction;
+
+  useEffect(() => {
+    const scope = sessionCompactionScope;
+    const requestId = ++sessionCompactionRequestIdRef.current;
+    sessionCompactionMutationRef.current = null;
+    activitySupersededCompactionMutationsRef.current.clear();
+    setSessionCompactionMutation(null);
+    if (!scope) {
+      setAuthoritativeSessionCompaction(null);
+      return;
+    }
+    if (activitySessionCompaction) {
+      lastCompactionActivityRef.current = {
+        scopeKey: scope.key,
+        updatedAt: activitySessionCompaction.updatedAt,
+      };
+      setAuthoritativeSessionCompaction({
+        scopeKey: scope.key,
+        snapshot: activitySessionCompaction,
+      });
+    } else {
+      lastCompactionActivityRef.current = null;
+      setAuthoritativeSessionCompaction(null);
+    }
+    if (activitySessionCompaction?.available === false) return;
+    void getSessionCompaction({
+      environmentId: scope.environmentId,
+      input: { threadId: scope.threadId },
+    }).then((result) => {
+      if (
+        result._tag === "Success" &&
+        isCurrentSessionCompactionRequest(
+          sessionCompactionScopeRef.current?.key,
+          sessionCompactionRequestIdRef.current,
+          { scopeKey: scope.key, id: requestId },
+        )
+      ) {
+        setAuthoritativeSessionCompaction({
+          scopeKey: scope.key,
+          snapshot: { ...result.value, updatedAt: new Date().toISOString() },
+        });
+      }
+    });
+  }, [getSessionCompaction, sessionCompactionScope?.key]);
+
+  useEffect(() => {
+    const scope = sessionCompactionScope;
+    const snapshot = activitySessionCompaction;
+    if (!scope || !snapshot) return;
+    const last = lastCompactionActivityRef.current;
+    if (last?.scopeKey === scope.key && last.updatedAt === snapshot.updatedAt) return;
+    lastCompactionActivityRef.current = { scopeKey: scope.key, updatedAt: snapshot.updatedAt };
+    sessionCompactionRequestIdRef.current += 1;
+    const supersededMutation = sessionCompactionMutationRef.current;
+    if (supersededMutation?.scopeKey === scope.key) {
+      activitySupersededCompactionMutationsRef.current.add(supersededMutation.id);
+    }
+    sessionCompactionMutationRef.current = null;
+    setSessionCompactionMutation(null);
+    setAuthoritativeSessionCompaction({ scopeKey: scope.key, snapshot });
+  }, [activitySessionCompaction, sessionCompactionScope]);
+
+  const runSessionCompactionMutation = useCallback(
+    async (action: "compact" | "abort" | "auto-enable" | "auto-disable"): Promise<boolean> => {
+      const scope = sessionCompactionScopeRef.current;
+      if (!scope || sessionCompactionMutationRef.current?.scopeKey === scope.key) return false;
+      const id = ++sessionCompactionRequestIdRef.current;
+      const mutation = { scopeKey: scope.key, id, action } as const;
+      sessionCompactionMutationRef.current = mutation;
+      setSessionCompactionMutation(mutation);
+      const command =
+        action === "compact"
+          ? compactSession({
+              environmentId: scope.environmentId,
+              input: { threadId: scope.threadId },
+            })
+          : action === "abort"
+            ? abortSessionCompaction({
+                environmentId: scope.environmentId,
+                input: { threadId: scope.threadId },
+              })
+            : setSessionAutoCompaction({
+                environmentId: scope.environmentId,
+                input: { threadId: scope.threadId, enabled: action === "auto-enable" },
+              });
+      const result = await command;
+      if (
+        !isCurrentSessionCompactionRequest(
+          sessionCompactionScopeRef.current?.key,
+          sessionCompactionRequestIdRef.current,
+          mutation,
+        )
+      ) {
+        const supersededByActivity = activitySupersededCompactionMutationsRef.current.delete(id);
+        if (
+          result._tag === "Failure" &&
+          supersededByActivity &&
+          sessionCompactionScopeRef.current?.key === mutation.scopeKey &&
+          !isAtomCommandInterrupted(result)
+        ) {
+          setPendingConnectionError("Failed to update context compaction.");
+        }
+        return isAcceptedSessionCompactionMutationResult({
+          succeeded: result._tag === "Success",
+          isCurrent: false,
+          supersededByActivity,
+        });
+      }
+      activitySupersededCompactionMutationsRef.current.delete(id);
+      sessionCompactionMutationRef.current = null;
+      setSessionCompactionMutation((current) => (current?.id === id ? null : current));
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          setPendingConnectionError("Failed to update context compaction.");
+        }
+        return false;
+      }
+      setAuthoritativeSessionCompaction({
+        scopeKey: scope.key,
+        snapshot: { ...result.value, updatedAt: new Date().toISOString() },
+      });
+      return true;
+    },
+    [abortSessionCompaction, compactSession, setSessionAutoCompaction],
+  );
   const selectedRuntimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
   const runtimeMode = selectedRuntimeMode
     ? resolveModelSelectionRuntimeMode(
@@ -587,6 +790,12 @@ export function useThreadComposerState() {
     selectedThreadResources,
     selectedThreadAgentDepth,
     selectedThreadInputQueue,
+    selectedThreadCompaction,
+    sessionCompactionScopeKey: sessionCompactionScope?.key ?? null,
+    sessionCompactionPendingAction:
+      sessionCompactionScope && sessionCompactionMutation?.scopeKey === sessionCompactionScope.key
+        ? sessionCompactionMutation.action
+        : null,
     selectedThreadQueueCount,
     activeWorkStartedAt,
     draftMessage,
@@ -604,6 +813,7 @@ export function useThreadComposerState() {
     onQueueFollowUp,
     onClearSessionInputQueue,
     onSetSessionInputQueueMode,
+    onRunSessionCompactionAction: runSessionCompactionMutation,
     onCancelSessionAgent,
     onUpdateModelSelection,
     onUpdateRuntimeMode,

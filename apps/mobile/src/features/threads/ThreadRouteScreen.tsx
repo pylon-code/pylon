@@ -812,6 +812,9 @@ function ThreadRouteContent(
           sessionResources={composer.selectedThreadResources}
           sessionAgentDepth={composer.selectedThreadAgentDepth}
           sessionInputQueue={composer.selectedThreadInputQueue}
+          sessionCompaction={composer.selectedThreadCompaction}
+          sessionCompactionScopeKey={composer.sessionCompactionScopeKey}
+          sessionCompactionPendingAction={composer.sessionCompactionPendingAction}
           activeWorkStartedAt={composer.activeWorkStartedAt}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
@@ -849,6 +852,7 @@ function ThreadRouteContent(
           onQueueFollowUp={composer.onQueueFollowUp}
           onClearSessionInputQueue={composer.onClearSessionInputQueue}
           onSetSessionInputQueueMode={composer.onSetSessionInputQueueMode}
+          onRunSessionCompactionAction={composer.onRunSessionCompactionAction}
           onCancelSessionAgent={composer.onCancelSessionAgent}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

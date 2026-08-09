@@ -1,5 +1,6 @@
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
+import type { SessionCompactionControlSnapshot } from "@t3tools/client-runtime/state/context-compaction";
 import type { SessionAgentDepthSnapshot } from "@t3tools/client-runtime/state/session-agent-depth";
 import type { SessionInputQueueSnapshot } from "@t3tools/client-runtime/state/session-input-queue";
 import type { SessionResourcesSnapshot } from "@t3tools/client-runtime/state/session-resources";
@@ -53,6 +54,7 @@ import {
   ThreadComposer,
 } from "./ThreadComposer";
 import { ThreadFeed } from "./ThreadFeed";
+import type { SessionCompactionMenuAction } from "./sessionCompactionMenu";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 
 export interface ThreadDetailScreenProps {
@@ -67,6 +69,9 @@ export interface ThreadDetailScreenProps {
   readonly sessionResources: SessionResourcesSnapshot | null;
   readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
   readonly sessionInputQueue: SessionInputQueueSnapshot | null;
+  readonly sessionCompaction: SessionCompactionControlSnapshot | null;
+  readonly sessionCompactionScopeKey: string | null;
+  readonly sessionCompactionPendingAction: SessionCompactionMenuAction | null;
   readonly activeWorkStartedAt: string | null;
   readonly activePendingApproval: PendingApproval | null;
   readonly respondingApprovalId: ApprovalRequestId | null;
@@ -110,6 +115,7 @@ export interface ThreadDetailScreenProps {
     queue: "steering" | "follow-up",
     mode: "all-at-once" | "one-at-a-time",
   ) => Promise<boolean>;
+  readonly onRunSessionCompactionAction: (action: SessionCompactionMenuAction) => Promise<boolean>;
   readonly onCancelSessionAgent: (agentId: string) => Promise<boolean>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
@@ -516,6 +522,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               sessionAgentDepth={props.sessionAgentDepth}
               sessionAgents={props.sessionAgents}
               sessionInputQueue={props.sessionInputQueue}
+              sessionCompaction={props.sessionCompaction}
+              sessionCompactionScopeKey={props.sessionCompactionScopeKey}
+              sessionCompactionPendingAction={props.sessionCompactionPendingAction}
               activeThreadBusy={props.activeThreadBusy}
               sessionInputBlocked={
                 props.activePendingApproval !== null ||
@@ -536,6 +545,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onQueueFollowUp={props.onQueueFollowUp}
               onClearSessionInputQueue={props.onClearSessionInputQueue}
               onSetSessionInputQueueMode={props.onSetSessionInputQueueMode}
+              onRunSessionCompactionAction={props.onRunSessionCompactionAction}
               onCancelSessionAgent={props.onCancelSessionAgent}
               onReconnectEnvironment={props.onReconnectEnvironment}
               onUpdateModelSelection={props.onUpdateThreadModelSelection}
