@@ -249,6 +249,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         "widget",
       ]);
       expect(snapshot.requiresNewThreadForModelChange).toBe(false);
+      expect(snapshot.supportedRuntimeModes).toEqual(["approval-required", "full-access"]);
       expect(snapshot.message).toBe("Checking Prime Agent CLI availability...");
     }),
   );
@@ -280,6 +281,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
       expect(snapshot.featureCapabilities?.sessionUi?.support).toBe("unavailable");
       expect(snapshot.models[0]?.capabilities?.optionDescriptors).toEqual([]);
       expect(snapshot.requiresNewThreadForModelChange).toBe(true);
+      expect(snapshot.supportedRuntimeModes).toEqual(["full-access"]);
       expect(snapshot.message).toBe(
         "Checking Prime Agent CLI availability... Prime Agent daemon integration is unavailable; using ACP compatibility mode.",
       );

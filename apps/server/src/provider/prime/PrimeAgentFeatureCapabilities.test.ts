@@ -8,9 +8,10 @@ describe("PrimeAgentFeatureCapabilities", () => {
     const capabilities = makePrimeAgentFeatureCapabilities({ runtime: "daemon", sessionUi: true });
 
     expect(capabilities.executionPolicy).toMatchObject({
-      support: "read-only",
-      runtimeModes: ["full-access"],
-      enforcement: "none",
+      support: "read-write",
+      operations: ["inspect", "select"],
+      runtimeModes: ["approval-required", "full-access"],
+      enforcement: "host-gated",
     });
     expect(capabilities.agents?.operations).toEqual(["observe", "hierarchy"]);
     expect(capabilities.inputQueue?.operations).toEqual(["steer"]);
@@ -29,6 +30,11 @@ describe("PrimeAgentFeatureCapabilities", () => {
   it("keeps ACP fallback capabilities narrow and explicit", () => {
     const capabilities = makePrimeAgentFeatureCapabilities({ runtime: "acp", sessionUi: false });
 
+    expect(capabilities.executionPolicy).toMatchObject({
+      support: "read-only",
+      runtimeModes: ["full-access"],
+      enforcement: "none",
+    });
     expect(capabilities.model?.operations).toEqual(["select"]);
     expect(capabilities.agents?.support).toBe("unavailable");
     expect(capabilities.reasoning?.support).toBe("unavailable");

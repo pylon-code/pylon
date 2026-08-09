@@ -3,6 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  ApprovalRequestId,
   PrimeAgentSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -11,6 +12,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -265,6 +267,53 @@ function offer(captures: FakeCaptures, event: PrimeDaemonEvent) {
 }
 
 describe("PrimeAgentDaemonAdapter", () => {
+  it.effect("rejects unsupported runtime modes at the adapter boundary", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        for (const runtimeMode of ["auto", "auto-accept-edits"] as const) {
+          const error = yield* adapter
+            .startSession({ threadId, cwd: process.cwd(), runtimeMode })
+            .pipe(Effect.flip);
+          expect(error).toMatchObject({
+            _tag: "ProviderAdapterValidationError",
+            operation: "startSession",
+          });
+        }
+        expect(captures.runtimeInputs).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+  it.effect("fails closed when the loaded managed extension source changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const delegate = fakeRuntimeFactory(captures);
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: (input) =>
+            delegate(input).pipe(
+              Effect.tap(() =>
+                Effect.promise(() => NodeFSP.writeFile(input.extensions![0]!, "tampered")),
+              ),
+            ),
+        });
+        const error = yield* adapter
+          .startSession({ threadId, cwd: process.cwd(), runtimeMode: "approval-required" })
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterProcessError",
+          detail:
+            "Prime Agent loaded an execution policy extension whose source integrity could not be verified.",
+        });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("starts with an opaque v2 cursor and owns the thread-scoped daemon directory", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -305,6 +354,180 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("gates approval-required sessions through opaque canonical approvals", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        const session = yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        expect(session.runtimeMode).toBe("approval-required");
+        expect(captures.runtimeInputs[0]).toMatchObject({
+          disableExtensionDiscovery: true,
+          disableAutoReconnect: true,
+          requiredExtension: {
+            markerCommand: "pylon-permission-gate-v1",
+          },
+        });
+        expect(captures.runtimeInputs[0]!.extensions).toHaveLength(1);
+        const slashError = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "/export /tmp/bypass.html",
+            interactionMode: "default",
+          })
+          .pipe(Effect.flip);
+        expect(slashError).toMatchObject({
+          operation: "sendTurn",
+          issue: expect.stringContaining("slash commands"),
+        });
+        expect(captures.prompts).toEqual([]);
+        const extensionPath = captures.runtimeInputs[0]!.extensions![0]!;
+        const extensionSource = yield* Effect.promise(() =>
+          NodeFSP.readFile(extensionPath, "utf8"),
+        );
+        const title = extensionSource.match(/const TITLE = "([^"]+)";/)?.[1];
+        expect(title).toMatch(/^Pylon execution approval:[0-9a-f-]{36}$/);
+        if (title === undefined) throw new Error("Managed extension title was not generated.");
+
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: {
+            id: "native-approval-secret",
+            method: "confirm",
+            title,
+            message: "pylon-permission-v1\ncommand_execution_approval\nbash\nprintf guarded",
+            timeoutMs: 600_000,
+          },
+        });
+        const requested = yield* awaitObservedType(subscription.observed, "request.opened");
+        expect(requested).toMatchObject({
+          payload: {
+            requestType: "command_execution_approval",
+            detail: "printf guarded",
+            args: { toolName: "bash" },
+          },
+        });
+        expect(encodeUnknownJson(requested)).not.toContain("native-approval-secret");
+        expect(encodeUnknownJson(requested)).not.toContain(title);
+
+        yield* adapter.respondToRequest(
+          threadId,
+          ApprovalRequestId.make(String(requested.requestId)),
+          "acceptForSession",
+        );
+        const resolved = yield* awaitObservedType(subscription.observed, "request.resolved");
+        expect(resolved).toMatchObject({
+          requestId: requested.requestId,
+          payload: { requestType: "command_execution_approval", decision: "acceptForSession" },
+        });
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: {
+            id: "native-session-approved",
+            method: "confirm",
+            title,
+            message: "pylon-permission-v1\nfile_change_approval\nedit\nREADME.md",
+          },
+        });
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: {
+            id: "native-wrong-token",
+            method: "confirm",
+            title: "Pylon execution approval:wrong-token",
+            message: "pylon-permission-v1\ncommand_execution_approval\nbash\ntouch denied",
+          },
+        });
+        yield* awaitObservedType(subscription.observed, "runtime.error");
+        expect(captures.extensions).toEqual([
+          { id: "native-approval-secret", response: { confirmed: true } },
+          { id: "native-session-approved", response: { confirmed: true } },
+          { id: "native-wrong-token", response: { confirmed: false } },
+        ]);
+        expect(subscription.events.filter((event) => event.type === "request.opened")).toHaveLength(
+          1,
+        );
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "keeps failed responses pending and settles cancellation even when queue clearing fails",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          captures.abortClearFailure = true;
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "approval-required",
+          });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+          const extensionPath = captures.runtimeInputs[0]!.extensions![0]!;
+          const source = yield* Effect.promise(() => NodeFSP.readFile(extensionPath, "utf8"));
+          const title = source.match(/const TITLE = "([^"]+)";/)?.[1];
+          if (title === undefined) throw new Error("Managed extension title was not generated.");
+          const turnFiber = yield* adapter
+            .sendTurn({ threadId, input: "run custom", interactionMode: "default" })
+            .pipe(Effect.forkChild);
+          yield* awaitObservedType(subscription.observed, "turn.started");
+          yield* Queue.take(captures.promptObserved!);
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: {
+              id: "native-retry-approval",
+              method: "confirm",
+              title,
+              message: "pylon-permission-v1\ncommand_execution_approval\nbash\nprintf guarded",
+            },
+          });
+          const requested = yield* awaitObservedType(subscription.observed, "request.opened");
+          const requestId = ApprovalRequestId.make(String(requested.requestId));
+          captures.extensionFailure = true;
+          yield* adapter.respondToRequest(threadId, requestId, "accept").pipe(Effect.flip);
+          expect(subscription.events.some((event) => event.type === "request.resolved")).toBe(
+            false,
+          );
+
+          captures.extensionFailure = false;
+          const cancelExit = yield* adapter
+            .respondToRequest(threadId, requestId, "cancel")
+            .pipe(Effect.exit);
+          expect(Exit.isFailure(cancelExit)).toBe(true);
+          const resolved = yield* awaitObservedType(subscription.observed, "request.resolved");
+          expect(resolved).toMatchObject({ payload: { decision: "cancel" } });
+          const result = yield* Fiber.join(turnFiber);
+          expect(result.threadId).toBe(threadId);
+          expect(
+            subscription.events.some(
+              (event) => event.type === "turn.completed" && event.payload.state === "cancelled",
+            ),
+          ).toBe(true);
+          expect(captures.extensions).toEqual([
+            { id: "native-retry-approval", response: { confirmed: false } },
+          ]);
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
   );
 
   it.effect(

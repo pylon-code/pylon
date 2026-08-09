@@ -53,6 +53,15 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
         >
           <Text className="font-t3-bold text-sm text-rose-700 dark:text-rose-300">Decline</Text>
         </Pressable>
+        <Pressable
+          className="items-center justify-center rounded-[14px] border border-neutral-300 px-3.5 py-3 dark:border-neutral-700"
+          disabled={props.respondingApprovalId === props.approval.requestId}
+          onPress={() => void props.onRespond(props.approval.requestId, "cancel")}
+        >
+          <Text className="font-t3-bold text-sm text-neutral-700 dark:text-neutral-300">
+            Cancel turn
+          </Text>
+        </Pressable>
       </View>
     </View>
   );

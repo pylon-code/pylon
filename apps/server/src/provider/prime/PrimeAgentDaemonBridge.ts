@@ -109,6 +109,10 @@ export interface PrimeAgentDaemonAgentConnection {
     requestId: string,
     response: PrimeAgentDaemonExtensionUiResponse,
   ) => Promise<unknown>;
+  readonly getCommands?: () => Promise<unknown>;
+  readonly getResourceSnapshot?: () => Promise<unknown>;
+  readonly getRlmMaxDepthStatus?: () => Promise<unknown>;
+  readonly setRlmMaxDepth?: (maxDepth: number) => Promise<unknown>;
   readonly dispose: () => Promise<unknown>;
 }
 

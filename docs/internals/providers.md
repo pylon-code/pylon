@@ -33,7 +33,15 @@ paths, request IDs, and native payloads never cross the provider boundary.
 A short-lived RPC probe discovers the qualified model catalog. Its synthetic `default` model means
 “do not force a model,” while discovered model metadata drives generic thinking and service-tier
 composer options. The daemon adapter can switch models before a turn, steer an active turn, and
-keeps queued native runs inside one Pylon turn until the queue settles. ACP remains an explicit
+keeps queued native runs inside one Pylon turn until the queue settles. Approval-required sessions
+materialize a server-owned, token-correlated Prime extension, disable extension discovery, verify
+the generated source plus the loaded extension-sourced marker through public resource APIs, set and
+verify RLM depth zero before prompt admission, reject slash-command prompts that bypass tool hooks,
+and disable unverified daemon recovery so transport loss requires a fresh verified session. Its
+blocking hooks map reviewable built-in edit, shell, and IPython requests privately to canonical
+Pylon approval events; unknown tools and oversized inputs are denied rather than incompletely
+presented. Native request IDs and policy tokens remain adapter-local. The gate fails closed, but it
+is not an OS sandbox, so approved IPython and shell calls retain host access. ACP remains an explicit
 compatibility fallback for custom launch arguments or failed daemon setup. The fallback snapshot
 strips daemon-only model options and capabilities rather than rendering controls ACP would ignore.
 

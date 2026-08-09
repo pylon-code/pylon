@@ -44,5 +44,13 @@ with prompting enabled and a restricted workspace while **Full access** disables
 labels above describe what you get; the exact per-provider translation is internal and may
 change.
 
+Prime Agent's daemon-backed **Supervised** mode is an approval gate rather than a workspace
+sandbox. It asks before supported built-in edits, commands, and IPython cells; disables discovered
+Prime extensions, slash commands, and subagent spawning; and fails closed when the gate cannot be
+verified. Tool inputs that are too large to display completely, and tools whose arguments Pylon
+cannot review completely, are denied instead of being truncated or silently approved. Once you
+approve an IPython cell or command, that call still has normal host access. Prime Agent's ACP
+compatibility mode supports only **Full access**.
+
 Mobile offers the same four modes. It labels the first one **Approve actions** rather than
 **Supervised**.
