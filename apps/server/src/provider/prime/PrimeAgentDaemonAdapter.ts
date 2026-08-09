@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   EventId,
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
+  PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
   PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
   type PrimeAgentSettings,
   type ProviderRuntimeEvent,
@@ -2634,6 +2635,112 @@ export function makePrimeAgentDaemonAdapter(
         ),
       );
 
+    const messageSessionAgent: NonNullable<PrimeAgentAdapterShape["messageSessionAgent"]> = (
+      threadId,
+      agentId,
+      rawMessage,
+    ) =>
+      Effect.uninterruptible(
+        withThreadMutationLock(
+          threadId,
+          Effect.gen(function* () {
+            const context = yield* requireSession(threadId);
+            if (context.session.runtimeMode !== "full-access") {
+              return yield* new ProviderAdapterUnsupportedOperationError({
+                provider: PROVIDER,
+                operation: "messageSessionAgent",
+              });
+            }
+            if (!context.runtime.agentMessageAvailable) {
+              return yield* new ProviderAdapterUnsupportedOperationError({
+                provider: PROVIDER,
+                operation: "messageSessionAgent",
+              });
+            }
+            const message = rawMessage.trim();
+            if (message.length === 0 || message.length > PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS) {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "session/message-agent-invalid-message",
+                detail: `Message must contain at most ${PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS} non-empty characters.`,
+              });
+            }
+
+            // The runtime's private roster is seeded by attach/resync and updated before each
+            // decoded child event is exposed. Client-projected rows never supply native endpoints.
+            const roster = yield* context.runtime.getAgentRoster.pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/get-agent-roster", error),
+              ),
+            );
+            yield* applyAgentRosterSnapshot(context, roster);
+            const known = context.knownNativeChildren.get(agentId);
+            if (known === undefined) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "messageSessionAgent",
+                issue: "The agent is not part of this provider session.",
+                reason: "invalid-input",
+              });
+            }
+            if (known.status !== "queued" && known.status !== "running") {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "messageSessionAgent",
+                issue: "The agent is no longer active.",
+                reason: "invalid-input",
+              });
+            }
+            const targetActiveSessionId = known.activeSessionId?.trim();
+            if (targetActiveSessionId === undefined || targetActiveSessionId.length === 0) {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "session/message-agent-not-ready",
+                detail: "The active agent does not expose a direct-message endpoint.",
+              });
+            }
+            if (context.cancellationPendingNativeChildren.has(agentId)) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "messageSessionAgent",
+                issue: "The agent has a cancellation request pending.",
+                reason: "invalid-input",
+              });
+            }
+
+            const delivery = yield* context.runtime
+              .messageAgent(targetActiveSessionId, message)
+              .pipe(Effect.result);
+            if (Result.isSuccess(delivery)) {
+              return { agentId, disposition: delivery.success };
+            }
+            if (
+              delivery.failure.reason !== "request-failed" &&
+              delivery.failure.reason !== "request-timed-out" &&
+              delivery.failure.reason !== "invalid-response"
+            ) {
+              return yield* runtimeOperationError(
+                threadId,
+                "session/message-agent",
+                delivery.failure,
+              );
+            }
+
+            // Delivery may already have happened. Refresh the row once for freshness, but
+            // never retry the non-idempotent send and never close an otherwise healthy chat.
+            const reconciled = yield* context.runtime.getAgentRoster.pipe(Effect.result);
+            if (Result.isSuccess(reconciled)) {
+              yield* applyAgentRosterSnapshot(context, reconciled.success);
+            }
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/message-agent-delivery-unknown",
+              detail: "Prime Agent message delivery could not be confirmed.",
+            });
+          }),
+        ),
+      );
+
     const getSessionAgentDepth: NonNullable<PrimeAgentAdapterShape["getSessionAgentDepth"]> = (
       threadId,
     ) =>
@@ -3512,6 +3619,7 @@ export function makePrimeAgentDaemonAdapter(
       respondToInteraction,
       reloadSessionResources,
       cancelSessionAgent,
+      messageSessionAgent,
       getSessionAgentDepth,
       setSessionAgentDepth,
       followUp,

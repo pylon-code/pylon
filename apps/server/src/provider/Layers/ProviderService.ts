@@ -19,6 +19,8 @@ import {
   ProviderClearSessionInputQueueInput,
   ProviderCompactSessionInput,
   ProviderFollowUpInput,
+  ProviderMessageSessionAgentInput,
+  PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
   ProviderGetSessionAgentDepthInput,
   ProviderGetSessionCompactionInput,
   ProviderGetSessionInputQueueInput,
@@ -977,6 +979,53 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* cancelAgent(routed.threadId, input.agentId);
   });
 
+  const messageSessionAgent: ProviderServiceMethod<"messageSessionAgent"> = Effect.fn(
+    "messageSessionAgent",
+  )(function* (rawInput) {
+    const rawMessage =
+      typeof rawInput === "object" && rawInput !== null && "message" in rawInput
+        ? rawInput.message
+        : undefined;
+    if (
+      typeof rawMessage !== "string" ||
+      rawMessage.trim().length === 0 ||
+      rawMessage.trim().length > PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS
+    ) {
+      return yield* new ProviderValidationError({
+        operation: "ProviderService.messageSessionAgent",
+        issue: `Message must contain at most ${PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS} non-empty characters.`,
+        reason: "invalid-input",
+      });
+    }
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.messageSessionAgent",
+      schema: ProviderMessageSessionAgentInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.messageSessionAgent",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.messageSessionAgent",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const messageAgent = routed.adapter.messageSessionAgent;
+    if (messageAgent === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "message-session-agent",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+    });
+    return yield* messageAgent(routed.threadId, input.agentId, input.message);
+  });
+
   const getSessionAgentDepth: ProviderServiceMethod<"getSessionAgentDepth"> = Effect.fn(
     "getSessionAgentDepth",
   )(function* (rawInput) {
@@ -1558,6 +1607,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToInteraction,
     reloadSessionResources,
     cancelSessionAgent,
+    messageSessionAgent,
     getSessionAgentDepth,
     setSessionAgentDepth,
     followUp,

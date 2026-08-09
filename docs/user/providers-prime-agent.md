@@ -66,7 +66,7 @@ resources, runtime, and extension lifecycle before replacing the visible command
 unavailable in Supervised mode. If the reload cannot finish safely, Pylon clears the catalog and closes that
 native session rather than risking a partially reloaded runtime; it never retries automatically. Pylon does not
 send resource paths, diagnostics, or extension source details
-to clients. Supervised sessions keep discovered commands disabled. Observed Prime subagents appear in Pylon's Agents hierarchy. In Full access, an active agent can be stopped from its Agents row on web or desktop, or from the **Agents** control on mobile. Pylon waits for Prime's native cancelled status instead of marking the agent stopped optimistically; completed output and activity remain in the thread. A cancellation racing natural completion is treated as already settled, and Pylon never retries an uncertain cancellation automatically. Supervised sessions do not offer this control because child-agent spawning is disabled. When the selected model explicitly
+to clients. Supervised sessions keep discovered commands disabled. Observed Prime subagents appear in Pylon's Agents hierarchy. In Full access, an active agent can be stopped from its Agents row on web or desktop, or from the **Agents** control on mobile. Pylon waits for Prime's native cancelled status instead of marking the agent stopped optimistically; completed output and activity remain in the thread. A cancellation racing natural completion is treated as already settled, and Pylon never retries an uncertain cancellation automatically. Supervised sessions do not offer this control because child-agent spawning is disabled. In Full access, a live agent with a native message endpoint can also receive a direct message from its Agents row. Pylon reports only whether Prime delivered the message immediately or queued it behind current work; that receipt does not mean the agent read, answered, or completed it. Pylon does not copy the message or Prime's receipt identifiers into its event store, activity history, diagnostics, or other clients. Prime necessarily adds the text to the selected child agent's private native transcript and context so the agent can act on it. Sending is never retried automatically; if delivery becomes uncertain, sending again may duplicate the message. Supervised and ACP sessions do not offer native agent messaging. When the selected model explicitly
 exposes reasoning text, Pylon adds a bounded final **Reasoning** entry to the work log. Incremental
 thinking deltas and provider-private reasoning metadata are not persisted.
 
@@ -127,8 +127,10 @@ instead of silently opening a blank or merely recent Prime session.
 - Authentication is managed in Prime Agent, not Pylon.
 - Plan mode, provider-conversation rollback, per-item queue editing or reordering, and Pylon's
   per-thread MCP bridge are not supported yet.
-- Pylon does not yet present live Prime reasoning streams, cost breakdowns, goals, heartbeats,
-  saved-session history, or native package or MCP catalogs as first-class features.
+- Pylon does not yet present live Prime reasoning streams, child-session transcripts, cost breakdowns,
+  goals, heartbeats, saved-session history, or native package or MCP catalogs as first-class features.
+- Prime's daemon-global pause/resume controls for inbound agent messages are intentionally not exposed;
+  they can clear queued messages and reset limits across unrelated sessions.
 - Prime Agent is not used for Pylon's background text-generation helpers in Early Access.
 - ACP compatibility mode is intentionally narrower: it hides daemon-only thinking and service-tier
   controls, cannot steer or switch models in a running session, supports only Full access, and does

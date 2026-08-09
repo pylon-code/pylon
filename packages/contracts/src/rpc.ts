@@ -70,6 +70,9 @@ import {
   ProviderCancelSessionAgentError,
   ProviderCancelSessionAgentInput,
   ProviderCancelSessionAgentResult,
+  ProviderMessageSessionAgentError,
+  ProviderMessageSessionAgentInput,
+  ProviderMessageSessionAgentResult,
   ProviderClearSessionInputQueueInput,
   ProviderAbortSessionCompactionInput,
   ProviderCompactSessionInput,
@@ -257,6 +260,7 @@ export const WS_METHODS = {
   // Provider session methods
   providerReloadSessionResources: "provider.reloadSessionResources",
   providerCancelSessionAgent: "provider.cancelSessionAgent",
+  providerMessageSessionAgent: "provider.messageSessionAgent",
   providerGetSessionAgentDepth: "provider.getSessionAgentDepth",
   providerSetSessionAgentDepth: "provider.setSessionAgentDepth",
   providerGetSessionInputQueue: "provider.getSessionInputQueue",
@@ -365,6 +369,12 @@ export const WsProviderCancelSessionAgentRpc = Rpc.make(WS_METHODS.providerCance
   payload: ProviderCancelSessionAgentInput,
   success: ProviderCancelSessionAgentResult,
   error: Schema.Union([ProviderCancelSessionAgentError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderMessageSessionAgentRpc = Rpc.make(WS_METHODS.providerMessageSessionAgent, {
+  payload: ProviderMessageSessionAgentInput,
+  success: ProviderMessageSessionAgentResult,
+  error: Schema.Union([ProviderMessageSessionAgentError, EnvironmentAuthorizationError]),
 });
 
 export const WsProviderGetSessionAgentDepthRpc = Rpc.make(WS_METHODS.providerGetSessionAgentDepth, {
@@ -965,6 +975,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRefreshProvidersRpc,
   WsProviderReloadSessionResourcesRpc,
   WsProviderCancelSessionAgentRpc,
+  WsProviderMessageSessionAgentRpc,
   WsProviderGetSessionAgentDepthRpc,
   WsProviderSetSessionAgentDepthRpc,
   WsProviderGetSessionInputQueueRpc,

@@ -349,6 +349,7 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     "runHandles",
     "outputFile",
     "agentPath",
+    "messageable",
     "timelineBypass",
     "typedUsage",
     "status",

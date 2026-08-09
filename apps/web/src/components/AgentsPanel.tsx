@@ -23,8 +23,21 @@ import {
   formatSubagentTokenCount,
   isActiveSubagentStatus,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { Bot, Braces, Check, ChevronDown, ChevronRight, Square, X } from "lucide-react";
+import {
+  PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
+  type EnvironmentId,
+  type ThreadId,
+} from "@t3tools/contracts";
+import {
+  Bot,
+  Braces,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  MessageSquare,
+  Square,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -40,6 +53,15 @@ import {
   AlertDialogPopup,
   AlertDialogTitle,
 } from "~/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPopup,
+  DialogTitle,
+} from "~/components/ui/dialog";
+import { Textarea } from "~/components/ui/textarea";
 import { DotMatrix, type DotMatrixState } from "./ui/dot-matrix";
 
 /**
@@ -154,13 +176,20 @@ interface AgentCancelControls {
   readonly onRequest: (agent: RuntimeSubagent) => void;
 }
 
-/** Flat agent status line with an optional provider-neutral stop action. */
+interface AgentMessageControls {
+  readonly enabled: boolean;
+  readonly onRequest: (agent: RuntimeSubagent) => void;
+}
+
+/** Flat agent status line with provider-neutral message and stop actions. */
 function AgentRow({
   agent,
   cancelControls,
+  messageControls,
 }: {
   agent: RuntimeSubagent;
   cancelControls: AgentCancelControls;
+  messageControls: AgentMessageControls;
 }) {
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
@@ -175,15 +204,17 @@ function AgentRow({
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
-  const cancellable =
-    cancelControls.enabled && agent.kind !== "workflow" && isActiveSubagentStatus(agent.status);
+  const active = isActiveSubagentStatus(agent.status);
+  const messageable =
+    messageControls.enabled && agent.kind !== "workflow" && agent.messageable && active;
+  const cancellable = cancelControls.enabled && agent.kind !== "workflow" && active;
   const stopping = cancellable && cancelControls.pendingIds.has(agent.id);
 
   return (
     // The marker track is sized for a 14px DotMatrix, not upstream's 6px dot:
     // a narrower track would let the glyph bleed into the title column and
     // undo the fixed-height guarantee this grid exists for.
-    <div className="grid h-[3.875rem] grid-cols-[0.875rem_minmax(0,1fr)_auto_1.75rem] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
+    <div className="grid h-[3.875rem] grid-cols-[0.875rem_minmax(0,1fr)_auto_1.75rem_1.75rem] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
       <span className="col-start-1 row-start-1 flex items-center">
         <StatusDot status={agent.status} />
       </span>
@@ -204,6 +235,18 @@ function AgentRow({
         </span>
       </span>
       <span className="col-start-4 row-start-1 flex size-7 items-center justify-center">
+        {messageable ? (
+          <button
+            type="button"
+            aria-label={`Message ${agent.title}`}
+            onClick={() => messageControls.onRequest(agent)}
+            className="flex size-6 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <MessageSquare aria-hidden className="size-3.5" />
+          </button>
+        ) : null}
+      </span>
+      <span className="col-start-5 row-start-1 flex size-7 items-center justify-center">
         {cancellable ? (
           <button
             type="button"
@@ -219,13 +262,13 @@ function AgentRow({
       </span>
       <span
         className={cn(
-          "col-start-2 col-end-5 row-start-2 block truncate text-xs",
+          "col-start-2 col-end-6 row-start-2 block truncate text-xs",
           agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
         )}
       >
         {activity ?? visuals.label}
       </span>
-      <span className="col-start-2 col-end-5 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
+      <span className="col-start-2 col-end-6 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
         {metadata.join(" · ")}
       </span>
       <span className="sr-only">{visuals.label}</span>
@@ -359,10 +402,12 @@ function WorkflowScriptView({
 function PhaseSection({
   phase,
   cancelControls,
+  messageControls,
   defaultOpen = false,
 }: {
   phase: AgentPanelWorkflowGroup["phases"][number];
   cancelControls: AgentCancelControls;
+  messageControls: AgentMessageControls;
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen || phase.state === "running");
@@ -414,7 +459,12 @@ function PhaseSection({
       </button>
       {open
         ? phase.members.map((member) => (
-            <AgentRow key={member.id} agent={member} cancelControls={cancelControls} />
+            <AgentRow
+              key={member.id}
+              agent={member}
+              cancelControls={cancelControls}
+              messageControls={messageControls}
+            />
           ))
         : null}
     </div>
@@ -427,12 +477,14 @@ function ExpandedWorkflowSection({
   environmentId,
   threadId,
   cancelControls,
+  messageControls,
   onCollapse,
 }: {
   group: AgentPanelWorkflowGroup;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
   cancelControls: AgentCancelControls;
+  messageControls: AgentMessageControls;
   onCollapse: () => void;
 }) {
   const [scriptOpen, setScriptOpen] = useState(false);
@@ -492,14 +544,24 @@ function ExpandedWorkflowSection({
           key={phase.index}
           phase={phase}
           cancelControls={cancelControls}
+          messageControls={messageControls}
           defaultOpen={!workflowIsLive(group)}
         />
       ))}
       {group.unphasedMembers.map((member) => (
-        <AgentRow key={member.id} agent={member} cancelControls={cancelControls} />
+        <AgentRow
+          key={member.id}
+          agent={member}
+          cancelControls={cancelControls}
+          messageControls={messageControls}
+        />
       ))}
       {group.phases.length === 0 && group.unphasedMembers.length === 0 ? (
-        <AgentRow agent={group.workflow} cancelControls={cancelControls} />
+        <AgentRow
+          agent={group.workflow}
+          cancelControls={cancelControls}
+          messageControls={messageControls}
+        />
       ) : null}
     </section>
   );
@@ -558,11 +620,13 @@ function WorkflowSection({
   environmentId,
   threadId,
   cancelControls,
+  messageControls,
 }: {
   group: AgentPanelWorkflowGroup;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
   cancelControls: AgentCancelControls;
+  messageControls: AgentMessageControls;
 }) {
   const [open, setOpen] = useState(() => workflowIsLive(group));
   return open ? (
@@ -571,6 +635,7 @@ function WorkflowSection({
       environmentId={environmentId}
       threadId={threadId}
       cancelControls={cancelControls}
+      messageControls={messageControls}
       onCollapse={() => setOpen(false)}
     />
   ) : (
@@ -585,24 +650,66 @@ export function AgentsPanel({
   environmentId = null,
   threadId = null,
   canCancelAgents = false,
+  canMessageAgents = false,
+  agentMessageScopeKey,
   cancellingAgentIds = EMPTY_CANCELLING_AGENT_IDS,
   onCancelAgent,
+  onMessageAgent,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
   canCancelAgents?: boolean;
+  canMessageAgents?: boolean;
+  agentMessageScopeKey?: string;
   cancellingAgentIds?: ReadonlySet<string>;
   onCancelAgent?: (agentId: string) => Promise<void>;
+  onMessageAgent?: (agentId: string, message: string) => Promise<"delivered" | "queued" | null>;
 }) {
+  const messageScopeKey = agentMessageScopeKey ?? JSON.stringify([environmentId, threadId]);
   const [confirmAgent, setConfirmAgent] = useState<RuntimeSubagent | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [messageAgent, setMessageAgent] = useState<RuntimeSubagent | null>(null);
+  const [messageDraft, setMessageDraft] = useState("");
+  const [messagePending, setMessagePending] = useState(false);
+  const [messageError, setMessageError] = useState<string | null>(null);
+  const [messageFeedback, setMessageFeedback] = useState<{
+    readonly agentTitle: string;
+    readonly disposition: "delivered" | "queued";
+  } | null>(null);
+  const [messageStateScopeKey, setMessageStateScopeKey] = useState(messageScopeKey);
+  const messageScopeRef = useRef(messageScopeKey);
+  messageScopeRef.current = messageScopeKey;
+  useEffect(() => {
+    setMessageStateScopeKey(messageScopeKey);
+    setMessageAgent(null);
+    setMessageDraft("");
+    setMessagePending(false);
+    setMessageError(null);
+    setMessageFeedback(null);
+  }, [messageScopeKey]);
   const cancelControls: AgentCancelControls = {
     enabled: canCancelAgents && onCancelAgent !== undefined,
     pendingIds: cancellingAgentIds,
     onRequest: (agent) => {
       setCancelError(null);
       setConfirmAgent(agent);
+    },
+  };
+  const closeMessageDialog = () => {
+    if (messagePending) return;
+    setMessageAgent(null);
+    setMessageDraft("");
+    setMessageError(null);
+  };
+  const messageControls: AgentMessageControls = {
+    enabled: canMessageAgents && onMessageAgent !== undefined,
+    onRequest: (agent) => {
+      setMessageStateScopeKey(messageScopeKey);
+      setMessageFeedback(null);
+      setMessageError(null);
+      setMessageDraft("");
+      setMessageAgent(agent);
     },
   };
   const confirmCancel = async () => {
@@ -613,6 +720,40 @@ export function AgentsPanel({
       await onCancelAgent(agent.id);
     } catch {
       setCancelError(`Could not stop ${agent.title}. Its status has been refreshed.`);
+    }
+  };
+  const sendAgentMessage = async () => {
+    const agent = messageAgent;
+    const message = messageDraft.trim();
+    if (
+      agent === null ||
+      onMessageAgent === undefined ||
+      messagePending ||
+      messageStateScopeKey !== messageScopeKey
+    )
+      return;
+    if (message.length === 0) {
+      setMessageError("Enter a message for the agent.");
+      return;
+    }
+    const expectedScopeKey = messageScopeKey;
+    setMessagePending(true);
+    setMessageError(null);
+    try {
+      const disposition = await onMessageAgent(agent.id, message);
+      if (messageScopeRef.current !== expectedScopeKey || disposition === null) return;
+      setMessageFeedback({ agentTitle: agent.title, disposition });
+      setMessageAgent(null);
+      setMessageDraft("");
+    } catch (error) {
+      if (messageScopeRef.current !== expectedScopeKey) return;
+      setMessageError(
+        error instanceof Error && error.message.length > 0
+          ? error.message
+          : `Could not message ${agent.title}. Check its live status and try again.`,
+      );
+    } finally {
+      if (messageScopeRef.current === expectedScopeKey) setMessagePending(false);
     }
   };
   if (!model.hasAgents) {
@@ -638,6 +779,13 @@ export function AgentsPanel({
           {cancelError}
         </div>
       ) : null}
+      {messageFeedback && messageStateScopeKey === messageScopeKey ? (
+        <div role="status" className="border-b border-border/60 px-3 py-2 text-xs text-foreground">
+          {messageFeedback.disposition === "delivered"
+            ? `Message delivered to ${messageFeedback.agentTitle}.`
+            : `Message queued for ${messageFeedback.agentTitle}.`}
+        </div>
+      ) : null}
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2 p-2">
           {model.workflows.map((group) => (
@@ -647,6 +795,7 @@ export function AgentsPanel({
               environmentId={environmentId}
               threadId={threadId}
               cancelControls={cancelControls}
+              messageControls={messageControls}
             />
           ))}
           {model.directAgents.length > 0 ? (
@@ -655,7 +804,12 @@ export function AgentsPanel({
                 Direct spawns
               </div>
               {model.directAgents.map((agent) => (
-                <AgentRow key={agent.id} agent={agent} cancelControls={cancelControls} />
+                <AgentRow
+                  key={agent.id}
+                  agent={agent}
+                  cancelControls={cancelControls}
+                  messageControls={messageControls}
+                />
               ))}
             </section>
           ) : null}
@@ -673,6 +827,65 @@ export function AgentsPanel({
         </span>
         <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
       </footer>
+      <Dialog
+        open={messageAgent !== null && messageStateScopeKey === messageScopeKey}
+        onOpenChange={(open) => {
+          if (!open) closeMessageDialog();
+        }}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Message {messageAgent?.title ?? "agent"}</DialogTitle>
+            <DialogDescription>Send a direct instruction to this active agent.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 px-6 pb-4">
+            <Textarea
+              autoFocus
+              aria-label={`Message for ${messageAgent?.title ?? "agent"}`}
+              maxLength={PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS}
+              value={messageDraft}
+              disabled={messagePending}
+              onChange={(event) => {
+                setMessageDraft(event.currentTarget.value);
+                if (messageError) setMessageError(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  void sendAgentMessage();
+                }
+              }}
+              placeholder="What should this agent know or do?"
+              className="min-h-32 resize-y"
+            />
+            <div className="flex items-center justify-between gap-3 text-xs">
+              <span
+                className="text-destructive-foreground"
+                role={messageError ? "alert" : undefined}
+              >
+                {messageError}
+              </span>
+              <span className="ml-auto tabular-nums text-muted-foreground">
+                {messageDraft.length.toLocaleString()} /{" "}
+                {PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS.toLocaleString()}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">Press Ctrl+Enter or ⌘+Enter to send.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={messagePending} onClick={closeMessageDialog}>
+              Cancel
+            </Button>
+            <Button
+              disabled={messagePending || messageDraft.trim().length === 0}
+              aria-busy={messagePending || undefined}
+              onClick={() => void sendAgentMessage()}
+            >
+              {messagePending ? "Sending…" : "Send message"}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
       <AlertDialog
         open={confirmAgent !== null}
         onOpenChange={(open) => {

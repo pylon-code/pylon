@@ -33,9 +33,12 @@ import {
 } from "@t3tools/client-runtime/state/session-input-queue";
 import { deriveLatestSessionResources } from "@t3tools/client-runtime/state/session-resources";
 import {
+  canMessageSessionAgent,
   foldSubagentActivities,
   isActiveSubagentStatus,
+  isSessionAgentMessageDeliveryUnknown,
   supportsSessionAgentCancel,
+  supportsSessionAgentMessage,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
@@ -125,6 +128,9 @@ export function useThreadComposerState() {
   const cancelSessionAgent = useAtomCommand(threadEnvironment.cancelSessionAgent, {
     reportFailure: false,
   });
+  const messageSessionAgent = useAtomCommand(threadEnvironment.messageSessionAgent, {
+    reportFailure: false,
+  });
   const clearSessionInputQueue = useAtomCommand(threadEnvironment.clearSessionInputQueue, {
     reportFailure: false,
   });
@@ -162,6 +168,20 @@ export function useThreadComposerState() {
     const sessionLive = status === "starting" || status === "ready" || status === "running";
     return foldSubagentActivities(selectedThreadDetail?.activities ?? [], { sessionLive });
   }, [selectedThreadDetail]);
+  const sessionAgentMessageScopeRef = useRef({
+    threadKey: selectedThreadKey,
+    thread: selectedThreadShell,
+    session: selectedThreadDetail?.session ?? null,
+    agents: selectedThreadAgents,
+    providers: selectedThreadServerConfig?.providers ?? [],
+  });
+  sessionAgentMessageScopeRef.current = {
+    threadKey: selectedThreadKey,
+    thread: selectedThreadShell,
+    session: selectedThreadDetail?.session ?? null,
+    agents: selectedThreadAgents,
+    providers: selectedThreadServerConfig?.providers ?? [],
+  };
 
   const selectedDraft = selectedThreadKey ? composerDrafts[selectedThreadKey] : null;
   const draftMessage = selectedDraft?.text ?? "";
@@ -529,6 +549,65 @@ export function useThreadComposerState() {
     selectedThreadShell,
   ]);
 
+  const onMessageSessionAgent = useCallback(
+    async (
+      agentId: string,
+      rawMessage: string,
+    ): Promise<"delivered" | "queued" | "delivery-unknown" | null> => {
+      const scope = sessionAgentMessageScopeRef.current;
+      const provider =
+        scope.session?.providerInstanceId === undefined
+          ? null
+          : (scope.providers.find(
+              (candidate) => candidate.instanceId === scope.session?.providerInstanceId,
+            ) ?? null);
+      const agent = scope.agents.find((candidate) => candidate.id === agentId);
+      const message = rawMessage.trim();
+      if (
+        scope.threadKey === null ||
+        scope.thread === null ||
+        (scope.session?.status !== "ready" && scope.session?.status !== "running") ||
+        scope.session.runtimeMode !== "full-access" ||
+        !supportsSessionAgentMessage(provider) ||
+        agent === undefined ||
+        !canMessageSessionAgent(provider, agent) ||
+        message.length === 0
+      ) {
+        return null;
+      }
+      const expectedScopeKey = JSON.stringify([
+        scope.threadKey,
+        scope.session.providerInstanceId,
+        scope.session.runtimeMode,
+      ]);
+      const result = await messageSessionAgent({
+        environmentId: scope.thread.environmentId,
+        input: {
+          threadId: scope.thread.id,
+          agentId: RuntimeTaskId.make(agentId),
+          message,
+        },
+      });
+      const latest = sessionAgentMessageScopeRef.current;
+      if (
+        JSON.stringify([
+          latest.threadKey,
+          latest.session?.providerInstanceId,
+          latest.session?.runtimeMode,
+        ]) !== expectedScopeKey
+      ) {
+        return null;
+      }
+      if (result._tag === "Failure") {
+        if (isAtomCommandInterrupted(result)) return null;
+        const error = squashAtomCommandFailure(result);
+        return isSessionAgentMessageDeliveryUnknown(error) ? "delivery-unknown" : null;
+      }
+      return result.value.disposition;
+    },
+    [messageSessionAgent],
+  );
+
   const onCancelSessionAgent = useCallback(
     async (agentId: string) => {
       const session = selectedThreadDetail?.session;
@@ -815,6 +894,7 @@ export function useThreadComposerState() {
     onSetSessionInputQueueMode,
     onRunSessionCompactionAction: runSessionCompactionMutation,
     onCancelSessionAgent,
+    onMessageSessionAgent,
     onUpdateModelSelection,
     onUpdateRuntimeMode,
     onUpdateInteractionMode,

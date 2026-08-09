@@ -32,6 +32,7 @@ export function makePrimeAgentFeatureCapabilities(input: {
   readonly inputQueue: boolean;
   readonly inputQueueModes: boolean;
   readonly agentCancel: boolean;
+  readonly agentMessage: boolean;
   readonly compaction: boolean;
   readonly autoCompaction: boolean;
 }): ProviderFeatureCapabilities {
@@ -68,12 +69,21 @@ export function makePrimeAgentFeatureCapabilities(input: {
     },
     agents: {
       support: "read-write",
-      reason: input.agentCancel
-        ? "Pylon can observe and cancel Prime Agent subagents and configure bounded per-session spawn depth; supervised sessions remain fixed at depth zero."
-        : "Pylon can observe Prime Agent subagents and configure bounded per-session spawn depth; cancellation is unavailable with the loaded daemon and supervised sessions remain fixed at depth zero.",
-      operations: input.agentCancel
-        ? ["observe", "hierarchy", "cancel", "set-depth"]
-        : ["observe", "hierarchy", "set-depth"],
+      reason:
+        input.agentCancel && input.agentMessage
+          ? "Pylon can observe, message, and cancel compatible live Prime Agent descendants and configure bounded per-session spawn depth; supervised sessions remain fixed at depth zero."
+          : input.agentMessage
+            ? "Pylon can observe and message compatible live Prime Agent descendants and configure bounded per-session spawn depth; cancellation is unavailable with the loaded daemon and supervised sessions remain fixed at depth zero."
+            : input.agentCancel
+              ? "Pylon can observe and cancel Prime Agent subagents and configure bounded per-session spawn depth; messaging is unavailable with the loaded daemon and supervised sessions remain fixed at depth zero."
+              : "Pylon can observe Prime Agent subagents and configure bounded per-session spawn depth; messaging and cancellation are unavailable with the loaded daemon and supervised sessions remain fixed at depth zero.",
+      operations: [
+        "observe",
+        "hierarchy",
+        ...(input.agentMessage ? (["message"] as const) : []),
+        ...(input.agentCancel ? (["cancel"] as const) : []),
+        "set-depth",
+      ],
     },
     resources: {
       support: "read-write",

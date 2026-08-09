@@ -854,6 +854,7 @@ function ThreadRouteContent(
           onSetSessionInputQueueMode={composer.onSetSessionInputQueueMode}
           onRunSessionCompactionAction={composer.onRunSessionCompactionAction}
           onCancelSessionAgent={composer.onCancelSessionAgent}
+          onMessageSessionAgent={composer.onMessageSessionAgent}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
           onUpdateThreadRuntimeMode={composer.onUpdateRuntimeMode}

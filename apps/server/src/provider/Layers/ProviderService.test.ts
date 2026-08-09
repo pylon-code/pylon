@@ -175,6 +175,11 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     ),
   );
 
+  const messageSessionAgent = vi.fn(
+    (_threadId: ThreadId, agentId: RuntimeTaskId, _message: string) =>
+      Effect.succeed({ agentId, disposition: "delivered" as const }),
+  );
+
   let agentDepth = {
     maxDepth: 2,
     source: "session" as const,
@@ -322,6 +327,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     respondToInteraction,
     reloadSessionResources,
     cancelSessionAgent,
+    messageSessionAgent,
     getSessionAgentDepth,
     setSessionAgentDepth,
     getSessionInputQueue,
@@ -366,6 +372,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     respondToInteraction,
     reloadSessionResources,
     cancelSessionAgent,
+    messageSessionAgent,
     getSessionAgentDepth,
     setSessionAgentDepth,
     getSessionInputQueue,
@@ -1054,6 +1061,19 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
       assert.deepEqual(routing.codex.cancelSessionAgent.mock.calls, [
         [session.threadId, RuntimeTaskId.make("agent-1")],
+      ]);
+
+      const messaged = yield* provider.messageSessionAgent({
+        threadId: session.threadId,
+        agentId: RuntimeTaskId.make("agent-1"),
+        message: "Check the failing test.",
+      });
+      assert.deepEqual(messaged, {
+        agentId: RuntimeTaskId.make("agent-1"),
+        disposition: "delivered",
+      });
+      assert.deepEqual(routing.codex.messageSessionAgent.mock.calls, [
+        [session.threadId, RuntimeTaskId.make("agent-1"), "Check the failing test."],
       ]);
 
       const invalidDepth = yield* provider
@@ -2080,6 +2100,22 @@ validation.layer("ProviderServiceLive validation", (it) => {
       }
       assert.equal(failure.failure.operation, "ProviderService.startSession");
       assert.equal(failure.failure.issue.includes("invalid-provider"), true);
+
+      const invalidMessage = yield* Effect.result(
+        provider.messageSessionAgent({
+          threadId: asThreadId("thread-validation"),
+          agentId: RuntimeTaskId.make("agent-1"),
+          message: "   ",
+        } as never),
+      );
+      assert.equal(invalidMessage._tag, "Failure");
+      if (invalidMessage._tag === "Failure") {
+        assert.equal(invalidMessage.failure._tag, "ProviderValidationError");
+        if (invalidMessage.failure._tag === "ProviderValidationError") {
+          assert.equal(invalidMessage.failure.operation, "ProviderService.messageSessionAgent");
+          assert.equal(invalidMessage.failure.reason, "invalid-input");
+        }
+      }
     }),
   );
 

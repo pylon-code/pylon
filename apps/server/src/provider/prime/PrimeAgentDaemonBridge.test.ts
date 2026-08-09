@@ -28,6 +28,7 @@ function daemonModuleSource(options?: {
   readonly omitConnection?: boolean;
   readonly omitSessionStats?: boolean;
   readonly omitResourceCatalog?: boolean;
+  readonly omitAgentMessaging?: boolean;
 }): string {
   return `
 export const VERSION = ${JSON.stringify(options?.version ?? "0.7.1")};
@@ -53,6 +54,7 @@ ${
   ${options?.omitResourceCatalog ? "" : "async getCommands() { return []; } async getResourceSnapshot() { return {}; } async reload() {}"}
   ${options?.omitSessionStats ? "" : "async getSessionStats() { return {}; }"}
   async promptAndWait() {}
+  ${options?.omitAgentMessaging ? "" : 'async sendAgentMessage(targetActiveSessionId, message) { return { deliveryStatus: "delivered", targetActiveSessionId, message }; }'}
   async abort() {}
   async dispose() {}
 }`
@@ -140,7 +142,33 @@ describe("PrimeAgentDaemonBridge", () => {
       expect(bridge.protocolName).toBe(PRIME_AGENT_DAEMON_PROTOCOL_NAME);
       expect(bridge.protocolVersion).toBe(PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION);
       expect(bridge.defaultDaemonSocketPath()).toBe("/tmp/prime-agent-test.sock");
+      const connection = yield* Effect.promise(() =>
+        bridge.DaemonAgentConnection.attach(client, "active-parent"),
+      );
+      expect(
+        yield* Effect.promise(() => connection.sendAgentMessage!("active-child", "hello")),
+      ).toEqual({
+        deliveryStatus: "delivered",
+        targetActiveSessionId: "active-child",
+        message: "hello",
+      });
       expect(client.isConnected).toBe(false);
+    }),
+  );
+
+  it.effect("keeps the newer agent messaging method optional for compatible daemons", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({ omitAgentMessaging: true }),
+      });
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+      const client = new bridge.DaemonClient("/tmp/test.sock");
+      const connection = yield* Effect.promise(() =>
+        bridge.DaemonAgentConnection.attach(client, "active-parent"),
+      );
+
+      expect(connection.sendAgentMessage).toBeUndefined();
     }),
   );
 

@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vite-plus/test";
 import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tools/contracts";
 import {
+  canMessageSessionAgent,
   deriveAgentPanelModel,
   foldSubagentActivities,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
   isAgentAttributedToolActivity,
+  isSessionAgentMessageDeliveryUnknown,
   isSubagentActivityKind,
   isTimelineBypassActivity,
   supportsSessionAgentCancel,
+  supportsSessionAgentMessage,
   workflowCardMembers,
 } from "./subagentRuntime.ts";
 
@@ -914,5 +917,70 @@ describe("supportsSessionAgentCancel", () => {
     expect(supportsSessionAgentCancel(provider("read-only", ["cancel"]))).toBe(false);
     expect(supportsSessionAgentCancel(provider("read-write", ["observe"]))).toBe(false);
     expect(supportsSessionAgentCancel(provider("read-write", ["observe", "cancel"]))).toBe(true);
+  });
+});
+
+describe("session agent messaging", () => {
+  const provider = (support: "read-only" | "read-write", operations: ReadonlyArray<string>) => ({
+    featureCapabilities: {
+      agents: { support, operations },
+    } as NonNullable<import("@t3tools/contracts").ServerProvider["featureCapabilities"]>,
+  });
+
+  it("requires the provider-neutral read-write message capability", () => {
+    expect(supportsSessionAgentMessage(null)).toBe(false);
+    expect(supportsSessionAgentMessage(provider("read-only", ["message"]))).toBe(false);
+    expect(supportsSessionAgentMessage(provider("read-write", ["observe"]))).toBe(false);
+    expect(supportsSessionAgentMessage(provider("read-write", ["message"]))).toBe(true);
+  });
+
+  it("only addresses provider-marked live agents, including nested descendants", () => {
+    const [nested] = fold([
+      activity("task.started", {
+        taskId: "nested-messageable",
+        taskType: "local_agent",
+        agentId: "parent-agent",
+        messageable: true,
+      }),
+    ]);
+    expect(nested?.messageable).toBe(true);
+    expect(canMessageSessionAgent(provider("read-write", ["message"]), nested!)).toBe(true);
+    expect(canMessageSessionAgent(provider("read-write", ["observe"]), nested!)).toBe(false);
+    expect(
+      canMessageSessionAgent(provider("read-write", ["message"]), {
+        ...nested!,
+        messageable: false,
+      }),
+    ).toBe(false);
+    expect(
+      canMessageSessionAgent(provider("read-write", ["message"]), {
+        ...nested!,
+        status: "completed",
+      }),
+    ).toBe(false);
+    expect(
+      canMessageSessionAgent(provider("read-write", ["message"]), { ...nested!, kind: "workflow" }),
+    ).toBe(false);
+  });
+
+  it("honors an explicit messageability revocation on a later activity", () => {
+    const [agent] = fold([
+      activity("task.started", {
+        taskId: "revoked-messageable",
+        taskType: "local_agent",
+        messageable: true,
+      }),
+      activity("task.progress", {
+        taskId: "revoked-messageable",
+        messageable: false,
+      }),
+    ]);
+    expect(agent?.messageable).toBe(false);
+  });
+
+  it("distinguishes unknown delivery from safely retryable failures", () => {
+    expect(isSessionAgentMessageDeliveryUnknown({ reason: "delivery-unknown" })).toBe(true);
+    expect(isSessionAgentMessageDeliveryUnknown({ reason: "request-failed" })).toBe(false);
+    expect(isSessionAgentMessageDeliveryUnknown(new Error("failed"))).toBe(false);
   });
 });
