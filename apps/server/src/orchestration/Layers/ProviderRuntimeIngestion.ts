@@ -252,7 +252,7 @@ function assistantSegmentMessageId(baseKey: string, segmentIndex: number): Messa
 function buildContextWindowActivityPayload(
   event: ProviderRuntimeEvent,
 ): ThreadTokenUsageSnapshot | undefined {
-  if (event.type !== "thread.token-usage.updated" || event.payload.usage.usedTokens <= 0) {
+  if (event.type !== "thread.token-usage.updated" || event.payload.usage.usedTokens < 0) {
     return undefined;
   }
   return event.payload.usage;
@@ -359,6 +359,17 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     }
   }
   return fields;
+}
+
+function contextWindowActivityId(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { readonly type: "thread.token-usage.updated" | "thread.token-usage.cleared" }
+  >,
+): EventId {
+  return EventId.make(
+    `context-window:${event.providerInstanceId ?? event.provider}:${event.threadId}:${event.turnId ?? "session"}`,
+  );
 }
 
 function reasoningActivityId(
@@ -839,6 +850,19 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "thread.token-usage.cleared":
+      return [
+        {
+          id: contextWindowActivityId(event),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "context-window.cleared",
+          summary: "Context window unavailable",
+          payload: { reason: event.payload.reason },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
     case "thread.token-usage.updated": {
       const payload = buildContextWindowActivityPayload(event);
       if (!payload) {
@@ -847,7 +871,7 @@ export function runtimeEventToActivities(
 
       return [
         {
-          id: event.eventId,
+          id: contextWindowActivityId(event),
           createdAt: event.createdAt,
           tone: "info",
           kind: "context-window.updated",

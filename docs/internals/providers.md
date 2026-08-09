@@ -45,7 +45,12 @@ blocking hooks map reviewable built-in edit, shell, and IPython requests private
 Pylon approval events; unknown tools and oversized inputs are denied rather than incompletely
 presented. Native request IDs and policy tokens remain adapter-local. Provider-exposed final reasoning is
 bounded into the shared work-log item shape; incremental deltas and provider-private reasoning
-metadata are discarded at the Prime boundary. The gate fails closed, but it is not an OS sandbox,
+metadata are discarded at the Prime boundary. Public daemon session statistics are decoded behind
+an identity check and reduced to the active context estimate, current model window, and exact
+automatic-compaction setting. A typed provider-neutral clear barrier retracts stale meters while
+Prime reports post-compaction context as unknown; aggregate retained-session counts and native
+identity, path, percentage, and cost fields are not conflated with active context usage. The gate
+fails closed, but it is not an OS sandbox,
 so approved IPython and shell calls retain host access. ACP remains an explicit
 compatibility fallback for custom launch arguments or failed daemon setup. The fallback snapshot
 strips daemon-only model options and capabilities rather than rendering controls ACP would ignore.

@@ -50,6 +50,7 @@ function snapshot(sequence = 4) {
       sessionDir: "/daemon/private/session",
       sessionFile: "/daemon/private/session.jsonl",
       messageCount: 0,
+      autoCompactionEnabled: true,
       sessionActions: actions,
       goal,
     },
@@ -91,6 +92,7 @@ function fixture(options?: {
   readonly resourceSnapshot?: unknown;
   readonly commands?: unknown;
   readonly rlmDepth?: number;
+  readonly sessionStats?: unknown;
 }) {
   const captures: Captures = {
     order: [],
@@ -243,6 +245,24 @@ function fixture(options?: {
         options?.resourceSnapshot ?? {
           extensions: [{ path: "/state/pylon/permission.mjs" }],
           diagnostics: { extensions: [] },
+        },
+      );
+    }
+    getSessionStats(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getSessionStats", args: [] });
+      return Promise.resolve(
+        options?.sessionStats ?? {
+          sessionFile: "/daemon/private/session.jsonl",
+          sessionId: "session-1",
+          tokens: {
+            input: 120,
+            output: 30,
+            cacheRead: 850,
+            cacheWrite: 10,
+            total: 1_010,
+          },
+          cost: 0.42,
+          contextUsage: { tokens: 320, contextWindow: 200_000, percent: 0.16 },
         },
       );
     }
@@ -619,6 +639,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         yield* runtime.setThinkingLevel("xhigh");
         yield* runtime.setServiceTier("priority");
         yield* runtime.respondToExtensionUiRequest("dialog-1", { confirmed: true });
+        const stats = yield* runtime.getSessionStats;
 
         expect(selected).toEqual({
           provider: "prime",
@@ -627,6 +648,12 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         });
         expect(selected).not.toHaveProperty("baseUrl");
         expect(selected).not.toHaveProperty("headers");
+        expect(stats).toEqual({
+          contextUsage: { usedTokens: 320, maxTokens: 200_000 },
+        });
+        expect(stats).not.toHaveProperty("sessionFile");
+        expect(stats).not.toHaveProperty("sessionId");
+        expect(stats).not.toHaveProperty("cost");
         expect(captures.connectionCalls).toEqual(
           [
             ["prompt", ["prompt", { queueIfBusy: false, images, signal }]],
@@ -638,6 +665,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
             ["setThinkingLevel", ["xhigh"]],
             ["setServiceTier", ["priority"]],
             ["extension", ["dialog-1", { confirmed: true }]],
+            ["getSessionStats", []],
           ].map(([method, args]) => ({ method, args })),
         );
       }),
@@ -683,6 +711,23 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         reason: "invalid-response",
       });
       expect(snapshotError.detail).not.toContain("/secret");
+
+      const invalidStats = fixture({
+        sessionStats: {
+          sessionId: "wrong-session",
+          contextUsage: { tokens: 1, contextWindow: 100, percent: 1 },
+        },
+      });
+      const statsError = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* invalidStats.make();
+          return yield* runtime.getSessionStats.pipe(Effect.flip);
+        }),
+      );
+      expect(statsError).toMatchObject({
+        operation: "session-stats",
+        reason: "invalid-response",
+      });
     }),
   );
 });

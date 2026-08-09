@@ -11,7 +11,10 @@ import {
 } from "@t3tools/contracts";
 
 import type { PrimeDaemonEvent } from "./PrimeAgentDaemonEvents.ts";
-import { mapPrimeAgentDaemonRuntimeEventDrafts } from "./PrimeAgentDaemonRuntimeEvents.ts";
+import {
+  mapPrimeAgentContextUsageDraft,
+  mapPrimeAgentDaemonRuntimeEventDrafts,
+} from "./PrimeAgentDaemonRuntimeEvents.ts";
 
 const provider = ProviderDriverKind.make("primeAgent");
 const providerInstanceId = ProviderInstanceId.make("primeAgent_default");
@@ -326,29 +329,61 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
         providerInstanceId,
         threadId,
         turnId,
-        type: "thread.token-usage.updated",
-        payload: {
-          usage: {
-            usedTokens: 8,
-            inputTokens: 5,
-            lastInputTokens: 5,
-            cachedInputTokens: 1,
-            lastCachedInputTokens: 1,
-            outputTokens: 2,
-            lastOutputTokens: 2,
-            lastUsedTokens: 8,
-          },
-        },
-      },
-      {
-        provider,
-        providerInstanceId,
-        threadId,
-        turnId,
         type: "session.state.changed",
         payload: { state: "ready" },
       },
     ]);
+  });
+
+  it("maps authoritative context usage without conflating turn or cumulative totals", () => {
+    expect(
+      mapPrimeAgentContextUsageDraft({
+        provider,
+        providerInstanceId,
+        threadId,
+        stats: { contextUsage: { usedTokens: 320, maxTokens: 200_000 } },
+        compactsAutomatically: true,
+      }),
+    ).toEqual({
+      provider,
+      providerInstanceId,
+      threadId,
+      type: "thread.token-usage.updated",
+      payload: {
+        usage: {
+          usedTokens: 320,
+          maxTokens: 200_000,
+          compactsAutomatically: true,
+        },
+      },
+    });
+  });
+
+  it("clears context usage when Prime reports unknown or unavailable context", () => {
+    expect(
+      mapPrimeAgentContextUsageDraft({
+        provider,
+        providerInstanceId,
+        threadId,
+        stats: { contextUsage: { usedTokens: null, maxTokens: 200_000 } },
+        compactsAutomatically: false,
+      }),
+    ).toMatchObject({
+      type: "thread.token-usage.cleared",
+      payload: { reason: "unknown" },
+    });
+    expect(
+      mapPrimeAgentContextUsageDraft({
+        provider,
+        providerInstanceId,
+        threadId,
+        stats: {},
+        compactsAutomatically: true,
+      }),
+    ).toMatchObject({
+      type: "thread.token-usage.cleared",
+      payload: { reason: "unavailable" },
+    });
   });
 
   it("does not complete a replayed run and fails an active run with no assistant", () => {
@@ -534,6 +569,7 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
           thinkingLevel: "medium",
           serviceTier: null,
           messageCount: 1,
+          autoCompactionEnabled: true,
         },
         messages: [assistant()],
         children: [],

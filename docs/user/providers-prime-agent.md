@@ -54,6 +54,11 @@ surface. Observed Prime subagents appear in Pylon's Agents hierarchy. When the s
 exposes reasoning text, Pylon adds a bounded final **Reasoning** entry to the work log. Incremental
 thinking deltas and provider-private reasoning metadata are not persisted.
 
+Daemon-backed threads also show Prime's current context-window estimate and selected model limit in
+the composer. The meter is separate from per-turn token totals and hides when Prime reports the
+post-compaction context as unknown; it returns after the next successful model response. Pylon uses
+the session's native automatic-compaction setting rather than assuming compaction is enabled.
+
 ## Execution Approvals
 
 Daemon-backed threads support **Supervised** and **Full access**. Supervised mode loads a
@@ -83,8 +88,8 @@ instead of silently opening a blank or merely recent Prime session.
 - Authentication is managed in Prime Agent, not Pylon.
 - Plan mode, provider-conversation rollback, queue inspection and follow-up controls, and Pylon's
   per-thread MCP bridge are not supported yet.
-- Pylon does not yet present live Prime reasoning streams, cost breakdowns, context compaction, goals,
-  heartbeats, saved-session history, or native resource catalogs as first-class features.
+- Pylon does not yet present live Prime reasoning streams, cost breakdowns, compaction lifecycle,
+  goals, heartbeats, saved-session history, or native resource catalogs as first-class features.
 - Prime Agent is not used for Pylon's background text-generation helpers in Early Access.
 - ACP compatibility mode is intentionally narrower: it hides daemon-only thinking and service-tier
   controls, cannot steer or switch models in a running session, supports only Full access, and does

@@ -91,6 +91,15 @@ const commandsSchema = Schema.Array(
     sourceInfo: Schema.Struct({ path: Schema.String }),
   }),
 );
+const sessionStatsSchema = Schema.Struct({
+  sessionId: Schema.NonEmptyString,
+  contextUsage: Schema.optional(
+    Schema.Struct({
+      tokens: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+      contextWindow: Schema.Int.check(Schema.isGreaterThan(0)),
+    }),
+  ),
+});
 const rlmMaxDepthStatusSchema = Schema.Struct({ maxDepth: Schema.Number });
 
 const decodeThinkingLevel = Schema.decodeUnknownOption(thinkingLevelSchema);
@@ -103,6 +112,7 @@ const decodeModel = Schema.decodeUnknownOption(modelSchema);
 const decodeQueueState = Schema.decodeUnknownOption(queueStateSchema);
 const decodeResourceSnapshot = Schema.decodeUnknownOption(resourceSnapshotSchema);
 const decodeCommands = Schema.decodeUnknownOption(commandsSchema);
+const decodeSessionStats = Schema.decodeUnknownOption(sessionStatsSchema);
 const decodeRlmMaxDepthStatus = Schema.decodeUnknownOption(rlmMaxDepthStatusSchema);
 
 const runtimeErrorOperation = Schema.Literals([
@@ -121,6 +131,7 @@ const runtimeErrorOperation = Schema.Literals([
   "set-thinking-level",
   "set-service-tier",
   "extension-ui-response",
+  "session-stats",
   "dispose",
 ]);
 const runtimeErrorReason = Schema.Literals([
@@ -179,6 +190,16 @@ export interface PrimeAgentDaemonSafeModel {
   readonly provider: string;
 }
 
+/** Provider-neutral session usage fields projected from Prime's private daemon response. */
+export interface PrimeAgentDaemonSessionStats {
+  readonly contextUsage?:
+    | {
+        readonly usedTokens: number | null;
+        readonly maxTokens: number;
+      }
+    | undefined;
+}
+
 type PrimeAgentDaemonCanonicalSnapshot = Extract<
   PrimeDaemonEvent,
   { readonly _tag: "SessionResynced" }
@@ -217,6 +238,10 @@ export interface PrimeAgentDaemonSessionRuntime {
     requestId: string,
     response: PrimeAgentDaemonExtensionUiResponse,
   ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  readonly getSessionStats: Effect.Effect<
+    PrimeAgentDaemonSessionStats,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
   readonly dispose: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
 }
 
@@ -828,6 +853,32 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       );
     });
 
+    const getSessionStats = Effect.gen(function* () {
+      yield* ensureOpen("session-stats");
+      const method = yield* requireMethod("session-stats", connection!.getSessionStats);
+      const output = yield* Effect.tryPromise({
+        try: () => method.call(connection),
+        catch: () =>
+          runtimeError("session-stats", "request-failed", "Could not read daemon session usage."),
+      });
+      const decoded = decodeSessionStats(output);
+      if (Option.isNone(decoded) || decoded.value.sessionId !== sessionId) {
+        return yield* runtimeError(
+          "session-stats",
+          "invalid-response",
+          "The daemon returned invalid session usage.",
+        );
+      }
+      return decoded.value.contextUsage === undefined
+        ? {}
+        : ({
+            contextUsage: {
+              usedTokens: decoded.value.contextUsage.tokens,
+              maxTokens: decoded.value.contextUsage.contextWindow,
+            },
+          } satisfies PrimeAgentDaemonSessionStats);
+    });
+
     const dispose = Effect.suspend(() => {
       if (disposed || disposeStarted) return Effect.void;
       disposeStarted = true;
@@ -876,6 +927,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       setThinkingLevel,
       setServiceTier,
       respondToExtensionUiRequest,
+      getSessionStats,
       dispose,
     } satisfies PrimeAgentDaemonSessionRuntime;
   },

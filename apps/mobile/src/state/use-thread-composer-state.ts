@@ -11,6 +11,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
+import { deriveLatestContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
@@ -81,6 +82,10 @@ export function useThreadDraftForThread(input: {
 export function useThreadComposerState() {
   const { selectedThread: selectedThreadShell } = useThreadSelection();
   const selectedThreadDetail = useSelectedThreadDetail();
+  const selectedThreadContextWindow = useMemo(
+    () => deriveLatestContextWindowSnapshot(selectedThreadDetail?.activities ?? []),
+    [selectedThreadDetail?.activities],
+  );
   const selectedThreadServerConfig = useEnvironmentServerConfig(
     selectedThreadShell?.environmentId ?? null,
   );
@@ -361,6 +366,7 @@ export function useThreadComposerState() {
 
   return {
     selectedThreadFeed,
+    selectedThreadContextWindow,
     selectedThreadQueueCount,
     activeWorkStartedAt,
     draftMessage,

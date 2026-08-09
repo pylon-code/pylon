@@ -55,7 +55,10 @@ import {
   type PrimeAgentTurnControlsResult,
   resolvePrimeAgentTurnControls,
 } from "./PrimeAgentModelOptions.ts";
-import { mapPrimeAgentDaemonRuntimeEventDrafts } from "./PrimeAgentDaemonRuntimeEvents.ts";
+import {
+  mapPrimeAgentContextUsageDraft,
+  mapPrimeAgentDaemonRuntimeEventDrafts,
+} from "./PrimeAgentDaemonRuntimeEvents.ts";
 import {
   PRIME_AGENT_PERMISSION_EXTENSION_FILENAME,
   PRIME_AGENT_PERMISSION_EXTENSION_MARKER_COMMAND,
@@ -79,6 +82,7 @@ import {
 } from "./PrimeAgentSessionIdentity.ts";
 
 const PROVIDER = ProviderDriverKind.make("primeAgent");
+const SESSION_STATS_TIMEOUT_MS = 1_000;
 
 export interface PrimeAgentDaemonAdapterLiveOptions {
   /** Kept at the provider boundary because the manager is normally built from this environment. */
@@ -230,6 +234,9 @@ interface PrimeAgentDaemonSessionContext {
   readonly defaultServiceTier: PrimeAgentDaemonServiceTier;
   currentThinkingLevel: PrimeAgentDaemonThinkingLevel;
   currentServiceTier: PrimeAgentDaemonServiceTier;
+  autoCompactionEnabled: boolean;
+  lifecycleStarted: boolean;
+  usageRefreshSequence: number;
   eventFiber: Fiber.Fiber<void, never> | undefined;
   readonly turns: Array<{ readonly id: TurnId; readonly items: Array<unknown> }>;
   readonly pendingInteractions: Map<
@@ -424,6 +431,36 @@ export function makePrimeAgentDaemonAdapter(
         }
       });
 
+    const refreshContextUsage = (context: PrimeAgentDaemonSessionContext) =>
+      Effect.gen(function* () {
+        const refreshSequence = ++context.usageRefreshSequence;
+        const statsOption = yield* context.runtime.getSessionStats.pipe(
+          Effect.timeoutOption(SESSION_STATS_TIMEOUT_MS),
+          Effect.orElseSucceed(() => Option.none()),
+        );
+        if (Option.isNone(statsOption)) {
+          yield* Effect.logWarning("Prime Agent session usage could not be refreshed.", {
+            threadId: context.threadId,
+          });
+          return;
+        }
+        if (
+          sessions.get(context.threadId) !== context ||
+          context.stopped ||
+          context.usageRefreshSequence !== refreshSequence
+        ) {
+          return;
+        }
+        const draft = mapPrimeAgentContextUsageDraft({
+          provider: PROVIDER,
+          providerInstanceId: boundInstanceId,
+          threadId: context.threadId,
+          stats: statsOption.value,
+          compactsAutomatically: context.autoCompactionEnabled,
+        });
+        yield* offerRuntimeEvent({ ...draft, ...(yield* makeEventStamp()) });
+      });
+
     /** Must be called with the thread lock held. */
     const settleActiveTurnLocked = (
       context: PrimeAgentDaemonSessionContext,
@@ -579,7 +616,21 @@ export function makePrimeAgentDaemonAdapter(
     const consumeEvent = (context: PrimeAgentDaemonSessionContext, event: PrimeDaemonEvent) =>
       Effect.gen(function* () {
         yield* logNativeKind(context.threadId, event);
-        if (event._tag === "SessionResynced" || event._tag === "SessionReplaced") return;
+        if (event._tag === "SessionResynced") {
+          yield* withThreadLock(
+            context.threadId,
+            Effect.sync(() => {
+              if (sessions.get(context.threadId) === context && !context.stopped) {
+                context.autoCompactionEnabled = event.state.autoCompactionEnabled;
+              }
+            }),
+          );
+          if (context.lifecycleStarted) {
+            yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+          }
+          return;
+        }
+        if (event._tag === "SessionReplaced") return;
 
         if (event._tag === "ExtensionRequest") {
           const permissionProjection = projectPrimeAgentManagedPermissionRequest(
@@ -875,16 +926,16 @@ export function makePrimeAgentDaemonAdapter(
         }
 
         if (event._tag === "RunCompleted") {
-          yield* withThreadLock(
+          const settled = yield* withThreadLock(
             context.threadId,
             Effect.gen(function* () {
               const turn = context.activeTurn;
-              if (turn === undefined) return;
+              if (turn === undefined) return false;
               if (turn.queuedInputCount > 0) {
                 turn.completedRunMessages.push(...event.messages);
                 turn.awaitingQueuedRun = true;
                 turn.queuedActionObserved = false;
-                return;
+                return false;
               }
               const completionEvent =
                 turn.completedRunMessages.length === 0
@@ -893,12 +944,15 @@ export function makePrimeAgentDaemonAdapter(
                       ...event,
                       messages: [...turn.completedRunMessages, ...event.messages],
                     };
-              yield* settleActiveTurnLocked(context, turn, {
+              return yield* settleActiveTurnLocked(context, turn, {
                 state: "completed",
                 event: completionEvent,
               });
             }),
           );
+          if (settled) {
+            yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+          }
           return;
         }
 
@@ -993,6 +1047,13 @@ export function makePrimeAgentDaemonAdapter(
             yield* publishDrafts(context, event, context.activeTurn);
           }),
         );
+        if (
+          context.lifecycleStarted &&
+          event._tag === "ConnectionStatus" &&
+          event.status === "connected"
+        ) {
+          yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+        }
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logError("Failed to consume a Prime Agent daemon event.", {
@@ -1357,6 +1418,9 @@ export function makePrimeAgentDaemonAdapter(
             defaultServiceTier: runtime.initialSnapshot.state.serviceTier,
             currentThinkingLevel: runtime.initialSnapshot.state.thinkingLevel,
             currentServiceTier: runtime.initialSnapshot.state.serviceTier,
+            autoCompactionEnabled: runtime.initialSnapshot.state.autoCompactionEnabled,
+            lifecycleStarted: false,
+            usageRefreshSequence: 0,
             eventFiber: undefined,
             turns: [],
             pendingInteractions: new Map(),
@@ -1399,6 +1463,8 @@ export function makePrimeAgentDaemonAdapter(
             threadId: input.threadId,
             payload: {},
           });
+          context.lifecycleStarted = true;
+          yield* refreshContextUsage(context).pipe(Effect.forkDetach);
           return session;
         }).pipe(Effect.scoped),
       );
@@ -1427,6 +1493,7 @@ export function makePrimeAgentDaemonAdapter(
             model: requestedModel,
             updatedAt: yield* nowIso,
           };
+          yield* refreshContextUsage(context).pipe(Effect.forkDetach);
         }
         const thinkingLevel =
           turnControls.thinkingLevel === PRIME_AGENT_INHERIT_MODEL_OPTION

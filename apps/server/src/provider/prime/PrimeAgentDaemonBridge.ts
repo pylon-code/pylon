@@ -111,6 +111,7 @@ export interface PrimeAgentDaemonAgentConnection {
   ) => Promise<unknown>;
   readonly getCommands?: () => Promise<unknown>;
   readonly getResourceSnapshot?: () => Promise<unknown>;
+  readonly getSessionStats: () => Promise<unknown>;
   readonly getRlmMaxDepthStatus?: () => Promise<unknown>;
   readonly setRlmMaxDepth?: (maxDepth: number) => Promise<unknown>;
   readonly dispose: () => Promise<unknown>;
@@ -375,6 +376,7 @@ function requireDaemonExports(input: {
     !Predicate.isObject(daemonAgentConnection.prototype) ||
     !Predicate.isFunction(daemonAgentConnection.prototype.subscribe) ||
     !Predicate.isFunction(daemonAgentConnection.prototype.getInitialSnapshot) ||
+    !Predicate.isFunction(daemonAgentConnection.prototype.getSessionStats) ||
     !Predicate.isFunction(daemonAgentConnection.prototype.promptAndWait) ||
     !Predicate.isFunction(daemonAgentConnection.prototype.abort) ||
     !Predicate.isFunction(daemonAgentConnection.prototype.dispose) ||

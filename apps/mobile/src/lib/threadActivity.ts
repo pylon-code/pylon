@@ -323,7 +323,9 @@ function deriveWorkLogEntries(
     // Terminal bypassed updates pass: Codex children's only terminal signal.
     if (activity.kind === "task.updated" && !isTerminalBypassUpdate(activity)) continue;
     if (activity.kind === "tool.progress") continue;
-    if (activity.kind === "context-window.updated") continue;
+    if (activity.kind === "context-window.updated" || activity.kind === "context-window.cleared") {
+      continue;
+    }
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     if (isAgentInternalActivity(activity)) continue;

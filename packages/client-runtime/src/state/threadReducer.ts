@@ -36,15 +36,15 @@ const activityOrder = O.combineAll<OrchestrationThreadActivity>([
 ]);
 
 /**
- * Matches the validity rule in `deriveLatestContextWindowSnapshot` (and the
- * server's snapshot-side `dropStaleContextWindowActivities`): rows without a
- * finite, non-negative `usedTokens` are skipped during the consumer's backward
- * walk, so they must not replace an earlier resolvable row here.
+ * Matches `deriveLatestContextWindowSnapshot`: clear activities are barriers,
+ * while malformed updates are skipped during the consumer's backward walk and
+ * must not replace an earlier resolvable row here.
  */
 function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity): boolean {
-  if (activity.kind !== "context-window.updated") {
-    return false;
+  if (activity.kind === "context-window.cleared") {
+    return true;
   }
+  if (activity.kind !== "context-window.updated") return false;
   const payload =
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)

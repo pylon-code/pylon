@@ -1,3 +1,16 @@
+                <ComposerInlineControl
+                  accessibilityLabel="Model and reasoning settings"
+                  emphasized
+                  iconNode={
+                    <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
+                  }
+                  label={currentModelOption?.label ?? currentModelSelection.model}
+                  maxWidth={152}
+                  onPress={openSettings}
+                />
+                {props.contextWindow ? (
+                  <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                ) : null}
 import type {
   EnvironmentId,
   MessageId,
@@ -35,6 +48,7 @@ import Animated, {
   LinearTransition,
 } from "react-native-reanimated";
 import { useThemeColor } from "../../lib/useThemeColor";
+import { presentMobileContextWindow } from "../../lib/contextWindow";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 
@@ -111,6 +125,7 @@ export interface ThreadComposerProps {
   readonly selectedThread: OrchestrationThreadShell;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
+  readonly contextWindow: ContextWindowSnapshot | null;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
@@ -268,6 +283,44 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
         </Text>
       </Pressable>
     </Animated.View>
+  );
+});
+
+const ContextWindowIndicator = memo(function ContextWindowIndicator(props: {
+  readonly snapshot: ContextWindowSnapshot;
+  readonly expanded: boolean;
+}) {
+  const presentation = presentMobileContextWindow(props.snapshot);
+  if (presentation === null) return null;
+  const knownMaximum = props.snapshot.maxTokens !== null;
+  return (
+    <View
+      accessible
+      accessibilityLabel="Context window usage"
+      accessibilityRole={knownMaximum ? "progressbar" : "text"}
+      accessibilityValue={
+        knownMaximum
+          ? {
+              min: 0,
+              max: props.snapshot.maxTokens ?? undefined,
+              now: Math.min(props.snapshot.usedTokens, props.snapshot.maxTokens ?? 0),
+              text: presentation.accessibilityText,
+            }
+          : undefined
+      }
+      className="mx-1 rounded-full bg-subtle px-2.5 py-1"
+    >
+      <Text
+        className={
+          presentation.warning
+            ? "text-xs font-t3-bold tabular-nums text-danger-foreground"
+            : "text-xs font-t3-medium tabular-nums text-foreground-muted"
+        }
+        numberOfLines={1}
+      >
+        {props.expanded ? presentation.expandedLabel : presentation.compactLabel}
+      </Text>
+    </View>
   );
 });
 
@@ -855,6 +908,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               ) : null}
             </View>
           ) : null}
+          {!isExpanded && props.contextWindow ? (
+            <ContextWindowIndicator snapshot={props.contextWindow} expanded={false} />
+          ) : null}
           {!isExpanded ? (
             <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
               {showStopAction ? (
@@ -882,6 +938,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   onPress={() => void props.onPickDraftImages()}
                   showChevron={false}
                 />
+<<<<<<< HEAD
                 <ComposerInlineControl
                   accessibilityLabel="Model and reasoning settings"
                   emphasized
@@ -892,6 +949,36 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   maxWidth={152}
                   onPress={openSettings}
                 />
+=======
+                {settingsMenu ? (
+                  <ControlPillMenu
+                    actions={settingsMenu.actions}
+                    onPressAction={({ nativeEvent }) => handleSettingsMenuAction(nativeEvent.event)}
+                  >
+                    <ComposerToolbarTrigger
+                      accessibilityLabel="Thread settings"
+                      iconNode={
+                        <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
+                      }
+                      label={settingsSummaryLabel}
+                      maxWidth={320}
+                    />
+                  </ControlPillMenu>
+                ) : (
+                  <ComposerToolbarTrigger
+                    accessibilityLabel="Thread settings"
+                    iconNode={
+                      <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
+                    }
+                    label={settingsSummaryLabel}
+                    maxWidth={320}
+                    onPress={settingsSheetPresentation.open}
+                  />
+                )}
+                {props.contextWindow ? (
+                  <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                ) : null}
+>>>>>>> 475e79b7c (feat(providers): show Prime context usage)
                 {showStopAction ? (
                   <ComposerToolbarButton
                     accessibilityLabel="Stop"

@@ -276,6 +276,32 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.usage.maxTokens).toBe(200000);
     expect(parsed.payload.usage.usedTokens).toBe(31251);
   });
+
+  it("decodes typed context usage clear barriers", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "thread.token-usage.cleared",
+      eventId: "event-token-usage-clear-1",
+      provider: "primeAgent",
+      createdAt: "2026-02-28T00:00:05.000Z",
+      threadId: "thread-1",
+      payload: { reason: "unknown" },
+    });
+
+    expect(parsed).toMatchObject({
+      type: "thread.token-usage.cleared",
+      payload: { reason: "unknown" },
+    });
+    expect(() =>
+      decodeRuntimeEvent({
+        type: "thread.token-usage.cleared",
+        eventId: "event-token-usage-clear-2",
+        provider: "primeAgent",
+        createdAt: "2026-02-28T00:00:05.000Z",
+        threadId: "thread-1",
+        payload: { reason: "native-private-reason" },
+      }),
+    ).toThrow();
+  });
 });
 
 describe("classifyTaskAgentKind", () => {
