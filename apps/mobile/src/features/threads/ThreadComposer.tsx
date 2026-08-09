@@ -126,6 +126,7 @@ export interface ThreadComposerProps {
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
   readonly contextWindow: ContextWindowSnapshot | null;
+  readonly sessionResources: SessionResourcesSnapshot | null;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
@@ -422,6 +423,20 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ) ?? null
     );
   }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  const providerSlashCommands = useMemo(
+    () =>
+      resolveSessionSlashCommands(
+        selectedProviderStatus?.featureCapabilities?.resources?.operations.includes("commands")
+          ? props.sessionResources
+          : null,
+        selectedProviderStatus?.slashCommands ?? [],
+      ),
+    [
+      selectedProviderStatus?.featureCapabilities?.resources?.operations,
+      selectedProviderStatus?.slashCommands,
+      props.sessionResources,
+    ],
+  );
 
   // ── Trigger detection ────────────────────────────────────
   const [composerSelection, setComposerSelection] = useState(() => ({
@@ -491,14 +506,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       const builtIn = allBuiltIn.filter((item) => item.command.includes(q));
 
       const providerCommands: ComposerCommandItem[] = [];
-      for (const cmd of selectedProviderStatus?.slashCommands ?? []) {
+      for (const cmd of providerSlashCommands) {
         if (!cmd.name.toLowerCase().includes(q)) continue;
         providerCommands.push({
           id: `pcmd:${cmd.name}`,
           type: "provider-slash-command" as const,
           command: cmd,
           label: `/${cmd.name}`,
-          description: cmd.description ?? "",
+          description: formatProviderSlashCommandDescription(cmd),
         });
       }
 
@@ -603,7 +618,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }
 
     return [];
-  }, [composerTrigger, pathSearch.entries, selectedProviderStatus, showInteractionModeToggle]);
+  }, [
+    composerTrigger,
+    pathSearch.entries,
+    providerSlashCommands,
+    selectedProviderStatus,
+    showInteractionModeToggle,
+  ]);
 
   // ── Handle command selection ──────────────────────────────
   const { onChangeDraftMessage, onUpdateInteractionMode, draftMessage, onSendMessage } = props;

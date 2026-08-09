@@ -331,6 +331,7 @@ function deriveWorkLogEntries(
     if (
       activity.kind === "context-window.updated" ||
       activity.kind === "context-window.cleared" ||
+      activity.kind === "session.resources.updated" ||
       activity.kind === "turn.cost"
     ) {
       continue;

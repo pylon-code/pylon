@@ -14,6 +14,10 @@ describe("PrimeAgentFeatureCapabilities", () => {
       enforcement: "host-gated",
     });
     expect(capabilities.agents?.operations).toEqual(["observe", "hierarchy"]);
+    expect(capabilities.resources).toMatchObject({
+      support: "read-only",
+      operations: ["commands"],
+    });
     expect(capabilities.inputQueue?.operations).toEqual(["steer"]);
     expect(capabilities.context).toMatchObject({
       support: "read-only",

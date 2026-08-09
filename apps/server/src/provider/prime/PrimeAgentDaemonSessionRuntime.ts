@@ -1,3 +1,9 @@
+import {
+  RUNTIME_RESOURCE_CATALOG_MAX_ITEMS,
+  RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS,
+  RUNTIME_RESOURCE_NAME_MAX_CHARS,
+  type SessionResourcesUpdatedPayload,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -145,39 +151,37 @@ const decodeCommands = Schema.decodeUnknownOption(commandsSchema);
 const decodeSessionStats = Schema.decodeUnknownOption(sessionStatsSchema);
 const decodeRlmMaxDepthStatus = Schema.decodeUnknownOption(rlmMaxDepthStatusSchema);
 
-const RESOURCE_NAME_MAX_CHARS = 200;
-const RESOURCE_DESCRIPTION_MAX_CHARS = 1_000;
-const RESOURCE_CATALOG_MAX_ITEMS = 512;
-
 function resourceText(value: string | undefined, maxChars: number): string | undefined {
-  const trimmed = value?.trim();
+  const trimmed = value?.replaceAll("\u0000", "").trim();
   return trimmed ? trimmed.slice(0, maxChars) : undefined;
 }
 
 function safeSessionResources(
   resources: typeof resourceSnapshotSchema.Type,
   commands: typeof commandsSchema.Type,
-  hiddenCommand: string | undefined,
+  disableCommands: boolean,
 ): PrimeAgentDaemonSessionResources {
-  const skills = (resources.skills ?? []).slice(0, RESOURCE_CATALOG_MAX_ITEMS).flatMap((skill) => {
-    const name = resourceText(skill.name, RESOURCE_NAME_MAX_CHARS);
-    if (name === undefined) return [];
-    const description = resourceText(skill.description, RESOURCE_DESCRIPTION_MAX_CHARS);
-    return [
-      {
-        name,
-        ...(description === undefined ? {} : { description }),
-        ...(skill.sourceInfo === undefined ? {} : { scope: skill.sourceInfo.scope }),
-      },
-    ];
-  });
-  const prompts = (resources.prompts ?? [])
-    .slice(0, RESOURCE_CATALOG_MAX_ITEMS)
-    .flatMap((prompt) => {
-      const name = resourceText(prompt.name, RESOURCE_NAME_MAX_CHARS);
+  const skills = (resources.skills ?? [])
+    .slice(0, RUNTIME_RESOURCE_CATALOG_MAX_ITEMS)
+    .flatMap((skill) => {
+      const name = resourceText(skill.name, RUNTIME_RESOURCE_NAME_MAX_CHARS);
       if (name === undefined) return [];
-      const description = resourceText(prompt.description, RESOURCE_DESCRIPTION_MAX_CHARS);
-      const argumentHint = resourceText(prompt.argumentHint, RESOURCE_NAME_MAX_CHARS);
+      const description = resourceText(skill.description, RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS);
+      return [
+        {
+          name,
+          ...(description === undefined ? {} : { description }),
+          ...(skill.sourceInfo === undefined ? {} : { scope: skill.sourceInfo.scope }),
+        },
+      ];
+    });
+  const prompts = (resources.prompts ?? [])
+    .slice(0, RUNTIME_RESOURCE_CATALOG_MAX_ITEMS)
+    .flatMap((prompt) => {
+      const name = resourceText(prompt.name, RUNTIME_RESOURCE_NAME_MAX_CHARS);
+      if (name === undefined) return [];
+      const description = resourceText(prompt.description, RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS);
+      const argumentHint = resourceText(prompt.argumentHint, RUNTIME_RESOURCE_NAME_MAX_CHARS);
       return [
         {
           name,
@@ -187,11 +191,12 @@ function safeSessionResources(
         },
       ];
     });
-  const safeCommands = commands.slice(0, RESOURCE_CATALOG_MAX_ITEMS).flatMap((command) => {
-    const name = resourceText(command.name, RESOURCE_NAME_MAX_CHARS);
-    if (name === undefined || name === hiddenCommand) return [];
-    const description = resourceText(command.description, RESOURCE_DESCRIPTION_MAX_CHARS);
-    const argumentHint = resourceText(command.argumentHint, RESOURCE_NAME_MAX_CHARS);
+  const safeCommands = commands.slice(0, RUNTIME_RESOURCE_CATALOG_MAX_ITEMS).flatMap((command) => {
+    if (disableCommands) return [];
+    const name = resourceText(command.name, RUNTIME_RESOURCE_NAME_MAX_CHARS);
+    if (name === undefined) return [];
+    const description = resourceText(command.description, RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS);
+    const argumentHint = resourceText(command.argumentHint, RUNTIME_RESOURCE_NAME_MAX_CHARS);
     return [
       {
         name,
@@ -286,26 +291,7 @@ export interface PrimeAgentDaemonSafeModel {
   readonly provider: string;
 }
 
-export interface PrimeAgentDaemonSessionResources {
-  readonly available: boolean;
-  readonly skills: ReadonlyArray<{
-    readonly name: string;
-    readonly description?: string | undefined;
-    readonly scope?: "user" | "project" | "temporary" | undefined;
-  }>;
-  readonly prompts: ReadonlyArray<{
-    readonly name: string;
-    readonly description?: string | undefined;
-    readonly argumentHint?: string | undefined;
-    readonly scope?: "user" | "project" | "temporary" | undefined;
-  }>;
-  readonly commands: ReadonlyArray<{
-    readonly name: string;
-    readonly description?: string | undefined;
-    readonly argumentHint?: string | undefined;
-    readonly source: "extension" | "prompt" | "skill";
-  }>;
-}
+export type PrimeAgentDaemonSessionResources = SessionResourcesUpdatedPayload;
 
 /** Provider-neutral session usage fields projected from Prime's private daemon response. */
 export interface PrimeAgentDaemonSessionStats {
@@ -789,11 +775,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
 
     const initialResources =
       verifiedInventory !== undefined
-        ? safeSessionResources(
-            verifiedInventory[0],
-            verifiedInventory[1],
-            input.requiredExtension?.markerCommand,
-          )
+        ? safeSessionResources(verifiedInventory[0], verifiedInventory[1], true)
         : yield* Effect.tryPromise({
             try: () => Promise.all([connection!.getResourceSnapshot(), connection!.getCommands()]),
             catch: () => undefined,
@@ -806,7 +788,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               const resources = decodeResourceSnapshot(result.value[0]);
               const commands = decodeCommands(result.value[1]);
               return Option.isSome(resources) && Option.isSome(commands)
-                ? safeSessionResources(resources.value, commands.value, undefined)
+                ? safeSessionResources(resources.value, commands.value, false)
                 : unavailableSessionResources;
             }),
           );

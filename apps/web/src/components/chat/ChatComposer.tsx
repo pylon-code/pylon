@@ -20,6 +20,11 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
+import {
+  deriveLatestSessionResources,
+  formatProviderSlashCommandDescription,
+  resolveSessionSlashCommands,
+} from "@t3tools/client-runtime/state/session-resources";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import {
@@ -923,6 +928,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => selectedProviderEntry?.snapshot ?? null,
     [selectedProviderEntry],
   );
+  const sessionResources = useMemo(
+    () => deriveLatestSessionResources(activeThreadActivities ?? [], selectedInstanceId),
+    [activeThreadActivities, selectedInstanceId],
+  );
+  const providerSlashCommands = useMemo(
+    () =>
+      resolveSessionSlashCommands(
+        selectedProviderStatus?.featureCapabilities?.resources?.operations.includes("commands")
+          ? sessionResources
+          : null,
+        selectedProviderStatus?.slashCommands ?? [],
+      ),
+    [
+      selectedProviderStatus?.featureCapabilities?.resources?.operations,
+      selectedProviderStatus?.slashCommands,
+      sessionResources,
+    ],
+  );
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
     () => selectedProviderEntry?.models ?? [],
     [selectedProviderEntry],
@@ -1177,16 +1200,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             ]
           : []),
       ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
-      const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
-        (command) => ({
-          id: `provider-slash-command:${selectedProvider}:${command.name}`,
-          type: "provider-slash-command" as const,
-          provider: selectedProvider,
-          command,
-          label: `/${command.name}`,
-          description: command.description ?? command.input?.hint ?? "Run provider command",
-        }),
-      );
+      const providerSlashCommandItems = providerSlashCommands.map((command) => ({
+        id: `provider-slash-command:${selectedProvider}:${command.name}`,
+        type: "provider-slash-command" as const,
+        provider: selectedProvider,
+        command,
+        label: `/${command.name}`,
+        description: formatProviderSlashCommandDescription(command),
+      }));
       const query = composerTrigger.query.trim().toLowerCase();
       const slashCommandItems = [...builtInSlashCommandItems, ...providerSlashCommandItems];
       if (!query) {
@@ -1213,6 +1234,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [
     composerProviderControls.showInteractionModeToggle,
     composerTrigger,
+    providerSlashCommands,
     selectedProvider,
     selectedProviderStatus,
     workspaceEntries.entries,

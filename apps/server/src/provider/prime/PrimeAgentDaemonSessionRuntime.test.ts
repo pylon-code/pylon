@@ -510,14 +510,41 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
   it.effect("passes only explicitly configured extension paths to session creation", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { captures, make } = fixture({ rawSnapshot: { ...snapshot(), children: [] } });
+        const { captures, make } = fixture({
+          rawSnapshot: { ...snapshot(), children: [] },
+          resourceSnapshot: {
+            skills: [
+              {
+                name: "review",
+                description: "Review changes",
+                filePath: "/private/review/SKILL.md",
+                sourceInfo: { scope: "project" },
+              },
+            ],
+            prompts: [],
+            extensions: [{ path: "/state/pylon/permission.mjs" }],
+            diagnostics: { extensions: [] },
+          },
+          commands: [
+            {
+              name: "pylon-permission-gate-v1",
+              source: "extension",
+              sourceInfo: { path: "/state/pylon/permission.mjs" },
+            },
+            {
+              name: "skill:review",
+              source: "skill",
+              sourceInfo: { path: "/private/review/SKILL.md", scope: "project" },
+            },
+          ],
+        });
         const runtime = yield* make(undefined, [" /state/pylon/permission.mjs ", ""], {
           path: "/state/pylon/permission.mjs",
           markerCommand: "pylon-permission-gate-v1",
         });
         expect(runtime.initialResources).toEqual({
           available: true,
-          skills: [],
+          skills: [{ name: "review", description: "Review changes", scope: "project" }],
           prompts: [],
           commands: [],
         });

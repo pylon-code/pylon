@@ -459,6 +459,48 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "session.resources.updated": {
+      return [
+        {
+          // One provider-scoped snapshot per thread. A later session start or
+          // reload replaces this inventory instead of growing activity history.
+          id: EventId.make(
+            `session-resources:${event.providerInstanceId ?? event.provider}:${event.threadId}`,
+          ),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "session.resources.updated",
+          summary: "Session resources updated",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId === undefined
+              ? {}
+              : { providerInstanceId: event.providerInstanceId }),
+            available: event.payload.available,
+            skills: event.payload.skills.map((skill) => ({
+              name: skill.name,
+              ...(skill.description === undefined ? {} : { description: skill.description }),
+              ...(skill.scope === undefined ? {} : { scope: skill.scope }),
+            })),
+            prompts: event.payload.prompts.map((prompt) => ({
+              name: prompt.name,
+              ...(prompt.description === undefined ? {} : { description: prompt.description }),
+              ...(prompt.argumentHint === undefined ? {} : { argumentHint: prompt.argumentHint }),
+              ...(prompt.scope === undefined ? {} : { scope: prompt.scope }),
+            })),
+            commands: event.payload.commands.map((command) => ({
+              name: command.name,
+              source: command.source,
+              ...(command.description === undefined ? {} : { description: command.description }),
+              ...(command.argumentHint === undefined ? {} : { argumentHint: command.argumentHint }),
+            })),
+          },
+          turnId: null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "runtime.error": {
       return [
         {

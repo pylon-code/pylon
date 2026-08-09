@@ -21,7 +21,8 @@ import {
   TrimmedString,
   TurnId,
 } from "./baseSchemas.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { SessionResourcesUpdatedPayload } from "./providerRuntime.ts";
 import {
   SessionInteractionRequest,
   SessionInteractionRequestId,
@@ -362,6 +363,15 @@ export const SessionPresentationUpdatedActivityPayload = Schema.Struct({
 export type SessionPresentationUpdatedActivityPayload =
   typeof SessionPresentationUpdatedActivityPayload.Type;
 
+/** Safe session resource inventory carried in the generic activity timeline. */
+export const SessionResourcesUpdatedActivityPayload = Schema.Struct({
+  ...SessionResourcesUpdatedPayload.fields,
+  provider: ProviderDriverKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+});
+export type SessionResourcesUpdatedActivityPayload =
+  typeof SessionResourcesUpdatedActivityPayload.Type;
+
 const SessionActivityBaseFields = {
   id: EventId,
   tone: OrchestrationThreadActivityTone,
@@ -387,6 +397,11 @@ export const OrchestrationSessionActivity = Schema.Union([
     ...SessionActivityBaseFields,
     kind: Schema.Literal("session-presentation.updated"),
     payload: SessionPresentationUpdatedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("session.resources.updated"),
+    payload: SessionResourcesUpdatedActivityPayload,
   }),
 ]);
 export type OrchestrationSessionActivity = typeof OrchestrationSessionActivity.Type;

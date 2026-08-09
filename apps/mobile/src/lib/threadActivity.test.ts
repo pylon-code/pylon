@@ -286,6 +286,14 @@ describe("buildThreadFeed", () => {
       ],
       activities: [
         makeActivity({
+          id: EventId.make("session-resources"),
+          kind: "session.resources.updated",
+          summary: "Session resources updated",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          turnId: null,
+          payload: { available: true, skills: [], prompts: [], commands: [] },
+        }),
+        makeActivity({
           id: EventId.make("turn-cost"),
           kind: "turn.cost",
           summary: "Reported turn cost",

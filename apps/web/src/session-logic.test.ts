@@ -1610,6 +1610,13 @@ describe("deriveWorkLogEntries context window handling", () => {
         tone: "info",
       }),
       makeActivity({
+        id: "resources-1",
+        turnId: "turn-1",
+        kind: "session.resources.updated",
+        summary: "Session resources updated",
+        tone: "info",
+      }),
+      makeActivity({
         id: "turn-cost-1",
         turnId: "turn-1",
         kind: "turn.cost",

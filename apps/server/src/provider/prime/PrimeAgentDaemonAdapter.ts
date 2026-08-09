@@ -1504,6 +1504,14 @@ export function makePrimeAgentDaemonAdapter(
             payload: { resume: input.resumeCursor !== undefined },
           });
           yield* offerRuntimeEvent({
+            type: "session.resources.updated",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: input.threadId,
+            payload: runtime.initialResources,
+          });
+          yield* offerRuntimeEvent({
             type: "session.state.changed",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,

@@ -124,12 +124,23 @@ exec ${process.execPath} ${mockAgentPath} "$@"
 
     const threadId = ThreadId.make("resume/thread");
     const startupWarning = yield* Deferred.make<void>();
+    const unavailableResources =
+      yield* Deferred.make<
+        Extract<ProviderRuntimeEvent, { readonly type: "session.resources.updated" }>
+      >();
     const startupWarningFiber = yield* adapter.streamEvents.pipe(
       Stream.runForEach((event) =>
-        event.type === "runtime.warning" &&
-        event.payload.message === "Prime daemon unavailable; using ACP compatibility fallback."
-          ? Deferred.succeed(startupWarning, undefined).pipe(Effect.ignore)
-          : Effect.void,
+        Effect.gen(function* () {
+          if (
+            event.type === "runtime.warning" &&
+            event.payload.message === "Prime daemon unavailable; using ACP compatibility fallback."
+          ) {
+            yield* Deferred.succeed(startupWarning, undefined).pipe(Effect.ignore);
+          }
+          if (event.type === "session.resources.updated") {
+            yield* Deferred.succeed(unavailableResources, event).pipe(Effect.ignore);
+          }
+        }),
       ),
       Effect.forkChild,
     );
@@ -146,7 +157,15 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       },
     });
     yield* Deferred.await(startupWarning);
+    const resourcesEvent = yield* Deferred.await(unavailableResources);
     yield* Fiber.interrupt(startupWarningFiber);
+    assert.deepEqual(resourcesEvent.payload, {
+      available: false,
+      skills: [],
+      prompts: [],
+      commands: [],
+    });
+    assert.equal(resourcesEvent.providerInstanceId, ProviderInstanceId.make("primeAgent"));
     assert.isTrue(parsePrimeAgentResumeMarker(session.resumeCursor));
     assert.isTrue(
       parsePrimeAgentResumeMarker({
