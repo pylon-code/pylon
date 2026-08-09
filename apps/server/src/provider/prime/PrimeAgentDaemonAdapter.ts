@@ -69,6 +69,14 @@ import {
   type PrimeAgentDaemonSessionRuntimeError,
   type PrimeAgentDaemonSessionRuntimeInput,
 } from "./PrimeAgentDaemonSessionRuntime.ts";
+import {
+  PRIME_AGENT_SESSION_IDENTITY_FILENAME,
+  PRIME_AGENT_SESSION_IDENTITY_TEMP_FILENAME,
+  decodePrimeAgentSessionIdentity,
+  encodePrimeAgentSessionIdentity,
+  primeAgentLegacySessionFileNames,
+  primeAgentSessionFileName,
+} from "./PrimeAgentSessionIdentity.ts";
 
 const PROVIDER = ProviderDriverKind.make("primeAgent");
 
@@ -1085,6 +1093,7 @@ export function makePrimeAgentDaemonAdapter(
             join: path.join,
           });
           yield* fileSystem.makeDirectory(sessionDir, { recursive: true }).pipe(
+            Effect.andThen(fileSystem.chmod(sessionDir, 0o700)),
             Effect.mapError(
               (cause) =>
                 new ProviderAdapterProcessError({
@@ -1095,6 +1104,88 @@ export function makePrimeAgentDaemonAdapter(
                 }),
             ),
           );
+          const identityPath = path.join(sessionDir, PRIME_AGENT_SESSION_IDENTITY_FILENAME);
+          let resumeSessionId: string | undefined;
+          let expectedSessionFileName: string | undefined;
+          if (input.resumeCursor !== undefined) {
+            const identityExists = yield* fileSystem.exists(identityPath).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterProcessError({
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    detail: "Failed to inspect the Prime Agent durable session identity.",
+                    cause,
+                  }),
+              ),
+            );
+            if (identityExists) {
+              const identitySource = yield* fileSystem.readFileString(identityPath).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      detail: "Failed to read the Prime Agent durable session identity.",
+                      cause,
+                    }),
+                ),
+              );
+              const identity = decodePrimeAgentSessionIdentity(sessionDir, identitySource);
+              if (identity === undefined) {
+                return yield* new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: "The Prime Agent durable session identity is invalid.",
+                });
+              }
+              const sessionFileExists = yield* fileSystem.exists(identity.sessionPath).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      detail: "Failed to verify the saved Prime Agent session.",
+                      cause,
+                    }),
+                ),
+              );
+              if (!sessionFileExists) {
+                return yield* new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: "The saved Prime Agent session is no longer available.",
+                });
+              }
+              resumeSessionId = identity.sessionId;
+              expectedSessionFileName = primeAgentSessionFileName(sessionDir, identity.sessionPath);
+            } else {
+              const entries = yield* fileSystem.readDirectory(sessionDir).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      detail: "Failed to inspect legacy Prime Agent sessions.",
+                      cause,
+                    }),
+                ),
+              );
+              const legacySessionFiles = primeAgentLegacySessionFileNames(entries);
+              if (legacySessionFiles.length !== 1) {
+                return yield* new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail:
+                    legacySessionFiles.length === 0
+                      ? "No saved Prime Agent session is available to continue."
+                      : "The legacy Prime Agent session identity is ambiguous and cannot be continued safely.",
+                });
+              }
+              expectedSessionFileName = legacySessionFiles[0];
+            }
+          }
+
           const permissionExtensionPath = path.join(
             sessionDir,
             PRIME_AGENT_PERMISSION_EXTENSION_FILENAME,
@@ -1108,6 +1199,7 @@ export function makePrimeAgentDaemonAdapter(
             yield* fileSystem
               .writeFileString(permissionExtensionPath, permissionExtensionSource)
               .pipe(
+                Effect.andThen(fileSystem.chmod(permissionExtensionPath, 0o600)),
                 Effect.mapError(
                   (cause) =>
                     new ProviderAdapterProcessError({
@@ -1144,6 +1236,7 @@ export function makePrimeAgentDaemonAdapter(
                 }
               : {}),
             ...(input.resumeCursor === undefined ? {} : { resumeCursor: input.resumeCursor }),
+            ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
           }).pipe(
             Effect.provideService(Scope.Scope, sessionScope),
             Effect.mapError((error) => runtimeStartError(input.threadId, error)),
@@ -1172,6 +1265,75 @@ export function makePrimeAgentDaemonAdapter(
               });
             }
           }
+
+          if (
+            expectedSessionFileName !== undefined &&
+            primeAgentSessionFileName(sessionDir, runtime.sessionFile) !== expectedSessionFileName
+          ) {
+            return yield* new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+              detail: "Prime Agent did not continue the expected session transcript.",
+            });
+          }
+          const runtimeSessionFileExists = yield* fileSystem.exists(runtime.sessionFile).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: "Failed to verify the active Prime Agent session file.",
+                  cause,
+                }),
+            ),
+          );
+          if (!runtimeSessionFileExists) {
+            return yield* new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+              detail: "Prime Agent did not create its durable session file.",
+            });
+          }
+          yield* fileSystem.chmod(runtime.sessionFile, 0o600).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: "Failed to protect the Prime Agent durable session file.",
+                  cause,
+                }),
+            ),
+          );
+          const identitySource = encodePrimeAgentSessionIdentity(
+            sessionDir,
+            runtime.sessionId,
+            runtime.sessionFile,
+          );
+          if (identitySource === undefined) {
+            return yield* new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+              detail: "Prime Agent returned an invalid durable session identity.",
+            });
+          }
+          const identityTempPath = path.join(
+            sessionDir,
+            PRIME_AGENT_SESSION_IDENTITY_TEMP_FILENAME,
+          );
+          yield* fileSystem.writeFileString(identityTempPath, identitySource).pipe(
+            Effect.andThen(fileSystem.chmod(identityTempPath, 0o600)),
+            Effect.andThen(fileSystem.rename(identityTempPath, identityPath)),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: "Failed to persist the Prime Agent durable session identity.",
+                  cause,
+                }),
+            ),
+          );
 
           const now = yield* nowIso;
           const session: ProviderSession = {

@@ -130,7 +130,8 @@ function fixture(options?: {
           success: true,
           data: {
             activeSessionId: "active-secret-1",
-            sessionFile: "/daemon/private/session.jsonl",
+            sessionId: "session-1",
+            sessionFile: "/state/provider-sessions/thread-safe/session.jsonl",
           },
         },
       );
@@ -287,6 +288,7 @@ function fixture(options?: {
     resumeCursor?: unknown,
     extensions?: ReadonlyArray<string>,
     requiredExtension?: { readonly path: string; readonly markerCommand: string },
+    resumeSessionId?: string,
   ) =>
     makePrimeAgentDaemonSessionRuntime({
       manager,
@@ -300,6 +302,7 @@ function fixture(options?: {
         ? {}
         : { disableExtensionDiscovery: true, disableAutoReconnect: true, requiredExtension }),
       ...(resumeCursor === undefined ? {} : { resumeCursor }),
+      ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
     });
   return { captures, make };
 }
@@ -342,6 +345,8 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
               },
             ]);
             expect(runtime.resumeCursor).toEqual(PRIME_AGENT_DAEMON_RESUME_CURSOR);
+            expect(runtime.sessionId).toBe("session-1");
+            expect(runtime.sessionFile).toBe("/state/provider-sessions/thread-safe/session.jsonl");
             expect(runtime.resumeCursor).not.toHaveProperty("activeSessionId");
             expect(runtime.resumeCursor).not.toHaveProperty("sessionPath");
             expect(runtime.initialSnapshot.state).not.toHaveProperty("sessionDir");
@@ -457,6 +462,57 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
       });
       expect(captures.disposeCount).toBe(1);
       expect(captures.closeCount).toBe(1);
+    }),
+  );
+
+  it.effect("resumes the exact private session identity when one is available", () =>
+    Effect.gen(function* () {
+      const { captures, make } = fixture();
+      yield* Effect.scoped(
+        make(PRIME_AGENT_DAEMON_RESUME_CURSOR, undefined, undefined, "session-1"),
+      );
+      expect(captures.commands[0]).toMatchObject({
+        type: "create",
+        lifecycle: "client_owned",
+        sessionPath: "session-1",
+        continueRecent: false,
+      });
+
+      const invalid = fixture();
+      const error = yield* Effect.scoped(
+        invalid
+          .make(PRIME_AGENT_DAEMON_RESUME_CURSOR, undefined, undefined, "../invalid")
+          .pipe(Effect.flip),
+      );
+      expect(error).toMatchObject({ operation: "create-session", reason: "invalid-input" });
+      expect(invalid.captures.openCount).toBe(0);
+
+      const mismatch = fixture({
+        createResponse: {
+          type: "response",
+          command: "create",
+          success: true,
+          data: {
+            activeSessionId: "active-secret-1",
+            sessionId: "another-session",
+            sessionFile: "/state/provider-sessions/thread-safe/another-session.jsonl",
+          },
+        },
+      });
+      const mismatchError = yield* Effect.scoped(
+        mismatch
+          .make(PRIME_AGENT_DAEMON_RESUME_CURSOR, undefined, undefined, "session-1")
+          .pipe(Effect.flip),
+      );
+      expect(mismatchError).toMatchObject({
+        operation: "create-session",
+        reason: "invalid-response",
+      });
+      expect(mismatch.captures.commands[1]).toEqual({
+        type: "complete_owned_session",
+        activeSessionId: "active-secret-1",
+      });
+      expect(mismatch.captures.attachOptions).toEqual([]);
     }),
   );
 

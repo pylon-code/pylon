@@ -15,6 +15,7 @@ import {
 } from "./PrimeAgentDaemonBridge.ts";
 import { decodePrimeAgentDaemonEvent, type PrimeDaemonEvent } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import { primeAgentSessionFileName } from "./PrimeAgentSessionIdentity.ts";
 import {
   isPrimeAgentCompatibleResumeCursor,
   PRIME_AGENT_DAEMON_RESUME_CURSOR,
@@ -53,6 +54,8 @@ const createSuccessSchema = Schema.Struct({
   success: Schema.Literal(true),
   data: Schema.Struct({
     activeSessionId: Schema.String,
+    sessionId: Schema.String,
+    sessionFile: Schema.String,
   }),
 });
 const createFailureSchema = Schema.Struct({
@@ -159,6 +162,8 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
     readonly markerCommand: string;
   };
   readonly resumeCursor?: unknown;
+  /** Private stable native id selected from the server-owned identity sidecar. */
+  readonly resumeSessionId?: string;
 }
 
 export interface PrimeAgentDaemonPromptInput {
@@ -182,6 +187,9 @@ type PrimeAgentDaemonCanonicalSnapshot = Extract<
 export interface PrimeAgentDaemonSessionRuntime {
   /** Opaque and safe to persist in ProviderSession.resumeCursor. */
   readonly resumeCursor: PrimeAgentDaemonResumeCursor;
+  /** Private native identity used only to refresh the server-owned sidecar. */
+  readonly sessionId: string;
+  readonly sessionFile: string;
   readonly activeSessionId: string;
   readonly initialSnapshot: PrimeAgentDaemonCanonicalSnapshot;
   readonly events: Stream.Stream<PrimeDaemonEvent, never>;
@@ -310,6 +318,17 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         "The Prime Agent resume cursor is invalid or unsupported.",
       );
     }
+    const resumeSessionId = input.resumeSessionId?.trim();
+    if (
+      resumeSessionId !== undefined &&
+      (!shouldContinue || !/^[A-Za-z0-9_-]{1,256}$/.test(resumeSessionId))
+    ) {
+      return yield* runtimeError(
+        "create-session",
+        "invalid-input",
+        "The Prime Agent resume session identity is invalid.",
+      );
+    }
     if (
       input.thinkingLevel !== undefined &&
       Option.isNone(decodeThinkingLevel(input.thinkingLevel))
@@ -384,7 +403,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           {
             type: "create",
             lifecycle: "client_owned",
-            continueRecent: shouldContinue,
+            ...(resumeSessionId === undefined
+              ? { continueRecent: shouldContinue }
+              : { sessionPath: resumeSessionId, continueRecent: false }),
             config: {
               cwd,
               sessionDir,
@@ -429,12 +450,26 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         "The daemon create response omitted its active session identifier.",
       );
     }
-
     const completeUnattachedOwnedSession = Effect.tryPromise({
       try: () =>
         client.request({ type: "complete_owned_session", activeSessionId }, COMMAND_TIMEOUT_MS),
       catch: () => undefined,
     }).pipe(Effect.ignore, Effect.ensuring(closeClient));
+
+    const sessionId = created.value.data.sessionId.trim();
+    const sessionFile = created.value.data.sessionFile.trim();
+    if (
+      !/^[A-Za-z0-9_-]{1,256}$/.test(sessionId) ||
+      primeAgentSessionFileName(sessionDir, sessionFile) === undefined ||
+      (resumeSessionId !== undefined && sessionId !== resumeSessionId)
+    ) {
+      yield* completeUnattachedOwnedSession;
+      return yield* runtimeError(
+        "create-session",
+        "invalid-response",
+        "The daemon create response did not match the isolated durable session identity.",
+      );
+    }
 
     connection = yield* Effect.tryPromise({
       try: () =>
@@ -569,14 +604,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     const initialEvent = safeEvent(
       decodePrimeAgentDaemonEvent({ type: "session_resynced", snapshot: rawSnapshot }),
     );
-    if (initialEvent._tag !== "SessionResynced") {
+    if (initialEvent._tag !== "SessionResynced" || initialEvent.state.sessionId !== sessionId) {
       unsubscribe();
       yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
       client.close();
       return yield* runtimeError(
         "initial-snapshot",
         "invalid-response",
-        "The daemon returned an invalid initial snapshot.",
+        "The daemon returned an invalid or mismatched initial snapshot.",
       );
     }
     if (
@@ -827,6 +862,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
 
     return {
       resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
+      sessionId,
+      sessionFile,
       activeSessionId,
       initialSnapshot: initialEvent,
       events: Stream.fromQueue(eventQueue),

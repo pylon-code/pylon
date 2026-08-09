@@ -153,12 +153,17 @@ function fakeRuntimeFactory(
   return (input) =>
     Effect.gen(function* () {
       captures.runtimeInputs.push(input);
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(`${input.sessionDir}/native-session-secret.jsonl`, ""),
+      );
       const queue = yield* Queue.unbounded<PrimeDaemonEvent>();
       const promptObserved = yield* Queue.unbounded<void>();
       captures.queue = queue;
       captures.promptObserved = promptObserved;
       const runtime: PrimeAgentDaemonSessionRuntime = {
         resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
+        sessionId: "native-session-secret",
+        sessionFile: `${input.sessionDir}/native-session-secret.jsonl`,
         activeSessionId: "native-active-secret",
         initialSnapshot: initialSnapshot(),
         events: Stream.fromQueue(queue),
@@ -314,7 +319,7 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("starts with an opaque v2 cursor and owns the thread-scoped daemon directory", () =>
+  it.effect("persists a server-private identity behind the opaque v3 cursor", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const captures = makeCaptures();
@@ -329,7 +334,6 @@ describe("PrimeAgentDaemonAdapter", () => {
           provider: ProviderDriverKind.make("primeAgent"),
           cwd: process.cwd(),
           runtimeMode: "full-access",
-          resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
           modelSelection: { instanceId, model: "openai/first" },
         });
         yield* awaitObservedType(subscription.observed, "thread.started");
@@ -338,7 +342,6 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(captures.runtimeInputs[0]).toMatchObject({
           agentDir: "/prime/home",
           model: "openai/first",
-          resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
         });
         expect(captures.runtimeInputs[0]!.sessionDir).toContain("provider-sessions/prime-agent/");
         expect(subscription.events.map((event) => event.type)).toEqual([
@@ -351,7 +354,75 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(encodeUnknownJson(subscription.events)).not.toContain("/native/secret/path");
         expect(new Set(subscription.events.map((event) => event.eventId)).size).toBe(3);
         expect(subscription.events.every((event) => event.createdAt.length > 0)).toBe(true);
+        const identitySource = yield* Effect.promise(() =>
+          NodeFSP.readFile(
+            `${captures.runtimeInputs[0]!.sessionDir}/.pylon-prime-session.json`,
+            "utf8",
+          ),
+        );
+        expect(identitySource).toContain('"sessionId":"native-session-secret"');
+        const privateDirMode =
+          (yield* Effect.promise(() => NodeFSP.stat(captures.runtimeInputs[0]!.sessionDir))).mode &
+          0o777;
+        const identityMode =
+          (yield* Effect.promise(() =>
+            NodeFSP.stat(`${captures.runtimeInputs[0]!.sessionDir}/.pylon-prime-session.json`),
+          )).mode & 0o777;
+        expect(privateDirMode).toBe(0o700);
+        expect(identityMode).toBe(0o600);
+
+        yield* Effect.promise(() =>
+          NodeFSP.unlink(`${captures.runtimeInputs[0]!.sessionDir}/.pylon-prime-session.json`),
+        );
+        yield* adapter.stopSession(threadId);
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: session.resumeCursor,
+        });
+        expect(captures.runtimeInputs[1]).toMatchObject({
+          resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
+        });
+        expect(captures.runtimeInputs[1]).not.toHaveProperty("resumeSessionId");
+
+        yield* adapter.stopSession(threadId);
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: session.resumeCursor,
+        });
+        expect(captures.runtimeInputs[2]).toMatchObject({
+          resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
+          resumeSessionId: "native-session-secret",
+        });
         yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails visibly instead of resuming a missing native transcript", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const error = yield* adapter
+          .startSession({
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+            resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
+          })
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterProcessError",
+          detail: "No saved Prime Agent session is available to continue.",
+        });
+        expect(captures.runtimeInputs).toEqual([]);
       }),
     ).pipe(Effect.provide(testLayer)),
   );

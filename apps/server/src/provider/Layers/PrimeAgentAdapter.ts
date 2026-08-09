@@ -380,6 +380,7 @@ export function makePrimeAgentAdapter(
             join: path.join,
           });
           yield* fileSystem.makeDirectory(sessionDir, { recursive: true }).pipe(
+            Effect.andThen(fileSystem.chmod(sessionDir, 0o700)),
             Effect.mapError(
               (cause) =>
                 new ProviderAdapterProcessError({
