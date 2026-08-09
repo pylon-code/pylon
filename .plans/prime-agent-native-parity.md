@@ -17,7 +17,7 @@ Use the independently installed Prime Agent package and its public detached-daem
 - use a short, stable Pylon-owned socket/pipe name so the user's normal Prime daemon is untouched;
 - strip every inherited `PRIME_AGENT_INTERNAL_*` variable before launch, because Pylon may itself be running inside a Prime worker;
 - create one client-owned Prime daemon session per live Pylon thread;
-- persist Prime session file/id metadata in Pylon's provider resume cursor and rehydrate after server restart;
+- persist exact Prime session identity in a server-private thread sidecar while keeping the client-visible provider resume cursor opaque, then rehydrate after server restart;
 - keep ACP only as an explicit compatibility fallback for installations without the supported daemon API.
 
 Prime Agent 0.7.1 exposes `prime-agent.daemon` protocol 7, schema revision 13. Pylon accepts protocol 7 or newer through the installed high-level client and negotiates server capabilities rather than pinning an internal wire schema.

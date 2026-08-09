@@ -26,7 +26,10 @@ transport, config, and event shapes are mapped.
 
 Prime Agent uses its public detached-daemon APIs as the primary runtime. One scoped daemon belongs
 to a provider instance, while each Pylon thread owns an isolated, deterministic native session
-directory and an opaque continuation cursor. Prime-native events terminate in
+directory. The client-visible continuation cursor stays an opaque marker; a server-private sidecar
+binds it to the exact stable Prime transcript identity and verifies the saved file before cold
+resume. On POSIX filesystems the thread session directory is owner-only, and its identity,
+managed-extension, and native transcript files are protected before the session becomes usable. Prime-native events terminate in
 `provider/prime/*` and map to provider-neutral runtime contracts; daemon identifiers, sockets,
 paths, request IDs, and native payloads never cross the provider boundary.
 

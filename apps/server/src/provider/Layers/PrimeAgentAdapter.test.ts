@@ -182,9 +182,11 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       threadId,
       join: NodePath.join,
     });
-    assert.isTrue(
-      yield* Effect.promise(() => NodeFSP.stat(expectedSessionDir).then((s) => s.isDirectory())),
+    const expectedSessionDirectoryStat = yield* Effect.promise(() =>
+      NodeFSP.stat(expectedSessionDir),
     );
+    assert.isTrue(expectedSessionDirectoryStat.isDirectory());
+    assert.equal(expectedSessionDirectoryStat.mode & 0o777, 0o700);
 
     const modelSwitch = yield* adapter
       .sendTurn({

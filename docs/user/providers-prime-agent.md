@@ -70,6 +70,10 @@ This is an approval gate, not a sandbox. An approved IPython cell or shell comma
 access as Prime Agent, including access outside the workspace and the ability to start processes or
 use the network.
 
+Daemon-backed threads resume the exact Prime transcript selected for that Pylon thread. If the saved
+transcript is removed or its private identity cannot be verified, Pylon reports a resume failure
+instead of silently opening a blank or merely recent Prime session.
+
 ## Current Limitations
 
 - Prime Agent 0.7.1 has no daemon-native or operating-system sandbox policy. Supervised mode gates
