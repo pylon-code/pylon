@@ -71,18 +71,24 @@ import {
   ProviderCancelSessionAgentInput,
   ProviderCancelSessionAgentResult,
   ProviderClearSessionInputQueueInput,
+  ProviderAbortSessionCompactionInput,
+  ProviderCompactSessionInput,
   ProviderGetSessionAgentDepthInput,
+  ProviderGetSessionCompactionInput,
   ProviderGetSessionInputQueueInput,
   ProviderReloadSessionResourcesInput,
   ProviderSessionAgentDepthError,
+  ProviderSessionCompactionError,
   ProviderSessionInputQueueError,
   ProviderSessionResourcesReloadError,
   ProviderSetSessionAgentDepthInput,
+  ProviderSetSessionAutoCompactionInput,
   ProviderSetSessionInputQueueModeInput,
 } from "./provider.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   SessionAgentDepthUpdatedPayload,
+  SessionCompactionUpdatedPayload,
   SessionInputQueueUpdatedPayload,
   SessionResourcesUpdatedPayload,
 } from "./providerRuntime.ts";
@@ -281,6 +287,10 @@ export const WS_METHODS = {
   providerGetSessionInputQueue: "provider.getSessionInputQueue",
   providerClearSessionInputQueue: "provider.clearSessionInputQueue",
   providerSetSessionInputQueueMode: "provider.setSessionInputQueueMode",
+  providerGetSessionCompaction: "provider.getSessionCompaction",
+  providerCompactSession: "provider.compactSession",
+  providerAbortSessionCompaction: "provider.abortSessionCompaction",
+  providerSetSessionAutoCompaction: "provider.setSessionAutoCompaction",
 
   // Server meta
   serverProbe: "server.probe",
@@ -434,6 +444,36 @@ export const WsProviderSetSessionInputQueueModeRpc = Rpc.make(
     payload: ProviderSetSessionInputQueueModeInput,
     success: SessionInputQueueUpdatedPayload,
     error: Schema.Union([ProviderSessionInputQueueError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsProviderGetSessionCompactionRpc = Rpc.make(WS_METHODS.providerGetSessionCompaction, {
+  payload: ProviderGetSessionCompactionInput,
+  success: SessionCompactionUpdatedPayload,
+  error: Schema.Union([ProviderSessionCompactionError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderCompactSessionRpc = Rpc.make(WS_METHODS.providerCompactSession, {
+  payload: ProviderCompactSessionInput,
+  success: SessionCompactionUpdatedPayload,
+  error: Schema.Union([ProviderSessionCompactionError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderAbortSessionCompactionRpc = Rpc.make(
+  WS_METHODS.providerAbortSessionCompaction,
+  {
+    payload: ProviderAbortSessionCompactionInput,
+    success: SessionCompactionUpdatedPayload,
+    error: Schema.Union([ProviderSessionCompactionError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsProviderSetSessionAutoCompactionRpc = Rpc.make(
+  WS_METHODS.providerSetSessionAutoCompaction,
+  {
+    payload: ProviderSetSessionAutoCompactionInput,
+    success: SessionCompactionUpdatedPayload,
+    error: Schema.Union([ProviderSessionCompactionError, EnvironmentAuthorizationError]),
   },
 );
 
@@ -1098,6 +1138,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderGetSessionInputQueueRpc,
   WsProviderClearSessionInputQueueRpc,
   WsProviderSetSessionInputQueueModeRpc,
+  WsProviderGetSessionCompactionRpc,
+  WsProviderCompactSessionRpc,
+  WsProviderAbortSessionCompactionRpc,
+  WsProviderSetSessionAutoCompactionRpc,
   WsServerUpdateProviderRpc,
   WsServerStartProviderLoginRpc,
   WsServerSubmitProviderLoginCodeRpc,

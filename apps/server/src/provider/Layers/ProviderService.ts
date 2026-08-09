@@ -14,14 +14,18 @@ import {
   NonNegativeInt,
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   ThreadId,
+  ProviderAbortSessionCompactionInput,
   ProviderCancelSessionAgentInput,
   ProviderClearSessionInputQueueInput,
+  ProviderCompactSessionInput,
   ProviderFollowUpInput,
   ProviderGetSessionAgentDepthInput,
+  ProviderGetSessionCompactionInput,
   ProviderGetSessionInputQueueInput,
   ProviderInterruptTurnInput,
   ProviderReloadSessionResourcesInput,
   ProviderSetSessionAgentDepthInput,
+  ProviderSetSessionAutoCompactionInput,
   ProviderSetSessionInputQueueModeInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -1205,6 +1209,135 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* setInputQueueMode({ ...input, threadId: routed.threadId });
   });
 
+  const getSessionCompaction: ProviderServiceMethod<"getSessionCompaction"> = Effect.fn(
+    "getSessionCompaction",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.getSessionCompaction",
+      schema: ProviderGetSessionCompactionInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.getSessionCompaction",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.getSessionCompaction",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const getCompaction = routed.adapter.getSessionCompaction;
+    if (getCompaction === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "get-session-compaction",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+    });
+    return yield* getCompaction(routed.threadId);
+  });
+
+  const compactSession: ProviderServiceMethod<"compactSession"> = Effect.fn("compactSession")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.compactSession",
+        schema: ProviderCompactSessionInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.compactSession",
+        allowRecovery: false,
+      });
+      if (!routed.isActive) {
+        return yield* toValidationError(
+          "ProviderService.compactSession",
+          `Thread '${input.threadId}' does not have an active provider session.`,
+        );
+      }
+      const compact = routed.adapter.compactSession;
+      if (compact === undefined) {
+        return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+      }
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "compact-session",
+        "provider.kind": routed.adapter.provider,
+        "provider.instance_id": routed.instanceId,
+        "provider.thread_id": input.threadId,
+      });
+      return yield* compact(routed.threadId);
+    },
+  );
+
+  const abortSessionCompaction: ProviderServiceMethod<"abortSessionCompaction"> = Effect.fn(
+    "abortSessionCompaction",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.abortSessionCompaction",
+      schema: ProviderAbortSessionCompactionInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.abortSessionCompaction",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.abortSessionCompaction",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const abortCompaction = routed.adapter.abortSessionCompaction;
+    if (abortCompaction === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "abort-session-compaction",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+    });
+    return yield* abortCompaction(routed.threadId);
+  });
+
+  const setSessionAutoCompaction: ProviderServiceMethod<"setSessionAutoCompaction"> = Effect.fn(
+    "setSessionAutoCompaction",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.setSessionAutoCompaction",
+      schema: ProviderSetSessionAutoCompactionInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.setSessionAutoCompaction",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.setSessionAutoCompaction",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const setAutoCompaction = routed.adapter.setSessionAutoCompaction;
+    if (setAutoCompaction === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "set-session-auto-compaction",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+      "provider.auto_compaction_enabled": input.enabled,
+    });
+    return yield* setAutoCompaction({ ...input, threadId: routed.threadId });
+  });
+
   const stopSession: ProviderServiceMethod<"stopSession"> = Effect.fn("stopSession")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1462,6 +1595,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getSessionInputQueue,
     clearSessionInputQueue,
     setSessionInputQueueMode,
+    getSessionCompaction,
+    compactSession,
+    abortSessionCompaction,
+    setSessionAutoCompaction,
     stopSession,
     listSessions,
     getCapabilities,

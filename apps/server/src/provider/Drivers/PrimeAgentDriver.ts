@@ -160,6 +160,18 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
                 agentCancel:
                   typeof backend.manager.bridge.DaemonAgentConnection.prototype.cancelRlmChild ===
                   "function",
+                compaction: ["getState", "compact", "abortCompaction"].every(
+                  (method) =>
+                    typeof backend.manager.bridge.DaemonAgentConnection.prototype[
+                      method as "getState" | "compact" | "abortCompaction"
+                    ] === "function",
+                ),
+                autoCompaction: ["getState", "setAutoCompactionEnabled"].every(
+                  (method) =>
+                    typeof backend.manager.bridge.DaemonAgentConnection.prototype[
+                      method as "getState" | "setAutoCompactionEnabled"
+                    ] === "function",
+                ),
               }
             : {
                 runtime: "acp",

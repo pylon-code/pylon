@@ -13,11 +13,13 @@ import type {
   ProviderCancelSessionAgentResult,
   ProviderFollowUpInput,
   ProviderDriverKind,
+  ProviderSetSessionAutoCompactionInput,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
   SessionInteractionRequestId,
   SessionInteractionResponse,
   SessionAgentDepthUpdatedPayload,
+  SessionCompactionUpdatedPayload,
   SessionInputQueueUpdatedPayload,
   SessionResourcesUpdatedPayload,
   ProviderSendTurnInput,
@@ -155,6 +157,26 @@ export interface ProviderAdapterShape<TError> {
   readonly setSessionInputQueueMode?: (
     input: ProviderSetSessionInputQueueModeInput,
   ) => Effect.Effect<SessionInputQueueUpdatedPayload, TError>;
+
+  /** Read authoritative compaction control state for one active session. */
+  readonly getSessionCompaction?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, TError>;
+
+  /** Admit one idle-only manual context compaction. */
+  readonly compactSession?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, TError>;
+
+  /** Request cancellation without claiming a terminal compaction outcome. */
+  readonly abortSessionCompaction?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, TError>;
+
+  /** Configure automatic compaction with provider-declared scope. */
+  readonly setSessionAutoCompaction?: (
+    input: ProviderSetSessionAutoCompactionInput,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, TError>;
 
   /**
    * Stop one provider session.

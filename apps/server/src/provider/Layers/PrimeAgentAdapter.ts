@@ -574,6 +574,20 @@ export function makePrimeAgentAdapter(
             payload: { available: false, skills: [], prompts: [], commands: [] },
           });
           yield* offerRuntimeEvent({
+            type: "session.compaction.updated",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: input.threadId,
+            payload: {
+              available: false,
+              status: "idle",
+              abortable: false,
+              autoCompactionWritable: false,
+              manualCompactionSettable: false,
+            },
+          });
+          yield* offerRuntimeEvent({
             type: "session.state.changed",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,

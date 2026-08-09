@@ -9,6 +9,7 @@ import type {
   RuntimeMode,
   ScopedThreadRef,
   ServerProvider,
+  SessionCompactionUpdatedPayload,
   ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -20,6 +21,15 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
+import {
+  canAbortSessionCompaction,
+  canConfigureSessionAutoCompaction,
+  canStartSessionCompaction,
+  deriveLatestSessionCompaction,
+  isCurrentSessionCompactionRequest,
+  sessionCompactionScopeKey as makeSessionCompactionScopeKey,
+  supportsSessionCompaction,
+} from "@t3tools/client-runtime/state/context-compaction";
 import {
   canSetSessionAgentDepth,
   deriveLatestSessionAgentDepth,
@@ -461,6 +471,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   activeThreadProviderDisplayName: string | null;
   activeProviderUsageAccounts: readonly ProviderUsageAccount[];
   timestampFormat: UnifiedSettings["timestampFormat"];
+  contextCompaction: import("./ContextWindowMeter").ContextCompactionControlProps | null;
   isPreparingWorktree: boolean;
   pendingAction: {
     questionIndex: number;
@@ -486,11 +497,12 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
 }) {
   return (
     <>
-      {props.activeContextWindow ? (
+      {props.activeContextWindow || props.contextCompaction ? (
         <ContextWindowMeter
           usage={props.activeContextWindow}
           providerDisplayName={props.activeThreadProviderDisplayName}
           timestampFormat={props.timestampFormat}
+          compaction={props.contextCompaction}
         />
       ) : null}
       {props.isPreparingWorktree ? (
@@ -657,6 +669,10 @@ export interface ChatComposerProps {
   onInterrupt: () => void;
   onReloadSessionResources: () => Promise<void>;
   onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
+  onGetSessionCompaction: () => Promise<SessionCompactionUpdatedPayload | null>;
+  onCompactSession: () => Promise<SessionCompactionUpdatedPayload | null>;
+  onAbortSessionCompaction: () => Promise<SessionCompactionUpdatedPayload | null>;
+  onSetSessionAutoCompaction: (enabled: boolean) => Promise<SessionCompactionUpdatedPayload | null>;
   onImplementPlanInNewThread: () => void;
   onContinueThreadOnAccount: () => void;
   onRespondToApproval: (
@@ -747,6 +763,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onInterrupt,
     onReloadSessionResources,
     onSetSessionAgentDepth,
+    onGetSessionCompaction,
+    onCompactSession,
+    onAbortSessionCompaction,
+    onSetSessionAutoCompaction,
     onImplementPlanInNewThread,
     onContinueThreadOnAccount,
     onRespondToApproval,
@@ -1113,6 +1133,184 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     },
     [onSetSessionAgentDepth, sessionAgentDepthDisabled],
   );
+
+  const sessionCompactionScopeKey =
+    activeThreadId && activeSessionInstanceId
+      ? makeSessionCompactionScopeKey({
+          environmentId,
+          threadId: activeThreadId,
+          providerInstanceId: activeSessionInstanceId,
+        })
+      : null;
+  const activitySessionCompaction = useMemo(
+    () =>
+      activeSessionInstanceId === undefined
+        ? null
+        : deriveLatestSessionCompaction(activeThreadActivities ?? [], activeSessionInstanceId),
+    [activeSessionInstanceId, activeThreadActivities],
+  );
+  const [authoritativeSessionCompaction, setAuthoritativeSessionCompaction] = useState<{
+    readonly scopeKey: string;
+    readonly snapshot: SessionCompactionUpdatedPayload;
+  } | null>(null);
+  const [sessionCompactionMutation, setSessionCompactionMutation] = useState<{
+    readonly scopeKey: string;
+    readonly id: number;
+    readonly action: "compact" | "abort" | "auto";
+  } | null>(null);
+  const sessionCompactionScopeRef = useRef(sessionCompactionScopeKey);
+  sessionCompactionScopeRef.current = sessionCompactionScopeKey;
+  const sessionCompactionMutationRef = useRef(sessionCompactionMutation);
+  sessionCompactionMutationRef.current = sessionCompactionMutation;
+  const sessionCompactionRequestIdRef = useRef(0);
+  const lastCompactionActivityRef = useRef<{ scopeKey: string; updatedAt: string } | null>(null);
+  const sessionCompaction =
+    sessionCompactionScopeKey &&
+    authoritativeSessionCompaction?.scopeKey === sessionCompactionScopeKey
+      ? authoritativeSessionCompaction.snapshot
+      : activitySessionCompaction;
+  const showSessionCompaction =
+    sessionCompactionScopeKey !== null && supportsSessionCompaction(activeSessionProviderStatus);
+
+  useEffect(() => {
+    const scopeKey = sessionCompactionScopeKey;
+    const requestId = ++sessionCompactionRequestIdRef.current;
+    sessionCompactionMutationRef.current = null;
+    setSessionCompactionMutation(null);
+    if (
+      !scopeKey ||
+      !supportsSessionCompaction(activeSessionProviderStatus) ||
+      (activeThread?.session?.status !== "ready" && activeThread?.session?.status !== "running")
+    ) {
+      setAuthoritativeSessionCompaction(null);
+      return;
+    }
+    if (activitySessionCompaction) {
+      lastCompactionActivityRef.current = {
+        scopeKey,
+        updatedAt: activitySessionCompaction.updatedAt,
+      };
+      setAuthoritativeSessionCompaction({ scopeKey, snapshot: activitySessionCompaction });
+    } else {
+      lastCompactionActivityRef.current = null;
+      setAuthoritativeSessionCompaction(null);
+    }
+    if (activitySessionCompaction?.available === false) return;
+    void onGetSessionCompaction().then((snapshot) => {
+      if (
+        snapshot &&
+        isCurrentSessionCompactionRequest(
+          sessionCompactionScopeRef.current,
+          sessionCompactionRequestIdRef.current,
+          { scopeKey, id: requestId },
+        )
+      ) {
+        setAuthoritativeSessionCompaction({ scopeKey, snapshot });
+      }
+    });
+  }, [
+    activeSessionProviderStatus,
+    activeThread?.session?.status,
+    onGetSessionCompaction,
+    sessionCompactionScopeKey,
+  ]);
+
+  useEffect(() => {
+    const scopeKey = sessionCompactionScopeKey;
+    const snapshot = activitySessionCompaction;
+    if (!scopeKey || !snapshot) return;
+    const last = lastCompactionActivityRef.current;
+    if (last?.scopeKey === scopeKey && last.updatedAt === snapshot.updatedAt) return;
+    lastCompactionActivityRef.current = { scopeKey, updatedAt: snapshot.updatedAt };
+    sessionCompactionRequestIdRef.current += 1;
+    sessionCompactionMutationRef.current = null;
+    setSessionCompactionMutation(null);
+    setAuthoritativeSessionCompaction({ scopeKey, snapshot });
+  }, [activitySessionCompaction, sessionCompactionScopeKey]);
+
+  const runSessionCompactionMutation = useCallback(
+    async (
+      action: "compact" | "abort" | "auto",
+      mutate: () => Promise<SessionCompactionUpdatedPayload | null>,
+    ) => {
+      const scopeKey = sessionCompactionScopeRef.current;
+      if (!scopeKey || sessionCompactionMutationRef.current?.scopeKey === scopeKey) return;
+      const id = ++sessionCompactionRequestIdRef.current;
+      const mutation = { scopeKey, id, action } as const;
+      sessionCompactionMutationRef.current = mutation;
+      setSessionCompactionMutation(mutation);
+      const snapshot = await mutate();
+      if (
+        !isCurrentSessionCompactionRequest(
+          sessionCompactionScopeRef.current,
+          sessionCompactionRequestIdRef.current,
+          mutation,
+        )
+      ) {
+        return;
+      }
+      sessionCompactionMutationRef.current = null;
+      setSessionCompactionMutation((current) => (current?.id === id ? null : current));
+      if (snapshot) {
+        setAuthoritativeSessionCompaction({ scopeKey, snapshot });
+      }
+    },
+    [],
+  );
+  const contextCompactionConnected =
+    (activeThread?.session?.status === "ready" || activeThread?.session?.status === "running") &&
+    !isConnecting &&
+    environmentUnavailable === null;
+  const contextCompactionControl =
+    showSessionCompaction && sessionCompaction?.available
+      ? {
+          snapshot: sessionCompaction,
+          pendingAction:
+            sessionCompactionMutation?.scopeKey === sessionCompactionScopeKey
+              ? sessionCompactionMutation.action
+              : null,
+          canCompact:
+            contextCompactionConnected &&
+            sessionCompactionMutation === null &&
+            canStartSessionCompaction(activeSessionProviderStatus, sessionCompaction),
+          canAbort:
+            contextCompactionConnected &&
+            sessionCompactionMutation === null &&
+            canAbortSessionCompaction(activeSessionProviderStatus, sessionCompaction),
+          canSetAuto:
+            contextCompactionConnected &&
+            sessionCompactionMutation === null &&
+            canConfigureSessionAutoCompaction(activeSessionProviderStatus, sessionCompaction),
+          onCompact: () => {
+            if (
+              !contextCompactionConnected ||
+              !canStartSessionCompaction(activeSessionProviderStatus, sessionCompaction) ||
+              !globalThis.confirm("Compact the current provider session's context now?")
+            ) {
+              return;
+            }
+            void runSessionCompactionMutation("compact", onCompactSession);
+          },
+          onAbort: () => {
+            if (
+              !contextCompactionConnected ||
+              !canAbortSessionCompaction(activeSessionProviderStatus, sessionCompaction)
+            ) {
+              return;
+            }
+            void runSessionCompactionMutation("abort", onAbortSessionCompaction);
+          },
+          onSetAuto: (enabled: boolean) => {
+            if (
+              !contextCompactionConnected ||
+              !canConfigureSessionAutoCompaction(activeSessionProviderStatus, sessionCompaction)
+            ) {
+              return;
+            }
+            void runSessionCompactionMutation("auto", () => onSetSessionAutoCompaction(enabled));
+          },
+        }
+      : null;
 
   const sessionResources = useMemo(
     () => deriveLatestSessionResources(activeThreadActivities ?? [], selectedInstanceId),
@@ -3649,6 +3847,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   activeThreadProviderDisplayName={activeThreadProviderDisplayName}
                   activeProviderUsageAccounts={activeProviderUsageAccounts}
                   timestampFormat={settings.timestampFormat}
+                  contextCompaction={contextCompactionControl}
                   pendingAction={pendingPrimaryAction}
                   isRunning={phase === "running"}
                   canQueueFollowUp={canQueueSessionFollowUp}

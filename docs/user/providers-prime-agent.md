@@ -75,6 +75,8 @@ the composer. The meter is separate from per-turn token totals and hides when Pr
 post-compaction context as unknown; it returns after the next successful model response. Pylon uses
 the session's native automatic-compaction setting rather than assuming compaction is enabled.
 
+Full-access daemon sessions expose context controls beside the context-window meter. **Compact now** is admitted only after Pylon confirms the native session is idle; it never accepts custom instructions. While compaction is active, **Abort compaction** requests Prime's native cancellation, but the control stays active until Prime reports a terminal outcome. **Automatic compaction** changes the current session and Prime's provider-wide default, which the control states explicitly. These mutations are serialized with other session controls and are never retried automatically. If a response is ambiguous and authoritative state cannot be restored, Pylon closes the native session instead of guessing. Supervised and ACP sessions do not offer these controls.
+
 Daemon-backed sessions also expose an **Agent spawn depth** control while the session is idle. Depth
 0 disables recursive child-agent spawning; depths 1 through 4 bound how many nested levels Prime may
 create. The choice applies only to that native session and never changes Prime's global setting.

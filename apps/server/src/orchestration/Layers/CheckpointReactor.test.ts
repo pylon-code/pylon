@@ -120,6 +120,10 @@ function createProviderServiceHarness(
     getSessionInputQueue: () => unsupported(),
     clearSessionInputQueue: () => unsupported(),
     setSessionInputQueueMode: () => unsupported(),
+    getSessionCompaction: () => unsupported(),
+    compactSession: () => unsupported(),
+    abortSessionCompaction: () => unsupported(),
+    setSessionAutoCompaction: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions,
     getCapabilities: () =>

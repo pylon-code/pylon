@@ -11,6 +11,8 @@ describe("PrimeAgentFeatureCapabilities", () => {
       inputQueue: true,
       inputQueueModes: true,
       agentCancel: true,
+      compaction: true,
+      autoCompaction: true,
     });
 
     expect(capabilities.executionPolicy).toMatchObject({
@@ -35,8 +37,8 @@ describe("PrimeAgentFeatureCapabilities", () => {
       "set-modes",
     ]);
     expect(capabilities.context).toMatchObject({
-      support: "read-only",
-      operations: ["observe"],
+      support: "read-write",
+      operations: ["observe", "compact", "abort-compaction", "configure-compaction"],
     });
     expect(capabilities.model?.operations).toEqual(["select", "thinking", "service-tier"]);
     expect(capabilities.reasoning).toMatchObject({
@@ -60,6 +62,8 @@ describe("PrimeAgentFeatureCapabilities", () => {
       inputQueue: false,
       inputQueueModes: false,
       agentCancel: false,
+      compaction: false,
+      autoCompaction: false,
     });
     expect(capabilities.inputQueue).toMatchObject({
       support: "unavailable",
@@ -74,6 +78,8 @@ describe("PrimeAgentFeatureCapabilities", () => {
       inputQueue: false,
       inputQueueModes: false,
       agentCancel: false,
+      compaction: false,
+      autoCompaction: false,
     });
 
     expect(capabilities.executionPolicy).toMatchObject({

@@ -108,6 +108,9 @@ function fixture(options?: {
   readonly getStateImpl?: () => Promise<unknown>;
   readonly setSteeringModeImpl?: (mode: "all" | "one-at-a-time") => Promise<unknown>;
   readonly setFollowUpModeImpl?: (mode: "all" | "one-at-a-time") => Promise<unknown>;
+  readonly compactImpl?: () => Promise<unknown>;
+  readonly abortCompactionImpl?: () => Promise<unknown>;
+  readonly setAutoCompactionImpl?: (enabled: boolean) => Promise<unknown>;
 }) {
   const captures: Captures = {
     order: [],
@@ -242,6 +245,26 @@ function fixture(options?: {
     setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<unknown> {
       captures.connectionCalls.push({ method: "setFollowUpMode", args: [mode] });
       return options?.setFollowUpModeImpl?.(mode) ?? Promise.resolve(undefined);
+    }
+    compact(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "compact", args: [] });
+      return (
+        options?.compactImpl?.() ??
+        Promise.resolve({
+          summary: "private summary",
+          details: { sessionFile: "/daemon/private/session.jsonl" },
+          firstKeptId: "native-secret",
+          tokensBefore: 1234,
+        })
+      );
+    }
+    abortCompaction(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "abortCompaction", args: [] });
+      return options?.abortCompactionImpl?.() ?? Promise.resolve(undefined);
+    }
+    setAutoCompactionEnabled(enabled: boolean): Promise<unknown> {
+      captures.connectionCalls.push({ method: "setAutoCompactionEnabled", args: [enabled] });
+      return options?.setAutoCompactionImpl?.(enabled) ?? Promise.resolve(undefined);
     }
     setModel(provider: string, modelId: string): Promise<unknown> {
       captures.connectionCalls.push({ method: "setModel", args: [provider, modelId] });
@@ -797,6 +820,16 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           markerCommand: "pylon-permission-gate-v1",
         });
         captures.connectionCalls.splice(0);
+        expect(runtime.compactionAvailable).toBe(false);
+        expect(runtime.autoCompactionWritable).toBe(false);
+        expect(yield* runtime.compact.pipe(Effect.flip)).toMatchObject({
+          operation: "compact",
+          reason: "incompatible-api",
+        });
+        expect(yield* runtime.setAutoCompactionEnabled(false).pipe(Effect.flip)).toMatchObject({
+          operation: "set-auto-compaction",
+          reason: "incompatible-api",
+        });
         const error = yield* runtime.reloadResources.pipe(Effect.flip);
         expect(error).toMatchObject({ operation: "reload-resources", reason: "invalid-input" });
         expect(captures.connectionCalls).toEqual([]);
@@ -1262,6 +1295,80 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         });
         expect(captures.connectionCalls).toContainEqual({ method: "getState", args: [] });
         expect(captures.order.filter((entry) => entry === "snapshot")).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("uses argument-free compaction controls and projects only safe state", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let isCompacting = false;
+        let autoCompactionEnabled = true;
+        const { captures, make } = fixture({
+          rawSnapshotImpl: () => {
+            const current = snapshot();
+            return {
+              ...current,
+              state: {
+                ...current.state,
+                isCompacting,
+                autoCompactionEnabled,
+              },
+            };
+          },
+          compactImpl: () => {
+            isCompacting = true;
+            return Promise.resolve({
+              summary: "private summary",
+              details: { path: "/Users/private" },
+              tokenCount: 1234,
+            });
+          },
+          abortCompactionImpl: () => {
+            isCompacting = false;
+            return Promise.resolve(undefined);
+          },
+          setAutoCompactionImpl: (enabled) => {
+            autoCompactionEnabled = enabled;
+            return Promise.resolve(undefined);
+          },
+        });
+        const runtime = yield* make();
+        expect(runtime.compactionAvailable).toBe(true);
+        expect(runtime.autoCompactionWritable).toBe(true);
+        expect(runtime.initialCompactionState).toEqual({
+          isCompacting: false,
+          autoCompactionEnabled: true,
+          isStreaming: false,
+          isBashRunning: false,
+          inputQueueActive: false,
+          steeringCount: 0,
+          followUpCount: 0,
+        });
+
+        expect(yield* runtime.compact).toBeUndefined();
+        expect(yield* runtime.getCompactionState).toMatchObject({
+          isCompacting: true,
+          autoCompactionEnabled: true,
+        });
+        yield* runtime.abortCompaction;
+        yield* runtime.setAutoCompactionEnabled(false);
+        const state = yield* runtime.getCompactionState;
+        expect(state).toEqual({
+          isCompacting: false,
+          autoCompactionEnabled: false,
+          isStreaming: false,
+          isBashRunning: false,
+          inputQueueActive: false,
+          steeringCount: 0,
+          followUpCount: 0,
+        });
+        expect(captures.connectionCalls).toContainEqual({ method: "compact", args: [] });
+        expect(captures.connectionCalls).toContainEqual({ method: "abortCompaction", args: [] });
+        expect(captures.connectionCalls).toContainEqual({
+          method: "setAutoCompactionEnabled",
+          args: [false],
+        });
       }),
     ),
   );

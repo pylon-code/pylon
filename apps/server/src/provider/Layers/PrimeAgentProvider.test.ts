@@ -241,6 +241,8 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         inputQueue: true,
         inputQueueModes: true,
         agentCancel: true,
+        compaction: true,
+        autoCompaction: true,
       });
 
       expect(snapshot.featureCapabilities?.version).toBe(1);

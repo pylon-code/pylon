@@ -9,6 +9,7 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderTurnStartResult,
+  SessionCompactionUpdatedPayload,
   SessionInputQueueUpdatedPayload,
 } from "@t3tools/contracts";
 import {
@@ -200,6 +201,41 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       }),
   );
 
+  let compaction: SessionCompactionUpdatedPayload = {
+    available: true,
+    status: "idle" as const,
+    abortable: false,
+    autoCompactionEnabled: true,
+    autoCompactionWritable: true,
+    manualCompactionSettable: true,
+    autoCompactionScope: "session-and-provider-default" as const,
+  };
+  const getSessionCompaction = vi.fn((_threadId: ThreadId) => Effect.sync(() => compaction));
+  const compactSession = vi.fn((_threadId: ThreadId) =>
+    Effect.sync(() => {
+      compaction = {
+        ...compaction,
+        status: "starting" as const,
+        abortable: true,
+        manualCompactionSettable: false,
+      };
+      return compaction;
+    }),
+  );
+  const abortSessionCompaction = vi.fn((_threadId: ThreadId) =>
+    Effect.sync(() => {
+      compaction = { ...compaction, status: "abort-requested" as const };
+      return compaction;
+    }),
+  );
+  const setSessionAutoCompaction = vi.fn(
+    (input: { readonly threadId: ThreadId; readonly enabled: boolean }) =>
+      Effect.sync(() => {
+        compaction = { ...compaction, autoCompactionEnabled: input.enabled };
+        return compaction;
+      }),
+  );
+
   let inputQueue: SessionInputQueueUpdatedPayload = {
     steeringCount: 0,
     followUpCount: 0,
@@ -295,6 +331,10 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     getSessionInputQueue,
     clearSessionInputQueue,
     setSessionInputQueueMode,
+    getSessionCompaction,
+    compactSession,
+    abortSessionCompaction,
+    setSessionAutoCompaction,
     stopSession,
     listSessions,
     hasSession,
@@ -335,6 +375,10 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     getSessionInputQueue,
     clearSessionInputQueue,
     setSessionInputQueueMode,
+    getSessionCompaction,
+    compactSession,
+    abortSessionCompaction,
+    setSessionAutoCompaction,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -1058,6 +1102,26 @@ routing.layer("ProviderServiceLive routing", (it) => {
             mode: "all-at-once",
           },
         ],
+      ]);
+
+      const compactionState = yield* provider.getSessionCompaction({
+        threadId: session.threadId,
+      });
+      const compacting = yield* provider.compactSession({ threadId: session.threadId });
+      const aborting = yield* provider.abortSessionCompaction({ threadId: session.threadId });
+      const autoDisabled = yield* provider.setSessionAutoCompaction({
+        threadId: session.threadId,
+        enabled: false,
+      });
+      assert.equal(compactionState.status, "idle");
+      assert.equal(compacting.status, "starting");
+      assert.equal(aborting.status, "abort-requested");
+      assert.equal(autoDisabled.autoCompactionEnabled, false);
+      assert.deepEqual(routing.codex.getSessionCompaction.mock.calls, [[session.threadId]]);
+      assert.deepEqual(routing.codex.compactSession.mock.calls, [[session.threadId]]);
+      assert.deepEqual(routing.codex.abortSessionCompaction.mock.calls, [[session.threadId]]);
+      assert.deepEqual(routing.codex.setSessionAutoCompaction.mock.calls, [
+        [{ threadId: session.threadId, enabled: false }],
       ]);
 
       yield* provider.rollbackConversation({

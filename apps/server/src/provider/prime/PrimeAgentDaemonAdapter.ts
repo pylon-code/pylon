@@ -14,6 +14,7 @@ import {
   SessionInteractionResponse,
   SessionPresentation,
   type SessionAgentDepthUpdatedPayload,
+  type SessionCompactionUpdatedPayload,
   type SessionInputQueueUpdatedPayload,
   type ProviderTurnStartResult,
   type ThreadId,
@@ -243,6 +244,7 @@ interface PrimeAgentDaemonSessionContext {
   currentThinkingLevel: PrimeAgentDaemonThinkingLevel;
   currentServiceTier: PrimeAgentDaemonServiceTier;
   autoCompactionEnabled: boolean;
+  compaction: SessionCompactionUpdatedPayload;
   agentDepth: SessionAgentDepthUpdatedPayload;
   inputQueue: SessionInputQueueUpdatedPayload;
   inputQueueClearPending: boolean;
@@ -267,6 +269,8 @@ interface PrimeAgentDaemonSessionContext {
   agentRosterProjected: boolean;
   resourceReloadCompletion: Deferred.Deferred<void> | undefined;
   activeCompactionScope: { readonly turnId?: TurnId | undefined } | undefined;
+  manualCompactionRequestActive: boolean;
+  compactionAbortRequested: boolean;
   stopRequested: boolean;
   stopped: boolean;
   exitEmitted: boolean;
@@ -474,6 +478,21 @@ export function makePrimeAgentDaemonAdapter(
         });
       });
 
+    const publishSessionCompaction = (
+      threadId: ThreadId,
+      payload: SessionCompactionUpdatedPayload,
+    ) =>
+      Effect.gen(function* () {
+        yield* offerRuntimeEvent({
+          type: "session.compaction.updated",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          providerInstanceId: boundInstanceId,
+          threadId,
+          payload,
+        });
+      });
+
     const publishSessionInputQueue = (
       threadId: ThreadId,
       payload: SessionInputQueueUpdatedPayload,
@@ -525,6 +544,7 @@ export function makePrimeAgentDaemonAdapter(
       !context.nativeBashActive &&
       context.activeNativeChildren.size === 0 &&
       context.activeCompactionScope === undefined &&
+      !context.manualCompactionRequestActive &&
       context.pendingApprovals.size === 0 &&
       context.pendingInteractions.size === 0;
 
@@ -535,6 +555,50 @@ export function makePrimeAgentDaemonAdapter(
         if (context.agentDepth.settable === settable) return;
         context.agentDepth = { ...context.agentDepth, settable };
         yield* publishSessionAgentDepth(context.threadId, context.agentDepth);
+      });
+
+    const isManualCompactionSettable = (context: PrimeAgentDaemonSessionContext): boolean =>
+      context.compaction.available &&
+      context.compaction.status === "idle" &&
+      context.resourceReloadCompletion === undefined &&
+      context.session.status === "ready" &&
+      context.activeTurn === undefined &&
+      !context.nativeRunActive &&
+      !context.nativeBashActive &&
+      !context.nativeQueueActionActive &&
+      context.inputQueue.steeringCount === 0 &&
+      context.inputQueue.followUpCount === 0 &&
+      context.activeNativeChildren.size === 0 &&
+      context.activeCompactionScope === undefined &&
+      !context.manualCompactionRequestActive &&
+      context.pendingApprovals.size === 0 &&
+      context.pendingInteractions.size === 0;
+
+    /** Must be called with the thread lock held. */
+    const updateCompactionProjectionLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      patch: Partial<SessionCompactionUpdatedPayload> = {},
+    ) =>
+      Effect.gen(function* () {
+        const base = { ...context.compaction, ...patch };
+        const next = {
+          ...base,
+          manualCompactionSettable:
+            base.available && base.status === "idle"
+              ? isManualCompactionSettable({ ...context, compaction: base })
+              : false,
+        } satisfies SessionCompactionUpdatedPayload;
+        const changed =
+          context.compaction.available !== next.available ||
+          context.compaction.status !== next.status ||
+          context.compaction.abortable !== next.abortable ||
+          context.compaction.autoCompactionEnabled !== next.autoCompactionEnabled ||
+          context.compaction.autoCompactionWritable !== next.autoCompactionWritable ||
+          context.compaction.manualCompactionSettable !== next.manualCompactionSettable ||
+          context.compaction.autoCompactionScope !== next.autoCompactionScope;
+        context.compaction = next;
+        context.autoCompactionEnabled = next.autoCompactionEnabled ?? false;
+        if (changed) yield* publishSessionCompaction(context.threadId, next);
       });
 
     const publishDrafts = (
@@ -626,6 +690,7 @@ export function makePrimeAgentDaemonAdapter(
         }
         context.agentRosterProjected = true;
         yield* syncAgentDepthSettableLocked(context);
+        yield* updateCompactionProjectionLocked(context);
       });
 
     const refreshContextUsage = (context: PrimeAgentDaemonSessionContext) =>
@@ -741,6 +806,7 @@ export function makePrimeAgentDaemonAdapter(
           });
         }
         yield* syncAgentDepthSettableLocked(context);
+        yield* updateCompactionProjectionLocked(context);
       });
 
     /** Must be called with the thread lock held. */
@@ -768,6 +834,7 @@ export function makePrimeAgentDaemonAdapter(
           });
         }
         yield* syncAgentDepthSettableLocked(context);
+        yield* updateCompactionProjectionLocked(context);
       });
 
     /** Must be called with the thread lock held. */
@@ -828,6 +895,9 @@ export function makePrimeAgentDaemonAdapter(
                 context.activeCompactionScope = event.state.isCompacting
                   ? (context.activeCompactionScope ?? {})
                   : undefined;
+                if (!event.state.isCompacting && !context.manualCompactionRequestActive) {
+                  context.compactionAbortRequested = false;
+                }
                 const initialRosterAlreadyProjected =
                   context.agentRosterProjected &&
                   event.lastEventSequence !== undefined &&
@@ -839,6 +909,25 @@ export function makePrimeAgentDaemonAdapter(
                 );
                 context.nativeQueueActionActive = event.state.inputQueue.activeAction;
                 yield* updateInputQueueProjection(context, event.state.inputQueue);
+                yield* updateCompactionProjectionLocked(context, {
+                  status:
+                    (context.manualCompactionRequestActive &&
+                      context.compaction.status === "starting") ||
+                    (context.compactionAbortRequested &&
+                      event.state.isCompacting &&
+                      context.compaction.status === "abort-requested")
+                      ? context.compaction.status
+                      : event.state.isCompacting
+                        ? "compacting"
+                        : "idle",
+                  abortable:
+                    event.state.isCompacting && context.manualCompactionRequestActive
+                      ? context.compaction.abortable
+                      : false,
+                  ...(context.compaction.available
+                    ? { autoCompactionEnabled: event.state.autoCompactionEnabled }
+                    : {}),
+                });
                 const turn = context.activeTurn;
                 if (turn !== undefined) {
                   turn.queuedInputCount =
@@ -960,6 +1049,7 @@ export function makePrimeAgentDaemonAdapter(
                           if (context.pendingApprovals.get(requestId) !== pending) return;
                           context.pendingApprovals.delete(requestId);
                           yield* syncAgentDepthSettableLocked(context);
+                          yield* updateCompactionProjectionLocked(context);
                           yield* offerRuntimeEvent({
                             type: "request.resolved",
                             ...(yield* makeEventStamp()),
@@ -1147,6 +1237,7 @@ export function makePrimeAgentDaemonAdapter(
                         if (context.pendingInteractions.get(requestId) !== pending) return;
                         context.pendingInteractions.delete(requestId);
                         yield* syncAgentDepthSettableLocked(context);
+                        yield* updateCompactionProjectionLocked(context);
                         yield* offerRuntimeEvent({
                           type: "interaction.resolved",
                           ...(yield* makeEventStamp()),
@@ -1223,6 +1314,10 @@ export function makePrimeAgentDaemonAdapter(
               if (sessions.get(context.threadId) !== context || context.stopped) return;
               const turn = context.activeTurn;
               context.activeCompactionScope ??= turn === undefined ? {} : { turnId: turn.id };
+              yield* updateCompactionProjectionLocked(context, {
+                status: context.compactionAbortRequested ? "abort-requested" : "compacting",
+                abortable: true,
+              });
               yield* publishDrafts(context, event, turn);
             }),
           );
@@ -1240,6 +1335,11 @@ export function makePrimeAgentDaemonAdapter(
               yield* publishDrafts(context, event, turn);
               if (event.willRetry) return false;
               context.activeCompactionScope = undefined;
+              context.compactionAbortRequested = false;
+              yield* updateCompactionProjectionLocked(context, {
+                status: "idle",
+                abortable: false,
+              });
               if (turn?.command !== "compact" || compactionTurnId !== turn.id) return true;
               yield* settleActiveTurnLocked(
                 context,
@@ -1428,6 +1528,7 @@ export function makePrimeAgentDaemonAdapter(
             Effect.gen(function* () {
               if (sessions.get(context.threadId) !== context || context.stopped) return;
               yield* syncAgentDepthSettableLocked(context);
+              yield* updateCompactionProjectionLocked(context);
             }),
           ).pipe(Effect.ignore),
         ),
@@ -1808,6 +1909,20 @@ export function makePrimeAgentDaemonAdapter(
             currentThinkingLevel: runtime.initialSnapshot.state.thinkingLevel,
             currentServiceTier: runtime.initialSnapshot.state.serviceTier,
             autoCompactionEnabled: runtime.initialSnapshot.state.autoCompactionEnabled,
+            compaction: {
+              available: runtime.compactionAvailable && input.runtimeMode === "full-access",
+              status: runtime.initialCompactionState.isCompacting ? "compacting" : "idle",
+              abortable: false,
+              ...(runtime.compactionAvailable && input.runtimeMode === "full-access"
+                ? { autoCompactionEnabled: runtime.initialCompactionState.autoCompactionEnabled }
+                : {}),
+              autoCompactionWritable:
+                runtime.autoCompactionWritable && input.runtimeMode === "full-access",
+              manualCompactionSettable: false,
+              ...(runtime.autoCompactionWritable && input.runtimeMode === "full-access"
+                ? { autoCompactionScope: "session-and-provider-default" as const }
+                : {}),
+            },
             agentDepth: runtime.initialAgentDepth,
             inputQueue: runtime.initialInputQueue,
             inputQueueClearPending: false,
@@ -1835,6 +1950,8 @@ export function makePrimeAgentDaemonAdapter(
             agentRosterProjected: false,
             resourceReloadCompletion: undefined,
             activeCompactionScope: runtime.initialSnapshot.state.isCompacting ? {} : undefined,
+            manualCompactionRequestActive: false,
+            compactionAbortRequested: false,
             stopRequested: false,
             stopped: false,
             exitEmitted: false,
@@ -1843,13 +1960,12 @@ export function makePrimeAgentDaemonAdapter(
             ...context.agentDepth,
             settable: isAgentDepthSettable(context),
           };
+          context.compaction = {
+            ...context.compaction,
+            manualCompactionSettable: isManualCompactionSettable(context),
+          };
           sessions.set(input.threadId, context);
           scopeTransferred = true;
-          context.eventFiber = yield* runtime.events.pipe(
-            Stream.runForEach((event) => consumeEvent(context, event)),
-            Effect.forkChild,
-          );
-
           yield* offerRuntimeEvent({
             type: "session.started",
             ...(yield* makeEventStamp()),
@@ -1860,6 +1976,7 @@ export function makePrimeAgentDaemonAdapter(
           });
           yield* publishSessionResources(input.threadId, runtime.initialResources);
           yield* publishSessionAgentDepth(input.threadId, context.agentDepth);
+          yield* publishSessionCompaction(input.threadId, context.compaction);
           yield* publishSessionInputQueue(input.threadId, context.inputQueue);
           yield* offerRuntimeEvent({
             type: "session.state.changed",
@@ -1885,6 +2002,11 @@ export function makePrimeAgentDaemonAdapter(
             }
             context.agentRosterProjected = true;
           }
+          context.eventFiber = yield* runtime.events.pipe(
+            Stream.runForEach((event) => consumeEvent(context, event)),
+            Effect.forkChild,
+          );
+
           context.lifecycleStarted = true;
           yield* refreshContextUsage(context).pipe(Effect.forkDetach);
           return session;
@@ -2068,6 +2190,17 @@ export function makePrimeAgentDaemonAdapter(
                 };
               }
 
+              if (
+                context.activeCompactionScope !== undefined ||
+                context.manualCompactionRequestActive
+              ) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "sendTurn",
+                  reason: "busy",
+                  issue: "Prime Agent cannot start a turn during context compaction.",
+                });
+              }
               yield* applyTurnSelection(context, input.threadId, requestedModel, turnControls);
               const turnId = TurnId.make(yield* randomUUIDv4);
               const turn: PrimeAgentDaemonActiveTurn = {
@@ -2235,6 +2368,7 @@ export function makePrimeAgentDaemonAdapter(
           }
           if (decision === "acceptForSession") context.approvalsAcceptedForSession = true;
           yield* syncAgentDepthSettableLocked(context);
+          yield* updateCompactionProjectionLocked(context);
           yield* offerRuntimeEvent({
             type: "request.resolved",
             ...(yield* makeEventStamp()),
@@ -2358,6 +2492,7 @@ export function makePrimeAgentDaemonAdapter(
             );
           context.pendingInteractions.delete(requestId);
           yield* syncAgentDepthSettableLocked(context);
+          yield* updateCompactionProjectionLocked(context);
           yield* offerRuntimeEvent({
             type: "interaction.resolved",
             ...(yield* makeEventStamp()),
@@ -2614,7 +2749,11 @@ export function makePrimeAgentDaemonAdapter(
                 issue: "A follow-up requires an active Prime Agent run.",
               });
             }
-            if (turn.command === "compact" || context.activeCompactionScope !== undefined) {
+            if (
+              turn.command === "compact" ||
+              context.activeCompactionScope !== undefined ||
+              context.manualCompactionRequestActive
+            ) {
               return yield* new ProviderAdapterValidationError({
                 provider: PROVIDER,
                 operation: "followUp",
@@ -2806,6 +2945,17 @@ export function makePrimeAgentDaemonAdapter(
                 reason: "busy",
               });
             }
+            if (
+              context.activeCompactionScope !== undefined ||
+              context.manualCompactionRequestActive
+            ) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "setSessionInputQueueMode",
+                issue: "Session input delivery cannot change during context compaction.",
+                reason: "busy",
+              });
+            }
             const currentMode =
               input.queue === "steering"
                 ? context.inputQueue.steeringMode
@@ -2871,6 +3021,330 @@ export function makePrimeAgentDaemonAdapter(
         ),
       );
 
+    /** Must be called with the thread lock held. */
+    const applyCompactionStateLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      state: {
+        readonly isCompacting: boolean;
+        readonly autoCompactionEnabled: boolean;
+        readonly isStreaming: boolean;
+        readonly isBashRunning: boolean;
+        readonly inputQueueActive: boolean;
+        readonly steeringCount: number;
+        readonly followUpCount: number;
+      },
+      options?: { readonly preservePendingStatus?: boolean },
+    ) =>
+      Effect.gen(function* () {
+        context.nativeRunActive = state.isStreaming;
+        context.nativeBashActive = state.isBashRunning;
+        context.nativeQueueActionActive = state.inputQueueActive;
+        yield* updateInputQueueProjection(context, {
+          steeringCount: state.steeringCount,
+          followUpCount: state.followUpCount,
+        });
+        const preservePending =
+          options?.preservePendingStatus === true &&
+          ((context.manualCompactionRequestActive && context.compaction.status === "starting") ||
+            (context.compactionAbortRequested &&
+              context.compaction.status === "abort-requested" &&
+              (state.isCompacting || context.manualCompactionRequestActive)));
+        if (!state.isCompacting && !context.manualCompactionRequestActive) {
+          context.compactionAbortRequested = false;
+        }
+        context.activeCompactionScope = state.isCompacting
+          ? (context.activeCompactionScope ?? {})
+          : preservePending
+            ? (context.activeCompactionScope ?? {})
+            : undefined;
+        const status = state.isCompacting
+          ? preservePending
+            ? context.compaction.status
+            : "compacting"
+          : preservePending
+            ? context.compaction.status
+            : "idle";
+        yield* updateCompactionProjectionLocked(context, {
+          status,
+          abortable: state.isCompacting || preservePending ? context.compaction.abortable : false,
+          autoCompactionEnabled: state.autoCompactionEnabled,
+        });
+        yield* syncAgentDepthSettableLocked(context);
+      });
+
+    const requireCompactionControls = (
+      context: PrimeAgentDaemonSessionContext,
+      operation: string,
+    ) =>
+      context.session.runtimeMode === "full-access" &&
+      context.runtime.compactionAvailable &&
+      context.compaction.available
+        ? Effect.void
+        : Effect.fail(
+            new ProviderAdapterUnsupportedOperationError({ provider: PROVIDER, operation }),
+          );
+
+    const getSessionCompaction: NonNullable<PrimeAgentAdapterShape["getSessionCompaction"]> = (
+      threadId,
+    ) =>
+      withThreadMutationLock(
+        threadId,
+        Effect.gen(function* () {
+          const context = yield* requireSession(threadId);
+          yield* requireCompactionControls(context, "getSessionCompaction");
+          const state = yield* context.runtime.getCompactionState.pipe(
+            Effect.mapError((error) =>
+              runtimeOperationError(threadId, "session/get-compaction-state", error),
+            ),
+          );
+          yield* applyCompactionStateLocked(context, state, { preservePendingStatus: true });
+          return context.compaction;
+        }),
+      );
+
+    const compactSession: NonNullable<PrimeAgentAdapterShape["compactSession"]> = (threadId) =>
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          const reserved = yield* withThreadMutationLock(
+            threadId,
+            Effect.gen(function* () {
+              const context = yield* requireSession(threadId);
+              yield* requireCompactionControls(context, "compactSession");
+              const state = yield* context.runtime.getCompactionState.pipe(
+                Effect.mapError((error) =>
+                  runtimeOperationError(threadId, "session/get-compaction-state", error),
+                ),
+              );
+              yield* applyCompactionStateLocked(context, state);
+              if (!isManualCompactionSettable(context)) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "compactSession",
+                  reason: "busy",
+                  issue: "Context can only be compacted while the session is authoritatively idle.",
+                });
+              }
+              context.activeCompactionScope = {};
+              context.manualCompactionRequestActive = true;
+              yield* updateCompactionProjectionLocked(context, {
+                status: "starting",
+                abortable: true,
+              });
+              yield* syncAgentDepthSettableLocked(context);
+              return context;
+            }),
+          );
+
+          const runCompaction = reserved.runtime.compact.pipe(
+            Effect.exit,
+            Effect.flatMap((outcome) =>
+              withThreadMutationLock(
+                threadId,
+                Effect.gen(function* () {
+                  if (
+                    sessions.get(threadId) !== reserved ||
+                    reserved.stopped ||
+                    reserved.stopRequested
+                  ) {
+                    return;
+                  }
+                  const terminalObserved =
+                    reserved.compaction.status === "idle" &&
+                    reserved.activeCompactionScope === undefined;
+                  reserved.manualCompactionRequestActive = false;
+                  const reconciled = yield* reserved.runtime.getCompactionState.pipe(Effect.exit);
+                  if (Exit.isSuccess(reconciled)) {
+                    yield* applyCompactionStateLocked(reserved, reconciled.value);
+                    if (
+                      Exit.isSuccess(outcome) ||
+                      reconciled.value.isCompacting ||
+                      terminalObserved
+                    ) {
+                      return;
+                    }
+                    yield* offerRuntimeEvent({
+                      type: "runtime.error",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      providerInstanceId: boundInstanceId,
+                      threadId,
+                      payload: {
+                        message: "Prime Agent context compaction did not complete.",
+                        class: "provider_error",
+                      },
+                    });
+                    return;
+                  }
+                  yield* stopSessionInternal(
+                    reserved,
+                    "Prime Agent session closed after context compaction could not be reconciled safely.",
+                  ).pipe(Effect.ignore);
+                }),
+              ),
+            ),
+            Effect.catchCause(() => Effect.void),
+          );
+          yield* Effect.forkIn(runCompaction, reserved.scope);
+          return reserved.compaction;
+        }),
+      );
+
+    const abortSessionCompaction: NonNullable<PrimeAgentAdapterShape["abortSessionCompaction"]> = (
+      threadId,
+    ) =>
+      Effect.uninterruptible(
+        withThreadMutationLock(
+          threadId,
+          Effect.gen(function* () {
+            const context = yield* requireSession(threadId);
+            yield* requireCompactionControls(context, "abortSessionCompaction");
+            const before = yield* context.runtime.getCompactionState.pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/get-compaction-state", error),
+              ),
+            );
+            yield* applyCompactionStateLocked(context, before, { preservePendingStatus: true });
+            if (!before.isCompacting && context.compaction.status !== "starting") {
+              return context.compaction;
+            }
+            if (!context.compaction.abortable) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "abortSessionCompaction",
+                reason: "busy",
+                issue: "The active context operation cannot be aborted by this control.",
+              });
+            }
+            context.compactionAbortRequested = true;
+            yield* updateCompactionProjectionLocked(context, { status: "abort-requested" });
+            const outcome = yield* Effect.result(context.runtime.abortCompaction);
+            if (Result.isFailure(outcome) && outcome.failure.reason === "request-timed-out") {
+              yield* stopSessionInternal(
+                context,
+                "Prime Agent session closed after compaction cancellation timed out.",
+              ).pipe(Effect.ignore);
+              return yield* runtimeOperationError(
+                threadId,
+                "session/abort-compaction",
+                outcome.failure,
+              );
+            }
+            const reconciled = yield* Effect.result(context.runtime.getCompactionState);
+            if (Result.isFailure(outcome)) context.compactionAbortRequested = false;
+            if (Result.isSuccess(reconciled)) {
+              yield* applyCompactionStateLocked(context, reconciled.success, {
+                preservePendingStatus: true,
+              });
+            } else {
+              yield* stopSessionInternal(
+                context,
+                "Prime Agent session closed after compaction cancellation could not be reconciled safely.",
+              ).pipe(Effect.ignore);
+            }
+            if (Result.isFailure(outcome)) {
+              return yield* runtimeOperationError(
+                threadId,
+                "session/abort-compaction",
+                outcome.failure,
+              );
+            }
+            return context.compaction;
+          }),
+        ),
+      );
+
+    const setSessionAutoCompaction: NonNullable<
+      PrimeAgentAdapterShape["setSessionAutoCompaction"]
+    > = (input) =>
+      Effect.uninterruptible(
+        withThreadMutationLock(
+          input.threadId,
+          Effect.gen(function* () {
+            const context = yield* requireSession(input.threadId);
+            yield* requireCompactionControls(context, "setSessionAutoCompaction");
+            if (
+              !context.runtime.autoCompactionWritable ||
+              !context.compaction.autoCompactionWritable
+            ) {
+              return yield* new ProviderAdapterUnsupportedOperationError({
+                provider: PROVIDER,
+                operation: "setSessionAutoCompaction",
+              });
+            }
+            if (context.session.status !== "ready" && context.session.status !== "running") {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "setSessionAutoCompaction",
+                reason: "busy",
+                issue: "Automatic compaction cannot change while the session is reconnecting.",
+              });
+            }
+            if (
+              context.activeCompactionScope !== undefined ||
+              context.manualCompactionRequestActive
+            ) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "setSessionAutoCompaction",
+                reason: "busy",
+                issue: "Automatic compaction cannot change during an active compaction.",
+              });
+            }
+            const before = yield* context.runtime.getCompactionState.pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(input.threadId, "session/get-compaction-state", error),
+              ),
+            );
+            yield* applyCompactionStateLocked(context, before);
+            if (before.isCompacting || context.manualCompactionRequestActive) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "setSessionAutoCompaction",
+                reason: "busy",
+                issue: "Automatic compaction cannot change during an active compaction.",
+              });
+            }
+            if (before.autoCompactionEnabled === input.enabled) return context.compaction;
+            const outcome = yield* Effect.result(
+              context.runtime.setAutoCompactionEnabled(input.enabled),
+            );
+            const reconciled = yield* Effect.result(context.runtime.getCompactionState);
+            if (Result.isFailure(reconciled)) {
+              yield* stopSessionInternal(
+                context,
+                "Prime Agent session closed after automatic compaction could not be reconciled safely.",
+              ).pipe(Effect.ignore);
+              const error = Result.isFailure(outcome) ? outcome.failure : reconciled.failure;
+              return yield* runtimeOperationError(
+                input.threadId,
+                "session/set-auto-compaction",
+                error,
+              );
+            }
+            yield* applyCompactionStateLocked(context, reconciled.success);
+            if (reconciled.success.autoCompactionEnabled === input.enabled) {
+              return context.compaction;
+            }
+            if (Result.isFailure(outcome)) {
+              return yield* runtimeOperationError(
+                input.threadId,
+                "session/set-auto-compaction",
+                outcome.failure,
+              );
+            }
+            yield* stopSessionInternal(
+              context,
+              "Prime Agent session closed after it did not confirm automatic compaction configuration.",
+            ).pipe(Effect.ignore);
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/set-auto-compaction",
+              detail: "Prime Agent did not confirm automatic compaction configuration.",
+            });
+          }),
+        ),
+      );
+
     const reloadSessionResources: NonNullable<PrimeAgentAdapterShape["reloadSessionResources"]> = (
       threadId,
     ) =>
@@ -2894,6 +3368,7 @@ export function makePrimeAgentDaemonAdapter(
                 context.nativeBashActive ||
                 context.activeNativeChildren.size > 0 ||
                 context.activeCompactionScope !== undefined ||
+                context.manualCompactionRequestActive ||
                 context.pendingApprovals.size > 0 ||
                 context.pendingInteractions.size > 0
               ) {
@@ -2906,6 +3381,7 @@ export function makePrimeAgentDaemonAdapter(
               const completion = yield* Deferred.make<void>();
               context.resourceReloadCompletion = completion;
               yield* syncAgentDepthSettableLocked(context);
+              yield* updateCompactionProjectionLocked(context);
               return { context, completion };
             }),
           );
@@ -2955,6 +3431,7 @@ export function makePrimeAgentDaemonAdapter(
                   if (context.resourceReloadCompletion === completion) {
                     context.resourceReloadCompletion = undefined;
                     yield* syncAgentDepthSettableLocked(context);
+                    yield* updateCompactionProjectionLocked(context);
                   }
                   yield* Deferred.succeed(completion, undefined).pipe(Effect.ignore);
                 }),
@@ -3041,6 +3518,10 @@ export function makePrimeAgentDaemonAdapter(
       getSessionInputQueue,
       clearSessionInputQueue,
       setSessionInputQueueMode,
+      getSessionCompaction,
+      compactSession,
+      abortSessionCompaction,
+      setSessionAutoCompaction,
       readThread,
       rollbackThread,
       stopSession,
