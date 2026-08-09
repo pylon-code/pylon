@@ -11,14 +11,20 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { deriveLatestContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import { deriveLatestSessionAgentDepth } from "@t3tools/client-runtime/state/session-agent-depth";
+import { deriveLatestSessionInputQueue } from "@t3tools/client-runtime/state/session-input-queue";
 import { deriveLatestSessionResources } from "@t3tools/client-runtime/state/session-resources";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
 import {
   convertPastedImagesToAttachments,
+  toUploadChatImageAttachments,
   pasteComposerClipboard,
   pickComposerImages,
 } from "../lib/composerImages";
@@ -49,6 +55,8 @@ import { useSelectedThreadDetail } from "../state/use-thread-detail";
 import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
+import { useAtomCommand } from "./use-atom-command";
+import { threadEnvironment } from "./threads";
 
 export function appendReviewCommentToDraft(input: {
   readonly environmentId: EnvironmentId;
@@ -93,6 +101,12 @@ export function useThreadComposerState() {
   );
   const composerDrafts = useAtomValue(composerDraftsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
+  const followUpInputQueue = useAtomCommand(threadEnvironment.followUpInputQueue, {
+    reportFailure: false,
+  });
+  const clearSessionInputQueue = useAtomCommand(threadEnvironment.clearSessionInputQueue, {
+    reportFailure: false,
+  });
 
   useEffect(() => {
     ensureComposerDraftsLoaded();
@@ -127,6 +141,12 @@ export function useThreadComposerState() {
     const instanceId = selectedThreadDetail?.session?.providerInstanceId;
     return selectedThreadDetail && instanceId
       ? deriveLatestSessionAgentDepth(selectedThreadDetail.activities, instanceId)
+      : null;
+  }, [selectedThreadDetail]);
+  const selectedThreadInputQueue = useMemo(() => {
+    const instanceId = selectedThreadDetail?.session?.providerInstanceId;
+    return selectedThreadDetail && instanceId
+      ? deriveLatestSessionInputQueue(selectedThreadDetail.activities, instanceId)
       : null;
   }, [selectedThreadDetail]);
   const selectedRuntimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
@@ -234,6 +254,82 @@ export function useThreadComposerState() {
     });
     return messageId;
   }, [selectedThreadDetail, selectedThreadServerConfig, selectedThreadShell]);
+
+  const onQueueFollowUp = useCallback(async () => {
+    if (
+      !selectedThreadShell ||
+      selectedThreadDetail?.session?.status !== "running" ||
+      selectedThreadDetail.session.activeTurnId == null
+    ) {
+      return null;
+    }
+    const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
+    const draft = getComposerDraftSnapshot(threadKey);
+    const text = draft.text.trim();
+    const attachments = draft.attachments;
+    if (text.length === 0 && attachments.length === 0) return null;
+
+    const metadata = makeQueuedMessageMetadata();
+    const messageId = MessageId.make(metadata.messageId);
+    clearComposerDraftContent(threadKey);
+    const result = await followUpInputQueue({
+      environmentId: selectedThreadShell.environmentId,
+      input: {
+        commandId: CommandId.make(metadata.commandId),
+        threadId: selectedThreadShell.id,
+        message: {
+          messageId,
+          role: "user",
+          text,
+          attachments: toUploadChatImageAttachments(attachments),
+        },
+        createdAt: metadata.createdAt,
+      },
+    });
+    if (result._tag === "Failure") {
+      await mergeComposerDraftContent(threadKey, { text, attachments: [] });
+      appendComposerDraftAttachments(threadKey, attachments);
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setPendingConnectionError(
+          error instanceof Error ? error.message : "Failed to queue the follow-up.",
+        );
+      }
+      return null;
+    }
+    return messageId;
+  }, [
+    followUpInputQueue,
+    selectedThreadDetail?.session?.activeTurnId,
+    selectedThreadDetail?.session?.status,
+    selectedThreadShell,
+  ]);
+
+  const onClearSessionInputQueue = useCallback(async () => {
+    if (
+      !selectedThreadShell ||
+      selectedThreadDetail?.session?.status !== "running" ||
+      selectedThreadDetail.session.activeTurnId == null
+    ) {
+      return false;
+    }
+    const result = await clearSessionInputQueue({
+      environmentId: selectedThreadShell.environmentId,
+      input: { threadId: selectedThreadShell.id },
+    });
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        setPendingConnectionError("Failed to clear pending session inputs.");
+      }
+      return false;
+    }
+    return true;
+  }, [
+    clearSessionInputQueue,
+    selectedThreadDetail?.session?.activeTurnId,
+    selectedThreadDetail?.session?.status,
+    selectedThreadShell,
+  ]);
 
   const onChangeDraftMessage = useCallback(
     (value: string) => {
@@ -384,6 +480,7 @@ export function useThreadComposerState() {
     selectedThreadContextWindow,
     selectedThreadResources,
     selectedThreadAgentDepth,
+    selectedThreadInputQueue,
     selectedThreadQueueCount,
     activeWorkStartedAt,
     draftMessage,
@@ -398,6 +495,8 @@ export function useThreadComposerState() {
     onNativePasteImages,
     onRemoveDraftImage,
     onSendMessage,
+    onQueueFollowUp,
+    onClearSessionInputQueue,
     onUpdateModelSelection,
     onUpdateRuntimeMode,
     onUpdateInteractionMode,

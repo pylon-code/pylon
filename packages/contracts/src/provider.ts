@@ -131,6 +131,36 @@ export class ProviderSessionAgentDepthError extends Schema.TaggedErrorClass<Prov
   },
 ) {}
 
+export const ProviderFollowUpInput = Schema.Struct({
+  threadId: ThreadId,
+  input: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+  ),
+  attachments: Schema.optional(
+    Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
+  ),
+});
+export type ProviderFollowUpInput = typeof ProviderFollowUpInput.Type;
+
+export const ProviderGetSessionInputQueueInput = Schema.Struct({ threadId: ThreadId });
+export type ProviderGetSessionInputQueueInput = typeof ProviderGetSessionInputQueueInput.Type;
+
+export const ProviderClearSessionInputQueueInput = Schema.Struct({ threadId: ThreadId });
+export type ProviderClearSessionInputQueueInput = typeof ProviderClearSessionInputQueueInput.Type;
+
+export class ProviderSessionInputQueueError extends Schema.TaggedErrorClass<ProviderSessionInputQueueError>()(
+  "ProviderSessionInputQueueError",
+  {
+    reason: Schema.Literals([
+      "session-not-ready",
+      "unsupported",
+      "not-running",
+      "invalid-input",
+      "request-failed",
+    ]),
+  },
+) {}
+
 export const ProviderRespondToRequestInput = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,

@@ -236,11 +236,14 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
   it.effect("stamps authoritative daemon capabilities and in-session model changes", () =>
     Effect.gen(function* () {
       const initial = yield* buildInitialPrimeAgentProviderSnapshot(decodeSettings({}));
-      const snapshot = stampPrimeAgentBackendSnapshot(initial, { runtime: "daemon" });
+      const snapshot = stampPrimeAgentBackendSnapshot(initial, {
+        runtime: "daemon",
+        inputQueue: true,
+      });
 
       expect(snapshot.featureCapabilities?.version).toBe(1);
-      expect(snapshot.featureCapabilities?.agents?.support).toBe("read-only");
-      expect(snapshot.featureCapabilities?.reasoning?.support).toBe("unavailable");
+      expect(snapshot.featureCapabilities?.agents?.support).toBe("read-write");
+      expect(snapshot.featureCapabilities?.reasoning?.support).toBe("read-only");
       expect(snapshot.featureCapabilities?.sessionUi?.support).toBe("read-write");
       expect(snapshot.featureCapabilities?.sessionUi?.operations).toEqual([
         "dialog",

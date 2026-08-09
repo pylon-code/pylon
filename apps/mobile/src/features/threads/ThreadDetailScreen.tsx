@@ -1,6 +1,7 @@
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import type { SessionAgentDepthSnapshot } from "@t3tools/client-runtime/state/session-agent-depth";
+import type { SessionInputQueueSnapshot } from "@t3tools/client-runtime/state/session-input-queue";
 import type { SessionResourcesSnapshot } from "@t3tools/client-runtime/state/session-resources";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
@@ -63,6 +64,7 @@ export interface ThreadDetailScreenProps {
   readonly contextWindow: ContextWindowSnapshot | null;
   readonly sessionResources: SessionResourcesSnapshot | null;
   readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
+  readonly sessionInputQueue: SessionInputQueueSnapshot | null;
   readonly activeWorkStartedAt: string | null;
   readonly activePendingApproval: PendingApproval | null;
   readonly respondingApprovalId: ApprovalRequestId | null;
@@ -86,7 +88,7 @@ export interface ThreadDetailScreenProps {
   readonly environmentId: EnvironmentId;
   readonly projectWorkspaceRoot: string | null;
   readonly threadCwd: string | null;
-  readonly selectedThreadQueueCount: number;
+  readonly localOutboxCount: number;
   readonly serverConfig: T3ServerConfig | null;
   readonly layoutVariant?: LayoutVariant;
   readonly usesAutomaticContentInsets?: boolean;
@@ -100,6 +102,8 @@ export interface ThreadDetailScreenProps {
   readonly onReloadSessionResources: () => Promise<void>;
   readonly onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
   readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onQueueFollowUp: () => Promise<MessageId | null>;
+  readonly onClearSessionInputQueue: () => Promise<boolean>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -499,11 +503,17 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               threadSyncPhase={threadSyncPhase}
               selectedThread={props.selectedThread}
               serverConfig={props.serverConfig}
-              queueCount={props.selectedThreadQueueCount}
+              localOutboxCount={props.localOutboxCount}
               contextWindow={props.contextWindow}
               sessionResources={props.sessionResources}
               sessionAgentDepth={props.sessionAgentDepth}
+              sessionInputQueue={props.sessionInputQueue}
               activeThreadBusy={props.activeThreadBusy}
+              sessionInputBlocked={
+                props.activePendingApproval !== null ||
+                props.activePendingUserInput !== null ||
+                props.activePendingInteraction !== null
+              }
               environmentId={props.environmentId}
               projectCwd={props.projectWorkspaceRoot}
               bottomInset={hasBelowEditorWidgets ? 0 : composerBottomInset}
@@ -515,6 +525,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onReloadSessionResources={props.onReloadSessionResources}
               onSetSessionAgentDepth={props.onSetSessionAgentDepth}
               onSendMessage={handleSendMessage}
+              onQueueFollowUp={props.onQueueFollowUp}
+              onClearSessionInputQueue={props.onClearSessionInputQueue}
               onReconnectEnvironment={props.onReconnectEnvironment}
               onUpdateModelSelection={props.onUpdateThreadModelSelection}
               onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}

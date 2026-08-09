@@ -158,8 +158,8 @@ const toolResult = Schema.Struct({
 
 const sessionActions = Schema.Struct({
   queuedCount: Schema.Int,
-  steering: Schema.Array(Schema.String),
-  followUps: Schema.Array(Schema.String),
+  steering: Schema.Array(Schema.Unknown).check(Schema.isMaxLength(1_000)),
+  followUps: Schema.Array(Schema.Unknown).check(Schema.isMaxLength(1_000)),
   active: Schema.optional(
     Schema.Struct({
       kind: Schema.Literals(["turn", "session_command"]),
@@ -594,6 +594,11 @@ export interface PrimeDaemonSessionState {
   readonly serviceTier: typeof serviceTier.Type;
   readonly messageCount: number;
   readonly autoCompactionEnabled: boolean;
+  readonly inputQueue: {
+    readonly steeringCount: number;
+    readonly followUpCount: number;
+    readonly activeAction: boolean;
+  };
   readonly contextUsage?:
     | {
         readonly tokens: number | null;
@@ -655,13 +660,12 @@ export type PrimeDaemonEvent =
   | {
       readonly _tag: "QueueChanged";
       readonly queuedCount: number;
-      readonly steering: ReadonlyArray<string>;
-      readonly followUps: ReadonlyArray<string>;
+      readonly steeringCount: number;
+      readonly followUpCount: number;
       readonly active?:
         | {
             readonly kind: "turn" | "session_command";
             readonly phase: string;
-            readonly label?: string | undefined;
           }
         | undefined;
     }
@@ -961,6 +965,11 @@ function mapState(value: typeof sessionState.Type): PrimeDaemonSessionState {
     serviceTier: value.serviceTier,
     messageCount: value.messageCount,
     autoCompactionEnabled: value.autoCompactionEnabled,
+    inputQueue: {
+      steeringCount: value.sessionActions.steering.length,
+      followUpCount: value.sessionActions.followUps.length,
+      activeAction: value.sessionActions.active !== undefined,
+    },
     contextUsage: value.contextUsage,
     recap: optionalBounded(value.recap, MAX_PREVIEW_LENGTH),
   };
@@ -1119,14 +1128,13 @@ function mapSessionEvent(event: typeof agentSessionEvent.Type): PrimeDaemonEvent
     case "session_action_update":
       return {
         _tag: "QueueChanged",
-        queuedCount: event.actions.queuedCount,
-        steering: event.actions.steering
-          .slice(0, MAX_LIST_ITEMS)
-          .map((item) => bounded(item, MAX_PREVIEW_LENGTH)),
-        followUps: event.actions.followUps
-          .slice(0, MAX_LIST_ITEMS)
-          .map((item) => bounded(item, MAX_PREVIEW_LENGTH)),
-        active: event.actions.active,
+        queuedCount: event.actions.steering.length + event.actions.followUps.length,
+        steeringCount: event.actions.steering.length,
+        followUpCount: event.actions.followUps.length,
+        active:
+          event.actions.active === undefined
+            ? undefined
+            : { kind: event.actions.active.kind, phase: event.actions.active.phase },
       };
     case "thinking_level_changed":
       return { _tag: "ThinkingLevelChanged", level: event.level };

@@ -1231,6 +1231,13 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const followUpThreadInputQueue = useAtomCommand(threadEnvironment.followUpInputQueue, {
+    reportFailure: false,
+  });
+  const clearThreadSessionInputQueue = useAtomCommand(
+    threadEnvironment.clearSessionInputQueue,
+    "session input queue clear",
+  );
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -4951,6 +4958,7 @@ function ChatViewContent(props: ChatViewProps) {
       annotation: PreviewAnnotationPayload;
       image: ComposerImageAttachment | null;
     },
+    delivery: "immediate" | "follow-up" = "immediate",
   ) => {
     e?.preventDefault();
     const notifyDirectAnnotationAttached = () => {
@@ -5197,7 +5205,7 @@ function ChatViewContent(props: ChatViewProps) {
         role: "user",
         text: outgoingMessageText,
         ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
-        turnId: null,
+        turnId: delivery === "follow-up" ? (activeThread.latestTurn?.turnId ?? null) : null,
         createdAt: messageCreatedAt,
         updatedAt: messageCreatedAt,
         streaming: false,
@@ -5249,7 +5257,7 @@ function ChatViewContent(props: ChatViewProps) {
 
     let failure: AtomCommandResult<unknown, unknown> | null = null;
     // Auto-title from first message
-    if (isFirstMessage && isServerThread) {
+    if (delivery === "immediate" && isFirstMessage && isServerThread) {
       const titleResult = await updateThreadMetadata({
         environmentId,
         input: {
@@ -5262,7 +5270,7 @@ function ChatViewContent(props: ChatViewProps) {
       }
     }
 
-    if (failure === null && isServerThread) {
+    if (failure === null && delivery === "immediate" && isServerThread) {
       const settingsResult = await persistThreadSettingsForNextTurn({
         threadId: threadIdForSend,
         createdAt: messageCreatedAt,
@@ -5316,24 +5324,39 @@ function ChatViewContent(props: ChatViewProps) {
             }
           : undefined;
       beginLocalDispatch({ preparingWorktree: false });
-      const startResult = await startThreadTurn({
-        environmentId,
-        input: {
-          threadId: threadIdForSend,
-          message: {
-            messageId: messageIdForSend,
-            role: "user",
-            text: outgoingMessageText,
-            attachments: turnAttachmentsResult.value,
-          },
-          modelSelection: ctxSelectedModelSelection,
-          titleSeed: title,
-          runtimeMode,
-          interactionMode,
-          ...(bootstrap ? { bootstrap } : {}),
-          createdAt: messageCreatedAt,
-        },
-      });
+      const startResult =
+        delivery === "follow-up"
+          ? await followUpThreadInputQueue({
+              environmentId,
+              input: {
+                threadId: threadIdForSend,
+                message: {
+                  messageId: messageIdForSend,
+                  role: "user",
+                  text: outgoingMessageText,
+                  attachments: turnAttachmentsResult.value,
+                },
+                createdAt: messageCreatedAt,
+              },
+            })
+          : await startThreadTurn({
+              environmentId,
+              input: {
+                threadId: threadIdForSend,
+                message: {
+                  messageId: messageIdForSend,
+                  role: "user",
+                  text: outgoingMessageText,
+                  attachments: turnAttachmentsResult.value,
+                },
+                modelSelection: ctxSelectedModelSelection,
+                titleSeed: title,
+                runtimeMode,
+                interactionMode,
+                ...(bootstrap ? { bootstrap } : {}),
+                createdAt: messageCreatedAt,
+              },
+            });
       if (startResult._tag === "Failure") {
         failure = startResult;
       } else {
@@ -5343,7 +5366,66 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     if (failure !== null) {
-      if (
+      const removeOptimisticMessage = () =>
+        setOptimisticUserMessages((existing) => {
+          const removed = existing.filter((message) => message.id === messageIdForSend);
+          for (const message of removed) {
+            revokeUserMessagePreviewUrls(message);
+          }
+          const next = existing.filter((message) => message.id !== messageIdForSend);
+          return next.length === existing.length ? existing : next;
+        });
+      if (delivery === "follow-up") {
+        removeOptimisticMessage();
+        const currentPrompt = promptRef.current;
+        const mergedPrompt =
+          promptForSend.length === 0
+            ? currentPrompt
+            : currentPrompt.length === 0
+              ? promptForSend
+              : `${promptForSend}\n\n${currentPrompt}`;
+        const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
+        const mergeById = <T extends { readonly id: string }>(
+          sent: ReadonlyArray<T>,
+          current: ReadonlyArray<T>,
+        ): T[] => {
+          const currentIds = new Set(current.map((item) => item.id));
+          return [...sent.filter((item) => !currentIds.has(item.id)), ...current];
+        };
+        const currentDraft =
+          useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) ?? null;
+        const mergedTerminalContexts = mergeById(
+          composerTerminalContextsSnapshot,
+          composerTerminalContextsRef.current,
+        );
+        const mergedElementContexts = mergeById(
+          composerElementContextsSnapshot,
+          composerElementContextsRef.current,
+        );
+        const mergedPreviewAnnotations = mergeById(
+          composerPreviewAnnotationsSnapshot,
+          currentDraft?.previewAnnotations ?? [],
+        );
+        const mergedReviewComments = mergeById(
+          composerReviewCommentsSnapshot,
+          currentDraft?.reviewComments ?? [],
+        );
+        promptRef.current = mergedPrompt;
+        composerImagesRef.current = [...composerImagesRef.current, ...retryComposerImages];
+        composerTerminalContextsRef.current = mergedTerminalContexts;
+        composerElementContextsRef.current = mergedElementContexts;
+        setComposerDraftPrompt(composerDraftTarget, mergedPrompt);
+        addComposerDraftImages(composerDraftTarget, retryComposerImages);
+        setComposerDraftTerminalContexts(composerDraftTarget, mergedTerminalContexts);
+        setComposerDraftElementContexts(composerDraftTarget, mergedElementContexts);
+        setComposerDraftPreviewAnnotations(composerDraftTarget, mergedPreviewAnnotations);
+        setComposerDraftReviewComments(composerDraftTarget, mergedReviewComments);
+        composerRef.current?.resetCursorState({
+          cursor: collapseExpandedComposerCursor(mergedPrompt, mergedPrompt.length),
+          prompt: mergedPrompt,
+          detectTrigger: true,
+        });
+      } else if (
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0 &&
@@ -5353,14 +5435,7 @@ function ChatViewContent(props: ChatViewProps) {
         (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
           .length ?? 0) === 0
       ) {
-        setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
-          for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
-          }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
-          return next.length === existing.length ? existing : next;
-        });
+        removeOptimisticMessage();
         promptRef.current = promptForSend;
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
@@ -5382,7 +5457,11 @@ function ChatViewContent(props: ChatViewProps) {
         const error = squashAtomCommandFailure(failure);
         setThreadError(
           threadIdForSend,
-          error instanceof Error ? error.message : "Failed to send message.",
+          error instanceof Error
+            ? error.message
+            : delivery === "follow-up"
+              ? "Failed to queue follow-up."
+              : "Failed to send message.",
         );
       }
     }
@@ -5457,6 +5536,25 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeThreadId, environmentId, setThreadError, setThreadSessionAgentDepth],
   );
+
+  const onClearSessionInputQueue = useCallback(async () => {
+    if (!activeThreadId) return;
+    const result = await clearThreadSessionInputQueue({
+      environmentId,
+      input: { threadId: activeThreadId },
+    });
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        setThreadError(activeThreadId, "Could not clear the session input queue.");
+      }
+      return;
+    }
+    setThreadError(activeThreadId, null);
+    toastManager.add({
+      type: "success",
+      title: "Pending session inputs cleared",
+    });
+  }, [activeThreadId, clearThreadSessionInputQueue, environmentId, setThreadError]);
 
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
@@ -6737,6 +6835,8 @@ function ChatViewContent(props: ChatViewProps) {
                             composerTerminalContextsRef={composerTerminalContextsRef}
                             composerElementContextsRef={composerElementContextsRef}
                             onSend={onSend}
+                            onQueueFollowUp={() => onSend(undefined, undefined, "follow-up")}
+                            onClearSessionInputQueue={onClearSessionInputQueue}
                             onInterrupt={onInterrupt}
                             onReloadSessionResources={onReloadSessionResources}
                             onSetSessionAgentDepth={onSetSessionAgentDepth}

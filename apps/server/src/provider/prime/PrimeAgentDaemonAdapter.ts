@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   EventId,
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
+  PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
   type PrimeAgentSettings,
   type ProviderRuntimeEvent,
   type ProviderSession,
@@ -13,6 +14,7 @@ import {
   SessionInteractionResponse,
   SessionPresentation,
   type SessionAgentDepthUpdatedPayload,
+  type SessionInputQueueUpdatedPayload,
   type ProviderTurnStartResult,
   type ThreadId,
   TurnId,
@@ -240,6 +242,9 @@ interface PrimeAgentDaemonSessionContext {
   currentServiceTier: PrimeAgentDaemonServiceTier;
   autoCompactionEnabled: boolean;
   agentDepth: SessionAgentDepthUpdatedPayload;
+  inputQueue: SessionInputQueueUpdatedPayload;
+  inputQueueClearPending: boolean;
+  nativeQueueActionActive: boolean;
   lifecycleStarted: boolean;
   usageRefreshSequence: number;
   eventFiber: Fiber.Fiber<void, never> | undefined;
@@ -462,6 +467,34 @@ export function makePrimeAgentDaemonAdapter(
           threadId,
           payload,
         });
+      });
+
+    const publishSessionInputQueue = (
+      threadId: ThreadId,
+      payload: SessionInputQueueUpdatedPayload,
+    ) =>
+      Effect.gen(function* () {
+        yield* offerRuntimeEvent({
+          type: "session.input-queue.updated",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          providerInstanceId: boundInstanceId,
+          threadId,
+          payload,
+        });
+      });
+
+    /** Must be called with the thread lock held. */
+    const updateInputQueueProjection = (
+      context: PrimeAgentDaemonSessionContext,
+      next: SessionInputQueueUpdatedPayload,
+    ) =>
+      Effect.gen(function* () {
+        const changed =
+          context.inputQueue.steeringCount !== next.steeringCount ||
+          context.inputQueue.followUpCount !== next.followUpCount;
+        context.inputQueue = next;
+        if (changed) yield* publishSessionInputQueue(context.threadId, next);
       });
 
     const isAgentDepthSettable = (context: PrimeAgentDaemonSessionContext): boolean =>
@@ -717,7 +750,7 @@ export function makePrimeAgentDaemonAdapter(
         if (event._tag === "SessionResynced") {
           yield* withThreadLock(
             context.threadId,
-            Effect.sync(() => {
+            Effect.gen(function* () {
               if (sessions.get(context.threadId) === context && !context.stopped) {
                 context.autoCompactionEnabled = event.state.autoCompactionEnabled;
                 context.nativeRunActive = event.state.isStreaming;
@@ -731,10 +764,52 @@ export function makePrimeAgentDaemonAdapter(
                     context.activeNativeChildren.add(child.id);
                   }
                 }
+                context.nativeQueueActionActive = event.state.inputQueue.activeAction;
+                yield* updateInputQueueProjection(context, event.state.inputQueue);
+                const turn = context.activeTurn;
+                if (turn !== undefined) {
+                  turn.queuedInputCount =
+                    event.state.inputQueue.steeringCount + event.state.inputQueue.followUpCount;
+                  const authoritativeIdle =
+                    turn.queuedInputCount === 0 &&
+                    !event.state.inputQueue.activeAction &&
+                    !event.state.isStreaming;
+                  if (turn.awaitingQueuedRun && authoritativeIdle) {
+                    const explicitClear = context.inputQueueClearPending;
+                    context.inputQueueClearPending = false;
+                    if (explicitClear) {
+                      const settled = yield* settleActiveTurnLocked(context, turn, {
+                        state: "completed",
+                        event: { _tag: "RunCompleted", messages: turn.completedRunMessages },
+                      });
+                      if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+                    } else {
+                      yield* settleActiveTurnLocked(context, turn, {
+                        state: "failed",
+                        errorMessage: turn.queuedActionObserved
+                          ? "Prime Agent queued input ended before a native run started."
+                          : "Prime Agent could not reconcile the active turn after reconnecting.",
+                      });
+                      context.stopRequested = true;
+                    }
+                  } else if (authoritativeIdle) {
+                    yield* settleActiveTurnLocked(context, turn, {
+                      state: "failed",
+                      errorMessage:
+                        "Prime Agent could not reconcile the active turn after reconnecting.",
+                    });
+                    context.stopRequested = true;
+                  }
+                }
               }
             }),
           );
-          if (context.lifecycleStarted) {
+          if (context.stopRequested && !context.stopped) {
+            yield* withThreadMutationLock(
+              context.threadId,
+              stopSessionInternal(context, "Prime Agent session state could not be reconciled."),
+            ).pipe(Effect.ignore, Effect.forkDetach);
+          } else if (context.lifecycleStarted) {
             yield* refreshContextUsage(context).pipe(Effect.forkDetach);
           }
           return;
@@ -1134,6 +1209,9 @@ export function makePrimeAgentDaemonAdapter(
                       },
                 );
               }
+              context.inputQueueClearPending = false;
+              context.nativeQueueActionActive = false;
+              yield* updateInputQueueProjection(context, { steeringCount: 0, followUpCount: 0 });
               const disposeExit = yield* context.runtime.dispose.pipe(Effect.exit);
               context.stopped = true;
               context.stopRequested = true;
@@ -1176,30 +1254,57 @@ export function makePrimeAgentDaemonAdapter(
             } else if (event._tag === "ServiceTierChanged") {
               context.currentServiceTier = event.serviceTier;
             }
-            if (event._tag === "RunStarted" && turn?.awaitingQueuedRun === true) {
-              turn.awaitingQueuedRun = false;
-              turn.queuedActionObserved = false;
+            if (event._tag === "RunStarted") {
+              context.inputQueueClearPending = false;
+              if (turn?.awaitingQueuedRun === true) {
+                turn.awaitingQueuedRun = false;
+                turn.queuedActionObserved = false;
+              }
             }
-            if (event._tag === "QueueChanged" && turn !== undefined) {
-              turn.queuedInputCount = event.queuedCount;
-              if (turn.awaitingQueuedRun && event.active !== undefined) {
-                turn.queuedActionObserved = true;
-              } else if (turn.awaitingQueuedRun && turn.queuedActionObserved) {
-                const clearExit = yield* context.runtime.abortAndClearQueue.pipe(Effect.exit);
-                yield* settleActiveTurnLocked(context, turn, {
-                  state: "failed",
-                  errorMessage: "Prime Agent could not start a queued input.",
-                });
-                if (Exit.isFailure(clearExit)) {
-                  context.stopRequested = true;
-                  yield* Effect.forkDetach(
-                    Effect.yieldNow.pipe(
-                      Effect.andThen(
-                        withThreadLock(context.threadId, stopSessionInternal(context)),
+            if (event._tag === "QueueChanged") {
+              const queue = {
+                steeringCount: event.steeringCount,
+                followUpCount: event.followUpCount,
+              };
+              context.nativeQueueActionActive = event.active !== undefined;
+              yield* updateInputQueueProjection(context, queue);
+              if (turn !== undefined) {
+                turn.queuedInputCount = event.queuedCount;
+                if (turn.awaitingQueuedRun && event.active !== undefined) {
+                  context.inputQueueClearPending = false;
+                  turn.queuedActionObserved = true;
+                } else if (
+                  turn.awaitingQueuedRun &&
+                  context.inputQueueClearPending &&
+                  event.queuedCount === 0
+                ) {
+                  context.inputQueueClearPending = false;
+                  const settled = yield* settleActiveTurnLocked(context, turn, {
+                    state: "completed",
+                    event: { _tag: "RunCompleted", messages: turn.completedRunMessages },
+                  });
+                  if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+                } else if (turn.awaitingQueuedRun && turn.queuedActionObserved) {
+                  const clearExit = yield* context.runtime.abortAndClearQueue.pipe(Effect.exit);
+                  yield* settleActiveTurnLocked(context, turn, {
+                    state: "failed",
+                    errorMessage: "Prime Agent could not start a queued input.",
+                  });
+                  if (Exit.isFailure(clearExit)) {
+                    context.stopRequested = true;
+                    yield* Effect.forkDetach(
+                      Effect.yieldNow.pipe(
+                        Effect.andThen(
+                          withThreadLock(context.threadId, stopSessionInternal(context)),
+                        ),
                       ),
-                    ),
-                  );
+                    );
+                  }
+                } else if (!turn.awaitingQueuedRun) {
+                  context.inputQueueClearPending = false;
                 }
+              } else {
+                context.inputQueueClearPending = false;
               }
             }
             if (event._tag === "ConnectionStatus") {
@@ -1261,6 +1366,9 @@ export function makePrimeAgentDaemonAdapter(
           yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
         }
 
+        context.inputQueueClearPending = false;
+        context.nativeQueueActionActive = false;
+        yield* updateInputQueueProjection(context, { steeringCount: 0, followUpCount: 0 });
         const disposeExit = yield* context.runtime.dispose.pipe(Effect.exit);
         context.stopped = true;
         if (context.eventFiber !== undefined) yield* Fiber.interrupt(context.eventFiber);
@@ -1605,6 +1713,9 @@ export function makePrimeAgentDaemonAdapter(
             currentServiceTier: runtime.initialSnapshot.state.serviceTier,
             autoCompactionEnabled: runtime.initialSnapshot.state.autoCompactionEnabled,
             agentDepth: runtime.initialAgentDepth,
+            inputQueue: runtime.initialInputQueue,
+            inputQueueClearPending: false,
+            nativeQueueActionActive: runtime.initialSnapshot.state.inputQueue.activeAction,
             lifecycleStarted: false,
             usageRefreshSequence: 0,
             eventFiber: undefined,
@@ -1648,6 +1759,7 @@ export function makePrimeAgentDaemonAdapter(
           });
           yield* publishSessionResources(input.threadId, runtime.initialResources);
           yield* publishSessionAgentDepth(input.threadId, context.agentDepth);
+          yield* publishSessionInputQueue(input.threadId, context.inputQueue);
           yield* offerRuntimeEvent({
             type: "session.state.changed",
             ...(yield* makeEventStamp()),
@@ -2272,6 +2384,204 @@ export function makePrimeAgentDaemonAdapter(
         ),
       );
 
+    const getSessionInputQueue: NonNullable<PrimeAgentAdapterShape["getSessionInputQueue"]> = (
+      threadId,
+    ) =>
+      withThreadMutationLock(
+        threadId,
+        Effect.gen(function* () {
+          const context = yield* requireSession(threadId);
+          const next = yield* context.runtime.getInputQueue.pipe(
+            Effect.mapError((error) =>
+              runtimeOperationError(threadId, "session/get-input-queue", error),
+            ),
+          );
+          yield* updateInputQueueProjection(context, next);
+          return context.inputQueue;
+        }),
+      );
+
+    const followUp: NonNullable<PrimeAgentAdapterShape["followUp"]> = (input) =>
+      Effect.uninterruptible(
+        withThreadMutationLock(
+          input.threadId,
+          Effect.gen(function* () {
+            const context = yield* requireSession(input.threadId);
+            const turn = context.activeTurn;
+            if (turn === undefined || context.session.status !== "running") {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "followUp",
+                reason: "busy",
+                issue: "A follow-up requires an active Prime Agent run.",
+              });
+            }
+            if (turn.command === "compact" || context.activeCompactionScope !== undefined) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "followUp",
+                reason: "busy",
+                issue: "Prime Agent cannot queue a follow-up during context compaction.",
+              });
+            }
+            const text = input.input?.trim() ?? "";
+            if (context.session.runtimeMode === "approval-required" && text.startsWith("/")) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "followUp",
+                issue:
+                  "Prime Agent slash commands are unavailable in supervised mode because they bypass tool approvals.",
+              });
+            }
+            const images = [];
+            for (const attachment of input.attachments ?? []) {
+              const attachmentPath = resolveAttachmentPath({
+                attachmentsDir: serverConfig.attachmentsDir,
+                attachment,
+              });
+              if (attachmentPath === null) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "session/follow-up",
+                  detail: `Invalid attachment id '${attachment.id}'.`,
+                });
+              }
+              const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "session/follow-up",
+                      detail: "Failed to read a follow-up attachment.",
+                      cause,
+                    }),
+                ),
+              );
+              images.push({
+                type: "image" as const,
+                data: Buffer.from(bytes).toString("base64"),
+                mimeType: attachment.mimeType,
+              });
+            }
+            if (text.length === 0 && images.length === 0) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "followUp",
+                reason: "invalid-input",
+                issue: "Follow-up requires non-empty text or attachments.",
+              });
+            }
+
+            const before = context.inputQueue;
+            const admission = yield* context.runtime.followUp({ text, images }).pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(input.threadId, "session/follow-up", error),
+              ),
+              Effect.exit,
+            );
+            const reconciled = yield* context.runtime.getInputQueue.pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(input.threadId, "session/get-input-queue", error),
+              ),
+              Effect.exit,
+            );
+            if (Exit.isSuccess(admission)) {
+              const next = Exit.isSuccess(reconciled)
+                ? reconciled.value
+                : {
+                    steeringCount: before.steeringCount,
+                    followUpCount: Math.min(
+                      PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
+                      before.followUpCount + 1,
+                    ),
+                  };
+              yield* updateInputQueueProjection(context, next);
+              turn.queuedInputCount = Math.max(1, next.steeringCount + next.followUpCount);
+              return context.inputQueue;
+            }
+            if (Exit.isSuccess(reconciled)) {
+              yield* updateInputQueueProjection(context, reconciled.value);
+            }
+            yield* stopSessionInternal(
+              context,
+              "Prime Agent session closed after follow-up admission could not be reconciled safely.",
+            ).pipe(Effect.ignore);
+            return yield* Effect.failCause(admission.cause);
+          }),
+        ),
+      );
+
+    const clearSessionInputQueue: NonNullable<PrimeAgentAdapterShape["clearSessionInputQueue"]> = (
+      threadId,
+    ) =>
+      Effect.uninterruptible(
+        withThreadMutationLock(
+          threadId,
+          Effect.gen(function* () {
+            const context = yield* requireSession(threadId);
+            context.inputQueueClearPending = true;
+            const applyStatus = (status: {
+              readonly queue: SessionInputQueueUpdatedPayload;
+              readonly activeAction: boolean;
+              readonly isStreaming: boolean;
+            }) =>
+              Effect.gen(function* () {
+                context.nativeQueueActionActive = status.activeAction;
+                context.nativeRunActive = status.isStreaming;
+                yield* updateInputQueueProjection(context, status.queue);
+                const turn = context.activeTurn;
+                if (turn === undefined) {
+                  context.inputQueueClearPending = false;
+                  return;
+                }
+                turn.queuedInputCount = status.queue.steeringCount + status.queue.followUpCount;
+                if (
+                  turn.awaitingQueuedRun &&
+                  turn.queuedInputCount === 0 &&
+                  !status.activeAction &&
+                  !status.isStreaming
+                ) {
+                  context.inputQueueClearPending = false;
+                  const settled = yield* settleActiveTurnLocked(context, turn, {
+                    state: "completed",
+                    event: { _tag: "RunCompleted", messages: turn.completedRunMessages },
+                  });
+                  if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+                } else if (status.activeAction || status.isStreaming) {
+                  context.inputQueueClearPending = false;
+                }
+              });
+
+            const cleared = yield* context.runtime.clearInputQueue.pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/clear-input-queue", error),
+              ),
+              Effect.exit,
+            );
+            if (Exit.isSuccess(cleared)) {
+              yield* applyStatus(cleared.value);
+              return context.inputQueue;
+            }
+            const reconciled = yield* context.runtime.getInputQueueStatus.pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/get-input-queue", error),
+              ),
+              Effect.exit,
+            );
+            if (Exit.isSuccess(reconciled)) {
+              yield* applyStatus(reconciled.value);
+            } else {
+              context.inputQueueClearPending = false;
+              yield* stopSessionInternal(
+                context,
+                "Prime Agent session closed after its input queue could not be reconciled safely.",
+              ).pipe(Effect.ignore);
+            }
+            return yield* Effect.failCause(cleared.cause);
+          }),
+        ),
+      );
+
     const reloadSessionResources: NonNullable<PrimeAgentAdapterShape["reloadSessionResources"]> = (
       threadId,
     ) =>
@@ -2437,6 +2747,9 @@ export function makePrimeAgentDaemonAdapter(
       reloadSessionResources,
       getSessionAgentDepth,
       setSessionAgentDepth,
+      followUp,
+      getSessionInputQueue,
+      clearSessionInputQueue,
       readThread,
       rollbackThread,
       stopSession,

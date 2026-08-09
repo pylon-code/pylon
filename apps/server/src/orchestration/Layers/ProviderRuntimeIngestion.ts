@@ -486,6 +486,30 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "session.input-queue.updated": {
+      return [
+        {
+          id: EventId.make(
+            `session-input-queue:${event.providerInstanceId ?? event.provider}:${event.threadId}`,
+          ),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "session.input-queue.updated",
+          summary: "Session input queue updated",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId === undefined
+              ? {}
+              : { providerInstanceId: event.providerInstanceId }),
+            steeringCount: event.payload.steeringCount,
+            followUpCount: event.payload.followUpCount,
+          },
+          turnId: null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "session.resources.updated": {
       return [
         {

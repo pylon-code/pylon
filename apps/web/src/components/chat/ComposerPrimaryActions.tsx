@@ -17,6 +17,8 @@ interface ComposerPrimaryActionsProps {
   compact: boolean;
   pendingAction: PendingActionState | null;
   isRunning: boolean;
+  canQueueFollowUp: boolean;
+  onQueueFollowUp: () => void;
   showPlanFollowUpPrompt: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
@@ -57,6 +59,8 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
   pendingAction,
   isRunning,
+  canQueueFollowUp,
+  onQueueFollowUp,
   showPlanFollowUpPrompt,
   promptHasText,
   isSendBusy,
@@ -148,7 +152,43 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   }
 
   if (isRunning) {
-    return renderStopGenerationButton(false);
+    return (
+      <div className="flex items-center justify-end gap-2">
+        {renderStopGenerationButton(false)}
+        {canQueueFollowUp ? (
+          <button
+            type="button"
+            className={cn(
+              "relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-message-action text-message-action-foreground shadow-xs transition-all duration-150 enabled:cursor-pointer enabled:shadow-message-action/24 enabled:inset-shadow-[0_1px_--theme(--color-white/16%)] hover:scale-105 hover:bg-message-action-hover active:shadow-none disabled:pointer-events-none disabled:opacity-30 sm:h-8 sm:w-8",
+            )}
+            {...pointerFocusProps}
+            disabled={
+              isSendBusy ||
+              isSendDisabled ||
+              isConnecting ||
+              isEnvironmentUnavailable ||
+              !hasSendableContent
+            }
+            onClick={onQueueFollowUp}
+            aria-label={isSendBusy ? "Queueing follow-up" : "Queue follow-up"}
+          >
+            {isSendBusy ? (
+              <Spinner className="size-3.5" aria-hidden="true" />
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <path
+                  d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
+          </button>
+        ) : null}
+      </div>
+    );
   }
 
   if (showPlanFollowUpPrompt) {

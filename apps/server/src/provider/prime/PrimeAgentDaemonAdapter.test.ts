@@ -92,6 +92,7 @@ function initialSnapshot(): Extract<PrimeDaemonEvent, { readonly _tag: "SessionR
       serviceTier: null,
       messageCount: 0,
       autoCompactionEnabled: true,
+      inputQueue: { steeringCount: 0, followUpCount: 0, activeAction: false },
     },
     messages: [],
     children: [],
@@ -110,6 +111,8 @@ interface FakeCaptures {
     }>;
     readonly signal: AbortSignal | undefined;
   }>;
+  readonly followUps: Array<{ readonly text: string; readonly imageCount: number }>;
+  followUpFailure: boolean;
   readonly steers: Array<{
     readonly text: string;
     readonly images: ReadonlyArray<{
@@ -148,6 +151,7 @@ interface FakeCaptures {
   agentDepthReadFailure: boolean;
   agentDepthObserved: Queue.Queue<void> | undefined;
   agentDepthRelease: Deferred.Deferred<void> | undefined;
+  inputQueue: { steeringCount: number; followUpCount: number };
   sessionStats: PrimeAgentDaemonSessionStats;
   promptObserved: Queue.Queue<void> | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
@@ -157,6 +161,8 @@ function makeCaptures(): FakeCaptures {
   return {
     runtimeInputs: [],
     prompts: [],
+    followUps: [],
+    followUpFailure: false,
     steers: [],
     models: [],
     thinkingLevels: [],
@@ -185,6 +191,7 @@ function makeCaptures(): FakeCaptures {
     agentDepthReadFailure: false,
     agentDepthObserved: undefined,
     agentDepthRelease: undefined,
+    inputQueue: { steeringCount: 0, followUpCount: 0 },
     sessionStats: {
       contextUsage: { usedTokens: 320, maxTokens: 200_000 },
     },
@@ -213,6 +220,7 @@ function fakeRuntimeFactory(
         activeSessionId: "native-active-secret",
         initialSnapshot: initialSnapshot(),
         initialResources: { available: true, skills: [], prompts: [], commands: [] },
+        initialInputQueue: captures.inputQueue,
         initialAgentDepth:
           input.requiredExtension === undefined
             ? captures.agentDepth
@@ -299,7 +307,35 @@ function fakeRuntimeFactory(
             captures.order.push("steer");
             captures.steers.push({ text: steer.text, images: steer.images ?? [] });
           }),
-        followUp: () => Effect.void,
+        followUp: (followUp) =>
+          captures.followUpFailure
+            ? Effect.fail(
+                new PrimeAgentDaemonSessionRuntimeError({
+                  operation: "follow-up",
+                  reason: "request-failed",
+                  detail: "follow-up failed",
+                }),
+              )
+            : Effect.sync(() => {
+                captures.followUps.push({
+                  text: followUp.text,
+                  imageCount: followUp.images?.length ?? 0,
+                });
+                captures.inputQueue = {
+                  ...captures.inputQueue,
+                  followUpCount: captures.inputQueue.followUpCount + 1,
+                };
+              }),
+        getInputQueue: Effect.sync(() => captures.inputQueue),
+        getInputQueueStatus: Effect.sync(() => ({
+          queue: captures.inputQueue,
+          activeAction: false,
+          isStreaming: false,
+        })),
+        clearInputQueue: Effect.sync(() => {
+          captures.inputQueue = { steeringCount: 0, followUpCount: 0 };
+          return { queue: captures.inputQueue, activeAction: false, isStreaming: false };
+        }),
         abort: Effect.sync(() => {
           captures.order.push("abort");
           expect(captures.prompts.at(-1)?.signal?.aborted).toBe(true);
@@ -534,6 +570,204 @@ describe("PrimeAgentDaemonAdapter", () => {
           operation: "setSessionAgentDepth",
         });
         expect(captures.agentDepthCalls).toEqual([3]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "publishes count-only queue state and clears it without interrupting the active run",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          const initial = yield* awaitObservedType(
+            subscription.observed,
+            "session.input-queue.updated",
+          );
+          expect(initial.payload).toEqual({ steeringCount: 0, followUpCount: 0 });
+
+          const running = yield* adapter
+            .sendTurn({ threadId, input: "base run" })
+            .pipe(Effect.forkChild);
+          yield* Queue.take(captures.promptObserved!);
+          const queued = yield* adapter.followUp!({ threadId, input: "private follow-up" });
+          expect(queued).toEqual({ steeringCount: 0, followUpCount: 1 });
+          const queuedEvent = yield* awaitObservedType(
+            subscription.observed,
+            "session.input-queue.updated",
+          );
+          expect(queuedEvent.payload).toEqual(queued);
+          expect(encodeUnknownJson(queuedEvent)).not.toContain("private follow-up");
+          expect(captures.followUps).toEqual([{ text: "private follow-up", imageCount: 0 }]);
+          yield* offer(captures, {
+            _tag: "QueueChanged",
+            queuedCount: 1,
+            steeringCount: 0,
+            followUpCount: 1,
+          });
+
+          const cleared = yield* adapter.clearSessionInputQueue!(threadId);
+          expect(cleared).toEqual({ steeringCount: 0, followUpCount: 0 });
+          const clearedEvent = yield* awaitObservedType(
+            subscription.observed,
+            "session.input-queue.updated",
+          );
+          expect(clearedEvent.payload).toEqual(cleared);
+          expect(captures.order).not.toContain("abort-clear");
+          yield* offer(captures, {
+            _tag: "QueueChanged",
+            queuedCount: 0,
+            steeringCount: 0,
+            followUpCount: 0,
+          });
+          yield* offer(captures, { _tag: "RunCompleted", messages: [] });
+          yield* Fiber.join(running);
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails closed when a rejected follow-up cannot be attributed from queue counts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "base run" })
+          .pipe(Effect.forkChild);
+        yield* Queue.take(captures.promptObserved!);
+
+        // The native count is ahead of Pylon's projection because another producer queued work.
+        captures.inputQueue = { steeringCount: 0, followUpCount: 1 };
+        captures.followUpFailure = true;
+        const error = yield* adapter.followUp!({
+          threadId,
+          input: "must not be falsely attributed",
+        }).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterRequestError",
+          method: "session/follow-up",
+        });
+        expect(captures.disposeCount).toBe(1);
+        expect(subscription.events).toContainEqual(
+          expect.objectContaining({
+            type: "session.input-queue.updated",
+            payload: { steeringCount: 0, followUpCount: 0 },
+          }),
+        );
+        yield* Fiber.join(running);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "settles completed when an explicit clear removes a follow-up between native runs",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+
+          const running = yield* adapter
+            .sendTurn({ threadId, input: "base run" })
+            .pipe(Effect.forkChild);
+          yield* Queue.take(captures.promptObserved!);
+          yield* adapter.followUp!({ threadId, input: "queued next run" });
+          yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+          yield* offer(captures, {
+            _tag: "QueueChanged",
+            queuedCount: 1,
+            steeringCount: 0,
+            followUpCount: 1,
+          });
+          const firstRunMessage = assistantMessage("base complete");
+          yield* offer(captures, { _tag: "RunCompleted", messages: [firstRunMessage] });
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: { id: "queue-clear-barrier", method: "notify", message: "   " },
+          });
+          yield* awaitObservedType(subscription.observed, "runtime.warning");
+
+          yield* adapter.clearSessionInputQueue!(threadId);
+          yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+          const completed = yield* awaitObservedType(subscription.observed, "turn.completed");
+          expect(completed.payload).toMatchObject({ state: "completed" });
+          expect(completed.payload).not.toHaveProperty("errorMessage");
+          yield* Fiber.join(running);
+          expect(captures.order).not.toContain("abort-clear");
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails closed when resync loses an observed queued action before RunStarted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "base run" })
+          .pipe(Effect.forkChild);
+        yield* Queue.take(captures.promptObserved!);
+        yield* adapter.followUp!({ threadId, input: "queued next run" });
+        yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 1,
+          steeringCount: 0,
+          followUpCount: 1,
+        });
+        yield* offer(captures, {
+          _tag: "RunCompleted",
+          messages: [assistantMessage("base complete")],
+        });
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 0,
+          steeringCount: 0,
+          followUpCount: 0,
+          active: { kind: "turn", phase: "preparing" },
+        });
+        const resynced = initialSnapshot();
+        yield* offer(captures, {
+          ...resynced,
+          lastEventSequence: 2,
+        });
+
+        const completed = yield* awaitObservedType(subscription.observed, "turn.completed");
+        expect(completed.payload).toMatchObject({
+          state: "failed",
+          errorMessage: "Prime Agent queued input ended before a native run started.",
+        });
+        yield* Fiber.join(running);
+        yield* awaitObservedType(subscription.observed, "session.exited");
+        expect(yield* adapter.hasSession(threadId)).toBe(false);
+        yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),
   );
@@ -1232,13 +1466,14 @@ describe("PrimeAgentDaemonAdapter", () => {
           "session.started",
           "session.resources.updated",
           "session.agent-depth.updated",
+          "session.input-queue.updated",
           "session.state.changed",
           "thread.started",
         ]);
         expect(encodeUnknownJson(subscription.events)).not.toContain("native-active-secret");
         expect(encodeUnknownJson(subscription.events)).not.toContain("native-session-secret");
         expect(encodeUnknownJson(subscription.events)).not.toContain("/native/secret/path");
-        expect(new Set(subscription.events.map((event) => event.eventId)).size).toBe(5);
+        expect(new Set(subscription.events.map((event) => event.eventId)).size).toBe(6);
         expect(subscription.events.every((event) => event.createdAt.length > 0)).toBe(true);
         const identitySource = yield* Effect.promise(() =>
           NodeFSP.readFile(
@@ -1804,8 +2039,8 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* offer(captures, {
           _tag: "QueueChanged",
           queuedCount: 0,
-          steering: [],
-          followUps: [],
+          steeringCount: 0,
+          followUpCount: 0,
         });
         yield* offer(captures, {
           _tag: "RetryStarted",
@@ -1870,15 +2105,15 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* offer(captures, {
           _tag: "QueueChanged",
           queuedCount: 1,
-          steering: ["queued two"],
-          followUps: [],
+          steeringCount: 1,
+          followUpCount: 0,
           active: { kind: "turn", phase: "preparing" },
         });
         yield* offer(captures, {
           _tag: "QueueChanged",
           queuedCount: 1,
-          steering: ["queued two"],
-          followUps: [],
+          steeringCount: 1,
+          followUpCount: 0,
         });
         yield* Fiber.join(running);
 
@@ -1921,15 +2156,15 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* offer(captures, {
           _tag: "QueueChanged",
           queuedCount: 0,
-          steering: [],
-          followUps: [],
+          steeringCount: 0,
+          followUpCount: 0,
           active: { kind: "turn", phase: "preparing" },
         });
         yield* offer(captures, {
           _tag: "QueueChanged",
           queuedCount: 0,
-          steering: [],
-          followUps: [],
+          steeringCount: 0,
+          followUpCount: 0,
         });
 
         yield* Fiber.join(running);

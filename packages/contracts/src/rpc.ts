@@ -67,15 +67,19 @@ import {
   OrchestrationGetWorkflowScriptError,
 } from "./orchestration.ts";
 import {
+  ProviderClearSessionInputQueueInput,
   ProviderGetSessionAgentDepthInput,
+  ProviderGetSessionInputQueueInput,
   ProviderReloadSessionResourcesInput,
   ProviderSessionAgentDepthError,
+  ProviderSessionInputQueueError,
   ProviderSessionResourcesReloadError,
   ProviderSetSessionAgentDepthInput,
 } from "./provider.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   SessionAgentDepthUpdatedPayload,
+  SessionInputQueueUpdatedPayload,
   SessionResourcesUpdatedPayload,
 } from "./providerRuntime.ts";
 import {
@@ -244,6 +248,8 @@ export const WS_METHODS = {
   providerReloadSessionResources: "provider.reloadSessionResources",
   providerGetSessionAgentDepth: "provider.getSessionAgentDepth",
   providerSetSessionAgentDepth: "provider.setSessionAgentDepth",
+  providerGetSessionInputQueue: "provider.getSessionInputQueue",
+  providerClearSessionInputQueue: "provider.clearSessionInputQueue",
 
   // Server meta
   serverProbe: "server.probe",
@@ -350,6 +356,21 @@ export const WsProviderSetSessionAgentDepthRpc = Rpc.make(WS_METHODS.providerSet
   success: SessionAgentDepthUpdatedPayload,
   error: Schema.Union([ProviderSessionAgentDepthError, EnvironmentAuthorizationError]),
 });
+
+export const WsProviderGetSessionInputQueueRpc = Rpc.make(WS_METHODS.providerGetSessionInputQueue, {
+  payload: ProviderGetSessionInputQueueInput,
+  success: SessionInputQueueUpdatedPayload,
+  error: Schema.Union([ProviderSessionInputQueueError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderClearSessionInputQueueRpc = Rpc.make(
+  WS_METHODS.providerClearSessionInputQueue,
+  {
+    payload: ProviderClearSessionInputQueueInput,
+    success: SessionInputQueueUpdatedPayload,
+    error: Schema.Union([ProviderSessionInputQueueError, EnvironmentAuthorizationError]),
+  },
+);
 
 export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
   payload: ServerProviderUpdateInput,
@@ -884,6 +905,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderReloadSessionResourcesRpc,
   WsProviderGetSessionAgentDepthRpc,
   WsProviderSetSessionAgentDepthRpc,
+  WsProviderGetSessionInputQueueRpc,
+  WsProviderClearSessionInputQueueRpc,
   WsServerUpdateProviderRpc,
   WsServerStartProviderLoginRpc,
   WsServerSubmitProviderLoginCodeRpc,

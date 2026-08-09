@@ -810,6 +810,7 @@ function ThreadRouteContent(
           contextWindow={composer.selectedThreadContextWindow}
           sessionResources={composer.selectedThreadResources}
           sessionAgentDepth={composer.selectedThreadAgentDepth}
+          sessionInputQueue={composer.selectedThreadInputQueue}
           activeWorkStartedAt={composer.activeWorkStartedAt}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
@@ -831,7 +832,7 @@ function ThreadRouteContent(
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
           threadCwd={selectedThreadCwd}
-          selectedThreadQueueCount={composer.selectedThreadQueueCount}
+          localOutboxCount={composer.selectedThreadQueueCount}
           layoutVariant={layout.variant}
           usesAutomaticContentInsets={usesNativeHeaderGlass}
           onOpenConnectionEditor={handleOpenConnectionEditor}
@@ -844,6 +845,8 @@ function ThreadRouteContent(
           onReloadSessionResources={handleReloadSessionResources}
           onSetSessionAgentDepth={handleSetSessionAgentDepth}
           onSendMessage={composer.onSendMessage}
+          onQueueFollowUp={composer.onQueueFollowUp}
+          onClearSessionInputQueue={composer.onClearSessionInputQueue}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
           onUpdateThreadRuntimeMode={composer.onUpdateRuntimeMode}

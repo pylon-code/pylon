@@ -665,6 +665,7 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
           serviceTier: null,
           messageCount: 1,
           autoCompactionEnabled: true,
+          inputQueue: { steeringCount: 0, followUpCount: 0, activeAction: false },
         },
         messages: [assistant()],
         children: [],

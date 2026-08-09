@@ -163,6 +163,8 @@ export function foldSessionInteractionActivities(
         break;
       }
       case "session.resources.updated":
+      case "session.agent-depth.updated":
+      case "session.input-queue.updated":
         break;
     }
   }

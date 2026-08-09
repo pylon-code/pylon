@@ -314,6 +314,8 @@ function deriveWorkLogEntries(
       activity.kind === "context-window.updated" ||
       activity.kind === "context-window.cleared" ||
       activity.kind === "session.resources.updated" ||
+      activity.kind === "session.agent-depth.updated" ||
+      activity.kind === "session.input-queue.updated" ||
       activity.kind === "turn.cost"
     ) {
       continue;

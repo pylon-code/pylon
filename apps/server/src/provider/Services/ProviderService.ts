@@ -12,12 +12,16 @@
  * @module ProviderService
  */
 import type {
+  ProviderClearSessionInputQueueInput,
+  ProviderFollowUpInput,
   ProviderGetSessionAgentDepthInput,
+  ProviderGetSessionInputQueueInput,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderReloadSessionResourcesInput,
   ProviderSetSessionAgentDepthInput,
   SessionAgentDepthUpdatedPayload,
+  SessionInputQueueUpdatedPayload,
   SessionResourcesUpdatedPayload,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -99,6 +103,18 @@ export interface ProviderServiceShape {
   readonly setSessionAgentDepth: (
     input: ProviderSetSessionAgentDepthInput,
   ) => Effect.Effect<SessionAgentDepthUpdatedPayload, ProviderServiceError>;
+
+  readonly followUp: (
+    input: ProviderFollowUpInput,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
+
+  readonly getSessionInputQueue: (
+    input: ProviderGetSessionInputQueueInput,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
+
+  readonly clearSessionInputQueue: (
+    input: ProviderClearSessionInputQueueInput,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
 
   /**
    * Stop a provider session.
