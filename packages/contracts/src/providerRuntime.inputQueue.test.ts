@@ -22,13 +22,20 @@ describe("session.input-queue.updated", () => {
       payload: {
         steeringCount: 1,
         followUpCount: 2,
+        steeringMode: "all-at-once",
+        followUpMode: "one-at-a-time",
         steering: ["private steering text"],
         followUps: ["private follow-up text"],
       },
     });
     assert.equal(decoded.type, "session.input-queue.updated");
     if (decoded.type !== "session.input-queue.updated") return;
-    assert.deepStrictEqual(decoded.payload, { steeringCount: 1, followUpCount: 2 });
+    assert.deepStrictEqual(decoded.payload, {
+      steeringCount: 1,
+      followUpCount: 2,
+      steeringMode: "all-at-once",
+      followUpMode: "one-at-a-time",
+    });
   });
 
   it("rejects oversized counts and raw native envelopes", () => {
@@ -38,6 +45,17 @@ describe("session.input-queue.updated", () => {
         followUpCount: 0,
       }),
     );
+    assert.throws(() =>
+      decodePayload({
+        steeringCount: 0,
+        followUpCount: 0,
+        steeringMode: "private-native-mode",
+      }),
+    );
+    assert.deepStrictEqual(decodePayload({ steeringCount: 0, followUpCount: 0 }), {
+      steeringCount: 0,
+      followUpCount: 0,
+    });
     assert.throws(() =>
       decodeEvent({
         type: "session.input-queue.updated",

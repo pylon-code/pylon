@@ -9,6 +9,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       runtime: "daemon",
       sessionUi: true,
       inputQueue: true,
+      inputQueueModes: true,
       agentCancel: true,
     });
 
@@ -26,7 +27,13 @@ describe("PrimeAgentFeatureCapabilities", () => {
       support: "read-write",
       operations: ["commands", "reload"],
     });
-    expect(capabilities.inputQueue?.operations).toEqual(["observe", "follow-up", "steer", "clear"]);
+    expect(capabilities.inputQueue?.operations).toEqual([
+      "observe",
+      "follow-up",
+      "steer",
+      "clear",
+      "set-modes",
+    ]);
     expect(capabilities.context).toMatchObject({
       support: "read-only",
       operations: ["observe"],
@@ -51,6 +58,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       runtime: "daemon",
       sessionUi: true,
       inputQueue: false,
+      inputQueueModes: false,
       agentCancel: false,
     });
     expect(capabilities.inputQueue).toMatchObject({
@@ -64,6 +72,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       runtime: "acp",
       sessionUi: false,
       inputQueue: false,
+      inputQueueModes: false,
       agentCancel: false,
     });
 

@@ -340,6 +340,7 @@ describe("ProviderCommandReactor", () => {
       followUp: () => unsupported(),
       getSessionInputQueue: () => unsupported(),
       clearSessionInputQueue: () => unsupported(),
+      setSessionInputQueueMode: () => unsupported(),
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       listSessions: () => Effect.succeed(runtimeSessions),
       getCapabilities: (_provider) =>

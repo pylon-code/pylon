@@ -27,10 +27,12 @@ import {
 } from "@t3tools/client-runtime/state/session-agent-depth";
 import {
   deriveLatestSessionInputQueue,
+  hasSessionInputQueueModes,
   sessionInputQueueCount,
   supportsSessionInputQueue,
   supportsSessionInputQueueClear,
   supportsSessionInputQueueFollowUp,
+  supportsSessionInputQueueSetModes,
 } from "@t3tools/client-runtime/state/session-input-queue";
 import {
   deriveLatestSessionResources,
@@ -122,6 +124,7 @@ import {
   renderProviderTraitsPicker,
 } from "./composerProviderState";
 import { ContextWindowMeter } from "./ContextWindowMeter";
+import { SessionInputQueueControl } from "./SessionInputQueueControl";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../pierre-icons";
 import { cn, randomUUID } from "~/lib/utils";
@@ -647,6 +650,10 @@ export interface ChatComposerProps {
   onSend: (e?: { preventDefault: () => void }) => void;
   onQueueFollowUp: () => void;
   onClearSessionInputQueue: () => Promise<void>;
+  onSetSessionInputQueueMode: (
+    queue: "steering" | "follow-up",
+    mode: "all-at-once" | "one-at-a-time",
+  ) => Promise<void>;
   onInterrupt: () => void;
   onReloadSessionResources: () => Promise<void>;
   onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
@@ -736,6 +743,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onSend,
     onQueueFollowUp,
     onClearSessionInputQueue,
+    onSetSessionInputQueueMode,
     onInterrupt,
     onReloadSessionResources,
     onSetSessionAgentDepth,
@@ -989,10 +997,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [activeSessionInstanceId, activeThreadActivities],
   );
   const sessionInputCount = sessionInputQueueCount(sessionInputQueue);
+  const sessionInputQueueScopeKey = `${environmentId}:${activeThreadId ?? "draft"}:${activeSessionInstanceId ?? "none"}`;
   const showSessionInputQueue =
     sessionInputQueue !== null &&
     sessionInputCount > 0 &&
     supportsSessionInputQueue(activeSessionProviderStatus);
+  const showSessionInputQueueModes =
+    hasSessionInputQueueModes(sessionInputQueue) &&
+    supportsSessionInputQueueSetModes(activeSessionProviderStatus);
   const canQueueSessionFollowUp =
     activeThread?.session?.status === "running" &&
     phase === "running" &&
@@ -1004,17 +1016,62 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThread.session.activeTurnId != null &&
     !isConnecting &&
     environmentUnavailable === null;
-  const [isClearingSessionInputQueue, setIsClearingSessionInputQueue] = useState(false);
+  const [clearingSessionInputQueueScope, setClearingSessionInputQueueScope] = useState<
+    string | null
+  >(null);
+  const isClearingSessionInputQueue = clearingSessionInputQueueScope === sessionInputQueueScopeKey;
   const clearSessionInputQueue = useCallback(async () => {
     if (!canClearSessionInputQueue || isClearingSessionInputQueue) return;
     if (!globalThis.confirm("Clear all pending inputs for this provider session?")) return;
-    setIsClearingSessionInputQueue(true);
+    const scopeKey = sessionInputQueueScopeKey;
+    setClearingSessionInputQueueScope(scopeKey);
     try {
       await onClearSessionInputQueue();
     } finally {
-      setIsClearingSessionInputQueue(false);
+      setClearingSessionInputQueueScope((current) => (current === scopeKey ? null : current));
     }
-  }, [canClearSessionInputQueue, isClearingSessionInputQueue, onClearSessionInputQueue]);
+  }, [
+    canClearSessionInputQueue,
+    isClearingSessionInputQueue,
+    onClearSessionInputQueue,
+    sessionInputQueueScopeKey,
+  ]);
+  const [settingSessionInputQueueMode, setSettingSessionInputQueueMode] = useState<{
+    readonly scopeKey: string;
+    readonly queue: "steering" | "follow-up";
+  } | null>(null);
+  const isSettingSessionInputQueueMode =
+    settingSessionInputQueueMode?.scopeKey === sessionInputQueueScopeKey;
+  const canSetSessionInputQueueModes =
+    showSessionInputQueueModes &&
+    (activeThread?.session?.status === "ready" || activeThread?.session?.status === "running") &&
+    !isConnecting &&
+    environmentUnavailable === null &&
+    !isSettingSessionInputQueueMode;
+  const setSessionInputQueueMode = useCallback(
+    async (queue: "steering" | "follow-up", value: string | null) => {
+      if (!canSetSessionInputQueueModes || (value !== "all-at-once" && value !== "one-at-a-time")) {
+        return;
+      }
+      const currentMode =
+        queue === "steering" ? sessionInputQueue?.steeringMode : sessionInputQueue?.followUpMode;
+      if (value === currentMode) return;
+      const mutation = { scopeKey: sessionInputQueueScopeKey, queue } as const;
+      setSettingSessionInputQueueMode(mutation);
+      try {
+        await onSetSessionInputQueueMode(queue, value);
+      } finally {
+        setSettingSessionInputQueueMode((current) => (current === mutation ? null : current));
+      }
+    },
+    [
+      canSetSessionInputQueueModes,
+      onSetSessionInputQueueMode,
+      sessionInputQueue?.followUpMode,
+      sessionInputQueue?.steeringMode,
+      sessionInputQueueScopeKey,
+    ],
+  );
   const sessionAgentDepth = useMemo(
     () =>
       activeSessionInstanceId === undefined
@@ -3520,7 +3577,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     </TooltipPopup>
                   </Tooltip>
                 ) : null}
-                {showSessionInputQueue ? (
+                {showSessionInputQueueModes && sessionInputQueue ? (
+                  <SessionInputQueueControl
+                    snapshot={sessionInputQueue}
+                    count={sessionInputCount}
+                    canSetModes={canSetSessionInputQueueModes}
+                    isSettingMode={isSettingSessionInputQueueMode}
+                    canClear={canClearSessionInputQueue}
+                    isClearing={isClearingSessionInputQueue}
+                    onSetMode={(queue, value) => void setSessionInputQueueMode(queue, value)}
+                    onClear={() => void clearSessionInputQueue()}
+                  />
+                ) : showSessionInputQueue ? (
                   <Tooltip>
                     <TooltipTrigger
                       render={

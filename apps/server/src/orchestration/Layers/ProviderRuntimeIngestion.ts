@@ -503,6 +503,12 @@ export function runtimeEventToActivities(
               : { providerInstanceId: event.providerInstanceId }),
             steeringCount: event.payload.steeringCount,
             followUpCount: event.payload.followUpCount,
+            ...(event.payload.steeringMode === undefined
+              ? {}
+              : { steeringMode: event.payload.steeringMode }),
+            ...(event.payload.followUpMode === undefined
+              ? {}
+              : { followUpMode: event.payload.followUpMode }),
           },
           turnId: null,
           ...maybeSequence,

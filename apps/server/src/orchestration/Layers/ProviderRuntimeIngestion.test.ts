@@ -120,6 +120,7 @@ function createProviderServiceHarness() {
     followUp: () => unsupported(),
     getSessionInputQueue: () => unsupported(),
     clearSessionInputQueue: () => unsupported(),
+    setSessionInputQueueMode: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
@@ -236,7 +237,12 @@ it("maps session input queue counts to one stable privacy-safe activity", () => 
     providerInstanceId: ProviderInstanceId.make("prime-work"),
     threadId: ThreadId.make("thread-1"),
     createdAt: "2026-08-09T00:00:00.000Z",
-    payload: { steeringCount: 2, followUpCount: 3 },
+    payload: {
+      steeringCount: 2,
+      followUpCount: 3,
+      steeringMode: "all-at-once",
+      followUpMode: "one-at-a-time",
+    },
   });
   expect(activities).toEqual([
     expect.objectContaining({
@@ -247,10 +253,13 @@ it("maps session input queue counts to one stable privacy-safe activity", () => 
         providerInstanceId: "prime-work",
         steeringCount: 2,
         followUpCount: 3,
+        steeringMode: "all-at-once",
+        followUpMode: "one-at-a-time",
       },
     }),
   ]);
   expect(JSON.stringify(activities)).not.toContain("followUps");
+  expect(JSON.stringify(activities)).not.toContain("queued prompt");
 });
 
 describe("ProviderRuntimeIngestion", () => {

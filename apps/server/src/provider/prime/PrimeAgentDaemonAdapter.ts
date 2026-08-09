@@ -29,6 +29,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -492,13 +493,27 @@ export function makePrimeAgentDaemonAdapter(
     const updateInputQueueProjection = (
       context: PrimeAgentDaemonSessionContext,
       next: SessionInputQueueUpdatedPayload,
+      options?: { readonly preserveModes?: boolean },
     ) =>
       Effect.gen(function* () {
+        const preserveModes = options?.preserveModes ?? true;
+        const steeringMode =
+          next.steeringMode ?? (preserveModes ? context.inputQueue.steeringMode : undefined);
+        const followUpMode =
+          next.followUpMode ?? (preserveModes ? context.inputQueue.followUpMode : undefined);
+        const resolved = {
+          steeringCount: next.steeringCount,
+          followUpCount: next.followUpCount,
+          ...(steeringMode === undefined ? {} : { steeringMode }),
+          ...(followUpMode === undefined ? {} : { followUpMode }),
+        } satisfies SessionInputQueueUpdatedPayload;
         const changed =
-          context.inputQueue.steeringCount !== next.steeringCount ||
-          context.inputQueue.followUpCount !== next.followUpCount;
-        context.inputQueue = next;
-        if (changed) yield* publishSessionInputQueue(context.threadId, next);
+          context.inputQueue.steeringCount !== resolved.steeringCount ||
+          context.inputQueue.followUpCount !== resolved.followUpCount ||
+          context.inputQueue.steeringMode !== resolved.steeringMode ||
+          context.inputQueue.followUpMode !== resolved.followUpMode;
+        context.inputQueue = resolved;
+        if (changed) yield* publishSessionInputQueue(context.threadId, resolved);
       });
 
     const isAgentDepthSettable = (context: PrimeAgentDaemonSessionContext): boolean =>
@@ -1269,7 +1284,11 @@ export function makePrimeAgentDaemonAdapter(
               }
               context.inputQueueClearPending = false;
               context.nativeQueueActionActive = false;
-              yield* updateInputQueueProjection(context, { steeringCount: 0, followUpCount: 0 });
+              yield* updateInputQueueProjection(
+                context,
+                { steeringCount: 0, followUpCount: 0 },
+                { preserveModes: false },
+              );
               const disposeExit = yield* context.runtime.dispose.pipe(Effect.exit);
               context.stopped = true;
               context.stopRequested = true;
@@ -1441,7 +1460,11 @@ export function makePrimeAgentDaemonAdapter(
 
         context.inputQueueClearPending = false;
         context.nativeQueueActionActive = false;
-        yield* updateInputQueueProjection(context, { steeringCount: 0, followUpCount: 0 });
+        yield* updateInputQueueProjection(
+          context,
+          { steeringCount: 0, followUpCount: 0 },
+          { preserveModes: false },
+        );
         const disposeExit = yield* context.runtime.dispose.pipe(Effect.exit);
         context.stopped = true;
         if (context.eventFiber !== undefined) yield* Fiber.interrupt(context.eventFiber);
@@ -2757,6 +2780,97 @@ export function makePrimeAgentDaemonAdapter(
         ),
       );
 
+    const setSessionInputQueueMode: NonNullable<
+      PrimeAgentAdapterShape["setSessionInputQueueMode"]
+    > = (input) =>
+      Effect.uninterruptible(
+        withThreadMutationLock(
+          input.threadId,
+          Effect.gen(function* () {
+            const context = yield* requireSession(input.threadId);
+            if (
+              !context.runtime.inputQueueModesAvailable ||
+              context.inputQueue.steeringMode === undefined ||
+              context.inputQueue.followUpMode === undefined
+            ) {
+              return yield* new ProviderAdapterUnsupportedOperationError({
+                provider: PROVIDER,
+                operation: "setSessionInputQueueMode",
+              });
+            }
+            if (context.session.status !== "ready" && context.session.status !== "running") {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "setSessionInputQueueMode",
+                issue: "Session input delivery cannot change while the session is reconnecting.",
+                reason: "busy",
+              });
+            }
+            const currentMode =
+              input.queue === "steering"
+                ? context.inputQueue.steeringMode
+                : context.inputQueue.followUpMode;
+            if (currentMode === input.mode) return context.inputQueue;
+
+            const outcome = yield* Effect.result(
+              context.runtime.setInputQueueMode({ queue: input.queue, mode: input.mode }),
+            );
+            if (Result.isFailure(outcome) && outcome.failure.reason === "request-timed-out") {
+              yield* stopSessionInternal(
+                context,
+                "Prime Agent session closed after an input delivery mode update timed out.",
+              ).pipe(Effect.ignore);
+              return yield* runtimeOperationError(
+                input.threadId,
+                "session/set-input-queue-mode",
+                outcome.failure,
+              );
+            }
+
+            const reconciled = yield* Effect.result(context.runtime.getInputQueueStatus);
+            if (Result.isFailure(reconciled)) {
+              yield* stopSessionInternal(
+                context,
+                "Prime Agent session closed after its input delivery modes could not be reconciled safely.",
+              ).pipe(Effect.ignore);
+              const error = Result.isFailure(outcome) ? outcome.failure : reconciled.failure;
+              return yield* runtimeOperationError(
+                input.threadId,
+                "session/set-input-queue-mode",
+                error,
+              );
+            }
+
+            context.nativeQueueActionActive = reconciled.success.activeAction;
+            context.nativeRunActive = reconciled.success.isStreaming;
+            yield* updateInputQueueProjection(context, reconciled.success.queue);
+            const authoritativeMode =
+              input.queue === "steering"
+                ? context.inputQueue.steeringMode
+                : context.inputQueue.followUpMode;
+            if (authoritativeMode === input.mode) return context.inputQueue;
+
+            if (Result.isFailure(outcome)) {
+              return yield* runtimeOperationError(
+                input.threadId,
+                "session/set-input-queue-mode",
+                outcome.failure,
+              );
+            }
+
+            yield* stopSessionInternal(
+              context,
+              "Prime Agent session closed after it did not confirm an input delivery mode update.",
+            ).pipe(Effect.ignore);
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/set-input-queue-mode",
+              detail: "Prime Agent did not confirm the requested input delivery mode.",
+            });
+          }),
+        ),
+      );
+
     const reloadSessionResources: NonNullable<PrimeAgentAdapterShape["reloadSessionResources"]> = (
       threadId,
     ) =>
@@ -2926,6 +3040,7 @@ export function makePrimeAgentDaemonAdapter(
       followUp,
       getSessionInputQueue,
       clearSessionInputQueue,
+      setSessionInputQueueMode,
       readThread,
       rollbackThread,
       stopSession,

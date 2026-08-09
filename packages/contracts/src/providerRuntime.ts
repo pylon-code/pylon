@@ -891,10 +891,16 @@ const SessionInputQueueCount = NonNegativeInt.check(
   Schema.isLessThanOrEqualTo(PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT),
 );
 
-/** Counts only: queued prompt contents stay private to the provider runtime. */
+export const SessionInputQueueDeliveryMode = Schema.Literals(["all-at-once", "one-at-a-time"]);
+export type SessionInputQueueDeliveryMode = typeof SessionInputQueueDeliveryMode.Type;
+
+/** Counts and delivery policy only: queued prompt contents stay private to the provider runtime. */
 export const SessionInputQueueUpdatedPayload = Schema.Struct({
   steeringCount: SessionInputQueueCount,
   followUpCount: SessionInputQueueCount,
+  // Optional so activities persisted before delivery-mode support remain decodable.
+  steeringMode: Schema.optional(SessionInputQueueDeliveryMode),
+  followUpMode: Schema.optional(SessionInputQueueDeliveryMode),
 });
 export type SessionInputQueueUpdatedPayload = typeof SessionInputQueueUpdatedPayload.Type;
 

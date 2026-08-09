@@ -78,6 +78,7 @@ import {
   ProviderSessionInputQueueError,
   ProviderSessionResourcesReloadError,
   ProviderSetSessionAgentDepthInput,
+  ProviderSetSessionInputQueueModeInput,
 } from "./provider.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
@@ -254,6 +255,7 @@ export const WS_METHODS = {
   providerSetSessionAgentDepth: "provider.setSessionAgentDepth",
   providerGetSessionInputQueue: "provider.getSessionInputQueue",
   providerClearSessionInputQueue: "provider.clearSessionInputQueue",
+  providerSetSessionInputQueueMode: "provider.setSessionInputQueueMode",
 
   // Server meta
   serverProbe: "server.probe",
@@ -377,6 +379,15 @@ export const WsProviderClearSessionInputQueueRpc = Rpc.make(
   WS_METHODS.providerClearSessionInputQueue,
   {
     payload: ProviderClearSessionInputQueueInput,
+    success: SessionInputQueueUpdatedPayload,
+    error: Schema.Union([ProviderSessionInputQueueError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsProviderSetSessionInputQueueModeRpc = Rpc.make(
+  WS_METHODS.providerSetSessionInputQueueMode,
+  {
+    payload: ProviderSetSessionInputQueueModeInput,
     success: SessionInputQueueUpdatedPayload,
     error: Schema.Union([ProviderSessionInputQueueError, EnvironmentAuthorizationError]),
   },
@@ -918,6 +929,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderSetSessionAgentDepthRpc,
   WsProviderGetSessionInputQueueRpc,
   WsProviderClearSessionInputQueueRpc,
+  WsProviderSetSessionInputQueueModeRpc,
   WsServerUpdateProviderRpc,
   WsServerStartProviderLoginRpc,
   WsServerSubmitProviderLoginCodeRpc,

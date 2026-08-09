@@ -22,6 +22,7 @@ import type {
   ProviderInstanceId,
   ProviderReloadSessionResourcesInput,
   ProviderSetSessionAgentDepthInput,
+  ProviderSetSessionInputQueueModeInput,
   SessionAgentDepthUpdatedPayload,
   SessionInputQueueUpdatedPayload,
   SessionResourcesUpdatedPayload,
@@ -120,6 +121,10 @@ export interface ProviderServiceShape {
 
   readonly clearSessionInputQueue: (
     input: ProviderClearSessionInputQueueInput,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
+
+  readonly setSessionInputQueueMode: (
+    input: ProviderSetSessionInputQueueModeInput,
   ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
 
   /**

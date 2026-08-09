@@ -239,6 +239,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
       const snapshot = stampPrimeAgentBackendSnapshot(initial, {
         runtime: "daemon",
         inputQueue: true,
+        inputQueueModes: true,
         agentCancel: true,
       });
 
@@ -252,6 +253,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         "status",
         "widget",
       ]);
+      expect(snapshot.featureCapabilities?.inputQueue?.operations).toContain("set-modes");
       expect(snapshot.requiresNewThreadForModelChange).toBe(false);
       expect(snapshot.supportedRuntimeModes).toEqual(["approval-required", "full-access"]);
       expect(snapshot.message).toBe("Checking Prime Agent CLI availability...");

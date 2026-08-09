@@ -119,6 +119,7 @@ function createProviderServiceHarness(
     followUp: () => unsupported(),
     getSessionInputQueue: () => unsupported(),
     clearSessionInputQueue: () => unsupported(),
+    setSessionInputQueueMode: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions,
     getCapabilities: () =>

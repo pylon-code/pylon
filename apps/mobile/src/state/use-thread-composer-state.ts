@@ -18,7 +18,11 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { deriveLatestContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import { deriveLatestSessionAgentDepth } from "@t3tools/client-runtime/state/session-agent-depth";
-import { deriveLatestSessionInputQueue } from "@t3tools/client-runtime/state/session-input-queue";
+import {
+  deriveLatestSessionInputQueue,
+  hasSessionInputQueueModes,
+  supportsSessionInputQueueSetModes,
+} from "@t3tools/client-runtime/state/session-input-queue";
 import { deriveLatestSessionResources } from "@t3tools/client-runtime/state/session-resources";
 import {
   foldSubagentActivities,
@@ -114,6 +118,9 @@ export function useThreadComposerState() {
     reportFailure: false,
   });
   const clearSessionInputQueue = useAtomCommand(threadEnvironment.clearSessionInputQueue, {
+    reportFailure: false,
+  });
+  const setSessionInputQueueMode = useAtomCommand(threadEnvironment.setSessionInputQueueMode, {
     reportFailure: false,
   });
 
@@ -386,6 +393,49 @@ export function useThreadComposerState() {
     selectedThreadShell,
   ]);
 
+  const onSetSessionInputQueueMode = useCallback(
+    async (queue: "steering" | "follow-up", mode: "all-at-once" | "one-at-a-time") => {
+      const session = selectedThreadDetail?.session;
+      const provider =
+        session?.providerInstanceId === undefined
+          ? null
+          : (selectedThreadServerConfig?.providers.find(
+              (candidate) => candidate.instanceId === session.providerInstanceId,
+            ) ?? null);
+      if (
+        !selectedThreadShell ||
+        (session?.status !== "ready" && session?.status !== "running") ||
+        !supportsSessionInputQueueSetModes(provider) ||
+        !hasSessionInputQueueModes(selectedThreadInputQueue)
+      ) {
+        return false;
+      }
+      const currentMode =
+        queue === "steering"
+          ? selectedThreadInputQueue.steeringMode
+          : selectedThreadInputQueue.followUpMode;
+      if (currentMode === mode) return true;
+      const result = await setSessionInputQueueMode({
+        environmentId: selectedThreadShell.environmentId,
+        input: { threadId: selectedThreadShell.id, queue, mode },
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          setPendingConnectionError("Failed to update session input delivery.");
+        }
+        return false;
+      }
+      return true;
+    },
+    [
+      selectedThreadDetail?.session,
+      selectedThreadInputQueue,
+      selectedThreadServerConfig?.providers,
+      selectedThreadShell,
+      setSessionInputQueueMode,
+    ],
+  );
+
   const onChangeDraftMessage = useCallback(
     (value: string) => {
       if (!selectedThreadShell) {
@@ -553,6 +603,7 @@ export function useThreadComposerState() {
     onSendMessage,
     onQueueFollowUp,
     onClearSessionInputQueue,
+    onSetSessionInputQueueMode,
     onCancelSessionAgent,
     onUpdateModelSelection,
     onUpdateRuntimeMode,

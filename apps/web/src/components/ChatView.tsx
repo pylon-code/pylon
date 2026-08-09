@@ -1241,6 +1241,10 @@ function ChatViewContent(props: ChatViewProps) {
     threadEnvironment.clearSessionInputQueue,
     "session input queue clear",
   );
+  const setThreadSessionInputQueueMode = useAtomCommand(
+    threadEnvironment.setSessionInputQueueMode,
+    "session input queue mode update",
+  );
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -5639,6 +5643,28 @@ function ChatViewContent(props: ChatViewProps) {
     });
   }, [activeThreadId, clearThreadSessionInputQueue, environmentId, setThreadError]);
 
+  const onSetSessionInputQueueMode = useCallback(
+    async (queue: "steering" | "follow-up", mode: "all-at-once" | "one-at-a-time") => {
+      if (!activeThreadId) return;
+      const result = await setThreadSessionInputQueueMode({
+        environmentId,
+        input: { threadId: activeThreadId, queue, mode },
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          setThreadError(activeThreadId, "Could not update session input delivery.");
+        }
+        return;
+      }
+      setThreadError(activeThreadId, null);
+      toastManager.add({
+        type: "success",
+        title: `${queue === "steering" ? "Steering" : "Follow-up"} delivery updated`,
+      });
+    },
+    [activeThreadId, environmentId, setThreadError, setThreadSessionInputQueueMode],
+  );
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
@@ -6924,6 +6950,7 @@ function ChatViewContent(props: ChatViewProps) {
                             onSend={onSend}
                             onQueueFollowUp={() => onSend(undefined, undefined, "follow-up")}
                             onClearSessionInputQueue={onClearSessionInputQueue}
+                            onSetSessionInputQueueMode={onSetSessionInputQueueMode}
                             onInterrupt={onInterrupt}
                             onReloadSessionResources={onReloadSessionResources}
                             onSetSessionAgentDepth={onSetSessionAgentDepth}
