@@ -21,14 +21,25 @@ import type {
 import {
   formatSubagentModelLabel,
   formatSubagentTokenCount,
+  isActiveSubagentStatus,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
+import { Bot, Braces, Check, ChevronDown, ChevronRight, Square, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import { Button } from "~/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "~/components/ui/alert-dialog";
 import { DotMatrix, type DotMatrixState } from "./ui/dot-matrix";
 
 /**
@@ -137,8 +148,20 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
   );
 }
 
-/** Flat, non-interactive agent status line. No unfold. */
-function AgentRow({ agent }: { agent: RuntimeSubagent }) {
+interface AgentCancelControls {
+  readonly enabled: boolean;
+  readonly pendingIds: ReadonlySet<string>;
+  readonly onRequest: (agent: RuntimeSubagent) => void;
+}
+
+/** Flat agent status line with an optional provider-neutral stop action. */
+function AgentRow({
+  agent,
+  cancelControls,
+}: {
+  agent: RuntimeSubagent;
+  cancelControls: AgentCancelControls;
+}) {
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
@@ -152,12 +175,15 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
+  const cancellable =
+    cancelControls.enabled && agent.kind !== "workflow" && isActiveSubagentStatus(agent.status);
+  const stopping = cancellable && cancelControls.pendingIds.has(agent.id);
 
   return (
     // The marker track is sized for a 14px DotMatrix, not upstream's 6px dot:
     // a narrower track would let the glyph bleed into the title column and
     // undo the fixed-height guarantee this grid exists for.
-    <div className="grid h-[3.875rem] grid-cols-[0.875rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
+    <div className="grid h-[3.875rem] grid-cols-[0.875rem_minmax(0,1fr)_auto_1.75rem] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
       <span className="col-start-1 row-start-1 flex items-center">
         <StatusDot status={agent.status} />
       </span>
@@ -177,15 +203,29 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
           ) : null}
         </span>
       </span>
+      <span className="col-start-4 row-start-1 flex size-7 items-center justify-center">
+        {cancellable ? (
+          <button
+            type="button"
+            aria-label={stopping ? `Stopping ${agent.title}` : `Stop ${agent.title}`}
+            aria-busy={stopping || undefined}
+            disabled={stopping}
+            onClick={() => cancelControls.onRequest(agent)}
+            className="flex size-6 items-center justify-center rounded-sm text-muted-foreground hover:bg-destructive/10 hover:text-destructive-foreground disabled:cursor-wait disabled:opacity-50"
+          >
+            <Square aria-hidden className="size-3" fill="currentColor" />
+          </button>
+        ) : null}
+      </span>
       <span
         className={cn(
-          "col-start-2 col-end-4 row-start-2 block truncate text-xs",
+          "col-start-2 col-end-5 row-start-2 block truncate text-xs",
           agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
         )}
       >
         {activity ?? visuals.label}
       </span>
-      <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
+      <span className="col-start-2 col-end-5 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
         {metadata.join(" · ")}
       </span>
       <span className="sr-only">{visuals.label}</span>
@@ -318,9 +358,11 @@ function WorkflowScriptView({
  */
 function PhaseSection({
   phase,
+  cancelControls,
   defaultOpen = false,
 }: {
   phase: AgentPanelWorkflowGroup["phases"][number];
+  cancelControls: AgentCancelControls;
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen || phase.state === "running");
@@ -370,7 +412,11 @@ function PhaseSection({
           </span>
         ) : null}
       </button>
-      {open ? phase.members.map((member) => <AgentRow key={member.id} agent={member} />) : null}
+      {open
+        ? phase.members.map((member) => (
+            <AgentRow key={member.id} agent={member} cancelControls={cancelControls} />
+          ))
+        : null}
     </div>
   );
 }
@@ -380,11 +426,13 @@ function ExpandedWorkflowSection({
   group,
   environmentId,
   threadId,
+  cancelControls,
   onCollapse,
 }: {
   group: AgentPanelWorkflowGroup;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
+  cancelControls: AgentCancelControls;
   onCollapse: () => void;
 }) {
   const [scriptOpen, setScriptOpen] = useState(false);
@@ -440,13 +488,18 @@ function ExpandedWorkflowSection({
         />
       ) : null}
       {group.phases.map((phase) => (
-        <PhaseSection key={phase.index} phase={phase} defaultOpen={!workflowIsLive(group)} />
+        <PhaseSection
+          key={phase.index}
+          phase={phase}
+          cancelControls={cancelControls}
+          defaultOpen={!workflowIsLive(group)}
+        />
       ))}
       {group.unphasedMembers.map((member) => (
-        <AgentRow key={member.id} agent={member} />
+        <AgentRow key={member.id} agent={member} cancelControls={cancelControls} />
       ))}
       {group.phases.length === 0 && group.unphasedMembers.length === 0 ? (
-        <AgentRow agent={group.workflow} />
+        <AgentRow agent={group.workflow} cancelControls={cancelControls} />
       ) : null}
     </section>
   );
@@ -504,10 +557,12 @@ function WorkflowSection({
   group,
   environmentId,
   threadId,
+  cancelControls,
 }: {
   group: AgentPanelWorkflowGroup;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
+  cancelControls: AgentCancelControls;
 }) {
   const [open, setOpen] = useState(() => workflowIsLive(group));
   return open ? (
@@ -515,6 +570,7 @@ function WorkflowSection({
       group={group}
       environmentId={environmentId}
       threadId={threadId}
+      cancelControls={cancelControls}
       onCollapse={() => setOpen(false)}
     />
   ) : (
@@ -522,15 +578,43 @@ function WorkflowSection({
   );
 }
 
+const EMPTY_CANCELLING_AGENT_IDS: ReadonlySet<string> = new Set();
+
 export function AgentsPanel({
   model,
   environmentId = null,
   threadId = null,
+  canCancelAgents = false,
+  cancellingAgentIds = EMPTY_CANCELLING_AGENT_IDS,
+  onCancelAgent,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
+  canCancelAgents?: boolean;
+  cancellingAgentIds?: ReadonlySet<string>;
+  onCancelAgent?: (agentId: string) => Promise<void>;
 }) {
+  const [confirmAgent, setConfirmAgent] = useState<RuntimeSubagent | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const cancelControls: AgentCancelControls = {
+    enabled: canCancelAgents && onCancelAgent !== undefined,
+    pendingIds: cancellingAgentIds,
+    onRequest: (agent) => {
+      setCancelError(null);
+      setConfirmAgent(agent);
+    },
+  };
+  const confirmCancel = async () => {
+    const agent = confirmAgent;
+    if (agent === null || onCancelAgent === undefined) return;
+    setConfirmAgent(null);
+    try {
+      await onCancelAgent(agent.id);
+    } catch {
+      setCancelError(`Could not stop ${agent.title}. Its status has been refreshed.`);
+    }
+  };
   if (!model.hasAgents) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -546,6 +630,14 @@ export function AgentsPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {cancelError ? (
+        <div
+          role="alert"
+          className="border-b border-destructive/30 px-3 py-2 text-xs text-destructive-foreground"
+        >
+          {cancelError}
+        </div>
+      ) : null}
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2 p-2">
           {model.workflows.map((group) => (
@@ -554,6 +646,7 @@ export function AgentsPanel({
               group={group}
               environmentId={environmentId}
               threadId={threadId}
+              cancelControls={cancelControls}
             />
           ))}
           {model.directAgents.length > 0 ? (
@@ -562,7 +655,7 @@ export function AgentsPanel({
                 Direct spawns
               </div>
               {model.directAgents.map((agent) => (
-                <AgentRow key={agent.id} agent={agent} />
+                <AgentRow key={agent.id} agent={agent} cancelControls={cancelControls} />
               ))}
             </section>
           ) : null}
@@ -580,6 +673,27 @@ export function AgentsPanel({
         </span>
         <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
       </footer>
+      <AlertDialog
+        open={confirmAgent !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmAgent(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Stop {confirmAgent?.title ?? "agent"}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Its current work will end. Completed output and activity stay in the thread.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Keep running</AlertDialogClose>
+            <Button variant="destructive" onClick={() => void confirmCancel()}>
+              Stop agent
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
     </div>
   );
 }

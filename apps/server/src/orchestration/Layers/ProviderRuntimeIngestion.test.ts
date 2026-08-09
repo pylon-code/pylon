@@ -114,6 +114,7 @@ function createProviderServiceHarness() {
     respondToUserInput: () => unsupported(),
     respondToInteraction: () => unsupported(),
     reloadSessionResources: () => unsupported(),
+    cancelSessionAgent: () => unsupported(),
     getSessionAgentDepth: () => unsupported(),
     setSessionAgentDepth: () => unsupported(),
     followUp: () => unsupported(),

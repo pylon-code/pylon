@@ -807,6 +807,7 @@ function ThreadRouteContent(
           connectionError={routeConnectionError}
           environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
           selectedThreadFeed={composer.selectedThreadFeed}
+          sessionAgents={composer.selectedThreadAgents}
           contextWindow={composer.selectedThreadContextWindow}
           sessionResources={composer.selectedThreadResources}
           sessionAgentDepth={composer.selectedThreadAgentDepth}
@@ -847,6 +848,7 @@ function ThreadRouteContent(
           onSendMessage={composer.onSendMessage}
           onQueueFollowUp={composer.onQueueFollowUp}
           onClearSessionInputQueue={composer.onClearSessionInputQueue}
+          onCancelSessionAgent={composer.onCancelSessionAgent}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
           onUpdateThreadRuntimeMode={composer.onUpdateRuntimeMode}

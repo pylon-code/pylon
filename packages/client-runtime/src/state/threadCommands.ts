@@ -216,6 +216,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    cancelSessionAgent: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:cancel-session-agent",
+      tag: WS_METHODS.providerCancelSessionAgent,
+      scheduler,
+      concurrency,
+    }),
     reloadSessionResources: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:commands:thread:reload-session-resources",
       tag: WS_METHODS.providerReloadSessionResources,

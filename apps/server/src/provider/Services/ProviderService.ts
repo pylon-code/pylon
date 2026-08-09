@@ -12,6 +12,8 @@
  * @module ProviderService
  */
 import type {
+  ProviderCancelSessionAgentInput,
+  ProviderCancelSessionAgentResult,
   ProviderClearSessionInputQueueInput,
   ProviderFollowUpInput,
   ProviderGetSessionAgentDepthInput,
@@ -95,6 +97,10 @@ export interface ProviderServiceShape {
   readonly reloadSessionResources: (
     input: ProviderReloadSessionResourcesInput,
   ) => Effect.Effect<SessionResourcesUpdatedPayload, ProviderServiceError>;
+
+  readonly cancelSessionAgent: (
+    input: ProviderCancelSessionAgentInput,
+  ) => Effect.Effect<ProviderCancelSessionAgentResult, ProviderServiceError>;
 
   readonly getSessionAgentDepth: (
     input: ProviderGetSessionAgentDepthInput,

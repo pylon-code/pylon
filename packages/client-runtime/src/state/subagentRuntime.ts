@@ -17,7 +17,7 @@
  * folding (completion can create an agent; a late start only fills
  * metadata).
  */
-import type { OrchestrationThreadActivity } from "@t3tools/contracts";
+import type { OrchestrationThreadActivity, ServerProvider } from "@t3tools/contracts";
 
 export type RuntimeSubagentStatus =
   | "pending"
@@ -102,6 +102,13 @@ export function isTerminalSubagentStatus(status: RuntimeSubagentStatus): boolean
  * but resumable; waiting counts as active because it needs the user. */
 export function isActiveSubagentStatus(status: RuntimeSubagentStatus): boolean {
   return status === "pending" || status === "running" || status === "waiting";
+}
+
+export function supportsSessionAgentCancel(
+  provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
+): boolean {
+  const agents = provider?.featureCapabilities?.agents;
+  return agents?.support === "read-write" && agents.operations.includes("cancel");
 }
 
 const RECENT_ACTIVITY_LIMIT = 6;

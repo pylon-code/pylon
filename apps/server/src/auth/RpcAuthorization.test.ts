@@ -30,6 +30,12 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("requires orchestration operate access for agent cancellation", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerCancelSessionAgent)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("separates session agent depth observation from mutation", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.providerGetSessionAgentDepth)).toBe(
       AuthOrchestrationReadScope,

@@ -3,6 +3,7 @@ import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/contex
 import type { SessionAgentDepthSnapshot } from "@t3tools/client-runtime/state/session-agent-depth";
 import type { SessionInputQueueSnapshot } from "@t3tools/client-runtime/state/session-input-queue";
 import type { SessionResourcesSnapshot } from "@t3tools/client-runtime/state/session-resources";
+import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
@@ -61,6 +62,7 @@ export interface ThreadDetailScreenProps {
   readonly connectionError: string | null;
   readonly environmentLabel: string | null;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
+  readonly sessionAgents: ReadonlyArray<RuntimeSubagent>;
   readonly contextWindow: ContextWindowSnapshot | null;
   readonly sessionResources: SessionResourcesSnapshot | null;
   readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
@@ -104,6 +106,7 @@ export interface ThreadDetailScreenProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onQueueFollowUp: () => Promise<MessageId | null>;
   readonly onClearSessionInputQueue: () => Promise<boolean>;
+  readonly onCancelSessionAgent: (agentId: string) => Promise<boolean>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -507,6 +510,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               contextWindow={props.contextWindow}
               sessionResources={props.sessionResources}
               sessionAgentDepth={props.sessionAgentDepth}
+              sessionAgents={props.sessionAgents}
               sessionInputQueue={props.sessionInputQueue}
               activeThreadBusy={props.activeThreadBusy}
               sessionInputBlocked={
@@ -527,6 +531,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onSendMessage={handleSendMessage}
               onQueueFollowUp={props.onQueueFollowUp}
               onClearSessionInputQueue={props.onClearSessionInputQueue}
+              onCancelSessionAgent={props.onCancelSessionAgent}
               onReconnectEnvironment={props.onReconnectEnvironment}
               onUpdateModelSelection={props.onUpdateThreadModelSelection}
               onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
+import { PROVIDER_AGENT_CONTROL_ID_MAX_CHARS } from "@t3tools/contracts";
 
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import {
   type PrimeAgentDaemonAgentConnection,
@@ -97,6 +99,7 @@ function fixture(options?: {
   readonly rlmDepth?: number;
   readonly rlmStatus?: unknown;
   readonly setRlmImpl?: (maxDepth: number) => Promise<unknown>;
+  readonly cancelRlmImpl?: (agentId: string) => Promise<unknown>;
   readonly sessionStats?: unknown;
   readonly getQueueImpl?: () => Promise<unknown>;
   readonly clearQueueImpl?: () => Promise<unknown>;
@@ -290,6 +293,10 @@ function fixture(options?: {
       return Promise.resolve(
         options?.rlmStatus ?? { maxDepth: options?.rlmDepth ?? 0, source: "chat" },
       );
+    }
+    cancelRlmChild(agentId: string): Promise<unknown> {
+      captures.connectionCalls.push({ method: "cancelRlmChild", args: [agentId] });
+      return options?.cancelRlmImpl?.(agentId) ?? Promise.resolve(true);
     }
     setRlmMaxDepth(maxDepth: number): Promise<unknown> {
       captures.connectionCalls.push({ method: "setRlmMaxDepth", args: [maxDepth] });
@@ -654,6 +661,92 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         });
         expect(captures.connectionCalls).toEqual([{ method: "setRlmMaxDepth", args: [3] }]);
       }),
+    ),
+  );
+
+  it.effect("reads the safe agent roster and routes bounded native cancellation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({
+          cancelRlmImpl: (agentId) => Promise.resolve(agentId === "child-1"),
+        });
+        const runtime = yield* make();
+        captures.connectionCalls.splice(0);
+
+        const roster = yield* runtime.getAgentRoster;
+        const cancelled = yield* runtime.cancelAgent("child-1");
+
+        expect(roster).toEqual([
+          expect.objectContaining({ id: "child-1", label: "child", status: "running" }),
+        ]);
+        expect(roster[0]).not.toHaveProperty("sessionDir");
+        expect(cancelled).toBe(true);
+        expect(captures.connectionCalls).toEqual([{ method: "cancelRlmChild", args: ["child-1"] }]);
+      }),
+    ),
+  );
+
+  it.effect("rejects invalid cancellation ids and native responses without retrying", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({ cancelRlmImpl: () => Promise.resolve("yes") });
+        const runtime = yield* make();
+        captures.connectionCalls.splice(0);
+
+        const invalidId = yield* runtime.cancelAgent(" ").pipe(Effect.flip);
+        const oversizedId = yield* runtime
+          .cancelAgent("x".repeat(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS + 1))
+          .pipe(Effect.flip);
+        const invalidResponse = yield* runtime.cancelAgent("child-1").pipe(Effect.flip);
+
+        expect(invalidId).toMatchObject({ operation: "cancel-agent", reason: "invalid-input" });
+        expect(oversizedId).toMatchObject({
+          operation: "cancel-agent",
+          reason: "invalid-input",
+        });
+        expect(invalidResponse).toMatchObject({
+          operation: "cancel-agent",
+          reason: "invalid-response",
+        });
+        expect(captures.connectionCalls).toEqual([{ method: "cancelRlmChild", args: ["child-1"] }]);
+      }),
+    ),
+  );
+
+  it.effect("bounds native agent cancellation and roster reads", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let snapshotReads = 0;
+        const never = () => new Promise<unknown>(() => undefined);
+        const { make } = fixture({
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            return snapshotReads === 1 ? snapshot() : never();
+          },
+          cancelRlmImpl: never,
+        });
+        const runtime = yield* make();
+
+        const cancellationFiber = yield* runtime.cancelAgent("child-1").pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("30 seconds");
+        const cancellationError = yield* Fiber.join(cancellationFiber).pipe(Effect.flip);
+        expect(cancellationError).toMatchObject({
+          operation: "cancel-agent",
+          reason: "request-failed",
+          detail: expect.stringContaining("Timed out"),
+        });
+
+        const rosterFiber = yield* runtime.getAgentRoster.pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("30 seconds");
+        const rosterError = yield* Fiber.join(rosterFiber).pipe(Effect.flip);
+        expect(rosterError).toMatchObject({
+          operation: "get-agent-roster",
+          reason: "request-failed",
+          detail: expect.stringContaining("Timed out"),
+        });
+      }).pipe(Effect.provide(TestClock.layer())),
     ),
   );
 

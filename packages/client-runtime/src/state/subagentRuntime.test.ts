@@ -8,6 +8,7 @@ import {
   isAgentAttributedToolActivity,
   isSubagentActivityKind,
   isTimelineBypassActivity,
+  supportsSessionAgentCancel,
   workflowCardMembers,
 } from "./subagentRuntime.ts";
 
@@ -898,5 +899,20 @@ describe("nested agents vs subagent shells", () => {
       }),
     ]);
     expect(agents.map((agent) => agent.id)).toEqual(["nested-1"]);
+  });
+});
+
+describe("supportsSessionAgentCancel", () => {
+  const provider = (support: "read-only" | "read-write", operations: ReadonlyArray<string>) => ({
+    featureCapabilities: {
+      agents: { support, operations },
+    } as NonNullable<import("@t3tools/contracts").ServerProvider["featureCapabilities"]>,
+  });
+
+  it("requires an advertised read-write cancel operation", () => {
+    expect(supportsSessionAgentCancel(null)).toBe(false);
+    expect(supportsSessionAgentCancel(provider("read-only", ["cancel"]))).toBe(false);
+    expect(supportsSessionAgentCancel(provider("read-write", ["observe"]))).toBe(false);
+    expect(supportsSessionAgentCancel(provider("read-write", ["observe", "cancel"]))).toBe(true);
   });
 });

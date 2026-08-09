@@ -1,6 +1,7 @@
 import {
   RUNTIME_RESOURCE_CATALOG_MAX_ITEMS,
   RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS,
+  PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
   RUNTIME_RESOURCE_NAME_MAX_CHARS,
@@ -273,6 +274,8 @@ const runtimeErrorOperation = Schema.Literals([
   "reload-resources",
   "get-agent-depth",
   "set-agent-depth",
+  "get-agent-roster",
+  "cancel-agent",
   "prompt",
   "steer",
   "follow-up",
@@ -349,6 +352,11 @@ export type PrimeAgentDaemonAgentDepth = SessionAgentDepthUpdatedPayload;
 
 export type PrimeAgentDaemonInputQueue = SessionInputQueueUpdatedPayload;
 
+export type PrimeAgentDaemonChild = Extract<
+  PrimeDaemonEvent,
+  { readonly _tag: "ChildUpdated" }
+>["child"];
+
 export interface PrimeAgentDaemonInputQueueStatus {
   readonly queue: PrimeAgentDaemonInputQueue;
   readonly activeAction: boolean;
@@ -398,6 +406,13 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly setAgentDepth: (
     maxDepth: number,
   ) => Effect.Effect<PrimeAgentDaemonAgentDepth, PrimeAgentDaemonSessionRuntimeError>;
+  readonly getAgentRoster: Effect.Effect<
+    ReadonlyArray<PrimeAgentDaemonChild>,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
+  readonly cancelAgent: (
+    agentId: string,
+  ) => Effect.Effect<boolean, PrimeAgentDaemonSessionRuntimeError>;
   readonly events: Stream.Stream<PrimeDaemonEvent, never>;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
@@ -1114,6 +1129,92 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return safeAgentDepth(depth.value, true);
     });
 
+    const readAgentRoster = (
+      operation: "get-agent-roster" | "cancel-agent",
+    ): Effect.Effect<ReadonlyArray<PrimeAgentDaemonChild>, PrimeAgentDaemonSessionRuntimeError> =>
+      Effect.gen(function* () {
+        yield* ensureOpen(operation);
+        const raw = yield* Effect.tryPromise({
+          try: () => connection!.getInitialSnapshot(),
+          catch: () =>
+            runtimeError(
+              operation,
+              "request-failed",
+              "Could not read the Prime Agent agent roster.",
+            ),
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: COMMAND_TIMEOUT_MS,
+            orElse: () =>
+              runtimeError(
+                operation,
+                "request-failed",
+                "Timed out while reading the Prime Agent agent roster.",
+              ),
+          }),
+        );
+        const event = decodePrimeAgentDaemonEvent({ type: "session_resynced", snapshot: raw });
+        if (
+          event._tag !== "SessionResynced" ||
+          event.state.activeSessionId !== initialEvent.state.activeSessionId ||
+          event.state.sessionId !== sessionId
+        ) {
+          return yield* runtimeError(
+            operation,
+            "invalid-response",
+            "Prime Agent returned an invalid or mismatched agent roster.",
+          );
+        }
+        return event.children;
+      });
+
+    const getAgentRoster = readAgentRoster("get-agent-roster");
+
+    const cancelAgent = Effect.fn("PrimeAgentDaemonSessionRuntime.cancelAgent")(function* (
+      rawAgentId: string,
+    ) {
+      yield* ensureOpen("cancel-agent");
+      const agentId = yield* validateNonEmpty("cancel-agent", "Agent id", rawAgentId);
+      if (agentId.length > PROVIDER_AGENT_CONTROL_ID_MAX_CHARS) {
+        return yield* runtimeError(
+          "cancel-agent",
+          "invalid-input",
+          `Agent id must be at most ${PROVIDER_AGENT_CONTROL_ID_MAX_CHARS} characters.`,
+        );
+      }
+      if (input.requiredExtension !== undefined) {
+        return yield* runtimeError(
+          "cancel-agent",
+          "invalid-input",
+          "Agent cancellation is unavailable in supervised sessions.",
+        );
+      }
+      const method = yield* requireMethod("cancel-agent", connection!.cancelRlmChild);
+      const output = yield* Effect.tryPromise({
+        try: () => method.call(connection, agentId),
+        catch: () =>
+          runtimeError("cancel-agent", "request-failed", "Could not cancel the Prime Agent agent."),
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: COMMAND_TIMEOUT_MS,
+          orElse: () =>
+            runtimeError(
+              "cancel-agent",
+              "request-failed",
+              "Timed out while cancelling the Prime Agent agent.",
+            ),
+        }),
+      );
+      if (typeof output !== "boolean") {
+        return yield* runtimeError(
+          "cancel-agent",
+          "invalid-response",
+          "Prime Agent returned an invalid agent cancellation result.",
+        );
+      }
+      return output;
+    });
+
     const prompt = Effect.fn("PrimeAgentDaemonSessionRuntime.prompt")(function* (
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
@@ -1426,6 +1527,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       reloadResources,
       getAgentDepth,
       setAgentDepth,
+      getAgentRoster,
+      cancelAgent,
       events: Stream.fromQueue(eventQueue),
       prompt,
       steer,

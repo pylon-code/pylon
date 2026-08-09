@@ -239,6 +239,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
       const snapshot = stampPrimeAgentBackendSnapshot(initial, {
         runtime: "daemon",
         inputQueue: true,
+        agentCancel: true,
       });
 
       expect(snapshot.featureCapabilities?.version).toBe(1);

@@ -14,6 +14,7 @@ import {
   NonNegativeInt,
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   ThreadId,
+  ProviderCancelSessionAgentInput,
   ProviderClearSessionInputQueueInput,
   ProviderFollowUpInput,
   ProviderGetSessionAgentDepthInput,
@@ -939,6 +940,38 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* reload(routed.threadId);
   });
 
+  const cancelSessionAgent: ProviderServiceMethod<"cancelSessionAgent"> = Effect.fn(
+    "cancelSessionAgent",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.cancelSessionAgent",
+      schema: ProviderCancelSessionAgentInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.cancelSessionAgent",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.cancelSessionAgent",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const cancelAgent = routed.adapter.cancelSessionAgent;
+    if (cancelAgent === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "cancel-session-agent",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+    });
+    return yield* cancelAgent(routed.threadId, input.agentId);
+  });
+
   const getSessionAgentDepth: ProviderServiceMethod<"getSessionAgentDepth"> = Effect.fn(
     "getSessionAgentDepth",
   )(function* (rawInput) {
@@ -1356,6 +1389,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToUserInput,
     respondToInteraction,
     reloadSessionResources,
+    cancelSessionAgent,
     getSessionAgentDepth,
     setSessionAgentDepth,
     followUp,
