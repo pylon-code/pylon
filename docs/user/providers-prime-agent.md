@@ -50,7 +50,9 @@ when the next message starts; they cannot be changed by a steering message after
 While a daemon-backed turn is working, sending another message steers the same turn. Stopping the
 turn also clears queued steering input. Native select, confirm, input, and editor dialogs appear in
 the session panel; notifications, status, and widgets use the same provider-neutral presentation
-surface. Observed Prime subagents appear in Pylon's Agents hierarchy.
+surface. Observed Prime subagents appear in Pylon's Agents hierarchy. When the selected model explicitly
+exposes reasoning text, Pylon adds a bounded final **Reasoning** entry to the work log. Incremental
+thinking deltas and provider-private reasoning metadata are not persisted.
 
 ## Execution Approvals
 
@@ -81,7 +83,7 @@ instead of silently opening a blank or merely recent Prime session.
 - Authentication is managed in Prime Agent, not Pylon.
 - Plan mode, provider-conversation rollback, queue inspection and follow-up controls, and Pylon's
   per-thread MCP bridge are not supported yet.
-- Pylon does not yet present Prime reasoning streams, cost breakdowns, context compaction, goals,
+- Pylon does not yet present live Prime reasoning streams, cost breakdowns, context compaction, goals,
   heartbeats, saved-session history, or native resource catalogs as first-class features.
 - Prime Agent is not used for Pylon's background text-generation helpers in Early Access.
 - ACP compatibility mode is intentionally narrower: it hides daemon-only thinking and service-tier

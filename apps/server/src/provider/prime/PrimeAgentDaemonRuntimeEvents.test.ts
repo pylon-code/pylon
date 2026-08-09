@@ -149,49 +149,29 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     }
   });
 
-  it("maps thinking lifecycle and deltas to one stable reasoning item", () => {
+  it("projects only bounded final provider-exposed reasoning", () => {
     const map = (event: PrimeDaemonEvent) =>
       mapPrimeAgentDaemonRuntimeEventDrafts({ ...context, event });
 
     expect(
       map({ _tag: "AssistantStream", phase: "start", kind: "thinking", contentIndex: 4 }),
-    ).toEqual([
-      {
-        provider,
-        providerInstanceId,
-        threadId,
-        turnId,
-        type: "item.started",
-        itemId: RuntimeItemId.make("reasoning:turn-1"),
-        payload: { itemType: "reasoning", status: "inProgress" },
-      },
-    ]);
+    ).toEqual([]);
     expect(
       map({
         _tag: "AssistantStream",
         phase: "delta",
         kind: "thinking",
         contentIndex: 4,
-        delta: "considering",
+        delta: "private incremental thought",
       }),
-    ).toEqual([
-      {
-        provider,
-        providerInstanceId,
-        threadId,
-        turnId,
-        type: "content.delta",
-        itemId: RuntimeItemId.make("reasoning:turn-1"),
-        payload: { streamKind: "reasoning_text", delta: "considering", contentIndex: 4 },
-      },
-    ]);
+    ).toEqual([]);
     expect(
       map({
         _tag: "AssistantStream",
         phase: "end",
         kind: "thinking",
         contentIndex: 4,
-        content: "considering",
+        content: "provider-exposed reasoning",
       }),
     ).toEqual([
       {
@@ -201,9 +181,22 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
         turnId,
         type: "item.completed",
         itemId: RuntimeItemId.make("reasoning:turn-1"),
-        payload: { itemType: "reasoning", status: "completed" },
+        payload: {
+          itemType: "reasoning",
+          status: "completed",
+          title: "Reasoning",
+          detail: "provider-exposed reasoning",
+        },
       },
     ]);
+    const long = map({
+      _tag: "AssistantStream",
+      phase: "end",
+      kind: "thinking",
+      contentIndex: 4,
+      content: "x".repeat(5_000),
+    });
+    expect(long[0]?.payload).toMatchObject({ detail: "x".repeat(4_000) });
   });
 
   it("maps tool execution lifecycle, classifies clear names, and keeps only safe input", () => {

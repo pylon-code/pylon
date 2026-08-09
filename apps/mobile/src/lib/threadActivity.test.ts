@@ -108,6 +108,40 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it("keeps final reasoning as an expandable provider-neutral work row", () => {
+    const turnId = TurnId.make("turn-reasoning");
+    const thread = makeThread({
+      id: ThreadId.make("thread-reasoning"),
+      projectId: ProjectId.make("project-1"),
+      title: "Reasoning",
+      activities: [
+        makeActivity({
+          id: EventId.make("reasoning-completed"),
+          kind: "reasoning.completed",
+          summary: "Reasoning",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId,
+          payload: {
+            itemType: "reasoning",
+            detail: "Provider-exposed final reasoning",
+          },
+        }),
+      ],
+    });
+
+    const group = buildThreadFeed(thread)[0];
+    expect(group).toMatchObject({ type: "activity-group", turnId });
+    if (!group || group.type !== "activity-group") return;
+    expect(group.activities).toHaveLength(1);
+    expect(group.activities[0]).toMatchObject({
+      id: "reasoning-completed",
+      summary: "Reasoning",
+      detail: "Provider-exposed final reasoning",
+      canExpand: true,
+      toolLike: false,
+    });
+  });
+
   it("collapses matching tool lifecycle rows like desktop", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-2"),

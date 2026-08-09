@@ -437,41 +437,21 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
       }
       if (event.kind === "thinking") {
         const itemId = reasoningItemId(input.turnId);
-        if (itemId === undefined) return [];
-        if (event.phase === "start") {
-          return [
-            {
-              ...base,
-              type: "item.started",
-              itemId,
-              payload: { itemType: "reasoning", status: "inProgress" },
+        const detail = boundedNonEmpty(event.content, MAX_SCALAR_LENGTH);
+        if (itemId === undefined || event.phase !== "end" || detail === undefined) return [];
+        return [
+          {
+            ...base,
+            type: "item.completed",
+            itemId,
+            payload: {
+              itemType: "reasoning",
+              status: "completed",
+              title: "Reasoning",
+              detail,
             },
-          ];
-        }
-        if (event.phase === "delta" && event.delta !== undefined) {
-          return [
-            {
-              ...base,
-              type: "content.delta",
-              itemId,
-              payload: {
-                streamKind: "reasoning_text",
-                delta: bounded(event.delta),
-                ...(event.contentIndex === undefined ? {} : { contentIndex: event.contentIndex }),
-              },
-            },
-          ];
-        }
-        if (event.phase === "end") {
-          return [
-            {
-              ...base,
-              type: "item.completed",
-              itemId,
-              payload: { itemType: "reasoning", status: "completed" },
-            },
-          ];
-        }
+          },
+        ];
       }
       return [];
     }

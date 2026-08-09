@@ -1133,6 +1133,77 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("persists and replaces bounded final reasoning as one provider-neutral work-log activity", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const activityId = "reasoning:primeAgent:thread-1:reasoning:turn-reasoning";
+    const finalReasoning = "r".repeat(4_000);
+    const event = {
+      type: "item.completed" as const,
+      provider: ProviderDriverKind.make("primeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("reasoning:turn-reasoning"),
+      payload: {
+        itemType: "reasoning" as const,
+        status: "completed" as const,
+        title: "Reasoning",
+        detail: finalReasoning,
+      },
+    };
+
+    const emptyActivityId = "reasoning:codex:thread-1:reasoning:empty";
+    harness.emit({
+      ...event,
+      eventId: asEventId("evt-reasoning-empty"),
+      provider: ProviderDriverKind.make("codex"),
+      itemId: asItemId("reasoning:empty"),
+      payload: {
+        itemType: "reasoning",
+        status: "completed",
+        title: "Reasoning",
+      },
+    });
+    harness.emit({ ...event, eventId: asEventId("evt-reasoning-completed") });
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => activity.id === activityId),
+    );
+    expect(
+      thread.activities.some((entry: ProviderRuntimeTestActivity) => entry.id === emptyActivityId),
+    ).toBe(false);
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === activityId,
+    );
+    expect(activity).toMatchObject({
+      tone: "info",
+      kind: "reasoning.completed",
+      summary: "Reasoning",
+      payload: {
+        itemType: "reasoning",
+        detail: finalReasoning,
+      },
+    });
+
+    harness.emit({
+      ...event,
+      eventId: asEventId("evt-reasoning-replaced"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { ...event.payload, title: "Reasoning replacement", detail: "Replacement" },
+    });
+    const replaced = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (candidate: ProviderRuntimeTestActivity) =>
+          candidate.id === activityId && candidate.summary === "Reasoning replacement",
+      ),
+    );
+    expect(
+      replaced.activities.filter(
+        (candidate: ProviderRuntimeTestActivity) => candidate.id === activityId,
+      ),
+    ).toHaveLength(1);
+  });
+
   it("preserves completed tool metadata on projected tool activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
