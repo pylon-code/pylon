@@ -1,7 +1,12 @@
+import { WS_METHODS } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
 
-import { createAtomCommandScheduler, createEnvironmentCommand } from "./runtime.ts";
+import {
+  createAtomCommandScheduler,
+  createEnvironmentCommand,
+  createEnvironmentRpcCommand,
+} from "./runtime.ts";
 import {
   type ArchiveThreadInput,
   type CreateThreadInput,
@@ -199,6 +204,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     revertCheckpoint: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:revert-checkpoint",
       execute: (input: RevertThreadCheckpointInput) => revertThreadCheckpoint(input),
+      scheduler,
+      concurrency,
+    }),
+    reloadSessionResources: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:reload-session-resources",
+      tag: WS_METHODS.providerReloadSessionResources,
       scheduler,
       concurrency,
     }),

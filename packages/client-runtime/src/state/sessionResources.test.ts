@@ -10,6 +10,7 @@ import {
   deriveLatestSessionResources,
   formatProviderSlashCommandDescription,
   resolveSessionSlashCommands,
+  supportsSessionResourceReload,
 } from "./sessionResources.ts";
 
 const makeActivity = (input: {
@@ -196,5 +197,27 @@ describe("deriveLatestSessionResources", () => {
     );
 
     expect(snapshot?.updatedAt).toBe("2026-01-01T00:00:00.000Z");
+  });
+});
+
+describe("supportsSessionResourceReload", () => {
+  it("requires a read-write reload operation", () => {
+    expect(supportsSessionResourceReload(null)).toBe(false);
+    expect(
+      supportsSessionResourceReload({
+        featureCapabilities: {
+          version: 1,
+          resources: { support: "read-only", operations: ["commands"] },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      supportsSessionResourceReload({
+        featureCapabilities: {
+          version: 1,
+          resources: { support: "read-write", operations: ["commands", "reload"] },
+        },
+      }),
+    ).toBe(true);
   });
 });

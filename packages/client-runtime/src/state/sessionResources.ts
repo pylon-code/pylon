@@ -50,3 +50,11 @@ export function formatProviderSlashCommandDescription(
   if (description && hint) return `${description} · ${hint}`;
   return description || hint || "Run provider command";
 }
+
+/** Whether the active provider instance advertises explicit session resource reload. */
+export function supportsSessionResourceReload(
+  provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
+): boolean {
+  const resources = provider?.featureCapabilities?.resources;
+  return resources?.support === "read-write" && resources.operations.includes("reload");
+}

@@ -223,6 +223,7 @@ const runtimeErrorOperation = Schema.Literals([
   "attach-session",
   "initial-snapshot",
   "verify-extension",
+  "reload-resources",
   "prompt",
   "steer",
   "follow-up",
@@ -317,6 +318,11 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly activeSessionId: string;
   readonly initialSnapshot: PrimeAgentDaemonCanonicalSnapshot;
   readonly initialResources: PrimeAgentDaemonSessionResources;
+  /** Reload the native runtime, then return one sanitized post-reload catalog. */
+  readonly reloadResources: Effect.Effect<
+    PrimeAgentDaemonSessionResources,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
   readonly events: Stream.Stream<PrimeDaemonEvent, never>;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
@@ -899,6 +905,39 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
     });
 
+    const reloadResources = Effect.gen(function* () {
+      yield* ensureOpen("reload-resources");
+      if (input.requiredExtension !== undefined) {
+        return yield* runtimeError(
+          "reload-resources",
+          "invalid-input",
+          "Resource reload is unavailable for supervised Prime Agent sessions.",
+        );
+      }
+      const reload = yield* requireMethod("reload-resources", connection!.reload);
+      yield* callVoid("reload-resources", () => reload.call(connection));
+      yield* ensureOpen("reload-resources");
+      const rawInventory = yield* Effect.tryPromise({
+        try: () => Promise.all([connection!.getResourceSnapshot(), connection!.getCommands()]),
+        catch: () =>
+          runtimeError(
+            "reload-resources",
+            "request-failed",
+            "The daemon resource catalog could not be read after reload.",
+          ),
+      });
+      const resources = decodeResourceSnapshot(rawInventory[0]);
+      const commands = decodeCommands(rawInventory[1]);
+      if (Option.isNone(resources) || Option.isNone(commands)) {
+        return yield* runtimeError(
+          "reload-resources",
+          "invalid-response",
+          "The daemon returned an invalid resource catalog after reload.",
+        );
+      }
+      return safeSessionResources(resources.value, commands.value, false);
+    });
+
     const setModel = Effect.fn("PrimeAgentDaemonSessionRuntime.setModel")(function* (
       selector: string,
     ) {
@@ -1044,6 +1083,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       activeSessionId,
       initialSnapshot: initialEvent,
       initialResources,
+      reloadResources,
       events: Stream.fromQueue(eventQueue),
       prompt,
       steer,

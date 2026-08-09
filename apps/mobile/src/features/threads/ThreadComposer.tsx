@@ -3,6 +3,7 @@ import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/contex
 import {
   formatProviderSlashCommandDescription,
   resolveSessionSlashCommands,
+  supportsSessionResourceReload,
   type SessionResourcesSnapshot,
 } from "@t3tools/client-runtime/state/session-resources";
 import type {
@@ -126,6 +127,7 @@ export interface ThreadComposerProps {
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  readonly onReloadSessionResources: () => Promise<void>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -401,6 +403,31 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ) ?? null
     );
   }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  const activeSessionProviderStatus = useMemo(() => {
+    const instanceId = props.selectedThread.session?.providerInstanceId;
+    if (!props.serverConfig || instanceId === undefined) return null;
+    return (
+      props.serverConfig.providers.find((provider) => provider.instanceId === instanceId) ?? null
+    );
+  }, [props.selectedThread.session?.providerInstanceId, props.serverConfig]);
+  const showSessionResourceReload =
+    props.selectedThread.session?.runtimeMode === "full-access" &&
+    supportsSessionResourceReload(activeSessionProviderStatus);
+  const sessionResourceReloadDisabled =
+    props.connectionState !== "connected" ||
+    props.activeThreadBusy ||
+    props.selectedThread.session?.status !== "ready";
+  const [isReloadingSessionResources, setIsReloadingSessionResources] = useState(false);
+  const reloadSessionResources = useCallback(async () => {
+    if (sessionResourceReloadDisabled || isReloadingSessionResources) return;
+    setIsReloadingSessionResources(true);
+    try {
+      await props.onReloadSessionResources();
+    } finally {
+      setIsReloadingSessionResources(false);
+    }
+  }, [isReloadingSessionResources, props.onReloadSessionResources, sessionResourceReloadDisabled]);
+
   const providerSlashCommands = useMemo(
     () =>
       resolveSessionSlashCommands(
@@ -1009,6 +1036,19 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 </ControlPillMenu>
                 {props.contextWindow ? (
                   <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                ) : null}
+                {showSessionResourceReload ? (
+                  <ComposerToolbarButton
+                    accessibilityLabel={
+                      isReloadingSessionResources
+                        ? "Reloading session resources"
+                        : "Reload session resources"
+                    }
+                    icon="arrow.clockwise"
+                    disabled={sessionResourceReloadDisabled || isReloadingSessionResources}
+                    onPress={() => void reloadSessionResources()}
+                    showChevron={false}
+                  />
                 ) : null}
                 {showStopAction ? (
                   <ComposerToolbarButton

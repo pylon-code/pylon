@@ -20,6 +20,22 @@ export class ProviderAdapterValidationError extends Schema.TaggedErrorClass<Prov
 }
 
 /**
+ * ProviderAdapterUnsupportedOperationError - Adapter exists but cannot perform this operation.
+ */
+export class ProviderAdapterUnsupportedOperationError extends Schema.TaggedErrorClass<ProviderAdapterUnsupportedOperationError>()(
+  "ProviderAdapterUnsupportedOperationError",
+  {
+    provider: Schema.String,
+    operation: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Provider adapter '${this.provider}' does not support ${this.operation}`;
+  }
+}
+
+/**
  * ProviderAdapterSessionNotFoundError - Adapter-owned session id is unknown.
  */
 export class ProviderAdapterSessionNotFoundError extends Schema.TaggedErrorClass<ProviderAdapterSessionNotFoundError>()(
@@ -189,6 +205,7 @@ export class ProviderSessionDirectoryPersistenceError extends Schema.TaggedError
 
 export type ProviderAdapterError =
   | ProviderAdapterValidationError
+  | ProviderAdapterUnsupportedOperationError
   | ProviderAdapterSessionNotFoundError
   | ProviderAdapterSessionClosedError
   | ProviderAdapterRequestError

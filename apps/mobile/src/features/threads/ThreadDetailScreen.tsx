@@ -95,6 +95,7 @@ export interface ThreadDetailScreenProps {
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  readonly onReloadSessionResources: () => Promise<void>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
@@ -507,6 +508,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onNativePasteImages={props.onNativePasteImages}
               onRemoveDraftImage={props.onRemoveDraftImage}
               onStopThread={props.onStopThread}
+              onReloadSessionResources={props.onReloadSessionResources}
               onSendMessage={handleSendMessage}
               onReconnectEnvironment={props.onReconnectEnvironment}
               onUpdateModelSelection={props.onUpdateThreadModelSelection}

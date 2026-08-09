@@ -15,6 +15,7 @@ import type {
   ProviderRuntimeEvent,
   SessionInteractionRequestId,
   SessionInteractionResponse,
+  SessionResourcesUpdatedPayload,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -103,6 +104,14 @@ export interface ProviderAdapterShape<TError> {
     requestId: SessionInteractionRequestId,
     response: SessionInteractionResponse,
   ) => Effect.Effect<void, TError>;
+
+  /**
+   * Reload one active session's provider-owned resource catalog. Optional so
+   * adapters without a faithful session reload operation remain unsupported.
+   */
+  readonly reloadSessionResources?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<SessionResourcesUpdatedPayload, TError>;
 
   /**
    * Stop one provider session.

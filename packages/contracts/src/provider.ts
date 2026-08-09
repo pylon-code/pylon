@@ -96,6 +96,18 @@ export const ProviderStopSessionInput = Schema.Struct({
 });
 export type ProviderStopSessionInput = typeof ProviderStopSessionInput.Type;
 
+export const ProviderReloadSessionResourcesInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type ProviderReloadSessionResourcesInput = typeof ProviderReloadSessionResourcesInput.Type;
+
+export class ProviderSessionResourcesReloadError extends Schema.TaggedErrorClass<ProviderSessionResourcesReloadError>()(
+  "ProviderSessionResourcesReloadError",
+  {
+    reason: Schema.Literals(["session-not-ready", "unsupported", "busy", "reload-failed"]),
+  },
+) {}
+
 export const ProviderRespondToRequestInput = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,

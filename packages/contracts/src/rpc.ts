@@ -66,7 +66,12 @@ import {
   OrchestrationRpcSchemas,
   OrchestrationGetWorkflowScriptError,
 } from "./orchestration.ts";
+import {
+  ProviderReloadSessionResourcesInput,
+  ProviderSessionResourcesReloadError,
+} from "./provider.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { SessionResourcesUpdatedPayload } from "./providerRuntime.ts";
 import {
   RelayClientInstallFailedError,
   RelayClientInstallProgressEventSchema,
@@ -229,6 +234,9 @@ export const WS_METHODS = {
   previewAutomationRespond: "previewAutomation.respond",
   previewAutomationFocusHost: "previewAutomation.focusHost",
 
+  // Provider session methods
+  providerReloadSessionResources: "provider.reloadSessionResources",
+
   // Server meta
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
@@ -313,6 +321,15 @@ export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProv
   success: ServerProviderUpdatedPayload,
   error: EnvironmentAuthorizationError,
 });
+
+export const WsProviderReloadSessionResourcesRpc = Rpc.make(
+  WS_METHODS.providerReloadSessionResources,
+  {
+    payload: ProviderReloadSessionResourcesInput,
+    success: SessionResourcesUpdatedPayload,
+    error: Schema.Union([ProviderSessionResourcesReloadError, EnvironmentAuthorizationError]),
+  },
+);
 
 export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
   payload: ServerProviderUpdateInput,
@@ -844,6 +861,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
+  WsProviderReloadSessionResourcesRpc,
   WsServerUpdateProviderRpc,
   WsServerStartProviderLoginRpc,
   WsServerSubmitProviderLoginCodeRpc,

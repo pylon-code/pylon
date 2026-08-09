@@ -157,6 +157,15 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     NonNullable<ProviderAdapterShape<ProviderAdapterError>["respondToInteraction"]>
   >(() => Effect.void);
 
+  const reloadSessionResources = vi.fn(
+    (
+      _threadId: ThreadId,
+    ): Effect.Effect<
+      { available: true; skills: readonly []; prompts: readonly []; commands: readonly [] },
+      ProviderAdapterError
+    > => Effect.succeed({ available: true, skills: [], prompts: [], commands: [] }),
+  );
+
   const stopSession = vi.fn(
     (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
       Effect.sync(() => {
@@ -215,6 +224,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     respondToRequest,
     respondToUserInput,
     respondToInteraction,
+    reloadSessionResources,
     stopSession,
     listSessions,
     hasSession,
@@ -248,6 +258,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     startSession,
     sendTurn,
     respondToInteraction,
+    reloadSessionResources,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -913,6 +924,10 @@ routing.layer("ProviderServiceLive routing", (it) => {
         ],
       ]);
 
+      const resources = yield* provider.reloadSessionResources({ threadId: session.threadId });
+      assert.deepEqual(resources, { available: true, skills: [], prompts: [], commands: [] });
+      assert.deepEqual(routing.codex.reloadSessionResources.mock.calls, [[session.threadId]]);
+
       yield* provider.rollbackConversation({
         threadId: session.threadId,
         numTurns: 0,
@@ -921,6 +936,12 @@ routing.layer("ProviderServiceLive routing", (it) => {
       yield* provider.stopSession({ threadId: session.threadId });
       routing.codex.startSession.mockClear();
       routing.codex.sendTurn.mockClear();
+
+      const reloadError = yield* provider
+        .reloadSessionResources({ threadId: session.threadId })
+        .pipe(Effect.flip);
+      assert.equal(reloadError._tag, "ProviderValidationError");
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
 
       yield* provider.sendTurn({
         threadId: session.threadId,

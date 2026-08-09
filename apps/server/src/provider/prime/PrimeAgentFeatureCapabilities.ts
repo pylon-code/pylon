@@ -67,10 +67,10 @@ export function makePrimeAgentFeatureCapabilities(input: {
       operations: ["observe", "hierarchy"],
     },
     resources: {
-      support: "read-only",
+      support: "read-write",
       reason:
-        "Pylon shows the safe session-scoped command inventory loaded when a Prime Agent daemon session starts; package, MCP, and reload controls are not wired yet.",
-      operations: ["commands"],
+        "Pylon shows safe session-scoped commands and can explicitly reload full-access sessions while idle; supervised reload, packages, and MCP controls are unavailable.",
+      operations: ["commands", "reload"],
     },
     inputQueue: {
       support: "read-write",

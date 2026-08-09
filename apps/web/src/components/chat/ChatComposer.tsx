@@ -24,6 +24,7 @@ import {
   deriveLatestSessionResources,
   formatProviderSlashCommandDescription,
   resolveSessionSlashCommands,
+  supportsSessionResourceReload,
 } from "@t3tools/client-runtime/state/session-resources";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
@@ -244,6 +245,7 @@ import {
   LockIcon,
   LockOpenIcon,
   PenLineIcon,
+  RefreshCwIcon,
   SparklesIcon,
   XIcon,
 } from "lucide-react";
@@ -628,6 +630,7 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
+  onReloadSessionResources: () => Promise<void>;
   onImplementPlanInNewThread: () => void;
   onContinueThreadOnAccount: () => void;
   onRespondToApproval: (
@@ -713,6 +716,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isContinuingThreadOnAccount,
     onSend,
     onInterrupt,
+    onReloadSessionResources,
     onImplementPlanInNewThread,
     onContinueThreadOnAccount,
     onRespondToApproval,
@@ -928,6 +932,32 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => selectedProviderEntry?.snapshot ?? null,
     [selectedProviderEntry],
   );
+  const activeSessionProviderStatus = useMemo(() => {
+    const instanceId = activeThread?.session?.providerInstanceId;
+    if (instanceId === undefined) return null;
+    return (
+      providerInstanceEntries.find((entry) => entry.instanceId === instanceId)?.snapshot ?? null
+    );
+  }, [activeThread?.session?.providerInstanceId, providerInstanceEntries]);
+  const showSessionResourceReload =
+    activeThreadId !== null &&
+    activeThread?.session?.runtimeMode === "full-access" &&
+    supportsSessionResourceReload(activeSessionProviderStatus);
+  const sessionResourceReloadDisabled =
+    activeThread?.session?.status !== "ready" ||
+    phase === "running" ||
+    isConnecting ||
+    environmentUnavailable !== null;
+  const [isReloadingSessionResources, setIsReloadingSessionResources] = useState(false);
+  const reloadSessionResources = useCallback(async () => {
+    if (sessionResourceReloadDisabled || isReloadingSessionResources) return;
+    setIsReloadingSessionResources(true);
+    try {
+      await onReloadSessionResources();
+    } finally {
+      setIsReloadingSessionResources(false);
+    }
+  }, [isReloadingSessionResources, onReloadSessionResources, sessionResourceReloadDisabled]);
   const sessionResources = useMemo(
     () => deriveLatestSessionResources(activeThreadActivities ?? [], selectedInstanceId),
     [activeThreadActivities, selectedInstanceId],
@@ -3318,6 +3348,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     />
                   </>
                 )}
+                {showSessionResourceReload ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <ComposerControl
+                          type="button"
+                          aria-label="Reload session resources"
+                          disabled={sessionResourceReloadDisabled || isReloadingSessionResources}
+                          onClick={() => void reloadSessionResources()}
+                        />
+                      }
+                    >
+                      <ComposerControlIcon icon={RefreshCwIcon} />
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">
+                      {isReloadingSessionResources
+                        ? "Reloading session resources…"
+                        : "Reload session commands and resources"}
+                    </TooltipPopup>
+                  </Tooltip>
+                ) : null}
               </div>
 
               {/* Right side: send / stop button */}

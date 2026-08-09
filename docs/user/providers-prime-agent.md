@@ -52,8 +52,12 @@ turn also clears queued steering input. Native select, confirm, input, and edito
 the session panel; notifications, status, and widgets use the same provider-neutral presentation
 surface. In Full access, the slash-command menu also shows the safe command names, descriptions, and
 argument hints loaded for that thread when its native session starts, including prompt and skill commands.
-Pylon does not send resource paths, diagnostics, or extension source details to clients. Supervised sessions
-keep discovered commands disabled. Observed Prime subagents appear in Pylon's Agents hierarchy. When the selected model explicitly
+While the session is idle, the refresh control reloads Prime's settings, authentication, MCP configuration,
+resources, runtime, and extension lifecycle before replacing the visible command catalog. It is intentionally
+unavailable in Supervised mode. If the reload cannot finish safely, Pylon clears the catalog and closes that
+native session rather than risking a partially reloaded runtime; it never retries automatically. Pylon does not
+send resource paths, diagnostics, or extension source details
+to clients. Supervised sessions keep discovered commands disabled. Observed Prime subagents appear in Pylon's Agents hierarchy. When the selected model explicitly
 exposes reasoning text, Pylon adds a bounded final **Reasoning** entry to the work log. Incremental
 thinking deltas and provider-private reasoning metadata are not persisted.
 
@@ -108,7 +112,7 @@ instead of silently opening a blank or merely recent Prime session.
 - Plan mode, provider-conversation rollback, queue inspection and follow-up controls, and Pylon's
   per-thread MCP bridge are not supported yet.
 - Pylon does not yet present live Prime reasoning streams, cost breakdowns, goals, heartbeats,
-  saved-session history, native package or MCP catalogs, or resource reload controls as first-class features.
+  saved-session history, or native package or MCP catalogs as first-class features.
 - Prime Agent is not used for Pylon's background text-generation helpers in Early Access.
 - ACP compatibility mode is intentionally narrower: it hides daemon-only thinking and service-tier
   controls, cannot steer or switch models in a running session, supports only Full access, and does

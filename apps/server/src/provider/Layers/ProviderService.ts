@@ -14,6 +14,7 @@ import {
   NonNegativeInt,
   ThreadId,
   ProviderInterruptTurnInput,
+  ProviderReloadSessionResourcesInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRespondToInteractionInput,
@@ -49,6 +50,7 @@ import {
 import {
   ProviderAdapterRequestError,
   type ProviderAdapterError,
+  ProviderUnsupportedError,
   ProviderValidationError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
@@ -899,6 +901,38 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const reloadSessionResources: ProviderServiceMethod<"reloadSessionResources"> = Effect.fn(
+    "reloadSessionResources",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.reloadSessionResources",
+      schema: ProviderReloadSessionResourcesInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.reloadSessionResources",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.reloadSessionResources",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const reload = routed.adapter.reloadSessionResources;
+    if (reload === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "reload-session-resources",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+    });
+    return yield* reload(routed.threadId);
+  });
+
   const stopSession: ProviderServiceMethod<"stopSession"> = Effect.fn("stopSession")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1148,6 +1182,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToRequest,
     respondToUserInput,
     respondToInteraction,
+    reloadSessionResources,
     stopSession,
     listSessions,
     getCapabilities,

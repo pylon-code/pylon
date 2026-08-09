@@ -38,6 +38,7 @@ import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
+  ProviderAdapterUnsupportedOperationError,
   ProviderAdapterValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
@@ -248,6 +249,10 @@ interface PrimeAgentDaemonSessionContext {
   readonly permissionToken: string | undefined;
   approvalsAcceptedForSession: boolean;
   activeTurn: PrimeAgentDaemonActiveTurn | undefined;
+  nativeRunActive: boolean;
+  nativeBashActive: boolean;
+  readonly activeNativeChildren: Set<string>;
+  resourceReloadCompletion: Deferred.Deferred<void> | undefined;
   activeCompactionScope: { readonly turnId?: TurnId | undefined } | undefined;
   stopRequested: boolean;
   stopped: boolean;
@@ -364,6 +369,33 @@ export function makePrimeAgentDaemonAdapter(
     const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
 
+    const withThreadMutationLock = <A, E, R>(
+      threadId: ThreadId,
+      effect: Effect.Effect<A, E, R>,
+      interruptibleWait = false,
+    ): Effect.Effect<A, E, R> =>
+      Effect.suspend(() =>
+        withThreadLock(
+          threadId,
+          Effect.gen(function* () {
+            const completion = sessions.get(threadId)?.resourceReloadCompletion;
+            if (completion !== undefined) {
+              return { _tag: "Wait" as const, completion };
+            }
+            return { _tag: "Result" as const, value: yield* effect };
+          }),
+        ).pipe(
+          Effect.flatMap((outcome) =>
+            outcome._tag === "Result"
+              ? Effect.succeed(outcome.value)
+              : (interruptibleWait
+                  ? Effect.interruptible(Deferred.await(outcome.completion))
+                  : Deferred.await(outcome.completion)
+                ).pipe(Effect.andThen(withThreadMutationLock(threadId, effect, interruptibleWait))),
+          ),
+        ),
+      );
+
     const logNativeKind = (threadId: ThreadId, event: PrimeDaemonEvent) =>
       Effect.gen(function* () {
         if (!nativeEventLogger) return;
@@ -398,6 +430,21 @@ export function makePrimeAgentDaemonAdapter(
         ? Effect.fail(new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId }))
         : Effect.succeed(context);
     };
+
+    const publishSessionResources = (
+      threadId: ThreadId,
+      payload: PrimeAgentDaemonSessionRuntime["initialResources"],
+    ) =>
+      Effect.gen(function* () {
+        yield* offerRuntimeEvent({
+          type: "session.resources.updated",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          providerInstanceId: boundInstanceId,
+          threadId,
+          payload,
+        });
+      });
 
     const publishDrafts = (
       context: PrimeAgentDaemonSessionContext,
@@ -632,6 +679,17 @@ export function makePrimeAgentDaemonAdapter(
             Effect.sync(() => {
               if (sessions.get(context.threadId) === context && !context.stopped) {
                 context.autoCompactionEnabled = event.state.autoCompactionEnabled;
+                context.nativeRunActive = event.state.isStreaming;
+                context.nativeBashActive = event.state.isBashRunning;
+                context.activeCompactionScope = event.state.isCompacting
+                  ? (context.activeCompactionScope ?? {})
+                  : undefined;
+                context.activeNativeChildren.clear();
+                for (const child of event.children) {
+                  if (child.status === "queued" || child.status === "running") {
+                    context.activeNativeChildren.add(child.id);
+                  }
+                }
               }
             }),
           );
@@ -939,6 +997,7 @@ export function makePrimeAgentDaemonAdapter(
           const settled = yield* withThreadLock(
             context.threadId,
             Effect.gen(function* () {
+              context.nativeRunActive = false;
               const turn = context.activeTurn;
               if (turn === undefined) return false;
               if (turn.queuedInputCount > 0) {
@@ -1056,6 +1115,19 @@ export function makePrimeAgentDaemonAdapter(
           Effect.gen(function* () {
             if (sessions.get(context.threadId) !== context || context.stopped) return;
             const turn = context.activeTurn;
+            if (event._tag === "RunStarted") {
+              context.nativeRunActive = true;
+            } else if (event._tag === "BashStarted") {
+              context.nativeBashActive = true;
+            } else if (event._tag === "BashCompleted") {
+              context.nativeBashActive = false;
+            } else if (event._tag === "ChildUpdated") {
+              if (event.child.status === "queued" || event.child.status === "running") {
+                context.activeNativeChildren.add(event.child.id);
+              } else {
+                context.activeNativeChildren.delete(event.child.id);
+              }
+            }
             if (event._tag === "ThinkingLevelChanged") {
               context.currentThinkingLevel = event.level;
             } else if (event._tag === "ServiceTierChanged") {
@@ -1120,7 +1192,10 @@ export function makePrimeAgentDaemonAdapter(
       );
 
     /** Must be called with the thread lock held. */
-    const stopSessionInternal = (context: PrimeAgentDaemonSessionContext) =>
+    const stopSessionInternal = (
+      context: PrimeAgentDaemonSessionContext,
+      terminalReason?: string,
+    ) =>
       Effect.gen(function* () {
         if (sessions.get(context.threadId) !== context || context.stopped) return;
         context.stopRequested = true;
@@ -1149,10 +1224,13 @@ export function makePrimeAgentDaemonAdapter(
             providerInstanceId: boundInstanceId,
             threadId: context.threadId,
             payload: {
-              exitKind: Exit.isSuccess(disposeExit) ? "graceful" : "error",
-              ...(Exit.isSuccess(disposeExit)
-                ? {}
-                : { reason: "Prime Agent daemon session disposal failed." }),
+              exitKind:
+                Exit.isSuccess(disposeExit) && terminalReason === undefined ? "graceful" : "error",
+              ...(terminalReason !== undefined
+                ? { reason: terminalReason }
+                : Exit.isSuccess(disposeExit)
+                  ? {}
+                  : { reason: "Prime Agent daemon session disposal failed." }),
             },
           });
         }
@@ -1167,7 +1245,7 @@ export function makePrimeAgentDaemonAdapter(
       });
 
     const startSession: PrimeAgentAdapterShape["startSession"] = (input) =>
-      withThreadLock(
+      withThreadMutationLock(
         input.threadId,
         Effect.gen(function* () {
           if (input.provider !== undefined && input.provider !== PROVIDER) {
@@ -1483,7 +1561,15 @@ export function makePrimeAgentDaemonAdapter(
             permissionToken,
             approvalsAcceptedForSession: false,
             activeTurn: undefined,
-            activeCompactionScope: undefined,
+            nativeRunActive: runtime.initialSnapshot.state.isStreaming,
+            nativeBashActive: runtime.initialSnapshot.state.isBashRunning,
+            activeNativeChildren: new Set(
+              runtime.initialSnapshot.children
+                .filter((child) => child.status === "queued" || child.status === "running")
+                .map((child) => child.id),
+            ),
+            resourceReloadCompletion: undefined,
+            activeCompactionScope: runtime.initialSnapshot.state.isCompacting ? {} : undefined,
             stopRequested: false,
             stopped: false,
             exitEmitted: false,
@@ -1503,14 +1589,7 @@ export function makePrimeAgentDaemonAdapter(
             threadId: input.threadId,
             payload: { resume: input.resumeCursor !== undefined },
           });
-          yield* offerRuntimeEvent({
-            type: "session.resources.updated",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            providerInstanceId: boundInstanceId,
-            threadId: input.threadId,
-            payload: runtime.initialResources,
-          });
+          yield* publishSessionResources(input.threadId, runtime.initialResources);
           yield* offerRuntimeEvent({
             type: "session.state.changed",
             ...(yield* makeEventStamp()),
@@ -1590,7 +1669,7 @@ export function makePrimeAgentDaemonAdapter(
     const sendTurn: PrimeAgentAdapterShape["sendTurn"] = (input) =>
       Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const prepared = yield* withThreadLock(
+          const prepared = yield* withThreadMutationLock(
             input.threadId,
             Effect.gen(function* () {
               const context = yield* requireSession(input.threadId);
@@ -1741,6 +1820,7 @@ export function makePrimeAgentDaemonAdapter(
                 turnControls,
               };
             }),
+            true,
           );
           if (prepared._tag === "Steered") return prepared.result;
           const { context, turn, text, images, requestedModel } = prepared;
@@ -1808,7 +1888,7 @@ export function makePrimeAgentDaemonAdapter(
       );
 
     const interruptTurn: PrimeAgentAdapterShape["interruptTurn"] = (threadId, turnId) =>
-      withThreadLock(
+      withThreadMutationLock(
         threadId,
         Effect.gen(function* () {
           const context = sessions.get(threadId);
@@ -2030,20 +2110,114 @@ export function makePrimeAgentDaemonAdapter(
           issue: "Prime Agent daemon conversation rollback is unsupported.",
         });
       });
-    const stopSession: PrimeAgentAdapterShape["stopSession"] = (threadId) =>
+    const reloadSessionResources: NonNullable<PrimeAgentAdapterShape["reloadSessionResources"]> = (
+      threadId,
+    ) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
-          const context = sessions.get(threadId);
-          if (context === undefined || context.stopped) {
-            return yield* new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId });
-          }
-          context.stopRequested = true;
-          if (context.activeTurn !== undefined) {
-            context.activeTurn.cancellationRequested = true;
-            context.activeTurn.controller.abort();
-          }
-          yield* withThreadLock(threadId, stopSessionInternal(context));
+          const { context, completion } = yield* withThreadLock(
+            threadId,
+            Effect.gen(function* () {
+              const context = yield* requireSession(threadId);
+              if (context.session.runtimeMode !== "full-access") {
+                return yield* new ProviderAdapterUnsupportedOperationError({
+                  provider: PROVIDER,
+                  operation: "reloadSessionResources",
+                });
+              }
+              if (
+                context.resourceReloadCompletion !== undefined ||
+                context.session.status !== "ready" ||
+                context.activeTurn !== undefined ||
+                context.nativeRunActive ||
+                context.nativeBashActive ||
+                context.activeNativeChildren.size > 0 ||
+                context.activeCompactionScope !== undefined ||
+                context.pendingApprovals.size > 0 ||
+                context.pendingInteractions.size > 0
+              ) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "reloadSessionResources",
+                  issue: "Session resources can only be reloaded while the session is idle.",
+                });
+              }
+              const completion = yield* Deferred.make<void>();
+              context.resourceReloadCompletion = completion;
+              return { context, completion };
+            }),
+          );
+
+          return yield* Effect.gen(function* () {
+            const outcome = yield* context.runtime.reloadResources.pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/reload-resources", error),
+              ),
+              Effect.exit,
+            );
+            return yield* withThreadLock(
+              threadId,
+              Effect.gen(function* () {
+                if (
+                  context.stopRequested ||
+                  context.stopped ||
+                  sessions.get(threadId) !== context
+                ) {
+                  return yield* new ProviderAdapterSessionNotFoundError({
+                    provider: PROVIDER,
+                    threadId,
+                  });
+                }
+                const payload = Exit.isSuccess(outcome)
+                  ? outcome.value
+                  : { available: false as const, skills: [], prompts: [], commands: [] };
+                yield* publishSessionResources(threadId, payload);
+                if (Exit.isFailure(outcome)) {
+                  yield* stopSessionInternal(
+                    context,
+                    "Prime Agent session closed after session resources could not be reloaded safely.",
+                  ).pipe(Effect.ignore);
+                  return yield* Effect.failCause(outcome.cause);
+                }
+                return payload;
+              }),
+            );
+          }).pipe(
+            Effect.ensuring(
+              withThreadLock(
+                threadId,
+                Effect.gen(function* () {
+                  if (context.resourceReloadCompletion === completion) {
+                    context.resourceReloadCompletion = undefined;
+                  }
+                  yield* Deferred.succeed(completion, undefined).pipe(Effect.ignore);
+                }),
+              ),
+            ),
+          );
         }),
+      );
+
+    const stopSession: PrimeAgentAdapterShape["stopSession"] = (threadId) =>
+      Effect.uninterruptible(
+        withThreadMutationLock(
+          threadId,
+          Effect.gen(function* () {
+            const context = sessions.get(threadId);
+            if (context === undefined || context.stopped) {
+              return yield* new ProviderAdapterSessionNotFoundError({
+                provider: PROVIDER,
+                threadId,
+              });
+            }
+            context.stopRequested = true;
+            if (context.activeTurn !== undefined) {
+              context.activeTurn.cancellationRequested = true;
+              context.activeTurn.controller.abort();
+            }
+            yield* stopSessionInternal(context);
+          }),
+        ),
       );
     const listSessions: PrimeAgentAdapterShape["listSessions"] = () =>
       Effect.sync(() => Array.from(sessions.values(), (context) => ({ ...context.session })));
@@ -2055,16 +2229,21 @@ export function makePrimeAgentDaemonAdapter(
     const stopAll: PrimeAgentAdapterShape["stopAll"] = () =>
       Effect.gen(function* () {
         const contexts = Array.from(sessions.values());
-        for (const context of contexts) {
-          context.stopRequested = true;
-          if (context.activeTurn !== undefined) {
-            context.activeTurn.cancellationRequested = true;
-            context.activeTurn.controller.abort();
-          }
-        }
         yield* Effect.forEach(
           contexts,
-          (context) => withThreadLock(context.threadId, stopSessionInternal(context)),
+          (context) =>
+            withThreadMutationLock(
+              context.threadId,
+              Effect.gen(function* () {
+                if (sessions.get(context.threadId) !== context || context.stopped) return;
+                context.stopRequested = true;
+                if (context.activeTurn !== undefined) {
+                  context.activeTurn.cancellationRequested = true;
+                  context.activeTurn.controller.abort();
+                }
+                yield* stopSessionInternal(context);
+              }),
+            ),
           { discard: true },
         );
       }).pipe(Effect.uninterruptible);
@@ -2088,6 +2267,7 @@ export function makePrimeAgentDaemonAdapter(
       respondToRequest,
       respondToUserInput,
       respondToInteraction,
+      reloadSessionResources,
       readThread,
       rollbackThread,
       stopSession,
