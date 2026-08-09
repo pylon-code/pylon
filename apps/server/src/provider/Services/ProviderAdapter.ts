@@ -12,6 +12,7 @@ import type {
   ProviderApprovalDecision,
   ProviderCancelSessionAgentResult,
   ProviderFollowUpInput,
+  ProviderMessageSessionAgentResult,
   ProviderDriverKind,
   ProviderSetSessionAutoCompactionInput,
   ProviderUserInputAnswers,
@@ -126,6 +127,13 @@ export interface ProviderAdapterShape<TError> {
     threadId: ThreadId,
     agentId: RuntimeTaskId,
   ) => Effect.Effect<ProviderCancelSessionAgentResult, TError>;
+
+  /** Send bounded text to one known live provider agent without persisting content. */
+  readonly messageSessionAgent?: (
+    threadId: ThreadId,
+    agentId: RuntimeTaskId,
+    message: string,
+  ) => Effect.Effect<ProviderMessageSessionAgentResult, TError>;
 
   /** Read one active session's recursive agent-spawn depth. */
   readonly getSessionAgentDepth?: (

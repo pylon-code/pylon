@@ -124,6 +124,38 @@ export const ProviderCancelSessionAgentResult = Schema.Struct({
 });
 export type ProviderCancelSessionAgentResult = typeof ProviderCancelSessionAgentResult.Type;
 
+export const PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS = 16_384;
+
+export const ProviderMessageSessionAgentInput = Schema.Struct({
+  threadId: ThreadId,
+  agentId: RuntimeTaskId.check(Schema.isMaxLength(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS)),
+  message: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS),
+  ),
+});
+export type ProviderMessageSessionAgentInput = typeof ProviderMessageSessionAgentInput.Type;
+
+export const ProviderMessageSessionAgentResult = Schema.Struct({
+  agentId: RuntimeTaskId.check(Schema.isMaxLength(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS)),
+  disposition: Schema.Literals(["delivered", "queued"]),
+});
+export type ProviderMessageSessionAgentResult = typeof ProviderMessageSessionAgentResult.Type;
+
+export class ProviderMessageSessionAgentError extends Schema.TaggedErrorClass<ProviderMessageSessionAgentError>()(
+  "ProviderMessageSessionAgentError",
+  {
+    reason: Schema.Literals([
+      "session-not-ready",
+      "unsupported",
+      "agent-not-active",
+      "agent-not-messageable",
+      "invalid-message",
+      "delivery-unknown",
+      "request-failed",
+    ]),
+  },
+) {}
+
 export class ProviderCancelSessionAgentError extends Schema.TaggedErrorClass<ProviderCancelSessionAgentError>()(
   "ProviderCancelSessionAgentError",
   {

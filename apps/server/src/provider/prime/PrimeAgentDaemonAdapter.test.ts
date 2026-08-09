@@ -5,6 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   ApprovalRequestId,
   PrimeAgentSettings,
+  PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
@@ -193,9 +194,23 @@ interface FakeCaptures {
   compactionStateFailure: boolean;
   compactionStateFailureAfterMutation: boolean;
   agentRoster: Array<Extract<PrimeDaemonEvent, { readonly _tag: "ChildUpdated" }>["child"]>;
+  agentRosterReads: number;
   cancelAgentCalls: Array<string>;
   cancelAgentResult: boolean;
   cancelAgentFailure: boolean;
+  agentMessageAvailable: boolean;
+  agentMessageCalls: Array<{ readonly activeSessionId: string; readonly message: string }>;
+  agentMessageDisposition: "delivered" | "queued";
+  agentMessageFailureReason:
+    | "request-failed"
+    | "request-timed-out"
+    | "invalid-response"
+    | undefined;
+  agentMessageObserved: Queue.Queue<void> | undefined;
+  agentMessageRelease: Deferred.Deferred<void> | undefined;
+  agentMessageRosterAfterInvocation:
+    | Array<Extract<PrimeDaemonEvent, { readonly _tag: "ChildUpdated" }>["child"]>
+    | undefined;
   agentRosterFailure: boolean;
   sessionStats: PrimeAgentDaemonSessionStats;
   promptObserved: Queue.Queue<void> | undefined;
@@ -269,9 +284,17 @@ function makeCaptures(): FakeCaptures {
     compactionStateFailure: false,
     compactionStateFailureAfterMutation: false,
     agentRoster: [],
+    agentRosterReads: 0,
     cancelAgentCalls: [],
     cancelAgentResult: true,
     cancelAgentFailure: false,
+    agentMessageAvailable: true,
+    agentMessageCalls: [],
+    agentMessageDisposition: "delivered",
+    agentMessageFailureReason: undefined,
+    agentMessageObserved: undefined,
+    agentMessageRelease: undefined,
+    agentMessageRosterAfterInvocation: undefined,
     agentRosterFailure: false,
     sessionStats: {
       contextUsage: { usedTokens: 320, maxTokens: 200_000 },
@@ -396,8 +419,10 @@ function fakeRuntimeFactory(
           }
           return captures.agentDepth;
         }),
-        getAgentRoster: Effect.suspend(() =>
-          captures.agentRosterFailure
+        agentMessageAvailable: captures.agentMessageAvailable,
+        getAgentRoster: Effect.suspend(() => {
+          captures.agentRosterReads += 1;
+          return captures.agentRosterFailure
             ? Effect.fail(
                 new PrimeAgentDaemonSessionRuntimeError({
                   operation: "get-agent-roster",
@@ -405,8 +430,8 @@ function fakeRuntimeFactory(
                   detail: "roster failed",
                 }),
               )
-            : Effect.succeed(captures.agentRoster),
-        ),
+            : Effect.succeed(captures.agentRoster);
+        }),
         cancelAgent: (agentId) =>
           Effect.suspend(() => {
             captures.cancelAgentCalls.push(agentId);
@@ -419,6 +444,28 @@ function fakeRuntimeFactory(
                   }),
                 )
               : Effect.succeed(captures.cancelAgentResult);
+          }),
+        messageAgent: (activeSessionId, message) =>
+          Effect.gen(function* () {
+            captures.agentMessageCalls.push({ activeSessionId, message });
+            if (captures.agentMessageRosterAfterInvocation !== undefined) {
+              captures.agentRoster = captures.agentMessageRosterAfterInvocation;
+            }
+            if (captures.agentMessageObserved !== undefined) {
+              yield* Queue.offer(captures.agentMessageObserved, undefined);
+            }
+            if (captures.agentMessageRelease !== undefined) {
+              yield* Deferred.await(captures.agentMessageRelease);
+            }
+            captures.order.push("agent-message-completed");
+            if (captures.agentMessageFailureReason !== undefined) {
+              return yield* new PrimeAgentDaemonSessionRuntimeError({
+                operation: "message-agent",
+                reason: captures.agentMessageFailureReason,
+                detail: `private native failure for ${activeSessionId}: ${message}`,
+              });
+            }
+            return captures.agentMessageDisposition;
           }),
         setAgentDepth: (maxDepth) =>
           Effect.gen(function* () {
@@ -1693,6 +1740,323 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("messages a nested live descendant through the authoritative native endpoint", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.agentMessageDisposition = "queued";
+        captures.agentRoster = [
+          {
+            id: "nested-child",
+            parentId: "intermediate-child",
+            activeSessionId: "stale-native-endpoint",
+            label: "nested worker",
+            status: "queued",
+          },
+        ];
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        captures.agentRoster = [
+          {
+            id: "nested-child",
+            parentId: "intermediate-child",
+            activeSessionId: "authoritative-native-endpoint",
+            label: "nested worker",
+            status: "running",
+          },
+        ];
+
+        const result = yield* adapter.messageSessionAgent!(
+          threadId,
+          RuntimeTaskId.make("nested-child"),
+          "  review the final diff  ",
+        );
+
+        expect(result).toEqual({ agentId: "nested-child", disposition: "queued" });
+        expect(captures.agentRosterReads).toBe(1);
+        expect(captures.agentMessageCalls).toEqual([
+          {
+            activeSessionId: "authoritative-native-endpoint",
+            message: "review the final diff",
+          },
+        ]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects unsupported and invalid agent-message preflight without sending", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const supervisedCaptures = makeCaptures();
+        const supervisedAdapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(supervisedCaptures),
+        });
+        const supervisedThread = ThreadId.make("prime-daemon/supervised-message");
+        yield* supervisedAdapter.startSession({
+          threadId: supervisedThread,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        expect(
+          yield* supervisedAdapter.messageSessionAgent!(
+            supervisedThread,
+            RuntimeTaskId.make("supervised-child"),
+            "hello",
+          ).pipe(Effect.flip),
+        ).toMatchObject({
+          _tag: "ProviderAdapterUnsupportedOperationError",
+          operation: "messageSessionAgent",
+        });
+        expect(supervisedCaptures.agentRosterReads).toBe(0);
+        expect(supervisedCaptures.agentMessageCalls).toEqual([]);
+
+        const unsupportedCaptures = makeCaptures();
+        unsupportedCaptures.agentMessageAvailable = false;
+        unsupportedCaptures.agentRoster = [
+          {
+            id: "child-live",
+            activeSessionId: "native-live",
+            label: "worker",
+            status: "running",
+          },
+        ];
+        const unsupportedAdapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(unsupportedCaptures),
+        });
+        const unsupportedThread = ThreadId.make("prime-daemon/unsupported-message");
+        yield* unsupportedAdapter.startSession({
+          threadId: unsupportedThread,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        expect(
+          yield* unsupportedAdapter.messageSessionAgent!(
+            unsupportedThread,
+            RuntimeTaskId.make("child-live"),
+            "hello",
+          ).pipe(Effect.flip),
+        ).toMatchObject({
+          _tag: "ProviderAdapterUnsupportedOperationError",
+          operation: "messageSessionAgent",
+        });
+        expect(unsupportedCaptures.agentRosterReads).toBe(0);
+        expect(unsupportedCaptures.agentMessageCalls).toEqual([]);
+
+        const rosterFailureCaptures = makeCaptures();
+        rosterFailureCaptures.agentRoster = [
+          {
+            id: "child-roster-failure",
+            activeSessionId: "native-roster-failure",
+            label: "worker",
+            status: "running",
+          },
+        ];
+        const rosterFailureAdapter = yield* makePrimeAgentDaemonAdapter(
+          decodeSettings({}),
+          manager,
+          {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(rosterFailureCaptures),
+          },
+        );
+        const rosterFailureThread = ThreadId.make("prime-daemon/message-roster-failure");
+        yield* rosterFailureAdapter.startSession({
+          threadId: rosterFailureThread,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        rosterFailureCaptures.agentRosterFailure = true;
+        expect(
+          yield* rosterFailureAdapter.messageSessionAgent!(
+            rosterFailureThread,
+            RuntimeTaskId.make("child-roster-failure"),
+            "hello",
+          ).pipe(Effect.flip),
+        ).toMatchObject({
+          _tag: "ProviderAdapterRequestError",
+          method: "session/get-agent-roster",
+        });
+        expect(rosterFailureCaptures.agentRosterReads).toBe(1);
+        expect(rosterFailureCaptures.agentMessageCalls).toEqual([]);
+
+        const captures = makeCaptures();
+        captures.agentRoster = [
+          { id: "child-settled", label: "done", status: "done" },
+          { id: "child-no-endpoint", label: "starting", status: "queued" },
+          {
+            id: "child-cancelling",
+            activeSessionId: "native-cancelling",
+            label: "stopping",
+            status: "running",
+          },
+        ];
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const preflightThread = ThreadId.make("prime-daemon/message-preflight");
+        yield* adapter.startSession({
+          threadId: preflightThread,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+
+        for (const agentId of ["unknown-child", "child-settled"] as const) {
+          expect(
+            yield* adapter.messageSessionAgent!(
+              preflightThread,
+              RuntimeTaskId.make(agentId),
+              "hello",
+            ).pipe(Effect.flip),
+          ).toMatchObject({ _tag: "ProviderAdapterValidationError" });
+        }
+        for (const message of ["   ", "x".repeat(PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS + 1)]) {
+          expect(
+            yield* adapter.messageSessionAgent!(
+              preflightThread,
+              RuntimeTaskId.make("child-settled"),
+              message,
+            ).pipe(Effect.flip),
+          ).toMatchObject({
+            _tag: "ProviderAdapterRequestError",
+            method: "session/message-agent-invalid-message",
+          });
+        }
+        const notReady = yield* adapter.messageSessionAgent!(
+          preflightThread,
+          RuntimeTaskId.make("child-no-endpoint"),
+          "hello",
+        ).pipe(Effect.flip);
+        expect(notReady).toMatchObject({
+          _tag: "ProviderAdapterRequestError",
+          method: "session/message-agent-not-ready",
+        });
+
+        yield* adapter.cancelSessionAgent!(preflightThread, RuntimeTaskId.make("child-cancelling"));
+        expect(
+          yield* adapter.messageSessionAgent!(
+            preflightThread,
+            RuntimeTaskId.make("child-cancelling"),
+            "hello",
+          ).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterValidationError" });
+        expect(captures.agentMessageCalls).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("maps uncertain delivery generically, reconciles once, and keeps the session", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        for (const reason of ["request-failed", "request-timed-out", "invalid-response"] as const) {
+          const captures = makeCaptures();
+          const agentId = `child-${reason}`;
+          const privateEndpoint = `private-endpoint-${reason}`;
+          const privateMessage = `private-message-${reason}`;
+          captures.agentRoster = [
+            {
+              id: agentId,
+              activeSessionId: privateEndpoint,
+              label: "worker",
+              status: "running",
+            },
+          ];
+          captures.agentMessageFailureReason = reason;
+          captures.agentMessageRosterAfterInvocation = [
+            { id: agentId, label: "worker", status: "done" },
+          ];
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const failureThread = ThreadId.make(`prime-daemon/message-${reason}`);
+          yield* adapter.startSession({
+            threadId: failureThread,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          });
+
+          const error = yield* adapter.messageSessionAgent!(
+            failureThread,
+            RuntimeTaskId.make(agentId),
+            privateMessage,
+          ).pipe(Effect.flip);
+          expect(error).toMatchObject({
+            _tag: "ProviderAdapterRequestError",
+            method: "session/message-agent-delivery-unknown",
+            detail: "Prime Agent message delivery could not be confirmed.",
+          });
+          expect(encodeUnknownJson(error)).not.toContain(privateEndpoint);
+          expect(encodeUnknownJson(error)).not.toContain(privateMessage);
+          expect(error.message).not.toContain(privateMessage);
+          expect(captures.agentMessageCalls).toEqual([
+            { activeSessionId: privateEndpoint, message: privateMessage },
+          ]);
+          expect(captures.agentRosterReads).toBe(2);
+          expect(yield* adapter.hasSession(failureThread)).toBe(true);
+
+          const settled = yield* adapter.messageSessionAgent!(
+            failureThread,
+            RuntimeTaskId.make(agentId),
+            "do not retry",
+          ).pipe(Effect.flip);
+          expect(settled).toMatchObject({ _tag: "ProviderAdapterValidationError" });
+          expect(captures.agentMessageCalls).toHaveLength(1);
+        }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("finishes an admitted agent message before honoring interruption", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.agentRoster = [
+          {
+            id: "child-locked",
+            activeSessionId: "native-locked",
+            label: "worker",
+            status: "running",
+          },
+        ];
+        captures.agentMessageObserved = yield* Queue.unbounded<void>();
+        captures.agentMessageRelease = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const lockedThread = ThreadId.make("prime-daemon/message-uninterruptible");
+        yield* adapter.startSession({
+          threadId: lockedThread,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+
+        const deliveryFiber = yield* adapter.messageSessionAgent!(
+          lockedThread,
+          RuntimeTaskId.make("child-locked"),
+          "hello",
+        ).pipe(Effect.forkChild);
+        yield* Queue.take(captures.agentMessageObserved);
+        const interruptFiber = yield* Fiber.interrupt(deliveryFiber).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(captures.order).not.toContain("agent-message-completed");
+        yield* Deferred.succeed(captures.agentMessageRelease, undefined);
+        yield* Fiber.join(interruptFiber);
+
+        expect(captures.order).toContain("agent-message-completed");
+        expect(captures.agentMessageCalls).toEqual([
+          { activeSessionId: "native-locked", message: "hello" },
+        ]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("settles children missing from an authoritative reconnect snapshot", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -2285,7 +2649,9 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(encodeUnknownJson(subscription.events)).not.toContain("native-active-secret");
         expect(encodeUnknownJson(subscription.events)).not.toContain("native-session-secret");
         expect(encodeUnknownJson(subscription.events)).not.toContain("/native/secret/path");
-        expect(new Set(subscription.events.map((event) => event.eventId)).size).toBe(6);
+        expect(new Set(subscription.events.map((event) => event.eventId)).size).toBe(
+          subscription.events.length,
+        );
         expect(subscription.events.every((event) => event.createdAt.length > 0)).toBe(true);
         const identitySource = yield* Effect.promise(() =>
           NodeFSP.readFile(

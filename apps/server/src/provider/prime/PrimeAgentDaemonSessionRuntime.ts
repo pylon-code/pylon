@@ -3,6 +3,7 @@ import {
   RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS,
   PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
+  PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
   PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
   RUNTIME_RESOURCE_NAME_MAX_CHARS,
   type ProviderSessionAgentDepthSource,
@@ -148,6 +149,9 @@ const rlmMaxDepthStatusSchema = Schema.Struct({
   maxDepth: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   source: Schema.Literals(["chat", "default", "env", "global", "inherited"]),
 });
+const agentMessageReceiptSchema = Schema.Struct({
+  deliveryStatus: Schema.Literals(["delivered", "queued"]),
+});
 
 const decodeThinkingLevel = Schema.decodeUnknownOption(thinkingLevelSchema);
 const decodeServiceTier = Schema.decodeUnknownOption(serviceTierSchema);
@@ -160,6 +164,7 @@ const decodeResourceSnapshot = Schema.decodeUnknownOption(resourceSnapshotSchema
 const decodeCommands = Schema.decodeUnknownOption(commandsSchema);
 const decodeSessionStats = Schema.decodeUnknownOption(sessionStatsSchema);
 const decodeRlmMaxDepthStatus = Schema.decodeUnknownOption(rlmMaxDepthStatusSchema);
+const decodeAgentMessageReceipt = Schema.decodeUnknownOption(agentMessageReceiptSchema);
 
 function providerAgentDepthSource(
   source: (typeof rlmMaxDepthStatusSchema.Type)["source"],
@@ -282,6 +287,7 @@ const runtimeErrorOperation = Schema.Literals([
   "set-agent-depth",
   "get-agent-roster",
   "cancel-agent",
+  "message-agent",
   "prompt",
   "steer",
   "follow-up",
@@ -448,9 +454,15 @@ export interface PrimeAgentDaemonSessionRuntime {
     ReadonlyArray<PrimeAgentDaemonChild>,
     PrimeAgentDaemonSessionRuntimeError
   >;
+  readonly agentMessageAvailable: boolean;
   readonly cancelAgent: (
     agentId: string,
   ) => Effect.Effect<boolean, PrimeAgentDaemonSessionRuntimeError>;
+  /** Sends bounded text to one private native endpoint and retains only its disposition. */
+  readonly messageAgent: (
+    activeSessionId: string,
+    message: string,
+  ) => Effect.Effect<"delivered" | "queued", PrimeAgentDaemonSessionRuntimeError>;
   readonly events: Stream.Stream<PrimeDaemonEvent, never>;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
@@ -845,6 +857,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let initializing = true;
     const bufferedEvents: unknown[] = [];
     let lastSnapshotSequence: number | undefined;
+    const knownAgentRoster = new Map<string, PrimeAgentDaemonChild>();
+
+    const trackAgentRoster = (event: PrimeDaemonEvent) => {
+      if (event._tag === "SessionResynced") {
+        knownAgentRoster.clear();
+        for (const child of event.children) knownAgentRoster.set(child.id, child);
+      } else if (event._tag === "ChildUpdated") {
+        knownAgentRoster.set(event.child.id, event.child);
+      }
+    };
 
     const offerDecoded = (raw: unknown) => {
       const event = safeEvent(decodePrimeAgentDaemonEvent(raw));
@@ -854,6 +876,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         lastSnapshotSequence = event.lastEventSequence;
       }
+      trackAgentRoster(event);
       return Queue.offer(eventQueue, event).pipe(Effect.asVoid);
     };
 
@@ -916,6 +939,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       );
     }
     lastSnapshotSequence = initialEvent.lastEventSequence;
+    trackAgentRoster(initialEvent);
     yield* Queue.offer(eventQueue, initialEvent);
     while (bufferedEvents.length > 0) {
       const batch = bufferedEvents.splice(0);
@@ -1130,6 +1154,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             ),
           );
 
+    const agentMessageAvailable =
+      input.requiredExtension === undefined && Predicate.isFunction(connection!.sendAgentMessage);
     const compactionAvailable =
       input.requiredExtension === undefined &&
       Predicate.isFunction(connection!.getState) &&
@@ -1331,38 +1357,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     ): Effect.Effect<ReadonlyArray<PrimeAgentDaemonChild>, PrimeAgentDaemonSessionRuntimeError> =>
       Effect.gen(function* () {
         yield* ensureOpen(operation);
-        const raw = yield* Effect.tryPromise({
-          try: () => connection!.getInitialSnapshot(),
-          catch: () =>
-            runtimeError(
-              operation,
-              "request-failed",
-              "Could not read the Prime Agent agent roster.",
-            ),
-        }).pipe(
-          Effect.timeoutOrElse({
-            duration: COMMAND_TIMEOUT_MS,
-            orElse: () =>
-              runtimeError(
-                operation,
-                "request-failed",
-                "Timed out while reading the Prime Agent agent roster.",
-              ),
-          }),
-        );
-        const event = decodePrimeAgentDaemonEvent({ type: "session_resynced", snapshot: raw });
-        if (
-          event._tag !== "SessionResynced" ||
-          event.state.activeSessionId !== initialEvent.state.activeSessionId ||
-          event.state.sessionId !== sessionId
-        ) {
-          return yield* runtimeError(
-            operation,
-            "invalid-response",
-            "Prime Agent returned an invalid or mismatched agent roster.",
-          );
-        }
-        return event.children;
+        return [...knownAgentRoster.values()];
       });
 
     const getAgentRoster = readAgentRoster("get-agent-roster");
@@ -1410,6 +1405,62 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         );
       }
       return output;
+    });
+
+    const messageAgent = Effect.fn("PrimeAgentDaemonSessionRuntime.messageAgent")(function* (
+      rawActiveSessionId: string,
+      rawMessage: string,
+    ) {
+      yield* ensureOpen("message-agent");
+      const targetActiveSessionId = yield* validateNonEmpty(
+        "message-agent",
+        "Target active session id",
+        rawActiveSessionId,
+      );
+      const message = yield* validateNonEmpty("message-agent", "Message", rawMessage);
+      if (message.length > PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS) {
+        return yield* runtimeError(
+          "message-agent",
+          "invalid-input",
+          `Message must be at most ${PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS} characters.`,
+        );
+      }
+      if (input.requiredExtension !== undefined) {
+        return yield* runtimeError(
+          "message-agent",
+          "invalid-input",
+          "Agent messaging is unavailable in supervised sessions.",
+        );
+      }
+      const method = yield* requireMethod("message-agent", connection!.sendAgentMessage);
+      const output = yield* Effect.tryPromise({
+        try: () => method.call(connection, targetActiveSessionId, message),
+        catch: () =>
+          runtimeError(
+            "message-agent",
+            "request-failed",
+            "Prime Agent message delivery could not be confirmed.",
+          ),
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: COMMAND_TIMEOUT_MS,
+          orElse: () =>
+            runtimeError(
+              "message-agent",
+              "request-timed-out",
+              "Prime Agent message delivery could not be confirmed.",
+            ),
+        }),
+      );
+      const receipt = decodeAgentMessageReceipt(output);
+      if (Option.isNone(receipt)) {
+        return yield* runtimeError(
+          "message-agent",
+          "invalid-response",
+          "Prime Agent message delivery could not be confirmed.",
+        );
+      }
+      return receipt.value.deliveryStatus;
     });
 
     const prompt = Effect.fn("PrimeAgentDaemonSessionRuntime.prompt")(function* (
@@ -1776,7 +1827,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       getAgentDepth,
       setAgentDepth,
       getAgentRoster,
+      agentMessageAvailable,
       cancelAgent,
+      messageAgent,
       events: Stream.fromQueue(eventQueue),
       prompt,
       steer,

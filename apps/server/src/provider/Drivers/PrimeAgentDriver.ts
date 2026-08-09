@@ -160,6 +160,9 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
                 agentCancel:
                   typeof backend.manager.bridge.DaemonAgentConnection.prototype.cancelRlmChild ===
                   "function",
+                agentMessage:
+                  typeof backend.manager.bridge.DaemonAgentConnection.prototype.sendAgentMessage ===
+                  "function",
                 compaction: ["getState", "compact", "abortCompaction"].every(
                   (method) =>
                     typeof backend.manager.bridge.DaemonAgentConnection.prototype[

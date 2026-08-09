@@ -1,5 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
-import { PROVIDER_AGENT_CONTROL_ID_MAX_CHARS } from "@t3tools/contracts";
+import {
+  PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
+  PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
+} from "@t3tools/contracts";
 
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -102,6 +105,8 @@ function fixture(options?: {
   readonly rlmStatus?: unknown;
   readonly setRlmImpl?: (maxDepth: number) => Promise<unknown>;
   readonly cancelRlmImpl?: (agentId: string) => Promise<unknown>;
+  readonly sendAgentMessageImpl?: (activeSessionId: string, message: string) => Promise<unknown>;
+  readonly omitSendAgentMessage?: boolean;
   readonly sessionStats?: unknown;
   readonly getQueueImpl?: () => Promise<unknown>;
   readonly clearQueueImpl?: () => Promise<unknown>;
@@ -169,6 +174,11 @@ function fixture(options?: {
   }
 
   class FakeConnection implements PrimeAgentDaemonAgentConnection {
+    constructor() {
+      if (options?.omitSendAgentMessage === true) {
+        Object.defineProperty(this, "sendAgentMessage", { value: undefined });
+      }
+    }
     static attach(
       _client: PrimeAgentDaemonClient,
       _activeSessionId: string,
@@ -344,6 +354,22 @@ function fixture(options?: {
       captures.connectionCalls.push({ method: "cancelRlmChild", args: [agentId] });
       return options?.cancelRlmImpl?.(agentId) ?? Promise.resolve(true);
     }
+    sendAgentMessage(activeSessionId: string, message: string): Promise<unknown> {
+      captures.connectionCalls.push({
+        method: "sendAgentMessage",
+        args: [activeSessionId, message],
+      });
+      return (
+        options?.sendAgentMessageImpl?.(activeSessionId, message) ??
+        Promise.resolve({
+          id: "private-receipt-id",
+          message,
+          target: { activeSessionId, sessionId: "private-target-session" },
+          deliveryStatus: "delivered",
+          deliveredAt: "2026-08-09T00:00:00.000Z",
+        })
+      );
+    }
     setRlmMaxDepth(maxDepth: number): Promise<unknown> {
       captures.connectionCalls.push({ method: "setRlmMaxDepth", args: [maxDepth] });
       return (
@@ -401,7 +427,8 @@ function fixture(options?: {
       ...(resumeCursor === undefined ? {} : { resumeCursor }),
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
     });
-  return { captures, make };
+  const emit = (event: unknown) => Promise.resolve(listener?.(event));
+  return { captures, emit, make };
 }
 
 function collectEvents(runtime: PrimeAgentDaemonSessionRuntime, count: number) {
@@ -759,18 +786,11 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
-  it.effect("bounds native agent cancellation and roster reads", () =>
+  it.effect("bounds native agent cancellation while roster reads stay event-driven", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        let snapshotReads = 0;
         const never = () => new Promise<unknown>(() => undefined);
-        const { make } = fixture({
-          rawSnapshotImpl: () => {
-            snapshotReads += 1;
-            return snapshotReads === 1 ? snapshot() : never();
-          },
-          cancelRlmImpl: never,
-        });
+        const { make } = fixture({ cancelRlmImpl: never });
         const runtime = yield* make();
 
         const cancellationFiber = yield* runtime.cancelAgent("child-1").pipe(Effect.forkChild);
@@ -782,17 +802,175 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           reason: "request-failed",
           detail: expect.stringContaining("Timed out"),
         });
+        expect(yield* runtime.getAgentRoster).toEqual([
+          expect.objectContaining({ id: "child-1", status: "running" }),
+        ]);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
 
-        const rosterFiber = yield* runtime.getAgentRoster.pipe(Effect.forkChild);
+  it.effect("tracks live child updates for mutation preflight without stale snapshot reads", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, emit, make } = fixture();
+        const runtime = yield* make();
+        captures.order.splice(0);
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_event",
+            event: {
+              type: "rlm_child_update",
+              child: {
+                id: "child-2",
+                parentId: "child-1",
+                activeSessionId: "active-child-2",
+                label: "nested child",
+                status: "running",
+                sessionDir: "/private/child-2",
+              },
+            },
+          }),
+        );
+
+        expect(yield* runtime.getAgentRoster).toEqual([
+          expect.objectContaining({ id: "child-1", status: "running" }),
+          expect.objectContaining({ id: "child-2", status: "running" }),
+        ]);
+        expect(captures.order).not.toContain("snapshot");
+      }),
+    ),
+  );
+
+  it.effect("returns only the bounded delivery disposition and discards private receipts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const privateMessage = "private message";
+        let nativeReceipt: unknown = {
+          id: "private-receipt-id",
+          source: "agent_message",
+          target: { activeSessionId: "private-target-id", sessionId: "private-session-id" },
+          from: { activeSessionId: "private-sender-id" },
+          message: privateMessage,
+          deliveryStatus: "queued",
+          queuedAt: "2026-08-09T00:00:00.000Z",
+          error: "private-native-error",
+        };
+        const { captures, make } = fixture({
+          sendAgentMessageImpl: () => Promise.resolve(nativeReceipt),
+        });
+        const runtime = yield* make();
+        captures.connectionCalls.splice(0);
+
+        const disposition = yield* runtime.messageAgent(" active-child ", ` ${privateMessage} `);
+        expect(disposition).toBe("queued");
+        expect(captures.connectionCalls).toEqual([
+          { method: "sendAgentMessage", args: ["active-child", privateMessage] },
+        ]);
+
+        nativeReceipt = {
+          deliveryStatus: "not-delivered",
+          message: privateMessage,
+          error: "private-native-error",
+        };
+        const malformed = yield* runtime
+          .messageAgent("active-child", privateMessage)
+          .pipe(Effect.flip);
+        expect(malformed).toMatchObject({
+          operation: "message-agent",
+          reason: "invalid-response",
+          detail: "Prime Agent message delivery could not be confirmed.",
+        });
+        expect(malformed.detail).not.toContain(privateMessage);
+        expect(malformed.detail).not.toContain("private-native-error");
+        expect(malformed.message).not.toContain(privateMessage);
+
+        const blank = yield* runtime.messageAgent("active-child", "  ").pipe(Effect.flip);
+        const oversized = yield* runtime
+          .messageAgent("active-child", "x".repeat(PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS + 1))
+          .pipe(Effect.flip);
+        expect(blank).toMatchObject({ operation: "message-agent", reason: "invalid-input" });
+        expect(oversized).toMatchObject({ operation: "message-agent", reason: "invalid-input" });
+        expect(captures.connectionCalls).toHaveLength(2);
+      }),
+    ),
+  );
+
+  it.effect("times out agent messaging once without retaining native errors", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let calls = 0;
+        const { make } = fixture({
+          sendAgentMessageImpl: () => {
+            calls += 1;
+            return new Promise<unknown>(() => undefined);
+          },
+        });
+        const runtime = yield* make();
+        const privateMessage = "do not retain this message";
+        const deliveryFiber = yield* runtime
+          .messageAgent("private-active-child", privateMessage)
+          .pipe(Effect.forkChild);
         yield* Effect.yieldNow;
         yield* TestClock.adjust("30 seconds");
-        const rosterError = yield* Fiber.join(rosterFiber).pipe(Effect.flip);
-        expect(rosterError).toMatchObject({
-          operation: "get-agent-roster",
-          reason: "request-failed",
-          detail: expect.stringContaining("Timed out"),
+
+        const error = yield* Fiber.join(deliveryFiber).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          operation: "message-agent",
+          reason: "request-timed-out",
+          detail: "Prime Agent message delivery could not be confirmed.",
         });
+        expect(error.detail).not.toContain(privateMessage);
+        expect(error.detail).not.toContain("private-active-child");
+        expect(error.message).not.toContain(privateMessage);
+        expect(calls).toBe(1);
       }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("reports native agent messaging unavailable before invoking an older client", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({ omitSendAgentMessage: true });
+        const runtime = yield* make();
+        captures.connectionCalls.splice(0);
+
+        expect(runtime.agentMessageAvailable).toBe(false);
+        const error = yield* runtime.messageAgent("active-child", "hello").pipe(Effect.flip);
+        expect(error).toMatchObject({ operation: "message-agent", reason: "incompatible-api" });
+        expect(captures.connectionCalls).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("disables native agent messaging in supervised sessions before invocation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const base = snapshot();
+        const { captures, make } = fixture({
+          rawSnapshot: { ...base, children: [] },
+          resourceSnapshot: {
+            extensions: [{ path: "/state/pylon/permission.mjs" }],
+            diagnostics: { extensions: [] },
+          },
+          commands: [
+            {
+              name: "pylon-permission-gate-v1",
+              source: "extension",
+              sourceInfo: { path: "/state/pylon/permission.mjs" },
+            },
+          ],
+        });
+        const runtime = yield* make(undefined, ["/state/pylon/permission.mjs"], {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        });
+        captures.connectionCalls.splice(0);
+
+        expect(runtime.agentMessageAvailable).toBe(false);
+        const error = yield* runtime.messageAgent("active-child", "hello").pipe(Effect.flip);
+        expect(error).toMatchObject({ operation: "message-agent", reason: "invalid-input" });
+        expect(captures.connectionCalls).toEqual([]);
+      }),
     ),
   );
 

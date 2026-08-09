@@ -11,6 +11,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       inputQueue: true,
       inputQueueModes: true,
       agentCancel: true,
+      agentMessage: true,
       compaction: true,
       autoCompaction: true,
     });
@@ -23,7 +24,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
     });
     expect(capabilities.agents).toMatchObject({
       support: "read-write",
-      operations: ["observe", "hierarchy", "cancel", "set-depth"],
+      operations: ["observe", "hierarchy", "message", "cancel", "set-depth"],
     });
     expect(capabilities.resources).toMatchObject({
       support: "read-write",
@@ -62,6 +63,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       inputQueue: false,
       inputQueueModes: false,
       agentCancel: false,
+      agentMessage: false,
       compaction: false,
       autoCompaction: false,
     });
@@ -78,6 +80,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       inputQueue: false,
       inputQueueModes: false,
       agentCancel: false,
+      agentMessage: false,
       compaction: false,
       autoCompaction: false,
     });

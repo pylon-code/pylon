@@ -20,6 +20,7 @@ import {
   type OrchestrationCommand,
   ProjectId,
   ProviderItemId,
+  RuntimeTaskId,
   SessionInteractionRequestId,
   type ServerSettings,
   ThreadId,
@@ -116,6 +117,7 @@ function createProviderServiceHarness() {
     respondToInteraction: () => unsupported(),
     reloadSessionResources: () => unsupported(),
     cancelSessionAgent: () => unsupported(),
+    messageSessionAgent: () => unsupported(),
     getSessionAgentDepth: () => unsupported(),
     setSessionAgentDepth: () => unsupported(),
     followUp: () => unsupported(),
@@ -305,6 +307,35 @@ it("maps session compaction to one stable privacy-safe control snapshot", () => 
   expect(JSON.stringify(activities)).not.toContain("private compaction contents");
   expect(JSON.stringify(activities)).not.toContain("sessionFile");
   expect(JSON.stringify(activities)).not.toContain("/Users/");
+});
+
+it("persists only provider-neutral per-agent message availability", () => {
+  const activities = runtimeEventToActivities({
+    type: "task.started",
+    eventId: EventId.make("evt-messageable-agent"),
+    provider: ProviderDriverKind.make("primeAgent"),
+    providerInstanceId: ProviderInstanceId.make("prime-work"),
+    threadId: ThreadId.make("thread-1"),
+    createdAt: "2026-08-09T00:00:00.000Z",
+    payload: {
+      taskId: RuntimeTaskId.make("agent-1"),
+      taskType: "subagent",
+      agentKind: "agent",
+      title: "Reviewer",
+      messageable: true,
+    },
+  });
+  expect(activities).toEqual([
+    expect.objectContaining({
+      kind: "task.started",
+      payload: expect.objectContaining({
+        taskId: "agent-1",
+        messageable: true,
+      }),
+    }),
+  ]);
+  expect(JSON.stringify(activities)).not.toContain("activeSessionId");
+  expect(JSON.stringify(activities)).not.toContain("sessionPath");
 });
 
 describe("ProviderRuntimeIngestion", () => {

@@ -238,10 +238,15 @@ function childDraft(
   const parentAgentId = boundedNonEmpty(child.parentId, MAX_SCALAR_LENGTH);
   const typedUsage = childUsage(child);
   const title = description;
+  const messageable =
+    (child.status === "queued" || child.status === "running") &&
+    child.activeSessionId !== undefined &&
+    child.activeSessionId.trim().length > 0;
   const linkage = {
     taskType: "subagent",
     agentKind: "agent",
     title,
+    messageable,
     ...(model === undefined ? {} : { model }),
     ...(parentAgentId === undefined ? {} : { parentAgentId }),
     timelineBypass: true,

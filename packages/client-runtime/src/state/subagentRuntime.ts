@@ -63,6 +63,8 @@ export interface RuntimeSubagent {
   readonly role: string | null;
   readonly model: string | null;
   readonly effort: string | null;
+  /** Provider-confirmed support for direct user messages to this activation. */
+  readonly messageable: boolean;
   readonly status: RuntimeSubagentStatus;
   readonly activationCount: number;
   readonly usage: SubagentUsage | null;
@@ -109,6 +111,40 @@ export function supportsSessionAgentCancel(
 ): boolean {
   const agents = provider?.featureCapabilities?.agents;
   return agents?.support === "read-write" && agents.operations.includes("cancel");
+}
+
+export function supportsSessionAgentMessage(
+  provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
+): boolean {
+  const agents = provider?.featureCapabilities?.agents;
+  return agents?.support === "read-write" && agents.operations.includes("message");
+}
+
+/**
+ * Direct messages are provider-neutral control operations. Workflow
+ * coordinators are never addressable, while direct and nested child agents
+ * are eligible when the provider explicitly marked their live activation as
+ * messageable.
+ */
+export function canMessageSessionAgent(
+  provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
+  agent: Pick<RuntimeSubagent, "kind" | "messageable" | "status">,
+): boolean {
+  return (
+    supportsSessionAgentMessage(provider) &&
+    agent.kind !== "workflow" &&
+    agent.messageable &&
+    isActiveSubagentStatus(agent.status)
+  );
+}
+
+export function isSessionAgentMessageDeliveryUnknown(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "reason" in error &&
+    error.reason === "delivery-unknown"
+  );
 }
 
 const RECENT_ACTIVITY_LIMIT = 6;
@@ -239,6 +275,7 @@ interface MutableAgent {
   role: string | null;
   model: string | null;
   effort: string | null;
+  messageable: boolean;
   status: RuntimeSubagentStatus;
   activationCount: number;
   usage: SubagentUsage | null;
@@ -293,6 +330,7 @@ function getOrCreate(
     role: asString(payload.role) ?? null,
     model: asString(payload.model) ?? null,
     effort: asString(payload.effort) ?? null,
+    messageable: payload.messageable === true,
     status: "pending",
     activationCount: 0,
     usage: null,
@@ -329,6 +367,7 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   if (model) agent.model = model;
   const effort = asString(payload.effort);
   if (effort) agent.effort = effort;
+  if (typeof payload.messageable === "boolean") agent.messageable = payload.messageable;
   const parentAgentId = asString(payload.parentAgentId);
   if (parentAgentId) {
     agent.parentAgentId = parentAgentId;

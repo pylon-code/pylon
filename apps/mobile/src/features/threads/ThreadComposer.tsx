@@ -8,8 +8,10 @@ import {
   type SessionCompactionControlSnapshot,
 } from "@t3tools/client-runtime/state/context-compaction";
 import {
+  canMessageSessionAgent,
   isActiveSubagentStatus,
   supportsSessionAgentCancel,
+  supportsSessionAgentMessage,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
@@ -32,6 +34,7 @@ import {
   supportsSessionResourceReload,
   type SessionResourcesSnapshot,
 } from "@t3tools/client-runtime/state/session-resources";
+import { PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS } from "@t3tools/contracts";
 import type {
   EnvironmentId,
   MessageId,
@@ -54,6 +57,8 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -74,7 +79,7 @@ import { presentMobileContextWindow } from "../../lib/contextWindow";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
 import { GlassSurface } from "../../components/GlassSurface";
 import {
@@ -125,6 +130,9 @@ import {
   parseSessionCompactionMenuAction,
   type SessionCompactionMenuAction,
 } from "./sessionCompactionMenu";
+import { buildSessionAgentMenuActions, parseSessionAgentMenuAction } from "./sessionAgentMenu";
+
+const AGENT_MESSAGE_UNAVAILABLE_ERROR = "This agent is no longer available for direct messages.";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -185,6 +193,10 @@ export interface ThreadComposerProps {
   ) => Promise<boolean>;
   readonly onRunSessionCompactionAction: (action: SessionCompactionMenuAction) => Promise<boolean>;
   readonly onCancelSessionAgent: (agentId: string) => Promise<boolean>;
+  readonly onMessageSessionAgent: (
+    agentId: string,
+    message: string,
+  ) => Promise<"delivered" | "queued" | "delivery-unknown" | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
@@ -534,13 +546,30 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     () => props.sessionAgents.filter((agent) => isActiveSubagentStatus(agent.status)),
     [props.sessionAgents],
   );
-  const canCancelSessionAgents =
+  const sessionAgentReady =
     props.connectionState === "connected" &&
+    (props.selectedThread.session?.status === "ready" ||
+      props.selectedThread.session?.status === "running");
+  const canCancelSessionAgents =
+    sessionAgentReady &&
     props.selectedThread.session?.runtimeMode === "full-access" &&
-    (props.selectedThread.session.status === "ready" ||
-      props.selectedThread.session.status === "running") &&
     supportsSessionAgentCancel(activeSessionProviderStatus);
+  const canMessageSessionAgents =
+    sessionAgentReady &&
+    props.selectedThread.session?.runtimeMode === "full-access" &&
+    supportsSessionAgentMessage(activeSessionProviderStatus);
+  const sessionAgentScopeKey = JSON.stringify([
+    props.environmentId,
+    props.selectedThread.id,
+    props.selectedThread.session?.providerInstanceId,
+    props.selectedThread.session?.runtimeMode,
+  ]);
   const [cancellingAgentIds, setCancellingAgentIds] = useState<ReadonlySet<string>>(new Set());
+  const [messageAgentId, setMessageAgentId] = useState<string | null>(null);
+  const [messageStateScopeKey, setMessageStateScopeKey] = useState(sessionAgentScopeKey);
+  const [agentMessageDraft, setAgentMessageDraft] = useState("");
+  const [agentMessagePending, setAgentMessagePending] = useState(false);
+  const [agentMessageError, setAgentMessageError] = useState<string | null>(null);
   useEffect(() => {
     const activeIds = new Set(activeSessionAgents.map((agent) => agent.id));
     setCancellingAgentIds((current) => {
@@ -550,40 +579,50 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   }, [activeSessionAgents]);
   useEffect(() => {
     setCancellingAgentIds(new Set());
-  }, [props.environmentId, props.selectedThread.id]);
-  const sessionAgentScopeKey = `${props.environmentId}:${props.selectedThread.id}`;
+    setMessageStateScopeKey(sessionAgentScopeKey);
+    setMessageAgentId(null);
+    setAgentMessageDraft("");
+    setAgentMessageError(null);
+    setAgentMessagePending(false);
+  }, [sessionAgentScopeKey]);
+  const messageDialogAgentIdRef = useRef(messageAgentId);
+  messageDialogAgentIdRef.current = messageAgentId;
   const sessionAgentControlRef = useRef({
     scopeKey: sessionAgentScopeKey,
     agents: props.sessionAgents,
+    provider: activeSessionProviderStatus,
     canCancel: canCancelSessionAgents,
+    canMessage: canMessageSessionAgents,
     cancellingAgentIds,
     onCancel: props.onCancelSessionAgent,
+    onMessage: props.onMessageSessionAgent,
   });
   sessionAgentControlRef.current = {
     scopeKey: sessionAgentScopeKey,
     agents: props.sessionAgents,
+    provider: activeSessionProviderStatus,
     canCancel: canCancelSessionAgents,
+    canMessage: canMessageSessionAgents,
     cancellingAgentIds,
     onCancel: props.onCancelSessionAgent,
+    onMessage: props.onMessageSessionAgent,
   };
   const sessionAgentActions = useMemo(
     () =>
-      activeSessionAgents.map((agent) => {
-        const stopping = cancellingAgentIds.has(agent.id);
-        return {
-          id: `cancel-session-agent:${agent.id}`,
-          title: stopping ? `Stopping ${agent.title}` : `Stop ${agent.title}`,
-          subtitle: stopping
-            ? "Waiting for provider confirmation"
-            : "End this agent's current work",
-          image: "stop.fill",
-          attributes:
-            stopping || !canCancelSessionAgents
-              ? ({ destructive: true, disabled: true } as const)
-              : ({ destructive: true } as const),
-        };
+      buildSessionAgentMenuActions({
+        scopeKey: sessionAgentScopeKey,
+        agents: activeSessionAgents,
+        canMessage: canMessageSessionAgents,
+        canCancel: canCancelSessionAgents,
+        cancellingAgentIds,
       }),
-    [activeSessionAgents, canCancelSessionAgents, cancellingAgentIds],
+    [
+      activeSessionAgents,
+      canCancelSessionAgents,
+      canMessageSessionAgents,
+      cancellingAgentIds,
+      sessionAgentScopeKey,
+    ],
   );
   const cancelSessionAgent = useCallback(async (agentId: string, expectedScopeKey: string) => {
     const control = sessionAgentControlRef.current;
@@ -613,20 +652,85 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       );
     }
   }, []);
+  const closeAgentMessage = useCallback(() => {
+    if (agentMessagePending) return;
+    setMessageAgentId(null);
+    setAgentMessageDraft("");
+    setAgentMessageError(null);
+  }, [agentMessagePending]);
+  const sendAgentMessage = useCallback(async () => {
+    const control = sessionAgentControlRef.current;
+    const agentId = messageDialogAgentIdRef.current;
+    const message = agentMessageDraft.trim();
+    const agent = control.agents.find((candidate) => candidate.id === agentId);
+    if (agentId === null || agentMessagePending) return;
+    if (
+      agent === undefined ||
+      !control.canMessage ||
+      !canMessageSessionAgent(control.provider, agent)
+    ) {
+      setAgentMessageError(AGENT_MESSAGE_UNAVAILABLE_ERROR);
+      return;
+    }
+    if (message.length === 0) {
+      setAgentMessageError("Enter a message for the agent.");
+      return;
+    }
+    const expectedScopeKey = control.scopeKey;
+    setAgentMessagePending(true);
+    setAgentMessageError(null);
+    let disposition: "delivered" | "queued" | "delivery-unknown" | null = null;
+    try {
+      disposition = await control.onMessage(agentId, message);
+    } catch {
+      disposition = null;
+    }
+    const latest = sessionAgentControlRef.current;
+    if (
+      latest.scopeKey !== expectedScopeKey ||
+      messageDialogAgentIdRef.current !== agentId ||
+      !latest.agents.some((candidate) => candidate.id === agentId)
+    ) {
+      return;
+    }
+    setAgentMessagePending(false);
+    if (disposition === "delivery-unknown") {
+      setAgentMessageError("Delivery could not be confirmed. Sending again may duplicate it.");
+      return;
+    }
+    if (disposition === null) {
+      setAgentMessageError(
+        "Could not send the message. Check the agent's live status and try again.",
+      );
+      return;
+    }
+    setMessageAgentId(null);
+    setAgentMessageDraft("");
+    setAgentMessageError(null);
+    Alert.alert(
+      disposition === "delivered" ? "Message delivered" : "Message queued",
+      disposition === "delivered"
+        ? `Your message was delivered to ${agent.title}.`
+        : `Your message will be delivered to ${agent.title} when it can receive it.`,
+    );
+  }, [agentMessageDraft, agentMessagePending]);
   const handleSessionAgentAction = useCallback(
     (eventId: string) => {
-      if (!eventId.startsWith("cancel-session-agent:")) return;
-      const agentId = eventId.slice("cancel-session-agent:".length);
+      const action = parseSessionAgentMenuAction(eventId);
+      if (action === null) return;
       const control = sessionAgentControlRef.current;
-      const agent = control.agents.find((candidate) => candidate.id === agentId);
-      if (
-        !agent ||
-        !control.canCancel ||
-        !isActiveSubagentStatus(agent.status) ||
-        control.cancellingAgentIds.has(agent.id)
-      ) {
+      if (action.scopeKey !== control.scopeKey) return;
+      const agent = control.agents.find((candidate) => candidate.id === action.agentId);
+      if (!agent || !isActiveSubagentStatus(agent.status)) return;
+      if (action.kind === "message") {
+        if (!control.canMessage || !canMessageSessionAgent(control.provider, agent)) return;
+        setMessageStateScopeKey(control.scopeKey);
+        setAgentMessageDraft("");
+        setAgentMessageError(null);
+        setMessageAgentId(agent.id);
         return;
       }
+      if (!control.canCancel || control.cancellingAgentIds.has(agent.id)) return;
       const expectedScopeKey = control.scopeKey;
       Alert.alert(
         `Stop ${agent.title}?`,
@@ -643,6 +747,32 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     },
     [cancelSessionAgent],
   );
+  const messageAgent =
+    messageAgentId === null || messageStateScopeKey !== sessionAgentScopeKey
+      ? null
+      : (props.sessionAgents.find((agent) => agent.id === messageAgentId) ?? null);
+  const messageAgentCanSend =
+    messageAgent !== null &&
+    canMessageSessionAgents &&
+    canMessageSessionAgent(activeSessionProviderStatus, messageAgent);
+  useEffect(() => {
+    if (messageAgentId === null) return;
+    if (messageAgent === null) {
+      setMessageAgentId(null);
+      setAgentMessageDraft("");
+      setAgentMessageError(null);
+      setAgentMessagePending(false);
+      return;
+    }
+    if (agentMessagePending) return;
+    setAgentMessageError((current) =>
+      messageAgentCanSend
+        ? current === AGENT_MESSAGE_UNAVAILABLE_ERROR
+          ? null
+          : current
+        : AGENT_MESSAGE_UNAVAILABLE_ERROR,
+    );
+  }, [agentMessagePending, messageAgent, messageAgentCanSend, messageAgentId]);
 
   const showSessionAgentDepth =
     props.sessionAgentDepth !== null && supportsSessionAgentDepth(activeSessionProviderStatus);
@@ -1489,19 +1619,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     <ContextWindowIndicator snapshot={props.contextWindow} expanded />
                   ) : null
                 ) : null}
-                ) : null}
-                {activeSessionAgents.length > 0 &&
-                supportsSessionAgentCancel(activeSessionProviderStatus) ? (
+                {sessionAgentActions.length > 0 ? (
                   <ControlPillMenu
                     title="Active agents"
-                    actions={sessionAgentActions}
+                    actions={[...sessionAgentActions]}
                     onPressAction={({ nativeEvent }) => handleSessionAgentAction(nativeEvent.event)}
                   >
                     <ComposerToolbarTrigger
-                      accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
+                      accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. Message or stop an agent.`}
                       icon="person.2"
                       label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
-                      disabled={!canCancelSessionAgents}
                     />
                   </ControlPillMenu>
                 ) : null}
@@ -1602,7 +1729,96 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </Animated.View>
         ) : null}
       </Animated.View>
-
+      <Modal
+        visible={messageAgent !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeAgentMessage}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          className="flex-1 justify-end"
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close agent message"
+            className="absolute inset-0 bg-black/50"
+            disabled={agentMessagePending}
+            onPress={closeAgentMessage}
+          />
+          <View className="rounded-t-[28px] border-t border-border bg-sheet px-5 pb-8 pt-5">
+            <View className="mb-4 flex-row items-start justify-between gap-4">
+              <View className="min-w-0 flex-1">
+                <Text className="text-lg font-t3-bold text-foreground">
+                  Message {messageAgent?.title ?? "agent"}
+                </Text>
+                <Text className="mt-1 text-sm text-foreground-muted">
+                  Send a direct instruction to this active agent.
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Cancel agent message"
+                disabled={agentMessagePending}
+                onPress={closeAgentMessage}
+                className="h-11 items-center justify-center px-2"
+              >
+                <Text className="font-t3-bold text-foreground-muted">Cancel</Text>
+              </Pressable>
+            </View>
+            <TextInput
+              autoFocus
+              multiline
+              textAlignVertical="top"
+              maxLength={PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS}
+              value={agentMessageDraft}
+              editable={!agentMessagePending}
+              onChangeText={(value) => {
+                setAgentMessageDraft(value);
+                if (agentMessageError && agentMessageError !== AGENT_MESSAGE_UNAVAILABLE_ERROR) {
+                  setAgentMessageError(null);
+                }
+              }}
+              placeholder="What should this agent know or do?"
+              className="h-36 rounded-[20px] px-4 py-3.5"
+            />
+            <View className="mt-2 flex-row items-start justify-between gap-3">
+              <Text
+                accessibilityRole={agentMessageError ? "alert" : undefined}
+                className="min-w-0 flex-1 text-xs text-danger"
+              >
+                {agentMessageError}
+              </Text>
+              <Text className="text-xs tabular-nums text-foreground-muted">
+                {agentMessageDraft.length.toLocaleString()} /{" "}
+                {PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS.toLocaleString()}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={agentMessagePending ? "Sending message" : "Send message"}
+              accessibilityState={{
+                disabled:
+                  agentMessagePending ||
+                  !messageAgentCanSend ||
+                  agentMessageDraft.trim().length === 0,
+                busy: agentMessagePending,
+              }}
+              disabled={
+                agentMessagePending || !messageAgentCanSend || agentMessageDraft.trim().length === 0
+              }
+              onPress={() => void sendAgentMessage()}
+              className="mt-4 h-12 flex-row items-center justify-center rounded-full bg-primary disabled:bg-subtle-strong"
+            >
+              {agentMessagePending ? (
+                <ActivityIndicator />
+              ) : (
+                <Text className="font-t3-bold text-primary-foreground">Send message</Text>
+              )}
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>{" "}
       <ImageViewing
         images={previewImageUri ? [{ uri: previewImageUri }] : []}
         imageIndex={0}

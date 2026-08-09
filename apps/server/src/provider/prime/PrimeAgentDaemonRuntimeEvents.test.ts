@@ -516,6 +516,7 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
           taskType: "subagent",
           agentKind: "agent",
           title: "Review tests",
+          messageable: true,
           model: "gpt-child",
           parentAgentId: "parent-1",
           timelineBypass: true,
@@ -547,6 +548,7 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
         status: "failed",
         summary: "test failure",
         typedUsage: { totalTokens: 100 },
+        messageable: false,
         timelineBypass: true,
       },
     });

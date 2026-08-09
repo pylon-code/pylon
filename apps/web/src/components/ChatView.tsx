@@ -157,10 +157,13 @@ import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavaila
 import { RightPanelTabs, type PullRequestTabStatus } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
 import {
+  canMessageSessionAgent,
   deriveAgentPanelModel,
   foldSubagentActivities,
   isActiveSubagentStatus,
+  isSessionAgentMessageDeliveryUnknown,
   supportsSessionAgentCancel,
+  supportsSessionAgentMessage,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
@@ -1275,6 +1278,9 @@ function ChatViewContent(props: ChatViewProps) {
     threadEnvironment.cancelSessionAgent,
     "session agent cancellation",
   );
+  const messageThreadSessionAgent = useAtomCommand(threadEnvironment.messageSessionAgent, {
+    reportFailure: false,
+  });
   const reloadThreadSessionResources = useAtomCommand(
     threadEnvironment.reloadSessionResources,
     "session resource reload",
@@ -2335,6 +2341,30 @@ function ChatViewContent(props: ChatViewProps) {
     activeThread?.session?.runtimeMode === "full-access" &&
     (activeThread.session.status === "ready" || activeThread.session.status === "running") &&
     supportsSessionAgentCancel(activeSessionProviderStatus);
+  const canMessageSessionAgents =
+    agentSessionLive &&
+    activeThread?.session?.runtimeMode === "full-access" &&
+    (activeThread.session.status === "ready" || activeThread.session.status === "running") &&
+    supportsSessionAgentMessage(activeSessionProviderStatus);
+  const sessionAgentMessageScopeKey = JSON.stringify([
+    activeThreadKey,
+    activeThread?.session?.providerInstanceId,
+    activeThread?.session?.runtimeMode,
+  ]);
+  const sessionAgentMessageScopeRef = useRef({
+    scopeKey: sessionAgentMessageScopeKey,
+    threadKey: activeThreadKey,
+    agents: runtimeSubagents,
+    provider: activeSessionProviderStatus,
+    enabled: canMessageSessionAgents,
+  });
+  sessionAgentMessageScopeRef.current = {
+    scopeKey: sessionAgentMessageScopeKey,
+    threadKey: activeThreadKey,
+    agents: runtimeSubagents,
+    provider: activeSessionProviderStatus,
+    enabled: canMessageSessionAgents,
+  };
   const [cancellingAgentIds, setCancellingAgentIds] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => {
     setCancellingAgentIds(new Set());
@@ -5817,6 +5847,46 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
+  const onMessageSessionAgent = useCallback(
+    async (agentId: string, rawMessage: string): Promise<"delivered" | "queued" | null> => {
+      const scope = sessionAgentMessageScopeRef.current;
+      const agent = scope.agents.find((candidate) => candidate.id === agentId);
+      const message = rawMessage.trim();
+      if (
+        scope.threadKey === null ||
+        !scope.enabled ||
+        agent === undefined ||
+        !canMessageSessionAgent(scope.provider, agent) ||
+        message.length === 0
+      ) {
+        throw new Error("The agent is no longer messageable.");
+      }
+      const expectedScopeKey = scope.scopeKey;
+      const threadRef = parseScopedThreadKey(scope.threadKey);
+      if (threadRef === null) throw new Error("The thread is no longer available.");
+      const result = await messageThreadSessionAgent({
+        environmentId: threadRef.environmentId,
+        input: {
+          threadId: threadRef.threadId,
+          agentId: RuntimeTaskId.make(agentId),
+          message,
+        },
+      });
+      const latest = sessionAgentMessageScopeRef.current;
+      if (latest.scopeKey !== expectedScopeKey) return null;
+      if (result._tag === "Failure") {
+        if (isAtomCommandInterrupted(result)) return null;
+        const error = squashAtomCommandFailure(result);
+        if (isSessionAgentMessageDeliveryUnknown(error)) {
+          throw new Error("Delivery could not be confirmed. Sending again may duplicate it.");
+        }
+        throw new Error("Could not send the message. Check the agent's live status and try again.");
+      }
+      return result.value.disposition;
+    },
+    [messageThreadSessionAgent],
+  );
+
   const onClearSessionInputQueue = useCallback(async () => {
     if (!activeThreadId) return;
     const result = await clearThreadSessionInputQueue({
@@ -6886,8 +6956,11 @@ function ChatViewContent(props: ChatViewProps) {
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
         canCancelAgents={canCancelSessionAgents}
+        canMessageAgents={canMessageSessionAgents}
+        agentMessageScopeKey={sessionAgentMessageScopeKey}
         cancellingAgentIds={cancellingAgentIds}
         onCancelAgent={onCancelSessionAgent}
+        onMessageAgent={onMessageSessionAgent}
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&

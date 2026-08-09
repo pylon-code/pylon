@@ -222,6 +222,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    messageSessionAgent: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:message-session-agent",
+      tag: WS_METHODS.providerMessageSessionAgent,
+      scheduler,
+      concurrency,
+    }),
     reloadSessionResources: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:commands:thread:reload-session-resources",
       tag: WS_METHODS.providerReloadSessionResources,

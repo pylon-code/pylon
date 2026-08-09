@@ -154,6 +154,10 @@ export interface ThreadDetailScreenProps {
   ) => Promise<boolean>;
   readonly onRunSessionCompactionAction: (action: SessionCompactionMenuAction) => Promise<boolean>;
   readonly onCancelSessionAgent: (agentId: string) => Promise<boolean>;
+  readonly onMessageSessionAgent: (
+    agentId: string,
+    message: string,
+  ) => Promise<"delivered" | "queued" | "delivery-unknown" | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -841,6 +845,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onSetSessionInputQueueMode={props.onSetSessionInputQueueMode}
                 onRunSessionCompactionAction={props.onRunSessionCompactionAction}
                 onCancelSessionAgent={props.onCancelSessionAgent}
+                onMessageSessionAgent={props.onMessageSessionAgent}
                 onReconnectEnvironment={props.onReconnectEnvironment}
                 onUpdateModelSelection={props.onUpdateThreadModelSelection}
                 onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}

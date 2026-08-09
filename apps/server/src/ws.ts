@@ -84,6 +84,7 @@ import {
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
+import { toProviderMessageSessionAgentError } from "./provider/providerMessageSessionAgentRpcError.ts";
 import { toProviderSessionCompactionError } from "./provider/providerSessionCompactionRpcError.ts";
 import { toProviderSessionInputQueueError } from "./provider/providerSessionInputQueueRpcError.ts";
 import {
@@ -1502,6 +1503,14 @@ const makeWsRpcLayer = (
                 return new ProviderCancelSessionAgentError({ reason });
               }),
             ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerMessageSessionAgent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerMessageSessionAgent,
+            providerService
+              .messageSessionAgent(input)
+              .pipe(Effect.mapError(toProviderMessageSessionAgentError)),
             { "rpc.aggregate": "provider" },
           ),
         [WS_METHODS.providerGetSessionAgentDepth]: (input) =>

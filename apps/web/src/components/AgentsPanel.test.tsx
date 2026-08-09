@@ -15,6 +15,7 @@ function agent(id: string, title: string, status: RuntimeSubagent["status"]): Ru
     role: null,
     model: null,
     effort: null,
+    messageable: true,
     status,
     activationCount: 1,
     usage: null,
@@ -86,5 +87,33 @@ describe("AgentsPanel agent cancellation", () => {
   it("keeps every agent row read-only without an advertised capability", () => {
     const markup = renderToStaticMarkup(<AgentsPanel model={model} />);
     expect(markup).not.toContain('aria-label="Stop ');
+  });
+
+  it("offers messaging only for provider-marked active agents when enabled", () => {
+    const unmessageable = {
+      ...active,
+      id: "agent-no-message",
+      title: "No messages",
+      messageable: false,
+    };
+    const messageModel = { ...model, directAgents: [active, unmessageable, completed] };
+    const markup = renderToStaticMarkup(
+      <AgentsPanel
+        model={messageModel}
+        canMessageAgents
+        onMessageAgent={async () => "delivered"}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Message Active reviewer"');
+    expect(markup).not.toContain('aria-label="Message No messages"');
+    expect(markup).not.toContain('aria-label="Message Finished reviewer"');
+  });
+
+  it("does not expose messaging without the advertised capability", () => {
+    const markup = renderToStaticMarkup(
+      <AgentsPanel model={model} onMessageAgent={async () => "queued"} />,
+    );
+    expect(markup).not.toContain('aria-label="Message ');
   });
 });
