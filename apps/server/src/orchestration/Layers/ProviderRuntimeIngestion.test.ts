@@ -3304,6 +3304,65 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("persists one safe Prime context-compaction lifecycle row", async () => {
+    const harness = await createHarness();
+    const provider = ProviderDriverKind.make("primeAgent");
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-1");
+    const itemId = ProviderItemId.make("compaction:turn-1");
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-prime-compaction-started"),
+      provider,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        itemType: "context_compaction",
+        status: "inProgress",
+        title: "PRIVATE TITLE",
+        detail: "PRIVATE INSTRUCTIONS",
+        data: { summary: "PRIVATE SUMMARY" },
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-prime-compaction-completed"),
+      provider,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        itemType: "context_compaction",
+        status: "completed",
+        title: "PRIVATE TITLE",
+        detail: "PRIVATE SUMMARY",
+        data: { error: "PRIVATE ERROR" },
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "context-compaction" && activity.summary === "Context compacted",
+      ),
+    );
+    const activities = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "context-compaction",
+    );
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      id: "context-compaction:primeAgent:thread-1:compaction:turn-1",
+      tone: "info",
+      summary: "Context compacted",
+      payload: { status: "completed" },
+    });
+    expect(JSON.stringify(activities)).not.toContain("PRIVATE");
+  });
+
   it("projects compacted thread state into context compaction activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

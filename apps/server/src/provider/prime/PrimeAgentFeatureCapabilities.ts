@@ -72,6 +72,12 @@ export function makePrimeAgentFeatureCapabilities(input: {
         "Pylon can steer the active Prime Agent run; follow-up queues and modes are not wired yet.",
       operations: ["steer"],
     },
+    context: {
+      support: "read-only",
+      reason:
+        "Pylon shows Prime Agent compaction lifecycle without persisting native instructions or summaries; compaction controls are not wired yet.",
+      operations: ["observe"],
+    },
     model: {
       support: "read-write",
       operations: ["select", "thinking", "service-tier"],

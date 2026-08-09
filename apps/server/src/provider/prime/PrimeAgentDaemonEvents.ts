@@ -667,20 +667,11 @@ export type PrimeDaemonEvent =
     }
   | { readonly _tag: "ThinkingLevelChanged"; readonly level: typeof thinkingLevel.Type }
   | { readonly _tag: "ServiceTierChanged"; readonly serviceTier: typeof serviceTier.Type }
-  | {
-      readonly _tag: "CompactionStarted";
-      readonly reason: string;
-      readonly instructions?: string | undefined;
-    }
+  | { readonly _tag: "CompactionStarted" }
   | {
       readonly _tag: "CompactionCompleted";
-      readonly reason: string;
-      readonly aborted: boolean;
+      readonly outcome: "completed" | "aborted" | "skipped" | "failed";
       readonly willRetry: boolean;
-      readonly summary?: string | undefined;
-      readonly tokensBefore?: number | undefined;
-      readonly errorMessage?: string | undefined;
-      readonly errorSeverity?: "warning" | "error" | undefined;
     }
   | {
       readonly _tag: "RetryStarted";
@@ -1148,21 +1139,18 @@ function mapSessionEvent(event: typeof agentSessionEvent.Type): PrimeDaemonEvent
     case "service_tier_changed":
       return { _tag: "ServiceTierChanged", serviceTier: event.serviceTier };
     case "compaction_start":
-      return {
-        _tag: "CompactionStarted",
-        reason: event.reason,
-        instructions: optionalBounded(event.customInstructions, MAX_PREVIEW_LENGTH),
-      };
+      return { _tag: "CompactionStarted" };
     case "compaction_end":
       return {
         _tag: "CompactionCompleted",
-        reason: event.reason,
-        aborted: event.aborted,
+        outcome: event.aborted
+          ? "aborted"
+          : event.errorSeverity === "warning"
+            ? "skipped"
+            : event.errorMessage !== undefined || event.errorSeverity === "error"
+              ? "failed"
+              : "completed",
         willRetry: event.willRetry,
-        summary: event.result ? bounded(event.result.summary) : undefined,
-        tokensBefore: event.result?.tokensBefore,
-        errorMessage: optionalBounded(event.errorMessage),
-        errorSeverity: event.errorSeverity,
       };
     case "auto_retry_start":
       return {

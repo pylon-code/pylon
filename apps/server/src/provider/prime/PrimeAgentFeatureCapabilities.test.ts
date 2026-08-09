@@ -15,6 +15,10 @@ describe("PrimeAgentFeatureCapabilities", () => {
     });
     expect(capabilities.agents?.operations).toEqual(["observe", "hierarchy"]);
     expect(capabilities.inputQueue?.operations).toEqual(["steer"]);
+    expect(capabilities.context).toMatchObject({
+      support: "read-only",
+      operations: ["observe"],
+    });
     expect(capabilities.model?.operations).toEqual(["select", "thinking", "service-tier"]);
     expect(capabilities.reasoning).toMatchObject({
       support: "read-only",

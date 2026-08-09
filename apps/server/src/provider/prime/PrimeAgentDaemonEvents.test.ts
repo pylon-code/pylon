@@ -331,18 +331,27 @@ describe("PrimeAgentDaemonEvents", () => {
   it("maps compaction, retry, bash, auth, and refinement status events", () => {
     const cases = [
       [
-        { type: "compaction_start", reason: "threshold" },
-        { _tag: "CompactionStarted", reason: "threshold" },
+        {
+          type: "compaction_start",
+          reason: "threshold",
+          customInstructions: "PRIVATE COMPACTION INSTRUCTIONS",
+        },
+        { _tag: "CompactionStarted" },
       ],
       [
         {
           type: "compaction_end",
           reason: "threshold",
-          result: { summary: "Summary", firstKeptEntryId: "entry-1", tokensBefore: 150000 },
+          result: {
+            summary: "PRIVATE COMPACTION SUMMARY",
+            firstKeptEntryId: "entry-1",
+            tokensBefore: 150000,
+          },
           aborted: false,
           willRetry: false,
+          customInstructions: "PRIVATE COMPACTION INSTRUCTIONS",
         },
-        { _tag: "CompactionCompleted", summary: "Summary", tokensBefore: 150000 },
+        { _tag: "CompactionCompleted", outcome: "completed", willRetry: false },
       ],
       [
         {
@@ -396,8 +405,26 @@ describe("PrimeAgentDaemonEvents", () => {
     ] as const;
 
     for (const [input, expected] of cases) {
-      expect(decodePrimeAgentDaemonEvent(sessionEvent(input))).toMatchObject(expected);
+      const decoded = decodePrimeAgentDaemonEvent(sessionEvent(input));
+      expect(decoded).toMatchObject(expected);
+      if (input.type.startsWith("compaction_")) {
+        expect(JSON.stringify(decoded)).not.toContain("PRIVATE COMPACTION");
+      }
     }
+
+    expect(
+      decodePrimeAgentDaemonEvent(
+        sessionEvent({
+          type: "compaction_end",
+          reason: "manual",
+          result: null,
+          aborted: false,
+          willRetry: false,
+          errorMessage: "PRIVATE SKIP EXPLANATION",
+          errorSeverity: "warning",
+        }),
+      ),
+    ).toEqual({ _tag: "CompactionCompleted", outcome: "skipped", willRetry: false });
   });
 
   it("maps extension dialogs without retaining unknown payload data", () => {

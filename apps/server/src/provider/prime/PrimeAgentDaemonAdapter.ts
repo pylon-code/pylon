@@ -109,6 +109,7 @@ interface PrimeAgentDaemonActiveTurn {
   awaitingQueuedRun: boolean;
   queuedActionObserved: boolean;
   readonly completedRunMessages: Array<PrimeDaemonMessage>;
+  readonly command?: "compact" | undefined;
 }
 
 type PrimeAgentDaemonBlockingInteractionMethod = "select" | "confirm" | "input" | "editor";
@@ -247,6 +248,7 @@ interface PrimeAgentDaemonSessionContext {
   readonly permissionToken: string | undefined;
   approvalsAcceptedForSession: boolean;
   activeTurn: PrimeAgentDaemonActiveTurn | undefined;
+  activeCompactionScope: { readonly turnId?: TurnId | undefined } | undefined;
   stopRequested: boolean;
   stopped: boolean;
   exitEmitted: boolean;
@@ -257,6 +259,7 @@ type TurnOutcome =
       readonly state: "completed";
       readonly event: Extract<PrimeDaemonEvent, { readonly _tag: "RunCompleted" }>;
     }
+  | { readonly state: "completedWithoutMessage" }
   | { readonly state: "failed"; readonly errorMessage: string }
   | { readonly state: "cancelled" };
 
@@ -409,12 +412,17 @@ export function makePrimeAgentDaemonAdapter(
         ) {
           turn.assistantTextStreamed = false;
         }
+        const compactionScope =
+          event._tag === "CompactionStarted" || event._tag === "CompactionCompleted"
+            ? context.activeCompactionScope
+            : undefined;
+        const runtimeTurnId = compactionScope === undefined ? turn?.id : compactionScope.turnId;
         const drafts = mapPrimeAgentDaemonRuntimeEventDrafts({
           event,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId: context.threadId,
-          ...(turn === undefined ? {} : { turnId: turn.id }),
+          ...(runtimeTurnId === undefined ? {} : { turnId: runtimeTurnId }),
           ...(turn === undefined ? {} : { assistantTextStreamed: turn.assistantTextStreamed }),
         });
         for (const draft of drafts) {
@@ -491,9 +499,11 @@ export function makePrimeAgentDaemonAdapter(
             threadId: context.threadId,
             turnId: turn.id,
             payload:
-              effectiveOutcome.state === "cancelled"
-                ? { state: "cancelled", stopReason: "aborted" }
-                : { state: "failed", errorMessage: effectiveOutcome.errorMessage },
+              effectiveOutcome.state === "completedWithoutMessage"
+                ? { state: "completed" }
+                : effectiveOutcome.state === "cancelled"
+                  ? { state: "cancelled", stopReason: "aborted" }
+                  : { state: "failed", errorMessage: effectiveOutcome.errorMessage },
           });
         }
 
@@ -953,6 +963,51 @@ export function makePrimeAgentDaemonAdapter(
           if (settled) {
             yield* refreshContextUsage(context).pipe(Effect.forkDetach);
           }
+          return;
+        }
+
+        if (event._tag === "CompactionStarted") {
+          yield* withThreadLock(
+            context.threadId,
+            Effect.gen(function* () {
+              if (sessions.get(context.threadId) !== context || context.stopped) return;
+              const turn = context.activeTurn;
+              context.activeCompactionScope ??= turn === undefined ? {} : { turnId: turn.id };
+              yield* publishDrafts(context, event, turn);
+            }),
+          );
+          return;
+        }
+
+        if (event._tag === "CompactionCompleted") {
+          const terminal = yield* withThreadLock(
+            context.threadId,
+            Effect.gen(function* () {
+              if (sessions.get(context.threadId) !== context || context.stopped) return false;
+              const turn = context.activeTurn;
+              context.activeCompactionScope ??= turn === undefined ? {} : { turnId: turn.id };
+              const compactionTurnId = context.activeCompactionScope.turnId;
+              yield* publishDrafts(context, event, turn);
+              if (event.willRetry) return false;
+              context.activeCompactionScope = undefined;
+              if (turn?.command !== "compact" || compactionTurnId !== turn.id) return true;
+              yield* settleActiveTurnLocked(
+                context,
+                turn,
+                event.outcome === "completed" || event.outcome === "skipped"
+                  ? { state: "completedWithoutMessage" }
+                  : {
+                      state: "failed",
+                      errorMessage:
+                        event.outcome === "aborted"
+                          ? "Prime Agent context compaction was aborted."
+                          : "Prime Agent context compaction failed.",
+                    },
+              );
+              return true;
+            }),
+          );
+          if (terminal) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
           return;
         }
 
@@ -1428,6 +1483,7 @@ export function makePrimeAgentDaemonAdapter(
             permissionToken,
             approvalsAcceptedForSession: false,
             activeTurn: undefined,
+            activeCompactionScope: undefined,
             stopRequested: false,
             stopped: false,
             exitEmitted: false,
@@ -1600,6 +1656,13 @@ export function makePrimeAgentDaemonAdapter(
 
               const requestedModel = modelSelection?.model.trim();
               if (activeTurn !== undefined) {
+                if (activeTurn.command === "compact") {
+                  return yield* new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "sendTurn",
+                    issue: "Prime Agent cannot steer an active context compaction.",
+                  });
+                }
                 const thinkingLevel =
                   turnControls.thinkingLevel === PRIME_AGENT_INHERIT_MODEL_OPTION
                     ? context.defaultThinkingLevel
@@ -1651,6 +1714,7 @@ export function makePrimeAgentDaemonAdapter(
                 awaitingQueuedRun: false,
                 queuedActionObserved: false,
                 completedRunMessages: [],
+                ...(/^\/compact(?:\s|$)/.test(text) ? { command: "compact" as const } : {}),
               };
               context.activeTurn = turn;
               context.session = {

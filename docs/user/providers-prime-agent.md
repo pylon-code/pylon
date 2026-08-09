@@ -59,6 +59,12 @@ the composer. The meter is separate from per-turn token totals and hides when Pr
 post-compaction context as unknown; it returns after the next successful model response. Pylon uses
 the session's native automatic-compaction setting rather than assuming compaction is enabled.
 
+When Prime compacts a daemon-backed thread, Pylon shows one provider-neutral lifecycle row. Pylon
+stores only constant started, completed, skipped, or failed presentation state; Prime's compaction
+instructions, generated summary, and native errors are not copied into Pylon's event store or
+remote clients. Prime still keeps the native compaction record in its private transcript for exact
+resume.
+
 ## Execution Approvals
 
 Daemon-backed threads support **Supervised** and **Full access**. Supervised mode loads a
@@ -88,8 +94,8 @@ instead of silently opening a blank or merely recent Prime session.
 - Authentication is managed in Prime Agent, not Pylon.
 - Plan mode, provider-conversation rollback, queue inspection and follow-up controls, and Pylon's
   per-thread MCP bridge are not supported yet.
-- Pylon does not yet present live Prime reasoning streams, cost breakdowns, compaction lifecycle,
-  goals, heartbeats, saved-session history, or native resource catalogs as first-class features.
+- Pylon does not yet present live Prime reasoning streams, cost breakdowns, goals, heartbeats,
+  saved-session history, or native resource catalogs as first-class features.
 - Prime Agent is not used for Pylon's background text-generation helpers in Early Access.
 - ACP compatibility mode is intentionally narrower: it hides daemon-only thinking and service-tier
   controls, cannot steer or switch models in a running session, supports only Full access, and does

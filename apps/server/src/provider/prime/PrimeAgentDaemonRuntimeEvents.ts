@@ -503,8 +503,7 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
         ? []
         : [{ ...base, type: "thread.metadata.updated", payload: { name } }];
     }
-    case "CompactionStarted": {
-      const detail = boundedNonEmpty(event.instructions ?? event.reason, MAX_SCALAR_LENGTH);
+    case "CompactionStarted":
       return [
         {
           ...base,
@@ -514,13 +513,11 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
             itemType: "context_compaction",
             status: "inProgress",
             title: "Context compaction",
-            ...(detail === undefined ? {} : { detail }),
           },
         },
       ];
-    }
-    case "CompactionCompleted": {
-      const detail = boundedNonEmpty(event.errorMessage ?? event.summary ?? event.reason);
+    case "CompactionCompleted":
+      if (event.willRetry) return [];
       return [
         {
           ...base,
@@ -528,19 +525,16 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
           itemId: compactionItemId(context),
           payload: {
             itemType: "context_compaction",
-            status: event.aborted || event.errorMessage !== undefined ? "failed" : "completed",
+            status:
+              event.outcome === "completed"
+                ? "completed"
+                : event.outcome === "skipped"
+                  ? "declined"
+                  : "failed",
             title: "Context compaction",
-            ...(detail === undefined ? {} : { detail }),
-            data: {
-              reason: bounded(event.reason, MAX_SCALAR_LENGTH),
-              aborted: event.aborted,
-              willRetry: event.willRetry,
-              ...(event.tokensBefore === undefined ? {} : { tokensBefore: event.tokensBefore }),
-            },
           },
         },
       ];
-    }
     case "RetryStarted":
       return [
         {
