@@ -24,12 +24,18 @@ adapter in a child scope. Adapter implementations live beside them in
 [`ProviderAdapter.ts`][adapter]. Read the driver plus its adapter to see how a specific agent's
 transport, config, and event shapes are mapped.
 
-Prime Agent uses the shared ACP runtime for turns, plus a short-lived RPC probe for its qualified
-model catalog. Its synthetic `default` model means “do not pass `--model`”; this lets Prime Agent
-select its configured default or restore the model owned by a continued session. ACP does not expose
-Prime Agent authentication, permission requests, model switching, or session loading, so the driver
-handles those limitations explicitly instead of advertising generic ACP capabilities it cannot
-provide.
+Prime Agent uses its public detached-daemon APIs as the primary runtime. One scoped daemon belongs
+to a provider instance, while each Pylon thread owns an isolated, deterministic native session
+directory and an opaque continuation cursor. Prime-native events terminate in
+`provider/prime/*` and map to provider-neutral runtime contracts; daemon identifiers, sockets,
+paths, request IDs, and native payloads never cross the provider boundary.
+
+A short-lived RPC probe discovers the qualified model catalog. Its synthetic `default` model means
+“do not force a model,” while discovered model metadata drives generic thinking and service-tier
+composer options. The daemon adapter can switch models before a turn, steer an active turn, and
+keeps queued native runs inside one Pylon turn until the queue settles. ACP remains an explicit
+compatibility fallback for custom launch arguments or failed daemon setup. The fallback snapshot
+strips daemon-only model options and capabilities rather than rendering controls ACP would ignore.
 
 ## Registry and routing
 

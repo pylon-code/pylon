@@ -58,9 +58,15 @@ export function makePrimeAgentFeatureCapabilities(input: {
       reason: "Pylon can observe Prime Agent subagents; control operations are not wired yet.",
       operations: ["observe", "hierarchy"],
     },
+    inputQueue: {
+      support: "read-write",
+      reason:
+        "Pylon can steer the active Prime Agent run; follow-up queues and modes are not wired yet.",
+      operations: ["steer"],
+    },
     model: {
       support: "read-write",
-      operations: ["select"],
+      operations: ["select", "thinking", "service-tier"],
     },
     reasoning: unavailable("Prime Agent reasoning is not projected into Pylon yet."),
     usage: {

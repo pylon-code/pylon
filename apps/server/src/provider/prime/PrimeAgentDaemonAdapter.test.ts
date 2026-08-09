@@ -20,7 +20,11 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
-import type { PrimeAgentDaemonExtensionUiResponse } from "./PrimeAgentDaemonBridge.ts";
+import type {
+  PrimeAgentDaemonExtensionUiResponse,
+  PrimeAgentDaemonServiceTier,
+  PrimeAgentDaemonThinkingLevel,
+} from "./PrimeAgentDaemonBridge.ts";
 import type { PrimeDaemonEvent, PrimeDaemonMessage } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import {
@@ -100,7 +104,17 @@ interface FakeCaptures {
     }>;
     readonly signal: AbortSignal | undefined;
   }>;
+  readonly steers: Array<{
+    readonly text: string;
+    readonly images: ReadonlyArray<{
+      readonly type: "image";
+      readonly data: string;
+      readonly mimeType: string;
+    }>;
+  }>;
   readonly models: Array<string>;
+  readonly thinkingLevels: Array<PrimeAgentDaemonThinkingLevel>;
+  readonly serviceTiers: Array<PrimeAgentDaemonServiceTier>;
   readonly extensions: Array<{
     readonly id: string;
     readonly response: PrimeAgentDaemonExtensionUiResponse;
@@ -108,6 +122,7 @@ interface FakeCaptures {
   readonly order: Array<string>;
   disposeCount: number;
   extensionFailure: boolean;
+  abortClearFailure: boolean;
   promptObserved: Queue.Queue<void> | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
 }
@@ -116,11 +131,15 @@ function makeCaptures(): FakeCaptures {
   return {
     runtimeInputs: [],
     prompts: [],
+    steers: [],
     models: [],
+    thinkingLevels: [],
+    serviceTiers: [],
     extensions: [],
     order: [],
     disposeCount: 0,
     extensionFailure: false,
+    abortClearFailure: false,
     promptObserved: undefined,
     queue: undefined,
   };
@@ -150,12 +169,27 @@ function fakeRuntimeFactory(
               signal: prompt.signal,
             });
           }).pipe(Effect.andThen(Queue.offer(promptObserved, undefined)), Effect.asVoid),
-        steer: () => Effect.void,
+        steer: (steer) =>
+          Effect.sync(() => {
+            captures.order.push("steer");
+            captures.steers.push({ text: steer.text, images: steer.images ?? [] });
+          }),
         followUp: () => Effect.void,
         abort: Effect.sync(() => {
           captures.order.push("abort");
           expect(captures.prompts.at(-1)?.signal?.aborted).toBe(true);
         }),
+        abortAndClearQueue: captures.abortClearFailure
+          ? Effect.fail(
+              new PrimeAgentDaemonSessionRuntimeError({
+                operation: "abort-and-clear-queue",
+                reason: "request-failed",
+                detail: "abort clear failed",
+              }),
+            )
+          : Effect.sync(() => {
+              captures.order.push("abort-clear");
+            }),
         setModel: (model) =>
           Effect.sync(() => {
             captures.order.push(`model:${model}`);
@@ -167,8 +201,16 @@ function fakeRuntimeFactory(
               name: model,
             };
           }),
-        setThinkingLevel: () => Effect.void,
-        setServiceTier: () => Effect.void,
+        setThinkingLevel: (level) =>
+          Effect.sync(() => {
+            captures.order.push(`thinking:${level}`);
+            captures.thinkingLevels.push(level);
+          }),
+        setServiceTier: (tier) =>
+          Effect.sync(() => {
+            captures.order.push(`service:${tier ?? "none"}`);
+            captures.serviceTiers.push(tier);
+          }),
         respondToExtensionUiRequest: (id, response) =>
           captures.extensionFailure
             ? Effect.fail(
@@ -303,7 +345,14 @@ describe("PrimeAgentDaemonAdapter", () => {
               threadId,
               input: "hello",
               attachments: [attachment],
-              modelSelection: { instanceId, model: "anthropic/second" },
+              modelSelection: {
+                instanceId,
+                model: "anthropic/second",
+                options: [
+                  { id: "thinkingLevel", value: "high" },
+                  { id: "serviceTier", value: "priority" },
+                ],
+              },
               interactionMode: "default",
             })
             .pipe(Effect.forkChild);
@@ -428,7 +477,14 @@ describe("PrimeAgentDaemonAdapter", () => {
           yield* awaitObservedType(subscription.observed, "session.state.changed");
 
           expect(result.resumeCursor).toEqual(PRIME_AGENT_DAEMON_RESUME_CURSOR);
-          expect(captures.order.slice(0, 2)).toEqual(["model:anthropic/second", "prompt"]);
+          expect(captures.order.slice(0, 4)).toEqual([
+            "model:anthropic/second",
+            "thinking:high",
+            "service:priority",
+            "prompt",
+          ]);
+          expect(captures.thinkingLevels).toEqual(["high"]);
+          expect(captures.serviceTiers).toEqual(["priority"]);
           expect(captures.prompts[0]).toMatchObject({
             text: "hello",
             images: [{ type: "image", data: "AQID", mimeType: "image/png" }],
@@ -508,6 +564,204 @@ describe("PrimeAgentDaemonAdapter", () => {
           yield* Fiber.interrupt(subscription.fiber);
         }),
       ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("steers an active daemon run without opening or settling another turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "first" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+
+        const changedControls = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "change controls",
+            modelSelection: {
+              instanceId,
+              model: "default",
+              options: [{ id: "thinkingLevel", value: "xhigh" }],
+            },
+          })
+          .pipe(Effect.result);
+        expect(changedControls._tag).toBe("Failure");
+
+        const steered = yield* adapter.sendTurn({
+          threadId,
+          input: "focus on the failure",
+          modelSelection: {
+            instanceId,
+            model: "default",
+            options: [
+              { id: "thinkingLevel", value: "medium" },
+              { id: "serviceTier", value: "prime-default" },
+            ],
+          },
+        });
+        expect(steered.turnId).toBe(started.turnId);
+        expect(captures.steers).toEqual([{ text: "focus on the failure", images: [] }]);
+        expect(captures.thinkingLevels).toEqual([]);
+        expect(captures.serviceTiers).toEqual([]);
+        expect(captures.order).toEqual(["prompt", "steer"]);
+        expect(subscription.events.filter((event) => event.type === "turn.started")).toHaveLength(
+          1,
+        );
+        expect(running.pollUnsafe()).toBeUndefined();
+
+        const firstRunMessage = assistantMessage("base");
+        yield* offer(captures, {
+          _tag: "TurnCompleted",
+          message: firstRunMessage,
+          toolResults: [],
+        });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [firstRunMessage] });
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 0,
+          steering: [],
+          followUps: [],
+        });
+        yield* offer(captures, {
+          _tag: "RetryStarted",
+          attempt: 1,
+          maxAttempts: 2,
+          delayMs: 0,
+          errorMessage: "queue barrier",
+        });
+        yield* awaitObservedType(subscription.observed, "runtime.warning");
+        expect(running.pollUnsafe()).toBeUndefined();
+        expect(subscription.events.filter((event) => event.type === "turn.completed")).toHaveLength(
+          0,
+        );
+
+        yield* offer(captures, { _tag: "RunStarted" });
+        const finalMessage = assistantMessage("done");
+        yield* offer(captures, {
+          _tag: "TurnCompleted",
+          message: finalMessage,
+          toolResults: [],
+        });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
+        yield* Fiber.join(running);
+        const completed = subscription.events.filter((event) => event.type === "turn.completed");
+        expect(completed).toHaveLength(1);
+        expect(completed[0]?.payload.usage).toEqual({
+          inputTokens: 22,
+          outputTokens: 14,
+          cachedInputTokens: 6,
+          cacheWriteTokens: 4,
+          totalTokens: 46,
+        });
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("settles when a queued steer fails before a native run starts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "first" })
+          .pipe(Effect.forkChild);
+        yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        yield* adapter.sendTurn({ threadId, input: "queued one" });
+        yield* adapter.sendTurn({ threadId, input: "queued two" });
+
+        const firstRunMessage = assistantMessage("base");
+        yield* offer(captures, { _tag: "RunCompleted", messages: [firstRunMessage] });
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 1,
+          steering: ["queued two"],
+          followUps: [],
+          active: { kind: "turn", phase: "preparing" },
+        });
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 1,
+          steering: ["queued two"],
+          followUps: [],
+        });
+        yield* Fiber.join(running);
+
+        const completions = subscription.events.filter((event) => event.type === "turn.completed");
+        expect(completions).toHaveLength(1);
+        expect(completions[0]?.payload).toMatchObject({
+          state: "failed",
+          errorMessage: "Prime Agent could not start a queued input.",
+        });
+        expect(captures.steers.map((steer) => steer.text)).toEqual(["queued one", "queued two"]);
+        expect(captures.order.at(-1)).toBe("abort-clear");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("finishes detached cleanup when a failed queued run cannot clear the queue", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.abortClearFailure = true;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "first" })
+          .pipe(Effect.forkChild);
+        yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        yield* adapter.sendTurn({ threadId, input: "queued" });
+        yield* offer(captures, {
+          _tag: "RunCompleted",
+          messages: [assistantMessage("base")],
+        });
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 0,
+          steering: [],
+          followUps: [],
+          active: { kind: "turn", phase: "preparing" },
+        });
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 0,
+          steering: [],
+          followUps: [],
+        });
+
+        yield* Fiber.join(running);
+        const exited = yield* awaitObservedType(subscription.observed, "session.exited");
+        expect(exited).toMatchObject({ payload: { exitKind: "graceful" } });
+        expect(captures.disposeCount).toBe(1);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
   );
 
   it.effect(
@@ -711,7 +965,7 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* Fiber.join(fiber);
         yield* awaitObservedType(subscription.observed, "turn.completed");
 
-        expect(captures.order).toEqual(["prompt", "abort"]);
+        expect(captures.order).toEqual(["prompt", "abort-clear"]);
         const completions = subscription.events.filter(
           (event) => event.type === "turn.completed" && event.turnId === turnId,
         );
@@ -896,7 +1150,7 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* awaitObservedType(subscription.observed, "runtime.error");
         const result = yield* Fiber.join(turnFiber);
 
-        expect(captures.order).toEqual(["prompt", "abort"]);
+        expect(captures.order).toEqual(["prompt", "abort-clear"]);
         expect(
           subscription.events.filter(
             (event) => event.type === "turn.completed" && event.turnId === result.turnId,

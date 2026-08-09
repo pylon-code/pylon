@@ -192,6 +192,10 @@ function fixture(options?: {
       captures.connectionCalls.push({ method: "abort", args: [] });
       return Promise.resolve(undefined);
     }
+    abortAndClearQueue(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "abortAndClearQueue", args: [] });
+      return Promise.resolve({ steering: [], followUp: [] });
+    }
     setModel(provider: string, modelId: string): Promise<unknown> {
       captures.connectionCalls.push({ method: "setModel", args: [provider, modelId] });
       return Promise.resolve({
@@ -415,6 +419,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         yield* runtime.steer({ text: "steer", images });
         yield* runtime.followUp({ text: "follow", images });
         yield* runtime.abort;
+        yield* runtime.abortAndClearQueue;
         const selected = yield* runtime.setModel("prime/model/with/slashes");
         yield* runtime.setThinkingLevel("xhigh");
         yield* runtime.setServiceTier("priority");
@@ -433,6 +438,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
             ["steer", ["steer", images]],
             ["followUp", ["follow", images]],
             ["abort", []],
+            ["abortAndClearQueue", []],
             ["setModel", ["prime", "model/with/slashes"]],
             ["setThinkingLevel", ["xhigh"]],
             ["setServiceTier", ["priority"]],

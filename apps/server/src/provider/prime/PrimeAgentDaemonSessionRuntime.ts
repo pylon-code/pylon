@@ -66,6 +66,10 @@ const modelSchema = Schema.Struct({
   name: Schema.String,
   provider: Schema.String,
 });
+const queueStateSchema = Schema.Struct({
+  steering: Schema.Array(Schema.String),
+  followUp: Schema.Array(Schema.String),
+});
 
 const decodeThinkingLevel = Schema.decodeUnknownOption(thinkingLevelSchema);
 const decodeServiceTier = Schema.decodeUnknownOption(serviceTierSchema);
@@ -74,6 +78,7 @@ const decodeExtensionUiResponse = Schema.decodeUnknownOption(extensionUiResponse
 const decodeCreateSuccess = Schema.decodeUnknownOption(createSuccessSchema);
 const decodeCreateFailure = Schema.decodeUnknownOption(createFailureSchema);
 const decodeModel = Schema.decodeUnknownOption(modelSchema);
+const decodeQueueState = Schema.decodeUnknownOption(queueStateSchema);
 
 const runtimeErrorOperation = Schema.Literals([
   "open-client",
@@ -85,6 +90,7 @@ const runtimeErrorOperation = Schema.Literals([
   "steer",
   "follow-up",
   "abort",
+  "abort-and-clear-queue",
   "set-model",
   "set-thinking-level",
   "set-service-tier",
@@ -157,6 +163,7 @@ export interface PrimeAgentDaemonSessionRuntime {
     input: PrimeAgentDaemonPromptInput,
   ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly abort: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  readonly abortAndClearQueue: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly setModel: (
     model: string,
   ) => Effect.Effect<PrimeAgentDaemonSafeModel, PrimeAgentDaemonSessionRuntimeError>;
@@ -548,6 +555,27 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* callVoid("abort", () => connection!.abort());
     });
 
+    const abortAndClearQueue = Effect.gen(function* () {
+      yield* ensureOpen("abort-and-clear-queue");
+      const method = yield* requireMethod("abort-and-clear-queue", connection!.abortAndClearQueue);
+      const output = yield* Effect.tryPromise({
+        try: () => method.call(connection),
+        catch: () =>
+          runtimeError(
+            "abort-and-clear-queue",
+            "request-failed",
+            "The daemon abort-and-clear operation failed.",
+          ),
+      });
+      if (Option.isNone(decodeQueueState(output))) {
+        return yield* runtimeError(
+          "abort-and-clear-queue",
+          "invalid-response",
+          "The daemon abort-and-clear operation returned an invalid response.",
+        );
+      }
+    });
+
     const setModel = Effect.fn("PrimeAgentDaemonSessionRuntime.setModel")(function* (
       selector: string,
     ) {
@@ -669,6 +697,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       steer,
       followUp,
       abort,
+      abortAndClearQueue,
       setModel,
       setThinkingLevel,
       setServiceTier,

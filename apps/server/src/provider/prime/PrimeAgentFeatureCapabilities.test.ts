@@ -13,7 +13,8 @@ describe("PrimeAgentFeatureCapabilities", () => {
       enforcement: "none",
     });
     expect(capabilities.agents?.operations).toEqual(["observe", "hierarchy"]);
-    expect(capabilities.model?.operations).toEqual(["select"]);
+    expect(capabilities.inputQueue?.operations).toEqual(["steer"]);
+    expect(capabilities.model?.operations).toEqual(["select", "thinking", "service-tier"]);
     expect(capabilities.reasoning?.support).toBe("unavailable");
     expect(capabilities.usage?.operations).toEqual(["token-usage"]);
     expect(capabilities.sessionUi?.operations).toEqual([
