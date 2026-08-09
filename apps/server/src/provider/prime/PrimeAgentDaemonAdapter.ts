@@ -206,7 +206,7 @@ interface PrimeAgentDaemonSessionContext {
 type TurnOutcome =
   | {
       readonly state: "completed";
-      readonly event: Extract<PrimeDaemonEvent, { readonly _tag: "TurnCompleted" }>;
+      readonly event: Extract<PrimeDaemonEvent, { readonly _tag: "RunCompleted" }>;
     }
   | { readonly state: "failed"; readonly errorMessage: string }
   | { readonly state: "cancelled" };
@@ -353,6 +353,13 @@ export function makePrimeAgentDaemonAdapter(
       turn: PrimeAgentDaemonActiveTurn | undefined,
     ) =>
       Effect.gen(function* () {
+        if (
+          turn !== undefined &&
+          event._tag === "MessageStarted" &&
+          event.message.role === "assistant"
+        ) {
+          turn.assistantTextStreamed = false;
+        }
         const drafts = mapPrimeAgentDaemonRuntimeEventDrafts({
           event,
           provider: PROVIDER,
@@ -646,7 +653,7 @@ export function makePrimeAgentDaemonAdapter(
           return;
         }
 
-        if (event._tag === "TurnCompleted") {
+        if (event._tag === "RunCompleted") {
           yield* withThreadLock(
             context.threadId,
             Effect.gen(function* () {

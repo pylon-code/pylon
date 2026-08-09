@@ -268,14 +268,44 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     });
   });
 
-  it("maps truthful turn completion, cost, and a separate token-usage draft", () => {
+  it("keeps provider turns open until the daemon run completes", () => {
     expect(
       mapPrimeAgentDaemonRuntimeEventDrafts({
         ...context,
         event: {
           _tag: "TurnCompleted",
-          message: assistant(),
+          message: assistant({ stopReason: "toolUse" }),
           toolResults: [],
+        },
+      }),
+    ).toEqual([]);
+
+    const finalUsage = {
+      inputTokens: 5,
+      outputTokens: 2,
+      cachedInputTokens: 1,
+      cacheWriteTokens: 0,
+      totalTokens: 8,
+      totalCostUsd: 0.003,
+    };
+    expect(
+      mapPrimeAgentDaemonRuntimeEventDrafts({
+        ...context,
+        event: {
+          _tag: "RunCompleted",
+          messages: [
+            assistant({ stopReason: "toolUse" }),
+            {
+              role: "toolResult",
+              timestamp: 2,
+              toolCallId: "tool-1",
+              toolName: "proof",
+              text: "done",
+              imageMimeTypes: [],
+              isError: false,
+            },
+            assistant({ text: "final", usage: finalUsage }),
+          ],
         },
       }),
     ).toEqual([
@@ -289,13 +319,13 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
           state: "completed",
           stopReason: "stop",
           usage: {
-            inputTokens: 11,
-            outputTokens: 7,
-            cachedInputTokens: 3,
+            inputTokens: 16,
+            outputTokens: 9,
+            cachedInputTokens: 4,
             cacheWriteTokens: 2,
-            totalTokens: 23,
+            totalTokens: 31,
           },
-          totalCostUsd: 0.0125,
+          totalCostUsd: 0.0155,
         },
       },
       {
@@ -306,27 +336,80 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
         type: "thread.token-usage.updated",
         payload: {
           usage: {
-            usedTokens: 23,
-            inputTokens: 11,
-            lastInputTokens: 11,
-            cachedInputTokens: 3,
-            lastCachedInputTokens: 3,
-            outputTokens: 7,
-            lastOutputTokens: 7,
-            lastUsedTokens: 23,
+            usedTokens: 8,
+            inputTokens: 5,
+            lastInputTokens: 5,
+            cachedInputTokens: 1,
+            lastCachedInputTokens: 1,
+            outputTokens: 2,
+            lastOutputTokens: 2,
+            lastUsedTokens: 8,
           },
         },
+      },
+      {
+        provider,
+        providerInstanceId,
+        threadId,
+        turnId,
+        type: "session.state.changed",
+        payload: { state: "ready" },
       },
     ]);
   });
 
-  it("does not turn aborted or error stops into successful turns", () => {
+  it("does not complete a replayed run and fails an active run with no assistant", () => {
+    expect(
+      mapPrimeAgentDaemonRuntimeEventDrafts({
+        provider,
+        providerInstanceId,
+        threadId,
+        event: { _tag: "RunCompleted", messages: [assistant()] },
+      }),
+    ).toEqual([
+      {
+        provider,
+        providerInstanceId,
+        threadId,
+        type: "session.state.changed",
+        payload: { state: "ready" },
+      },
+    ]);
+
+    expect(
+      mapPrimeAgentDaemonRuntimeEventDrafts({
+        ...context,
+        event: { _tag: "RunCompleted", messages: [] },
+      }),
+    ).toEqual([
+      {
+        provider,
+        providerInstanceId,
+        threadId,
+        turnId,
+        type: "turn.completed",
+        payload: {
+          state: "failed",
+          errorMessage: "Prime Agent completed the run without an assistant message.",
+        },
+      },
+      {
+        provider,
+        providerInstanceId,
+        threadId,
+        turnId,
+        type: "session.state.changed",
+        payload: { state: "ready" },
+      },
+    ]);
+  });
+
+  it("does not turn aborted or error run endings into successful turns", () => {
     const aborted = mapPrimeAgentDaemonRuntimeEventDrafts({
       ...context,
       event: {
-        _tag: "TurnCompleted",
-        message: assistant({ stopReason: "aborted" }),
-        toolResults: [],
+        _tag: "RunCompleted",
+        messages: [assistant({ stopReason: "toolUse" }), assistant({ stopReason: "aborted" })],
       },
     });
     expect(aborted[0]).toMatchObject({ type: "turn.completed", payload: { state: "cancelled" } });
@@ -334,9 +417,11 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     const failed = mapPrimeAgentDaemonRuntimeEventDrafts({
       ...context,
       event: {
-        _tag: "TurnCompleted",
-        message: assistant({ stopReason: "error", errorMessage: "quota exhausted" }),
-        toolResults: [],
+        _tag: "RunCompleted",
+        messages: [
+          assistant({ stopReason: "toolUse" }),
+          assistant({ stopReason: "error", errorMessage: "quota exhausted" }),
+        ],
       },
     });
     expect(failed[0]).toMatchObject({
