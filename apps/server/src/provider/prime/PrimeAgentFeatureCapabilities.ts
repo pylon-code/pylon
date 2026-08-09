@@ -75,7 +75,7 @@ export function makePrimeAgentFeatureCapabilities(input: {
     context: {
       support: "read-only",
       reason:
-        "Pylon shows Prime Agent compaction lifecycle without persisting native instructions or summaries; compaction controls are not wired yet.",
+        "Pylon shows Prime Agent compaction, retry, and refinement lifecycle without persisting native instructions or summaries; controls are not wired yet.",
       operations: ["observe"],
     },
     model: {

@@ -460,7 +460,7 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     expect(
       mapPrimeAgentDaemonRuntimeEventDrafts({
         ...context,
-        event: { _tag: "RetryCompleted", success: false, attempt: 3, finalError: "offline" },
+        event: { _tag: "RetryCompleted", success: false, attempt: 3 },
       }),
     ).toEqual([
       {
@@ -468,8 +468,14 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
         providerInstanceId,
         threadId,
         turnId,
-        type: "runtime.error",
-        payload: { message: "offline", class: "provider_error" },
+        type: "item.completed",
+        itemId: RuntimeItemId.make(`retry:${turnId}`),
+        payload: {
+          itemType: "retry",
+          status: "failed",
+          title: "Provider retry",
+          data: { attempt: 3 },
+        },
       },
     ]);
   });
@@ -544,6 +550,36 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
         timelineBypass: true,
       },
     });
+  });
+
+  it("maps retry and refinement lifecycle without native text or ids", () => {
+    expect(
+      mapPrimeAgentDaemonRuntimeEventDrafts({
+        ...context,
+        event: { _tag: "RetryStarted", attempt: 1, maxAttempts: 3, delayMs: 500 },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        type: "item.started",
+        itemId: RuntimeItemId.make(`retry:${turnId}`),
+        payload: expect.objectContaining({ itemType: "retry", status: "inProgress" }),
+      }),
+    ]);
+    const partial = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      event: { _tag: "RefinementCompleted", appliedCount: 2, failedCount: 1 },
+    });
+    expect(partial).toEqual([
+      expect.objectContaining({
+        type: "item.completed",
+        payload: expect.objectContaining({
+          itemType: "refinement",
+          status: "completed",
+          data: { appliedCount: 2, failedCount: 1, outcome: "partial" },
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(partial)).not.toContain("summary");
   });
 
   it("maps compaction lifecycle without provider instructions, summaries, or error text", () => {

@@ -54,7 +54,9 @@ compaction start and terminal events replace one provider-neutral activity row w
 payload contains only constant lifecycle state; native instructions, summaries, and error text are
 discarded before canonical runtime mapping. The same ingestion boundary drops compacted-state
 detail from other providers. Finite non-negative `turn.completed.totalCostUsd` values become stable,
-turn-linked `turn.cost` metadata activities; clients exclude them from work logs and show the
+turn-linked `turn.cost` metadata activities. Retry and refinement events likewise cross the Prime
+boundary only as safe numeric lifecycle state; ingestion replaces stable provider-neutral rows and
+represents partially applied refinements separately from total failure. Clients exclude cost metadata from work logs and show the
 provider-reported estimate only beside the terminal assistant message. Prime's retained-session
 statistics cost is never treated as a lifetime or per-turn total. The gate fails closed, but it is not an OS sandbox,
 so approved IPython and shell calls retain host access. ACP remains an explicit

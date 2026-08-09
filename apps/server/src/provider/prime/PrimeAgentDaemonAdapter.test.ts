@@ -1142,9 +1142,8 @@ describe("PrimeAgentDaemonAdapter", () => {
           attempt: 1,
           maxAttempts: 2,
           delayMs: 0,
-          errorMessage: "queue barrier",
         });
-        yield* awaitObservedType(subscription.observed, "runtime.warning");
+        yield* awaitObservedType(subscription.observed, "item.started");
         expect(running.pollUnsafe()).toBeUndefined();
         expect(subscription.events.filter((event) => event.type === "turn.completed")).toHaveLength(
           0,

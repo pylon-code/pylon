@@ -361,12 +361,13 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
   return fields;
 }
 
-function contextCompactionActivityId(
+function lifecycleActivityId(
+  kind: "context-compaction" | "provider-retry" | "harness-refinement",
   event: Extract<ProviderRuntimeEvent, { readonly type: "item.started" | "item.completed" }>,
 ): EventId {
   const scope = event.itemId ?? event.turnId ?? "session";
   return EventId.make(
-    `context-compaction:${event.providerInstanceId ?? event.provider}:${event.threadId}:${scope}`,
+    `${kind}:${event.providerInstanceId ?? event.provider}:${event.threadId}:${scope}`,
   );
 }
 
@@ -941,6 +942,68 @@ export function runtimeEventToActivities(
     }
 
     case "item.completed": {
+      if (event.payload.itemType === "retry") {
+        const completed = event.payload.status === "completed";
+        return [
+          {
+            id: lifecycleActivityId("provider-retry", event),
+            createdAt: event.createdAt,
+            tone: completed ? "info" : "error",
+            kind: "provider-retry",
+            summary: completed ? "Provider retry succeeded" : "Provider retry failed",
+            payload: { status: completed ? "completed" : "failed" },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
+      if (event.payload.itemType === "refinement") {
+        const data = event.payload.data;
+        const record =
+          data !== null && typeof data === "object" && !Array.isArray(data)
+            ? (data as Record<string, unknown>)
+            : undefined;
+        const appliedCount =
+          typeof record?.appliedCount === "number" &&
+          Number.isSafeInteger(record.appliedCount) &&
+          record.appliedCount >= 0
+            ? record.appliedCount
+            : 0;
+        const failedCount =
+          typeof record?.failedCount === "number" &&
+          Number.isSafeInteger(record.failedCount) &&
+          record.failedCount >= 0
+            ? record.failedCount
+            : event.payload.status === "failed"
+              ? 1
+              : 0;
+        const partial = appliedCount > 0 && failedCount > 0;
+        const failed = appliedCount === 0 && failedCount > 0;
+        return [
+          {
+            id: EventId.make(
+              `harness-refinement:${event.providerInstanceId ?? event.provider}:${event.threadId}:${event.eventId}`,
+            ),
+            createdAt: event.createdAt,
+            tone: failed ? "error" : "info",
+            kind: "harness-refinement",
+            summary: partial
+              ? "Harness refinement partially applied"
+              : failed
+                ? "Harness refinement failed"
+                : appliedCount > 0
+                  ? "Harness refinement applied"
+                  : "Harness refinement completed",
+            payload: {
+              status: partial ? "partial" : failed ? "failed" : "completed",
+              appliedCount,
+              failedCount,
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       if (event.payload.itemType === "context_compaction") {
         const status =
           event.payload.status === "completed"
@@ -950,7 +1013,7 @@ export function runtimeEventToActivities(
               : "failed";
         return [
           {
-            id: contextCompactionActivityId(event),
+            id: lifecycleActivityId("context-compaction", event),
             createdAt: event.createdAt,
             tone: status === "failed" ? "error" : "info",
             kind: "context-compaction",
@@ -1012,10 +1075,24 @@ export function runtimeEventToActivities(
     }
 
     case "item.started": {
+      if (event.payload.itemType === "retry") {
+        return [
+          {
+            id: lifecycleActivityId("provider-retry", event),
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "provider-retry",
+            summary: "Retrying provider request",
+            payload: { status: "inProgress" },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       if (event.payload.itemType === "context_compaction") {
         return [
           {
-            id: contextCompactionActivityId(event),
+            id: lifecycleActivityId("context-compaction", event),
             createdAt: event.createdAt,
             tone: "info",
             kind: "context-compaction",
