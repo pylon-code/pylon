@@ -73,7 +73,31 @@ const queueStateSchema = Schema.Struct({
   steering: Schema.Array(Schema.String),
   followUp: Schema.Array(Schema.String),
 });
+const resourceSourceInfoSchema = Schema.Struct({
+  scope: Schema.Literals(["user", "project", "temporary"]),
+});
 const resourceSnapshotSchema = Schema.Struct({
+  skills: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        name: Schema.String,
+        description: Schema.optional(Schema.String),
+        filePath: Schema.String,
+        sourceInfo: Schema.optional(resourceSourceInfoSchema),
+      }),
+    ),
+  ),
+  prompts: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        name: Schema.String,
+        description: Schema.optional(Schema.String),
+        argumentHint: Schema.optional(Schema.String),
+        filePath: Schema.String,
+        sourceInfo: Schema.optional(resourceSourceInfoSchema),
+      }),
+    ),
+  ),
   extensions: Schema.Array(Schema.Struct({ path: Schema.String })),
   diagnostics: Schema.Struct({
     extensions: Schema.Array(
@@ -87,8 +111,14 @@ const resourceSnapshotSchema = Schema.Struct({
 const commandsSchema = Schema.Array(
   Schema.Struct({
     name: Schema.String,
-    source: Schema.String,
-    sourceInfo: Schema.Struct({ path: Schema.String }),
+    registeredName: Schema.optional(Schema.String),
+    description: Schema.optional(Schema.String),
+    argumentHint: Schema.optional(Schema.String),
+    source: Schema.Literals(["extension", "prompt", "skill"]),
+    sourceInfo: Schema.Struct({
+      path: Schema.String,
+      scope: Schema.optional(Schema.Literals(["user", "project", "temporary"])),
+    }),
   }),
 );
 const sessionStatsSchema = Schema.Struct({
@@ -114,6 +144,72 @@ const decodeResourceSnapshot = Schema.decodeUnknownOption(resourceSnapshotSchema
 const decodeCommands = Schema.decodeUnknownOption(commandsSchema);
 const decodeSessionStats = Schema.decodeUnknownOption(sessionStatsSchema);
 const decodeRlmMaxDepthStatus = Schema.decodeUnknownOption(rlmMaxDepthStatusSchema);
+
+const RESOURCE_NAME_MAX_CHARS = 200;
+const RESOURCE_DESCRIPTION_MAX_CHARS = 1_000;
+const RESOURCE_CATALOG_MAX_ITEMS = 512;
+
+function resourceText(value: string | undefined, maxChars: number): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(0, maxChars) : undefined;
+}
+
+function safeSessionResources(
+  resources: typeof resourceSnapshotSchema.Type,
+  commands: typeof commandsSchema.Type,
+  hiddenCommand: string | undefined,
+): PrimeAgentDaemonSessionResources {
+  const skills = (resources.skills ?? []).slice(0, RESOURCE_CATALOG_MAX_ITEMS).flatMap((skill) => {
+    const name = resourceText(skill.name, RESOURCE_NAME_MAX_CHARS);
+    if (name === undefined) return [];
+    const description = resourceText(skill.description, RESOURCE_DESCRIPTION_MAX_CHARS);
+    return [
+      {
+        name,
+        ...(description === undefined ? {} : { description }),
+        ...(skill.sourceInfo === undefined ? {} : { scope: skill.sourceInfo.scope }),
+      },
+    ];
+  });
+  const prompts = (resources.prompts ?? [])
+    .slice(0, RESOURCE_CATALOG_MAX_ITEMS)
+    .flatMap((prompt) => {
+      const name = resourceText(prompt.name, RESOURCE_NAME_MAX_CHARS);
+      if (name === undefined) return [];
+      const description = resourceText(prompt.description, RESOURCE_DESCRIPTION_MAX_CHARS);
+      const argumentHint = resourceText(prompt.argumentHint, RESOURCE_NAME_MAX_CHARS);
+      return [
+        {
+          name,
+          ...(description === undefined ? {} : { description }),
+          ...(argumentHint === undefined ? {} : { argumentHint }),
+          ...(prompt.sourceInfo === undefined ? {} : { scope: prompt.sourceInfo.scope }),
+        },
+      ];
+    });
+  const safeCommands = commands.slice(0, RESOURCE_CATALOG_MAX_ITEMS).flatMap((command) => {
+    const name = resourceText(command.name, RESOURCE_NAME_MAX_CHARS);
+    if (name === undefined || name === hiddenCommand) return [];
+    const description = resourceText(command.description, RESOURCE_DESCRIPTION_MAX_CHARS);
+    const argumentHint = resourceText(command.argumentHint, RESOURCE_NAME_MAX_CHARS);
+    return [
+      {
+        name,
+        source: command.source,
+        ...(description === undefined ? {} : { description }),
+        ...(argumentHint === undefined ? {} : { argumentHint }),
+      },
+    ];
+  });
+  return { available: true, skills, prompts, commands: safeCommands };
+}
+
+const unavailableSessionResources: PrimeAgentDaemonSessionResources = {
+  available: false,
+  skills: [],
+  prompts: [],
+  commands: [],
+};
 
 const runtimeErrorOperation = Schema.Literals([
   "open-client",
@@ -190,6 +286,27 @@ export interface PrimeAgentDaemonSafeModel {
   readonly provider: string;
 }
 
+export interface PrimeAgentDaemonSessionResources {
+  readonly available: boolean;
+  readonly skills: ReadonlyArray<{
+    readonly name: string;
+    readonly description?: string | undefined;
+    readonly scope?: "user" | "project" | "temporary" | undefined;
+  }>;
+  readonly prompts: ReadonlyArray<{
+    readonly name: string;
+    readonly description?: string | undefined;
+    readonly argumentHint?: string | undefined;
+    readonly scope?: "user" | "project" | "temporary" | undefined;
+  }>;
+  readonly commands: ReadonlyArray<{
+    readonly name: string;
+    readonly description?: string | undefined;
+    readonly argumentHint?: string | undefined;
+    readonly source: "extension" | "prompt" | "skill";
+  }>;
+}
+
 /** Provider-neutral session usage fields projected from Prime's private daemon response. */
 export interface PrimeAgentDaemonSessionStats {
   readonly contextUsage?:
@@ -213,6 +330,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly sessionFile: string;
   readonly activeSessionId: string;
   readonly initialSnapshot: PrimeAgentDaemonCanonicalSnapshot;
+  readonly initialResources: PrimeAgentDaemonSessionResources;
   readonly events: Stream.Stream<PrimeDaemonEvent, never>;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
@@ -516,10 +634,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       await connection?.dispose().catch(() => undefined);
       client.close();
     });
+    let verifiedInventory:
+      | readonly [typeof resourceSnapshotSchema.Type, typeof commandsSchema.Type]
+      | undefined;
     if (input.requiredExtension !== undefined) {
       if (
-        !Predicate.isFunction(connection?.getResourceSnapshot) ||
-        !Predicate.isFunction(connection?.getCommands) ||
         !Predicate.isFunction(connection?.setRlmMaxDepth) ||
         !Predicate.isFunction(connection?.getRlmMaxDepthStatus)
       ) {
@@ -562,6 +681,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           const extensionFailed = resources.value.diagnostics.extensions.some(
             (diagnostic) => diagnostic.type !== "warning",
           );
+          verifiedInventory = [resources.value, commands.value];
           if (
             !extensionLoaded ||
             !markerLoaded ||
@@ -666,6 +786,30 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     }
     // No callback can interleave between the final empty check and this assignment.
     initializing = false;
+
+    const initialResources =
+      verifiedInventory !== undefined
+        ? safeSessionResources(
+            verifiedInventory[0],
+            verifiedInventory[1],
+            input.requiredExtension?.markerCommand,
+          )
+        : yield* Effect.tryPromise({
+            try: () => Promise.all([connection!.getResourceSnapshot(), connection!.getCommands()]),
+            catch: () => undefined,
+          }).pipe(
+            Effect.timeoutOption(1_000),
+            Effect.orElseSucceed(() => Option.none()),
+            Effect.map((result) => {
+              if (Option.isNone(result) || result.value === undefined)
+                return unavailableSessionResources;
+              const resources = decodeResourceSnapshot(result.value[0]);
+              const commands = decodeCommands(result.value[1]);
+              return Option.isSome(resources) && Option.isSome(commands)
+                ? safeSessionResources(resources.value, commands.value, undefined)
+                : unavailableSessionResources;
+            }),
+          );
 
     const ensureOpen = (
       operation: PrimeAgentDaemonSessionRuntimeError["operation"],
@@ -917,6 +1061,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       sessionFile,
       activeSessionId,
       initialSnapshot: initialEvent,
+      initialResources,
       events: Stream.fromQueue(eventQueue),
       prompt,
       steer,

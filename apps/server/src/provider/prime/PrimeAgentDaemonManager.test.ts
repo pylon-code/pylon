@@ -148,6 +148,15 @@ function fakeBridge(input: {
     subscribe(): () => void {
       return () => undefined;
     }
+    getCommands(): Promise<unknown> {
+      return Promise.resolve([]);
+    }
+    getResourceSnapshot(): Promise<unknown> {
+      return Promise.resolve({});
+    }
+    reload(): Promise<void> {
+      return Promise.resolve();
+    }
     getSessionStats(): Promise<unknown> {
       return Promise.resolve({ sessionId: "session-1" });
     }

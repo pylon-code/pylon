@@ -27,6 +27,7 @@ function daemonModuleSource(options?: {
   readonly version?: string;
   readonly omitConnection?: boolean;
   readonly omitSessionStats?: boolean;
+  readonly omitResourceCatalog?: boolean;
 }): string {
   return `
 export const VERSION = ${JSON.stringify(options?.version ?? "0.7.1")};
@@ -49,6 +50,7 @@ ${
   static async attach(client, activeSessionId) { return new DaemonAgentConnection(client, activeSessionId); }
   subscribe() { return () => {}; }
   async getInitialSnapshot() { return {}; }
+  ${options?.omitResourceCatalog ? "" : "async getCommands() { return []; } async getResourceSnapshot() { return {}; } async reload() {}"}
   ${options?.omitSessionStats ? "" : "async getSessionStats() { return {}; }"}
   async promptAndWait() {}
   async abort() {}
@@ -183,6 +185,18 @@ describe("PrimeAgentDaemonBridge", () => {
     Effect.gen(function* () {
       const pkg = makePackage({
         moduleSource: daemonModuleSource({ omitSessionStats: true }),
+      });
+
+      const error = yield* Effect.flip(loadPrimeAgentDaemonBridge(pkg.cliPath));
+
+      expect(error.reason).toBe("incompatible-exports");
+    }),
+  );
+
+  it.effect("rejects a daemon connection missing the stable resource catalog API", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({ omitResourceCatalog: true }),
       });
 
       const error = yield* Effect.flip(loadPrimeAgentDaemonBridge(pkg.cliPath));

@@ -248,6 +248,10 @@ function fixture(options?: {
         },
       );
     }
+    reload(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "reload", args: [] });
+      return Promise.resolve(undefined);
+    }
     getSessionStats(): Promise<unknown> {
       captures.connectionCalls.push({ method: "getSessionStats", args: [] });
       return Promise.resolve(
@@ -386,13 +390,136 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
       }),
   );
 
+  it.effect("projects a bounded path-free session resource catalog", () =>
+    Effect.gen(function* () {
+      const { make } = fixture({
+        resourceSnapshot: {
+          skills: [
+            {
+              name: " review ",
+              description: "Review the change",
+              filePath: "/private/project/.agents/skills/review/SKILL.md",
+              sourceInfo: {
+                path: "/private/project/.agents/skills/review/SKILL.md",
+                source: "local-secret",
+                scope: "project",
+                origin: "directory",
+                baseDir: "/private/project",
+              },
+            },
+          ],
+          prompts: [
+            {
+              name: "release",
+              description: "Prepare a release",
+              argumentHint: "<version>",
+              filePath: "/private/prompts/release.md",
+              sourceInfo: {
+                path: "/private/prompts/release.md",
+                source: "git+token-secret",
+                scope: "user",
+                origin: "package",
+              },
+            },
+          ],
+          extensions: [{ path: "/private/extensions/secret.mjs" }],
+          diagnostics: {
+            extensions: [
+              { type: "error", message: "credential-secret", path: "/private/secret.mjs" },
+            ],
+          },
+        },
+        commands: [
+          {
+            name: "skill:review",
+            registeredName: "private-registration",
+            description: "Review the change",
+            argumentHint: "[target]",
+            source: "skill",
+            sourceInfo: {
+              path: "/private/project/.agents/skills/review/SKILL.md",
+              scope: "project",
+            },
+          },
+          {
+            name: "release",
+            source: "prompt",
+            sourceInfo: { path: "/private/prompts/release.md", scope: "user" },
+          },
+        ],
+      });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* make();
+          expect(runtime.initialResources).toEqual({
+            available: true,
+            skills: [{ name: "review", description: "Review the change", scope: "project" }],
+            prompts: [
+              {
+                name: "release",
+                description: "Prepare a release",
+                argumentHint: "<version>",
+                scope: "user",
+              },
+            ],
+            commands: [
+              {
+                name: "skill:review",
+                description: "Review the change",
+                argumentHint: "[target]",
+                source: "skill",
+              },
+              { name: "release", source: "prompt" },
+            ],
+          });
+          expect(runtime.initialResources.skills[0]).not.toHaveProperty("filePath");
+          expect(runtime.initialResources.skills[0]).not.toHaveProperty("sourceInfo");
+          expect(runtime.initialResources.prompts[0]).not.toHaveProperty("filePath");
+          expect(runtime.initialResources.commands[0]).not.toHaveProperty("registeredName");
+          expect(runtime.initialResources.commands[0]).not.toHaveProperty("sourceInfo");
+        }),
+      );
+    }),
+  );
+
+  it.effect("marks malformed native resource catalogs unavailable without failing chat", () =>
+    Effect.gen(function* () {
+      const { make } = fixture({
+        resourceSnapshot: {
+          skills: [{ name: 123, filePath: "/private/skill" }],
+          prompts: [],
+          extensions: [],
+          diagnostics: { extensions: [] },
+        },
+        commands: [],
+      });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* make();
+          expect(runtime.initialResources).toEqual({
+            available: false,
+            skills: [],
+            prompts: [],
+            commands: [],
+          });
+        }),
+      );
+    }),
+  );
+
   it.effect("passes only explicitly configured extension paths to session creation", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { captures, make } = fixture({ rawSnapshot: { ...snapshot(), children: [] } });
-        yield* make(undefined, [" /state/pylon/permission.mjs ", ""], {
+        const runtime = yield* make(undefined, [" /state/pylon/permission.mjs ", ""], {
           path: "/state/pylon/permission.mjs",
           markerCommand: "pylon-permission-gate-v1",
+        });
+        expect(runtime.initialResources).toEqual({
+          available: true,
+          skills: [],
+          prompts: [],
+          commands: [],
         });
         expect(captures.commands[0]).toMatchObject({
           config: {
@@ -656,6 +783,8 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(stats).not.toHaveProperty("cost");
         expect(captures.connectionCalls).toEqual(
           [
+            ["getResourceSnapshot", []],
+            ["getCommands", []],
             ["prompt", ["prompt", { queueIfBusy: false, images, signal }]],
             ["steer", ["steer", images]],
             ["followUp", ["follow", images]],
