@@ -66,6 +66,12 @@ export function makePrimeAgentFeatureCapabilities(input: {
       reason: "Pylon can observe Prime Agent subagents; control operations are not wired yet.",
       operations: ["observe", "hierarchy"],
     },
+    resources: {
+      support: "read-only",
+      reason:
+        "Pylon shows the safe session-scoped command inventory loaded when a Prime Agent daemon session starts; package, MCP, and reload controls are not wired yet.",
+      operations: ["commands"],
+    },
     inputQueue: {
       support: "read-write",
       reason:

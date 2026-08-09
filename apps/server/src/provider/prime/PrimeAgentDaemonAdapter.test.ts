@@ -342,6 +342,40 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("publishes the initial resource inventory once for a started daemon session", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const event = yield* awaitObservedType(subscription.observed, "session.resources.updated");
+
+        expect(event).toMatchObject({
+          type: "session.resources.updated",
+          provider: "primeAgent",
+          providerInstanceId: instanceId,
+          threadId,
+          payload: { available: true, skills: [], prompts: [], commands: [] },
+        });
+        expect(event).not.toHaveProperty("turnId");
+        expect(event).not.toHaveProperty("providerRefs");
+        expect(event).not.toHaveProperty("raw");
+        expect(
+          subscription.events.filter((candidate) => candidate.type === "session.resources.updated"),
+        ).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("publishes authoritative context usage and clears unknown post-compaction state", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -563,13 +597,14 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(captures.runtimeInputs[0]!.sessionDir).toContain("provider-sessions/prime-agent/");
         expect(subscription.events.map((event) => event.type)).toEqual([
           "session.started",
+          "session.resources.updated",
           "session.state.changed",
           "thread.started",
         ]);
         expect(encodeUnknownJson(subscription.events)).not.toContain("native-active-secret");
         expect(encodeUnknownJson(subscription.events)).not.toContain("native-session-secret");
         expect(encodeUnknownJson(subscription.events)).not.toContain("/native/secret/path");
-        expect(new Set(subscription.events.map((event) => event.eventId)).size).toBe(3);
+        expect(new Set(subscription.events.map((event) => event.eventId)).size).toBe(4);
         expect(subscription.events.every((event) => event.createdAt.length > 0)).toBe(true);
         const identitySource = yield* Effect.promise(() =>
           NodeFSP.readFile(

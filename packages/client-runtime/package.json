@@ -55,6 +55,10 @@
       "types": "./src/state/contextWindow.ts",
       "default": "./src/state/contextWindow.ts"
     },
+    "./state/session-resources": {
+      "types": "./src/state/sessionResources.ts",
+      "default": "./src/state/sessionResources.ts"
+    },
     "./state/entities": {
       "types": "./src/state/entities.ts",
       "default": "./src/state/entities.ts"

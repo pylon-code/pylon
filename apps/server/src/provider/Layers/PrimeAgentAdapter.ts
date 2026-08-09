@@ -566,6 +566,14 @@ export function makePrimeAgentAdapter(
             payload: { resume: started.initializeResult },
           });
           yield* offerRuntimeEvent({
+            type: "session.resources.updated",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: input.threadId,
+            payload: { available: false, skills: [], prompts: [], commands: [] },
+          });
+          yield* offerRuntimeEvent({
             type: "session.state.changed",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,

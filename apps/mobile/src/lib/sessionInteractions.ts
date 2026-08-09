@@ -162,6 +162,8 @@ export function foldSessionInteractionActivities(
         }
         break;
       }
+      case "session.resources.updated":
+        break;
     }
   }
 

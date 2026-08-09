@@ -205,6 +205,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "config.warning",
   "deprecation.notice",
   "files.persisted",
+  "session.resources.updated",
   "runtime.warning",
   "runtime.error",
 ]);
@@ -261,6 +262,7 @@ const ConfigWarningType = Schema.Literal("config.warning");
 const DeprecationNoticeType = Schema.Literal("deprecation.notice");
 const FilesPersistedType = Schema.Literal("files.persisted");
 const ToolDeniedType = Schema.Literal("tool.denied");
+const SessionResourcesUpdatedType = Schema.Literal("session.resources.updated");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 
@@ -804,6 +806,61 @@ const ToolDeniedPayload = Schema.Struct({
 });
 export type ToolDeniedPayload = typeof ToolDeniedPayload.Type;
 
+export const RUNTIME_RESOURCE_NAME_MAX_CHARS = 200;
+export const RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS = 1_000;
+export const RUNTIME_RESOURCE_CATALOG_MAX_ITEMS = 512;
+
+const RuntimeResourceName = TrimmedNonEmptyStringSchema.check(
+  Schema.isMaxLength(RUNTIME_RESOURCE_NAME_MAX_CHARS),
+);
+const RuntimeResourceDescription = TrimmedNonEmptyStringSchema.check(
+  Schema.isMaxLength(RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS),
+);
+const RuntimeResourceScope = Schema.Literals(["user", "project", "temporary"]);
+
+export const RuntimeSessionSkill = Schema.Struct({
+  name: RuntimeResourceName,
+  description: Schema.optional(RuntimeResourceDescription),
+  scope: Schema.optional(RuntimeResourceScope),
+});
+export type RuntimeSessionSkill = typeof RuntimeSessionSkill.Type;
+
+export const RuntimeSessionPrompt = Schema.Struct({
+  name: RuntimeResourceName,
+  description: Schema.optional(RuntimeResourceDescription),
+  argumentHint: Schema.optional(RuntimeResourceName),
+  scope: Schema.optional(RuntimeResourceScope),
+});
+export type RuntimeSessionPrompt = typeof RuntimeSessionPrompt.Type;
+
+export const RuntimeSessionCommand = Schema.Struct({
+  name: RuntimeResourceName,
+  description: Schema.optional(RuntimeResourceDescription),
+  argumentHint: Schema.optional(RuntimeResourceName),
+  source: Schema.Literals(["extension", "prompt", "skill"]),
+});
+export type RuntimeSessionCommand = typeof RuntimeSessionCommand.Type;
+
+/**
+ * Provider-neutral, session-scoped resource inventory. Adapters must project
+ * provider-native catalogs into these safe fields before publishing: paths,
+ * native identifiers, diagnostics, and arbitrary provider objects do not cross
+ * this boundary.
+ */
+export const SessionResourcesUpdatedPayload = Schema.Struct({
+  available: Schema.Boolean,
+  skills: Schema.Array(RuntimeSessionSkill).check(
+    Schema.isMaxLength(RUNTIME_RESOURCE_CATALOG_MAX_ITEMS),
+  ),
+  prompts: Schema.Array(RuntimeSessionPrompt).check(
+    Schema.isMaxLength(RUNTIME_RESOURCE_CATALOG_MAX_ITEMS),
+  ),
+  commands: Schema.Array(RuntimeSessionCommand).check(
+    Schema.isMaxLength(RUNTIME_RESOURCE_CATALOG_MAX_ITEMS),
+  ),
+});
+export type SessionResourcesUpdatedPayload = typeof SessionResourcesUpdatedPayload.Type;
+
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(Schema.Unknown),
@@ -1197,6 +1254,17 @@ const ProviderRuntimeToolDeniedEvent = Schema.Struct({
 });
 export type ProviderRuntimeToolDeniedEvent = typeof ProviderRuntimeToolDeniedEvent.Type;
 
+const ProviderRuntimeSessionResourcesUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  // Resource inventories are safe projections, never diagnostic/native envelopes.
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionResourcesUpdatedType,
+  payload: SessionResourcesUpdatedPayload,
+});
+export type ProviderRuntimeSessionResourcesUpdatedEvent =
+  typeof ProviderRuntimeSessionResourcesUpdatedEvent.Type;
+
 const ProviderRuntimeWarningEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: RuntimeWarningType,
@@ -1263,6 +1331,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeDeprecationNoticeEvent,
   ProviderRuntimeFilesPersistedEvent,
   ProviderRuntimeToolDeniedEvent,
+  ProviderRuntimeSessionResourcesUpdatedEvent,
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,
 ]);

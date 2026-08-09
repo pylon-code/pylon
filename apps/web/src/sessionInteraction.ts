@@ -145,6 +145,7 @@ export function foldSessionInteractionActivities(
       continue;
     }
 
+    if (sessionActivity.kind !== "session-presentation.updated") continue;
     const presentation = sessionActivity.payload.presentation;
     if (presentation.kind === "notification") {
       notifications.push({
