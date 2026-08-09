@@ -19,6 +19,7 @@ import {
   findLatestProposedPlan,
   hasActionableProposedPlan,
   isLatestTurnSettled,
+  workLogEntryIsToolLike,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
@@ -740,6 +741,27 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities);
     expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
+  });
+
+  it("keeps bounded final reasoning expandable and non-tool-like", () => {
+    const detail = "r".repeat(4_000);
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "reasoning-completed",
+        kind: "reasoning.completed",
+        summary: "Reasoning",
+        tone: "info",
+        payload: { itemType: "reasoning", detail },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      id: "reasoning-completed",
+      label: "Reasoning",
+      detail,
+      sourceActivityKind: "reasoning.completed",
+    });
+    expect(entry && workLogEntryIsToolLike(entry)).toBe(false);
   });
 
   it("omits task.started but shows task.progress and task.completed", () => {

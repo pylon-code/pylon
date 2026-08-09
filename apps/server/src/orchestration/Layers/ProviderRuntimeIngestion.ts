@@ -207,6 +207,8 @@ function maxCheckpointTurnCount(
   return maxTurnCount;
 }
 
+const REASONING_DETAIL_MAX_CHARS = 4_000;
+
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }
@@ -357,6 +359,17 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     }
   }
   return fields;
+}
+
+function reasoningActivityId(
+  event: Extract<ProviderRuntimeEvent, { readonly type: "item.completed" }>,
+): EventId {
+  const scope = event.itemId ?? event.turnId;
+  return scope === undefined
+    ? event.eventId
+    : EventId.make(
+        `reasoning:${event.providerInstanceId ?? event.provider}:${event.threadId}:${scope}`,
+      );
 }
 
 export function runtimeEventToActivities(
@@ -874,6 +887,26 @@ export function runtimeEventToActivities(
     }
 
     case "item.completed": {
+      if (event.payload.itemType === "reasoning") {
+        if (event.payload.detail === undefined || event.payload.detail.trim().length === 0) {
+          return [];
+        }
+        return [
+          {
+            id: reasoningActivityId(event),
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "reasoning.completed",
+            summary: event.payload.title ?? "Reasoning",
+            payload: {
+              itemType: event.payload.itemType,
+              detail: truncateDetail(event.payload.detail, REASONING_DETAIL_MAX_CHARS),
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }

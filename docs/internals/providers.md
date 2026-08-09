@@ -43,8 +43,10 @@ verify RLM depth zero before prompt admission, reject slash-command prompts that
 and disable unverified daemon recovery so transport loss requires a fresh verified session. Its
 blocking hooks map reviewable built-in edit, shell, and IPython requests privately to canonical
 Pylon approval events; unknown tools and oversized inputs are denied rather than incompletely
-presented. Native request IDs and policy tokens remain adapter-local. The gate fails closed, but it
-is not an OS sandbox, so approved IPython and shell calls retain host access. ACP remains an explicit
+presented. Native request IDs and policy tokens remain adapter-local. Provider-exposed final reasoning is
+bounded into the shared work-log item shape; incremental deltas and provider-private reasoning
+metadata are discarded at the Prime boundary. The gate fails closed, but it is not an OS sandbox,
+so approved IPython and shell calls retain host access. ACP remains an explicit
 compatibility fallback for custom launch arguments or failed daemon setup. The fallback snapshot
 strips daemon-only model options and capabilities rather than rendering controls ACP would ignore.
 

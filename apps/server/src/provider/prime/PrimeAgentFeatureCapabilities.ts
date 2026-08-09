@@ -76,7 +76,12 @@ export function makePrimeAgentFeatureCapabilities(input: {
       support: "read-write",
       operations: ["select", "thinking", "service-tier"],
     },
-    reasoning: unavailable("Prime Agent reasoning is not projected into Pylon yet."),
+    reasoning: {
+      support: "read-only",
+      reason:
+        "Pylon shows bounded final reasoning that the selected model explicitly exposes; live reasoning deltas are not persisted.",
+      operations: ["final"],
+    },
     usage: {
       support: "read-only",
       reason: "Prime Agent cost reporting is not projected into Pylon yet.",
