@@ -24,7 +24,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       support: "read-only",
       operations: ["final"],
     });
-    expect(capabilities.usage?.operations).toEqual(["token-usage"]);
+    expect(capabilities.usage?.operations).toEqual(["token-usage", "cost"]);
     expect(capabilities.sessionUi?.operations).toEqual([
       "dialog",
       "notification",

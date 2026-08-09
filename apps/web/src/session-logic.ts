@@ -773,7 +773,11 @@ export function deriveWorkLogEntries(
     if (activity.kind === "task.started" && !isAgentTaskStartedActivity(activity)) continue;
     if (activity.kind === "task.updated") continue;
     if (activity.kind === "tool.progress") continue;
-    if (activity.kind === "context-window.updated" || activity.kind === "context-window.cleared") {
+    if (
+      activity.kind === "context-window.updated" ||
+      activity.kind === "context-window.cleared" ||
+      activity.kind === "turn.cost"
+    ) {
       continue;
     }
     if (activity.summary === "Checkpoint captured") continue;

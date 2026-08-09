@@ -7,6 +7,10 @@ import type {
   TurnId,
   UserInputQuestion,
 } from "@t3tools/contracts";
+import {
+  deriveReportedTurnCosts,
+  formatReportedTurnCost,
+} from "@t3tools/client-runtime/state/turn-costs";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 
 import * as Arr from "effect/Array";
@@ -90,6 +94,7 @@ type RawThreadFeedEntry =
       readonly id: string;
       readonly createdAt: string;
       readonly message: OrchestrationThread["messages"][number];
+      readonly reportedCostLabel?: string | undefined;
     }
   | {
       readonly type: "activity";
@@ -305,7 +310,11 @@ function deriveWorkLogEntries(
     // Terminal bypassed updates pass: Codex children's only terminal signal.
     if (activity.kind === "task.updated" && !isTerminalBypassUpdate(activity)) continue;
     if (activity.kind === "tool.progress") continue;
-    if (activity.kind === "context-window.updated" || activity.kind === "context-window.cleared") {
+    if (
+      activity.kind === "context-window.updated" ||
+      activity.kind === "context-window.cleared" ||
+      activity.kind === "turn.cost"
+    ) {
       continue;
     }
     if (activity.summary === "Checkpoint captured") continue;
@@ -1463,6 +1472,7 @@ export function buildThreadFeed(
   const oldestLoadedMessageCreatedAt =
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
   const workLogEntries = deriveWorkLogEntries(thread.activities);
+  const reportedTurnCosts = deriveReportedTurnCosts(thread.activities);
   const entries = Arr.sortWith(
     [
       ...loadedMessages.map<RawThreadFeedEntry>((message) => ({
@@ -1470,6 +1480,10 @@ export function buildThreadFeed(
         id: message.id,
         createdAt: message.createdAt,
         message,
+        reportedCostLabel:
+          message.role === "assistant" && message.turnId !== null
+            ? (formatReportedTurnCost(reportedTurnCosts.get(message.turnId) ?? -1) ?? undefined)
+            : undefined,
       })),
       ...workLogEntries
         .filter((entry) => {

@@ -994,6 +994,14 @@ function renderFeedEntry(
             <Text className="font-t3-medium text-xs tabular-nums text-neutral-600 dark:text-neutral-400">
               {timestampLabel}
             </Text>
+            {entry.reportedCostLabel ? (
+              <Text
+                accessibilityLabel={entry.reportedCostLabel}
+                className="font-t3-medium text-xs tabular-nums text-neutral-600 dark:text-neutral-400"
+              >
+                {entry.reportedCostLabel}
+              </Text>
+            ) : null}
           </View>
         ) : null}
       </Animated.View>

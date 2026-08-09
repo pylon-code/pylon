@@ -53,7 +53,10 @@ identity, path, percentage, and cost fields are not conflated with active contex
 compaction start and terminal events replace one provider-neutral activity row whose persisted
 payload contains only constant lifecycle state; native instructions, summaries, and error text are
 discarded before canonical runtime mapping. The same ingestion boundary drops compacted-state
-detail from other providers. The gate fails closed, but it is not an OS sandbox,
+detail from other providers. Finite non-negative `turn.completed.totalCostUsd` values become stable,
+turn-linked `turn.cost` metadata activities; clients exclude them from work logs and show the
+provider-reported estimate only beside the terminal assistant message. Prime's retained-session
+statistics cost is never treated as a lifetime or per-turn total. The gate fails closed, but it is not an OS sandbox,
 so approved IPython and shell calls retain host access. ACP remains an explicit
 compatibility fallback for custom launch arguments or failed daemon setup. The fallback snapshot
 strips daemon-only model options and capabilities rather than rendering controls ACP would ignore.

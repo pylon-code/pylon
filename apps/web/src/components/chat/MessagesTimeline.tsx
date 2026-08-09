@@ -213,6 +213,7 @@ interface MessagesTimelineProps {
   latestTurn: TimelineLatestTurn | null;
   runningTurnId: TurnId | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
+  reportedTurnCosts?: ReadonlyMap<TurnId, number>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
@@ -260,6 +261,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   latestTurn,
   runningTurnId,
   turnDiffSummaryByAssistantMessageId,
+  reportedTurnCosts,
   routeThreadKey,
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
@@ -406,6 +408,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         isWorking,
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
+        ...(reportedTurnCosts === undefined ? {} : { reportedTurnCosts }),
         revertTurnCountByUserMessageId,
       }),
     [
@@ -417,6 +420,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isWorking,
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
+      reportedTurnCosts,
       revertTurnCountByUserMessageId,
     ],
   );
@@ -1136,7 +1140,12 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           onOpenTurnDiff={ctx.onOpenTurnDiff}
         />
         {row.showAssistantMeta ? (
-          <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100">
+          <div
+            className={cn(
+              "mt-1.5 flex items-center gap-2 text-xs tabular-nums transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100",
+              row.reportedCostLabel ? "opacity-100" : "opacity-0",
+            )}
+          >
             <AssistantCopyButton row={row} />
             {!row.message.streaming && (
               <Tooltip>
@@ -1150,6 +1159,9 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
                 </TooltipPopup>
               </Tooltip>
             )}
+            {row.reportedCostLabel ? (
+              <p className="text-muted-foreground text-xs tabular-nums">{row.reportedCostLabel}</p>
+            ) : null}
           </div>
         ) : null}
       </div>

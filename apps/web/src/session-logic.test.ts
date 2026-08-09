@@ -1593,7 +1593,7 @@ describe("deriveTimelineEntries", () => {
 });
 
 describe("deriveWorkLogEntries context window handling", () => {
-  it("excludes context window updates and clear barriers from the work log", () => {
+  it("excludes context and cost metadata from the work log", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
         id: "context-1",
@@ -1607,6 +1607,13 @@ describe("deriveWorkLogEntries context window handling", () => {
         turnId: "turn-1",
         kind: "context-window.cleared",
         summary: "Context window unavailable",
+        tone: "info",
+      }),
+      makeActivity({
+        id: "turn-cost-1",
+        turnId: "turn-1",
+        kind: "turn.cost",
+        summary: "Reported turn cost",
         tone: "info",
       }),
       makeActivity({

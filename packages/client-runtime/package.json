@@ -135,6 +135,10 @@
       "types": "./src/state/threadSort.ts",
       "default": "./src/state/threadSort.ts"
     },
+    "./state/turn-costs": {
+      "types": "./src/state/turnCosts.ts",
+      "default": "./src/state/turnCosts.ts"
+    },
     "./state/thread-settled": {
       "types": "./src/state/threadSettled.ts",
       "default": "./src/state/threadSettled.ts"

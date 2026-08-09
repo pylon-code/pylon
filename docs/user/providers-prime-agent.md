@@ -65,6 +65,11 @@ instructions, generated summary, and native errors are not copied into Pylon's e
 remote clients. Prime still keeps the native compaction record in its private transcript for exact
 resume.
 
+Completed daemon turns can show a **Reported cost** beside the terminal reply. This is Prime's
+model-pricing estimate for that turn as reported at completion, not an invoice or account-wide
+billing total. Very small estimates remain visible instead of rounding to zero; a reported zero can
+also mean the selected model has no registered price.
+
 ## Execution Approvals
 
 Daemon-backed threads support **Supervised** and **Full access**. Supervised mode loads a
