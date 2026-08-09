@@ -182,6 +182,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/projects",
   },
   {
+    id: "project-new-thread-workspace",
+    title: "Project new-thread workspace",
+    to: "/settings/projects",
+  },
+  {
     id: "project-scripts",
     title: "Project scripts",
     to: "/settings/projects",
