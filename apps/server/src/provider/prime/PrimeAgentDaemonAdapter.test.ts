@@ -176,6 +176,7 @@ function fakeRuntimeFactory(
         sessionFile: `${input.sessionDir}/native-session-secret.jsonl`,
         activeSessionId: "native-active-secret",
         initialSnapshot: initialSnapshot(),
+        initialResources: { available: true, skills: [], prompts: [], commands: [] },
         events: Stream.fromQueue(queue),
         prompt: (prompt) =>
           Effect.sync(() => {
