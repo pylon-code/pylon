@@ -2,9 +2,11 @@ import {
   RUNTIME_RESOURCE_CATALOG_MAX_ITEMS,
   RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS,
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
+  PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
   RUNTIME_RESOURCE_NAME_MAX_CHARS,
   type ProviderSessionAgentDepthSource,
   type SessionAgentDepthUpdatedPayload,
+  type SessionInputQueueUpdatedPayload,
   type SessionResourcesUpdatedPayload,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -78,10 +80,6 @@ const modelSchema = Schema.Struct({
   name: Schema.String,
   provider: Schema.String,
 });
-const queueStateSchema = Schema.Struct({
-  steering: Schema.Array(Schema.String),
-  followUp: Schema.Array(Schema.String),
-});
 const resourceSourceInfoSchema = Schema.Struct({
   scope: Schema.Literals(["user", "project", "temporary"]),
 });
@@ -151,7 +149,6 @@ const decodeExtensionUiResponse = Schema.decodeUnknownOption(extensionUiResponse
 const decodeCreateSuccess = Schema.decodeUnknownOption(createSuccessSchema);
 const decodeCreateFailure = Schema.decodeUnknownOption(createFailureSchema);
 const decodeModel = Schema.decodeUnknownOption(modelSchema);
-const decodeQueueState = Schema.decodeUnknownOption(queueStateSchema);
 const decodeResourceSnapshot = Schema.decodeUnknownOption(resourceSnapshotSchema);
 const decodeCommands = Schema.decodeUnknownOption(commandsSchema);
 const decodeSessionStats = Schema.decodeUnknownOption(sessionStatsSchema);
@@ -183,6 +180,22 @@ function safeAgentDepth(
     settable: writable,
     maxSettableDepth: PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   };
+}
+
+function decodeInputQueueCounts(value: unknown): Option.Option<SessionInputQueueUpdatedPayload> {
+  if (typeof value !== "object" || value === null) return Option.none();
+  const queue = value as { readonly steering?: unknown; readonly followUp?: unknown };
+  const steering = queue.steering;
+  const followUp = queue.followUp;
+  if (
+    !Array.isArray(steering) ||
+    !Array.isArray(followUp) ||
+    steering.length > PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT ||
+    followUp.length > PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT
+  ) {
+    return Option.none();
+  }
+  return Option.some({ steeringCount: steering.length, followUpCount: followUp.length });
 }
 
 function resourceText(value: string | undefined, maxChars: number): string | undefined {
@@ -263,6 +276,8 @@ const runtimeErrorOperation = Schema.Literals([
   "prompt",
   "steer",
   "follow-up",
+  "get-input-queue",
+  "clear-input-queue",
   "abort",
   "abort-and-clear-queue",
   "set-model",
@@ -332,6 +347,14 @@ export type PrimeAgentDaemonSessionResources = SessionResourcesUpdatedPayload;
 
 export type PrimeAgentDaemonAgentDepth = SessionAgentDepthUpdatedPayload;
 
+export type PrimeAgentDaemonInputQueue = SessionInputQueueUpdatedPayload;
+
+export interface PrimeAgentDaemonInputQueueStatus {
+  readonly queue: PrimeAgentDaemonInputQueue;
+  readonly activeAction: boolean;
+  readonly isStreaming: boolean;
+}
+
 export interface PrimeAgentDaemonReloadResourcesResult {
   readonly resources: PrimeAgentDaemonSessionResources;
   readonly agentDepth: PrimeAgentDaemonAgentDepth;
@@ -362,6 +385,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly initialSnapshot: PrimeAgentDaemonCanonicalSnapshot;
   readonly initialResources: PrimeAgentDaemonSessionResources;
   readonly initialAgentDepth: PrimeAgentDaemonAgentDepth;
+  readonly initialInputQueue: PrimeAgentDaemonInputQueue;
   /** Reload the native runtime, then return sanitized post-reload session state. */
   readonly reloadResources: Effect.Effect<
     PrimeAgentDaemonReloadResourcesResult,
@@ -384,6 +408,18 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly followUp: (
     input: PrimeAgentDaemonPromptInput,
   ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  readonly getInputQueue: Effect.Effect<
+    PrimeAgentDaemonInputQueue,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
+  readonly getInputQueueStatus: Effect.Effect<
+    PrimeAgentDaemonInputQueueStatus,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
+  readonly clearInputQueue: Effect.Effect<
+    PrimeAgentDaemonInputQueueStatus,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
   readonly abort: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly abortAndClearQueue: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly setModel: (
@@ -808,6 +844,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       input.requiredExtension !== undefined &&
       (initialEvent.state.isStreaming ||
         initialEvent.state.isBashRunning ||
+        initialEvent.state.inputQueue.activeAction ||
         initialEvent.children.some(
           (child) => child.status === "queued" || child.status === "running",
         ))
@@ -881,6 +918,88 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         return safeAgentDepth(depth.value, true);
       }).pipe(Effect.onError(() => closeAttachedSession)));
+
+    const readInputQueueStatus = (
+      operation: "get-input-queue" | "clear-input-queue",
+    ): Effect.Effect<PrimeAgentDaemonInputQueueStatus, PrimeAgentDaemonSessionRuntimeError> =>
+      Effect.gen(function* () {
+        const statusSnapshot = yield* Effect.tryPromise({
+          try: () => connection!.getInitialSnapshot(),
+          catch: () =>
+            runtimeError(
+              operation,
+              "request-failed",
+              "Could not read the Prime Agent session action state.",
+            ),
+        });
+        const event = decodePrimeAgentDaemonEvent({
+          type: "session_resynced",
+          snapshot: statusSnapshot,
+        });
+        if (
+          event._tag !== "SessionResynced" ||
+          event.state.activeSessionId !== initialEvent.state.activeSessionId ||
+          event.state.sessionId !== sessionId
+        ) {
+          return yield* runtimeError(
+            operation,
+            "invalid-response",
+            "Prime Agent returned an invalid or mismatched session action state.",
+          );
+        }
+        return {
+          queue: {
+            steeringCount: event.state.inputQueue.steeringCount,
+            followUpCount: event.state.inputQueue.followUpCount,
+          },
+          activeAction: event.state.inputQueue.activeAction,
+          isStreaming: event.state.isStreaming,
+        };
+      });
+
+    const initialInputQueue = yield* Effect.gen(function* () {
+      const safeQueue = {
+        steeringCount: initialEvent.state.inputQueue.steeringCount,
+        followUpCount: initialEvent.state.inputQueue.followUpCount,
+      };
+      if (
+        input.requiredExtension === undefined ||
+        (safeQueue.steeringCount === 0 && safeQueue.followUpCount === 0)
+      ) {
+        return safeQueue;
+      }
+      const clearQueue = yield* requireMethod("clear-input-queue", connection!.clearQueue);
+      const removed = yield* Effect.tryPromise({
+        try: () => clearQueue.call(connection),
+        catch: () =>
+          runtimeError(
+            "clear-input-queue",
+            "request-failed",
+            "Could not clear restored Prime Agent session inputs in supervised mode.",
+          ),
+      });
+      if (Option.isNone(decodeInputQueueCounts(removed))) {
+        return yield* runtimeError(
+          "clear-input-queue",
+          "invalid-response",
+          "Prime Agent returned an invalid cleared supervised input queue.",
+        );
+      }
+      const confirmed = yield* readInputQueueStatus("clear-input-queue");
+      if (
+        confirmed.queue.steeringCount > 0 ||
+        confirmed.queue.followUpCount > 0 ||
+        confirmed.activeAction ||
+        confirmed.isStreaming
+      ) {
+        return yield* runtimeError(
+          "clear-input-queue",
+          "invalid-response",
+          "Prime Agent did not confirm an empty supervised session input queue.",
+        );
+      }
+      return confirmed.queue;
+    }).pipe(Effect.onError(() => closeAttachedSession));
 
     const ensureOpen = (
       operation: PrimeAgentDaemonSessionRuntimeError["operation"],
@@ -1030,6 +1149,64 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* callVoid("follow-up", () => method.call(connection, promptInput.text, images));
     });
 
+    const getInputQueue = Effect.gen(function* () {
+      yield* ensureOpen("get-input-queue");
+      const method = yield* requireMethod("get-input-queue", connection!.getQueue);
+      const output = yield* Effect.tryPromise({
+        try: () => method.call(connection),
+        catch: () =>
+          runtimeError(
+            "get-input-queue",
+            "request-failed",
+            "Could not read the Prime Agent session input queue.",
+          ),
+      });
+      const queue = decodeInputQueueCounts(output);
+      if (Option.isNone(queue)) {
+        return yield* runtimeError(
+          "get-input-queue",
+          "invalid-response",
+          "Prime Agent returned an invalid session input queue.",
+        );
+      }
+      return queue.value;
+    });
+
+    const getInputQueueStatus = Effect.gen(function* () {
+      yield* ensureOpen("get-input-queue");
+      return yield* readInputQueueStatus("get-input-queue");
+    });
+
+    const clearInputQueue = Effect.gen(function* () {
+      yield* ensureOpen("clear-input-queue");
+      const clear = yield* requireMethod("clear-input-queue", connection!.clearQueue);
+      const removed = yield* Effect.tryPromise({
+        try: () => clear.call(connection),
+        catch: () =>
+          runtimeError(
+            "clear-input-queue",
+            "request-failed",
+            "Could not clear the Prime Agent session input queue.",
+          ),
+      });
+      if (Option.isNone(decodeInputQueueCounts(removed))) {
+        return yield* runtimeError(
+          "clear-input-queue",
+          "invalid-response",
+          "Prime Agent returned an invalid cleared input queue.",
+        );
+      }
+      const status = yield* readInputQueueStatus("clear-input-queue");
+      if (status.queue.steeringCount !== 0 || status.queue.followUpCount !== 0) {
+        return yield* runtimeError(
+          "clear-input-queue",
+          "invalid-response",
+          "Prime Agent did not confirm an empty session input queue.",
+        );
+      }
+      return status;
+    });
+
     const abort = Effect.gen(function* () {
       yield* ensureOpen("abort");
       yield* callVoid("abort", () => connection!.abort());
@@ -1047,7 +1224,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             "The daemon abort-and-clear operation failed.",
           ),
       });
-      if (Option.isNone(decodeQueueState(output))) {
+      if (Option.isNone(decodeInputQueueCounts(output))) {
         return yield* runtimeError(
           "abort-and-clear-queue",
           "invalid-response",
@@ -1245,6 +1422,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       initialSnapshot: initialEvent,
       initialResources,
       initialAgentDepth,
+      initialInputQueue,
       reloadResources,
       getAgentDepth,
       setAgentDepth,
@@ -1252,6 +1430,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       prompt,
       steer,
       followUp,
+      getInputQueue,
+      getInputQueueStatus,
+      clearInputQueue,
       abort,
       abortAndClearQueue,
       setModel,

@@ -14,7 +14,10 @@ import {
   NonNegativeInt,
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   ThreadId,
+  ProviderClearSessionInputQueueInput,
+  ProviderFollowUpInput,
   ProviderGetSessionAgentDepthInput,
+  ProviderGetSessionInputQueueInput,
   ProviderInterruptTurnInput,
   ProviderReloadSessionResourcesInput,
   ProviderSetSessionAgentDepthInput,
@@ -1037,6 +1040,103 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* setDepth(routed.threadId, input.maxDepth);
   });
 
+  const followUp: ProviderServiceMethod<"followUp"> = Effect.fn("followUp")(function* (rawInput) {
+    const parsed = yield* decodeInputOrValidationError({
+      operation: "ProviderService.followUp",
+      schema: ProviderFollowUpInput,
+      payload: rawInput,
+    });
+    const input = { ...parsed, attachments: parsed.attachments ?? [] };
+    if (!input.input && input.attachments.length === 0) {
+      return yield* new ProviderValidationError({
+        operation: "ProviderService.followUp",
+        reason: "invalid-input",
+        issue: "Either follow-up text or at least one attachment is required.",
+      });
+    }
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.followUp",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.followUp",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const followUpSession = routed.adapter.followUp;
+    if (followUpSession === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "follow-up",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+      "provider.attachment_count": input.attachments.length,
+    });
+    return yield* followUpSession(input);
+  });
+
+  const getSessionInputQueue: ProviderServiceMethod<"getSessionInputQueue"> = Effect.fn(
+    "getSessionInputQueue",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.getSessionInputQueue",
+      schema: ProviderGetSessionInputQueueInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.getSessionInputQueue",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.getSessionInputQueue",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const getInputQueue = routed.adapter.getSessionInputQueue;
+    if (getInputQueue === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    return yield* getInputQueue(routed.threadId);
+  });
+
+  const clearSessionInputQueue: ProviderServiceMethod<"clearSessionInputQueue"> = Effect.fn(
+    "clearSessionInputQueue",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.clearSessionInputQueue",
+      schema: ProviderClearSessionInputQueueInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.clearSessionInputQueue",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.clearSessionInputQueue",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const clearInputQueue = routed.adapter.clearSessionInputQueue;
+    if (clearInputQueue === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "clear-session-input-queue",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+    });
+    return yield* clearInputQueue(routed.threadId);
+  });
+
   const stopSession: ProviderServiceMethod<"stopSession"> = Effect.fn("stopSession")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1289,6 +1389,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     reloadSessionResources,
     getSessionAgentDepth,
     setSessionAgentDepth,
+    followUp,
+    getSessionInputQueue,
+    clearSessionInputQueue,
     stopSession,
     listSessions,
     getCapabilities,

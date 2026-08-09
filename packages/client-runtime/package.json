@@ -63,6 +63,10 @@
       "types": "./src/state/sessionAgentDepth.ts",
       "default": "./src/state/sessionAgentDepth.ts"
     },
+    "./state/session-input-queue": {
+      "types": "./src/state/sessionInputQueue.ts",
+      "default": "./src/state/sessionInputQueue.ts"
+    },
     "./state/entities": {
       "types": "./src/state/entities.ts",
       "default": "./src/state/entities.ts"

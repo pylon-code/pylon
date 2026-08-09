@@ -51,6 +51,7 @@ import {
   RpcClientId,
   EnvironmentAuthorizationError,
   ProviderSessionAgentDepthError,
+  ProviderSessionInputQueueError,
   ProviderSessionResourcesReloadError,
   ThreadId,
   type TerminalAttachStreamEvent,
@@ -1525,6 +1526,46 @@ const makeWsRpcLayer = (
                               : "busy"
                             : "request-failed";
                 return new ProviderSessionAgentDepthError({ reason });
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerGetSessionInputQueue]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerGetSessionInputQueue,
+            providerService.getSessionInputQueue(input).pipe(
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderUnsupportedError" ||
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "unsupported"
+                    : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                        error._tag === "ProviderAdapterSessionClosedError" ||
+                        error._tag === "ProviderSessionNotFoundError" ||
+                        error._tag === "ProviderValidationError"
+                      ? "session-not-ready"
+                      : "request-failed";
+                return new ProviderSessionInputQueueError({ reason });
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerClearSessionInputQueue]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerClearSessionInputQueue,
+            providerService.clearSessionInputQueue(input).pipe(
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderUnsupportedError" ||
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "unsupported"
+                    : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                        error._tag === "ProviderAdapterSessionClosedError" ||
+                        error._tag === "ProviderSessionNotFoundError" ||
+                        error._tag === "ProviderValidationError"
+                      ? "session-not-ready"
+                      : "request-failed";
+                return new ProviderSessionInputQueueError({ reason });
               }),
             ),
             { "rpc.aggregate": "provider" },

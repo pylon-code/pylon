@@ -47,8 +47,14 @@ model. Selecting a discovered reasoning model adds its supported thinking levels
 Eligible OpenAI Codex models also expose **Standard** and **Fast** service tiers. These choices apply
 when the next message starts; they cannot be changed by a steering message after a run has begun.
 
-While a daemon-backed turn is working, sending another message steers the same turn. Stopping the
-turn also clears queued steering input. Native select, confirm, input, and editor dialogs appear in
+While a daemon-backed turn is working, sending another message steers the same turn. The separate
+**Queue follow-up** action admits the current draft for the next native run instead. Pylon shows only
+privacy-safe steering and follow-up counts; it never sends queued prompt previews to clients. The
+**Session inputs** control clears pending inputs without interrupting current work, while stopping the
+turn aborts current work and clears the native queue atomically. A queued follow-up remains in the
+conversation as your durable intent; if admission fails, Pylon marks it as not queued. Clearing session
+inputs does not erase conversation history. On mobile, these shared session inputs
+remain separate from pending sends saved on that device. Native select, confirm, input, and editor dialogs appear in
 the session panel; notifications, status, and widgets use the same provider-neutral presentation
 surface. In Full access, the slash-command menu also shows the safe command names, descriptions, and
 argument hints loaded for that thread when its native session starts, including prompt and skill commands.
@@ -114,7 +120,7 @@ instead of silently opening a blank or merely recent Prime session.
 - Prime Agent 0.7.1 has no daemon-native or operating-system sandbox policy. Supervised mode gates
   tool admission but does not restrict an approved tool.
 - Authentication is managed in Prime Agent, not Pylon.
-- Plan mode, provider-conversation rollback, queue inspection and follow-up controls, and Pylon's
+- Plan mode, provider-conversation rollback, per-item queue editing or reordering, and Pylon's
   per-thread MCP bridge are not supported yet.
 - Pylon does not yet present live Prime reasoning streams, cost breakdowns, goals, heartbeats,
   saved-session history, or native package or MCP catalogs as first-class features.

@@ -26,6 +26,13 @@ import {
   supportsSessionAgentDepth,
 } from "@t3tools/client-runtime/state/session-agent-depth";
 import {
+  deriveLatestSessionInputQueue,
+  sessionInputQueueCount,
+  supportsSessionInputQueue,
+  supportsSessionInputQueueClear,
+  supportsSessionInputQueueFollowUp,
+} from "@t3tools/client-runtime/state/session-input-queue";
+import {
   deriveLatestSessionResources,
   formatProviderSlashCommandDescription,
   resolveSessionSlashCommands,
@@ -460,6 +467,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
     isComplete: boolean;
   } | null;
   isRunning: boolean;
+  canQueueFollowUp: boolean;
+  onQueueFollowUp: () => void;
   showPlanFollowUpPrompt: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
@@ -488,6 +497,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         compact={props.compact}
         pendingAction={props.pendingAction}
         isRunning={props.isRunning}
+        canQueueFollowUp={props.canQueueFollowUp}
+        onQueueFollowUp={props.onQueueFollowUp}
         showPlanFollowUpPrompt={props.showPlanFollowUpPrompt}
         promptHasText={props.promptHasText}
         isSendBusy={props.isSendBusy}
@@ -634,6 +645,8 @@ export interface ChatComposerProps {
 
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
+  onQueueFollowUp: () => void;
+  onClearSessionInputQueue: () => Promise<void>;
   onInterrupt: () => void;
   onReloadSessionResources: () => Promise<void>;
   onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
@@ -721,6 +734,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     threadHandoffOffer,
     isContinuingThreadOnAccount,
     onSend,
+    onQueueFollowUp,
+    onClearSessionInputQueue,
     onInterrupt,
     onReloadSessionResources,
     onSetSessionAgentDepth,
@@ -966,6 +981,40 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
   }, [isReloadingSessionResources, onReloadSessionResources, sessionResourceReloadDisabled]);
   const activeSessionInstanceId = activeThread?.session?.providerInstanceId;
+  const sessionInputQueue = useMemo(
+    () =>
+      activeSessionInstanceId === undefined
+        ? null
+        : deriveLatestSessionInputQueue(activeThreadActivities ?? [], activeSessionInstanceId),
+    [activeSessionInstanceId, activeThreadActivities],
+  );
+  const sessionInputCount = sessionInputQueueCount(sessionInputQueue);
+  const showSessionInputQueue =
+    sessionInputQueue !== null &&
+    sessionInputCount > 0 &&
+    supportsSessionInputQueue(activeSessionProviderStatus);
+  const canQueueSessionFollowUp =
+    activeThread?.session?.status === "running" &&
+    phase === "running" &&
+    supportsSessionInputQueueFollowUp(activeSessionProviderStatus);
+  const canClearSessionInputQueue =
+    sessionInputCount > 0 &&
+    supportsSessionInputQueueClear(activeSessionProviderStatus) &&
+    activeThread?.session?.status === "running" &&
+    activeThread.session.activeTurnId != null &&
+    !isConnecting &&
+    environmentUnavailable === null;
+  const [isClearingSessionInputQueue, setIsClearingSessionInputQueue] = useState(false);
+  const clearSessionInputQueue = useCallback(async () => {
+    if (!canClearSessionInputQueue || isClearingSessionInputQueue) return;
+    if (!globalThis.confirm("Clear all pending inputs for this provider session?")) return;
+    setIsClearingSessionInputQueue(true);
+    try {
+      await onClearSessionInputQueue();
+    } finally {
+      setIsClearingSessionInputQueue(false);
+    }
+  }, [canClearSessionInputQueue, isClearingSessionInputQueue, onClearSessionInputQueue]);
   const sessionAgentDepth = useMemo(
     () =>
       activeSessionInstanceId === undefined
@@ -3005,6 +3054,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       compact
                       pendingAction={pendingPrimaryAction}
                       isRunning={false}
+                      canQueueFollowUp={false}
+                      onQueueFollowUp={() => undefined}
                       showPlanFollowUpPrompt={false}
                       promptHasText={false}
                       isSendBusy={isSendBusy}
@@ -3288,6 +3339,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     compact
                     pendingAction={pendingPrimaryAction}
                     isRunning={false}
+                    canQueueFollowUp={false}
+                    onQueueFollowUp={() => undefined}
                     showPlanFollowUpPrompt={false}
                     promptHasText={false}
                     isSendBusy={isSendBusy}
@@ -3467,6 +3520,30 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     </TooltipPopup>
                   </Tooltip>
                 ) : null}
+                {showSessionInputQueue ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <ComposerControl
+                          type="button"
+                          aria-label={`Session inputs ${sessionInputCount}: ${sessionInputQueue?.steeringCount ?? 0} steering, ${sessionInputQueue?.followUpCount ?? 0} follow-ups. Clear all pending inputs`}
+                          disabled={!canClearSessionInputQueue || isClearingSessionInputQueue}
+                          onClick={() => void clearSessionInputQueue()}
+                        />
+                      }
+                    >
+                      <span className="text-xs font-medium">
+                        Session inputs · {sessionInputCount}
+                      </span>
+                      <ComposerControlIcon icon={XIcon} />
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">
+                      {isClearingSessionInputQueue
+                        ? "Clearing pending session inputs…"
+                        : "Clear all pending session inputs"}
+                    </TooltipPopup>
+                  </Tooltip>
+                ) : null}
                 {showSessionResourceReload ? (
                   <Tooltip>
                     <TooltipTrigger
@@ -3506,6 +3583,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   timestampFormat={settings.timestampFormat}
                   pendingAction={pendingPrimaryAction}
                   isRunning={phase === "running"}
+                  canQueueFollowUp={canQueueSessionFollowUp}
+                  onQueueFollowUp={onQueueFollowUp}
                   showPlanFollowUpPrompt={pendingUserInputs.length === 0 && showPlanFollowUpPrompt}
                   promptHasText={prompt.trim().length > 0}
                   isSendBusy={isSendBusy}

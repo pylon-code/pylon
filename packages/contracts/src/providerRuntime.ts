@@ -264,6 +264,7 @@ const FilesPersistedType = Schema.Literal("files.persisted");
 const ToolDeniedType = Schema.Literal("tool.denied");
 const SessionResourcesUpdatedType = Schema.Literal("session.resources.updated");
 const SessionAgentDepthUpdatedType = Schema.Literal("session.agent-depth.updated");
+const SessionInputQueueUpdatedType = Schema.Literal("session.input-queue.updated");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 
@@ -885,6 +886,18 @@ export const SessionAgentDepthUpdatedPayload = Schema.Struct({
 });
 export type SessionAgentDepthUpdatedPayload = typeof SessionAgentDepthUpdatedPayload.Type;
 
+export const PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT = 1_000;
+const SessionInputQueueCount = NonNegativeInt.check(
+  Schema.isLessThanOrEqualTo(PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT),
+);
+
+/** Counts only: queued prompt contents stay private to the provider runtime. */
+export const SessionInputQueueUpdatedPayload = Schema.Struct({
+  steeringCount: SessionInputQueueCount,
+  followUpCount: SessionInputQueueCount,
+});
+export type SessionInputQueueUpdatedPayload = typeof SessionInputQueueUpdatedPayload.Type;
+
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(Schema.Unknown),
@@ -1299,6 +1312,16 @@ const ProviderRuntimeSessionAgentDepthUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionAgentDepthUpdatedEvent =
   typeof ProviderRuntimeSessionAgentDepthUpdatedEvent.Type;
 
+const ProviderRuntimeSessionInputQueueUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionInputQueueUpdatedType,
+  payload: SessionInputQueueUpdatedPayload,
+});
+export type ProviderRuntimeSessionInputQueueUpdatedEvent =
+  typeof ProviderRuntimeSessionInputQueueUpdatedEvent.Type;
+
 const ProviderRuntimeWarningEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: RuntimeWarningType,
@@ -1367,6 +1390,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeToolDeniedEvent,
   ProviderRuntimeSessionResourcesUpdatedEvent,
   ProviderRuntimeSessionAgentDepthUpdatedEvent,
+  ProviderRuntimeSessionInputQueueUpdatedEvent,
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,
 ]);

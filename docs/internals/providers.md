@@ -35,8 +35,14 @@ paths, request IDs, and native payloads never cross the provider boundary.
 
 A short-lived RPC probe discovers the qualified model catalog. Its synthetic `default` model means
 “do not force a model,” while discovered model metadata drives generic thinking and service-tier
-composer options. The daemon adapter can switch models before a turn, steer an active turn, and
-keeps queued native runs inside one Pylon turn until the queue settles. Approval-required sessions
+composer options. The daemon adapter can switch models before a turn, steer an active turn, admit
+explicit follow-ups, and clear pending inputs without aborting current work. Native queue previews
+terminate at the adapter boundary: only bounded steering/follow-up counts use the stable
+`session.input-queue.updated` activity projection. Follow-up text follows the normal durable user-message
+command path, so an admission failure leaves the message in history with an explicit not-queued
+activity rather than deleting user intent. Clearing pending native inputs likewise does not erase durable
+history. Queued native runs stay inside one Pylon turn until the queue settles. Mobile's
+file-backed device outbox remains a separate reliability layer. Approval-required sessions
 materialize a server-owned, token-correlated Prime extension, disable extension discovery, verify
 the generated source plus the loaded extension-sourced marker through public resource APIs, set and
 verify RLM depth zero before prompt admission, reject slash-command prompts that bypass tool hooks,

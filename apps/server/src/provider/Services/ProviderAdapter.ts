@@ -10,12 +10,14 @@
 import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
+  ProviderFollowUpInput,
   ProviderDriverKind,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
   SessionInteractionRequestId,
   SessionInteractionResponse,
   SessionAgentDepthUpdatedPayload,
+  SessionInputQueueUpdatedPayload,
   SessionResourcesUpdatedPayload,
   ProviderSendTurnInput,
   ProviderSession,
@@ -124,6 +126,21 @@ export interface ProviderAdapterShape<TError> {
     threadId: ThreadId,
     maxDepth: number,
   ) => Effect.Effect<SessionAgentDepthUpdatedPayload, TError>;
+
+  /** Admit a follow-up to the active provider run without starting a Pylon turn. */
+  readonly followUp?: (
+    input: ProviderFollowUpInput,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, TError>;
+
+  /** Read the privacy-safe counts for one active session's input queue. */
+  readonly getSessionInputQueue?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, TError>;
+
+  /** Clear queued inputs without interrupting the active provider run. */
+  readonly clearSessionInputQueue?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, TError>;
 
   /**
    * Stop one provider session.

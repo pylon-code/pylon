@@ -86,6 +86,7 @@ interface Captures {
 
 function fixture(options?: {
   readonly rawSnapshot?: unknown;
+  readonly rawSnapshotImpl?: () => unknown;
   readonly createResponse?: unknown;
   readonly duringSnapshot?: ReadonlyArray<unknown>;
   readonly afterSnapshotEvent?: unknown;
@@ -97,6 +98,8 @@ function fixture(options?: {
   readonly rlmStatus?: unknown;
   readonly setRlmImpl?: (maxDepth: number) => Promise<unknown>;
   readonly sessionStats?: unknown;
+  readonly getQueueImpl?: () => Promise<unknown>;
+  readonly clearQueueImpl?: () => Promise<unknown>;
 }) {
   const captures: Captures = {
     order: [],
@@ -181,7 +184,7 @@ function fixture(options?: {
           void listener?.(options.afterSnapshotEvent);
         });
       }
-      return options?.rawSnapshot ?? snapshot();
+      return options?.rawSnapshotImpl?.() ?? options?.rawSnapshot ?? snapshot();
     }
     promptAndWait(
       message: string,
@@ -205,6 +208,14 @@ function fixture(options?: {
     abortAndClearQueue(): Promise<unknown> {
       captures.connectionCalls.push({ method: "abortAndClearQueue", args: [] });
       return Promise.resolve({ steering: [], followUp: [] });
+    }
+    getQueue(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getQueue", args: [] });
+      return options?.getQueueImpl?.() ?? Promise.resolve({ steering: [], followUp: [] });
+    }
+    clearQueue(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "clearQueue", args: [] });
+      return options?.clearQueueImpl?.() ?? Promise.resolve({ steering: [], followUp: [] });
     }
     setModel(provider: string, modelId: string): Promise<unknown> {
       captures.connectionCalls.push({ method: "setModel", args: [provider, modelId] });
@@ -816,6 +827,38 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     }),
   );
 
+  it.effect("rejects a restored active scheduler action in supervised mode", () =>
+    Effect.gen(function* () {
+      const base = snapshot();
+      const { captures, make } = fixture({
+        rawSnapshot: {
+          ...base,
+          state: {
+            ...base.state,
+            sessionActions: {
+              ...actions,
+              active: { kind: "session_command", phase: "preparing", label: "/compact" },
+            },
+          },
+          children: [],
+        },
+      });
+      const error = yield* Effect.scoped(
+        make(undefined, ["/state/pylon/permission.mjs"], {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        }).pipe(Effect.flip),
+      );
+      expect(error).toMatchObject({
+        operation: "verify-extension",
+        reason: "invalid-response",
+      });
+      expect(captures.disposeCount).toBe(1);
+      expect(captures.closeCount).toBe(1);
+      expect(captures.connectionCalls.map((call) => call.method)).not.toContain("clearQueue");
+    }),
+  );
+
   it.effect("resumes the exact private session identity when one is available", () =>
     Effect.gen(function* () {
       const { captures, make } = fixture();
@@ -1006,6 +1049,48 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect(
+    "projects queue counts without retaining prompt previews and clears without aborting",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let queue = { steering: ["private steer"], followUp: ["private one", "private two"] };
+          const queuedSnapshot = snapshot();
+          const test = fixture({
+            rawSnapshotImpl: () => ({
+              ...queuedSnapshot,
+              state: {
+                ...queuedSnapshot.state,
+                sessionActions: {
+                  ...actions,
+                  steering: queue.steering,
+                  followUps: queue.followUp,
+                  queuedCount: queue.steering.length + queue.followUp.length,
+                },
+              },
+            }),
+            getQueueImpl: () => Promise.resolve(queue),
+            clearQueueImpl: () => {
+              const removed = queue;
+              queue = { steering: [], followUp: [] };
+              return Promise.resolve(removed);
+            },
+          });
+          const runtime = yield* test.make();
+
+          expect(runtime.initialInputQueue).toEqual({ steeringCount: 1, followUpCount: 2 });
+          expect(yield* runtime.getInputQueue).toEqual({ steeringCount: 1, followUpCount: 2 });
+          expect(yield* runtime.clearInputQueue).toEqual({
+            queue: { steeringCount: 0, followUpCount: 0 },
+            activeAction: false,
+            isStreaming: false,
+          });
+          expect(test.captures.connectionCalls.map((call) => call.method)).toContain("clearQueue");
+          expect(test.captures.connectionCalls.map((call) => call.method)).not.toContain("abort");
+        }),
+      ),
+  );
+
   it.effect("allows image-only prompts and rejects empty prompt, steer, and follow-up inputs", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1023,6 +1108,29 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           const error = yield* Effect.flip(operation);
           expect(error.reason).toBe("invalid-input");
         }
+      }),
+    ),
+  );
+
+  it.effect("accepts the same bounded per-category queue counts from events and reads", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const steering = Array.from({ length: 600 }, (_, index) => `steer-${index}`);
+        const followUp = Array.from({ length: 600 }, (_, index) => `follow-up-${index}`);
+        const base = snapshot();
+        const { make } = fixture({
+          rawSnapshot: {
+            ...base,
+            state: {
+              ...base.state,
+              sessionActions: { ...actions, steering, followUps: followUp, queuedCount: 1_200 },
+            },
+          },
+          getQueueImpl: () => Promise.resolve({ steering, followUp }),
+        });
+        const runtime = yield* make();
+        expect(runtime.initialInputQueue).toEqual({ steeringCount: 600, followUpCount: 600 });
+        expect(yield* runtime.getInputQueue).toEqual({ steeringCount: 600, followUpCount: 600 });
       }),
     ),
   );

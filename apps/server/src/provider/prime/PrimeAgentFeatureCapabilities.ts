@@ -29,6 +29,7 @@ const shared = {
 export function makePrimeAgentFeatureCapabilities(input: {
   readonly runtime: "daemon" | "acp";
   readonly sessionUi: boolean;
+  readonly inputQueue: boolean;
 }): ProviderFeatureCapabilities {
   if (input.runtime === "acp") {
     return {
@@ -73,12 +74,14 @@ export function makePrimeAgentFeatureCapabilities(input: {
         "Pylon shows safe session-scoped commands and can explicitly reload full-access sessions while idle; supervised reload, packages, and MCP controls are unavailable.",
       operations: ["commands", "reload"],
     },
-    inputQueue: {
-      support: "read-write",
-      reason:
-        "Pylon can steer the active Prime Agent run; follow-up queues and modes are not wired yet.",
-      operations: ["steer"],
-    },
+    inputQueue: input.inputQueue
+      ? {
+          support: "read-write",
+          reason:
+            "Pylon can observe privacy-safe queue counts, steer the active run, admit explicit follow-ups, and clear pending inputs without interrupting current work.",
+          operations: ["observe", "follow-up", "steer", "clear"],
+        }
+      : unavailable("The loaded Prime Agent daemon does not expose compatible input queue APIs."),
     context: {
       support: "read-only",
       reason:

@@ -1,6 +1,13 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import {
+  sessionInputQueueCount,
+  supportsSessionInputQueue,
+  supportsSessionInputQueueClear,
+  supportsSessionInputQueueFollowUp,
+  type SessionInputQueueSnapshot,
+} from "@t3tools/client-runtime/state/session-input-queue";
+import {
   canSetSessionAgentDepth,
   supportsSessionAgentDepth,
   type SessionAgentDepthSnapshot,
@@ -31,6 +38,7 @@ import type { ReactNode } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Platform,
   Pressable,
@@ -124,11 +132,13 @@ export interface ThreadComposerProps {
   readonly threadSyncPhase?: "loading" | "syncing" | null;
   readonly selectedThread: OrchestrationThreadShell;
   readonly serverConfig: T3ServerConfig | null;
-  readonly queueCount: number;
+  readonly localOutboxCount: number;
   readonly contextWindow: ContextWindowSnapshot | null;
   readonly sessionResources: SessionResourcesSnapshot | null;
   readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
+  readonly sessionInputQueue: SessionInputQueueSnapshot | null;
   readonly activeThreadBusy: boolean;
+  readonly sessionInputBlocked: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
   readonly editorRef?: RefObject<ComposerEditorHandle | null>;
@@ -140,6 +150,8 @@ export interface ThreadComposerProps {
   readonly onReloadSessionResources: () => Promise<void>;
   readonly onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
   readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onQueueFollowUp: () => Promise<MessageId | null>;
+  readonly onClearSessionInputQueue: () => Promise<boolean>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
@@ -389,10 +401,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session?.status === "running" ||
     props.selectedThread.session?.status === "starting";
 
-  const sendLabel =
-    props.connectionState !== "connected" || props.activeThreadBusy || props.queueCount > 0
-      ? "Queue"
-      : "Send";
   const currentModelSelection = props.selectedThread.modelSelection;
   const currentRuntimeMode = resolveModelSelectionRuntimeMode(
     props.serverConfig,
@@ -433,6 +441,30 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       props.serverConfig.providers.find((provider) => provider.instanceId === instanceId) ?? null
     );
   }, [props.selectedThread.session?.providerInstanceId, props.serverConfig]);
+  const sessionQueueCount = sessionInputQueueCount(props.sessionInputQueue);
+  const showSessionInputQueue =
+    props.sessionInputQueue !== null &&
+    sessionQueueCount > 0 &&
+    supportsSessionInputQueue(activeSessionProviderStatus);
+  const canQueueFollowUp =
+    props.connectionState === "connected" &&
+    props.selectedThread.session?.status === "running" &&
+    !props.sessionInputBlocked &&
+    props.localOutboxCount === 0 &&
+    supportsSessionInputQueueFollowUp(activeSessionProviderStatus);
+  const canClearSessionInputQueue =
+    props.connectionState === "connected" &&
+    props.selectedThread.session?.status === "running" &&
+    props.selectedThread.session.activeTurnId != null &&
+    sessionQueueCount > 0 &&
+    supportsSessionInputQueueClear(activeSessionProviderStatus);
+  const [isMutatingSessionInputQueue, setIsMutatingSessionInputQueue] = useState(false);
+  const sendLabel = canQueueFollowUp
+    ? "Queue follow-up"
+    : props.connectionState !== "connected" || props.activeThreadBusy || props.localOutboxCount > 0
+      ? "Save pending send"
+      : "Send";
+
   const showSessionResourceReload =
     props.selectedThread.session?.runtimeMode === "full-access" &&
     supportsSessionResourceReload(activeSessionProviderStatus);
@@ -458,7 +490,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     !canSetSessionAgentDepth(activeSessionProviderStatus, props.sessionAgentDepth) ||
     props.connectionState !== "connected" ||
     props.activeThreadBusy ||
-    props.queueCount > 0 ||
+    props.localOutboxCount > 0 ||
     props.selectedThread.session?.status !== "ready" ||
     isReloadingSessionResources ||
     isSettingSessionAgentDepth;
@@ -726,6 +758,45 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.id,
     props.selectedThread.title,
   ]);
+  const handleQueueFollowUp = useCallback(async () => {
+    const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+    if (inFlightThreadIdsRef.current.has(threadKey) || isMutatingSessionInputQueue) return;
+    inFlightThreadIdsRef.current.add(threadKey);
+    setIsMutatingSessionInputQueue(true);
+    try {
+      await props.onQueueFollowUp();
+    } finally {
+      setIsMutatingSessionInputQueue(false);
+      inFlightThreadIdsRef.current.delete(threadKey);
+    }
+  }, [
+    isMutatingSessionInputQueue,
+    props.environmentId,
+    props.onQueueFollowUp,
+    props.selectedThread.id,
+  ]);
+
+  const confirmClearSessionInputQueue = useCallback(() => {
+    if (!canClearSessionInputQueue || isMutatingSessionInputQueue) return;
+    Alert.alert(
+      "Clear pending session inputs?",
+      "This removes queued follow-ups and steering inputs without stopping current work.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear all",
+          style: "destructive",
+          onPress: () => {
+            setIsMutatingSessionInputQueue(true);
+            void props.onClearSessionInputQueue().finally(() => {
+              setIsMutatingSessionInputQueue(false);
+            });
+          },
+        },
+      ],
+    );
+  }, [canClearSessionInputQueue, isMutatingSessionInputQueue, props.onClearSessionInputQueue]);
+
   const handleCommandSelect = useCallback(
     (item: ComposerCommandItem) => {
       if (!composerTrigger) return;
@@ -1008,9 +1079,26 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           {!isExpanded ? (
             <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
               {showStopAction ? (
-                <ControlPill icon="stop.fill" variant="danger" onPress={props.onStopThread} />
+                <View className="flex-row items-center gap-2">
+                  <ControlPill
+                    accessibilityLabel="Stop"
+                    icon="stop.fill"
+                    variant="danger"
+                    onPress={props.onStopThread}
+                  />
+                  {canQueueFollowUp ? (
+                    <ControlPill
+                      accessibilityLabel="Queue follow-up"
+                      icon="arrow.up"
+                      variant="primary"
+                      disabled={!canSend || isMutatingSessionInputQueue}
+                      onPress={handleQueueFollowUp}
+                    />
+                  ) : null}
+                </View>
               ) : (
                 <ControlPill
+                  accessibilityLabel={sendLabel}
                   icon="arrow.up"
                   variant="primary"
                   disabled={!canSend}
@@ -1094,20 +1182,35 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 accessibilityLabel={sendLabel}
                 icon="arrow.up"
                 variant="primary"
-                disabled={!canSend}
-                onPress={handleSend}
+                disabled={!canSend || (canQueueFollowUp && isMutatingSessionInputQueue)}
+                onPress={canQueueFollowUp ? handleQueueFollowUp : handleSend}
                 showChevron={false}
               />
             </ComposerToolbarRow>
           ) : null}
         </ComposerSurface>
 
+        {showSessionInputQueue ? (
+          <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Session inputs ${sessionQueueCount}. Clear all pending session inputs`}
+              disabled={!canClearSessionInputQueue || isMutatingSessionInputQueue}
+              onPress={confirmClearSessionInputQueue}
+            >
+              <Text className="pt-2 text-xs text-foreground-muted">
+                Session inputs · {sessionQueueCount} · Clear all
+              </Text>
+            </Pressable>
+          </Animated.View>
+        ) : null}
+
         {/* Queue count */}
-        {props.queueCount > 0 ? (
+        {props.localOutboxCount > 0 ? (
           <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>
             <Text className="pt-2 text-xs text-foreground-muted">
-              {props.queueCount} queued message{props.queueCount === 1 ? "" : "s"} will send
-              automatically.
+              {props.localOutboxCount} pending send{props.localOutboxCount === 1 ? "" : "s"} on this
+              device.
             </Text>
           </Animated.View>
         ) : null}

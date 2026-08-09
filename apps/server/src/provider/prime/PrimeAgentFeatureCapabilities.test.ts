@@ -5,7 +5,11 @@ import { makePrimeAgentFeatureCapabilities } from "./PrimeAgentFeatureCapabiliti
 
 describe("PrimeAgentFeatureCapabilities", () => {
   it("advertises only daemon operations already exposed by Pylon", () => {
-    const capabilities = makePrimeAgentFeatureCapabilities({ runtime: "daemon", sessionUi: true });
+    const capabilities = makePrimeAgentFeatureCapabilities({
+      runtime: "daemon",
+      sessionUi: true,
+      inputQueue: true,
+    });
 
     expect(capabilities.executionPolicy).toMatchObject({
       support: "read-write",
@@ -21,7 +25,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       support: "read-write",
       operations: ["commands", "reload"],
     });
-    expect(capabilities.inputQueue?.operations).toEqual(["steer"]);
+    expect(capabilities.inputQueue?.operations).toEqual(["observe", "follow-up", "steer", "clear"]);
     expect(capabilities.context).toMatchObject({
       support: "read-only",
       operations: ["observe"],
@@ -41,8 +45,24 @@ describe("PrimeAgentFeatureCapabilities", () => {
     expect(capabilities.history?.support).toBe("unavailable");
   });
 
+  it("keeps native input queue controls unavailable without compatible daemon methods", () => {
+    const capabilities = makePrimeAgentFeatureCapabilities({
+      runtime: "daemon",
+      sessionUi: true,
+      inputQueue: false,
+    });
+    expect(capabilities.inputQueue).toMatchObject({
+      support: "unavailable",
+      operations: [],
+    });
+  });
+
   it("keeps ACP fallback capabilities narrow and explicit", () => {
-    const capabilities = makePrimeAgentFeatureCapabilities({ runtime: "acp", sessionUi: false });
+    const capabilities = makePrimeAgentFeatureCapabilities({
+      runtime: "acp",
+      sessionUi: false,
+      inputQueue: false,
+    });
 
     expect(capabilities.executionPolicy).toMatchObject({
       support: "read-only",

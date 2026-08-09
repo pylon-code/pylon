@@ -290,9 +290,17 @@ describe("PrimeAgentDaemonEvents", () => {
       _tag: "ChildUpdated",
       child: { id: "child-1", status: "running", activity: { toolName: "ipython" } },
     });
-    expect(
-      decodePrimeAgentDaemonEvent(sessionEvent({ type: "session_action_update", actions })),
-    ).toMatchObject({ _tag: "QueueChanged", queuedCount: 2, followUps: ["Summarize"] });
+    const queueChanged = decodePrimeAgentDaemonEvent(
+      sessionEvent({ type: "session_action_update", actions }),
+    );
+    expect(queueChanged).toMatchObject({
+      _tag: "QueueChanged",
+      queuedCount: 2,
+      steeringCount: 1,
+      followUpCount: 1,
+    });
+    expect(JSON.stringify(queueChanged)).not.toContain("Focus on errors");
+    expect(JSON.stringify(queueChanged)).not.toContain("Summarize");
     expect(decodePrimeAgentDaemonEvent(sessionEvent({ type: "goal_update", goal }))).toMatchObject({
       _tag: "GoalUpdated",
       goal: { objective: "Finish the integration" },

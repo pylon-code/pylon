@@ -24,6 +24,7 @@ import {
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
   SessionAgentDepthUpdatedPayload,
+  SessionInputQueueUpdatedPayload,
   SessionResourcesUpdatedPayload,
 } from "./providerRuntime.ts";
 import {
@@ -383,6 +384,14 @@ export const SessionAgentDepthUpdatedActivityPayload = Schema.Struct({
 export type SessionAgentDepthUpdatedActivityPayload =
   typeof SessionAgentDepthUpdatedActivityPayload.Type;
 
+export const SessionInputQueueUpdatedActivityPayload = Schema.Struct({
+  ...SessionInputQueueUpdatedPayload.fields,
+  provider: ProviderDriverKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+});
+export type SessionInputQueueUpdatedActivityPayload =
+  typeof SessionInputQueueUpdatedActivityPayload.Type;
+
 const SessionActivityBaseFields = {
   id: EventId,
   tone: OrchestrationThreadActivityTone,
@@ -418,6 +427,11 @@ export const OrchestrationSessionActivity = Schema.Union([
     ...SessionActivityBaseFields,
     kind: Schema.Literal("session.agent-depth.updated"),
     payload: SessionAgentDepthUpdatedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("session.input-queue.updated"),
+    payload: SessionInputQueueUpdatedActivityPayload,
   }),
 ]);
 export type OrchestrationSessionActivity = typeof OrchestrationSessionActivity.Type;
@@ -957,6 +971,32 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadInputQueueFollowUpCommand = Schema.Struct({
+  type: Schema.Literal("thread.input-queue.follow-up"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    role: Schema.Literal("user"),
+    text: Schema.String,
+    attachments: Schema.Array(ChatAttachment),
+  }),
+  createdAt: IsoDateTime,
+});
+
+const ClientThreadInputQueueFollowUpCommand = Schema.Struct({
+  type: Schema.Literal("thread.input-queue.follow-up"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    role: Schema.Literal("user"),
+    text: Schema.String,
+    attachments: Schema.Array(UploadChatAttachment),
+  }),
+  createdAt: IsoDateTime,
+});
+
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -1032,6 +1072,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
+  ThreadInputQueueFollowUpCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1061,6 +1102,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
+  ClientThreadInputQueueFollowUpCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1181,6 +1223,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.interaction-mode-set",
   "thread.message-sent",
   "thread.turn-start-requested",
+  "thread.input-queue-follow-up-requested",
   "thread.turn-interrupt-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
@@ -1362,6 +1405,12 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadInputQueueFollowUpRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
   createdAt: IsoDateTime,
 });
 
@@ -1552,6 +1601,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-start-requested"),
     payload: ThreadTurnStartRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.input-queue-follow-up-requested"),
+    payload: ThreadInputQueueFollowUpRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

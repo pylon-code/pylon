@@ -140,12 +140,23 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
               ...(backend.fallbackMessage ? { startupWarning: backend.fallbackMessage } : {}),
             });
       const stampBackendSnapshot = (snapshot: ServerProviderDraft) =>
-        stampPrimeAgentBackendSnapshot(snapshot, {
-          runtime: backend.runtime,
-          ...(backend.runtime === "acp" && backend.fallbackMessage
-            ? { fallbackMessage: backend.fallbackMessage }
-            : {}),
-        });
+        stampPrimeAgentBackendSnapshot(
+          snapshot,
+          backend.runtime === "daemon"
+            ? {
+                runtime: "daemon",
+                inputQueue: ["followUp", "getQueue", "clearQueue"].every(
+                  (method) =>
+                    typeof backend.manager.bridge.DaemonAgentConnection.prototype[
+                      method as "followUp" | "getQueue" | "clearQueue"
+                    ] === "function",
+                ),
+              }
+            : {
+                runtime: "acp",
+                ...(backend.fallbackMessage ? { fallbackMessage: backend.fallbackMessage } : {}),
+              },
+        );
       const stampSnapshot = (snapshot: ServerProviderDraft) =>
         stampIdentity(stampBackendSnapshot(snapshot));
       const textGeneration = makePrimeAgentTextGeneration();

@@ -50,7 +50,10 @@ import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
-import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import {
+  ProviderRuntimeIngestionLive,
+  runtimeEventToActivities,
+} from "./ProviderRuntimeIngestion.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -114,6 +117,9 @@ function createProviderServiceHarness() {
     reloadSessionResources: () => unsupported(),
     getSessionAgentDepth: () => unsupported(),
     setSessionAgentDepth: () => unsupported(),
+    followUp: () => unsupported(),
+    getSessionInputQueue: () => unsupported(),
+    clearSessionInputQueue: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
@@ -221,6 +227,31 @@ async function waitForThread(
   };
   return poll();
 }
+
+it("maps session input queue counts to one stable privacy-safe activity", () => {
+  const activities = runtimeEventToActivities({
+    type: "session.input-queue.updated",
+    eventId: EventId.make("evt-input-queue"),
+    provider: ProviderDriverKind.make("primeAgent"),
+    providerInstanceId: ProviderInstanceId.make("prime-work"),
+    threadId: ThreadId.make("thread-1"),
+    createdAt: "2026-08-09T00:00:00.000Z",
+    payload: { steeringCount: 2, followUpCount: 3 },
+  });
+  expect(activities).toEqual([
+    expect.objectContaining({
+      id: "session-input-queue:prime-work:thread-1",
+      kind: "session.input-queue.updated",
+      payload: {
+        provider: "primeAgent",
+        providerInstanceId: "prime-work",
+        steeringCount: 2,
+        followUpCount: 3,
+      },
+    }),
+  ]);
+  expect(JSON.stringify(activities)).not.toContain("followUps");
+});
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<

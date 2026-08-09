@@ -54,6 +54,7 @@ import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import {
   providerErrorLabel,
   providerErrorLabelFromInstanceHint,
+  providerFollowUpInputFromMessage,
   ProviderCommandReactorLive,
 } from "./ProviderCommandReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -141,6 +142,19 @@ describe("ProviderCommandReactor", () => {
 
     it("uses the unknown driver kind when the resolved driver is not registered locally", () => {
       expect(providerErrorLabel("third_party_driver")).toBe("third_party_driver");
+    });
+  });
+
+  it("omits blank text while preserving image-only follow-up attachments", () => {
+    const attachment = {
+      type: "image" as const,
+      id: "follow-up-image-00000000-0000-4000-8000-000000000001",
+      name: "follow-up.png",
+      mimeType: "image/png",
+      sizeBytes: 5,
+    };
+    expect(providerFollowUpInputFromMessage({ text: "", attachments: [attachment] })).toEqual({
+      attachments: [attachment],
     });
   });
 
@@ -322,6 +336,9 @@ describe("ProviderCommandReactor", () => {
       reloadSessionResources: () => unsupported(),
       getSessionAgentDepth: () => unsupported(),
       setSessionAgentDepth: () => unsupported(),
+      followUp: () => unsupported(),
+      getSessionInputQueue: () => unsupported(),
+      clearSessionInputQueue: () => unsupported(),
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       listSessions: () => Effect.succeed(runtimeSessions),
       getCapabilities: (_provider) =>
