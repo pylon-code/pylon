@@ -52,7 +52,10 @@ const usage = {
   totalCostUsd: 0.012,
 };
 
-function assistantMessage(text: string, stopReason: "stop" | "aborted" | "error" = "stop") {
+function assistantMessage(
+  text: string,
+  stopReason: Extract<PrimeDaemonMessage, { readonly role: "assistant" }>["stopReason"] = "stop",
+) {
   return {
     role: "assistant",
     timestamp: 1,
@@ -306,6 +309,7 @@ describe("PrimeAgentDaemonAdapter", () => {
             .pipe(Effect.forkChild);
           yield* awaitObservedType(subscription.observed, "turn.started");
           yield* Queue.take(captures.promptObserved!);
+          const toolTurnMessage = assistantMessage("hello back", "toolUse");
           yield* offer(captures, { _tag: "MessageStarted", message: assistantMessage("") });
           yield* offer(captures, {
             _tag: "AssistantStream",
@@ -350,7 +354,7 @@ describe("PrimeAgentDaemonAdapter", () => {
           });
           yield* offer(captures, {
             _tag: "MessageCompleted",
-            message: assistantMessage("hello back"),
+            message: toolTurnMessage,
           });
           yield* offer(captures, {
             _tag: "ExtensionRequest",
@@ -394,11 +398,34 @@ describe("PrimeAgentDaemonAdapter", () => {
           });
           yield* offer(captures, {
             _tag: "TurnCompleted",
-            message: assistantMessage("hello back"),
+            message: toolTurnMessage,
             toolResults: [],
           });
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: { id: "cycle-barrier", method: "barrier" },
+          });
+          yield* awaitObservedType(subscription.observed, "runtime.warning");
+          expect(turnFiber.pollUnsafe()).toBeUndefined();
+
+          const finalMessage = assistantMessage("final answer");
+          yield* offer(captures, { _tag: "TurnStarted" });
+          yield* offer(captures, { _tag: "MessageStarted", message: finalMessage });
+          yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+          yield* offer(captures, {
+            _tag: "TurnCompleted",
+            message: finalMessage,
+            toolResults: [],
+          });
+          yield* offer(captures, { _tag: "SessionInfoChanged", name: "Cycle complete" });
+          yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+          expect(turnFiber.pollUnsafe()).toBeUndefined();
+          yield* offer(captures, {
+            _tag: "RunCompleted",
+            messages: [toolTurnMessage, finalMessage],
+          });
           const result = yield* Fiber.join(turnFiber);
-          yield* awaitObservedType(subscription.observed, "thread.token-usage.updated");
+          yield* awaitObservedType(subscription.observed, "session.state.changed");
 
           expect(result.resumeCursor).toEqual(PRIME_AGENT_DAEMON_RESUME_CURSOR);
           expect(captures.order.slice(0, 2)).toEqual(["model:anthropic/second", "prompt"]);
@@ -424,10 +451,34 @@ describe("PrimeAgentDaemonAdapter", () => {
             "item.completed",
             "interaction.requested",
             "interaction.resolved",
+            "runtime.warning",
+            "item.started",
+            "content.delta",
+            "item.completed",
+            "thread.metadata.updated",
             "turn.completed",
             "thread.token-usage.updated",
+            "session.state.changed",
           ]);
           expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+          expect(turnEvents.find((event) => event.type === "turn.completed")).toMatchObject({
+            payload: {
+              state: "completed",
+              usage: {
+                inputTokens: 22,
+                outputTokens: 14,
+                cachedInputTokens: 6,
+                cacheWriteTokens: 4,
+                totalTokens: 46,
+              },
+              totalCostUsd: 0.024,
+            },
+          });
+          expect(
+            turnEvents.find((event) => event.type === "thread.token-usage.updated"),
+          ).toMatchObject({
+            payload: { usage: { usedTokens: 23, lastUsedTokens: 23 } },
+          });
           expect(new Set(turnEvents.map((event) => event.eventId)).size).toBe(turnEvents.length);
           expect(turnEvents.every((event) => event.createdAt.length > 0)).toBe(true);
           const serialized = encodeUnknownJson(turnEvents);
@@ -438,9 +489,8 @@ describe("PrimeAgentDaemonAdapter", () => {
 
           // A duplicate authoritative completion after settlement is ignored.
           yield* offer(captures, {
-            _tag: "TurnCompleted",
-            message: assistantMessage("duplicate"),
-            toolResults: [],
+            _tag: "RunCompleted",
+            messages: [assistantMessage("duplicate")],
           });
           yield* offer(captures, {
             _tag: "ExtensionRequest",
@@ -667,6 +717,24 @@ describe("PrimeAgentDaemonAdapter", () => {
         );
         expect(completions).toHaveLength(1);
         expect(completions[0]).toMatchObject({ payload: { state: "cancelled" } });
+
+        const lateMessage = assistantMessage("cancelled", "aborted");
+        yield* offer(captures, {
+          _tag: "TurnCompleted",
+          message: lateMessage,
+          toolResults: [],
+        });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [lateMessage] });
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: { id: "interrupt-barrier", method: "barrier" },
+        });
+        yield* awaitObservedType(subscription.observed, "runtime.warning");
+        expect(
+          subscription.events.filter(
+            (event) => event.type === "turn.completed" && event.turnId === turnId,
+          ),
+        ).toHaveLength(1);
         yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),

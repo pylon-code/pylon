@@ -9,7 +9,11 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 
-import type { PrimeDaemonEvent, PrimeDaemonUsage } from "./PrimeAgentDaemonEvents.ts";
+import type {
+  PrimeDaemonEvent,
+  PrimeDaemonMessage,
+  PrimeDaemonUsage,
+} from "./PrimeAgentDaemonEvents.ts";
 
 type RuntimeEventDraft<Event> = Event extends ProviderRuntimeEvent
   ? Omit<Event, "eventId" | "createdAt">
@@ -140,6 +144,39 @@ function turnUsage(usage: PrimeDaemonUsage) {
     cacheWriteTokens: usage.cacheWriteTokens,
     totalTokens: usage.totalTokens,
   };
+}
+
+type PrimeDaemonAssistantMessage = Extract<PrimeDaemonMessage, { readonly role: "assistant" }>;
+
+function assistantMessages(
+  messages: ReadonlyArray<PrimeDaemonMessage>,
+): ReadonlyArray<PrimeDaemonAssistantMessage> {
+  return messages.filter(
+    (message): message is PrimeDaemonAssistantMessage => message.role === "assistant",
+  );
+}
+
+function aggregateAssistantUsage(
+  messages: ReadonlyArray<PrimeDaemonAssistantMessage>,
+): PrimeDaemonUsage {
+  return messages.reduce<PrimeDaemonUsage>(
+    (total, message) => ({
+      inputTokens: total.inputTokens + message.usage.inputTokens,
+      outputTokens: total.outputTokens + message.usage.outputTokens,
+      cachedInputTokens: total.cachedInputTokens + message.usage.cachedInputTokens,
+      cacheWriteTokens: total.cacheWriteTokens + message.usage.cacheWriteTokens,
+      totalTokens: total.totalTokens + message.usage.totalTokens,
+      totalCostUsd: total.totalCostUsd + message.usage.totalCostUsd,
+    }),
+    {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+      totalCostUsd: 0,
+    },
+  );
 }
 
 function tokenUsageDraft(
@@ -289,8 +326,52 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
   switch (event._tag) {
     case "RunStarted":
       return [{ ...base, type: "session.state.changed", payload: { state: "running" } }];
-    case "RunCompleted":
-      return [{ ...base, type: "session.state.changed", payload: { state: "ready" } }];
+    case "RunCompleted": {
+      const ready: PrimeAgentRuntimeEventDraft = {
+        ...base,
+        type: "session.state.changed",
+        payload: { state: "ready" },
+      };
+      if (input.turnId === undefined) return [ready];
+
+      const runMessages = assistantMessages(event.messages);
+      const message = runMessages.at(-1);
+      if (message === undefined) {
+        return [
+          {
+            ...base,
+            type: "turn.completed",
+            payload: {
+              state: "failed",
+              errorMessage: "Prime Agent completed the run without an assistant message.",
+            },
+          },
+          ready,
+        ];
+      }
+
+      const errorMessage = boundedNonEmpty(message.errorMessage);
+      const state =
+        message.stopReason === "aborted"
+          ? "cancelled"
+          : message.stopReason === "error" || errorMessage !== undefined
+            ? "failed"
+            : "completed";
+      const usage = aggregateAssistantUsage(runMessages);
+      const completed: PrimeAgentRuntimeEventDraft = {
+        ...base,
+        type: "turn.completed",
+        payload: {
+          state,
+          stopReason: message.stopReason,
+          usage: turnUsage(usage),
+          totalCostUsd: usage.totalCostUsd,
+          ...(errorMessage === undefined ? {} : { errorMessage }),
+        },
+      };
+      const tokenDraft = tokenUsageDraft(context, message.usage);
+      return tokenDraft === undefined ? [completed, ready] : [completed, tokenDraft, ready];
+    }
     case "TurnStarted":
       return [];
     case "MessageStarted": {
@@ -425,28 +506,8 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
       });
       return draft === undefined ? [] : [draft];
     }
-    case "TurnCompleted": {
-      const errorMessage = boundedNonEmpty(event.message.errorMessage);
-      const state =
-        event.message.stopReason === "aborted"
-          ? "cancelled"
-          : event.message.stopReason === "error" || errorMessage !== undefined
-            ? "failed"
-            : "completed";
-      const completed: PrimeAgentRuntimeEventDraft = {
-        ...base,
-        type: "turn.completed",
-        payload: {
-          state,
-          stopReason: event.message.stopReason,
-          usage: turnUsage(event.message.usage),
-          totalCostUsd: event.message.usage.totalCostUsd,
-          ...(errorMessage === undefined ? {} : { errorMessage }),
-        },
-      };
-      const tokenDraft = tokenUsageDraft(context, event.message.usage);
-      return tokenDraft === undefined ? [completed] : [completed, tokenDraft];
-    }
+    case "TurnCompleted":
+      return [];
     case "SessionInfoChanged": {
       const name = boundedNonEmpty(event.name, MAX_SCALAR_LENGTH);
       return name === undefined
