@@ -52,10 +52,28 @@ turn also clears queued steering input. Native select, confirm, input, and edito
 the session panel; notifications, status, and widgets use the same provider-neutral presentation
 surface. Observed Prime subagents appear in Pylon's Agents hierarchy.
 
+## Execution Approvals
+
+Daemon-backed threads support **Supervised** and **Full access**. Supervised mode loads a
+Pylon-managed gate that pauses supported built-in edits, shell commands, and IPython cells before
+execution. You can approve one call, approve calls for the rest of that session, decline the call,
+or cancel the turn. Inputs that are too large to show completely and tools whose arguments Pylon
+cannot review completely are denied. A missing gate, invalid request, timeout, disconnect, or failed
+response blocks execution instead of falling back to full access.
+
+Supervised mode deliberately disables discovered Prime extensions, Prime slash commands, and Prime
+subagent spawning. Extensions and slash commands are executable host code that cannot be contained
+by the tool gate; child sessions also need their own independently verified gate. Full-access
+threads keep normal Prime extension discovery, commands, and subagents.
+
+This is an approval gate, not a sandbox. An approved IPython cell or shell command has the same host
+access as Prime Agent, including access outside the workspace and the ability to start processes or
+use the network.
+
 ## Current Limitations
 
-- Prime Agent runs with full access. Prime Agent 0.7.1 has no daemon-native sandbox policy, and Pylon
-  does not advertise approval-required mode.
+- Prime Agent 0.7.1 has no daemon-native or operating-system sandbox policy. Supervised mode gates
+  tool admission but does not restrict an approved tool.
 - Authentication is managed in Prime Agent, not Pylon.
 - Plan mode, provider-conversation rollback, queue inspection and follow-up controls, and Pylon's
   per-thread MCP bridge are not supported yet.
@@ -63,8 +81,8 @@ surface. Observed Prime subagents appear in Pylon's Agents hierarchy.
   heartbeats, saved-session history, or native resource catalogs as first-class features.
 - Prime Agent is not used for Pylon's background text-generation helpers in Early Access.
 - ACP compatibility mode is intentionally narrower: it hides daemon-only thinking and service-tier
-  controls, cannot steer or switch models in a running session, and does not expose native session
-  UI or subagent hierarchy.
+  controls, cannot steer or switch models in a running session, supports only Full access, and does
+  not expose native session UI or subagent hierarchy.
 
 Remote web and mobile clients work normally: Prime Agent runs on the environment host, not on the
 device displaying Pylon.

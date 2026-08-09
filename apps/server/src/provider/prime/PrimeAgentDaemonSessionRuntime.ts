@@ -70,6 +70,25 @@ const queueStateSchema = Schema.Struct({
   steering: Schema.Array(Schema.String),
   followUp: Schema.Array(Schema.String),
 });
+const resourceSnapshotSchema = Schema.Struct({
+  extensions: Schema.Array(Schema.Struct({ path: Schema.String })),
+  diagnostics: Schema.Struct({
+    extensions: Schema.Array(
+      Schema.Struct({
+        type: Schema.Literals(["warning", "error", "collision"]),
+        path: Schema.optional(Schema.String),
+      }),
+    ),
+  }),
+});
+const commandsSchema = Schema.Array(
+  Schema.Struct({
+    name: Schema.String,
+    source: Schema.String,
+    sourceInfo: Schema.Struct({ path: Schema.String }),
+  }),
+);
+const rlmMaxDepthStatusSchema = Schema.Struct({ maxDepth: Schema.Number });
 
 const decodeThinkingLevel = Schema.decodeUnknownOption(thinkingLevelSchema);
 const decodeServiceTier = Schema.decodeUnknownOption(serviceTierSchema);
@@ -79,6 +98,9 @@ const decodeCreateSuccess = Schema.decodeUnknownOption(createSuccessSchema);
 const decodeCreateFailure = Schema.decodeUnknownOption(createFailureSchema);
 const decodeModel = Schema.decodeUnknownOption(modelSchema);
 const decodeQueueState = Schema.decodeUnknownOption(queueStateSchema);
+const decodeResourceSnapshot = Schema.decodeUnknownOption(resourceSnapshotSchema);
+const decodeCommands = Schema.decodeUnknownOption(commandsSchema);
+const decodeRlmMaxDepthStatus = Schema.decodeUnknownOption(rlmMaxDepthStatusSchema);
 
 const runtimeErrorOperation = Schema.Literals([
   "open-client",
@@ -86,6 +108,7 @@ const runtimeErrorOperation = Schema.Literals([
   "create-session",
   "attach-session",
   "initial-snapshot",
+  "verify-extension",
   "prompt",
   "steer",
   "follow-up",
@@ -126,6 +149,15 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
   readonly agentDir?: string;
   readonly model?: string;
   readonly thinkingLevel?: PrimeAgentDaemonThinkingLevel;
+  /** Absolute server-owned extension paths explicitly loaded for this session. */
+  readonly extensions?: ReadonlyArray<string>;
+  readonly disableExtensionDiscovery?: boolean;
+  /** Supervised sessions fail closed on transport loss and are re-created after verification. */
+  readonly disableAutoReconnect?: boolean;
+  readonly requiredExtension?: {
+    readonly path: string;
+    readonly markerCommand: string;
+  };
   readonly resumeCursor?: unknown;
 }
 
@@ -305,7 +337,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       client.close();
     });
 
-    if (!Predicate.isFunction(client.enableAutoReconnect)) {
+    if (input.disableAutoReconnect !== true && !Predicate.isFunction(client.enableAutoReconnect)) {
       client.close();
       return yield* runtimeError(
         "configure-client",
@@ -315,8 +347,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     }
     yield* Effect.try({
       try: () => {
-        client.enableRequestRecovery?.();
-        client.enableAutoReconnect!({ recoverDaemon: input.manager.recover });
+        if (input.disableAutoReconnect !== true) {
+          client.enableRequestRecovery?.();
+          client.enableAutoReconnect!({ recoverDaemon: input.manager.recover });
+        }
       },
       catch: () =>
         runtimeError(
@@ -328,6 +362,22 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
 
     const configuredModel = input.model?.trim();
     const configuredAgentDir = input.agentDir?.trim();
+    const configuredExtensions = (input.extensions ?? [])
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (
+      input.requiredExtension !== undefined &&
+      (input.disableExtensionDiscovery !== true ||
+        configuredExtensions.length !== 1 ||
+        configuredExtensions[0] !== input.requiredExtension.path)
+    ) {
+      client.close();
+      return yield* runtimeError(
+        "verify-extension",
+        "invalid-input",
+        "Managed execution policy verification requires one explicit extension with discovery disabled.",
+      );
+    }
     const createResponse = yield* Effect.tryPromise({
       try: () =>
         client.request(
@@ -339,10 +389,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               cwd,
               sessionDir,
               noBuiltinTools: false,
-              noExtensions: false,
+              noExtensions: input.disableExtensionDiscovery ?? false,
               noSkills: false,
               noContextFiles: false,
               ...(configuredAgentDir ? { agentDir: configuredAgentDir } : {}),
+              ...(configuredExtensions.length > 0 ? { extensions: configuredExtensions } : {}),
               ...(configuredModel && configuredModel !== "default"
                 ? { model: configuredModel }
                 : {}),
@@ -391,7 +442,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           closeClientOnDispose: false,
           supportsExtensionUi: true,
           ownedSession: true,
-          recoverDaemon: input.manager.recover,
+          ...(input.disableAutoReconnect === true ? {} : { recoverDaemon: input.manager.recover }),
         }),
       catch: () =>
         runtimeError(
@@ -400,6 +451,75 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "Could not attach to the created daemon session.",
         ),
     }).pipe(Effect.onError(() => completeUnattachedOwnedSession));
+
+    const closeAttachedSession = Effect.promise(async () => {
+      await connection?.dispose().catch(() => undefined);
+      client.close();
+    });
+    if (input.requiredExtension !== undefined) {
+      if (
+        !Predicate.isFunction(connection?.getResourceSnapshot) ||
+        !Predicate.isFunction(connection?.getCommands) ||
+        !Predicate.isFunction(connection?.setRlmMaxDepth) ||
+        !Predicate.isFunction(connection?.getRlmMaxDepthStatus)
+      ) {
+        yield* closeAttachedSession;
+        return yield* runtimeError(
+          "verify-extension",
+          "incompatible-api",
+          "The installed daemon cannot verify the managed execution policy extension.",
+        );
+      }
+      yield* Effect.tryPromise({
+        try: async () => {
+          const rawSetDepth = await connection!.setRlmMaxDepth!(0);
+          const [rawResources, rawCommands, rawDepth] = await Promise.all([
+            connection!.getResourceSnapshot!(),
+            connection!.getCommands!(),
+            connection!.getRlmMaxDepthStatus!(),
+          ]);
+          const resources = decodeResourceSnapshot(rawResources);
+          const commands = decodeCommands(rawCommands);
+          const setDepth = decodeRlmMaxDepthStatus(rawSetDepth);
+          const depth = decodeRlmMaxDepthStatus(rawDepth);
+          if (
+            Option.isNone(resources) ||
+            Option.isNone(commands) ||
+            Option.isNone(setDepth) ||
+            Option.isNone(depth)
+          ) {
+            throw new Error("invalid managed extension inventory");
+          }
+          const extensionLoaded =
+            resources.value.extensions.length === 1 &&
+            resources.value.extensions[0]?.path === input.requiredExtension!.path;
+          const markerLoaded = commands.value.some(
+            (command) =>
+              command.name === input.requiredExtension!.markerCommand &&
+              command.source === "extension" &&
+              command.sourceInfo.path === input.requiredExtension!.path,
+          );
+          const extensionFailed = resources.value.diagnostics.extensions.some(
+            (diagnostic) => diagnostic.type !== "warning",
+          );
+          if (
+            !extensionLoaded ||
+            !markerLoaded ||
+            extensionFailed ||
+            setDepth.value.maxDepth !== 0 ||
+            depth.value.maxDepth !== 0
+          ) {
+            throw new Error("managed extension did not load");
+          }
+        },
+        catch: () =>
+          runtimeError(
+            "verify-extension",
+            "invalid-response",
+            "Prime Agent did not load the required managed execution policy extension.",
+          ),
+      }).pipe(Effect.onError(() => closeAttachedSession));
+    }
 
     const eventQueue = yield* Queue.unbounded<PrimeDaemonEvent>();
     const runtimeContext = yield* Effect.context<never>();
@@ -457,6 +577,23 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         "initial-snapshot",
         "invalid-response",
         "The daemon returned an invalid initial snapshot.",
+      );
+    }
+    if (
+      input.requiredExtension !== undefined &&
+      (initialEvent.state.isStreaming ||
+        initialEvent.state.isBashRunning ||
+        initialEvent.children.some(
+          (child) => child.status === "queued" || child.status === "running",
+        ))
+    ) {
+      unsubscribe();
+      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+      client.close();
+      return yield* runtimeError(
+        "verify-extension",
+        "invalid-response",
+        "Prime Agent restored active execution that was not admitted by supervised mode.",
       );
     }
     lastSnapshotSequence = initialEvent.lastEventSequence;

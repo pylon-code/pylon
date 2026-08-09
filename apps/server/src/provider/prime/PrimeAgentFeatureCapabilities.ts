@@ -14,13 +14,6 @@ const shared = {
   authentication: unavailable(
     "Prime Agent does not expose unified daemon authentication controls yet.",
   ),
-  executionPolicy: {
-    support: "read-only",
-    reason: "Prime Agent sessions currently execute with full host access.",
-    operations: ["inspect"],
-    runtimeModes: ["full-access"],
-    enforcement: "none",
-  },
   planning: unavailable("Prime Agent does not expose a Pylon-compatible plan mode."),
   goals: unavailable("Goal state is not projected into Pylon yet."),
   gates: unavailable("Autonomous gate mutation is not exposed by Prime Agent 0.7.1."),
@@ -40,6 +33,13 @@ export function makePrimeAgentFeatureCapabilities(input: {
   if (input.runtime === "acp") {
     return {
       ...shared,
+      executionPolicy: {
+        support: "read-only",
+        reason: "Prime Agent ACP sessions currently execute with full host access.",
+        operations: ["inspect"],
+        runtimeModes: ["full-access"],
+        enforcement: "none",
+      },
       agents: unavailable("Prime Agent ACP does not expose native subagents."),
       model: {
         support: "read-write",
@@ -53,6 +53,14 @@ export function makePrimeAgentFeatureCapabilities(input: {
 
   return {
     ...shared,
+    executionPolicy: {
+      support: "read-write",
+      reason:
+        "Approval-required mode gates every Prime tool before execution, disables discovered extensions and subagent spawning, and is not an operating-system sandbox.",
+      operations: ["inspect", "select"],
+      runtimeModes: ["approval-required", "full-access"],
+      enforcement: "host-gated",
+    },
     agents: {
       support: "read-only",
       reason: "Pylon can observe Prime Agent subagents; control operations are not wired yet.",

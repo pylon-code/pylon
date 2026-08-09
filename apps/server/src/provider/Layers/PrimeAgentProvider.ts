@@ -65,6 +65,10 @@ export function stampPrimeAgentBackendSnapshot(
         ? snapshot.models
         : snapshot.models.map((model) => ({ ...model, capabilities: EMPTY_CAPABILITIES })),
     requiresNewThreadForModelChange: backend.runtime === "acp",
+    supportedRuntimeModes:
+      backend.runtime === "daemon"
+        ? (["approval-required", "full-access"] as const)
+        : (["full-access"] as const),
     ...(message.length > 0 ? { message } : {}),
   };
 }

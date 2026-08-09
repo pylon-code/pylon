@@ -88,6 +88,9 @@ function fixture(options?: {
   readonly duringSnapshot?: ReadonlyArray<unknown>;
   readonly afterSnapshotEvent?: unknown;
   readonly attachFailure?: boolean;
+  readonly resourceSnapshot?: unknown;
+  readonly commands?: unknown;
+  readonly rlmDepth?: number;
 }) {
   const captures: Captures = {
     order: [],
@@ -221,6 +224,35 @@ function fixture(options?: {
       captures.connectionCalls.push({ method: "extension", args: [requestId, response] });
       return Promise.resolve(undefined);
     }
+    getCommands(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getCommands", args: [] });
+      return Promise.resolve(
+        options?.commands ?? [
+          {
+            name: "pylon-permission-gate-v1",
+            source: "extension",
+            sourceInfo: { path: "/state/pylon/permission.mjs" },
+          },
+        ],
+      );
+    }
+    getResourceSnapshot(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getResourceSnapshot", args: [] });
+      return Promise.resolve(
+        options?.resourceSnapshot ?? {
+          extensions: [{ path: "/state/pylon/permission.mjs" }],
+          diagnostics: { extensions: [] },
+        },
+      );
+    }
+    getRlmMaxDepthStatus(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getRlmMaxDepthStatus", args: [] });
+      return Promise.resolve({ maxDepth: options?.rlmDepth ?? 0, source: "chat" });
+    }
+    setRlmMaxDepth(maxDepth: number): Promise<unknown> {
+      captures.connectionCalls.push({ method: "setRlmMaxDepth", args: [maxDepth] });
+      return Promise.resolve({ maxDepth, source: "chat", globalSaved: false });
+    }
     dispose(): Promise<unknown> {
       captures.disposeCount += 1;
       return Promise.resolve(undefined);
@@ -251,7 +283,11 @@ function fixture(options?: {
       captures.recoverCount += 1;
     },
   };
-  const make = (resumeCursor?: unknown) =>
+  const make = (
+    resumeCursor?: unknown,
+    extensions?: ReadonlyArray<string>,
+    requiredExtension?: { readonly path: string; readonly markerCommand: string },
+  ) =>
     makePrimeAgentDaemonSessionRuntime({
       manager,
       cwd: "/work/project",
@@ -259,6 +295,10 @@ function fixture(options?: {
       agentDir: "/state/prime-agent-home",
       model: "openai/gpt-5.3-codex",
       thinkingLevel: "high",
+      ...(extensions === undefined ? {} : { extensions }),
+      ...(requiredExtension === undefined
+        ? {}
+        : { disableExtensionDiscovery: true, disableAutoReconnect: true, requiredExtension }),
       ...(resumeCursor === undefined ? {} : { resumeCursor }),
     });
   return { captures, make };
@@ -319,6 +359,105 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(captures.closeCount).toBe(1);
         expect(captures.unsubscribeCount).toBe(1);
       }),
+  );
+
+  it.effect("passes only explicitly configured extension paths to session creation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({ rawSnapshot: { ...snapshot(), children: [] } });
+        yield* make(undefined, [" /state/pylon/permission.mjs ", ""], {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        });
+        expect(captures.commands[0]).toMatchObject({
+          config: {
+            extensions: ["/state/pylon/permission.mjs"],
+            noExtensions: true,
+          },
+        });
+        expect(captures.reconnectOptions).toEqual([]);
+        expect(captures.order).not.toContain("request-recovery");
+        expect(captures.attachOptions[0]).not.toHaveProperty("recoverDaemon");
+        expect(captures.connectionCalls).toEqual([
+          { method: "setRlmMaxDepth", args: [0] },
+          { method: "getResourceSnapshot", args: [] },
+          { method: "getCommands", args: [] },
+          { method: "getRlmMaxDepthStatus", args: [] },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("fails closed when the managed extension inventory or RLM depth is not verified", () =>
+    Effect.gen(function* () {
+      for (const fixtureOptions of [
+        { commands: [] },
+        {
+          commands: [
+            {
+              name: "pylon-permission-gate-v1",
+              source: "prompt",
+              sourceInfo: { path: "/state/pylon/permission.mjs" },
+            },
+          ],
+        },
+        {
+          commands: [
+            {
+              name: "pylon-permission-gate-v1",
+              source: "extension",
+              sourceInfo: { path: "/state/pylon/different.mjs" },
+            },
+          ],
+        },
+        {
+          resourceSnapshot: {
+            extensions: [{ path: "/state/pylon/permission.mjs" }],
+            diagnostics: {
+              extensions: [
+                {
+                  type: "error",
+                  path: "/state/pylon/permission.mjs",
+                  message: "load failed",
+                },
+              ],
+            },
+          },
+        },
+        { rlmDepth: 1 },
+      ]) {
+        const { captures, make } = fixture({
+          ...fixtureOptions,
+          rawSnapshot: { ...snapshot(), children: [] },
+        });
+        const error = yield* Effect.scoped(
+          make(undefined, ["/state/pylon/permission.mjs"], {
+            path: "/state/pylon/permission.mjs",
+            markerCommand: "pylon-permission-gate-v1",
+          }).pipe(Effect.flip),
+        );
+        expect(error).toMatchObject({
+          operation: "verify-extension",
+          reason: "invalid-response",
+        });
+        expect(captures.disposeCount).toBe(1);
+        expect(captures.closeCount).toBe(1);
+      }
+
+      const { captures, make } = fixture({ rawSnapshot: snapshot() });
+      const childError = yield* Effect.scoped(
+        make(undefined, ["/state/pylon/permission.mjs"], {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        }).pipe(Effect.flip),
+      );
+      expect(childError).toMatchObject({
+        operation: "verify-extension",
+        reason: "invalid-response",
+      });
+      expect(captures.disposeCount).toBe(1);
+      expect(captures.closeCount).toBe(1);
+    }),
   );
 
   it.effect("completes an unattached client-owned worker when attach fails", () =>
