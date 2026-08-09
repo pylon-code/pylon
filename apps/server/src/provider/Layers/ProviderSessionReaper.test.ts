@@ -169,6 +169,7 @@ describe("ProviderSessionReaper", () => {
       respondToUserInput: () => unsupported(),
       respondToInteraction: () => unsupported(),
       reloadSessionResources: () => unsupported(),
+      cancelSessionAgent: () => unsupported(),
       getSessionAgentDepth: () => unsupported(),
       setSessionAgentDepth: () => unsupported(),
       followUp: () => unsupported(),

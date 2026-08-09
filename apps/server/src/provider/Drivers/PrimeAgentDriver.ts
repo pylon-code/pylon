@@ -151,6 +151,9 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
                       method as "followUp" | "getQueue" | "clearQueue"
                     ] === "function",
                 ),
+                agentCancel:
+                  typeof backend.manager.bridge.DaemonAgentConnection.prototype.cancelRlmChild ===
+                  "function",
               }
             : {
                 runtime: "acp",

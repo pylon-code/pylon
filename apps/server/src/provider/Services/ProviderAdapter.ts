@@ -10,6 +10,7 @@
 import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
+  ProviderCancelSessionAgentResult,
   ProviderFollowUpInput,
   ProviderDriverKind,
   ProviderUserInputAnswers,
@@ -23,6 +24,7 @@ import type {
   ProviderSession,
   ProviderSessionStartInput,
   ThreadId,
+  RuntimeTaskId,
   ProviderTurnStartResult,
   TurnId,
 } from "@t3tools/contracts";
@@ -115,6 +117,12 @@ export interface ProviderAdapterShape<TError> {
   readonly reloadSessionResources?: (
     threadId: ThreadId,
   ) => Effect.Effect<SessionResourcesUpdatedPayload, TError>;
+
+  /** Cancel one known active provider agent belonging to this session. */
+  readonly cancelSessionAgent?: (
+    threadId: ThreadId,
+    agentId: RuntimeTaskId,
+  ) => Effect.Effect<ProviderCancelSessionAgentResult, TError>;
 
   /** Read one active session's recursive agent-spawn depth. */
   readonly getSessionAgentDepth?: (

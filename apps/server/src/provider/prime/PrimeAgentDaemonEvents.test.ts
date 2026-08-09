@@ -1,3 +1,4 @@
+import { PROVIDER_AGENT_CONTROL_ID_MAX_CHARS } from "@t3tools/contracts";
 // @ts-expect-error -- Vite Plus provides the Vitest runner transitively to server tests.
 import { describe, expect, it } from "vitest";
 
@@ -281,6 +282,72 @@ describe("PrimeAgentDaemonEvents", () => {
         }),
       ),
     ).toMatchObject({ _tag: "ToolCompleted", text: "complete", isError: false });
+  });
+
+  it("redacts private native-agent handles from tool output", () => {
+    const privateHandles = [
+      "RLMSpawnHandle(rlm_child_id='sub-private', session_dir=PosixPath('/private/session'))",
+      '{"rlm_child_id":"sub-private","session_dir":"/private/session"}',
+      "{'active_session_id': 'native-private', 'session_dir': WindowsPath('C:/private')}",
+      "session_dir=/private/session",
+    ];
+
+    for (const privateHandle of privateHandles) {
+      expect(
+        decodePrimeAgentDaemonEvent(
+          sessionEvent({
+            type: "tool_execution_update",
+            toolCallId: "call-agent",
+            toolName: "ipython",
+            args: {},
+            partialResult: { content: [{ type: "text", text: privateHandle }], details: {} },
+          }),
+        ),
+      ).toMatchObject({ _tag: "ToolProgress", text: "Native agent operation completed." });
+
+      expect(
+        decodePrimeAgentDaemonEvent(
+          sessionEvent({
+            type: "tool_execution_end",
+            toolCallId: "call-agent",
+            toolName: "ipython",
+            result: { content: [{ type: "text", text: privateHandle }], details: {} },
+            isError: false,
+          }),
+        ),
+      ).toMatchObject({ _tag: "ToolCompleted", text: "Native agent operation completed." });
+
+      expect(
+        decodePrimeAgentDaemonEvent(
+          sessionEvent({
+            type: "message_end",
+            message: {
+              role: "toolResult",
+              toolCallId: "call-agent",
+              toolName: "ipython",
+              content: [{ type: "text", text: privateHandle }],
+              details: {},
+              isError: false,
+              timestamp: 11,
+            },
+          }),
+        ),
+      ).toMatchObject({
+        _tag: "MessageCompleted",
+        message: { text: "Native agent operation completed." },
+      });
+    }
+  });
+
+  it("rejects child identifiers that cannot be used as bounded public controls", () => {
+    expect(
+      decodePrimeAgentDaemonEvent(
+        sessionEvent({
+          type: "rlm_child_update",
+          child: { ...child, id: "x".repeat(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS + 1) },
+        }),
+      ),
+    ).toMatchObject({ _tag: "Ignored", reason: "malformed-event" });
   });
 
   it("maps child, queue, goal, recap, and model-setting updates", () => {

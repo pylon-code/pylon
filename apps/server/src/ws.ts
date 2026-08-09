@@ -50,6 +50,7 @@ import {
   AssetWorkspaceContextResolutionError,
   RpcClientId,
   EnvironmentAuthorizationError,
+  ProviderCancelSessionAgentError,
   ProviderSessionAgentDepthError,
   ProviderSessionInputQueueError,
   ProviderSessionResourcesReloadError,
@@ -1476,6 +1477,28 @@ const makeWsRpcLayer = (
                         ? "busy"
                         : "reload-failed";
                 return new ProviderSessionResourcesReloadError({ reason });
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerCancelSessionAgent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerCancelSessionAgent,
+            providerService.cancelSessionAgent(input).pipe(
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderUnsupportedError" ||
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "unsupported"
+                    : error._tag === "ProviderAdapterValidationError"
+                      ? "agent-not-active"
+                      : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                          error._tag === "ProviderAdapterSessionClosedError" ||
+                          error._tag === "ProviderSessionNotFoundError" ||
+                          error._tag === "ProviderValidationError"
+                        ? "session-not-ready"
+                        : "request-failed";
+                return new ProviderCancelSessionAgentError({ reason });
               }),
             ),
             { "rpc.aggregate": "provider" },

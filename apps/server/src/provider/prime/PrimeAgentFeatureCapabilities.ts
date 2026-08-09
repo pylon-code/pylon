@@ -30,6 +30,7 @@ export function makePrimeAgentFeatureCapabilities(input: {
   readonly runtime: "daemon" | "acp";
   readonly sessionUi: boolean;
   readonly inputQueue: boolean;
+  readonly agentCancel: boolean;
 }): ProviderFeatureCapabilities {
   if (input.runtime === "acp") {
     return {
@@ -64,9 +65,12 @@ export function makePrimeAgentFeatureCapabilities(input: {
     },
     agents: {
       support: "read-write",
-      reason:
-        "Pylon can observe Prime Agent subagents and configure bounded per-session spawn depth; supervised sessions remain fixed at depth zero.",
-      operations: ["observe", "hierarchy", "set-depth"],
+      reason: input.agentCancel
+        ? "Pylon can observe and cancel Prime Agent subagents and configure bounded per-session spawn depth; supervised sessions remain fixed at depth zero."
+        : "Pylon can observe Prime Agent subagents and configure bounded per-session spawn depth; cancellation is unavailable with the loaded daemon and supervised sessions remain fixed at depth zero.",
+      operations: input.agentCancel
+        ? ["observe", "hierarchy", "cancel", "set-depth"]
+        : ["observe", "hierarchy", "set-depth"],
     },
     resources: {
       support: "read-write",

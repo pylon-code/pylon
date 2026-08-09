@@ -1,6 +1,11 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import {
+  isActiveSubagentStatus,
+  supportsSessionAgentCancel,
+  type RuntimeSubagent,
+} from "@t3tools/client-runtime/state/subagentRuntime";
+import {
   sessionInputQueueCount,
   supportsSessionInputQueue,
   supportsSessionInputQueueClear,
@@ -136,6 +141,7 @@ export interface ThreadComposerProps {
   readonly contextWindow: ContextWindowSnapshot | null;
   readonly sessionResources: SessionResourcesSnapshot | null;
   readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
+  readonly sessionAgents: ReadonlyArray<RuntimeSubagent>;
   readonly sessionInputQueue: SessionInputQueueSnapshot | null;
   readonly activeThreadBusy: boolean;
   readonly sessionInputBlocked: boolean;
@@ -152,6 +158,7 @@ export interface ThreadComposerProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onQueueFollowUp: () => Promise<MessageId | null>;
   readonly onClearSessionInputQueue: () => Promise<boolean>;
+  readonly onCancelSessionAgent: (agentId: string) => Promise<boolean>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
@@ -482,6 +489,120 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       setIsReloadingSessionResources(false);
     }
   }, [isReloadingSessionResources, props.onReloadSessionResources, sessionResourceReloadDisabled]);
+
+  const activeSessionAgents = useMemo(
+    () => props.sessionAgents.filter((agent) => isActiveSubagentStatus(agent.status)),
+    [props.sessionAgents],
+  );
+  const canCancelSessionAgents =
+    props.connectionState === "connected" &&
+    props.selectedThread.session?.runtimeMode === "full-access" &&
+    (props.selectedThread.session.status === "ready" ||
+      props.selectedThread.session.status === "running") &&
+    supportsSessionAgentCancel(activeSessionProviderStatus);
+  const [cancellingAgentIds, setCancellingAgentIds] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const activeIds = new Set(activeSessionAgents.map((agent) => agent.id));
+    setCancellingAgentIds((current) => {
+      const next = new Set([...current].filter((agentId) => activeIds.has(agentId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [activeSessionAgents]);
+  useEffect(() => {
+    setCancellingAgentIds(new Set());
+  }, [props.environmentId, props.selectedThread.id]);
+  const sessionAgentScopeKey = `${props.environmentId}:${props.selectedThread.id}`;
+  const sessionAgentControlRef = useRef({
+    scopeKey: sessionAgentScopeKey,
+    agents: props.sessionAgents,
+    canCancel: canCancelSessionAgents,
+    cancellingAgentIds,
+    onCancel: props.onCancelSessionAgent,
+  });
+  sessionAgentControlRef.current = {
+    scopeKey: sessionAgentScopeKey,
+    agents: props.sessionAgents,
+    canCancel: canCancelSessionAgents,
+    cancellingAgentIds,
+    onCancel: props.onCancelSessionAgent,
+  };
+  const sessionAgentActions = useMemo(
+    () =>
+      activeSessionAgents.map((agent) => {
+        const stopping = cancellingAgentIds.has(agent.id);
+        return {
+          id: `cancel-session-agent:${agent.id}`,
+          title: stopping ? `Stopping ${agent.title}` : `Stop ${agent.title}`,
+          subtitle: stopping
+            ? "Waiting for provider confirmation"
+            : "End this agent's current work",
+          image: "stop.fill",
+          attributes:
+            stopping || !canCancelSessionAgents
+              ? ({ destructive: true, disabled: true } as const)
+              : ({ destructive: true } as const),
+        };
+      }),
+    [activeSessionAgents, canCancelSessionAgents, cancellingAgentIds],
+  );
+  const cancelSessionAgent = useCallback(async (agentId: string, expectedScopeKey: string) => {
+    const control = sessionAgentControlRef.current;
+    const current = control.agents.find((candidate) => candidate.id === agentId);
+    if (
+      control.scopeKey !== expectedScopeKey ||
+      !control.canCancel ||
+      current === undefined ||
+      !isActiveSubagentStatus(current.status) ||
+      control.cancellingAgentIds.has(agentId)
+    ) {
+      return;
+    }
+    const pendingIds = new Set(control.cancellingAgentIds).add(agentId);
+    sessionAgentControlRef.current = { ...control, cancellingAgentIds: pendingIds };
+    setCancellingAgentIds(pendingIds);
+    const accepted = await control.onCancel(agentId);
+    if (!accepted && sessionAgentControlRef.current.scopeKey === expectedScopeKey) {
+      setCancellingAgentIds((ids) => {
+        const next = new Set(ids);
+        next.delete(agentId);
+        return next;
+      });
+      Alert.alert(
+        "Could not stop agent",
+        "The agent status was refreshed. Try again if it is still active.",
+      );
+    }
+  }, []);
+  const handleSessionAgentAction = useCallback(
+    (eventId: string) => {
+      if (!eventId.startsWith("cancel-session-agent:")) return;
+      const agentId = eventId.slice("cancel-session-agent:".length);
+      const control = sessionAgentControlRef.current;
+      const agent = control.agents.find((candidate) => candidate.id === agentId);
+      if (
+        !agent ||
+        !control.canCancel ||
+        !isActiveSubagentStatus(agent.status) ||
+        control.cancellingAgentIds.has(agent.id)
+      ) {
+        return;
+      }
+      const expectedScopeKey = control.scopeKey;
+      Alert.alert(
+        `Stop ${agent.title}?`,
+        "Its current work will end. Completed output and activity stay in the thread.",
+        [
+          { text: "Keep running", style: "cancel" },
+          {
+            text: "Stop agent",
+            style: "destructive",
+            onPress: () => void cancelSessionAgent(agent.id, expectedScopeKey),
+          },
+        ],
+      );
+    },
+    [cancelSessionAgent],
+  );
 
   const showSessionAgentDepth =
     props.sessionAgentDepth !== null && supportsSessionAgentDepth(activeSessionProviderStatus);
@@ -1132,6 +1253,21 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 />
                 {props.contextWindow ? (
                   <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                ) : null}
+                {activeSessionAgents.length > 0 &&
+                supportsSessionAgentCancel(activeSessionProviderStatus) ? (
+                  <ControlPillMenu
+                    title="Active agents"
+                    actions={sessionAgentActions}
+                    onPressAction={({ nativeEvent }) => handleSessionAgentAction(nativeEvent.event)}
+                  >
+                    <ComposerToolbarTrigger
+                      accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
+                      icon="person.2"
+                      label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
+                      disabled={!canCancelSessionAgents}
+                    />
+                  </ControlPillMenu>
                 ) : null}
                 {showSessionAgentDepth && props.sessionAgentDepth !== null ? (
                   <ControlPillMenu

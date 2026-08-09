@@ -5,6 +5,7 @@ import {
   EventId,
   IsoDateTime,
   ProviderItemId,
+  RuntimeTaskId,
   ThreadId,
   TurnId,
 } from "./baseSchemas.ts";
@@ -105,6 +106,32 @@ export class ProviderSessionResourcesReloadError extends Schema.TaggedErrorClass
   "ProviderSessionResourcesReloadError",
   {
     reason: Schema.Literals(["session-not-ready", "unsupported", "busy", "reload-failed"]),
+  },
+) {}
+
+export const PROVIDER_AGENT_CONTROL_ID_MAX_CHARS = 512;
+
+export const ProviderCancelSessionAgentInput = Schema.Struct({
+  threadId: ThreadId,
+  agentId: RuntimeTaskId.check(Schema.isMaxLength(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS)),
+});
+export type ProviderCancelSessionAgentInput = typeof ProviderCancelSessionAgentInput.Type;
+
+export const ProviderCancelSessionAgentResult = Schema.Struct({
+  agentId: RuntimeTaskId.check(Schema.isMaxLength(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS)),
+  disposition: Schema.Literals(["cancel-requested", "already-settled"]),
+});
+export type ProviderCancelSessionAgentResult = typeof ProviderCancelSessionAgentResult.Type;
+
+export class ProviderCancelSessionAgentError extends Schema.TaggedErrorClass<ProviderCancelSessionAgentError>()(
+  "ProviderCancelSessionAgentError",
+  {
+    reason: Schema.Literals([
+      "session-not-ready",
+      "unsupported",
+      "agent-not-active",
+      "request-failed",
+    ]),
   },
 ) {}
 

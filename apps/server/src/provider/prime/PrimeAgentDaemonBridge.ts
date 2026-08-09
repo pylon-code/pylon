@@ -102,6 +102,7 @@ export interface PrimeAgentDaemonAgentConnection {
   ) => Promise<unknown>;
   readonly abort: () => Promise<unknown>;
   readonly abortAndClearQueue?: () => Promise<unknown>;
+  readonly cancelRlmChild?: (childId: string) => Promise<unknown>;
   readonly getQueue?: () => Promise<unknown>;
   readonly clearQueue?: () => Promise<unknown>;
   readonly setModel?: (provider: string, modelId: string) => Promise<unknown>;

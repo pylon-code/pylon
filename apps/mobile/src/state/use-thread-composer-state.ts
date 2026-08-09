@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import {
   CommandId,
   MessageId,
+  RuntimeTaskId,
   type EnvironmentId,
   type ModelSelection,
   type ProviderInteractionMode,
@@ -19,6 +20,11 @@ import { deriveLatestContextWindowSnapshot } from "@t3tools/client-runtime/state
 import { deriveLatestSessionAgentDepth } from "@t3tools/client-runtime/state/session-agent-depth";
 import { deriveLatestSessionInputQueue } from "@t3tools/client-runtime/state/session-input-queue";
 import { deriveLatestSessionResources } from "@t3tools/client-runtime/state/session-resources";
+import {
+  foldSubagentActivities,
+  isActiveSubagentStatus,
+  supportsSessionAgentCancel,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
@@ -104,6 +110,9 @@ export function useThreadComposerState() {
   const followUpInputQueue = useAtomCommand(threadEnvironment.followUpInputQueue, {
     reportFailure: false,
   });
+  const cancelSessionAgent = useAtomCommand(threadEnvironment.cancelSessionAgent, {
+    reportFailure: false,
+  });
   const clearSessionInputQueue = useAtomCommand(threadEnvironment.clearSessionInputQueue, {
     reportFailure: false,
   });
@@ -123,6 +132,11 @@ export function useThreadComposerState() {
     () => (selectedThreadDetail ? buildThreadFeed(selectedThreadDetail) : []),
     [selectedThreadDetail],
   );
+  const selectedThreadAgents = useMemo(() => {
+    const status = selectedThreadDetail?.session?.status;
+    const sessionLive = status === "starting" || status === "ready" || status === "running";
+    return foldSubagentActivities(selectedThreadDetail?.activities ?? [], { sessionLive });
+  }, [selectedThreadDetail]);
 
   const selectedDraft = selectedThreadKey ? composerDrafts[selectedThreadKey] : null;
   const draftMessage = selectedDraft?.text ?? "";
@@ -305,6 +319,47 @@ export function useThreadComposerState() {
     selectedThreadShell,
   ]);
 
+  const onCancelSessionAgent = useCallback(
+    async (agentId: string) => {
+      const session = selectedThreadDetail?.session;
+      const provider =
+        session?.providerInstanceId === undefined
+          ? null
+          : (selectedThreadServerConfig?.providers.find(
+              (candidate) => candidate.instanceId === session.providerInstanceId,
+            ) ?? null);
+      const agent = selectedThreadAgents.find((candidate) => candidate.id === agentId);
+      if (
+        !selectedThreadShell ||
+        session?.runtimeMode !== "full-access" ||
+        (session.status !== "ready" && session.status !== "running") ||
+        !supportsSessionAgentCancel(provider) ||
+        agent === undefined ||
+        !isActiveSubagentStatus(agent.status)
+      ) {
+        return false;
+      }
+      const result = await cancelSessionAgent({
+        environmentId: selectedThreadShell.environmentId,
+        input: { threadId: selectedThreadShell.id, agentId: RuntimeTaskId.make(agentId) },
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          setPendingConnectionError("Failed to stop the active agent.");
+        }
+        return false;
+      }
+      return true;
+    },
+    [
+      cancelSessionAgent,
+      selectedThreadAgents,
+      selectedThreadDetail?.session,
+      selectedThreadServerConfig?.providers,
+      selectedThreadShell,
+    ],
+  );
+
   const onClearSessionInputQueue = useCallback(async () => {
     if (
       !selectedThreadShell ||
@@ -477,6 +532,7 @@ export function useThreadComposerState() {
 
   return {
     selectedThreadFeed,
+    selectedThreadAgents,
     selectedThreadContextWindow,
     selectedThreadResources,
     selectedThreadAgentDepth,
@@ -497,6 +553,7 @@ export function useThreadComposerState() {
     onSendMessage,
     onQueueFollowUp,
     onClearSessionInputQueue,
+    onCancelSessionAgent,
     onUpdateModelSelection,
     onUpdateRuntimeMode,
     onUpdateInteractionMode,

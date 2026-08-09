@@ -73,6 +73,7 @@ import {
 } from "./PrimeAgentPermissionExtension.ts";
 import {
   makePrimeAgentDaemonSessionRuntime,
+  type PrimeAgentDaemonChild,
   type PrimeAgentDaemonSessionRuntime,
   type PrimeAgentDaemonSessionRuntimeError,
   type PrimeAgentDaemonSessionRuntimeInput,
@@ -260,6 +261,9 @@ interface PrimeAgentDaemonSessionContext {
   nativeRunActive: boolean;
   nativeBashActive: boolean;
   readonly activeNativeChildren: Set<string>;
+  readonly knownNativeChildren: Map<string, PrimeAgentDaemonChild>;
+  readonly cancellationPendingNativeChildren: Set<string>;
+  agentRosterProjected: boolean;
   resourceReloadCompletion: Deferred.Deferred<void> | undefined;
   activeCompactionScope: { readonly turnId?: TurnId | undefined } | undefined;
   stopRequested: boolean;
@@ -558,6 +562,57 @@ export function makePrimeAgentDaemonAdapter(
         }
       });
 
+    const applyAgentRosterSnapshot = (
+      context: PrimeAgentDaemonSessionContext,
+      children: ReadonlyArray<PrimeAgentDaemonChild>,
+      publishChildren = true,
+    ) =>
+      Effect.gen(function* () {
+        const previousChildren = new Map(context.knownNativeChildren);
+        const previousActive = new Map(
+          [...previousChildren].filter(
+            ([, child]) => child.status === "queued" || child.status === "running",
+          ),
+        );
+        context.knownNativeChildren.clear();
+        context.activeNativeChildren.clear();
+        for (const child of children) {
+          const previous = previousChildren.get(child.id);
+          const previousSettled =
+            previous !== undefined && previous.status !== "queued" && previous.status !== "running";
+          const authoritativeChild = previousSettled ? previous : child;
+          context.knownNativeChildren.set(authoritativeChild.id, authoritativeChild);
+          previousActive.delete(child.id);
+          if (authoritativeChild.status === "queued" || authoritativeChild.status === "running") {
+            context.activeNativeChildren.add(authoritativeChild.id);
+          } else {
+            context.cancellationPendingNativeChildren.delete(authoritativeChild.id);
+          }
+          if (publishChildren && !previousSettled) {
+            yield* publishDrafts(
+              context,
+              { _tag: "ChildUpdated", child: authoritativeChild },
+              context.activeTurn,
+            );
+          }
+        }
+        // A replacement snapshot is authoritative for live descendants. If a previously
+        // active child disappeared while disconnected, settle its stable row instead of
+        // leaving every client showing an agent that can no longer be controlled.
+        for (const child of previousActive.values()) {
+          const settled = { ...child, status: "cancelled" as const, error: undefined };
+          context.knownNativeChildren.set(settled.id, settled);
+          context.cancellationPendingNativeChildren.delete(settled.id);
+          yield* publishDrafts(
+            context,
+            { _tag: "ChildUpdated", child: settled },
+            context.activeTurn,
+          );
+        }
+        context.agentRosterProjected = true;
+        yield* syncAgentDepthSettableLocked(context);
+      });
+
     const refreshContextUsage = (context: PrimeAgentDaemonSessionContext) =>
       Effect.gen(function* () {
         const refreshSequence = ++context.usageRefreshSequence;
@@ -758,12 +813,15 @@ export function makePrimeAgentDaemonAdapter(
                 context.activeCompactionScope = event.state.isCompacting
                   ? (context.activeCompactionScope ?? {})
                   : undefined;
-                context.activeNativeChildren.clear();
-                for (const child of event.children) {
-                  if (child.status === "queued" || child.status === "running") {
-                    context.activeNativeChildren.add(child.id);
-                  }
-                }
+                const initialRosterAlreadyProjected =
+                  context.agentRosterProjected &&
+                  event.lastEventSequence !== undefined &&
+                  event.lastEventSequence === context.runtime.initialSnapshot.lastEventSequence;
+                yield* applyAgentRosterSnapshot(
+                  context,
+                  event.children,
+                  !initialRosterAlreadyProjected,
+                );
                 context.nativeQueueActionActive = event.state.inputQueue.activeAction;
                 yield* updateInputQueueProjection(context, event.state.inputQueue);
                 const turn = context.activeTurn;
@@ -1236,6 +1294,7 @@ export function makePrimeAgentDaemonAdapter(
           Effect.gen(function* () {
             if (sessions.get(context.threadId) !== context || context.stopped) return;
             const turn = context.activeTurn;
+            let publishEvent = true;
             if (event._tag === "RunStarted") {
               context.nativeRunActive = true;
             } else if (event._tag === "BashStarted") {
@@ -1243,10 +1302,22 @@ export function makePrimeAgentDaemonAdapter(
             } else if (event._tag === "BashCompleted") {
               context.nativeBashActive = false;
             } else if (event._tag === "ChildUpdated") {
-              if (event.child.status === "queued" || event.child.status === "running") {
-                context.activeNativeChildren.add(event.child.id);
+              const previous = context.knownNativeChildren.get(event.child.id);
+              const previousSettled =
+                previous !== undefined &&
+                previous.status !== "queued" &&
+                previous.status !== "running";
+              if (previousSettled) {
+                publishEvent = false;
               } else {
-                context.activeNativeChildren.delete(event.child.id);
+                context.knownNativeChildren.set(event.child.id, event.child);
+              }
+              const authoritative = context.knownNativeChildren.get(event.child.id) ?? event.child;
+              if (authoritative.status === "queued" || authoritative.status === "running") {
+                context.activeNativeChildren.add(authoritative.id);
+              } else {
+                context.activeNativeChildren.delete(authoritative.id);
+                context.cancellationPendingNativeChildren.delete(authoritative.id);
               }
             }
             if (event._tag === "ThinkingLevelChanged") {
@@ -1319,7 +1390,9 @@ export function makePrimeAgentDaemonAdapter(
                 updatedAt: yield* nowIso,
               };
             }
-            yield* publishDrafts(context, event, context.activeTurn);
+            if (publishEvent) {
+              yield* publishDrafts(context, event, context.activeTurn);
+            }
           }),
         );
         if (
@@ -1732,6 +1805,11 @@ export function makePrimeAgentDaemonAdapter(
                 .filter((child) => child.status === "queued" || child.status === "running")
                 .map((child) => child.id),
             ),
+            knownNativeChildren: new Map(
+              runtime.initialSnapshot.children.map((child) => [child.id, child]),
+            ),
+            cancellationPendingNativeChildren: new Set(),
+            agentRosterProjected: false,
             resourceReloadCompletion: undefined,
             activeCompactionScope: runtime.initialSnapshot.state.isCompacting ? {} : undefined,
             stopRequested: false,
@@ -1776,6 +1854,14 @@ export function makePrimeAgentDaemonAdapter(
             threadId: input.threadId,
             payload: {},
           });
+          if (!context.agentRosterProjected) {
+            for (const child of runtime.initialSnapshot.children) {
+              if (child.status === "queued" || child.status === "running") {
+                yield* publishDrafts(context, { _tag: "ChildUpdated", child }, undefined);
+              }
+            }
+            context.agentRosterProjected = true;
+          }
           context.lifecycleStarted = true;
           yield* refreshContextUsage(context).pipe(Effect.forkDetach);
           return session;
@@ -2301,6 +2387,95 @@ export function makePrimeAgentDaemonAdapter(
         if (changed) yield* publishSessionAgentDepth(context.threadId, projected);
       });
 
+    const cancelSessionAgent: NonNullable<PrimeAgentAdapterShape["cancelSessionAgent"]> = (
+      threadId,
+      agentId,
+    ) =>
+      Effect.uninterruptible(
+        withThreadMutationLock(
+          threadId,
+          Effect.gen(function* () {
+            const context = yield* requireSession(threadId);
+            if (context.session.runtimeMode !== "full-access") {
+              return yield* new ProviderAdapterUnsupportedOperationError({
+                provider: PROVIDER,
+                operation: "cancelSessionAgent",
+              });
+            }
+            const known = context.knownNativeChildren.get(agentId);
+            if (known === undefined) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "cancelSessionAgent",
+                issue: "The agent is not part of this provider session.",
+                reason: "invalid-input",
+              });
+            }
+            if (known.status !== "queued" && known.status !== "running") {
+              context.cancellationPendingNativeChildren.delete(agentId);
+              return { agentId, disposition: "already-settled" as const };
+            }
+            if (context.cancellationPendingNativeChildren.has(agentId)) {
+              return { agentId, disposition: "cancel-requested" as const };
+            }
+
+            const cancellation = yield* context.runtime.cancelAgent(agentId).pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/cancel-agent", error),
+              ),
+              Effect.exit,
+            );
+            if (Exit.isSuccess(cancellation) && cancellation.value) {
+              context.cancellationPendingNativeChildren.add(agentId);
+              return { agentId, disposition: "cancel-requested" as const };
+            }
+
+            // `false`, a transport failure, and a lost response may all race a natural
+            // completion. Re-read the authoritative roster exactly once; never retry the
+            // mutation or attribute an aggregate lifecycle change to this caller.
+            const roster = yield* context.runtime.getAgentRoster.pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(threadId, "session/get-agent-roster", error),
+              ),
+              Effect.exit,
+            );
+            if (Exit.isSuccess(roster)) {
+              yield* applyAgentRosterSnapshot(context, roster.value);
+              const reconciled = context.knownNativeChildren.get(agentId);
+              if (
+                reconciled === undefined ||
+                (reconciled.status !== "queued" && reconciled.status !== "running")
+              ) {
+                return { agentId, disposition: "already-settled" as const };
+              }
+              yield* stopSessionInternal(
+                context,
+                Exit.isFailure(cancellation)
+                  ? "Prime Agent session closed after a failed agent cancellation remained ambiguous."
+                  : "Prime Agent session closed after agent cancellation returned contradictory state.",
+              ).pipe(Effect.ignore);
+              if (Exit.isFailure(cancellation)) {
+                return yield* Effect.failCause(cancellation.cause);
+              }
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "session/cancel-agent",
+                detail: "Prime Agent did not confirm that the agent was cancelled.",
+              });
+            }
+
+            yield* stopSessionInternal(
+              context,
+              "Prime Agent session closed after agent cancellation could not be reconciled safely.",
+            ).pipe(Effect.ignore);
+            if (Exit.isFailure(cancellation)) {
+              return yield* Effect.failCause(cancellation.cause);
+            }
+            return yield* Effect.failCause(roster.cause);
+          }),
+        ),
+      );
+
     const getSessionAgentDepth: NonNullable<PrimeAgentAdapterShape["getSessionAgentDepth"]> = (
       threadId,
     ) =>
@@ -2745,6 +2920,7 @@ export function makePrimeAgentDaemonAdapter(
       respondToUserInput,
       respondToInteraction,
       reloadSessionResources,
+      cancelSessionAgent,
       getSessionAgentDepth,
       setSessionAgentDepth,
       followUp,

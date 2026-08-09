@@ -8,6 +8,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  RuntimeTaskId,
   SessionInteractionRequestId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -152,6 +153,11 @@ interface FakeCaptures {
   agentDepthObserved: Queue.Queue<void> | undefined;
   agentDepthRelease: Deferred.Deferred<void> | undefined;
   inputQueue: { steeringCount: number; followUpCount: number };
+  agentRoster: Array<Extract<PrimeDaemonEvent, { readonly _tag: "ChildUpdated" }>["child"]>;
+  cancelAgentCalls: Array<string>;
+  cancelAgentResult: boolean;
+  cancelAgentFailure: boolean;
+  agentRosterFailure: boolean;
   sessionStats: PrimeAgentDaemonSessionStats;
   promptObserved: Queue.Queue<void> | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
@@ -192,6 +198,11 @@ function makeCaptures(): FakeCaptures {
     agentDepthObserved: undefined,
     agentDepthRelease: undefined,
     inputQueue: { steeringCount: 0, followUpCount: 0 },
+    agentRoster: [],
+    cancelAgentCalls: [],
+    cancelAgentResult: true,
+    cancelAgentFailure: false,
+    agentRosterFailure: false,
     sessionStats: {
       contextUsage: { usedTokens: 320, maxTokens: 200_000 },
     },
@@ -218,7 +229,7 @@ function fakeRuntimeFactory(
         sessionId: "native-session-secret",
         sessionFile: `${input.sessionDir}/native-session-secret.jsonl`,
         activeSessionId: "native-active-secret",
-        initialSnapshot: initialSnapshot(),
+        initialSnapshot: { ...initialSnapshot(), children: captures.agentRoster },
         initialResources: { available: true, skills: [], prompts: [], commands: [] },
         initialInputQueue: captures.inputQueue,
         initialAgentDepth:
@@ -270,6 +281,30 @@ function fakeRuntimeFactory(
           }
           return captures.agentDepth;
         }),
+        getAgentRoster: Effect.suspend(() =>
+          captures.agentRosterFailure
+            ? Effect.fail(
+                new PrimeAgentDaemonSessionRuntimeError({
+                  operation: "get-agent-roster",
+                  reason: "request-failed",
+                  detail: "roster failed",
+                }),
+              )
+            : Effect.succeed(captures.agentRoster),
+        ),
+        cancelAgent: (agentId) =>
+          Effect.suspend(() => {
+            captures.cancelAgentCalls.push(agentId);
+            return captures.cancelAgentFailure
+              ? Effect.fail(
+                  new PrimeAgentDaemonSessionRuntimeError({
+                    operation: "cancel-agent",
+                    reason: "request-failed",
+                    detail: "cancel failed",
+                  }),
+                )
+              : Effect.succeed(captures.cancelAgentResult);
+          }),
         setAgentDepth: (maxDepth) =>
           Effect.gen(function* () {
             captures.agentDepthCalls.push(maxDepth);
@@ -903,6 +938,188 @@ describe("PrimeAgentDaemonAdapter", () => {
         );
         expect(event).toMatchObject({ payload: { maxDepth: 3 } });
         expect(yield* adapter.getSessionAgentDepth!(threadId)).toMatchObject({ maxDepth: 3 });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "cancels only a known active session agent and projects the native terminal update",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          captures.agentRoster = [
+            {
+              id: "child-live",
+              parentId: "parent-safe",
+              label: "reviewer",
+              status: "running",
+              activeSessionId: "native-active-secret",
+            },
+          ];
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          const started = yield* awaitObservedType(subscription.observed, "task.progress");
+          expect(started.payload).toMatchObject({
+            taskId: "child-live",
+            taskType: "subagent",
+            status: "running",
+          });
+          expect(started.payload).not.toHaveProperty("activeSessionId");
+
+          const accepted = yield* adapter.cancelSessionAgent!(
+            threadId,
+            RuntimeTaskId.make("child-live"),
+          );
+          expect(accepted).toEqual({ agentId: "child-live", disposition: "cancel-requested" });
+          expect(captures.cancelAgentCalls).toEqual(["child-live"]);
+
+          const duplicatePending = yield* adapter.cancelSessionAgent!(
+            threadId,
+            RuntimeTaskId.make("child-live"),
+          );
+          expect(duplicatePending).toEqual({
+            agentId: "child-live",
+            disposition: "cancel-requested",
+          });
+          expect(captures.cancelAgentCalls).toEqual(["child-live"]);
+
+          yield* Queue.offer(captures.queue!, {
+            _tag: "ChildUpdated",
+            child: { id: "child-live", label: "reviewer", status: "cancelled" },
+          });
+          const completed = yield* awaitObservedType(subscription.observed, "task.completed");
+          expect(completed.payload).toMatchObject({ taskId: "child-live", status: "stopped" });
+
+          yield* Queue.offer(captures.queue!, {
+            _tag: "ChildUpdated",
+            child: { id: "child-live", label: "reviewer", status: "cancelled" },
+          });
+          yield* Queue.offer(captures.queue!, {
+            _tag: "ChildUpdated",
+            child: { id: "child-live", label: "reviewer", status: "running" },
+          });
+          yield* Queue.offer(captures.queue!, {
+            _tag: "SessionInfoChanged",
+            name: "terminal-barrier",
+          });
+          yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+          expect(
+            subscription.events.filter(
+              (event) => event.type === "task.completed" && event.payload.taskId === "child-live",
+            ),
+          ).toHaveLength(1);
+
+          const settled = yield* adapter.cancelSessionAgent!(
+            threadId,
+            RuntimeTaskId.make("child-live"),
+          );
+          expect(settled.disposition).toBe("already-settled");
+          expect(captures.cancelAgentCalls).toEqual(["child-live"]);
+
+          const unknown = yield* adapter.cancelSessionAgent!(
+            threadId,
+            RuntimeTaskId.make("other-thread-child"),
+          ).pipe(Effect.flip);
+          expect(unknown).toMatchObject({ _tag: "ProviderAdapterValidationError" });
+          expect(captures.cancelAgentCalls).toEqual(["child-live"]);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("reconciles a false or failed agent cancellation without retrying", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.agentRoster = [{ id: "child-race", label: "worker", status: "running" }];
+        captures.cancelAgentResult = false;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "task.progress");
+        captures.agentRoster = [{ id: "child-race", label: "worker", status: "done" }];
+
+        const result = yield* adapter.cancelSessionAgent!(
+          threadId,
+          RuntimeTaskId.make("child-race"),
+        );
+        expect(result).toEqual({ agentId: "child-race", disposition: "already-settled" });
+        expect(captures.cancelAgentCalls).toEqual(["child-race"]);
+        const completed = yield* awaitObservedType(subscription.observed, "task.completed");
+        expect(completed.payload).toMatchObject({ taskId: "child-race", status: "completed" });
+
+        captures.agentRoster = [{ id: "child-again", label: "worker", status: "running" }];
+        yield* Queue.offer(captures.queue!, {
+          _tag: "ChildUpdated",
+          child: captures.agentRoster[0]!,
+        });
+        yield* awaitObservedType(subscription.observed, "task.progress");
+        captures.cancelAgentFailure = true;
+        const failure = yield* adapter.cancelSessionAgent!(
+          threadId,
+          RuntimeTaskId.make("child-again"),
+        ).pipe(Effect.flip);
+        expect(failure).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+        expect(captures.cancelAgentCalls).toEqual(["child-race", "child-again"]);
+        expect(yield* adapter.hasSession(threadId)).toBe(false);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("closes when an agent cancellation cannot be reconciled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.agentRoster = [{ id: "child-uncertain", label: "worker", status: "running" }];
+        captures.cancelAgentResult = false;
+        captures.agentRosterFailure = true;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "task.progress");
+
+        const failure = yield* adapter.cancelSessionAgent!(
+          threadId,
+          RuntimeTaskId.make("child-uncertain"),
+        ).pipe(Effect.flip);
+        expect(failure).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+        expect(captures.cancelAgentCalls).toEqual(["child-uncertain"]);
+        expect(yield* adapter.hasSession(threadId)).toBe(false);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("settles children missing from an authoritative reconnect snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.agentRoster = [{ id: "child-gap", label: "worker", status: "running" }];
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "task.progress");
+
+        yield* Queue.offer(captures.queue!, {
+          ...initialSnapshot(),
+          children: [],
+          lastEventSequence: 2,
+        });
+        const completed = yield* awaitObservedType(subscription.observed, "task.completed");
+        expect(completed.payload).toMatchObject({ taskId: "child-gap", status: "stopped" });
+        expect(captures.cancelAgentCalls).toEqual([]);
       }),
     ).pipe(Effect.provide(testLayer)),
   );

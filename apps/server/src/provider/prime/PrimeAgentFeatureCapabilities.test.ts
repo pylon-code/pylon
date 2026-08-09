@@ -9,6 +9,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       runtime: "daemon",
       sessionUi: true,
       inputQueue: true,
+      agentCancel: true,
     });
 
     expect(capabilities.executionPolicy).toMatchObject({
@@ -19,7 +20,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
     });
     expect(capabilities.agents).toMatchObject({
       support: "read-write",
-      operations: ["observe", "hierarchy", "set-depth"],
+      operations: ["observe", "hierarchy", "cancel", "set-depth"],
     });
     expect(capabilities.resources).toMatchObject({
       support: "read-write",
@@ -50,6 +51,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       runtime: "daemon",
       sessionUi: true,
       inputQueue: false,
+      agentCancel: false,
     });
     expect(capabilities.inputQueue).toMatchObject({
       support: "unavailable",
@@ -62,6 +64,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       runtime: "acp",
       sessionUi: false,
       inputQueue: false,
+      agentCancel: false,
     });
 
     expect(capabilities.executionPolicy).toMatchObject({

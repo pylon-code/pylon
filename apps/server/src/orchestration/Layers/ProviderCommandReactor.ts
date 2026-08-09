@@ -72,7 +72,7 @@ function toNonEmptyProviderInput(value: string | undefined): string | undefined 
 
 export function providerFollowUpInputFromMessage(message: {
   readonly text: string;
-  readonly attachments?: ReadonlyArray<ChatAttachment>;
+  readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
 }): { readonly input?: string; readonly attachments?: ReadonlyArray<ChatAttachment> } {
   return {
     ...(message.text.trim().length === 0 ? {} : { input: message.text }),

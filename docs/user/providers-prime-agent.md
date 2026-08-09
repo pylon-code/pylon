@@ -63,7 +63,7 @@ resources, runtime, and extension lifecycle before replacing the visible command
 unavailable in Supervised mode. If the reload cannot finish safely, Pylon clears the catalog and closes that
 native session rather than risking a partially reloaded runtime; it never retries automatically. Pylon does not
 send resource paths, diagnostics, or extension source details
-to clients. Supervised sessions keep discovered commands disabled. Observed Prime subagents appear in Pylon's Agents hierarchy. When the selected model explicitly
+to clients. Supervised sessions keep discovered commands disabled. Observed Prime subagents appear in Pylon's Agents hierarchy. In Full access, an active agent can be stopped from its Agents row on web or desktop, or from the **Agents** control on mobile. Pylon waits for Prime's native cancelled status instead of marking the agent stopped optimistically; completed output and activity remain in the thread. A cancellation racing natural completion is treated as already settled, and Pylon never retries an uncertain cancellation automatically. Supervised sessions do not offer this control because child-agent spawning is disabled. When the selected model explicitly
 exposes reasoning text, Pylon adds a bounded final **Reasoning** entry to the work log. Incremental
 thinking deltas and provider-private reasoning metadata are not persisted.
 

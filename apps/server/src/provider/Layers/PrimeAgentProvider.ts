@@ -51,7 +51,7 @@ const MODEL_DISCOVERY_REQUEST_ID = "pylon-prime-agent-models";
 export function stampPrimeAgentBackendSnapshot(
   snapshot: ServerProviderDraft,
   backend:
-    | { readonly runtime: "daemon"; readonly inputQueue: boolean }
+    | { readonly runtime: "daemon"; readonly inputQueue: boolean; readonly agentCancel: boolean }
     | { readonly runtime: "acp"; readonly fallbackMessage?: string },
 ): ServerProviderDraft {
   const fallbackMessage = backend.runtime === "acp" ? backend.fallbackMessage?.trim() : undefined;
@@ -62,6 +62,7 @@ export function stampPrimeAgentBackendSnapshot(
       runtime: backend.runtime,
       sessionUi: backend.runtime === "daemon",
       inputQueue: backend.runtime === "daemon" && backend.inputQueue,
+      agentCancel: backend.runtime === "daemon" && backend.agentCancel,
     }),
     models:
       backend.runtime === "daemon"

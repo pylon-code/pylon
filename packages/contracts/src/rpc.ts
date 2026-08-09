@@ -67,6 +67,9 @@ import {
   OrchestrationGetWorkflowScriptError,
 } from "./orchestration.ts";
 import {
+  ProviderCancelSessionAgentError,
+  ProviderCancelSessionAgentInput,
+  ProviderCancelSessionAgentResult,
   ProviderClearSessionInputQueueInput,
   ProviderGetSessionAgentDepthInput,
   ProviderGetSessionInputQueueInput,
@@ -271,6 +274,7 @@ export const WS_METHODS = {
 
   // Provider session methods
   providerReloadSessionResources: "provider.reloadSessionResources",
+  providerCancelSessionAgent: "provider.cancelSessionAgent",
   providerGetSessionAgentDepth: "provider.getSessionAgentDepth",
   providerSetSessionAgentDepth: "provider.setSessionAgentDepth",
   providerGetSessionInputQueue: "provider.getSessionInputQueue",
@@ -388,6 +392,12 @@ export const WsProviderReloadSessionResourcesRpc = Rpc.make(
     error: Schema.Union([ProviderSessionResourcesReloadError, EnvironmentAuthorizationError]),
   },
 );
+
+export const WsProviderCancelSessionAgentRpc = Rpc.make(WS_METHODS.providerCancelSessionAgent, {
+  payload: ProviderCancelSessionAgentInput,
+  success: ProviderCancelSessionAgentResult,
+  error: Schema.Union([ProviderCancelSessionAgentError, EnvironmentAuthorizationError]),
+});
 
 export const WsProviderGetSessionAgentDepthRpc = Rpc.make(WS_METHODS.providerGetSessionAgentDepth, {
   payload: ProviderGetSessionAgentDepthInput,
@@ -1071,6 +1081,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
   WsProviderReloadSessionResourcesRpc,
+  WsProviderCancelSessionAgentRpc,
   WsProviderGetSessionAgentDepthRpc,
   WsProviderSetSessionAgentDepthRpc,
   WsProviderGetSessionInputQueueRpc,

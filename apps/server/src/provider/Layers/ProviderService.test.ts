@@ -17,6 +17,7 @@ import {
   ProviderInstanceId,
   ProviderSessionStartInput,
   SessionInteractionRequestId,
+  RuntimeTaskId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -170,6 +171,12 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     > => Effect.succeed({ available: true, skills: [], prompts: [], commands: [] }),
   );
 
+  const cancelSessionAgent = vi.fn((threadId: ThreadId, agentId: RuntimeTaskId) =>
+    Effect.succeed({ threadId, agentId }).pipe(
+      Effect.as({ agentId, disposition: "cancel-requested" as const }),
+    ),
+  );
+
   let agentDepth = {
     maxDepth: 2,
     source: "session" as const,
@@ -251,6 +258,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     respondToUserInput,
     respondToInteraction,
     reloadSessionResources,
+    cancelSessionAgent,
     getSessionAgentDepth,
     setSessionAgentDepth,
     stopSession,
@@ -287,6 +295,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     sendTurn,
     respondToInteraction,
     reloadSessionResources,
+    cancelSessionAgent,
     getSessionAgentDepth,
     setSessionAgentDepth,
     interruptTurn,
@@ -966,6 +975,18 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const resources = yield* provider.reloadSessionResources({ threadId: session.threadId });
       assert.deepEqual(resources, { available: true, skills: [], prompts: [], commands: [] });
       assert.deepEqual(routing.codex.reloadSessionResources.mock.calls, [[session.threadId]]);
+
+      const cancelled = yield* provider.cancelSessionAgent({
+        threadId: session.threadId,
+        agentId: RuntimeTaskId.make("agent-1"),
+      });
+      assert.deepEqual(cancelled, {
+        agentId: RuntimeTaskId.make("agent-1"),
+        disposition: "cancel-requested",
+      });
+      assert.deepEqual(routing.codex.cancelSessionAgent.mock.calls, [
+        [session.threadId, RuntimeTaskId.make("agent-1")],
+      ]);
 
       const invalidDepth = yield* provider
         .setSessionAgentDepth({ threadId: session.threadId, maxDepth: 5 })

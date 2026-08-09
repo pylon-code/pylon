@@ -1,3 +1,4 @@
+import { PROVIDER_AGENT_CONTROL_ID_MAX_CHARS } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -185,7 +186,9 @@ const goalState = Schema.Struct({
 });
 
 const rlmChild = Schema.Struct({
-  id: Schema.String,
+  id: Schema.String.check(Schema.isNonEmpty()).check(
+    Schema.isMaxLength(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS),
+  ),
   parentId: Schema.optional(Schema.String),
   activeSessionId: Schema.optional(Schema.String),
   sessionName: Schema.optional(Schema.String),
@@ -845,6 +848,22 @@ function contentText(
   );
 }
 
+const PRIVATE_AGENT_RUNTIME_RESULT_MARKERS = [
+  "RLMSpawnHandle(",
+  "rlm_child_id",
+  "session_dir",
+  "active_session_id",
+  "activeSessionId",
+  "sessionDir",
+  "rlmChildId",
+] as const;
+
+function safeToolResultText(text: string): string {
+  return PRIVATE_AGENT_RUNTIME_RESULT_MARKERS.some((marker) => text.includes(marker))
+    ? "Native agent operation completed."
+    : text;
+}
+
 type PrimeDaemonAssistantMessage = Extract<PrimeDaemonMessage, { readonly role: "assistant" }>;
 type PrimeDaemonToolResultMessage = Extract<PrimeDaemonMessage, { readonly role: "toolResult" }>;
 
@@ -909,7 +928,7 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
         timestamp: value.timestamp,
         toolCallId: bounded(value.toolCallId, MAX_PREVIEW_LENGTH),
         toolName: bounded(value.toolName, MAX_PREVIEW_LENGTH),
-        text: contentText(value.content),
+        text: safeToolResultText(contentText(value.content)),
         imageMimeTypes: value.content
           .filter((part): part is typeof imageContent.Type => part.type === "image")
           .slice(0, MAX_LIST_ITEMS)
@@ -927,7 +946,7 @@ function mapUnknownMessages(values: ReadonlyArray<unknown>): ReadonlyArray<Prime
 }
 
 function mapToolText(value: typeof toolResult.Type): string {
-  return contentText(value.content);
+  return safeToolResultText(contentText(value.content));
 }
 
 function mapChild(

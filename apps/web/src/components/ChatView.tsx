@@ -11,6 +11,7 @@ import {
   type ProviderApprovalDecision,
   type PreviewAnnotationPayload,
   ProviderInstanceId,
+  RuntimeTaskId,
   type ServerProvider,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
@@ -157,6 +158,8 @@ import { AgentsPanel } from "./AgentsPanel";
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
+  isActiveSubagentStatus,
+  supportsSessionAgentCancel,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
@@ -1263,6 +1266,10 @@ function ChatViewContent(props: ChatViewProps) {
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
+  const cancelThreadSessionAgent = useAtomCommand(
+    threadEnvironment.cancelSessionAgent,
+    "session agent cancellation",
+  );
   const reloadThreadSessionResources = useAtomCommand(
     threadEnvironment.reloadSessionResources,
     "session resource reload",
@@ -2290,13 +2297,39 @@ function ChatViewContent(props: ChatViewProps) {
   // until orchestration-v2 lands (source precedence lives in the derive).
   // sessionLive derives interruption for agents orphaned by session death.
   const agentSessionLive = phase !== "disconnected";
-  const agentPanelModel = useMemo(
-    () =>
-      deriveAgentPanelModel({
-        agents: foldSubagentActivities(threadActivities, { sessionLive: agentSessionLive }),
-      }),
+  const runtimeSubagents = useMemo(
+    () => foldSubagentActivities(threadActivities, { sessionLive: agentSessionLive }),
     [agentSessionLive, threadActivities],
   );
+  const agentPanelModel = useMemo(
+    () => deriveAgentPanelModel({ agents: runtimeSubagents }),
+    [runtimeSubagents],
+  );
+  const activeSessionProviderStatus = useMemo(() => {
+    const instanceId = activeThread?.session?.providerInstanceId;
+    if (instanceId === undefined) return null;
+    return serverConfig?.providers.find((provider) => provider.instanceId === instanceId) ?? null;
+  }, [activeThread?.session?.providerInstanceId, serverConfig?.providers]);
+  const canCancelSessionAgents =
+    agentSessionLive &&
+    activeThread?.session?.runtimeMode === "full-access" &&
+    (activeThread.session.status === "ready" || activeThread.session.status === "running") &&
+    supportsSessionAgentCancel(activeSessionProviderStatus);
+  const [cancellingAgentIds, setCancellingAgentIds] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    setCancellingAgentIds(new Set());
+  }, [activeThreadId]);
+  useEffect(() => {
+    const activeIds = new Set(
+      runtimeSubagents
+        .filter((agent) => isActiveSubagentStatus(agent.status))
+        .map((agent) => agent.id),
+    );
+    setCancellingAgentIds((current) => {
+      const next = new Set([...current].filter((agentId) => activeIds.has(agentId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [runtimeSubagents]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -5648,6 +5681,56 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadId, environmentId, setThreadError, setThreadSessionAgentDepth],
   );
 
+  const onCancelSessionAgent = useCallback(
+    async (agentId: string) => {
+      const agent = runtimeSubagents.find((candidate) => candidate.id === agentId);
+      if (
+        !activeThreadId ||
+        !canCancelSessionAgents ||
+        agent === undefined ||
+        !isActiveSubagentStatus(agent.status)
+      ) {
+        throw new Error("The agent is no longer cancellable.");
+      }
+      setCancellingAgentIds((current) => new Set(current).add(agentId));
+      const result = await cancelThreadSessionAgent({
+        environmentId,
+        input: { threadId: activeThreadId, agentId: RuntimeTaskId.make(agentId) },
+      });
+      if (result._tag === "Failure") {
+        setCancellingAgentIds((current) => {
+          const next = new Set(current);
+          next.delete(agentId);
+          return next;
+        });
+        if (!isAtomCommandInterrupted(result)) {
+          setThreadError(activeThreadId, "Could not stop the active agent.");
+        }
+        throw new Error("Agent cancellation failed.");
+      }
+      setThreadError(activeThreadId, null);
+      toastManager.add({
+        type: "success",
+        title:
+          result.value.disposition === "cancel-requested"
+            ? `Stopping ${agent.title}`
+            : `${agent.title} already stopped`,
+        description:
+          result.value.disposition === "cancel-requested"
+            ? "The provider accepted the request. Status will update when cancellation is confirmed."
+            : "The provider confirmed that this agent is no longer active.",
+      });
+    },
+    [
+      activeThreadId,
+      canCancelSessionAgents,
+      cancelThreadSessionAgent,
+      environmentId,
+      runtimeSubagents,
+      setThreadError,
+    ],
+  );
+
   const onClearSessionInputQueue = useCallback(async () => {
     if (!activeThreadId) return;
     const result = await clearThreadSessionInputQueue({
@@ -6690,9 +6773,13 @@ function ChatViewContent(props: ChatViewProps) {
       />
     ) : activeRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
+        key={`${activeThreadRef?.environmentId ?? "none"}:${activeThreadRef?.threadId ?? "none"}`}
         model={agentPanelModel}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
+        canCancelAgents={canCancelSessionAgents}
+        cancellingAgentIds={cancellingAgentIds}
+        onCancelAgent={onCancelSessionAgent}
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
