@@ -837,6 +837,30 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "turn.completed": {
+      const totalCostUsd = event.payload.totalCostUsd;
+      if (
+        event.turnId === undefined ||
+        totalCostUsd === undefined ||
+        !Number.isFinite(totalCostUsd) ||
+        totalCostUsd < 0
+      ) {
+        return [];
+      }
+      return [
+        {
+          id: EventId.make(`turn-cost:${event.threadId}:${event.turnId}`),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "turn.cost",
+          summary: "Reported turn cost",
+          payload: { totalCostUsd },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "thread.state.changed": {
       if (event.payload.state !== "compacted") {
         return [];

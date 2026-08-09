@@ -176,3 +176,50 @@ describe("runtimeEventToActivities context compaction", () => {
     expect(JSON.stringify(skipped)).not.toContain("PRIVATE");
   });
 });
+
+describe("runtimeEventToActivities reported turn cost", () => {
+  it("persists finite non-negative values with stable per-turn identity", () => {
+    for (const totalCostUsd of [0, 0.0123]) {
+      const activities = runtimeEventToActivities({
+        ...base,
+        type: "turn.completed",
+        eventId: EventId.make(`evt-cost-${totalCostUsd}`),
+        turnId: TurnId.make("turn-cost"),
+        payload: { state: "completed", totalCostUsd },
+      });
+      expect(activities).toEqual([
+        {
+          id: "turn-cost:thread-1:turn-cost",
+          createdAt: base.createdAt,
+          tone: "info",
+          kind: "turn.cost",
+          summary: "Reported turn cost",
+          payload: { totalCostUsd },
+          turnId: "turn-cost",
+        },
+      ]);
+    }
+  });
+
+  it("drops absent, invalid, negative, and turnless values", () => {
+    for (const totalCostUsd of [undefined, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        runtimeEventToActivities({
+          ...base,
+          type: "turn.completed",
+          eventId: EventId.make("evt-invalid-cost"),
+          turnId: TurnId.make("turn-cost"),
+          payload: { state: "completed", totalCostUsd },
+        }),
+      ).toEqual([]);
+    }
+    expect(
+      runtimeEventToActivities({
+        ...base,
+        type: "turn.completed",
+        eventId: EventId.make("evt-turnless-cost"),
+        payload: { state: "completed", totalCostUsd: 1 },
+      }),
+    ).toEqual([]);
+  });
+});

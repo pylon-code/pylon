@@ -267,6 +267,44 @@ describe("buildThreadFeed", () => {
     expect(group.activities[0]?.getFullDetail()).toBeNull();
   });
 
+  it("attaches reported cost only to turn messages and not the work log", () => {
+    const turnId = TurnId.make("turn-cost");
+    const thread = makeThread({
+      id: ThreadId.make("thread-cost"),
+      projectId: ProjectId.make("project-1"),
+      title: "Cost",
+      messages: [
+        {
+          id: MessageId.make("assistant-cost"),
+          role: "assistant",
+          text: "Done.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:02.000Z",
+          updatedAt: "2026-04-01T00:00:03.000Z",
+        },
+      ],
+      activities: [
+        makeActivity({
+          id: EventId.make("turn-cost"),
+          kind: "turn.cost",
+          summary: "Reported turn cost",
+          createdAt: "2026-04-01T00:00:03.000Z",
+          turnId,
+          payload: { totalCostUsd: 0.123456 },
+        }),
+      ],
+    });
+
+    expect(buildThreadFeed(thread)).toEqual([
+      expect.objectContaining({
+        type: "message",
+        id: "assistant-cost",
+        reportedCostLabel: "Reported cost $0.1235",
+      }),
+    ]);
+  });
+
   it("collapses matching tool lifecycle rows like desktop", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-2"),

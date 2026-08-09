@@ -90,8 +90,9 @@ export function makePrimeAgentFeatureCapabilities(input: {
     },
     usage: {
       support: "read-only",
-      reason: "Prime Agent cost reporting is not projected into Pylon yet.",
-      operations: ["token-usage"],
+      reason:
+        "Pylon shows current context usage and the cost estimate Prime reports for each completed turn.",
+      operations: ["token-usage", "cost"],
     },
     sessionUi: input.sessionUi
       ? {

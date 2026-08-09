@@ -28,6 +28,7 @@ import {
   connectionStatusTitle,
   type EnvironmentConnectionPresentation,
 } from "@t3tools/client-runtime/connection";
+import { deriveReportedTurnCosts } from "@t3tools/client-runtime/state/turn-costs";
 import {
   changeRequestAutoSettles,
   effectiveSettled,
@@ -2616,6 +2617,10 @@ function ChatViewContent(props: ChatViewProps) {
     }
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
   }, [attachmentPreviewHandoffByMessageId, displayServerMessages, optimisticUserMessages]);
+  const reportedTurnCosts = useMemo(
+    () => deriveReportedTurnCosts(activeThread?.activities ?? []),
+    [activeThread?.activities],
+  );
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(
@@ -6657,6 +6662,7 @@ function ChatViewContent(props: ChatViewProps) {
                     : null
                 }
                 turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+                reportedTurnCosts={reportedTurnCosts}
                 activeThreadEnvironmentId={activeThread.environmentId}
                 routeThreadKey={routeThreadKey}
                 onOpenTurnDiff={onOpenTurnDiff}

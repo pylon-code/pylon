@@ -3377,6 +3377,37 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("persists provider-reported turn cost as stable turn metadata", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-cost"),
+      provider: ProviderDriverKind.make("primeAgent"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-cost"),
+      payload: { state: "completed", totalCostUsd: 0.123456 },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "turn.cost",
+      ),
+    );
+    expect(
+      thread.activities.filter(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "turn.cost",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        id: "turn-cost:thread-1:turn-cost",
+        summary: "Reported turn cost",
+        payload: { totalCostUsd: 0.123456 },
+        turnId: "turn-cost",
+      }),
+    ]);
+  });
+
   it("persists one safe Prime context-compaction lifecycle row", async () => {
     const harness = await createHarness();
     const provider = ProviderDriverKind.make("primeAgent");
