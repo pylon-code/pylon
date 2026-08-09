@@ -6,6 +6,7 @@ import {
 
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -16,6 +17,7 @@ import {
   type PrimeAgentDaemonExtensionUiResponse,
   type PrimeAgentDaemonImage,
   type PrimeAgentDaemonPromptOptions,
+  type PrimeAgentDaemonSessionWatcher,
   type PrimeAgentDaemonServiceTier,
   type PrimeAgentDaemonThinkingLevel,
 } from "./PrimeAgentDaemonBridge.ts";
@@ -23,6 +25,8 @@ import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import {
   makePrimeAgentDaemonSessionRuntime,
   PRIME_AGENT_DAEMON_RESUME_CURSOR,
+  PRIME_AGENT_LIVE_ACTIVITY_REFRESH_DELAY_MS,
+  sanitizePrimeAgentLiveActivityMessages,
   type PrimeAgentDaemonSessionRuntime,
 } from "./PrimeAgentDaemonSessionRuntime.ts";
 import { PRIME_AGENT_ACP_RESUME_CURSOR } from "./PrimeAgentResumeCursor.ts";
@@ -89,6 +93,10 @@ interface Captures {
   closeCount: number;
   disposeCount: number;
   unsubscribeCount: number;
+  watcherCloseCount: number;
+  watcherUnsubscribeCount: number;
+  readonly watchedActiveSessionIds: string[];
+  watcherMessageReads: number;
 }
 
 function fixture(options?: {
@@ -107,6 +115,10 @@ function fixture(options?: {
   readonly cancelRlmImpl?: (agentId: string) => Promise<unknown>;
   readonly sendAgentMessageImpl?: (activeSessionId: string, message: string) => Promise<unknown>;
   readonly omitSendAgentMessage?: boolean;
+  readonly omitWatchSession?: boolean;
+  readonly watchSessionUndefined?: boolean;
+  readonly watchSessionMalformed?: boolean;
+  readonly getWatchMessages?: () => ReadonlyArray<unknown> | Promise<ReadonlyArray<unknown>>;
   readonly sessionStats?: unknown;
   readonly getQueueImpl?: () => Promise<unknown>;
   readonly clearQueueImpl?: () => Promise<unknown>;
@@ -128,8 +140,13 @@ function fixture(options?: {
     closeCount: 0,
     disposeCount: 0,
     unsubscribeCount: 0,
+    watcherCloseCount: 0,
+    watcherUnsubscribeCount: 0,
+    watchedActiveSessionIds: [],
+    watcherMessageReads: 0,
   };
   let listener: ((event: unknown) => void | Promise<void>) | undefined;
+  let watcherListener: ((event: unknown) => void | Promise<void>) | undefined;
 
   class FakeClient implements PrimeAgentDaemonClient {
     isConnected = true;
@@ -177,6 +194,9 @@ function fixture(options?: {
     constructor() {
       if (options?.omitSendAgentMessage === true) {
         Object.defineProperty(this, "sendAgentMessage", { value: undefined });
+      }
+      if (options?.omitWatchSession === true) {
+        Object.defineProperty(this, "watchSession", { value: undefined });
       }
     }
     static attach(
@@ -370,6 +390,31 @@ function fixture(options?: {
         })
       );
     }
+    watchSession(activeSessionId: string): Promise<PrimeAgentDaemonSessionWatcher | undefined> {
+      captures.watchedActiveSessionIds.push(activeSessionId);
+      if (options?.watchSessionUndefined === true) return Promise.resolve(undefined);
+      if (options?.watchSessionMalformed === true) {
+        return Promise.resolve({
+          getMessages: () => Promise.resolve([]),
+        } as unknown as PrimeAgentDaemonSessionWatcher);
+      }
+      return Promise.resolve({
+        getMessages: () => {
+          captures.watcherMessageReads += 1;
+          return Promise.resolve(options?.getWatchMessages?.() ?? []);
+        },
+        subscribe: (next: (event: unknown) => void | Promise<void>) => {
+          watcherListener = next;
+          return () => {
+            captures.watcherUnsubscribeCount += 1;
+          };
+        },
+        close: () => {
+          captures.watcherCloseCount += 1;
+          return Promise.resolve();
+        },
+      });
+    }
     setRlmMaxDepth(maxDepth: number): Promise<unknown> {
       captures.connectionCalls.push({ method: "setRlmMaxDepth", args: [maxDepth] });
       return (
@@ -428,7 +473,8 @@ function fixture(options?: {
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
     });
   const emit = (event: unknown) => Promise.resolve(listener?.(event));
-  return { captures, emit, make };
+  const emitWatch = (event: unknown) => Promise.resolve(watcherListener?.(event));
+  return { captures, emit, emitWatch, make };
 }
 
 function collectEvents(runtime: PrimeAgentDaemonSessionRuntime, count: number) {
@@ -1666,5 +1712,427 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         reason: "invalid-response",
       });
     }),
+  );
+});
+
+describe("Prime Agent live activity privacy boundary", () => {
+  it("keeps only non-empty assistant text parts and drops every native field", () => {
+    const entries = sanitizePrimeAgentLiveActivityMessages([
+      { role: "user", content: "private delegation prompt", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "private reasoning" },
+          { type: "text", text: "  visible answer  " },
+          { type: "toolCall", id: "native-tool", name: "bash", arguments: { secret: true } },
+        ],
+        usage: { cost: { total: 99 } },
+        errorMessage: "private failure",
+        timestamp: 2,
+      },
+      {
+        role: "toolResult",
+        toolName: "bash",
+        content: [{ type: "text", text: "private result" }],
+        timestamp: 3,
+      },
+      { role: "assistant", content: [{ type: "text", text: "   " }], timestamp: 4 },
+    ]);
+
+    expect(entries).toEqual([{ speaker: "assistant", text: "visible answer" }]);
+    expect(JSON.stringify(entries)).not.toContain("private");
+    expect(JSON.stringify(entries)).not.toContain("native-tool");
+  });
+
+  it.effect("coalesces watcher events and closes the second connection when the stream ends", () =>
+    Effect.gen(function* () {
+      let messages: ReadonlyArray<unknown> = [
+        { role: "assistant", content: [{ type: "text", text: "first" }] },
+      ];
+      const { captures, emitWatch, make } = fixture({ getWatchMessages: () => messages });
+
+      const collected = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* make();
+          const initialObserved = yield* Queue.unbounded<void>();
+          const fiber = yield* runtime.watchAgentActivity("native-child-active").pipe(
+            Stream.tap(() => Queue.offer(initialObserved, undefined)),
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+          yield* Queue.take(initialObserved);
+          messages = [{ role: "assistant", content: [{ type: "text", text: "second" }] }];
+          yield* Effect.promise(() =>
+            Promise.all(
+              Array.from({ length: 20 }, (_, index) =>
+                emitWatch({
+                  type: "session_event",
+                  event: {
+                    type: "message_update",
+                    message: {
+                      role: "assistant",
+                      content: [{ type: "text", text: `second-${index}` }],
+                    },
+                  },
+                }),
+              ),
+            ),
+          );
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust(PRIME_AGENT_LIVE_ACTIVITY_REFRESH_DELAY_MS);
+          return Array.from(yield* Fiber.join(fiber));
+        }),
+      );
+
+      expect(collected).toEqual([
+        [{ speaker: "assistant", text: "first" }],
+        [
+          { speaker: "assistant", text: "first" },
+          { speaker: "assistant", text: "second-19" },
+        ],
+      ]);
+      expect(captures.watchedActiveSessionIds).toEqual(["native-child-active"]);
+      expect(captures.watcherMessageReads).toBe(1);
+      expect(captures.watcherUnsubscribeCount).toBe(1);
+      expect(captures.watcherCloseCount).toBe(1);
+    }),
+  );
+
+  it.effect("flushes every safe initialization event in order after the initial read", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let markReadStarted!: () => void;
+        let resolveInitialRead!: (messages: ReadonlyArray<unknown>) => void;
+        const readStarted = new Promise<void>((resolve) => {
+          markReadStarted = resolve;
+        });
+        const initialRead = new Promise<ReadonlyArray<unknown>>((resolve) => {
+          resolveInitialRead = resolve;
+        });
+        const { captures, emitWatch, make } = fixture({
+          getWatchMessages: () => {
+            markReadStarted();
+            return initialRead;
+          },
+        });
+        const runtime = yield* make();
+        const fiber = yield* runtime
+          .watchAgentActivity("native-child-active")
+          .pipe(Stream.take(3), Stream.runCollect, Effect.forkChild);
+        yield* Effect.promise(() => readStarted);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_replaced",
+            state: { isStreaming: true },
+            messages: [{ role: "assistant", content: [{ type: "text", text: "replacement" }] }],
+          }),
+        );
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "message_update",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "streaming one" }],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "message_update",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "streaming two" }],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "final answer" }],
+              },
+            },
+          }),
+        );
+        resolveInitialRead([{ role: "assistant", content: [{ type: "text", text: "initial" }] }]);
+
+        expect(Array.from(yield* Fiber.join(fiber))).toEqual([
+          [{ speaker: "assistant", text: "initial" }],
+          [{ speaker: "assistant", text: "replacement" }],
+          [
+            { speaker: "assistant", text: "replacement" },
+            { speaker: "assistant", text: "final answer" },
+          ],
+        ]);
+        expect(captures.watcherMessageReads).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("fails bounded initialization buffering instead of retaining unlimited events", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let markReadStarted!: () => void;
+        let resolveInitialRead!: (messages: ReadonlyArray<unknown>) => void;
+        const readStarted = new Promise<void>((resolve) => {
+          markReadStarted = resolve;
+        });
+        const initialRead = new Promise<ReadonlyArray<unknown>>((resolve) => {
+          resolveInitialRead = resolve;
+        });
+        const { emitWatch, make } = fixture({
+          getWatchMessages: () => {
+            markReadStarted();
+            return initialRead;
+          },
+        });
+        const runtime = yield* make();
+        const fiber = yield* runtime
+          .watchAgentActivity("native-child-active")
+          .pipe(Stream.runDrain, Effect.flip, Effect.forkChild);
+        yield* Effect.promise(() => readStarted);
+        for (let index = 0; index <= 64; index += 1) {
+          yield* Effect.promise(() =>
+            emitWatch({
+              type: "session_event",
+              event: {
+                type: "message_update",
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: `safe-${index}` }],
+                },
+              },
+            }),
+          );
+        }
+        resolveInitialRead([]);
+
+        expect(yield* Fiber.join(fiber)).toMatchObject({
+          operation: "watch-agent-activity",
+          reason: "request-failed",
+          detail: "Too many live agent activity events arrived during initialization.",
+        });
+      }),
+    ),
+  );
+
+  it.effect("keeps committed activity when resync streaming content is not visible", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { emitWatch, make } = fixture({
+          getWatchMessages: () => [
+            { role: "assistant", content: [{ type: "text", text: "initial" }] },
+          ],
+        });
+        const runtime = yield* make();
+        const observed = yield* Queue.unbounded<void>();
+        const fiber = yield* runtime.watchAgentActivity("native-child-active").pipe(
+          Stream.tap(() => Queue.offer(observed, undefined)),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Queue.take(observed);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_resynced",
+            snapshot: {
+              messages: [{ role: "assistant", content: [{ type: "text", text: "committed" }] }],
+              streamingMessage: {
+                role: "assistant",
+                content: [{ type: "thinking", thinking: "private reasoning" }],
+              },
+            },
+          }),
+        );
+        yield* Queue.take(observed);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "message_update",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "visible streaming" }],
+              },
+            },
+          }),
+        );
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(PRIME_AGENT_LIVE_ACTIVITY_REFRESH_DELAY_MS);
+
+        expect(Array.from(yield* Fiber.join(fiber))).toEqual([
+          [{ speaker: "assistant", text: "initial" }],
+          [{ speaker: "assistant", text: "committed" }],
+          [
+            { speaker: "assistant", text: "committed" },
+            { speaker: "assistant", text: "visible streaming" },
+          ],
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("projects streaming message events without refetching the native transcript", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, emitWatch, make } = fixture({
+          getWatchMessages: () => [
+            { role: "assistant", content: [{ type: "text", text: "committed" }] },
+          ],
+        });
+        const runtime = yield* make();
+        const initialObserved = yield* Queue.unbounded<void>();
+        const fiber = yield* runtime.watchAgentActivity("native-child-active").pipe(
+          Stream.tap(() => Queue.offer(initialObserved, undefined)),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Queue.take(initialObserved);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "message_update",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "thinking", thinking: "private reasoning" },
+                  { type: "text", text: "streaming answer" },
+                  { type: "toolCall", name: "bash", arguments: { secret: true } },
+                ],
+              },
+            },
+          }),
+        );
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(PRIME_AGENT_LIVE_ACTIVITY_REFRESH_DELAY_MS);
+
+        expect(Array.from(yield* Fiber.join(fiber))).toEqual([
+          [{ speaker: "assistant", text: "committed" }],
+          [
+            { speaker: "assistant", text: "committed" },
+            { speaker: "assistant", text: "streaming answer" },
+          ],
+        ]);
+        expect(captures.watcherMessageReads).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("uses authoritative replacement and resync snapshots without closing the watcher", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { emitWatch, make } = fixture({
+          getWatchMessages: () => [
+            { role: "assistant", content: [{ type: "text", text: "first" }] },
+          ],
+        });
+        const runtime = yield* make();
+        const observed = yield* Queue.unbounded<void>();
+        const fiber = yield* runtime.watchAgentActivity("native-child-active").pipe(
+          Stream.tap(() => Queue.offer(observed, undefined)),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Queue.take(observed);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "first" }],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_replaced",
+            state: { isStreaming: true },
+            messages: [{ role: "assistant", content: [{ type: "text", text: "replacement" }] }],
+          }),
+        );
+        yield* Queue.take(observed);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_resynced",
+            snapshot: {
+              messages: [{ role: "assistant", content: [{ type: "text", text: "resynced" }] }],
+              streamingMessage: {
+                role: "assistant",
+                content: [{ type: "text", text: "still streaming" }],
+              },
+            },
+          }),
+        );
+
+        expect(Array.from(yield* Fiber.join(fiber))).toEqual([
+          [{ speaker: "assistant", text: "first" }],
+          [{ speaker: "assistant", text: "replacement" }],
+          [
+            { speaker: "assistant", text: "resynced" },
+            { speaker: "assistant", text: "still streaming" },
+          ],
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("fails when a native watcher closes unexpectedly or has a malformed surface", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const closedFixture = fixture();
+        const runtime = yield* closedFixture.make();
+        const observed = yield* Queue.unbounded<void>();
+        const fiber = yield* runtime.watchAgentActivity("native-child-active").pipe(
+          Stream.tap(() => Queue.offer(observed, undefined)),
+          Stream.runDrain,
+          Effect.flip,
+          Effect.forkChild,
+        );
+        yield* Queue.take(observed);
+        yield* Effect.promise(() => closedFixture.emitWatch({ type: "closed" }));
+        expect(yield* Fiber.join(fiber)).toMatchObject({
+          operation: "watch-agent-activity",
+          reason: "request-failed",
+        });
+
+        const malformed = fixture({ watchSessionMalformed: true });
+        const malformedRuntime = yield* malformed.make();
+        expect(
+          yield* malformedRuntime
+            .watchAgentActivity("native-child-active")
+            .pipe(Stream.runDrain, Effect.flip),
+        ).toMatchObject({ operation: "watch-agent-activity", reason: "request-failed" });
+      }),
+    ),
+  );
+
+  it.effect("fails closed when public watchSession cannot find the live agent", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { make } = fixture({ watchSessionUndefined: true });
+        const runtime = yield* make();
+        const failure = yield* runtime
+          .watchAgentActivity("gone-child")
+          .pipe(Stream.runDrain, Effect.flip);
+        expect(failure.reason).toBe("request-failed");
+      }),
+    ),
   );
 });

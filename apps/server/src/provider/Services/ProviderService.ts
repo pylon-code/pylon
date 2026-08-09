@@ -20,6 +20,8 @@ import type {
   ProviderFollowUpInput,
   ProviderMessageSessionAgentInput,
   ProviderMessageSessionAgentResult,
+  ProviderWatchSessionAgentActivityInput,
+  ProviderSessionAgentActivitySnapshot,
   ProviderGetSessionAgentDepthInput,
   ProviderGetSessionCompactionInput,
   ProviderGetSessionInputQueueInput,
@@ -113,6 +115,10 @@ export interface ProviderServiceShape {
   readonly messageSessionAgent: (
     input: ProviderMessageSessionAgentInput,
   ) => Effect.Effect<ProviderMessageSessionAgentResult, ProviderServiceError>;
+
+  readonly watchSessionAgentActivity: (
+    input: ProviderWatchSessionAgentActivityInput,
+  ) => Stream.Stream<ProviderSessionAgentActivitySnapshot, ProviderServiceError>;
 
   readonly getSessionAgentDepth: (
     input: ProviderGetSessionAgentDepthInput,

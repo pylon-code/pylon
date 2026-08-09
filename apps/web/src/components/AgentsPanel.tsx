@@ -19,6 +19,10 @@ import type {
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
+  sessionAgentLiveActivitySelectionIsOpen,
+  type SessionAgentLiveActivitySelection,
+} from "@t3tools/client-runtime/state/session-agent-live-activity";
+import {
   formatSubagentModelLabel,
   formatSubagentTokenCount,
   isActiveSubagentStatus,
@@ -34,6 +38,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Eye,
   MessageSquare,
   Square,
   X,
@@ -63,6 +68,7 @@ import {
 } from "~/components/ui/dialog";
 import { Textarea } from "~/components/ui/textarea";
 import { DotMatrix, type DotMatrixState } from "./ui/dot-matrix";
+import { AgentLiveActivity } from "./AgentLiveActivity";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -181,15 +187,22 @@ interface AgentMessageControls {
   readonly onRequest: (agent: RuntimeSubagent) => void;
 }
 
+interface AgentLiveActivityControls {
+  readonly enabled: boolean;
+  readonly onRequest: (agent: RuntimeSubagent) => void;
+}
+
 /** Flat agent status line with provider-neutral message and stop actions. */
 function AgentRow({
   agent,
   cancelControls,
   messageControls,
+  liveActivityControls,
 }: {
   agent: RuntimeSubagent;
   cancelControls: AgentCancelControls;
   messageControls: AgentMessageControls;
+  liveActivityControls: AgentLiveActivityControls;
 }) {
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
@@ -209,12 +222,14 @@ function AgentRow({
     messageControls.enabled && agent.kind !== "workflow" && agent.messageable && active;
   const cancellable = cancelControls.enabled && agent.kind !== "workflow" && active;
   const stopping = cancellable && cancelControls.pendingIds.has(agent.id);
+  const liveActivityEligible = liveActivityControls.enabled && agent.kind !== "workflow";
+  const liveActivityAvailable = liveActivityEligible && active;
 
   return (
     // The marker track is sized for a 14px DotMatrix, not upstream's 6px dot:
     // a narrower track would let the glyph bleed into the title column and
     // undo the fixed-height guarantee this grid exists for.
-    <div className="grid h-[3.875rem] grid-cols-[0.875rem_minmax(0,1fr)_auto_1.75rem_1.75rem] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
+    <div className="grid h-[3.875rem] grid-cols-[0.875rem_minmax(0,1fr)_auto_auto_1.75rem_1.75rem] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
       <span className="col-start-1 row-start-1 flex items-center">
         <StatusDot status={agent.status} />
       </span>
@@ -234,7 +249,27 @@ function AgentRow({
           ) : null}
         </span>
       </span>
-      <span className="col-start-4 row-start-1 flex size-7 items-center justify-center">
+      <span className="col-start-4 row-start-1 flex items-center justify-end">
+        {liveActivityAvailable ? (
+          <button
+            type="button"
+            aria-label={`Open live activity for ${agent.title}`}
+            onClick={() => liveActivityControls.onRequest(agent)}
+            className="flex h-6 items-center gap-1 rounded-sm px-1.5 text-[.65rem] text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Eye aria-hidden className="size-3" />
+            Live activity
+          </button>
+        ) : liveActivityEligible ? (
+          <span
+            aria-label={`Live activity unavailable for ${agent.title}`}
+            className="text-[.65rem] text-muted-foreground/60"
+          >
+            Live activity unavailable
+          </span>
+        ) : null}
+      </span>
+      <span className="col-start-5 row-start-1 flex size-7 items-center justify-center">
         {messageable ? (
           <button
             type="button"
@@ -246,7 +281,7 @@ function AgentRow({
           </button>
         ) : null}
       </span>
-      <span className="col-start-5 row-start-1 flex size-7 items-center justify-center">
+      <span className="col-start-6 row-start-1 flex size-7 items-center justify-center">
         {cancellable ? (
           <button
             type="button"
@@ -262,13 +297,13 @@ function AgentRow({
       </span>
       <span
         className={cn(
-          "col-start-2 col-end-6 row-start-2 block truncate text-xs",
+          "col-start-2 col-end-7 row-start-2 block truncate text-xs",
           agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
         )}
       >
         {activity ?? visuals.label}
       </span>
-      <span className="col-start-2 col-end-6 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
+      <span className="col-start-2 col-end-7 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
         {metadata.join(" · ")}
       </span>
       <span className="sr-only">{visuals.label}</span>
@@ -403,11 +438,13 @@ function PhaseSection({
   phase,
   cancelControls,
   messageControls,
+  liveActivityControls,
   defaultOpen = false,
 }: {
   phase: AgentPanelWorkflowGroup["phases"][number];
   cancelControls: AgentCancelControls;
   messageControls: AgentMessageControls;
+  liveActivityControls: AgentLiveActivityControls;
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen || phase.state === "running");
@@ -464,6 +501,7 @@ function PhaseSection({
               agent={member}
               cancelControls={cancelControls}
               messageControls={messageControls}
+              liveActivityControls={liveActivityControls}
             />
           ))
         : null}
@@ -478,6 +516,7 @@ function ExpandedWorkflowSection({
   threadId,
   cancelControls,
   messageControls,
+  liveActivityControls,
   onCollapse,
 }: {
   group: AgentPanelWorkflowGroup;
@@ -485,6 +524,7 @@ function ExpandedWorkflowSection({
   threadId: ThreadId | null;
   cancelControls: AgentCancelControls;
   messageControls: AgentMessageControls;
+  liveActivityControls: AgentLiveActivityControls;
   onCollapse: () => void;
 }) {
   const [scriptOpen, setScriptOpen] = useState(false);
@@ -545,6 +585,7 @@ function ExpandedWorkflowSection({
           phase={phase}
           cancelControls={cancelControls}
           messageControls={messageControls}
+          liveActivityControls={liveActivityControls}
           defaultOpen={!workflowIsLive(group)}
         />
       ))}
@@ -554,6 +595,7 @@ function ExpandedWorkflowSection({
           agent={member}
           cancelControls={cancelControls}
           messageControls={messageControls}
+          liveActivityControls={liveActivityControls}
         />
       ))}
       {group.phases.length === 0 && group.unphasedMembers.length === 0 ? (
@@ -561,6 +603,7 @@ function ExpandedWorkflowSection({
           agent={group.workflow}
           cancelControls={cancelControls}
           messageControls={messageControls}
+          liveActivityControls={liveActivityControls}
         />
       ) : null}
     </section>
@@ -621,12 +664,14 @@ function WorkflowSection({
   threadId,
   cancelControls,
   messageControls,
+  liveActivityControls,
 }: {
   group: AgentPanelWorkflowGroup;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
   cancelControls: AgentCancelControls;
   messageControls: AgentMessageControls;
+  liveActivityControls: AgentLiveActivityControls;
 }) {
   const [open, setOpen] = useState(() => workflowIsLive(group));
   return open ? (
@@ -636,11 +681,19 @@ function WorkflowSection({
       threadId={threadId}
       cancelControls={cancelControls}
       messageControls={messageControls}
+      liveActivityControls={liveActivityControls}
       onCollapse={() => setOpen(false)}
     />
   ) : (
     <CollapsedWorkflowSection group={group} onExpand={() => setOpen(true)} />
   );
+}
+
+function agentPanelAgents(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent> {
+  return [
+    ...model.directAgents,
+    ...model.workflows.flatMap((group) => [group.workflow, ...workflowMembers(group)]),
+  ];
 }
 
 const EMPTY_CANCELLING_AGENT_IDS: ReadonlySet<string> = new Set();
@@ -651,7 +704,9 @@ export function AgentsPanel({
   threadId = null,
   canCancelAgents = false,
   canMessageAgents = false,
+  canWatchAgentActivity = false,
   agentMessageScopeKey,
+  agentLiveActivityScopeKey,
   cancellingAgentIds = EMPTY_CANCELLING_AGENT_IDS,
   onCancelAgent,
   onMessageAgent,
@@ -661,12 +716,17 @@ export function AgentsPanel({
   threadId?: ThreadId | null;
   canCancelAgents?: boolean;
   canMessageAgents?: boolean;
+  canWatchAgentActivity?: boolean;
   agentMessageScopeKey?: string;
+  agentLiveActivityScopeKey?: string;
   cancellingAgentIds?: ReadonlySet<string>;
   onCancelAgent?: (agentId: string) => Promise<void>;
   onMessageAgent?: (agentId: string, message: string) => Promise<"delivered" | "queued" | null>;
 }) {
   const messageScopeKey = agentMessageScopeKey ?? JSON.stringify([environmentId, threadId]);
+  const liveActivityScopeKey = agentLiveActivityScopeKey ?? messageScopeKey;
+  const [liveActivitySelection, setLiveActivitySelection] =
+    useState<SessionAgentLiveActivitySelection | null>(null);
   const [confirmAgent, setConfirmAgent] = useState<RuntimeSubagent | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [messageAgent, setMessageAgent] = useState<RuntimeSubagent | null>(null);
@@ -688,6 +748,30 @@ export function AgentsPanel({
     setMessageError(null);
     setMessageFeedback(null);
   }, [messageScopeKey]);
+  const selectedLiveActivityAgent =
+    liveActivitySelection === null
+      ? null
+      : (agentPanelAgents(model).find((agent) => agent.id === liveActivitySelection.agentId) ??
+        null);
+  const liveActivityOpen = sessionAgentLiveActivitySelectionIsOpen({
+    selection: liveActivitySelection,
+    currentScopeKey: liveActivityScopeKey,
+    capabilityEnabled: canWatchAgentActivity && environmentId !== null && threadId !== null,
+    agent: selectedLiveActivityAgent,
+  });
+  useEffect(() => {
+    if (liveActivitySelection !== null && !liveActivityOpen) {
+      setLiveActivitySelection(null);
+    }
+  }, [liveActivityOpen, liveActivitySelection]);
+  const liveActivityControls: AgentLiveActivityControls = {
+    enabled: canWatchAgentActivity && environmentId !== null && threadId !== null,
+    onRequest: (agent) => {
+      if (!isActiveSubagentStatus(agent.status) || agent.kind === "workflow") return;
+      setLiveActivitySelection({ agentId: agent.id, scopeKey: liveActivityScopeKey });
+    },
+  };
+
   const cancelControls: AgentCancelControls = {
     enabled: canCancelAgents && onCancelAgent !== undefined,
     pendingIds: cancellingAgentIds,
@@ -796,6 +880,7 @@ export function AgentsPanel({
               threadId={threadId}
               cancelControls={cancelControls}
               messageControls={messageControls}
+              liveActivityControls={liveActivityControls}
             />
           ))}
           {model.directAgents.length > 0 ? (
@@ -809,6 +894,7 @@ export function AgentsPanel({
                   agent={agent}
                   cancelControls={cancelControls}
                   messageControls={messageControls}
+                  liveActivityControls={liveActivityControls}
                 />
               ))}
             </section>
@@ -827,6 +913,38 @@ export function AgentsPanel({
         </span>
         <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
       </footer>
+      <Dialog
+        open={liveActivityOpen}
+        onOpenChange={(open) => {
+          if (!open) setLiveActivitySelection(null);
+        }}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Live activity</DialogTitle>
+            <DialogDescription>
+              Live only. Assistant updates are a bounded replacement snapshot and are unavailable
+              after the agent exits.
+            </DialogDescription>
+          </DialogHeader>
+          {liveActivityOpen &&
+          selectedLiveActivityAgent !== null &&
+          environmentId !== null &&
+          threadId !== null ? (
+            <AgentLiveActivity
+              key={liveActivityScopeKey}
+              environmentId={environmentId}
+              threadId={threadId}
+              agentId={selectedLiveActivityAgent.id}
+            />
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLiveActivitySelection(null)}>
+              Close live activity
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
       <Dialog
         open={messageAgent !== null && messageStateScopeKey === messageScopeKey}
         onOpenChange={(open) => {

@@ -19,6 +19,11 @@ import {
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
+  canWatchSessionAgentLiveActivity,
+  sessionAgentLiveActivitySelectionIsOpen,
+  type SessionAgentLiveActivitySelection,
+} from "@t3tools/client-runtime/state/session-agent-live-activity";
+import {
   hasSessionInputQueueModes,
   sessionInputQueueCount,
   supportsSessionInputQueue,
@@ -136,6 +141,7 @@ import {
 } from "./sessionCompactionMenu";
 import { buildSessionAgentMenuActions, parseSessionAgentMenuAction } from "./sessionAgentMenu";
 import { buildSessionGoalMenuActions } from "./sessionGoalMenu";
+import { SessionAgentLiveActivityModal } from "./SessionAgentLiveActivityModal";
 
 const AGENT_MESSAGE_UNAVAILABLE_ERROR = "This agent is no longer available for direct messages.";
 
@@ -564,6 +570,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     sessionAgentReady &&
     props.selectedThread.session?.runtimeMode === "full-access" &&
     supportsSessionAgentMessage(activeSessionProviderStatus);
+  const canWatchSessionAgentActivity =
+    props.connectionState === "connected" &&
+    canWatchSessionAgentLiveActivity(activeSessionProviderStatus, props.selectedThread.session);
   const sessionAgentScopeKey = JSON.stringify([
     props.environmentId,
     props.selectedThread.id,
@@ -571,6 +580,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session?.runtimeMode,
   ]);
   const [cancellingAgentIds, setCancellingAgentIds] = useState<ReadonlySet<string>>(new Set());
+  const [liveActivitySelection, setLiveActivitySelection] =
+    useState<SessionAgentLiveActivitySelection | null>(null);
   const [messageAgentId, setMessageAgentId] = useState<string | null>(null);
   const [messageStateScopeKey, setMessageStateScopeKey] = useState(sessionAgentScopeKey);
   const [agentMessageDraft, setAgentMessageDraft] = useState("");
@@ -585,6 +596,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   }, [activeSessionAgents]);
   useEffect(() => {
     setCancellingAgentIds(new Set());
+    setLiveActivitySelection(null);
     setMessageStateScopeKey(sessionAgentScopeKey);
     setMessageAgentId(null);
     setAgentMessageDraft("");
@@ -620,12 +632,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         agents: activeSessionAgents,
         canMessage: canMessageSessionAgents,
         canCancel: canCancelSessionAgents,
+        canWatchLiveActivity: canWatchSessionAgentActivity,
         cancellingAgentIds,
       }),
     [
       activeSessionAgents,
       canCancelSessionAgents,
       canMessageSessionAgents,
+      canWatchSessionAgentActivity,
       cancellingAgentIds,
       sessionAgentScopeKey,
     ],
@@ -728,6 +742,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       if (action.scopeKey !== control.scopeKey) return;
       const agent = control.agents.find((candidate) => candidate.id === action.agentId);
       if (!agent || !isActiveSubagentStatus(agent.status)) return;
+      if (action.kind === "live-activity") {
+        if (!canWatchSessionAgentActivity || agent.kind === "workflow") return;
+        setLiveActivitySelection({ agentId: agent.id, scopeKey: control.scopeKey });
+        return;
+      }
       if (action.kind === "message") {
         if (!control.canMessage || !canMessageSessionAgent(control.provider, agent)) return;
         setMessageStateScopeKey(control.scopeKey);
@@ -751,8 +770,24 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         ],
       );
     },
-    [cancelSessionAgent],
+    [canWatchSessionAgentActivity, cancelSessionAgent],
   );
+  const selectedLiveActivityAgent =
+    liveActivitySelection === null
+      ? null
+      : (props.sessionAgents.find((candidate) => candidate.id === liveActivitySelection.agentId) ??
+        null);
+  const liveActivityOpen = sessionAgentLiveActivitySelectionIsOpen({
+    selection: liveActivitySelection,
+    currentScopeKey: sessionAgentScopeKey,
+    capabilityEnabled: canWatchSessionAgentActivity,
+    agent: selectedLiveActivityAgent,
+  });
+  useEffect(() => {
+    if (liveActivitySelection !== null && !liveActivityOpen) {
+      setLiveActivitySelection(null);
+    }
+  }, [liveActivityOpen, liveActivitySelection]);
   const messageAgent =
     messageAgentId === null || messageStateScopeKey !== sessionAgentScopeKey
       ? null
@@ -1645,7 +1680,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     onPressAction={({ nativeEvent }) => handleSessionAgentAction(nativeEvent.event)}
                   >
                     <ComposerToolbarTrigger
-                      accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. Message or stop an agent.`}
+                      accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. View live activity, message, or stop an agent.`}
                       icon="person.2"
                       label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
                     />
@@ -1748,6 +1783,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </Animated.View>
         ) : null}
       </Animated.View>
+      {liveActivityOpen && selectedLiveActivityAgent !== null ? (
+        <SessionAgentLiveActivityModal
+          key={sessionAgentScopeKey}
+          environmentId={props.environmentId}
+          threadId={props.selectedThread.id}
+          agentId={selectedLiveActivityAgent.id}
+          onClose={() => setLiveActivitySelection(null)}
+        />
+      ) : null}
       <Modal
         visible={messageAgent !== null}
         transparent

@@ -67,6 +67,10 @@
       "types": "./src/state/sessionAgentDepth.ts",
       "default": "./src/state/sessionAgentDepth.ts"
     },
+    "./state/session-agent-live-activity": {
+      "types": "./src/state/sessionAgentLiveActivity.ts",
+      "default": "./src/state/sessionAgentLiveActivity.ts"
+    },
     "./state/session-input-queue": {
       "types": "./src/state/sessionInputQueue.ts",
       "default": "./src/state/sessionInputQueue.ts"

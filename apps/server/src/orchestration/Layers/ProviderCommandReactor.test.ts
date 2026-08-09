@@ -336,6 +336,7 @@ describe("ProviderCommandReactor", () => {
       reloadSessionResources: () => unsupported(),
       cancelSessionAgent: () => unsupported(),
       messageSessionAgent: () => unsupported(),
+      watchSessionAgentActivity: () => Stream.empty,
       getSessionAgentDepth: () => unsupported(),
       setSessionAgentDepth: () => unsupported(),
       followUp: () => unsupported(),

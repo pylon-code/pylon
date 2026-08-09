@@ -51,6 +51,7 @@ import {
   RpcClientId,
   EnvironmentAuthorizationError,
   ProviderCancelSessionAgentError,
+  ProviderWatchSessionAgentActivityError,
   ProviderSessionAgentDepthError,
   ProviderSessionResourcesReloadError,
   ThreadId,
@@ -1511,6 +1512,30 @@ const makeWsRpcLayer = (
             providerService
               .messageSessionAgent(input)
               .pipe(Effect.mapError(toProviderMessageSessionAgentError)),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerWatchSessionAgentActivity]: (input) =>
+          observeRpcStream(
+            WS_METHODS.providerWatchSessionAgentActivity,
+            providerService.watchSessionAgentActivity(input).pipe(
+              Stream.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderUnsupportedError" ||
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "unsupported"
+                    : error._tag === "ProviderAdapterValidationError"
+                      ? error.reason === "busy"
+                        ? "limit-reached"
+                        : "agent-not-active"
+                      : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                          error._tag === "ProviderAdapterSessionClosedError" ||
+                          error._tag === "ProviderSessionNotFoundError" ||
+                          error._tag === "ProviderValidationError"
+                        ? "session-not-ready"
+                        : "request-failed";
+                return new ProviderWatchSessionAgentActivityError({ reason });
+              }),
+            ),
             { "rpc.aggregate": "provider" },
           ),
         [WS_METHODS.providerGetSessionAgentDepth]: (input) =>

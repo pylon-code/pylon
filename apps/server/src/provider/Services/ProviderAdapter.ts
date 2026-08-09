@@ -13,6 +13,7 @@ import type {
   ProviderCancelSessionAgentResult,
   ProviderFollowUpInput,
   ProviderMessageSessionAgentResult,
+  ProviderSessionAgentActivitySnapshot,
   ProviderDriverKind,
   ProviderSetSessionAutoCompactionInput,
   ProviderUserInputAnswers,
@@ -134,6 +135,12 @@ export interface ProviderAdapterShape<TError> {
     agentId: RuntimeTaskId,
     message: string,
   ) => Effect.Effect<ProviderMessageSessionAgentResult, TError>;
+
+  /** Stream bounded assistant-only replacement snapshots for one known active agent. */
+  readonly watchSessionAgentActivity?: (
+    threadId: ThreadId,
+    agentId: RuntimeTaskId,
+  ) => Stream.Stream<ProviderSessionAgentActivitySnapshot, TError>;
 
   /** Read one active session's recursive agent-spawn depth. */
   readonly getSessionAgentDepth?: (

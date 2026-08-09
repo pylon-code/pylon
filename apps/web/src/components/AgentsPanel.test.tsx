@@ -5,6 +5,8 @@ import type {
   AgentPanelModel,
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import type { ProviderSessionAgentActivitySnapshot } from "@t3tools/contracts";
+import { AgentLiveActivitySnapshot } from "./AgentLiveActivity";
 import { AgentsPanel } from "./AgentsPanel";
 
 function agent(id: string, title: string, status: RuntimeSubagent["status"]): RuntimeSubagent {
@@ -115,5 +117,53 @@ describe("AgentsPanel agent cancellation", () => {
       <AgentsPanel model={model} onMessageAgent={async () => "queued"} />,
     );
     expect(markup).not.toContain('aria-label="Message ');
+  });
+  it("offers provider-gated live activity only for active agents and labels settled rows unavailable", () => {
+    const markup = renderToStaticMarkup(
+      <AgentsPanel
+        model={model}
+        environmentId={"env" as never}
+        threadId={"thread" as never}
+        canWatchAgentActivity
+      />,
+    );
+    expect(markup).toContain('aria-label="Open live activity for Active reviewer"');
+    expect(markup).toContain("Live activity unavailable");
+
+    const gated = renderToStaticMarkup(
+      <AgentsPanel model={model} environmentId={"env" as never} threadId={"thread" as never} />,
+    );
+    expect(gated).not.toContain("Open live activity");
+    expect(gated).not.toContain("Live activity unavailable");
+  });
+
+  it("renders empty and bounded assistant-only replacement snapshots", () => {
+    const empty = renderToStaticMarkup(
+      <AgentLiveActivitySnapshot
+        snapshot={{ agentId: "canonical" as never, revision: 1, entries: [] }}
+      />,
+    );
+    expect(empty).toContain("No assistant activity yet.");
+
+    const snapshot = {
+      agentId: "canonical",
+      revision: 2,
+      entries: [{ speaker: "assistant", text: "Safe assistant update" }],
+      nativeId: "private-native-id",
+      path: "/private/path",
+      tool: "private tool data",
+      thinking: "private thinking",
+      usage: "private usage",
+      metadata: "private metadata",
+    } as unknown as ProviderSessionAgentActivitySnapshot;
+    const markup = renderToStaticMarkup(<AgentLiveActivitySnapshot snapshot={snapshot} />);
+    expect(markup).toContain("Safe assistant update");
+    expect(markup).toContain("Latest bounded snapshot · Live only");
+    expect(markup).not.toContain("private-native-id");
+    expect(markup).not.toContain("/private/path");
+    expect(markup).not.toContain("private tool data");
+    expect(markup).not.toContain("private thinking");
+    expect(markup).not.toContain("private usage");
+    expect(markup).not.toContain("private metadata");
   });
 });

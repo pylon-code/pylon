@@ -54,6 +54,7 @@ const AgentOperations = ForwardCompatibleArray(
   Schema.Literals([
     "observe",
     "hierarchy",
+    "live-activity",
     "spawn",
     "message",
     "steer",

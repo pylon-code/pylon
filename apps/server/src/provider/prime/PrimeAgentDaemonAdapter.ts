@@ -3,6 +3,9 @@ import {
   EventId,
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
+  PROVIDER_SESSION_AGENT_ACTIVITY_LIFETIME_MAX_CHARS,
+  PROVIDER_SESSION_AGENT_ACTIVITY_LIFETIME_MAX_UPDATES,
+  PROVIDER_SESSION_AGENT_ACTIVITY_MAX_CONCURRENT_WATCHERS,
   PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
   type PrimeAgentSettings,
   type ProviderRuntimeEvent,
@@ -18,6 +21,7 @@ import {
   type SessionCompactionUpdatedPayload,
   type SessionGoalUpdatedPayload,
   type SessionInputQueueUpdatedPayload,
+  type ProviderSessionAgentActivitySnapshot,
   type ProviderTurnStartResult,
   type ThreadId,
   TurnId,
@@ -244,6 +248,15 @@ interface PrimeAgentDaemonPendingApproval {
   readonly requestType: PrimeAgentManagedPermissionRequestType;
 }
 
+interface PrimeAgentDaemonSharedActivityStream {
+  readonly nativeActiveSessionId: string;
+  readonly stop: Deferred.Deferred<void, PrimeAgentDaemonSessionRuntimeError>;
+  readonly stream: Stream.Stream<
+    ReadonlyArray<ProviderSessionAgentActivitySnapshot["entries"][number]>,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
+}
+
 interface PrimeAgentDaemonSessionContext {
   readonly threadId: ThreadId;
   session: ProviderSession;
@@ -277,6 +290,9 @@ interface PrimeAgentDaemonSessionContext {
   readonly activeNativeChildren: Set<string>;
   readonly knownNativeChildren: Map<string, PrimeAgentDaemonChild>;
   readonly cancellationPendingNativeChildren: Set<string>;
+  readonly activityWatchStops: Map<string, Set<Deferred.Deferred<void, ProviderAdapterError>>>;
+  readonly sharedActivityStreams: Map<string, PrimeAgentDaemonSharedActivityStream>;
+  activeActivityWatcherCount: number;
   agentRosterProjected: boolean;
   resourceReloadCompletion: Deferred.Deferred<void> | undefined;
   activeCompactionScope: { readonly turnId?: TurnId | undefined } | undefined;
@@ -285,6 +301,70 @@ interface PrimeAgentDaemonSessionContext {
   stopRequested: boolean;
   stopped: boolean;
   exitEmitted: boolean;
+}
+
+type PrimeAgentDaemonChildDurableProjection = {
+  readonly status: PrimeAgentDaemonChild["status"];
+  readonly label: string;
+  readonly parentId: string | undefined;
+  readonly model: string | undefined;
+  readonly messageable: boolean;
+  readonly waiting: boolean;
+  readonly lastToolName: string | undefined;
+  readonly tokenCount: number | undefined;
+  readonly toolUseCount: number | undefined;
+  readonly terminalDurationMs: number | undefined;
+};
+
+function durableChildText(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+function durableChildCount(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function durableChildProjection(
+  child: PrimeAgentDaemonChild,
+): PrimeAgentDaemonChildDurableProjection {
+  const active = child.status === "queued" || child.status === "running";
+  return {
+    status: child.status,
+    label: durableChildText(child.label) ?? child.id,
+    parentId: durableChildText(child.parentId),
+    model: durableChildText(child.model),
+    messageable: active && durableChildText(child.activeSessionId) !== undefined,
+    waiting: child.status === "running" && child.activity?.kind === "waiting",
+    lastToolName:
+      child.status === "running" && child.activity?.kind !== "waiting"
+        ? durableChildText(child.activity?.toolName)
+        : undefined,
+    tokenCount: durableChildCount(child.tokenCount),
+    toolUseCount: durableChildCount(child.toolUseCount),
+    terminalDurationMs: active ? undefined : durableChildCount(child.durationMs),
+  };
+}
+
+function durableChildChanged(
+  previous: PrimeAgentDaemonChild | undefined,
+  next: PrimeAgentDaemonChild,
+): boolean {
+  if (previous === undefined) return true;
+  const left = durableChildProjection(previous);
+  const right = durableChildProjection(next);
+  return (
+    left.status !== right.status ||
+    left.label !== right.label ||
+    left.parentId !== right.parentId ||
+    left.model !== right.model ||
+    left.messageable !== right.messageable ||
+    left.waiting !== right.waiting ||
+    left.lastToolName !== right.lastToolName ||
+    left.tokenCount !== right.tokenCount ||
+    left.toolUseCount !== right.toolUseCount ||
+    left.terminalDurationMs !== right.terminalDurationMs
+  );
 }
 
 type TurnOutcome =
@@ -683,6 +763,67 @@ export function makePrimeAgentDaemonAdapter(
         }
       });
 
+    /** Must be called with the thread lock held. Reservations leave only in stream finalizers. */
+    const signalInactiveActivityWatchesLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      agentId?: string,
+    ) =>
+      Effect.gen(function* () {
+        const endpointChangedAgents = new Set<string>();
+        const sharedEntries =
+          agentId === undefined
+            ? [...context.sharedActivityStreams.entries()]
+            : ([[agentId, context.sharedActivityStreams.get(agentId)]] as const);
+        for (const [watchedAgentId, shared] of sharedEntries) {
+          if (shared === undefined) continue;
+          const child = context.knownNativeChildren.get(watchedAgentId);
+          const nativeActiveSessionId = child?.activeSessionId?.trim();
+          const childActive =
+            child !== undefined && (child.status === "queued" || child.status === "running");
+          const endpointChanged =
+            childActive && nativeActiveSessionId !== shared.nativeActiveSessionId;
+          const remainsWatchable = agentId === undefined && childActive && !endpointChanged;
+          if (remainsWatchable) continue;
+          if (endpointChanged) endpointChangedAgents.add(watchedAgentId);
+          context.sharedActivityStreams.delete(watchedAgentId);
+          if (!endpointChanged) {
+            yield* Deferred.succeed(shared.stop, undefined).pipe(Effect.ignore, Effect.forkDetach);
+          }
+        }
+
+        const watchEntries =
+          agentId === undefined
+            ? context.activityWatchStops.entries()
+            : ([[agentId, context.activityWatchStops.get(agentId)]] as const);
+        for (const [watchedAgentId, stops] of watchEntries) {
+          if (stops === undefined) continue;
+          const child = context.knownNativeChildren.get(watchedAgentId);
+          const endpointChanged = endpointChangedAgents.has(watchedAgentId);
+          if (
+            !endpointChanged &&
+            agentId === undefined &&
+            child !== undefined &&
+            (child.status === "queued" || child.status === "running")
+          ) {
+            continue;
+          }
+          for (const stop of stops) {
+            yield* (
+              endpointChanged
+                ? Deferred.fail(
+                    stop,
+                    new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "session/watch-agent-activity",
+                      detail: "The live agent activity endpoint changed.",
+                    }),
+                  )
+                : Deferred.succeed(stop, undefined)
+            ).pipe(Effect.ignore, Effect.forkDetach);
+          }
+        }
+      });
+
     const applyAgentRosterSnapshot = (
       context: PrimeAgentDaemonSessionContext,
       children: ReadonlyArray<PrimeAgentDaemonChild>,
@@ -690,6 +831,7 @@ export function makePrimeAgentDaemonAdapter(
     ) =>
       Effect.gen(function* () {
         const previousChildren = new Map(context.knownNativeChildren);
+        const initialProjection = !context.agentRosterProjected;
         const previousActive = new Map(
           [...previousChildren].filter(
             ([, child]) => child.status === "queued" || child.status === "running",
@@ -709,7 +851,11 @@ export function makePrimeAgentDaemonAdapter(
           } else {
             context.cancellationPendingNativeChildren.delete(authoritativeChild.id);
           }
-          if (publishChildren && !previousSettled) {
+          if (
+            publishChildren &&
+            !previousSettled &&
+            (initialProjection || durableChildChanged(previous, authoritativeChild))
+          ) {
             yield* publishDrafts(
               context,
               { _tag: "ChildUpdated", child: authoritativeChild },
@@ -730,6 +876,7 @@ export function makePrimeAgentDaemonAdapter(
             context.activeTurn,
           );
         }
+        yield* signalInactiveActivityWatchesLocked(context);
         context.agentRosterProjected = true;
         yield* syncAgentDepthSettableLocked(context);
         yield* updateCompactionProjectionLocked(context);
@@ -1483,14 +1630,17 @@ export function makePrimeAgentDaemonAdapter(
               if (previousSettled) {
                 publishEvent = false;
               } else {
+                publishEvent = durableChildChanged(previous, event.child);
                 context.knownNativeChildren.set(event.child.id, event.child);
               }
               const authoritative = context.knownNativeChildren.get(event.child.id) ?? event.child;
               if (authoritative.status === "queued" || authoritative.status === "running") {
                 context.activeNativeChildren.add(authoritative.id);
+                yield* signalInactiveActivityWatchesLocked(context);
               } else {
                 context.activeNativeChildren.delete(authoritative.id);
                 context.cancellationPendingNativeChildren.delete(authoritative.id);
+                yield* signalInactiveActivityWatchesLocked(context, authoritative.id);
               }
             }
             if (event._tag === "ThinkingLevelChanged") {
@@ -1603,6 +1753,12 @@ export function makePrimeAgentDaemonAdapter(
       Effect.gen(function* () {
         if (sessions.get(context.threadId) !== context || context.stopped) return;
         context.stopRequested = true;
+        for (const watchedAgentId of new Set([
+          ...context.activityWatchStops.keys(),
+          ...context.sharedActivityStreams.keys(),
+        ])) {
+          yield* signalInactiveActivityWatchesLocked(context, watchedAgentId);
+        }
         yield* clearPendingApprovalsLocked(context, true);
         yield* clearPendingInteractionsLocked(context, true);
         const turn = context.activeTurn;
@@ -2005,6 +2161,9 @@ export function makePrimeAgentDaemonAdapter(
               runtime.initialSnapshot.children.map((child) => [child.id, child]),
             ),
             cancellationPendingNativeChildren: new Set(),
+            activityWatchStops: new Map(),
+            sharedActivityStreams: new Map(),
+            activeActivityWatcherCount: 0,
             agentRosterProjected: false,
             resourceReloadCompletion: undefined,
             activeCompactionScope: runtime.initialSnapshot.state.isCompacting ? {} : undefined,
@@ -2795,6 +2954,156 @@ export function makePrimeAgentDaemonAdapter(
               method: "session/message-agent-delivery-unknown",
               detail: "Prime Agent message delivery could not be confirmed.",
             });
+          }),
+        ),
+      );
+
+    const watchSessionAgentActivity: NonNullable<
+      PrimeAgentAdapterShape["watchSessionAgentActivity"]
+    > = (threadId, agentId) =>
+      Stream.unwrap(
+        Effect.acquireRelease(
+          withThreadLock(
+            threadId,
+            Effect.gen(function* () {
+              const context = yield* requireSession(threadId);
+              if (
+                context.session.runtimeMode !== "full-access" ||
+                !context.runtime.watchAgentActivityAvailable
+              ) {
+                return yield* new ProviderAdapterUnsupportedOperationError({
+                  provider: PROVIDER,
+                  operation: "watchSessionAgentActivity",
+                });
+              }
+              const roster = yield* context.runtime.getAgentRoster.pipe(
+                Effect.mapError((error) =>
+                  runtimeOperationError(threadId, "session/get-agent-roster", error),
+                ),
+              );
+              yield* applyAgentRosterSnapshot(context, roster);
+              const known = context.knownNativeChildren.get(agentId);
+              const nativeActiveSessionId = known?.activeSessionId?.trim();
+              if (
+                known === undefined ||
+                (known.status !== "queued" && known.status !== "running") ||
+                nativeActiveSessionId === undefined ||
+                nativeActiveSessionId.length === 0 ||
+                context.cancellationPendingNativeChildren.has(agentId)
+              ) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "watchSessionAgentActivity",
+                  issue: "The agent is not an active watchable member of this provider session.",
+                  reason: "invalid-input",
+                });
+              }
+              if (
+                context.activeActivityWatcherCount >=
+                PROVIDER_SESSION_AGENT_ACTIVITY_MAX_CONCURRENT_WATCHERS
+              ) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "watchSessionAgentActivity",
+                  issue: "The provider session has reached its live activity watcher limit.",
+                  reason: "busy",
+                });
+              }
+              let shared = context.sharedActivityStreams.get(agentId);
+              if (shared !== undefined && shared.nativeActiveSessionId !== nativeActiveSessionId) {
+                context.sharedActivityStreams.delete(agentId);
+                yield* Deferred.succeed(shared.stop, undefined).pipe(
+                  Effect.ignore,
+                  Effect.forkDetach,
+                );
+                shared = undefined;
+              }
+              if (shared === undefined) {
+                const sharedStop = yield* Deferred.make<
+                  void,
+                  PrimeAgentDaemonSessionRuntimeError
+                >();
+                const stream = yield* context.runtime
+                  .watchAgentActivity(nativeActiveSessionId)
+                  .pipe(
+                    Stream.interruptWhen(Deferred.await(sharedStop)),
+                    Stream.share({ capacity: 1, strategy: "sliding", replay: 1 }),
+                    Effect.provideService(Scope.Scope, context.scope),
+                  );
+                shared = { nativeActiveSessionId, stop: sharedStop, stream };
+                context.sharedActivityStreams.set(agentId, shared);
+              }
+
+              const stop = yield* Deferred.make<void, ProviderAdapterError>();
+              const stops = context.activityWatchStops.get(agentId) ?? new Set();
+              stops.add(stop);
+              context.activityWatchStops.set(agentId, stops);
+              context.activeActivityWatcherCount += 1;
+              return { context, shared, stop };
+            }),
+          ),
+          ({ context, stop }) =>
+            withThreadLock(
+              threadId,
+              Effect.sync(() => {
+                const stops = context.activityWatchStops.get(agentId);
+                if (stops?.delete(stop) && context.activeActivityWatcherCount > 0) {
+                  context.activeActivityWatcherCount -= 1;
+                }
+                if (stops?.size === 0) context.activityWatchStops.delete(agentId);
+              }),
+            ).pipe(Effect.ignore),
+        ).pipe(
+          Effect.map(({ shared, stop }) => {
+            let revision = 0;
+            let lifetimeUpdates = 0;
+            let lifetimeCharacters = 0;
+            return shared.stream.pipe(
+              Stream.mapError((error) =>
+                error.reason === "incompatible-api"
+                  ? new ProviderAdapterUnsupportedOperationError({
+                      provider: PROVIDER,
+                      operation: "watchSessionAgentActivity",
+                    })
+                  : error.reason === "agent-not-active"
+                    ? new ProviderAdapterValidationError({
+                        provider: PROVIDER,
+                        operation: "watchSessionAgentActivity",
+                        issue: "The agent is no longer active.",
+                        reason: "invalid-input",
+                      })
+                    : runtimeOperationError(threadId, "session/watch-agent-activity", error),
+              ),
+              Stream.mapEffect((entries) => {
+                const snapshotCharacters = entries.reduce(
+                  (total, entry) => total + [...entry.text].length,
+                  0,
+                );
+                if (
+                  lifetimeUpdates >= PROVIDER_SESSION_AGENT_ACTIVITY_LIFETIME_MAX_UPDATES ||
+                  lifetimeCharacters + snapshotCharacters >
+                    PROVIDER_SESSION_AGENT_ACTIVITY_LIFETIME_MAX_CHARS
+                ) {
+                  return Effect.fail(
+                    new ProviderAdapterValidationError({
+                      provider: PROVIDER,
+                      operation: "watchSessionAgentActivity",
+                      issue: "The live activity watcher reached its lifetime limit.",
+                      reason: "busy",
+                    }),
+                  );
+                }
+                lifetimeUpdates += 1;
+                lifetimeCharacters += snapshotCharacters;
+                revision += 1;
+                return Effect.succeed({
+                  agentId,
+                  revision,
+                  entries,
+                } satisfies ProviderSessionAgentActivitySnapshot);
+              }),
+              Stream.interruptWhen(Deferred.await(stop)),
+            );
           }),
         ),
       );
@@ -3678,6 +3987,7 @@ export function makePrimeAgentDaemonAdapter(
       reloadSessionResources,
       cancelSessionAgent,
       messageSessionAgent,
+      watchSessionAgentActivity,
       getSessionAgentDepth,
       setSessionAgentDepth,
       followUp,

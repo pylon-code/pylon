@@ -4,8 +4,13 @@ import {
   PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
+  PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS,
+  PROVIDER_SESSION_AGENT_ACTIVITY_MAX_ENTRIES,
+  PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_BYTES,
+  PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_CHARS,
   PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
   RUNTIME_RESOURCE_NAME_MAX_CHARS,
+  type ProviderSessionAgentActivityEntry,
   type ProviderSessionAgentDepthSource,
   type SessionAgentDepthUpdatedPayload,
   type SessionInputQueueDeliveryMode,
@@ -13,6 +18,7 @@ import {
   type SessionResourcesUpdatedPayload,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
@@ -44,6 +50,78 @@ import {
 export { PRIME_AGENT_DAEMON_RESUME_CURSOR } from "./PrimeAgentResumeCursor.ts";
 
 const COMMAND_TIMEOUT_MS = 30_000;
+export const PRIME_AGENT_LIVE_ACTIVITY_REFRESH_DELAY_MS = 500;
+const PRIME_AGENT_LIVE_ACTIVITY_PENDING_EVENT_MAX = 64;
+const liveActivityTextEncoder = new TextEncoder();
+// Reserve room for the canonical agent id, revision, entry envelopes and JSON escaping.
+const LIVE_ACTIVITY_TEXT_BYTE_BUDGET = PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_BYTES - 5_536;
+
+function truncateLiveActivityText(text: string, maxCharacters: number, maxBytes: number): string {
+  let characters = 0;
+  let bytes = 0;
+  let output = "";
+  for (const character of text) {
+    const encodedCharacter = JSON.stringify(character);
+    const characterBytes = liveActivityTextEncoder.encode(encodedCharacter.slice(1, -1)).byteLength;
+    if (characters >= maxCharacters || bytes + characterBytes > maxBytes) break;
+    output += character;
+    characters += 1;
+    bytes += characterBytes;
+  }
+  return output;
+}
+
+function visibleAssistantText(message: unknown): string | undefined {
+  if (
+    !Predicate.isObject(message) ||
+    message.role !== "assistant" ||
+    !Array.isArray(message.content)
+  ) {
+    return undefined;
+  }
+  const text = message.content
+    .filter(
+      (part) => Predicate.isObject(part) && part.type === "text" && Predicate.isString(part.text),
+    )
+    .map((part) => part.text as string)
+    .join("");
+  const trimmed = text.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Privacy boundary for Prime's AgentMessage union. Only assistant text content
+ * survives; roles, tool calls/results, thinking, metadata, ids and timestamps
+ * are discarded before a value can enter a Pylon stream.
+ */
+export function sanitizePrimeAgentLiveActivityMessages(
+  messages: unknown,
+): ReadonlyArray<ProviderSessionAgentActivityEntry> {
+  if (!Array.isArray(messages)) return [];
+  const entries: Array<ProviderSessionAgentActivityEntry> = [];
+  let remainingCharacters = PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_CHARS;
+  let remainingBytes = LIVE_ACTIVITY_TEXT_BYTE_BUDGET;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (entries.length >= PROVIDER_SESSION_AGENT_ACTIVITY_MAX_ENTRIES) break;
+    const text = visibleAssistantText(messages[index]);
+    if (text === undefined) continue;
+    const bounded = truncateLiveActivityText(
+      text,
+      Math.min(PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS, remainingCharacters),
+      remainingBytes,
+    );
+    if (bounded.length === 0) break;
+    const characterCount = [...bounded].length;
+    const encodedText = JSON.stringify(bounded);
+    const byteCount = liveActivityTextEncoder.encode(encodedText.slice(1, -1)).byteLength;
+    entries.unshift({ speaker: "assistant", text: bounded });
+    remainingCharacters -= characterCount;
+    remainingBytes -= byteCount;
+    if (remainingCharacters === 0 || remainingBytes === 0) break;
+  }
+  return entries;
+}
 
 const thinkingLevelSchema = Schema.Literals([
   "off",
@@ -288,6 +366,7 @@ const runtimeErrorOperation = Schema.Literals([
   "get-agent-roster",
   "cancel-agent",
   "message-agent",
+  "watch-agent-activity",
   "prompt",
   "steer",
   "follow-up",
@@ -313,6 +392,7 @@ const runtimeErrorReason = Schema.Literals([
   "request-failed",
   "request-timed-out",
   "invalid-response",
+  "agent-not-active",
   "disposed",
 ]);
 
@@ -463,6 +543,14 @@ export interface PrimeAgentDaemonSessionRuntime {
     activeSessionId: string,
     message: string,
   ) => Effect.Effect<"delivered" | "queued", PrimeAgentDaemonSessionRuntimeError>;
+  readonly watchAgentActivityAvailable: boolean;
+  /** Opens a separate public watcher connection and emits sanitized replacement entries only. */
+  readonly watchAgentActivity: (
+    activeSessionId: string,
+  ) => Stream.Stream<
+    ReadonlyArray<ProviderSessionAgentActivityEntry>,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
   readonly events: Stream.Stream<PrimeDaemonEvent, never>;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
@@ -1463,6 +1551,345 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return receipt.value.deliveryStatus;
     });
 
+    const watchAgentActivityAvailable =
+      input.requiredExtension === undefined && Predicate.isFunction(connection!.watchSession);
+
+    const watchAgentActivity: PrimeAgentDaemonSessionRuntime["watchAgentActivity"] = (
+      rawActiveSessionId,
+    ) =>
+      Stream.callback<
+        ReadonlyArray<ProviderSessionAgentActivityEntry>,
+        PrimeAgentDaemonSessionRuntimeError
+      >((queue) =>
+        Effect.acquireRelease(
+          Effect.gen(function* () {
+            yield* ensureOpen("watch-agent-activity");
+            const activeSessionId = yield* validateNonEmpty(
+              "watch-agent-activity",
+              "Target active session id",
+              rawActiveSessionId,
+            );
+            if (input.requiredExtension !== undefined) {
+              return yield* runtimeError(
+                "watch-agent-activity",
+                "incompatible-api",
+                "Live agent activity is unavailable in supervised sessions.",
+              );
+            }
+            const method = connection!.watchSession;
+            if (!Predicate.isFunction(method)) {
+              return yield* runtimeError(
+                "watch-agent-activity",
+                "incompatible-api",
+                "The installed Prime Agent connection does not support live agent activity.",
+              );
+            }
+            const watcher = yield* Effect.tryPromise({
+              try: () => method.call(connection, activeSessionId),
+              catch: () =>
+                runtimeError(
+                  "watch-agent-activity",
+                  "request-failed",
+                  "Could not attach the live agent activity watcher.",
+                ),
+            });
+            if (
+              !Predicate.isObject(watcher) ||
+              !Predicate.isFunction(watcher.getMessages) ||
+              !Predicate.isFunction(watcher.subscribe) ||
+              !Predicate.isFunction(watcher.close)
+            ) {
+              return yield* runtimeError(
+                "watch-agent-activity",
+                "request-failed",
+                "Could not attach the live agent activity watcher.",
+              );
+            }
+
+            let closed = false;
+            let initialized = false;
+            let pendingEventsTerminal = false;
+            const pendingWatchEvents: Array<unknown> = [];
+            let streamingMessageActive = false;
+            let latestEntries: ReadonlyArray<ProviderSessionAgentActivityEntry> | undefined;
+            let lastPublishedEntries: ReadonlyArray<ProviderSessionAgentActivityEntry> | undefined;
+            const pendingEntries =
+              yield* Queue.sliding<ReadonlyArray<ProviderSessionAgentActivityEntry>>(1);
+            const entriesChanged = (next: ReadonlyArray<ProviderSessionAgentActivityEntry>) =>
+              lastPublishedEntries === undefined ||
+              next.length !== lastPublishedEntries.length ||
+              next.some((entry, index) => entry.text !== lastPublishedEntries?.[index]?.text);
+            const offerEntries = (next: ReadonlyArray<ProviderSessionAgentActivityEntry>) =>
+              Effect.gen(function* () {
+                latestEntries = next;
+                if (closed || !entriesChanged(next)) return;
+                lastPublishedEntries = next;
+                yield* Queue.offer(queue, next);
+              });
+            const queueEntries = (next: ReadonlyArray<ProviderSessionAgentActivityEntry>) =>
+              Effect.gen(function* () {
+                latestEntries = next;
+                if (!closed) yield* Queue.offer(pendingEntries, next);
+              });
+            const failActivity = (error: PrimeAgentDaemonSessionRuntimeError) =>
+              Effect.gen(function* () {
+                if (closed) return;
+                closed = true;
+                yield* Queue.fail(queue, error);
+              });
+            const replacementEntries = (event: Record<string, unknown>) => {
+              const state = Predicate.isObject(event.state) ? event.state : undefined;
+              const snapshot = Predicate.isObject(event.snapshot) ? event.snapshot : undefined;
+              const replacement = state ?? snapshot;
+              const messages = Array.isArray(event.messages)
+                ? event.messages
+                : replacement !== undefined && Array.isArray(replacement.messages)
+                  ? replacement.messages
+                  : undefined;
+              if (messages === undefined) return undefined;
+              const streamingMessage =
+                replacement !== undefined && "streamingMessage" in replacement
+                  ? replacement.streamingMessage
+                  : event.streamingMessage;
+              const visibleStreaming = sanitizePrimeAgentLiveActivityMessages([
+                streamingMessage,
+              ])[0];
+              return {
+                entries:
+                  visibleStreaming === undefined
+                    ? sanitizePrimeAgentLiveActivityMessages(messages)
+                    : sanitizePrimeAgentLiveActivityMessages([
+                        ...messages,
+                        {
+                          role: "assistant",
+                          content: [{ type: "text", text: visibleStreaming.text }],
+                        },
+                      ]),
+                streaming: visibleStreaming !== undefined,
+              };
+            };
+            const updateStreamingMessage = (
+              message: unknown,
+              phase: "start" | "update" | "end",
+            ) => {
+              const visible = sanitizePrimeAgentLiveActivityMessages([message]);
+              if (visible.length === 0) return undefined;
+              const committed = [...(latestEntries ?? [])];
+              if (
+                phase === "end" &&
+                !streamingMessageActive &&
+                committed.at(-1)?.text === visible[0]?.text
+              ) {
+                streamingMessageActive = false;
+                return committed;
+              }
+              if (streamingMessageActive && phase !== "start") committed.pop();
+              const next = sanitizePrimeAgentLiveActivityMessages([
+                ...committed.map((entry) => ({
+                  role: "assistant",
+                  content: [{ type: "text", text: entry.text }],
+                })),
+                message,
+              ]);
+              streamingMessageActive = phase !== "end";
+              return next;
+            };
+            const handleWatchEvent = (event: unknown) =>
+              Effect.gen(function* () {
+                if (closed || !Predicate.isObject(event) || !Predicate.isString(event.type)) return;
+                if (event.type === "closed") {
+                  yield* failActivity(
+                    runtimeError(
+                      "watch-agent-activity",
+                      "request-failed",
+                      "The live agent activity watcher closed unexpectedly.",
+                    ),
+                  );
+                  return;
+                }
+                if (event.type === "session_replaced" || event.type === "session_resynced") {
+                  const replacement = replacementEntries(event);
+                  if (replacement !== undefined) {
+                    yield* Queue.poll(pendingEntries);
+                    streamingMessageActive = replacement.streaming;
+                    yield* offerEntries(replacement.entries);
+                  }
+                  return;
+                }
+                if (event.type !== "session_event" || !Predicate.isObject(event.event)) return;
+                const nativeEvent = event.event;
+                if (
+                  nativeEvent.type === "message_start" ||
+                  nativeEvent.type === "message_update" ||
+                  nativeEvent.type === "message_end"
+                ) {
+                  const phase =
+                    nativeEvent.type === "message_start"
+                      ? "start"
+                      : nativeEvent.type === "message_update"
+                        ? "update"
+                        : "end";
+                  const next = updateStreamingMessage(nativeEvent.message, phase);
+                  if (next === undefined) return;
+                  if (phase === "end") {
+                    yield* Queue.poll(pendingEntries);
+                    yield* offerEntries(next);
+                  } else {
+                    yield* queueEntries(next);
+                  }
+                }
+              });
+
+            const safeAssistantMessage = (text: string) => ({
+              role: "assistant",
+              content: [{ type: "text", text }],
+            });
+            const sanitizePendingWatchEvent = (event: unknown): unknown => {
+              if (!Predicate.isObject(event) || !Predicate.isString(event.type)) return undefined;
+              if (event.type === "closed") return { type: "closed" };
+              if (event.type === "session_replaced" || event.type === "session_resynced") {
+                const replacement = replacementEntries(event);
+                if (replacement === undefined) return { type: event.type };
+                const committed = replacement.streaming
+                  ? replacement.entries.slice(0, -1)
+                  : replacement.entries;
+                const streaming = replacement.streaming ? replacement.entries.at(-1) : undefined;
+                return {
+                  type: event.type,
+                  messages: committed.map((entry) => safeAssistantMessage(entry.text)),
+                  ...(streaming === undefined
+                    ? {}
+                    : { streamingMessage: safeAssistantMessage(streaming.text) }),
+                };
+              }
+              if (event.type !== "session_event" || !Predicate.isObject(event.event)) {
+                return undefined;
+              }
+              const nativeEvent = event.event;
+              if (
+                nativeEvent.type !== "message_start" &&
+                nativeEvent.type !== "message_update" &&
+                nativeEvent.type !== "message_end"
+              ) {
+                return undefined;
+              }
+              const visible = sanitizePrimeAgentLiveActivityMessages([nativeEvent.message]);
+              return {
+                type: "session_event",
+                event: {
+                  type: nativeEvent.type,
+                  ...(visible[0] === undefined
+                    ? {}
+                    : { message: safeAssistantMessage(visible[0].text) }),
+                },
+              };
+            };
+
+            const unsubscribeResult = yield* Effect.try({
+              try: () =>
+                watcher.subscribe(async (event) => {
+                  if (!initialized) {
+                    if (pendingEventsTerminal) return;
+                    const pending = sanitizePendingWatchEvent(event);
+                    if (pending === undefined) return;
+                    if (pendingWatchEvents.length >= PRIME_AGENT_LIVE_ACTIVITY_PENDING_EVENT_MAX) {
+                      pendingEventsTerminal = true;
+                      await runPromise(
+                        failActivity(
+                          runtimeError(
+                            "watch-agent-activity",
+                            "request-failed",
+                            "Too many live agent activity events arrived during initialization.",
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+                    pendingWatchEvents.push(pending);
+                    if (Predicate.isObject(pending) && pending.type === "closed") {
+                      pendingEventsTerminal = true;
+                    }
+                    return;
+                  }
+                  await runPromise(handleWatchEvent(event));
+                }),
+              catch: () =>
+                runtimeError(
+                  "watch-agent-activity",
+                  "request-failed",
+                  "Could not subscribe to live agent activity.",
+                ),
+            }).pipe(
+              Effect.onError(() => Effect.promise(() => watcher.close().catch(() => undefined))),
+            );
+            if (!Predicate.isFunction(unsubscribeResult)) {
+              yield* Effect.promise(() => watcher.close().catch(() => undefined));
+              return yield* runtimeError(
+                "watch-agent-activity",
+                "request-failed",
+                "Could not subscribe to live agent activity.",
+              );
+            }
+
+            const initialMessages = yield* Effect.tryPromise({
+              try: () => watcher.getMessages(),
+              catch: () =>
+                runtimeError(
+                  "watch-agent-activity",
+                  "request-failed",
+                  "Could not read initial live agent activity.",
+                ),
+            }).pipe(
+              Effect.onError(() =>
+                Effect.promise(async () => {
+                  unsubscribeResult();
+                  await watcher.close().catch(() => undefined);
+                }),
+              ),
+            );
+            const initialEntries = sanitizePrimeAgentLiveActivityMessages(initialMessages);
+            latestEntries = initialEntries;
+            lastPublishedEntries = initialEntries;
+            if (!closed) yield* Queue.offer(queue, initialEntries);
+            while (pendingWatchEvents.length > 0) {
+              if (closed) break;
+              const batch = pendingWatchEvents.splice(0, pendingWatchEvents.length);
+              for (const event of batch) {
+                if (closed) break;
+                yield* handleWatchEvent(event);
+              }
+            }
+            initialized = true;
+
+            const refreshFiber = yield* Effect.gen(function* () {
+              while (true) {
+                const first = yield* Queue.take(pendingEntries);
+                yield* Effect.sleep(PRIME_AGENT_LIVE_ACTIVITY_REFRESH_DELAY_MS);
+                const remaining = yield* Queue.poll(pendingEntries);
+                if (closed) return;
+                yield* offerEntries(Option.getOrElse(remaining, () => first));
+              }
+            }).pipe(Effect.forkScoped({ startImmediately: true }));
+
+            return {
+              watcher,
+              unsubscribe: unsubscribeResult,
+              refreshFiber,
+              close: () => {
+                closed = true;
+              },
+            };
+          }),
+          ({ watcher, unsubscribe, refreshFiber, close }) =>
+            Effect.gen(function* () {
+              close();
+              yield* Fiber.interrupt(refreshFiber);
+              unsubscribe();
+              yield* Effect.promise(() => watcher.close().catch(() => undefined));
+            }),
+        ).pipe(Effect.catch((error) => Queue.fail(queue, error))),
+      );
+
     const prompt = Effect.fn("PrimeAgentDaemonSessionRuntime.prompt")(function* (
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
@@ -1830,6 +2257,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       agentMessageAvailable,
       cancelAgent,
       messageAgent,
+      watchAgentActivityAvailable,
+      watchAgentActivity,
       events: Stream.fromQueue(eventQueue),
       prompt,
       steer,

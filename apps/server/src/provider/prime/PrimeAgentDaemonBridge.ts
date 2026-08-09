@@ -87,6 +87,12 @@ export interface PrimeAgentDaemonClientConstructor {
   new (socketPath: string): PrimeAgentDaemonClient;
 }
 
+export interface PrimeAgentDaemonSessionWatcher {
+  readonly getMessages: () => Promise<ReadonlyArray<unknown>>;
+  readonly subscribe: (listener: (event: unknown) => void | Promise<void>) => () => void;
+  readonly close: () => Promise<void>;
+}
+
 export interface PrimeAgentDaemonAgentConnection {
   readonly subscribe: (listener: (event: unknown) => void | Promise<void>) => () => void;
   readonly getInitialSnapshot: () => Promise<unknown>;
@@ -107,6 +113,10 @@ export interface PrimeAgentDaemonAgentConnection {
   readonly abortAndClearQueue?: () => Promise<unknown>;
   readonly cancelRlmChild?: (childId: string) => Promise<unknown>;
   readonly sendAgentMessage?: (targetActiveSessionId: string, message: string) => Promise<unknown>;
+  /** Public read-only attachment to another live session; never receives client input directly. */
+  readonly watchSession?: (
+    activeSessionId: string,
+  ) => Promise<PrimeAgentDaemonSessionWatcher | undefined>;
   readonly getQueue?: () => Promise<unknown>;
   readonly clearQueue?: () => Promise<unknown>;
   readonly setSteeringMode?: (mode: PrimeAgentDaemonQueueMode) => Promise<unknown>;
