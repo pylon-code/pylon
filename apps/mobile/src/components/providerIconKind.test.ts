@@ -17,4 +17,8 @@ describe("mobile provider icon selection", () => {
   it("reserves the Codex mark for Codex", () => {
     expect(providerIconKind("codex")).toBe("codex");
   });
+
+  it("selects the Jcode terminal mark explicitly", () => {
+    expect(providerIconKind("jcode")).toBe("jcode");
+  });
 });

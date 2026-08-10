@@ -39,6 +39,32 @@ describe("ProviderSettingsForm helpers", () => {
     });
   });
 
+  it("exposes Jcode as an Early Access driver with exactly its two settings", () => {
+    const jcode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("jcode")];
+
+    expect(jcode).toMatchObject({ label: "Jcode", badgeLabel: "Early Access" });
+    expect(deriveProviderSettingsFields(jcode!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "inheritLogins",
+    ]);
+  });
+
+  it("renders the Jcode credential choice as a switch with its quota warning", () => {
+    const jcode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("jcode")];
+    const fields = deriveProviderSettingsFields(jcode!);
+
+    expect(fields.find((field) => field.key === "binaryPath")).toMatchObject({
+      label: "Binary path",
+      placeholder: "jcode",
+    });
+    expect(fields.find((field) => field.key === "inheritLogins")).toMatchObject({
+      label: "Inherit provider logins",
+      control: "switch",
+      description:
+        "Share recognized host credential files with this private Jcode instance. This can spend the connected accounts' quota.",
+    });
+  });
+
   it("sources labels and descriptions from schema annotations", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();

@@ -2,6 +2,7 @@ import {
   classifyTaskAgentKind,
   EventId,
   MessageId,
+  ProviderDriverKind,
   ThreadId,
   TurnId,
   type OrchestrationThreadActivity,
@@ -9,6 +10,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  PROVIDER_OPTIONS,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   deriveTurnPlans,
@@ -1970,5 +1972,24 @@ describe("rerun workflows", () => {
     const spawnRows = entries.filter((entry) => entry.agentSpawn !== undefined);
     expect(spawnRows.map((row) => row.agentSpawn!.workflowId)).toEqual(["wf-run1", "wf-run2"]);
     expect(spawnRows.map((row) => row.turnId)).toEqual(["turn-1", "turn-2"]);
+  });
+});
+
+describe("PROVIDER_OPTIONS", () => {
+  // This list is the static presentation source `providerIconUtils` filters
+  // for the model picker's provider rail. It is deliberately not the
+  // authoritative configured-instance source; that stays the server snapshot.
+  it("presents Jcode with its product name and marks it available", () => {
+    expect(PROVIDER_OPTIONS).toContainEqual({
+      value: ProviderDriverKind.make("jcode"),
+      label: "Jcode",
+      available: true,
+      pickerSidebarBadge: "new",
+    });
+  });
+
+  it("lists every provider exactly once", () => {
+    const values = PROVIDER_OPTIONS.map((option) => option.value);
+    expect(new Set(values).size).toBe(values.length);
   });
 });

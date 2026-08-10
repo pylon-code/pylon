@@ -349,3 +349,73 @@ describe("instance-scoped model selection", () => {
     });
   });
 });
+
+describe("Jcode model selection", () => {
+  const jcode = ProviderDriverKind.make("jcode");
+
+  // Jcode has no client-side default model table; the daemon reports its own
+  // catalog. These cases prove selection works off that snapshot alone, with
+  // no Jcode branch anywhere in the selection helpers.
+  it("offers the server-reported Jcode catalog to the model picker", () => {
+    const entry = deriveProviderInstanceEntries([
+      provider({
+        provider: jcode,
+        instanceId: "jcode",
+        models: ["claude-opus-5", "claude-fable-5"],
+      }),
+    ])[0]!;
+
+    expect(
+      getAppModelOptionsForInstance(DEFAULT_UNIFIED_SETTINGS, entry).map((o) => o.slug),
+    ).toEqual(["claude-opus-5", "claude-fable-5"]);
+  });
+
+  it("accepts a Jcode instance and one of its server-provided models", () => {
+    const providers = [
+      provider({
+        provider: jcode,
+        instanceId: "jcode",
+        models: ["claude-opus-5", "claude-fable-5"],
+      }),
+    ];
+
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("jcode"),
+        DEFAULT_UNIFIED_SETTINGS,
+        providers,
+        "claude-fable-5",
+      ),
+    ).toBe("claude-fable-5");
+  });
+
+  // The legacy per-kind settings bucket does not carry a `customModels` entry
+  // for every driver. Reading it must degrade to "no custom models" rather
+  // than assume the field exists on every driver's settings shape.
+  it("contributes no custom models for a driver with no legacy custom-model bucket", () => {
+    const entry = deriveProviderInstanceEntries([
+      provider({ provider: jcode, instanceId: "jcode", models: ["claude-opus-5"] }),
+    ])[0]!;
+
+    expect(
+      getAppModelOptionsForInstance(DEFAULT_UNIFIED_SETTINGS, entry).filter(
+        (option) => option.isCustom,
+      ),
+    ).toEqual([]);
+  });
+
+  it("falls back to the instance's own first reported model, not a hardcoded default", () => {
+    const providers = [
+      provider({ provider: jcode, instanceId: "jcode", models: ["claude-opus-5"] }),
+    ];
+
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("jcode"),
+        DEFAULT_UNIFIED_SETTINGS,
+        providers,
+        "a-model-this-daemon-does-not-serve",
+      ),
+    ).toBe("claude-opus-5");
+  });
+});

@@ -42,6 +42,7 @@ function providerDisplayLabel(provider: {
   if (provider.driver === "codex") return "Codex";
   if (provider.driver === "claudeAgent") return "Claude";
   if (provider.driver === "primeAgent") return "Prime Agent";
+  if (provider.driver === "jcode") return "Jcode";
   return provider.instanceId;
 }
 

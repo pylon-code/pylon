@@ -3,6 +3,7 @@ import {
   CodexSettings,
   CursorSettings,
   GrokSettings,
+  JcodeSettings,
   OpenCodeSettings,
   PrimeAgentSettings,
   ProviderDriverKind,
@@ -13,6 +14,7 @@ import {
   CursorIcon,
   GrokIcon,
   type Icon,
+  JcodeIcon,
   OpenAI,
   OpenCodeIcon,
   PrimeAgentIcon,
@@ -82,6 +84,13 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     icon: PrimeAgentIcon,
     badgeLabel: "Early Access",
     settingsSchema: PrimeAgentSettings,
+  },
+  {
+    value: ProviderDriverKind.make("jcode"),
+    label: "Jcode",
+    icon: JcodeIcon,
+    badgeLabel: "Early Access",
+    settingsSchema: JcodeSettings,
   },
 ];
 

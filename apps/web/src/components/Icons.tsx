@@ -687,6 +687,30 @@ export const PrimeAgentIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+/**
+ * Jcode's provider mark: a rounded terminal frame containing `>_`.
+ *
+ * Deliberately a small monochrome line drawing rather than a brand raster.
+ * This is an Early Access *provider* marker rendered at 16-20px in pickers,
+ * settings rows, and the sidebar — not a Pylon product mark — so it inherits
+ * `currentColor` and stays legible in both themes with no icon pipeline.
+ */
+export const JcodeIcon: Icon = (props) => (
+  <svg
+    {...props}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.6}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <rect x="2.75" y="4.25" width="18.5" height="15.5" rx="3.5" />
+    <path d="M7.5 9.75 10.25 12 7.5 14.25" />
+    <path d="M12.75 15h4" />
+  </svg>
+);
+
 export const ACPRegistryIcon: Icon = ({ className, ...props }) => (
   <svg
     {...props}

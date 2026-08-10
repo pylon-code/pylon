@@ -7,7 +7,7 @@ orchestration layer does not know which one is behind a thread.
 
 ## Built-in drivers
 
-[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with six entries:
+[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with seven entries:
 
 | Driver kind   | Driver source                           |
 | ------------- | --------------------------------------- |
@@ -17,6 +17,7 @@ orchestration layer does not know which one is behind a thread.
 | `grok`        | [`Drivers/GrokDriver.ts`][grok]         |
 | `opencode`    | [`Drivers/OpenCodeDriver.ts`][opencode] |
 | `primeAgent`  | [`Drivers/PrimeAgentDriver.ts`][prime]  |
+| `jcode`       | [`Drivers/JcodeDriver.ts`][jcode]       |
 
 Each driver declares its `driverKind`, a `configSchema`, and a `create` function that builds an
 adapter in a child scope. Adapter implementations live beside them in
@@ -117,6 +118,64 @@ so approved IPython and shell calls retain host access. ACP remains an explicit
 compatibility fallback for custom launch arguments or failed daemon setup. The fallback snapshot
 strips daemon-only model options and capabilities rather than rendering controls ACP would ignore.
 
+Jcode is an Early Access driver over the public Jcode SDK's protocol v1. One private daemon belongs
+to a provider instance, launched with a per-instance Pylon-owned Jcode home and a sanitized
+environment; each Pylon thread owns one durable native session bound through a server-private
+sidecar, and the client-visible continuation cursor stays opaque. Native session ids, socket paths,
+and daemon identifiers terminate at the adapter boundary. The driver probes the configured
+executable exactly once at create time with `["--version"]` and reuses that observation as the
+initial snapshot, so a disabled instance spawns nothing and a failed launch publishes
+`status: "error"` with an empty catalog rather than a shadow `ready`. Models come from the attached
+session, so there is no hardcoded default; unavailable routes are dropped from the catalog rather
+than offered.
+
+Jcode's execution policy is `full-access` only, published as snapshot data rather than as a driver
+branch in orchestration: `JcodeProvider` declares `supportedRuntimeModes: ["full-access"]`, the
+registry derives routing information from that snapshot, and `ProviderService` rejects an
+unsupported mode at both `startSession` and `recoverSessionForThread`. Reconnect is deliberately
+disabled — protocol v1 cannot replay, so a resurrected stream would present a hole as continuity;
+`session.exited` retires the session so the thread is immediately startable again. Optional adapter
+members Jcode cannot honor are omitted rather than stubbed, because absence is the repo's
+established unsupported signal, and background text generation fails with a typed unavailable error
+because SDK v1 cannot disable host tools for a structured run.
+
+Reject-versus-coerce is a deliberate split, not an accident. The server _rejects_: an unsupported
+runtime mode fails at both `ProviderService.startSession` and `recoverSessionForThread`, before any
+MCP credential is issued or any provider process is engaged. Clients _coerce_: the generic
+`resolveServerProviderRuntimeMode` helper in contracts reads `supportedRuntimeModes` off the live
+snapshot and resolves a selection to a supported one, so a normal user-driven start does not reach
+the server's refusal. The helper names no driver, and Jcode adds no branch to it.
+
+The coerce half is currently pinned on mobile only, through `resolveModelSelectionRuntimeMode` in
+`apps/mobile/src/lib/modelOptions.ts`. Web does not consult `supportedRuntimeModes` before starting
+a session today, so on web a stale or unsupported persisted mode surfaces as the server's typed
+refusal rather than as a narrowed control. Rejection is the correct backstop either way — for stale
+persisted state and for a provider that narrows its policy after a choice was made — but the web
+half of the coercion story is a known gap, not a design claim.
+
+The [Jcode SDK blocker ledger](jcode-sdk-blockers.md) records the exact SDK requirements that must
+land before each withheld capability can be enabled.
+
+## Client presentation
+
+Clients learn about a provider through generic shared metadata plus the server snapshot; adding a
+driver to a client is registration, not new rendering code.
+
+- Web: `apps/web/src/components/settings/providerDriverMeta.ts` carries label, icon, optional
+  Early Access badge, and the settings schema that `AddProviderInstanceDialog`,
+  `ProviderSettingsPanel`, `ProviderInstanceCard`, and `ProviderSettingsForm` all render
+  generically. `apps/web/src/components/chat/providerIconUtils.ts` maps the driver kind to its
+  icon for chat, sidebar, and model presentation. `PROVIDER_OPTIONS` in
+  `apps/web/src/session-logic.ts` is a static presentation list kept in sync with the driver set;
+  it is explicitly not the authoritative configured-instance source, and it currently has no
+  production consumer beyond the `AVAILABLE_PROVIDER_OPTIONS` filter derived from it. The live
+  picker, composer, sidebar, and default-selection paths all read the server snapshot through
+  `providerInstances.ts`, which is generic over driver kind.
+- Desktop wraps the web client, so it inherits the same registration with no separate work.
+- Mobile registers the icon in `apps/mobile/src/components/providerIconKind.ts` plus
+  `ProviderIcon.tsx`, and the display label in `apps/mobile/src/lib/modelOptions.ts`. Mobile has no
+  provider-host configuration: it consumes the environment's server-authoritative snapshot.
+
 ## Registry and routing
 
 Two registries separate configuration from live processes:
@@ -176,6 +235,7 @@ when a request opens (approval) or user input is requested, via
 [grok]: ../../apps/server/src/provider/Drivers/GrokDriver.ts
 [opencode]: ../../apps/server/src/provider/Drivers/OpenCodeDriver.ts
 [prime]: ../../apps/server/src/provider/Drivers/PrimeAgentDriver.ts
+[jcode]: ../../apps/server/src/provider/Drivers/JcodeDriver.ts
 [adapter]: ../../apps/server/src/provider/Services/ProviderAdapter.ts
 [instances]: ../../apps/server/src/provider/Services/ProviderInstanceRegistry.ts
 [registry]: ../../apps/server/src/provider/Services/ProviderAdapterRegistry.ts

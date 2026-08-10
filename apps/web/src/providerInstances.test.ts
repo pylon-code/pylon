@@ -674,3 +674,79 @@ describe("resolveDefaultProviderModelSelection", () => {
     ).toBeNull();
   });
 });
+
+describe("Jcode provider instances", () => {
+  const jcode = ProviderDriverKind.make("jcode");
+  // Jcode reports its catalog from the attached session, so every model here
+  // comes from the server snapshot rather than a client-side default table.
+  const jcodeProvider = provider({
+    provider: jcode,
+    instanceId: "jcode",
+    displayName: "Jcode",
+    models: [model("claude-opus-5", false, true), model("claude-fable-5")],
+  });
+
+  it("derives an enabled, picker-ready entry from the server snapshot alone", () => {
+    const [entry] = deriveProviderInstanceEntries([jcodeProvider]);
+
+    expect(entry).toMatchObject({
+      instanceId: ProviderInstanceId.make("jcode"),
+      driverKind: jcode,
+      displayName: "Jcode",
+      isDefault: true,
+      enabled: true,
+      isAvailable: true,
+    });
+    expect(entry && isProviderInstancePickerVisible(entry)).toBe(true);
+    expect(entry && isProviderInstancePickerReady(entry)).toBe(true);
+    expect(entry?.models.map((candidate) => candidate.slug)).toEqual([
+      "claude-opus-5",
+      "claude-fable-5",
+    ]);
+  });
+
+  it("humanizes a second Jcode instance so two instances stay distinguishable", () => {
+    const entries = deriveProviderInstanceEntries([
+      jcodeProvider,
+      provider({ provider: jcode, instanceId: "jcode_work", displayName: "Jcode" }),
+    ]);
+
+    expect(entries.map((entry) => entry.displayName)).toEqual(["Jcode", "Jcode Work"]);
+  });
+
+  it("routes composer, sidebar, and model-picker consumers to the Jcode instance", () => {
+    const providers = [jcodeProvider];
+    const entries = deriveProviderInstanceEntries(providers);
+
+    expect(resolveSelectableProviderInstance(providers, undefined)).toBe("jcode");
+    expect(
+      resolveProviderDriverKindForInstanceSelection(
+        entries,
+        providers,
+        ProviderInstanceId.make("jcode"),
+      ),
+    ).toBe(jcode);
+    expect(getDefaultProviderInstanceModel(providers, ProviderInstanceId.make("jcode"))).toBe(
+      "claude-opus-5",
+    );
+  });
+
+  it("supplies the default selection used by new tasks and the command palette", () => {
+    expect(resolveDefaultProviderModelSelection([jcodeProvider], null)).toEqual({
+      instanceId: "jcode",
+      model: "claude-opus-5",
+    });
+  });
+
+  it("keeps settings authority over a stale enabled flag on the Jcode snapshot", () => {
+    const [entry] = applyProviderInstanceSettings(deriveProviderInstanceEntries([jcodeProvider]), {
+      providerInstances: {
+        [ProviderInstanceId.make("jcode")]: { driver: jcode, enabled: false },
+      },
+      providers: {} as never,
+    });
+
+    expect(entry?.enabled).toBe(false);
+    expect(entry && isProviderInstancePickerVisible(entry)).toBe(false);
+  });
+});

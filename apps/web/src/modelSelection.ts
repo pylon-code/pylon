@@ -63,9 +63,13 @@ function readInstanceCustomModels(
   if (instanceId !== defaultInstanceId) {
     return [];
   }
+  // `customModels` is optional here because not every driver's settings carry
+  // a legacy per-kind custom-model bucket. Requiring it made this cast
+  // unsound the moment a driver without one was added, and the `?? []` below
+  // has always handled absence anyway.
   const legacyProviders = settings.providers as Record<
     string,
-    { readonly customModels: ReadonlyArray<string> } | undefined
+    { readonly customModels?: ReadonlyArray<string> } | undefined
   >;
   return legacyProviders[driverKind]?.customModels ?? [];
 }

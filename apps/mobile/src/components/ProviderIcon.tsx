@@ -1,5 +1,5 @@
 import { useColorScheme } from "react-native";
-import { Circle, Path, Svg } from "react-native-svg";
+import { Circle, Path, Rect, Svg } from "react-native-svg";
 
 import { providerIconKind } from "./providerIconKind";
 
@@ -77,6 +77,33 @@ export function ProviderIcon(props: ProviderIconProps) {
             "m 55.1325,131.29447 c -1.0745,7.1515 1.6551,13.2715 12.8266,13.1915 h -0.0062 c 9.5413,-0.389 20.3365,-6.164 30.8838,-13.5492 6.9653,-4.8787 12.9873,-10.0236 16.8903,-17.6253 2.872,-5.5889 1.395,-10.0723 -2.933,-13.993799 -1.908,-1.7291 -3.73,-1.9205 -5.867,0.1667 -7.5842,7.423099 -17.0261,11.474299 -26.7218,15.550099 -2.4706,1.0393 -5.2847,1.5582 -8.1187,2.0809 -7.5511,1.3924 -15.2431,2.8103 -16.954,14.1791 z"
           }
         />
+      </Svg>
+    );
+  }
+
+  // Jcode's provider mark: a rounded terminal frame containing `>_`. Same
+  // monochrome line drawing as the web `JcodeIcon`, expressed with
+  // react-native-svg primitives so both clients present one mark.
+  if (iconKind === "jcode") {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <Rect
+          x="2.75"
+          y="4.25"
+          width="18.5"
+          height="15.5"
+          rx="3.5"
+          stroke={mono}
+          strokeWidth="1.6"
+        />
+        <Path
+          d="M7.5 9.75 10.25 12 7.5 14.25"
+          stroke={mono}
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <Path d="M12.75 15h4" stroke={mono} strokeWidth="1.6" strokeLinecap="round" />
       </Svg>
     );
   }

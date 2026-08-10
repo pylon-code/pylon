@@ -268,3 +268,80 @@ describe("mobile model options", () => {
     expect(resolveSelectableModelSelection(null, disabled)).toBe(disabled);
   });
 });
+
+describe("mobile Jcode presentation", () => {
+  // Mobile has no provider-host configuration. Everything below is derived
+  // from the environment's server-authoritative snapshot.
+  it("presents the Jcode instance with its product name and server catalog", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "jcode",
+          driver: "jcode",
+          enabled: true,
+          installed: true,
+          auth: { status: "unknown" },
+          models: [
+            { slug: "claude-opus-5", name: "Claude Opus 5", isCustom: false, capabilities: null },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    expect(buildModelOptions(config, null)).toMatchObject([
+      {
+        providerLabel: "Jcode",
+        providerDriver: "jcode",
+        label: "Claude Opus 5",
+      },
+    ]);
+  });
+
+  it("prefers a server-supplied display name over the built-in Jcode label", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "jcode_work",
+          driver: "jcode",
+          displayName: "Jcode Work",
+          enabled: true,
+          installed: true,
+          auth: { status: "unknown" },
+          models: [{ slug: "claude-opus-5", name: "Opus", isCustom: false, capabilities: null }],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    expect(buildModelOptions(config, null)[0]?.providerLabel).toBe("Jcode Work");
+  });
+
+  it("resolves the selected mode against the live snapshot with the generic helper", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "jcode",
+          driver: "jcode",
+          enabled: true,
+          installed: true,
+          auth: { status: "unknown" },
+          supportedRuntimeModes: ["full-access"],
+          models: [],
+        },
+      ],
+    } as unknown as ServerConfig;
+    const selection = {
+      instanceId: ProviderInstanceId.make("jcode"),
+      model: "claude-opus-5",
+    };
+
+    // The server rejects an unsupported mode at session start; the client
+    // resolves the stored choice against the published set first so a normal
+    // user-driven start never reaches that rejection. The helper is generic:
+    // it reads `supportedRuntimeModes` off the snapshot and names no driver.
+    expect(getModelSelectionSupportedRuntimeModes(config, selection)).toEqual(["full-access"]);
+    expect(resolveModelSelectionRuntimeMode(config, selection, "approval-required")).toBe(
+      "full-access",
+    );
+    expect(resolveModelSelectionRuntimeMode(config, selection, "full-access")).toBe("full-access");
+  });
+});

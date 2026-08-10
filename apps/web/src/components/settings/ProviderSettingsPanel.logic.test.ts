@@ -1,4 +1,8 @@
-import { AuthOrchestrationOperateScope, EnvironmentId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  EnvironmentId,
+  ProviderDriverKind,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -8,6 +12,7 @@ import {
   resolveRemoteOperateAccess,
   resolveSelectedProviderEnvironmentId,
 } from "./ProviderSettingsPanel.logic";
+import { PROVIDER_CLIENT_DEFINITIONS, getDriverOption } from "./providerDriverMeta";
 
 const primaryId = EnvironmentId.make("primary");
 const relayId = EnvironmentId.make("relay");
@@ -43,6 +48,30 @@ describe("provider environment selection", () => {
       relayId,
     );
     expect(resolveSelectedProviderEnvironmentId([], null, primaryId)).toBeNull();
+  });
+});
+
+describe("provider settings driver coverage", () => {
+  const jcode = ProviderDriverKind.make("jcode");
+
+  // The panel builds its per-provider settings rows from
+  // `PROVIDER_CLIENT_DEFINITIONS` and renders each configured instance card
+  // through `getDriverOption(row.driver)`. Jcode must be present in both, or
+  // the provider is invisible in Settings and its instances render as
+  // unlabeled generic cards.
+  it("includes Jcode in the panel's provider settings rows", () => {
+    expect(PROVIDER_CLIENT_DEFINITIONS.map((definition) => definition.value)).toContain(jcode);
+  });
+
+  it("labels and badges a configured Jcode instance card", () => {
+    expect(getDriverOption(jcode)).toMatchObject({
+      label: "Jcode",
+      badgeLabel: "Early Access",
+    });
+  });
+
+  it("still returns no metadata for an unknown driver", () => {
+    expect(getDriverOption(ProviderDriverKind.make("forkAgent"))).toBeUndefined();
   });
 });
 
