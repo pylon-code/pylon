@@ -34,14 +34,34 @@ const PROVIDER_INSTANCE_ID = ProviderInstanceId.make("jcode_local");
 const THREAD_ID = ThreadId.make("thread-1");
 const OTHER_THREAD_ID = ThreadId.make("thread-2");
 
+interface SourceItem {
+  readonly kind: "event" | "end";
+  readonly value?: ApiEvent;
+  /** Resolved once the consumer has processed this frame and asked for the next. */
+  readonly delivered?: () => void;
+}
+
 /** A hand-driven SDK event source so tests decide exactly when frames land. */
 class EventSource {
-  private readonly items: Array<{ readonly kind: "event" | "end"; readonly value?: ApiEvent }> = [];
+  private readonly items: SourceItem[] = [];
   private readonly waiters: Array<() => void> = [];
 
   push(value: ApiEvent): void {
     this.items.push({ kind: "event", value });
     this.wake();
+  }
+
+  /**
+   * Pushes a frame and resolves only after the runtime's event pump has mapped
+   * it. That is what makes an ordering test deterministic instead of dependent
+   * on scheduler luck: awaiting this inside `sendMessage` guarantees the mapped
+   * events are already queued ahead of the adapter's `turn.started`.
+   */
+  pushAwaited(value: ApiEvent): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.items.push({ kind: "event", value, delivered: resolve });
+      this.wake();
+    });
   }
 
   end(): void {
@@ -65,6 +85,8 @@ class EventSource {
         const next = self.items.shift()!;
         if (next.kind === "end") return;
         yield next.value as ApiEvent;
+        // Reached only once the consumer requests the following frame.
+        next.delivered?.();
       }
     })();
   }
@@ -94,7 +116,16 @@ function sessionInfo(sessionId: string, workingDir?: string): SessionInfo {
   };
 }
 
-function makeFakeSdk(): FakeSdk {
+interface FakeSdkOptions {
+  /**
+   * Runs inside `sendMessage`, before its promise resolves. This is the only way
+   * to model a daemon that streams its first frame while `sendTurn` is still in
+   * flight, which is what makes the `turn.started` ordering guarantee testable.
+   */
+  readonly onSendMessage?: (client: FakeClient) => Promise<void> | void;
+}
+
+function makeFakeSdk(options: FakeSdkOptions = {}): FakeSdk {
   const clients: FakeClient[] = [];
   const sdk: JcodeSdkModule = {
     launchInstance: async () => ({
@@ -133,6 +164,7 @@ function makeFakeSdk(): FakeSdk {
         },
         sendMessage: async (sessionId, content) => {
           state.sent.push({ sessionId, content });
+          await options.onSendMessage?.(state);
         },
         cancel: async (sessionId) => {
           state.cancels.push(sessionId);
@@ -205,11 +237,16 @@ interface Fixture {
 }
 
 /** Builds an adapter plus its fakes inside the caller's scope. */
-const fixture = (options: { readonly manager?: JcodeInstanceManager | undefined } = {}) =>
+const fixture = (
+  options: {
+    readonly manager?: JcodeInstanceManager | undefined;
+    readonly sdk?: FakeSdkOptions;
+  } = {},
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-adapter-cwd-" });
-    const fake = makeFakeSdk();
+    const fake = makeFakeSdk(options.sdk ?? {});
     const { double, bridge } = makeManagerDouble(fake);
     const adapter = yield* makeJcodeAdapter({
       providerInstanceId: PROVIDER_INSTANCE_ID,
@@ -436,11 +473,14 @@ describe("makeJcodeAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("rejects a concurrent turn on the same thread", () =>
+  it.effect("rejects a concurrent turn while the first is still running", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { adapter, cwd } = yield* fixture();
         yield* adapter.startSession(startInput({ cwd }));
+        // Deliberately never completed: this case must fail because a turn is
+        // genuinely in flight, which is only meaningful alongside the
+        // "accepts a second turn after the first completes" case below.
         yield* adapter.sendTurn({ threadId: THREAD_ID, input: "first" });
         const result = yield* adapter
           .sendTurn({ threadId: THREAD_ID, input: "second" })
@@ -450,6 +490,177 @@ describe("makeJcodeAdapter", () => {
         if (Result.isFailure(result)) {
           expect(result.failure._tag).toBe("ProviderAdapterValidationError");
         }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("releases the turn when the runtime reports it completed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, fake, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        // turn.started, then turn.completed forwarded from the runtime.
+        const collector = yield* collectEvents(adapter, 2);
+        const started = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+
+        const client = fake.clients[0]!;
+        client.source.push({ ev: "turn_done", session_id: client.sessionId } as ApiEvent);
+        const events = yield* Fiber.join(collector);
+
+        expect(events.map((event) => event.type)).toEqual(["turn.started", "turn.completed"]);
+        expect(events[1]?.turnId).toBe(started.turnId);
+
+        const sessions = yield* adapter.listSessions();
+        expect(sessions[0]?.status).toBe("ready");
+        expect(sessions[0]?.activeTurnId).toBeUndefined();
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("accepts a second turn after the first one completes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, fake, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        const first = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+
+        const client = fake.clients[0]!;
+        const completed = yield* collectEvents(adapter, 1);
+        client.source.push({ ev: "turn_done", session_id: client.sessionId } as ApiEvent);
+        yield* Fiber.join(completed);
+
+        const second = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "thanks" });
+
+        expect(second.turnId).not.toBe(first.turnId);
+        expect(client.sent.map((entry) => entry.content)).toEqual(["hello", "thanks"]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("retires a session whose runtime exited and frees the thread", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, fake, manager, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+
+        const client = fake.clients[0]!;
+        // The runtime answers a dead transport with turn.aborted + session.exited.
+        const exited = yield* Stream.runCollect(
+          Stream.takeUntil(adapter.streamEvents, (event) => event.type === "session.exited"),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+        client.source.end();
+        const events = Array.from(yield* Fiber.join(exited));
+
+        expect(events.map((event) => event.type)).toContain("session.exited");
+        expect(yield* adapter.hasSession(THREAD_ID)).toBe(false);
+        expect(yield* adapter.listSessions()).toEqual([]);
+        // Retirement hands the scope close to the adapter scope rather than
+        // closing from the scope-owned forwarding fiber, and teardown stays
+        // idempotent: exactly one child close.
+        expect(client.closes).toBe(1);
+
+        // The thread must be startable again rather than wedged behind a corpse.
+        const restarted = yield* adapter.startSession(startInput({ cwd }));
+        expect(restarted.threadId).toBe(THREAD_ID);
+        expect(restarted.status).toBe("ready");
+        expect(manager.connects()).toBe(2);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("publishes turn.started before any event the daemon emits during send", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // The frame is pushed from inside `sendMessage`, before it resolves, so
+        // only a structural ordering guarantee can keep turn.started first.
+        const { adapter, cwd } = yield* fixture({
+          sdk: {
+            onSendMessage: (client) =>
+              client.source.pushAwaited({
+                ev: "text_delta",
+                session_id: client.sessionId,
+                text: "eager",
+              } as ApiEvent),
+          },
+        });
+        yield* adapter.startSession(startInput({ cwd }));
+        const collector = yield* collectEvents(adapter, 3);
+
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+        const events = yield* Fiber.join(collector);
+
+        expect(events[0]?.type).toBe("turn.started");
+        expect(events.map((event) => event.type)).toEqual([
+          "turn.started",
+          "item.started",
+          "content.delta",
+        ]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("records an in-session model switch on the session and the turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, fake, cwd } = yield* fixture();
+        yield* adapter.startSession(
+          startInput({
+            cwd,
+            modelSelection: { instanceId: PROVIDER_INSTANCE_ID, model: "claude-opus-5" },
+          }),
+        );
+        const collector = yield* collectEvents(adapter, 1);
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "hello",
+          modelSelection: { instanceId: PROVIDER_INSTANCE_ID, model: "claude-fable-5" },
+        });
+        const events = yield* Fiber.join(collector);
+
+        expect(fake.clients[0]?.setModels.map((entry) => entry.model)).toEqual(["claude-fable-5"]);
+        expect(events[0]?.payload).toMatchObject({ model: "claude-fable-5" });
+        const sessions = yield* adapter.listSessions();
+        expect(sessions[0]?.model).toBe("claude-fable-5");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("never fabricates a model for a session started without a selection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        const collector = yield* collectEvents(adapter, 1);
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+        const events = yield* Fiber.join(collector);
+
+        // `"default"` is not a Jcode model; publishing it would persist a lie
+        // against the turn.
+        expect(events[0]?.payload).toEqual({});
+        const sessions = yield* adapter.listSessions();
+        expect(sessions[0]?.model).toBeUndefined();
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("issues restart-unique adapter event ids", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const first = yield* fixture();
+        const second = yield* fixture();
+        yield* first.adapter.startSession(startInput({ cwd: first.cwd }));
+        yield* second.adapter.startSession(startInput({ cwd: second.cwd }));
+
+        const firstEvent = yield* collectEvents(first.adapter, 1);
+        const secondEvent = yield* collectEvents(second.adapter, 1);
+        yield* first.adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+        yield* second.adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+
+        const firstId = (yield* Fiber.join(firstEvent))[0]?.eventId;
+        const secondId = (yield* Fiber.join(secondEvent))[0]?.eventId;
+        expect(firstId).toBeDefined();
+        expect(firstId).not.toBe(secondId);
       }),
     ).pipe(Effect.provide(testLayer)),
   );

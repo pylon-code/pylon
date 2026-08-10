@@ -1,8 +1,13 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
+
 import {
   EventId,
   ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type ProviderRuntimeSessionStateChangedEvent,
+  type ProviderRuntimeTurnStartedEvent,
   type ProviderSendTurnInput,
   type ProviderSession,
   type ProviderSessionStartInput,
@@ -17,6 +22,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../../config.ts";
@@ -65,7 +71,17 @@ interface JcodeSessionContext {
   readonly runtime: JcodeSessionRuntime;
   /** Child of the adapter scope; closing it runs the runtime's finalizer. */
   readonly scope: Scope.Closeable;
+  /**
+   * Serializes turn admission against event forwarding, so no runtime event for
+   * a turn can be published before the adapter's own `turn.started`.
+   */
+  readonly gate: Semaphore.Semaphore;
   stopped: boolean;
+}
+
+/** Terminal turn events after which the session is idle again. */
+function releasesTurn(event: ProviderRuntimeEvent): boolean {
+  return event.type === "turn.completed" || event.type === "turn.aborted";
 }
 
 /**
@@ -118,7 +134,9 @@ export const makeJcodeAdapter = Effect.fn("makeJcodeAdapter")(function* (
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-  const stampPrefix = `jcode-adapter-${options.instanceKey}`;
+  // A per-adapter UUID prefix, matching the runtime it wraps: a counter alone
+  // would re-issue the same ids after a restart.
+  const stampPrefix = `jcode-adapter-${NodeCrypto.randomUUID()}`;
   let stampSequence = 0;
   const nextEventId = () => EventId.make(`${stampPrefix}-${++stampSequence}`);
 
@@ -131,6 +149,67 @@ export const makeJcodeAdapter = Effect.fn("makeJcodeAdapter")(function* (
       return context === undefined || context.stopped
         ? Effect.fail(new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId }))
         : Effect.succeed(context);
+    });
+
+  /**
+   * Bookkeeping half of teardown. Runs the moment a session is known dead so the
+   * thread is immediately free to start again, rather than waiting for the
+   * session reaper or a restart.
+   */
+  const retireSession = (threadId: ThreadId, context: JcodeSessionContext) =>
+    Effect.gen(function* () {
+      if (context.stopped) return false;
+      context.stopped = true;
+      sessions.delete(threadId);
+      context.session = {
+        ...context.session,
+        status: "closed",
+        activeTurnId: undefined,
+        updatedAt: yield* nowIso,
+      };
+      return true;
+    });
+
+  /**
+   * Scope close is the single teardown path: the runtime registered its
+   * idempotent `close` as a finalizer, so calling it here too would
+   * double-manage the child client's lifetime.
+   */
+  const closeSessionScope = (context: JcodeSessionContext) => Scope.close(context.scope, Exit.void);
+
+  /**
+   * Every runtime event passes through here before reaching subscribers.
+   *
+   * The runtime mints turn ids and maps frames, but it cannot reach the
+   * adapter-owned `ProviderSession`, so acting on the terminal events it reports
+   * is the adapter's half of that ownership split.
+   */
+  const forwardEvent = (
+    threadId: ThreadId,
+    context: JcodeSessionContext,
+    event: ProviderRuntimeEvent,
+  ) =>
+    Effect.gen(function* () {
+      if (
+        releasesTurn(event) &&
+        event.turnId !== undefined &&
+        context.session.activeTurnId === event.turnId
+      ) {
+        context.session = {
+          ...context.session,
+          status: "ready",
+          activeTurnId: undefined,
+          updatedAt: yield* nowIso,
+        };
+      }
+      if (event.type === "session.exited") {
+        const retired = yield* retireSession(threadId, context);
+        // Closing the scope from this fiber would interrupt this fiber, which is
+        // itself scope-owned, so hand the close to the adapter scope. Both
+        // `Scope.close` and the runtime's `close` are idempotent.
+        if (retired) yield* closeSessionScope(context).pipe(Effect.forkIn(adapterScope));
+      }
+      yield* publish(event);
     });
 
   const startSession: JcodeAdapterShape["startSession"] = (input: ProviderSessionStartInput) =>
@@ -208,6 +287,7 @@ export const makeJcodeAdapter = Effect.fn("makeJcodeAdapter")(function* (
           session: runtime.session,
           runtime,
           scope: sessionScope,
+          gate: Semaphore.makeUnsafe(1),
           stopped: false,
         };
         sessions.set(input.threadId, context);
@@ -215,11 +295,11 @@ export const makeJcodeAdapter = Effect.fn("makeJcodeAdapter")(function* (
         // Republish this session's canonical events on the adapter stream. The
         // runtime ends its own stream when the session closes, so this fiber
         // completes on its own rather than needing separate cancellation.
-        yield* Stream.runForEach(runtime.streamEvents, publish).pipe(
-          Effect.forkIn(sessionScope, { startImmediately: true }),
-        );
+        yield* Stream.runForEach(runtime.streamEvents, (event) =>
+          context.gate.withPermit(forwardEvent(input.threadId, context, event)),
+        ).pipe(Effect.forkIn(sessionScope, { startImmediately: true }));
 
-        yield* publish({
+        const ready: ProviderRuntimeSessionStateChangedEvent = {
           eventId: nextEventId(),
           type: "session.state.changed",
           provider: PROVIDER,
@@ -227,7 +307,8 @@ export const makeJcodeAdapter = Effect.fn("makeJcodeAdapter")(function* (
           threadId: input.threadId,
           createdAt: yield* nowIso,
           payload: { state: "ready", reason: "The Jcode session is ready." },
-        } as ProviderRuntimeEvent);
+        };
+        yield* publish(ready);
 
         return context.session;
       }).pipe(
@@ -239,38 +320,55 @@ export const makeJcodeAdapter = Effect.fn("makeJcodeAdapter")(function* (
   const sendTurn: JcodeAdapterShape["sendTurn"] = (input: ProviderSendTurnInput) =>
     Effect.gen(function* () {
       const context = yield* requireSession(input.threadId);
-      if (context.session.activeTurnId !== undefined) {
-        return yield* new ProviderAdapterValidationError({
-          provider: PROVIDER,
-          operation: "sendTurn",
-          issue: "Jcode does not accept a second turn while one is already running.",
-        });
-      }
+      // Holding the gate across admission makes the ordering structural: the
+      // forwarding fiber cannot publish any event for this turn until
+      // `turn.started` has been published.
+      return yield* context.gate.withPermit(
+        Effect.gen(function* () {
+          if (context.session.activeTurnId !== undefined) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "sendTurn",
+              issue: "Jcode does not accept a second turn while one is already running.",
+            });
+          }
 
-      const started: ProviderTurnStartResult = yield* context.runtime
-        .sendTurn(input)
-        .pipe(Effect.mapError((cause) => toAdapterError(input.threadId, cause)));
+          const selected =
+            input.modelSelection?.instanceId === options.providerInstanceId
+              ? input.modelSelection.model
+              : undefined;
 
-      // The runtime deliberately never mutates session status or announces the
-      // turn; both belong to the adapter.
-      context.session = {
-        ...context.session,
-        status: "running",
-        activeTurnId: started.turnId,
-        updatedAt: yield* nowIso,
-      };
-      yield* publish({
-        eventId: nextEventId(),
-        type: "turn.started",
-        provider: PROVIDER,
-        providerInstanceId: options.providerInstanceId,
-        threadId: input.threadId,
-        turnId: started.turnId,
-        createdAt: yield* nowIso,
-        payload: { model: context.session.model ?? "default" },
-      } as ProviderRuntimeEvent);
+          const started: ProviderTurnStartResult = yield* context.runtime
+            .sendTurn(input)
+            .pipe(Effect.mapError((cause) => toAdapterError(input.threadId, cause)));
 
-      return started;
+          // The runtime deliberately never mutates session status or announces
+          // the turn; both belong to the adapter. An in-session switch is
+          // authoritative from here on, and an unknown model stays absent rather
+          // than being fabricated.
+          const model = selected ?? context.session.model;
+          context.session = {
+            ...context.session,
+            status: "running",
+            activeTurnId: started.turnId,
+            ...(model === undefined ? {} : { model }),
+            updatedAt: yield* nowIso,
+          };
+          const turnStarted: ProviderRuntimeTurnStartedEvent = {
+            eventId: nextEventId(),
+            type: "turn.started",
+            provider: PROVIDER,
+            providerInstanceId: options.providerInstanceId,
+            threadId: input.threadId,
+            turnId: started.turnId,
+            createdAt: yield* nowIso,
+            payload: model === undefined ? {} : { model },
+          };
+          yield* publish(turnStarted);
+
+          return started;
+        }),
+      );
     }).pipe(Effect.uninterruptible);
 
   const interruptTurn: JcodeAdapterShape["interruptTurn"] = (threadId: ThreadId, turnId?: TurnId) =>
@@ -281,22 +379,10 @@ export const makeJcodeAdapter = Effect.fn("makeJcodeAdapter")(function* (
         .pipe(Effect.mapError((cause) => toAdapterError(threadId, cause)));
     });
 
-  /** Closes the session scope, which runs the runtime's own close finalizer. */
   const closeSession = (threadId: ThreadId, context: JcodeSessionContext) =>
     Effect.gen(function* () {
-      if (context.stopped) return;
-      context.stopped = true;
-      sessions.delete(threadId);
-      // Scope close is the single teardown path: the runtime registered its
-      // idempotent `close` as a finalizer, so calling it here too would
-      // double-manage the child client's lifetime.
-      yield* Scope.close(context.scope, Exit.void);
-      context.session = {
-        ...context.session,
-        status: "closed",
-        activeTurnId: undefined,
-        updatedAt: yield* nowIso,
-      };
+      yield* retireSession(threadId, context);
+      yield* closeSessionScope(context);
     }).pipe(Effect.uninterruptible);
 
   const stopSession: JcodeAdapterShape["stopSession"] = (threadId: ThreadId) =>

@@ -10,7 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
+import type * as Scope from "effect/Scope";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
@@ -21,6 +21,7 @@ import { ProviderDriverError } from "../Errors.ts";
 import {
   makeJcodeInstanceManager,
   type JcodeInstanceManager,
+  type JcodeInstanceManagerError,
   type JcodeInstanceManagerInput,
   type JcodeInstanceProbe,
 } from "../jcode/JcodeInstanceManager.ts";
@@ -59,7 +60,6 @@ export type JcodeDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
-  | HttpClient.HttpClient
   | Path.Path
   | ServerConfig
   | ServerSettingsService;
@@ -91,9 +91,9 @@ export function jcodeCredentialValuesFromEnvironment(
  * Builds the manager input for exactly one provider instance.
  *
  * The bridge is constructed here, per call, and never taken from the module
- * singleton: `makeJcodeSdkBridge` closes over the launch credential literals it
- * is handed for the bridge's whole life, so one shared bridge would
- * cross-contaminate secrets between provider instances.
+ * singleton: a bridge accumulates the credential literals it is handed at launch
+ * into its own mutable redaction state and keeps them for its whole life, so one
+ * shared bridge would cross-contaminate secrets between provider instances.
  */
 export function buildJcodeInstanceManagerInput(input: {
   readonly instanceId: ProviderInstanceId;
@@ -131,124 +131,177 @@ const withInstanceIdentity =
     continuation: { groupKey: input.continuationGroupKey },
   });
 
-export const JcodeDriver: ProviderDriver<JcodeSettings, JcodeDriverEnv> = {
-  driverKind: DRIVER_KIND,
-  metadata: {
-    displayName: "Jcode",
-    supportsMultipleInstances: true,
-  },
-  configSchema: JcodeSettings,
-  defaultConfig: (): JcodeSettings => decodeJcodeSettings({}),
-  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
-    Effect.gen(function* () {
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const serverSettings = yield* ServerSettingsService;
-      const serverConfig = yield* ServerConfig;
-      const processEnv = mergeProviderInstanceEnvironment(environment);
-      const continuationIdentity = defaultProviderContinuationIdentity({
-        driverKind: DRIVER_KIND,
-        instanceId,
-      });
-      const stampIdentity = withInstanceIdentity({
-        instanceId,
-        displayName,
-        accentColor,
-        continuationGroupKey: continuationIdentity.continuationKey,
-      });
-      const effectiveConfig = { ...config, enabled } satisfies JcodeSettings;
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-      });
+export const PRIVATE_INSTANCE_UNAVAILABLE_MESSAGE =
+  "Pylon could not start this instance's private Jcode runtime, so no Jcode session can start.";
 
-      const managerInput = buildJcodeInstanceManagerInput({
-        instanceId,
-        stateDir: serverConfig.stateDir,
-        settings: effectiveConfig,
-        environment,
-        processEnv,
-      });
+/** How this driver builds the private instance it owns. Overridable for tests. */
+export interface JcodeDriverDependencies {
+  readonly makeInstanceManager: (
+    input: JcodeInstanceManagerInput,
+  ) => Effect.Effect<
+    JcodeInstanceManager,
+    JcodeInstanceManagerError,
+    FileSystem.FileSystem | Path.Path | Scope.Scope
+  >;
+}
 
-      // A disabled instance must not launch a private daemon, and a launch
-      // failure must not erase the provider: it stays visible with whatever
-      // status the executable probe reports.
-      const manager: JcodeInstanceManager | undefined = enabled
-        ? yield* makeJcodeInstanceManager(managerInput).pipe(
-            Effect.tapError((cause) =>
-              Effect.logWarning("Could not start the private Jcode instance.", {
-                operation: cause.operation,
-              }),
-            ),
-            Effect.result,
-            Effect.map((result) => (Result.isSuccess(result) ? result.success : undefined)),
-          )
-        : undefined;
+/**
+ * Builds the Jcode driver.
+ *
+ * The instance-manager factory is injected so `create` can be exercised without
+ * launching a real daemon, mirroring how `PrimeAgentDriver` injects `makeManager`
+ * into its backend negotiation.
+ */
+export function makeJcodeDriver(
+  overrides: Partial<JcodeDriverDependencies> = {},
+): ProviderDriver<JcodeSettings, JcodeDriverEnv> {
+  // Explicitly typed so the declared error channel wins over the factory's
+  // inferred one; otherwise `any` leaks into the error channel here.
+  const makeInstanceManager: JcodeDriverDependencies["makeInstanceManager"] =
+    overrides.makeInstanceManager ?? makeJcodeInstanceManager;
+  return {
+    driverKind: DRIVER_KIND,
+    metadata: {
+      displayName: "Jcode",
+      supportsMultipleInstances: true,
+    },
+    configSchema: JcodeSettings,
+    defaultConfig: (): JcodeSettings => decodeJcodeSettings({}),
+    create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const serverSettings = yield* ServerSettingsService;
+        const serverConfig = yield* ServerConfig;
+        const processEnv = mergeProviderInstanceEnvironment(environment);
+        const continuationIdentity = defaultProviderContinuationIdentity({
+          driverKind: DRIVER_KIND,
+          instanceId,
+        });
+        const stampIdentity = withInstanceIdentity({
+          instanceId,
+          displayName,
+          accentColor,
+          continuationGroupKey: continuationIdentity.continuationKey,
+        });
+        const effectiveConfig = { ...config, enabled } satisfies JcodeSettings;
+        const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+          UPDATE,
+          {
+            binaryPath: effectiveConfig.binaryPath,
+            env: processEnv,
+          },
+        );
 
-      // The model catalog is server-reported, so it is only available once a
-      // private instance is actually running.
-      const instanceProbe: JcodeInstanceProbe | undefined =
-        manager === undefined
-          ? undefined
-          : yield* manager.probe.pipe(
+        const managerInput = buildJcodeInstanceManagerInput({
+          instanceId,
+          stateDir: serverConfig.stateDir,
+          settings: effectiveConfig,
+          environment,
+          processEnv,
+        });
+
+        // A disabled instance must not launch a private daemon at all.
+        const manager: JcodeInstanceManager | undefined = enabled
+          ? yield* makeInstanceManager(managerInput).pipe(
               Effect.tapError((cause) =>
-                Effect.logWarning("Could not read the private Jcode instance runtime.", {
+                Effect.logWarning("Could not start the private Jcode instance.", {
                   operation: cause.operation,
                 }),
               ),
               Effect.result,
               Effect.map((result) => (Result.isSuccess(result) ? result.success : undefined)),
-            );
+            )
+          : undefined;
 
-      const adapter = yield* makeJcodeAdapter({
-        providerInstanceId: instanceId,
-        instanceKey: instanceId,
-        bridge: managerInput.bridge,
-        manager,
-      });
-      const textGeneration = makeJcodeTextGeneration();
+        const adapter = yield* makeJcodeAdapter({
+          providerInstanceId: instanceId,
+          instanceKey: instanceId,
+          bridge: managerInput.bridge,
+          manager,
+        });
+        const textGeneration = makeJcodeTextGeneration();
 
-      const checkProvider = checkJcodeProviderStatus({
-        settings: effectiveConfig,
-        environment: processEnv,
-        ...(instanceProbe === undefined ? {} : { instance: instanceProbe }),
-      }).pipe(
-        Effect.map(stampIdentity),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      );
+        /**
+         * A launch failure must not be published as a healthy provider, and must
+         * not erase the instance either: the provider stays visible with an
+         * explicit error so Settings can explain why no session will start.
+         */
+        const withPrivateInstanceOutcome = (snapshot: ServerProvider): ServerProvider =>
+          enabled && manager === undefined
+            ? {
+                ...snapshot,
+                status: "error",
+                message: PRIVATE_INSTANCE_UNAVAILABLE_MESSAGE,
+                models: [],
+              }
+            : snapshot;
 
-      // Probed once here and reused as the initial snapshot, so startup spends
-      // exactly one bounded `--version` call rather than one per code path.
-      const firstSnapshot = yield* checkProvider;
-      const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
-      const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<JcodeSettings>>({
-        maintenanceCapabilities,
-        getSettings: snapshotSettings.getSettings,
-        streamSettings: snapshotSettings.streamSettings,
-        haveSettingsChanged: haveProviderSnapshotSettingsChanged,
-        initialSnapshot: () => Effect.succeed(firstSnapshot),
-        checkProvider,
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: `Failed to build Jcode snapshot: ${cause.message ?? String(cause)}`,
-              cause,
-            }),
-        ),
-      );
+        // Read per refresh rather than closing over one observation: the model
+        // catalog is server-reported, so a daemon that becomes readable later must
+        // still be able to publish it.
+        const readInstanceProbe = (
+          instance: JcodeInstanceManager,
+        ): Effect.Effect<JcodeInstanceProbe | undefined> =>
+          instance.probe.pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning("Could not read the private Jcode instance runtime.", {
+                operation: cause.operation,
+              }),
+            ),
+            Effect.result,
+            Effect.map((result) => (Result.isSuccess(result) ? result.success : undefined)),
+          );
 
-      return {
-        instanceId,
-        driverKind: DRIVER_KIND,
-        continuationIdentity,
-        displayName,
-        accentColor,
-        enabled,
-        snapshot,
-        adapter,
-        textGeneration,
-      } satisfies ProviderInstance;
-    }),
-};
+        const checkProvider = Effect.gen(function* () {
+          const instanceProbe =
+            manager === undefined ? undefined : yield* readInstanceProbe(manager);
+          const draft = yield* checkJcodeProviderStatus({
+            settings: effectiveConfig,
+            environment: processEnv,
+            ...(instanceProbe === undefined ? {} : { instance: instanceProbe }),
+          });
+          return withPrivateInstanceOutcome(stampIdentity(draft));
+        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
+        // Probed once here and reused as the initial snapshot, so startup spends
+        // exactly one bounded `--version` call rather than one per code path.
+        const firstSnapshot = yield* checkProvider;
+        const snapshotSettings = makeProviderSnapshotSettingsSource(
+          effectiveConfig,
+          serverSettings,
+        );
+        const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<JcodeSettings>>({
+          maintenanceCapabilities,
+          getSettings: snapshotSettings.getSettings,
+          streamSettings: snapshotSettings.streamSettings,
+          haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+          initialSnapshot: () => Effect.succeed(firstSnapshot),
+          checkProvider,
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail: `Failed to build Jcode snapshot: ${cause.message ?? String(cause)}`,
+                cause,
+              }),
+          ),
+        );
+
+        return {
+          instanceId,
+          driverKind: DRIVER_KIND,
+          continuationIdentity,
+          displayName,
+          accentColor,
+          enabled,
+          snapshot,
+          adapter,
+          textGeneration,
+        } satisfies ProviderInstance;
+      }),
+  };
+}
+
+export const JcodeDriver: ProviderDriver<JcodeSettings, JcodeDriverEnv> = makeJcodeDriver();
