@@ -5,9 +5,11 @@ import { HarnessError } from "@1jehuang/jcode-sdk";
 import type { ApiEvent, SendMessageOptions, SessionInfo } from "@1jehuang/jcode-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInstanceId,
   ProviderRuntimeEvent,
   ThreadId,
+  TurnId,
   type ChatAttachment,
   type ProviderSendTurnInput,
 } from "@t3tools/contracts";
@@ -143,6 +145,14 @@ interface Harness {
   readonly cancels: string[];
   readonly histories: string[];
   closes: number;
+  /**
+   * The directory the fake daemon reports for this session.
+   *
+   * Mutable so `scenario` can point it at the temp cwd it just created: the
+   * real harness echoes the session's own working directory back on attach,
+   * and a double that always omitted it would hide the attach-time check.
+   */
+  workingDir: string | undefined;
 }
 
 interface HarnessOptions {
@@ -168,6 +178,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     cancels: [],
     histories: [],
     closes: 0,
+    workingDir: options.workingDir,
   };
 
   const client: JcodeSdkClientLike = {
@@ -177,12 +188,12 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     createSession: async (workingDir) => {
       harness.created.push(workingDir ?? "");
       if (options.createSession) return options.createSession(workingDir);
-      return sessionInfo(NATIVE_SESSION_ID, workingDir ?? options.workingDir);
+      return sessionInfo(NATIVE_SESSION_ID, workingDir ?? harness.workingDir);
     },
     attachSession: async (sessionId) => {
       harness.attached.push(sessionId);
       if (options.attachSession) return options.attachSession(sessionId);
-      return sessionInfo(sessionId, options.workingDir);
+      return sessionInfo(sessionId, harness.workingDir);
     },
     detachSession: async () => {},
     listSessions: async () => [],
@@ -282,6 +293,9 @@ const scenario = (harness: Harness, options: ScenarioOptions = {}) =>
     const serverConfig = yield* ServerConfig.ServerConfig;
     const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-runtime-state-" });
     const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-runtime-cwd-" });
+    // A daemon reports the session's real directory; only a test that overrode
+    // `workingDir` deliberately wants to see something else.
+    harness.workingDir ??= cwd;
     const threadId = options.threadId ?? THREAD_ID;
     const identityPath = jcodeThreadIdentityPath({
       stateDir,
@@ -535,6 +549,44 @@ describe("JcodeSessionRuntime create and exact resume", () => {
     expect(harness.created).toEqual([]);
   });
 
+  it("fails closed when the attached session omits its working directory", async () => {
+    const harness = makeHarness({
+      attachSession: async (sessionId) => sessionInfo(sessionId),
+    });
+    const { error } = await startFailure(harness, {
+      resumeCursor: JCODE_RESUME_CURSOR,
+      seedIdentity: { sessionId: "resumed-session" },
+    });
+
+    expect(error.operation).toBe("resume");
+    expect(harness.created).toEqual([]);
+  });
+
+  it("closes the child client on every fail-closed startup path", async () => {
+    const missingSidecar = makeHarness();
+    await startFailure(missingSidecar, { resumeCursor: JCODE_RESUME_CURSOR });
+    expect(missingSidecar.closes).toBe(1);
+
+    const unknownSession = makeHarness({
+      attachSession: async () => {
+        throw new HarnessError("unknown_session", "session gone");
+      },
+    });
+    await startFailure(unknownSession, {
+      resumeCursor: JCODE_RESUME_CURSOR,
+      seedIdentity: { sessionId: "resumed-session" },
+    });
+    expect(unknownSession.closes).toBe(1);
+
+    const createFailure = makeHarness({
+      createSession: async () => {
+        throw new Error("create failed");
+      },
+    });
+    await startFailure(createFailure, {});
+    expect(createFailure.closes).toBe(1);
+  });
+
   it("fails closed when the attached session reports a different working directory", async () => {
     const harness = makeHarness({
       attachSession: async (sessionId) => sessionInfo(sessionId, "/somewhere/else/entirely"),
@@ -654,6 +706,26 @@ describe("JcodeSessionRuntime turns and attachments", () => {
 
     expect((error as JcodeSessionRuntimeError).operation).toBe("attachments");
     expect(harness.sent).toEqual([]);
+  });
+
+  it("accepts exactly the canonical maximum number of attachments", async () => {
+    const harness = makeHarness();
+    const attachments = Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS }, (_, index) => ({
+      ...imageAttachment,
+      id: `thread-1-0000ffff-1111-2222-3333-44445555${String(index).padStart(4, "0")}`,
+    })) as ReadonlyArray<ChatAttachment>;
+
+    await withRuntime(harness, {}, (fixture) =>
+      Effect.gen(function* () {
+        for (const attachment of attachments) {
+          yield* writeAttachment(fixture.attachmentsDir, attachment, new Uint8Array([7]));
+        }
+        return yield* fixture.runtime.sendTurn(turnInput({ attachments }));
+      }),
+    );
+
+    expect(harness.sent).toHaveLength(1);
+    expect(harness.sent[0]?.options?.images).toHaveLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS);
   });
 
   it("rejects more attachments than the canonical bound without sending", async () => {
@@ -776,6 +848,80 @@ describe("JcodeSessionRuntime interruption and disconnect", () => {
     );
 
     expect(harness.cancels).toEqual([NATIVE_SESSION_ID]);
+  });
+
+  it("cancels exactly once when the interrupt names the active turn", async () => {
+    const harness = makeHarness();
+    await withRuntime(harness, {}, (fixture) =>
+      Effect.gen(function* () {
+        const started = yield* fixture.runtime.sendTurn(turnInput());
+        yield* fixture.runtime.interruptTurn(started.turnId);
+      }),
+    );
+
+    expect(harness.cancels).toEqual([NATIVE_SESSION_ID]);
+  });
+
+  it("ignores an interrupt that names a turn other than the active one", async () => {
+    const harness = makeHarness();
+    await withRuntime(harness, {}, (fixture) =>
+      Effect.gen(function* () {
+        yield* fixture.runtime.sendTurn(turnInput());
+        yield* fixture.runtime.interruptTurn(TurnId.make("some-other-turn"));
+      }),
+    );
+
+    expect(harness.cancels).toEqual([]);
+  });
+
+  it("does not cancel when no turn is active", async () => {
+    const harness = makeHarness();
+    await withRuntime(harness, {}, (fixture) => fixture.runtime.interruptTurn());
+
+    expect(harness.cancels).toEqual([]);
+  });
+
+  it("does not abort a completed turn when the transport later fails", async () => {
+    const harness = makeHarness();
+    const events = await withRuntime(harness, {}, (fixture) =>
+      Effect.gen(function* () {
+        const collector = yield* collectAll(fixture.runtime).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* fixture.runtime.sendTurn(turnInput());
+        harness.source.push(textDelta("answer"));
+        harness.source.push({ ev: "turn_done", session_id: NATIVE_SESSION_ID });
+        harness.source.fail(new Error("socket closed"));
+        return yield* Fiber.join(collector);
+      }),
+    );
+
+    const types = events.map((event) => event.type);
+    expect(types).toContain("turn.completed");
+    expect(types).not.toContain("turn.aborted");
+    expect(types.at(-1)).toBe("session.exited");
+    for (const event of events) expect(() => decodeRuntimeEvent(event)).not.toThrow();
+  });
+
+  it("does not abort a turn that was never accepted when the transport later fails", async () => {
+    const harness = makeHarness({
+      sendMessage: async () => {
+        throw new Error("write failed");
+      },
+    });
+    const events = await withRuntime(harness, {}, (fixture) =>
+      Effect.gen(function* () {
+        const collector = yield* collectAll(fixture.runtime).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* expectFailure(fixture.runtime.sendTurn(turnInput()));
+        harness.source.fail(new Error("socket closed"));
+        return yield* Fiber.join(collector);
+      }),
+    );
+
+    expect(events.map((event) => event.type)).not.toContain("turn.aborted");
+    expect(harness.cancels).toEqual([]);
   });
 
   it("aborts the active turn, reports the error, and exits on transport failure", async () => {

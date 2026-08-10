@@ -225,10 +225,14 @@ export const makeJcodeSessionRuntime = Effect.fn("makeJcodeSessionRuntime")(func
             ),
           ),
         );
-      if (attached.working_dir !== undefined && !isAbsoluteMatch(attached.working_dir, input.cwd)) {
+      // Fail closed on an omitted directory too. The plan requires attach to
+      // verify the *returned* working directory, and the sidecar cannot stand
+      // in for that: it is Pylon's own record, so trusting it alone would
+      // verify this thread against itself and never against the daemon.
+      if (attached.working_dir === undefined || !isAbsoluteMatch(attached.working_dir, input.cwd)) {
         return yield* runtimeError(
           "resume",
-          "The attached Jcode session reported a different working directory.",
+          "The attached Jcode session did not confirm this thread's working directory.",
         );
       }
       return { sessionId: identity.sessionId, restored: true };
@@ -262,6 +266,15 @@ export const makeJcodeSessionRuntime = Effect.fn("makeJcodeSessionRuntime")(func
     return { sessionId: created.session_id, restored: false };
   });
 
+  const closeClient = bridge
+    .trySdk({ operation: "close", run: () => client.close() })
+    .pipe(Effect.ignore);
+
+  // Registered before the session is opened, so every fail-closed startup path
+  // still releases the child client this runtime was handed. The bridge latches
+  // `close` on success, so the later full `close` cannot double-close it.
+  yield* Effect.addFinalizer(() => closeClient);
+
   const opened = yield* openSession;
   const sessionId = opened.sessionId;
 
@@ -276,10 +289,6 @@ export const makeJcodeSessionRuntime = Effect.fn("makeJcodeSessionRuntime")(func
   let activeTurnId: TurnId | undefined;
   let currentModel = input.model;
   let terminated = false;
-
-  const closeClient = bridge
-    .trySdk({ operation: "close", run: () => client.close() })
-    .pipe(Effect.ignore);
 
   const baseEvent = (createdAt: string, turnId?: TurnId) => ({
     eventId: nextStamp(),
@@ -346,6 +355,12 @@ export const makeJcodeSessionRuntime = Effect.fn("makeJcodeSessionRuntime")(func
       });
       mappingState = result.state;
       if (result.events.length > 0) yield* Queue.offerAll(queue, result.events);
+      // The mapper resets its own per-turn state at `turn_done`, but the active
+      // Pylon turn is separate bookkeeping. Releasing it here is what keeps a
+      // later transport failure from aborting a turn that already completed.
+      if (result.events.some((event) => event.type === "turn.completed")) {
+        activeTurnId = undefined;
+      }
       if (result.fatal) yield* terminate("fatal");
     });
 
@@ -476,9 +491,13 @@ export const makeJcodeSessionRuntime = Effect.fn("makeJcodeSessionRuntime")(func
         .pipe(
           // No retry: the harness owns turn admission, and a second write could
           // start a duplicate turn the user never asked for.
-          Effect.mapError((error) =>
-            runtimeError("send", "Jcode did not accept the message for this turn.", error),
-          ),
+          Effect.mapError((error) => {
+            // The turn was never admitted, so it must stop being the active one:
+            // otherwise a later transport failure would abort a turn no client
+            // was ever told about.
+            if (activeTurnId === turnId) activeTurnId = undefined;
+            return runtimeError("send", "Jcode did not accept the message for this turn.", error);
+          }),
         );
 
       return {
@@ -488,13 +507,30 @@ export const makeJcodeSessionRuntime = Effect.fn("makeJcodeSessionRuntime")(func
       } satisfies ProviderTurnStartResult;
     });
 
-  const interruptTurn = (_turnId?: TurnId) =>
-    bridge.trySdk({ operation: "cancel", sessionId, run: () => client.cancel(sessionId) }).pipe(
-      Effect.mapError((error) =>
-        runtimeError("cancel", "Jcode did not accept the cancellation request.", error),
-      ),
-      Effect.asVoid,
-    );
+  /**
+   * Cancels the active turn.
+   *
+   * The SDK's `cancel` is session-scoped, so the selector is honored to the only
+   * precision available: a request naming a turn that is no longer running is
+   * dropped rather than applied to whatever is running now. Without that guard,
+   * a Stop pressed for a turn that finished on its own would kill the turn the
+   * user started next. An idle session cancels nothing.
+   */
+  const interruptTurn = (turnId?: TurnId) =>
+    Effect.suspend(() => {
+      const running = activeTurnId;
+      if (running === undefined || (turnId !== undefined && turnId !== running)) {
+        return Effect.void;
+      }
+      return bridge
+        .trySdk({ operation: "cancel", sessionId, run: () => client.cancel(sessionId) })
+        .pipe(
+          Effect.mapError((error) =>
+            runtimeError("cancel", "Jcode did not accept the cancellation request.", error),
+          ),
+          Effect.asVoid,
+        );
+    });
 
   const createdAt = yield* nowIso;
   const session: ProviderSession = {
