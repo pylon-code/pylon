@@ -42,6 +42,9 @@ const SESSION_CLIENT_NAME = "pylon-jcode-session/1";
 
 const MAX_SESSION_ID_LENGTH = 256;
 
+/** The bridge's authoritative code for a session the daemon has forgotten. */
+const UNKNOWN_SESSION_CODE = "unknown_session";
+
 /**
  * The private identity of this instance's hidden probe session.
  *
@@ -142,6 +145,40 @@ function failureDetail(error: unknown): string {
   return "unknown failure";
 }
 
+/**
+ * The only platform failure that means "this file is not there".
+ *
+ * Matched on the reason discriminator rather than a message, mirroring the
+ * shape Task 4 proved against the real Node filesystem layer.
+ */
+function isNotFound(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const reason = (error as { readonly reason?: { readonly _tag?: unknown } }).reason;
+  return typeof reason === "object" && reason !== null && reason._tag === "NotFound";
+}
+
+/**
+ * What may be retained as a manager error's `cause`.
+ *
+ * A `Data.TaggedError` prop is an own enumerable property of a real `Error`, so
+ * anything stored here is printed by `util.inspect`, `JSON.stringify`, Node's
+ * crash printer, and any logger that walks error properties. The bridge redacts
+ * the credential literals it was handed at launch, but it cannot redact a
+ * native session ID it minted itself: `JcodeSessionNotFoundError.sessionId` is
+ * the private probe or thread session, and retaining it would publish exactly
+ * the identifier the sidecar exists to keep private. It is replaced by an
+ * equivalent operation error carrying the same authoritative code and no ID.
+ */
+function safeCause(cause: unknown): unknown {
+  return cause instanceof JcodeSessionNotFoundError
+    ? new JcodeSdkOperationError({
+        operation: cause.operation,
+        code: UNKNOWN_SESSION_CODE,
+        detail: "the session is no longer known to the instance",
+      })
+    : cause;
+}
+
 function isSessionId(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -195,7 +232,9 @@ export const makeJcodeInstanceManager = Effect.fn("makeJcodeInstanceManager")(fu
     new JcodeInstanceManagerError({
       operation,
       detail,
-      ...(cause === undefined ? {} : { cause }),
+      // Sanitized at the single construction site, so every call path inherits
+      // the guarantee rather than remembering it.
+      ...(cause === undefined ? {} : { cause: safeCause(cause) }),
     });
 
   // The instance home is created here, at owner-only, before the daemon can
@@ -312,9 +351,23 @@ export const makeJcodeInstanceManager = Effect.fn("makeJcodeInstanceManager")(fu
     );
   const controlClient = control;
 
+  /**
+   * Absence means "no probe session to continue"; corruption means the same and
+   * is handled downstream by the decoder. An I/O failure means neither: it means
+   * *unknown*, and treating it as absence would mint a second native probe
+   * session and atomically rename its identity over a sidecar that is still
+   * there, orphaning the first session and destroying the record of its ID. So
+   * only genuine absence is recovered and everything else fails closed, with no
+   * raw platform error retained as a cause.
+   */
   const readIdentity = fs.readFileString(identityPath).pipe(
-    // Absence and corruption both mean "no probe session to continue".
-    Effect.orElseSucceed((): string | undefined => undefined),
+    Effect.catch((error) =>
+      isNotFound(error)
+        ? Effect.succeed(undefined)
+        : Effect.fail(
+            managerError("attach-probe", "Could not read the private Jcode probe identity."),
+          ),
+    ),
     Effect.map((source) => (source === undefined ? undefined : decodeJcodeProbeIdentity(source))),
   );
 

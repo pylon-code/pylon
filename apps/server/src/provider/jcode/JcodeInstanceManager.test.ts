@@ -91,6 +91,8 @@ interface Harness {
 
 interface HarnessOptions {
   readonly attachFailure?: (sessionId: string) => unknown;
+  /** Raised by `listModels`, which is how a forgotten probe session surfaces. */
+  readonly listModelsFailure?: (sessionId: string) => unknown;
   /** Never-resolving gates stand in for a native call that stops answering. */
   readonly launchGate?: Promise<void>;
   readonly shutdownGate?: Promise<void>;
@@ -152,6 +154,8 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       listSessions: async () => [...harness.liveSessions].map(sessionInfo),
       listModels: async (sessionId) => {
         harness.modelCalls.push(sessionId);
+        const failure = options.listModelsFailure?.(sessionId);
+        if (failure !== undefined) throw failure;
         return { models: [harness.currentModel, "gpt-5.5"], current: harness.currentModel };
       },
       getRuntimeInfo: async (sessionId) => {
@@ -515,6 +519,41 @@ describe("JcodeInstanceManager probe identity", () => {
     expect(harness.created[0]).not.toBe("vanished-session");
   });
 
+  it("fails closed on an unreadable identity instead of minting a duplicate session", async () => {
+    if (!POSIX) return;
+    const harness = makeHarness();
+    const observed = await runScoped(({ fs, path, stateDir }) =>
+      Effect.gen(function* () {
+        const file = probePath(stateDir, "instance-a");
+        yield* fs.makeDirectory(path.dirname(file), { recursive: true, mode: 0o700 });
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - writes the exact private sidecar bytes under test.
+        const original = `${JSON.stringify({ schemaVersion: 1, sessionId: "existing-session" })}\n`;
+        yield* fs.writeFileString(file, original);
+        // An unreadable sidecar is "unknown", not "absent": EACCES must never be
+        // mistaken for a fresh instance.
+        yield* fs.chmod(file, 0o000);
+        const error = yield* Effect.flip(
+          Effect.scoped(Effect.asVoid(makeManager({ harness, stateDir }))),
+        );
+        yield* fs.chmod(file, 0o600);
+        return { error, source: yield* fs.readFileString(file), original };
+      }),
+    );
+
+    expect(observed.error._tag).toBe("JcodeInstanceManagerError");
+    expect(observed.error.operation).toBe("attach-probe");
+    // No duplicate probe session, and the record of the existing one survives.
+    expect(harness.created).toHaveLength(0);
+    expect(observed.source).toBe(observed.original);
+    // A failed startup still stops the instance it launched.
+    expect(harness.shutdowns).toBe(1);
+    // The failure names neither the private layout nor the recorded session.
+    const rendered = `${inspect(observed.error, { depth: 10 })}${String(observed.error)}`;
+    expect(rendered).not.toContain("existing-session");
+    expect(rendered).not.toContain("probe.json");
+    expect(rendered).not.toContain("b64-");
+  });
+
   it("keeps the identity and fails startup when attach fails transiently", async () => {
     const harness = makeHarness({
       attachFailure: (sessionId) =>
@@ -573,6 +612,38 @@ describe("JcodeInstanceManager probe", () => {
       "schemaVersion",
       "sessionId",
     ]);
+  });
+
+  it("keeps the native probe session id out of every surface of a not-found probe failure", async () => {
+    // The daemon forgetting the probe session is the live route to a nested
+    // `JcodeSessionNotFoundError`, which carries the native id as an own
+    // enumerable property of a real `Error`.
+    const harness = makeHarness({
+      listModelsFailure: (sessionId) =>
+        new HarnessError("unknown_session", `session ${sessionId} is gone`),
+    });
+    const observed = await runScoped(({ stateDir }) =>
+      Effect.gen(function* () {
+        const manager = yield* makeManager({ harness, stateDir });
+        return yield* Effect.flip(manager.probe);
+      }),
+    );
+
+    const probeSession = harness.created[0]!;
+    expect(observed._tag).toBe("JcodeInstanceManagerError");
+    expect(observed.operation).toBe("probe");
+    // Everything a logger, crash printer, or serializer can realistically see.
+    const rendered = [
+      inspect(observed, { depth: 10 }),
+      JSON.stringify(observed),
+      JSON.stringify({ error: observed }),
+      String(observed),
+      observed.stack ?? "",
+    ].join("\n");
+    expect(rendered).not.toContain(probeSession);
+    expect(rendered).not.toContain("probe-session-");
+    // The typed detail still says what happened, without naming the session.
+    expect(observed.detail).toContain("no longer known");
   });
 
   it("records advertised permissions as a capability without entering supervised mode", async () => {
