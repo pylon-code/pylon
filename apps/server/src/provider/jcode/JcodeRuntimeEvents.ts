@@ -6,18 +6,23 @@
  * `ProviderRuntimeEvent` values; no wire schema, client state, or
  * provider-specific contract is introduced by this file.
  *
- * Three rules shape the mapping:
+ * Four rules shape the mapping:
  *
  *   - **Nothing native reaches a client-visible field.** Native call and task
  *     IDs become opaque `jcode-tool:` / `jcode-task:` handles, and the native
  *     session ID is never copied anywhere. A permission request's `request_id`
  *     is dropped outright rather than echoed as a correlation handle.
- *   - **Every string is bounded before it enters a payload.** Jcode streams
- *     unbounded tool output and status text, and a projection is a durable
- *     store: an unbounded copy is a persistent memory fault, not a display bug.
- *   - **State is immutable and bounded.** The adapter carries only what
- *     multi-event lifecycles require, and both per-call and per-task tracking
- *     have hard caps so a hostile or looping harness cannot grow it forever.
+ *   - **Every external string is trimmed, bounded, then rechecked.** The
+ *     canonical schemas use `TrimmedNonEmptyString`, which trims during decode
+ *     and then requires non-empty. Slicing first and checking the original
+ *     produces an all-whitespace value that fails decode, so the order matters
+ *     and a value with no content left is omitted rather than emitted blank.
+ *   - **Every payload field must exist in the canonical schema.** Writing a
+ *     field the schema does not define is silently dropped at the boundary,
+ *     which reads locally like labeling and is downstream data loss.
+ *   - **State is immutable and bounded, and nothing opened stays open.** Every
+ *     item this mapper starts or updates is completed: at `tool_done`, at
+ *     `turn_done`, or at the moment cap eviction makes it unreachable.
  *
  * `raw` is never set: it would carry native identity straight back into the
  * diagnostic envelope this mapper exists to strip.
@@ -43,9 +48,19 @@ const MAX_TEXT_LENGTH = 100_000;
 const MAX_SCALAR_LENGTH = 4_000;
 /** Accumulated tool-call input retained for JSON completion detection. */
 const MAX_TOOL_INPUT_LENGTH = 8_000;
-/** Concurrent tool calls and background tasks tracked per session. */
-const MAX_TRACKED_TOOL_CALLS = 64;
-const MAX_TRACKED_TASKS = 64;
+/** Concurrent tool calls tracked per session. */
+export const MAX_TRACKED_TOOL_CALLS = 64;
+/** Started and recently-completed background tasks tracked per session. */
+export const MAX_TRACKED_TASKS = 64;
+/**
+ * Turn segments before the counter wraps.
+ *
+ * Segment identity only has to distinguish items that can be live at the same
+ * time, and a Pylon turn holds at most a handful. Wrapping keeps the ID short
+ * and the state bounded; a monotonic counter would grow a durable ID with the
+ * session's lifetime for no benefit.
+ */
+export const MAX_TURN_SEGMENTS = 1_000;
 
 export interface JcodeEventMappingContext {
   readonly eventId: EventId;
@@ -56,20 +71,32 @@ export interface JcodeEventMappingContext {
 }
 
 /**
+ * One tool call this mapper has an open item for.
+ *
+ * `name` is optional because a `tool_input_delta` can arrive before its
+ * `tool_start`: the item still has to be tracked (and eventually closed) even
+ * though its canonical type is not yet known.
+ */
+export interface JcodeOpenToolCall {
+  readonly name?: string;
+  readonly input: string;
+}
+
+/**
  * Adapter-local state for lifecycles that span several SDK events.
  *
- * `toolNames` is kept beside `toolInputs` rather than folded into it: the
- * canonical item type of a `tool_input_delta` is derived from the tool name
- * announced by the earlier `tool_start`, and `tool_input_delta` itself carries
- * no name. Storing both in one value would make the accumulated-input bound
- * (which drives JSON completion detection) depend on the tool name's length.
+ * One map covers tool calls rather than parallel name/input maps: the close set
+ * at `turn_done` must be exactly the set of items this mapper opened, and two
+ * maps made that set a union whose halves could drift apart.
  */
 export interface JcodeEventMappingState {
   readonly assistantStarted: boolean;
   readonly reasoningStarted: boolean;
-  readonly toolInputs: ReadonlyMap<string, string>;
-  readonly toolNames: ReadonlyMap<string, string>;
+  readonly openTools: ReadonlyMap<string, JcodeOpenToolCall>;
   readonly startedTasks: ReadonlySet<string>;
+  readonly completedTasks: ReadonlySet<string>;
+  /** Distinguishes assistant/reasoning items across `turn_done` boundaries. */
+  readonly segment: number;
   readonly currentModel?: string;
 }
 
@@ -83,9 +110,10 @@ export interface JcodeEventMappingResult {
 export const initialJcodeEventMappingState: JcodeEventMappingState = {
   assistantStarted: false,
   reasoningStarted: false,
-  toolInputs: new Map(),
-  toolNames: new Map(),
+  openTools: new Map(),
   startedTasks: new Set(),
+  completedTasks: new Set(),
+  segment: 0,
 };
 
 type RuntimeEventDraft<Event> = Event extends ProviderRuntimeEvent ? Omit<Event, "eventId"> : never;
@@ -95,9 +123,18 @@ function bounded(value: string, maximum = MAX_TEXT_LENGTH): string {
   return value.length <= maximum ? value : value.slice(0, maximum);
 }
 
+/**
+ * Trim, then bound, then trim again.
+ *
+ * The second trim matters: slicing a value whose content sits just past the
+ * bound can leave trailing whitespace, and `TrimmedNonEmptyString` would reject
+ * the result. When nothing survives, the caller omits the field rather than
+ * emitting a blank one.
+ */
 function boundedNonEmpty(value: string | undefined, maximum = MAX_TEXT_LENGTH): string | undefined {
-  if (value === undefined || value.trim().length === 0) return undefined;
-  return bounded(value, maximum);
+  if (value === undefined) return undefined;
+  const sliced = bounded(value.trim(), maximum).trim();
+  return sliced.length === 0 ? undefined : sliced;
 }
 
 /** Opaque, deterministic, and reversible only inside this server process. */
@@ -115,14 +152,27 @@ function taskId(nativeTaskId: string): RuntimeTaskId {
 
 /**
  * Assistant and reasoning items are keyed by the Pylon turn (thread when the
- * mapper runs outside a turn), never by anything the harness supplied.
+ * mapper runs outside a turn) plus a segment, never by anything the harness
+ * supplied. The segment advances at `turn_done`, so a harness that ends several
+ * segments inside one Pylon turn cannot re-open a durable item that already
+ * received its terminal row.
  */
-function assistantItemId(context: JcodeEventMappingContext): RuntimeItemId {
-  return RuntimeItemId.make(`jcode-assistant:${context.turnId ?? context.threadId}`);
+function assistantItemId(
+  state: JcodeEventMappingState,
+  context: JcodeEventMappingContext,
+): RuntimeItemId {
+  return RuntimeItemId.make(
+    `jcode-assistant:${context.turnId ?? context.threadId}:${state.segment}`,
+  );
 }
 
-function reasoningItemId(context: JcodeEventMappingContext): RuntimeItemId {
-  return RuntimeItemId.make(`jcode-reasoning:${context.turnId ?? context.threadId}`);
+function reasoningItemId(
+  state: JcodeEventMappingState,
+  context: JcodeEventMappingContext,
+): RuntimeItemId {
+  return RuntimeItemId.make(
+    `jcode-reasoning:${context.turnId ?? context.threadId}:${state.segment}`,
+  );
 }
 
 function base(context: JcodeEventMappingContext) {
@@ -166,31 +216,27 @@ function ignored(state: JcodeEventMappingState): JcodeEventMappingResult {
   return { state, events: [], fatal: false };
 }
 
-/** Newest-wins insertion with a hard cap, so tracking cannot grow unbounded. */
-function withCappedEntry<Value>(
-  map: ReadonlyMap<string, Value>,
-  key: string,
-  value: Value,
+/** Newest-wins insertion with a hard cap on a set of bare IDs. */
+function withCappedMember(
+  members: ReadonlySet<string>,
+  value: string,
   maximum: number,
-): ReadonlyMap<string, Value> {
-  const next = new Map(map);
-  next.delete(key);
-  next.set(key, value);
+): ReadonlySet<string> {
+  const next = new Set(members);
+  next.delete(value);
+  next.add(value);
   while (next.size > maximum) {
-    const oldest = next.keys().next();
+    const oldest = next.values().next();
     if (oldest.done === true) break;
     next.delete(oldest.value);
   }
   return next;
 }
 
-function withoutEntry<Value>(
-  map: ReadonlyMap<string, Value>,
-  key: string,
-): ReadonlyMap<string, Value> {
-  if (!map.has(key)) return map;
-  const next = new Map(map);
-  next.delete(key);
+function withoutMember(members: ReadonlySet<string>, value: string): ReadonlySet<string> {
+  if (!members.has(value)) return members;
+  const next = new Set(members);
+  next.delete(value);
   return next;
 }
 
@@ -202,7 +248,8 @@ function nameTokens(toolName: string): ReadonlyArray<string> {
     .filter((token) => token.length > 0);
 }
 
-function canonicalToolItemType(toolName: string): ToolLifecycleItemType {
+function canonicalToolItemType(toolName: string | undefined): ToolLifecycleItemType {
+  if (toolName === undefined) return "dynamic_tool_call";
   const tokens = nameTokens(toolName);
   if (tokens[0] === "mcp") return "mcp_tool_call";
   if (tokens.some((token) => token === "bash" || token === "shell" || token === "ipython")) {
@@ -220,11 +267,6 @@ function canonicalToolItemType(toolName: string): ToolLifecycleItemType {
     return "web_search";
   }
   return "dynamic_tool_call";
-}
-
-function toolItemTypeFor(state: JcodeEventMappingState, callId: string): ToolLifecycleItemType {
-  const name = state.toolNames.get(callId);
-  return name === undefined ? "dynamic_tool_call" : canonicalToolItemType(name);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -248,6 +290,72 @@ function toolInputData(accumulated: string): Record<string, unknown> {
 
 function nonNegativeInteger(value: number | undefined): number | undefined {
   return value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+const UNFINISHED_TOOL_DETAIL = "The tool call did not report completion before the turn ended.";
+const EVICTED_TOOL_DETAIL =
+  "Jcode reported more concurrent tool calls than this provider tracks, so this one can no longer be followed.";
+
+/** The terminal row for a tool item this mapper opened but never saw finish. */
+function abandonedToolDraft(
+  call: JcodeOpenToolCall,
+  callId: string,
+  detail: string,
+  context: JcodeEventMappingContext,
+): JcodeRuntimeEventDraft {
+  const title = boundedNonEmpty(call.name, MAX_SCALAR_LENGTH);
+  return {
+    ...base(context),
+    type: "item.completed",
+    itemId: toolItemId(callId),
+    payload: {
+      itemType: canonicalToolItemType(call.name),
+      status: "failed",
+      ...(title === undefined ? {} : { title }),
+      detail,
+    },
+  };
+}
+
+/**
+ * Records an open tool call, evicting the oldest entry when the cap is reached.
+ *
+ * Eviction emits the evicted call's terminal row immediately: once it leaves
+ * the map, `turn_done` can no longer see it, and an item that is never
+ * completed spins in every client forever.
+ */
+function trackOpenTool(
+  state: JcodeEventMappingState,
+  callId: string,
+  call: JcodeOpenToolCall,
+  context: JcodeEventMappingContext,
+): {
+  readonly openTools: ReadonlyMap<string, JcodeOpenToolCall>;
+  readonly evictions: ReadonlyArray<JcodeRuntimeEventDraft>;
+} {
+  const next = new Map(state.openTools);
+  next.delete(callId);
+  next.set(callId, call);
+
+  const evictions: JcodeRuntimeEventDraft[] = [];
+  while (next.size > MAX_TRACKED_TOOL_CALLS) {
+    const oldest = next.entries().next();
+    if (oldest.done === true) break;
+    const [evictedId, evicted] = oldest.value;
+    next.delete(evictedId);
+    evictions.push(abandonedToolDraft(evicted, evictedId, EVICTED_TOOL_DETAIL, context));
+  }
+  return { openTools: next, evictions };
+}
+
+function withoutOpenTool(
+  openTools: ReadonlyMap<string, JcodeOpenToolCall>,
+  callId: string,
+): ReadonlyMap<string, JcodeOpenToolCall> {
+  if (!openTools.has(callId)) return openTools;
+  const next = new Map(openTools);
+  next.delete(callId);
+  return next;
 }
 
 const THREAD_STATE_BY_STATUS: ReadonlyMap<string, "active" | "idle" | "error"> = new Map([
@@ -275,7 +383,7 @@ function closeOpenItems(
     drafts.push({
       ...base(context),
       type: "item.completed",
-      itemId: assistantItemId(context),
+      itemId: assistantItemId(state, context),
       payload: { itemType: "assistant_message", status: "completed" },
     });
   }
@@ -283,21 +391,12 @@ function closeOpenItems(
     drafts.push({
       ...base(context),
       type: "item.completed",
-      itemId: reasoningItemId(context),
+      itemId: reasoningItemId(state, context),
       payload: { itemType: "reasoning", status: "completed", title: "Reasoning" },
     });
   }
-  for (const callId of state.toolNames.keys()) {
-    drafts.push({
-      ...base(context),
-      type: "item.completed",
-      itemId: toolItemId(callId),
-      payload: {
-        itemType: toolItemTypeFor(state, callId),
-        status: "failed",
-        detail: "The tool call did not report completion before the turn ended.",
-      },
-    });
+  for (const [callId, call] of state.openTools) {
+    drafts.push(abandonedToolDraft(call, callId, UNFINISHED_TOOL_DETAIL, context));
   }
   return drafts;
 }
@@ -317,19 +416,20 @@ export function mapJcodeRuntimeEvent(
   switch (event.ev) {
     case "text_delta": {
       const delta = bounded(event.text);
+      const itemId = assistantItemId(state, context);
       const drafts: JcodeRuntimeEventDraft[] = [];
       if (!state.assistantStarted) {
         drafts.push({
           ...base(context),
           type: "item.started",
-          itemId: assistantItemId(context),
+          itemId,
           payload: { itemType: "assistant_message", status: "inProgress" },
         });
       }
       drafts.push({
         ...base(context),
         type: "content.delta",
-        itemId: assistantItemId(context),
+        itemId,
         payload: { streamKind: "assistant_text", delta },
       });
       return result({ ...state, assistantStarted: true }, drafts, context);
@@ -337,19 +437,20 @@ export function mapJcodeRuntimeEvent(
 
     case "reasoning_delta": {
       const delta = bounded(event.text);
+      const itemId = reasoningItemId(state, context);
       const drafts: JcodeRuntimeEventDraft[] = [];
       if (!state.reasoningStarted) {
         drafts.push({
           ...base(context),
           type: "item.started",
-          itemId: reasoningItemId(context),
+          itemId,
           payload: { itemType: "reasoning", status: "inProgress", title: "Reasoning" },
         });
       }
       drafts.push({
         ...base(context),
         type: "content.delta",
-        itemId: reasoningItemId(context),
+        itemId,
         payload: { streamKind: "reasoning_text", delta },
       });
       return result({ ...state, reasoningStarted: true }, drafts, context);
@@ -363,7 +464,7 @@ export function mapJcodeRuntimeEvent(
           {
             ...base(context),
             type: "item.completed",
-            itemId: reasoningItemId(context),
+            itemId: reasoningItemId(state, context),
             payload: { itemType: "reasoning", status: "completed", title: "Reasoning" },
           },
         ],
@@ -372,27 +473,25 @@ export function mapJcodeRuntimeEvent(
     }
 
     case "tool_start": {
-      const title = boundedNonEmpty(event.name, MAX_SCALAR_LENGTH);
+      const name = boundedNonEmpty(event.name, MAX_SCALAR_LENGTH);
+      const { openTools, evictions } = trackOpenTool(
+        state,
+        event.call_id,
+        { ...(name === undefined ? {} : { name }), input: "" },
+        context,
+      );
       return result(
-        {
-          ...state,
-          toolNames: withCappedEntry(
-            state.toolNames,
-            event.call_id,
-            bounded(event.name, MAX_SCALAR_LENGTH),
-            MAX_TRACKED_TOOL_CALLS,
-          ),
-          toolInputs: withCappedEntry(state.toolInputs, event.call_id, "", MAX_TRACKED_TOOL_CALLS),
-        },
+        { ...state, openTools },
         [
+          ...evictions,
           {
             ...base(context),
             type: "item.started",
             itemId: toolItemId(event.call_id),
             payload: {
-              itemType: canonicalToolItemType(event.name),
+              itemType: canonicalToolItemType(name),
               status: "inProgress",
-              ...(title === undefined ? {} : { title }),
+              ...(name === undefined ? {} : { title: name }),
             },
           },
         ],
@@ -401,30 +500,27 @@ export function mapJcodeRuntimeEvent(
     }
 
     case "tool_input_delta": {
-      const accumulated = bounded(
-        `${state.toolInputs.get(event.call_id) ?? ""}${event.delta}`,
-        MAX_TOOL_INPUT_LENGTH,
+      const existing = state.openTools.get(event.call_id);
+      const accumulated = bounded(`${existing?.input ?? ""}${event.delta}`, MAX_TOOL_INPUT_LENGTH);
+      const name = existing?.name;
+      const { openTools, evictions } = trackOpenTool(
+        state,
+        event.call_id,
+        { ...(name === undefined ? {} : { name }), input: accumulated },
+        context,
       );
-      const title = boundedNonEmpty(state.toolNames.get(event.call_id), MAX_SCALAR_LENGTH);
       return result(
-        {
-          ...state,
-          toolInputs: withCappedEntry(
-            state.toolInputs,
-            event.call_id,
-            accumulated,
-            MAX_TRACKED_TOOL_CALLS,
-          ),
-        },
+        { ...state, openTools },
         [
+          ...evictions,
           {
             ...base(context),
             type: "item.updated",
             itemId: toolItemId(event.call_id),
             payload: {
-              itemType: toolItemTypeFor(state, event.call_id),
+              itemType: canonicalToolItemType(name),
               status: "inProgress",
-              ...(title === undefined ? {} : { title }),
+              ...(name === undefined ? {} : { title: name }),
               data: toolInputData(accumulated),
             },
           },
@@ -434,26 +530,26 @@ export function mapJcodeRuntimeEvent(
     }
 
     case "tool_exec": {
-      const title = boundedNonEmpty(event.name, MAX_SCALAR_LENGTH);
+      const name = boundedNonEmpty(event.name, MAX_SCALAR_LENGTH);
+      const existing = state.openTools.get(event.call_id);
+      const { openTools, evictions } = trackOpenTool(
+        state,
+        event.call_id,
+        { ...(name === undefined ? {} : { name }), input: existing?.input ?? "" },
+        context,
+      );
       return result(
-        {
-          ...state,
-          toolNames: withCappedEntry(
-            state.toolNames,
-            event.call_id,
-            bounded(event.name, MAX_SCALAR_LENGTH),
-            MAX_TRACKED_TOOL_CALLS,
-          ),
-        },
+        { ...state, openTools },
         [
+          ...evictions,
           {
             ...base(context),
             type: "item.updated",
             itemId: toolItemId(event.call_id),
             payload: {
-              itemType: canonicalToolItemType(event.name),
+              itemType: canonicalToolItemType(name),
               status: "inProgress",
-              ...(title === undefined ? {} : { title }),
+              ...(name === undefined ? {} : { title: name }),
             },
           },
         ],
@@ -462,22 +558,23 @@ export function mapJcodeRuntimeEvent(
     }
 
     case "tool_done": {
+      // Tolerant by design: a `tool_done` for a call this mapper never opened
+      // still completes. The harness owns call identity, and a client that saw
+      // the start through another path would otherwise hold a row that never
+      // resolves. Completing an item nobody started is inert; leaving one open
+      // is a permanent spinner.
       const failure = boundedNonEmpty(event.error);
       const detail = failure ?? boundedNonEmpty(event.output);
       const title = boundedNonEmpty(event.name, MAX_SCALAR_LENGTH);
       return result(
-        {
-          ...state,
-          toolNames: withoutEntry(state.toolNames, event.call_id),
-          toolInputs: withoutEntry(state.toolInputs, event.call_id),
-        },
+        { ...state, openTools: withoutOpenTool(state.openTools, event.call_id) },
         [
           {
             ...base(context),
             type: "item.completed",
             itemId: toolItemId(event.call_id),
             payload: {
-              itemType: canonicalToolItemType(event.name),
+              itemType: canonicalToolItemType(title),
               status: failure === undefined ? "completed" : "failed",
               ...(title === undefined ? {} : { title }),
               ...(detail === undefined ? {} : { detail }),
@@ -492,6 +589,11 @@ export function mapJcodeRuntimeEvent(
       const inputTokens = nonNegativeInteger(event.input);
       const outputTokens = nonNegativeInteger(event.output);
       if (inputTokens === undefined || outputTokens === undefined) return ignored(state);
+      // Two individually-safe counters can sum past the safe-integer range, and
+      // `NonNegativeInt` rejects the result. Report nothing rather than a
+      // number that fails canonical decode downstream.
+      const usedTokens = nonNegativeInteger(inputTokens + outputTokens);
+      if (usedTokens === undefined) return ignored(state);
       const cachedInputTokens = nonNegativeInteger(event.cache_read_input);
       return result(
         state,
@@ -501,7 +603,7 @@ export function mapJcodeRuntimeEvent(
             type: "thread.token-usage.updated",
             payload: {
               usage: {
-                usedTokens: inputTokens + outputTokens,
+                usedTokens,
                 inputTokens,
                 outputTokens,
                 ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
@@ -520,19 +622,32 @@ export function mapJcodeRuntimeEvent(
       const id = taskId(event.task_id);
 
       if (event.done === true) {
-        const next = new Set(state.startedTasks);
-        next.delete(event.task_id);
+        // A repeated terminal frame must not produce a second terminal row.
+        // Tracking is capped like everything else, so a very long-lived session
+        // can eventually forget a completion and repeat it; that is the bounded
+        // trade, and it beats unbounded growth.
+        if (state.completedTasks.has(event.task_id)) return ignored(state);
         return result(
-          { ...state, startedTasks: next },
+          {
+            ...state,
+            startedTasks: withoutMember(state.startedTasks, event.task_id),
+            completedTasks: withCappedMember(
+              state.completedTasks,
+              event.task_id,
+              MAX_TRACKED_TASKS,
+            ),
+          },
           [
             {
               ...base(context),
+              // `TaskCompletedPayload` defines no `title`, so the label is
+              // folded into `summary`, the only free-text field it has.
+              // Writing `title` here would silently drop the label.
               type: "task.completed",
               payload: {
                 taskId: id,
                 status: "completed",
-                title: description,
-                ...(summary === undefined ? {} : { summary }),
+                summary: summary ?? description,
               },
             },
           ],
@@ -550,7 +665,6 @@ export function mapJcodeRuntimeEvent(
               payload: {
                 taskId: id,
                 description,
-                title: description,
                 status: "running",
                 ...(summary === undefined ? {} : { summary }),
               },
@@ -560,14 +674,19 @@ export function mapJcodeRuntimeEvent(
         );
       }
 
-      const started = [...state.startedTasks, event.task_id].slice(-MAX_TRACKED_TASKS);
       return result(
-        { ...state, startedTasks: new Set(started) },
+        {
+          ...state,
+          startedTasks: withCappedMember(state.startedTasks, event.task_id, MAX_TRACKED_TASKS),
+          // A task that reports progress after completing has restarted, so it
+          // is allowed to reach a terminal row again.
+          completedTasks: withoutMember(state.completedTasks, event.task_id),
+        },
         [
           {
             ...base(context),
             type: "task.started",
-            payload: { taskId: id, description, title: description },
+            payload: { taskId: id, description },
           },
         ],
         context,
@@ -627,7 +746,11 @@ export function mapJcodeRuntimeEvent(
       return result(
         {
           ...initialJcodeEventMappingState,
+          // Model and task identity outlive one segment; item identity does not.
           ...(state.currentModel === undefined ? {} : { currentModel: state.currentModel }),
+          startedTasks: state.startedTasks,
+          completedTasks: state.completedTasks,
+          segment: (state.segment + 1) % MAX_TURN_SEGMENTS,
         },
         drafts,
         context,
