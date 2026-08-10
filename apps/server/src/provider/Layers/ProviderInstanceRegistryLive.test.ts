@@ -16,12 +16,22 @@
  *     across every provider — any driver plugs into the registry through
  *     the same `ProviderDriver` value contract.
  *
- * Every instance in these tests is configured with `enabled: false` so the
+ *  3. **Same driver, many *private daemons*** — the "multi-instance jcode
+ *     slice" describe block configures two *enabled* `jcode` instances, each
+ *     backed by its own fake SDK module behind the real
+ *     `makeJcodeInstanceManager`. Unlike the slices below it, this one has to
+ *     run enabled: a private-daemon provider only has a home, a socket, a
+ *     control client, and a catalog once its instance is actually up, and those
+ *     are exactly the things that must not be shared between instances.
+ *
+ * Every instance in the codex and all-drivers slices is configured with
+ * `enabled: false` so the
  * provider-status checks short-circuit to pending/disabled snapshots
  * without trying to spawn real `codex` / `claude` / `agent` / `grok` / `opencode`
  * binaries. That keeps the assertions focused on registry routing
  * behaviour rather than the runtime details of each provider.
  */
+import type { LaunchOptions, RuntimeInfo, SessionInfo } from "@1jehuang/jcode-sdk";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -29,6 +39,7 @@ import {
   type CodexSettings,
   type CursorSettings,
   type GrokSettings,
+  type JcodeSettings,
   type OpenCodeSettings,
   ProviderDriverKind,
   type ProviderInstanceConfigMap,
@@ -36,9 +47,12 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
@@ -47,7 +61,11 @@ import { ClaudeDriver } from "../Drivers/ClaudeDriver.ts";
 import { CodexDriver } from "../Drivers/CodexDriver.ts";
 import { CursorDriver } from "../Drivers/CursorDriver.ts";
 import { GrokDriver } from "../Drivers/GrokDriver.ts";
+import { makeJcodeDriver } from "../Drivers/JcodeDriver.ts";
 import { OpenCodeDriver } from "../Drivers/OpenCodeDriver.ts";
+import { makeJcodeInstanceManager } from "../jcode/JcodeInstanceManager.ts";
+import { jcodeHomePath } from "../jcode/JcodePaths.ts";
+import { makeJcodeSdkBridge, type JcodeSdkClientLike } from "../jcode/JcodeSdkBridge.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
@@ -131,6 +149,305 @@ const makeOpenCodeConfig = (overrides: Partial<OpenCodeSettings>): OpenCodeSetti
   serverPassword: "",
   customModels: [],
   ...overrides,
+});
+
+const makeJcodeConfig = (overrides: Partial<JcodeSettings>): JcodeSettings => ({
+  enabled: true,
+  binaryPath: "jcode",
+  inheritLogins: true,
+  ...overrides,
+});
+
+interface SpawnCall {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+}
+
+/**
+ * Records every spawn so each instance's executable probe stays attributable.
+ *
+ * The count is deliberately not asserted: `makeManagedServerProvider` may
+ * re-check a provider whenever settings or background policy say it should, so
+ * a fixed spawn count would be a scheduling assertion rather than an isolation
+ * one. What must hold per instance is *which binary* was probed.
+ */
+const jcodeSpawnerLayer = (calls: Array<SpawnCall>) =>
+  Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly command: string;
+        readonly args: ReadonlyArray<string>;
+      };
+      calls.push({ command: childProcess.command, args: childProcess.args });
+      return Effect.succeed(
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.make(new TextEncoder().encode("jcode v0.73.0\n")),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        }),
+      );
+    }),
+  );
+
+/**
+ * One fake Jcode daemon per provider instance.
+ *
+ * Only the SDK module is faked: each instance still runs the real
+ * `makeJcodeInstanceManager`, so its private home, its control connection, its
+ * hidden probe session, and its server-reported catalog are all production code
+ * paths observable per instance.
+ */
+function makeJcodeDaemonDouble(input: { readonly socketPath: string; readonly model: string }) {
+  const launches: LaunchOptions[] = [];
+  const connects: Array<{ readonly socketPath: string; readonly clientName: string }> = [];
+  const clients: JcodeSdkClientLike[] = [];
+  const state = { shutdowns: 0 };
+
+  const sessionInfo = (sessionId: string): SessionInfo => ({
+    session_id: sessionId,
+    status: "idle",
+  });
+  const runtimeInfo = (sessionId: string): RuntimeInfo => ({
+    server: "jcode-harness-api-bridge/0.1.0",
+    protocolVersion: 1,
+    capabilities: ["sessions", "models"],
+    healthy: true,
+    sessionId,
+    model: input.model,
+    providers: ["anthropic"],
+    routes: [
+      {
+        model: input.model,
+        provider: "anthropic",
+        api_method: "messages",
+        available: true,
+        detail: "",
+      },
+    ],
+  });
+
+  const sdk = {
+    launchInstance: async (options: LaunchOptions) => {
+      launches.push(options);
+      return {
+        socketPath: input.socketPath,
+        jcodeHome: options.jcodeHome ?? input.socketPath,
+        shutdown: async () => {
+          state.shutdowns += 1;
+        },
+      };
+    },
+    connect: async (options: { readonly socketPath: string; readonly clientName: string }) => {
+      connects.push(options);
+      const client: JcodeSdkClientLike = {
+        server: "jcode-harness-api-bridge/0.1.0",
+        capabilities: ["sessions", "models"],
+        supports: () => true,
+        createSession: async () => sessionInfo(`probe-session-${clients.length + 1}`),
+        attachSession: async (sessionId) => sessionInfo(sessionId),
+        detachSession: async () => {},
+        listSessions: async () => [],
+        listModels: async () => ({ models: [input.model], current: input.model }),
+        getRuntimeInfo: async (sessionId) => runtimeInfo(sessionId),
+        setModel: async () => {},
+        setReasoningEffort: async () => {},
+        sendMessage: async () => {},
+        cancel: async () => {},
+        getHistory: async () => [],
+        // eslint-disable-next-line require-yield
+        events: async function* () {},
+        close: async () => {},
+      };
+      clients.push(client);
+      return client;
+    },
+  };
+
+  return {
+    sdk,
+    launches,
+    connects,
+    clients,
+    socketPath: input.socketPath,
+    shutdowns: () => state.shutdowns,
+  };
+}
+
+describe("ProviderInstanceRegistryLive — multi-instance jcode slice", () => {
+  const testLayer = (calls: Array<SpawnCall>) =>
+    Layer.mergeAll(
+      NodeServices.layer,
+      jcodeSpawnerLayer(calls),
+      BackgroundPolicyAlwaysRunLayer,
+      ServerSettingsService.layerTest(),
+      TestHttpClientLive,
+      Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers),
+      ServerConfig.layerTest(process.cwd(), {
+        prefix: "provider-instance-registry-jcode-test",
+      }).pipe(Layer.provide(NodeServices.layer)),
+    );
+
+  const PERSONAL_SECRET = "sk-jcode-personal-9999";
+  const WORK_SECRET = "sk-jcode-work-1111";
+
+  it.live("gives two private Jcode instances their own daemon, home, and catalog", () => {
+    const calls: Array<SpawnCall> = [];
+    const personalId = ProviderInstanceId.make("jcode_personal");
+    const workId = ProviderInstanceId.make("jcode_work");
+    const jcodeDriverKind = ProviderDriverKind.make("jcode");
+    const daemons = new Map([
+      [
+        String(personalId),
+        makeJcodeDaemonDouble({
+          socketPath: "/tmp/jcode-personal/api.sock",
+          model: "claude-opus-5",
+        }),
+      ],
+      [
+        String(workId),
+        makeJcodeDaemonDouble({ socketPath: "/tmp/jcode-work/api.sock", model: "gpt-5.5-work" }),
+      ],
+    ]);
+    const personal = daemons.get(String(personalId))!;
+    const work = daemons.get(String(workId))!;
+
+    // The real instance manager, pointed at this instance's own fake daemon.
+    const driver = makeJcodeDriver({
+      makeInstanceManager: (input) =>
+        makeJcodeInstanceManager({
+          ...input,
+          bridge: makeJcodeSdkBridge(daemons.get(String(input.instanceId))!.sdk),
+        }),
+    });
+
+    const personalEntry = {
+      driver: jcodeDriverKind,
+      displayName: "Jcode (personal)",
+      enabled: true,
+      environment: [{ name: "PYLON_TEST_PERSONAL_KEY", value: PERSONAL_SECRET, sensitive: true }],
+      config: makeJcodeConfig({
+        binaryPath: "/opt/jcode-personal/bin/jcode",
+        inheritLogins: true,
+      }),
+    };
+    const workEntry = {
+      driver: jcodeDriverKind,
+      displayName: "Jcode (work)",
+      enabled: true,
+      environment: [{ name: "PYLON_TEST_WORK_KEY", value: WORK_SECRET, sensitive: true }],
+      config: makeJcodeConfig({
+        binaryPath: "/opt/jcode-work/bin/jcode",
+        inheritLogins: false,
+      }),
+    };
+    const configMap: ProviderInstanceConfigMap = {
+      [personalId]: personalEntry,
+      [workId]: workEntry,
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const serverConfig = yield* ServerConfig;
+      const homes = {
+        personal: jcodeHomePath({ stateDir: serverConfig.stateDir, instanceId: personalId }),
+        work: jcodeHomePath({ stateDir: serverConfig.stateDir, instanceId: workId }),
+      };
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const { registry, mutator } = yield* makeProviderInstanceRegistry({
+            drivers: [driver],
+            configMap,
+          });
+
+          const instances = yield* registry.listInstances;
+          expect(instances).toHaveLength(2);
+          expect(yield* registry.listUnavailable).toEqual([]);
+
+          // One private daemon per instance, each under its own JCODE_HOME.
+          expect(personal.launches).toHaveLength(1);
+          expect(work.launches).toHaveLength(1);
+          expect(homes.personal).not.toBe(homes.work);
+          expect(personal.launches[0]!.jcodeHome).toBe(homes.personal);
+          expect(work.launches[0]!.jcodeHome).toBe(homes.work);
+          expect(yield* fs.exists(homes.personal)).toBe(true);
+          expect(yield* fs.exists(homes.work)).toBe(true);
+
+          // Each instance's configured binary and credential mode reach its own
+          // launch, and neither launch carries the other's secret.
+          expect(personal.launches[0]!.binary).toBe("/opt/jcode-personal/bin/jcode");
+          expect(work.launches[0]!.binary).toBe("/opt/jcode-work/bin/jcode");
+          expect(personal.launches[0]!.inheritLogins).toBe(true);
+          expect(work.launches[0]!.inheritLogins).toBe(false);
+          const personalEnv = Object.values(personal.launches[0]!.env ?? {});
+          const workEnv = Object.values(work.launches[0]!.env ?? {});
+          expect(personalEnv).toContain(PERSONAL_SECRET);
+          expect(personalEnv).not.toContain(WORK_SECRET);
+          expect(workEnv).toContain(WORK_SECRET);
+          expect(workEnv).not.toContain(PERSONAL_SECRET);
+
+          // One control client each, on its own private socket, and never the
+          // sibling's.
+          expect(personal.socketPath).not.toBe(work.socketPath);
+          expect(personal.connects).toEqual([
+            { socketPath: personal.socketPath, clientName: "pylon-jcode-control/1" },
+          ]);
+          expect(work.connects).toEqual([
+            { socketPath: work.socketPath, clientName: "pylon-jcode-control/1" },
+          ]);
+          expect(personal.clients[0]).not.toBe(work.clients[0]);
+
+          // Server-reported catalogs stay per instance.
+          const personalInstance = yield* registry.getInstance(personalId);
+          const workInstance = yield* registry.getInstance(workId);
+          expect(personalInstance!.adapter).not.toBe(workInstance!.adapter);
+          expect(personalInstance!.snapshot).not.toBe(workInstance!.snapshot);
+          const personalSnapshot = yield* personalInstance!.snapshot.getSnapshot;
+          const workSnapshot = yield* workInstance!.snapshot.getSnapshot;
+          expect(personalSnapshot.instanceId).toBe(personalId);
+          expect(personalSnapshot.driver).toBe(jcodeDriverKind);
+          expect(personalSnapshot.status).toBe("ready");
+          expect(personalSnapshot.models.map((model) => model.slug)).toEqual(["claude-opus-5"]);
+          expect(workSnapshot.models.map((model) => model.slug)).toEqual(["gpt-5.5-work"]);
+          // @effect-diagnostics-next-line preferSchemaOverJson:off - cross-instance leak assertion.
+          expect(JSON.stringify(workSnapshot)).not.toContain("claude-opus-5");
+          // Each instance probed its own configured executable, and the probe
+          // is always exactly `--version`.
+          expect(calls.every((call) => call.args.length === 1)).toBe(true);
+          expect(new Set(calls.flatMap((call) => call.args))).toEqual(new Set(["--version"]));
+          expect(new Set(calls.map((call) => call.command))).toEqual(
+            new Set(["/opt/jcode-personal/bin/jcode", "/opt/jcode-work/bin/jcode"]),
+          );
+
+          // Removing one instance closes only that instance's scope: its daemon
+          // stops, and the survivor keeps serving from its own.
+          yield* mutator.reconcile({ [workId]: workEntry });
+          expect(personal.shutdowns()).toBe(1);
+          expect(work.shutdowns()).toBe(0);
+          expect(yield* registry.getInstance(personalId)).toBeUndefined();
+          const survivor = yield* registry.getInstance(workId);
+          expect(survivor).toBeDefined();
+          const refreshed = yield* survivor!.snapshot.refresh;
+          expect(refreshed.models.map((model) => model.slug)).toEqual(["gpt-5.5-work"]);
+          // The survivor was never rebuilt, so it never launched a second daemon.
+          expect(work.launches).toHaveLength(1);
+        }),
+      );
+
+      // The registry scope owns every surviving instance scope.
+      expect(work.shutdowns()).toBe(1);
+      expect(personal.shutdowns()).toBe(1);
+    }).pipe(Effect.provide(testLayer(calls)));
+  });
 });
 
 describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {

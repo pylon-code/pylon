@@ -806,6 +806,113 @@ describe("JcodeInstanceManager session clients", () => {
   });
 });
 
+describe("JcodeInstanceManager cold restart", () => {
+  it("reattaches the exact recorded probe session after a clean stop and a fresh manager", async () => {
+    // Two harnesses model one surviving daemon across a server restart: the
+    // private state directory persists, while the child connection, its event
+    // stream, and every counter are new.
+    const before = makeHarness();
+    const after = makeHarness();
+    const observed = await runScoped(({ fs, stateDir }) =>
+      Effect.gen(function* () {
+        const persisted = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const manager = yield* makeManager({ harness: before, stateDir });
+            yield* manager.connectSessionClient;
+            // A clean stop, not an abandoned process: the recorded identity must
+            // survive the shutdown that closes the control client.
+            yield* manager.shutdown;
+            return yield* fs.readFileString(probePath(stateDir, "instance-a"));
+          }),
+        );
+        yield* makeManager({ harness: after, stateDir });
+        return { persisted, reread: yield* fs.readFileString(probePath(stateDir, "instance-a")) };
+      }),
+    );
+
+    const recorded = before.created[0]!;
+    expect(before.shutdowns).toBe(1);
+    // The restarted manager attaches the exact recorded session and mints none.
+    expect(after.created).toEqual([]);
+    expect(after.events).toContain(`attach:client-1:${recorded}`);
+    expect(after.clients[0]!.attached).toEqual([recorded]);
+    // The identity is a durable record, not a cache rewritten on every boot.
+    expect(observed.reread).toBe(observed.persisted);
+    expect((JSON.parse(observed.reread) as { sessionId: string }).sessionId).toBe(recorded);
+    // Reattach reads the sidecar and nothing else: no catalog, no runtime info.
+    expect(after.modelCalls).toEqual([]);
+    expect(after.runtimeCalls).toEqual([]);
+  });
+});
+
+describe("JcodeInstanceManager cross-provider isolation", () => {
+  it("stops only what its own bridge handed it, never a process handle or a sibling manager", async () => {
+    const harness = makeHarness();
+    // A sibling provider's manager and a raw process handle, both hanging off
+    // the object the SDK returns. Jcode teardown must reach neither.
+    const foreign = { shutdowns: 0, kills: 0 };
+    const kills: string[] = [];
+    const sdk: JcodeSdkModule = {
+      ...harness.sdk,
+      launchInstance: async (options) => {
+        const launched = await harness.sdk.launchInstance(options);
+        // Assigned through a local so the extra members are structurally
+        // reachable, exactly as a passthrough of the raw SDK value would be.
+        const withHandles = {
+          ...launched,
+          pid: 4242,
+          kill: () => {
+            kills.push("kill");
+          },
+          primeAgentManager: {
+            shutdown: () => {
+              foreign.shutdowns += 1;
+            },
+            kill: () => {
+              foreign.kills += 1;
+            },
+          },
+        };
+        return withHandles;
+      },
+    };
+
+    const observed = await runScoped(({ stateDir }) =>
+      Effect.gen(function* () {
+        const bridge = makeJcodeSdkBridge(sdk);
+        const manager = yield* makeJcodeInstanceManager({
+          bridge,
+          instanceId: "instance-a",
+          stateDir,
+          settings: { binaryPath: "jcode", inheritLogins: true },
+          environment: { PATH: "/usr/bin" },
+          credentialValues: [SECRET],
+        });
+        yield* manager.shutdown;
+        // The launched value every Jcode consumer can ever see.
+        const launched = yield* bridge.launchInstance({
+          jcodeHome: `${stateDir}/probe-launch`,
+          inheritLogins: false,
+        });
+        return {
+          surface: Object.keys(manager).toSorted(),
+          launched: Object.keys(launched).toSorted(),
+        };
+      }),
+    );
+
+    expect(harness.shutdowns).toBe(1);
+    // Teardown asked the instance to stop; it never killed anything, and never
+    // touched the sibling provider's manager.
+    expect(kills).toEqual([]);
+    expect(foreign).toEqual({ shutdowns: 0, kills: 0 });
+    // The bridge is a narrowing boundary rather than a passthrough, so no pid,
+    // no kill, and no foreign manager is reachable from a launched instance.
+    expect(observed.launched).toEqual(["jcodeHome", "shutdown", "socketPath"]);
+    expect(observed.surface).toEqual(["connectSessionClient", "probe", "shutdown"]);
+  });
+});
+
 describe("JcodeInstanceManager deadlines", () => {
   it("fails launch with a typed error when the instance never becomes available", async () => {
     const stalled = stalledCall();

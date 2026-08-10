@@ -270,6 +270,12 @@ interface ScenarioOptions {
   readonly threadId?: ThreadId;
   /** Seeds the private sidecar before the runtime starts. */
   readonly seedIdentity?: { readonly sessionId: string; readonly workingDir?: string };
+  /**
+   * Reuses an earlier scenario's private state directory and working directory,
+   * which is how a cold restart reaches the identity a previous boot persisted.
+   */
+  readonly stateDir?: string;
+  readonly cwd?: string;
 }
 
 /**
@@ -291,8 +297,10 @@ const scenario = (harness: Harness, options: ScenarioOptions = {}) =>
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig.ServerConfig;
-    const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-runtime-state-" });
-    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-runtime-cwd-" });
+    const stateDir =
+      options.stateDir ?? (yield* fs.makeTempDirectoryScoped({ prefix: "jcode-runtime-state-" }));
+    const cwd =
+      options.cwd ?? (yield* fs.makeTempDirectoryScoped({ prefix: "jcode-runtime-cwd-" }));
     const threadId = options.threadId ?? THREAD_ID;
     const identityPath = jcodeThreadIdentityPath({
       stateDir,
@@ -1071,6 +1079,137 @@ describe("JcodeSessionRuntime event mapping", () => {
     );
 
     expect(events.map((event) => event.type)).toEqual(["item.started"]);
+  });
+});
+
+describe("JcodeSessionRuntime cold restart", () => {
+  it("attaches the exact recorded session on a fresh runtime over the same state directory", async () => {
+    // Two harnesses model one surviving daemon across a server restart: the
+    // private state directory persists, while the child client, its event
+    // stream, and every counter are new.
+    const before = makeHarness();
+    const after = makeHarness();
+    const observed = await runScoped(() =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const first = yield* scenario(before, {});
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const runtime = yield* makeJcodeSessionRuntime(first.input);
+            yield* runtime.sendTurn(turnInput());
+            before.source.push({ ev: "turn_done", session_id: NATIVE_SESSION_ID });
+            // A clean stop, so the restart below is a cold one rather than a crash.
+            yield* runtime.close;
+          }),
+        );
+        const persisted = yield* fs.readFileString(first.identityPath);
+
+        const restarted = yield* scenario(after, {
+          resumeCursor: JCODE_RESUME_CURSOR,
+          stateDir: first.stateDir,
+          cwd: first.cwd,
+        });
+        const runtime = yield* makeJcodeSessionRuntime(restarted.input);
+        const collector = yield* collect(runtime, 4).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        after.source.push(textDelta("live"));
+        after.source.push({ ev: "turn_done", session_id: NATIVE_SESSION_ID });
+        return {
+          session: runtime.session,
+          events: yield* Fiber.join(collector),
+          persisted,
+          reread: yield* fs.readFileString(first.identityPath),
+        };
+      }),
+    );
+
+    // The exact native session recorded on disk is attached, and none is minted.
+    expect(after.attached).toEqual([NATIVE_SESSION_ID]);
+    expect(after.created).toEqual([]);
+    expect(observed.session.restored).toBe(true);
+    expect(observed.session.resumeCursor).toEqual(JCODE_RESUME_CURSOR);
+    // The identity is a durable record, not a cache rewritten on every boot.
+    expect(observed.reread).toBe(observed.persisted);
+    // Reattach replays nothing: no history read, and the first events on the
+    // restarted stream are the live frames the daemon pushed after it.
+    expect(after.histories).toEqual([]);
+    expect(observed.events.map((event) => event.type)).toEqual([
+      "item.started",
+      "content.delta",
+      "item.completed",
+      "turn.completed",
+    ]);
+    expect(before.closes).toBe(1);
+    expect(after.source.starts).toBe(1);
+  });
+});
+
+describe("JcodeSessionRuntime active disconnect", () => {
+  it("ends a live turn on a mid-turn transport failure and closes once with its scope", async () => {
+    const harness = makeHarness();
+    // Waiting on the runtime's own events and then on scope closure is the whole
+    // synchronization here: no sleep, no polling, no deadline.
+    const events = await runScoped(() =>
+      Effect.gen(function* () {
+        const built = yield* scenario(harness, {});
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const runtime = yield* makeJcodeSessionRuntime(built.input);
+            const collector = yield* collectAll(runtime).pipe(
+              Effect.forkChild({ startImmediately: true }),
+            );
+            yield* runtime.sendTurn(turnInput());
+            harness.source.push(textDelta("partial"));
+            harness.source.fail(new Error(`socket closed at ${NATIVE_SOCKET} for ${SECRET}`));
+            return yield* Fiber.join(collector);
+          }),
+        );
+      }),
+    );
+
+    const types = events.map((event) => event.type);
+    expect(types.filter((type) => type === "turn.aborted")).toHaveLength(1);
+    expect(types.filter((type) => type === "session.exited")).toHaveLength(1);
+    // A turn the daemon never finished must not be reported as completed.
+    expect(types).not.toContain("turn.completed");
+    expect(types.at(-1)).toBe("session.exited");
+    for (const event of events) expect(() => decodeRuntimeEvent(event)).not.toThrow();
+    // No reconnect, no retried write, no synthesized history.
+    expect(harness.source.starts).toBe(1);
+    expect(harness.sent).toHaveLength(1);
+    expect(harness.histories).toEqual([]);
+    // The scope has closed by now, and teardown was idempotent across the
+    // transport failure, the runtime finalizer, and the scope finalizer.
+    expect(harness.closes).toBe(1);
+    expect(harness.source.returns).toBe(1);
+  });
+
+  it("reports exactly one completion and one exit when the transport dies after a turn", async () => {
+    const harness = makeHarness();
+    const events = await runScoped(() =>
+      Effect.gen(function* () {
+        const built = yield* scenario(harness, {});
+        const runtime = yield* makeJcodeSessionRuntime(built.input);
+        const collector = yield* collectAll(runtime).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* runtime.sendTurn(turnInput());
+        harness.source.push({ ev: "turn_done", session_id: NATIVE_SESSION_ID });
+        harness.source.fail(new Error("socket closed"));
+        return yield* Fiber.join(collector);
+      }),
+    );
+
+    const types = events.map((event) => event.type);
+    // The transport failure must not republish the completion the daemon
+    // already reported, nor abort the turn it belongs to.
+    expect(types.filter((type) => type === "turn.completed")).toHaveLength(1);
+    expect(types.filter((type) => type === "session.exited")).toHaveLength(1);
+    expect(types).not.toContain("turn.aborted");
+    expect(harness.sent).toHaveLength(1);
+    expect(harness.source.starts).toBe(1);
+    expect(harness.histories).toEqual([]);
   });
 });
 

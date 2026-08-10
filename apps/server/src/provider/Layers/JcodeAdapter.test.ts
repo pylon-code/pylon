@@ -1,4 +1,4 @@
-import type { ApiEvent, SessionInfo } from "@1jehuang/jcode-sdk";
+import type { ApiEvent, LaunchOptions, SessionInfo } from "@1jehuang/jcode-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -12,12 +12,18 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../../config.ts";
-import type { JcodeInstanceManager, JcodeInstanceProbe } from "../jcode/JcodeInstanceManager.ts";
+import {
+  makeJcodeInstanceManager,
+  type JcodeInstanceManager,
+  type JcodeInstanceProbe,
+} from "../jcode/JcodeInstanceManager.ts";
+import { jcodeThreadIdentityPath } from "../jcode/JcodePaths.ts";
 import {
   makeJcodeSdkBridge,
   type JcodeSdkClientLike,
@@ -99,6 +105,7 @@ interface FakeClient {
   readonly setModels: Array<{ readonly sessionId: string; readonly model: string }>;
   readonly setEfforts: Array<{ readonly sessionId: string; readonly effort: string }>;
   readonly cancels: string[];
+  readonly detached: string[];
   closes: number;
 }
 
@@ -106,6 +113,8 @@ interface FakeSdk {
   readonly sdk: JcodeSdkModule;
   /** One entry per `connect`, so per-session lifetimes are countable. */
   readonly clients: FakeClient[];
+  /** One entry per launched daemon, so "exactly one instance" is measurable. */
+  readonly launches: LaunchOptions[];
 }
 
 function sessionInfo(sessionId: string, workingDir?: string): SessionInfo {
@@ -127,12 +136,16 @@ interface FakeSdkOptions {
 
 function makeFakeSdk(options: FakeSdkOptions = {}): FakeSdk {
   const clients: FakeClient[] = [];
+  const launches: LaunchOptions[] = [];
   const sdk: JcodeSdkModule = {
-    launchInstance: async () => ({
-      socketPath: NATIVE_SOCKET,
-      jcodeHome: "/private/var/folders/jcode-home-abc",
-      shutdown: async () => {},
-    }),
+    launchInstance: async (launchOptions) => {
+      launches.push(launchOptions);
+      return {
+        socketPath: NATIVE_SOCKET,
+        jcodeHome: launchOptions.jcodeHome ?? "/private/var/folders/jcode-home-abc",
+        shutdown: async () => {},
+      };
+    },
     connect: async () => {
       const state: FakeClient = {
         sessionId: `${NATIVE_SESSION_ID}-${clients.length + 1}`,
@@ -141,6 +154,7 @@ function makeFakeSdk(options: FakeSdkOptions = {}): FakeSdk {
         setModels: [],
         setEfforts: [],
         cancels: [],
+        detached: [],
         closes: 0,
       };
       clients.push(state);
@@ -150,7 +164,9 @@ function makeFakeSdk(options: FakeSdkOptions = {}): FakeSdk {
         supports: () => true,
         createSession: async (workingDir) => sessionInfo(state.sessionId, workingDir),
         attachSession: async (sessionId) => sessionInfo(sessionId),
-        detachSession: async () => {},
+        detachSession: async (sessionId) => {
+          state.detached.push(sessionId);
+        },
         listSessions: async () => [],
         listModels: async () => ({ models: [] }),
         getRuntimeInfo: async () => {
@@ -179,7 +195,7 @@ function makeFakeSdk(options: FakeSdkOptions = {}): FakeSdk {
       return client;
     },
   };
-  return { sdk, clients };
+  return { sdk, clients, launches };
 }
 
 const PROBE: JcodeInstanceProbe = {
@@ -275,6 +291,65 @@ const collectEvents = (adapter: JcodeAdapterShape, count: number) =>
     Effect.map((chunk) => Array.from(chunk).map((event) => decodeRuntimeEvent(event))),
     Effect.forkChild({ startImmediately: true }),
   );
+
+/**
+ * The same adapter, but over the *real* instance manager.
+ *
+ * The manager double cannot answer "how many daemons did two threads launch",
+ * because it never launches one. Here the launch, the control client, the hidden
+ * probe session, and every child connection are production code paths, with only
+ * the SDK module faked.
+ */
+const concurrentFixture = () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const serverConfig = yield* ServerConfig.ServerConfig;
+    const fake = makeFakeSdk();
+    const bridge = makeJcodeSdkBridge(fake.sdk);
+    const manager = yield* makeJcodeInstanceManager({
+      bridge,
+      instanceId: INSTANCE_KEY,
+      stateDir: serverConfig.stateDir,
+      settings: { binaryPath: "/usr/local/bin/jcode", inheritLogins: true },
+      environment: { PATH: "/usr/bin" },
+      credentialValues: [],
+    }).pipe(Effect.orDie);
+    const adapter = yield* makeJcodeAdapter({
+      providerInstanceId: PROVIDER_INSTANCE_ID,
+      instanceKey: INSTANCE_KEY,
+      bridge,
+      manager,
+    });
+    // Two threads with their own working directories, as two Pylon threads have.
+    const firstCwd = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-adapter-cwd-a-" });
+    const secondCwd = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-adapter-cwd-b-" });
+    const identityPath = (threadId: ThreadId) =>
+      jcodeThreadIdentityPath({
+        stateDir: serverConfig.stateDir,
+        instanceId: INSTANCE_KEY,
+        threadId,
+        join: (...segments) => path.join(...segments),
+      });
+    yield* adapter.startSession(startInput({ cwd: firstCwd }));
+    yield* adapter.startSession(startInput({ cwd: secondCwd, threadId: OTHER_THREAD_ID }));
+    return {
+      adapter,
+      fake,
+      firstCwd,
+      secondCwd,
+      identityPath,
+      // Index 0 is the manager's control client; each thread owns the next one.
+      firstClient: fake.clients[1]!,
+      secondClient: fake.clients[2]!,
+    };
+  });
+
+const textDelta = (client: FakeClient, text: string): ApiEvent =>
+  ({ ev: "text_delta", session_id: client.sessionId, text }) as ApiEvent;
+
+const turnDone = (client: FakeClient): ApiEvent =>
+  ({ ev: "turn_done", session_id: client.sessionId }) as ApiEvent;
 
 describe("makeJcodeAdapter", () => {
   it.effect("declares the Jcode adapter contract", () =>
@@ -834,6 +909,123 @@ describe("makeJcodeAdapter", () => {
         } else {
           expect.unreachable("respondToUserInput must report a typed unsupported operation");
         }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("serves two threads from one launched instance with private identities", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { fake, firstCwd, secondCwd, identityPath, firstClient, secondClient } =
+          yield* concurrentFixture();
+
+        // One daemon for the provider instance, one control client, and exactly
+        // one child connection per thread.
+        expect(fake.launches).toHaveLength(1);
+        expect(fake.clients).toHaveLength(3);
+        expect(firstClient).not.toBe(secondClient);
+
+        const files = [identityPath(THREAD_ID), identityPath(OTHER_THREAD_ID)];
+        expect(files[0]).not.toBe(files[1]);
+        const identities = yield* Effect.forEach(files, (file) => fs.readFileString(file));
+        const parsed = identities.map(
+          (source) =>
+            JSON.parse(source) as { readonly sessionId: string; readonly workingDir: string },
+        );
+        // Each thread has its own private identity file naming its own native
+        // session and its own working directory.
+        expect(parsed[0]!.sessionId).not.toBe(parsed[1]!.sessionId);
+        expect(parsed.map((identity) => identity.sessionId)).toEqual([
+          firstClient.sessionId,
+          secondClient.sessionId,
+        ]);
+        expect(parsed.map((identity) => identity.workingDir)).toEqual([firstCwd, secondCwd]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps interleaved events attached to the thread and turn that produced them", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, firstClient, secondClient } = yield* concurrentFixture();
+        // Two turn.started, then item.started + content.delta for each thread's
+        // first delta, plus one more content.delta on the first thread.
+        const collector = yield* collectEvents(adapter, 7);
+        const firstTurn = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "one" });
+        const secondTurn = yield* adapter.sendTurn({ threadId: OTHER_THREAD_ID, input: "two" });
+
+        firstClient.source.push(textDelta(firstClient, "a"));
+        secondClient.source.push(textDelta(secondClient, "b"));
+        firstClient.source.push(textDelta(firstClient, "c"));
+        const events = yield* Fiber.join(collector);
+
+        const forThread = (threadId: ThreadId) =>
+          events.filter((event) => event.threadId === threadId);
+        expect(forThread(THREAD_ID).map((event) => event.type)).toEqual([
+          "turn.started",
+          "item.started",
+          "content.delta",
+          "content.delta",
+        ]);
+        expect(forThread(OTHER_THREAD_ID).map((event) => event.type)).toEqual([
+          "turn.started",
+          "item.started",
+          "content.delta",
+        ]);
+        // Nothing crosses over: every event carries its own thread's turn id.
+        expect(firstTurn.turnId).not.toBe(secondTurn.turnId);
+        expect(new Set(forThread(THREAD_ID).map((event) => event.turnId))).toEqual(
+          new Set([firstTurn.turnId]),
+        );
+        expect(new Set(forThread(OTHER_THREAD_ID).map((event) => event.turnId))).toEqual(
+          new Set([secondTurn.turnId]),
+        );
+        expect(firstClient.sent.map((entry) => entry.content)).toEqual(["one"]);
+        expect(secondClient.sent.map((entry) => entry.content)).toEqual(["two"]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("stopping one thread neither detaches nor cancels the other", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, firstClient, secondClient } = yield* concurrentFixture();
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "one" });
+        const survivor = yield* adapter.sendTurn({ threadId: OTHER_THREAD_ID, input: "two" });
+
+        // Subscribed before the stop, so nothing published in between is missed.
+        const collector = yield* Stream.runCollect(
+          Stream.takeUntil(adapter.streamEvents, (event) => event.type === "turn.completed"),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+
+        yield* adapter.stopSession(THREAD_ID);
+
+        expect(firstClient.closes).toBe(1);
+        expect(secondClient.closes).toBe(0);
+        expect(secondClient.detached).toEqual([]);
+        expect(secondClient.cancels).toEqual([]);
+        expect(yield* adapter.hasSession(THREAD_ID)).toBe(false);
+        expect(yield* adapter.hasSession(OTHER_THREAD_ID)).toBe(true);
+
+        // The surviving thread's turn still completes on its own child client.
+        secondClient.source.push(turnDone(secondClient));
+        const events = Array.from(yield* Fiber.join(collector)).map((event) =>
+          decodeRuntimeEvent(event),
+        );
+        expect(
+          events.filter((event) => event.threadId === OTHER_THREAD_ID).map((event) => event.type),
+        ).toEqual(["turn.completed"]);
+        expect(events.at(-1)?.turnId).toBe(survivor.turnId);
+        // Stopping a thread never fabricates a completion for it.
+        expect(
+          events.filter((event) => event.threadId === THREAD_ID && event.type === "turn.completed"),
+        ).toEqual([]);
+
+        const sessions = yield* adapter.listSessions();
+        expect(sessions.map((session) => session.threadId)).toEqual([OTHER_THREAD_ID]);
+        expect(sessions[0]?.status).toBe("ready");
+        expect(sessions[0]?.activeTurnId).toBeUndefined();
       }),
     ).pipe(Effect.provide(testLayer)),
   );
