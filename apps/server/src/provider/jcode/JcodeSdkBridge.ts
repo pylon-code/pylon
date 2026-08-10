@@ -103,8 +103,13 @@ export interface JcodeSdkBridge {
   }) => Effect.Effect<A, JcodeSdkBridgeError>;
 }
 
-/** Absolute POSIX and Windows paths, which name the user's machine and instance home. */
-const ABSOLUTE_PATH = /(?:[A-Za-z]:)?[\\/][^\s'"`,;)\]]+/g;
+/**
+ * Absolute POSIX and Windows paths, which name the user's machine and instance
+ * home. Two segments are required so ordinary API routes (`/health`) and bare
+ * dividers survive: those carry no host detail and are the only debugging
+ * context left once the raw throwable is dropped.
+ */
+const ABSOLUTE_PATH = /(?:[A-Za-z]:)?(?:[\\/][^\s'"`,;)\]/\\]+){2,}/g;
 
 function redactDetail(message: string, secrets: ReadonlyArray<string>): string {
   const withoutSecrets = secrets.reduce(
@@ -124,6 +129,34 @@ function harnessCode(error: unknown): string | undefined {
 }
 
 /**
+ * What a bridge error is allowed to remember about the throwable it replaced.
+ *
+ * Never the throwable itself: a tagged error is a real `Error`, so an attached
+ * `cause` is printed by `util.inspect`, Node's crash printer, `Cause.pretty`,
+ * and any logger that walks error properties. A raw SDK rejection carries the
+ * launch environment and the instance's absolute paths in its message and
+ * stack, so retaining it would put provider credentials in server logs.
+ */
+interface JcodeRedactedCause {
+  readonly name: string;
+  readonly message: string;
+  readonly stack?: string;
+}
+
+function redactedCause(
+  error: unknown,
+  detail: string,
+  secrets: ReadonlyArray<string>,
+): JcodeRedactedCause {
+  const stack = error instanceof Error ? error.stack : undefined;
+  return {
+    name: error instanceof Error ? error.name : typeof error,
+    message: detail,
+    ...(stack === undefined ? {} : { stack: redactDetail(stack, secrets) }),
+  };
+}
+
+/**
  * The single mapping boundary. Every promise the SDK hands us goes through here
  * so no consumer invents its own classification.
  */
@@ -133,45 +166,44 @@ function toBridgeError(input: {
   readonly sessionId?: string;
   readonly secrets?: ReadonlyArray<string>;
 }): JcodeSdkBridgeError {
+  // Already classified upstream (a wrapped client method): keep the original
+  // tag rather than re-wrapping a session-not-found into an operation error.
+  if (
+    input.error instanceof JcodeSessionNotFoundError ||
+    input.error instanceof JcodeSdkOperationError
+  ) {
+    return input.error;
+  }
   const code = harnessCode(input.error);
-  if (code === UNKNOWN_SESSION_CODE && input.sessionId !== undefined) {
+  if (code === UNKNOWN_SESSION_CODE) {
     return new JcodeSessionNotFoundError({
       operation: input.operation,
-      sessionId: input.sessionId,
+      sessionId: input.sessionId ?? "",
     });
   }
-  const detail = redactDetail(errorMessage(input.error), input.secrets ?? []);
+  const secrets = input.secrets ?? [];
+  const detail = redactDetail(errorMessage(input.error), secrets);
   return new JcodeSdkOperationError({
     operation: input.operation,
     ...(code === undefined ? {} : { code }),
-    detail: code === undefined ? detail : `${code}: ${detail}`,
-    cause: input.error,
+    detail,
+    cause: redactedCause(input.error, detail, secrets),
   });
 }
 
-function tryPromise<A>(input: {
-  readonly operation: string;
-  readonly sessionId?: string;
-  readonly secrets?: ReadonlyArray<string>;
-  readonly run: () => Promise<A>;
-}): Effect.Effect<A, JcodeSdkBridgeError> {
-  return Effect.tryPromise({
-    try: () => input.run(),
-    catch: (error) =>
-      toBridgeError({
-        error,
-        operation: input.operation,
-        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-        ...(input.secrets === undefined ? {} : { secrets: input.secrets }),
-      }),
-  });
-}
-
-/** Run `task` at most once, no matter how many callers race on it. */
+/**
+ * Run `task` at most once *successfully*, no matter how many callers race on it.
+ *
+ * Only success latches. A transient cleanup failure must stay retryable, or an
+ * instance manager that hits one timeout can never stop its daemon again.
+ */
 function once(task: () => Promise<void>): () => Promise<void> {
   let started: Promise<void> | undefined;
   return () => {
-    started ??= task();
+    started ??= task().catch((error: unknown) => {
+      started = undefined;
+      throw error;
+    });
     return started;
   };
 }
@@ -190,47 +222,102 @@ async function* knownEvents(
   }
 }
 
-function wrapClient(client: JcodeSdkClientLike): JcodeSdkClient {
-  const close = once(() => client.close());
-  return {
-    get server() {
-      return client.server;
-    },
-    get capabilities() {
-      return client.capabilities;
-    },
-    supports: (capability) => client.supports(capability),
-    createSession: (workingDir) => client.createSession(workingDir),
-    attachSession: (sessionId) => client.attachSession(sessionId),
-    detachSession: (sessionId) => client.detachSession(sessionId),
-    listSessions: (options) => client.listSessions(options),
-    listModels: (sessionId) => client.listModels(sessionId),
-    getRuntimeInfo: (sessionId) => client.getRuntimeInfo(sessionId),
-    setModel: (sessionId, model) => client.setModel(sessionId, model),
-    setReasoningEffort: (sessionId, effort) => client.setReasoningEffort(sessionId, effort),
-    sendMessage: (sessionId, content, options) => client.sendMessage(sessionId, content, options),
-    cancel: (sessionId) => client.cancel(sessionId),
-    getHistory: (sessionId) => client.getHistory(sessionId),
-    events: (sessionId) => knownEvents(client.events(sessionId)),
-    close,
-  };
-}
-
 export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
+  /**
+   * Secrets handed to a launched instance, remembered for the bridge's whole
+   * life. The daemon can echo a launch env value back in any later failure, so
+   * redaction has to be bridge-scoped rather than something each caller
+   * remembers to pass.
+   */
+  const launchSecrets = new Set<string>();
+
+  function tryPromise<A>(input: {
+    readonly operation: string;
+    readonly sessionId?: string;
+    readonly run: () => Promise<A>;
+  }): Effect.Effect<A, JcodeSdkBridgeError> {
+    return Effect.tryPromise({
+      try: () => input.run(),
+      catch: (error) =>
+        toBridgeError({
+          error,
+          operation: input.operation,
+          ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+          secrets: [...launchSecrets],
+        }),
+    });
+  }
+
+  /**
+   * Bind an operation name (and session) to a client promise so its rejection
+   * is already a `JcodeSdkBridgeError`. Consumers cannot get a raw SDK
+   * rejection out of a wrapped client, whichever Effect combinator they reach
+   * for, and `trySdk` passes an already-classified error through untouched.
+   */
+  function guard<A>(
+    operation: string,
+    sessionId: string | undefined,
+    run: () => Promise<A>,
+  ): Promise<A> {
+    return run().catch((error: unknown) => {
+      throw toBridgeError({
+        error,
+        operation,
+        ...(sessionId === undefined ? {} : { sessionId }),
+        secrets: [...launchSecrets],
+      });
+    });
+  }
+
+  function wrapClient(client: JcodeSdkClientLike): JcodeSdkClient {
+    const close = once(() => guard("close", undefined, () => client.close()));
+    return {
+      get server() {
+        return client.server;
+      },
+      get capabilities() {
+        return client.capabilities;
+      },
+      supports: (capability) => client.supports(capability),
+      createSession: (workingDir) =>
+        guard("createSession", undefined, () => client.createSession(workingDir)),
+      attachSession: (sessionId) =>
+        guard("attachSession", sessionId, () => client.attachSession(sessionId)),
+      detachSession: (sessionId) =>
+        guard("detachSession", sessionId, () => client.detachSession(sessionId)),
+      listSessions: (options) =>
+        guard("listSessions", undefined, () => client.listSessions(options)),
+      listModels: (sessionId) => guard("listModels", sessionId, () => client.listModels(sessionId)),
+      getRuntimeInfo: (sessionId) =>
+        guard("getRuntimeInfo", sessionId, () => client.getRuntimeInfo(sessionId)),
+      setModel: (sessionId, model) =>
+        guard("setModel", sessionId, () => client.setModel(sessionId, model)),
+      setReasoningEffort: (sessionId, effort) =>
+        guard("setReasoningEffort", sessionId, () => client.setReasoningEffort(sessionId, effort)),
+      sendMessage: (sessionId, content, options) =>
+        guard("sendMessage", sessionId, () => client.sendMessage(sessionId, content, options)),
+      cancel: (sessionId) => guard("cancel", sessionId, () => client.cancel(sessionId)),
+      getHistory: (sessionId) => guard("getHistory", sessionId, () => client.getHistory(sessionId)),
+      events: (sessionId) => knownEvents(client.events(sessionId)),
+      close,
+    };
+  }
+
   return {
-    launchInstance: (options) =>
-      Effect.map(
+    launchInstance: (options) => {
+      for (const value of Object.values(options.env ?? {})) launchSecrets.add(value);
+      return Effect.map(
         tryPromise({
           operation: "launchInstance",
-          secrets: Object.values(options.env ?? {}),
           run: () => sdk.launchInstance(options),
         }),
         (instance) => ({
           socketPath: instance.socketPath,
           jcodeHome: instance.jcodeHome,
-          shutdown: once(() => instance.shutdown()),
+          shutdown: once(() => guard("shutdown", undefined, () => instance.shutdown())),
         }),
-      ),
+      );
+    },
     connect: (options) =>
       Effect.map(tryPromise({ operation: "connect", run: () => sdk.connect(options) }), wrapClient),
     trySdk: (input) =>

@@ -1,5 +1,8 @@
+import { inspect } from "node:util";
+
 import { HarnessError } from "@1jehuang/jcode-sdk";
 import type { ApiEvent, LaunchedInstance, SessionInfo } from "@1jehuang/jcode-sdk";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 // @ts-expect-error -- Vite Plus provides the Vitest runner transitively to server tests.
 import { describe, expect, it } from "vitest";
@@ -29,6 +32,21 @@ function asSessionNotFoundError(error: JcodeSdkBridgeError): JcodeSessionNotFoun
 
 const SECRET = "sk-ant-secret-value-1234";
 const NATIVE_PATH = "/private/var/folders/jcode-home-abc/api.sock";
+
+/**
+ * Everything a logger, crash printer, or serializer can realistically observe
+ * on a bridge error. Redaction has to hold across all of it, not just `detail`.
+ */
+function observableSurface(error: JcodeSdkBridgeError): string {
+  return [
+    inspect(error, { depth: 10 }),
+    JSON.stringify(error),
+    JSON.stringify({ error }),
+    String(error),
+    error.stack ?? "",
+    Cause.pretty(Cause.fail(error)),
+  ].join("\n");
+}
 
 function sessionInfo(sessionId: string): SessionInfo {
   return { session_id: sessionId, status: "idle" };
@@ -100,6 +118,30 @@ describe("JcodeSdkBridge launchInstance", () => {
     expect(asOperationError(error).detail).not.toContain("/private/var/folders");
   });
 
+  it("keeps the secret and native path out of every observable surface, not just detail", async () => {
+    const bridge = makeJcodeSdkBridge(
+      fakeSdk({
+        launchInstance: async () => {
+          throw new Error(`spawn failed for ${NATIVE_PATH} with key ${SECRET}`);
+        },
+      }),
+    );
+
+    const error = await Effect.runPromise(
+      Effect.flip(
+        bridge.launchInstance({
+          jcodeHome: "/private/var/folders/jcode-home-abc",
+          env: { ANTHROPIC_API_KEY: SECRET },
+        }),
+      ),
+    );
+
+    const surface = observableSurface(error);
+    expect(surface).not.toContain(SECRET);
+    expect(surface).not.toContain(NATIVE_PATH);
+    expect(surface).not.toContain("/private/var/folders");
+  });
+
   it("returns an instance whose shutdown is idempotent at the wrapper boundary", async () => {
     let shutdowns = 0;
     const bridge = makeJcodeSdkBridge(
@@ -124,6 +166,149 @@ describe("JcodeSdkBridge launchInstance", () => {
     await Promise.all([instance.shutdown(), instance.shutdown()]);
 
     expect(shutdowns).toBe(1);
+  });
+});
+
+describe("JcodeSdkBridge secret scope", () => {
+  it("redacts launch secrets from later client operations without caller discipline", async () => {
+    const bridge = makeJcodeSdkBridge(
+      fakeSdk({
+        connect: async () =>
+          fakeClient({
+            getHistory: async () => {
+              throw new HarnessError("internal", `provider rejected key ${SECRET}`);
+            },
+          }),
+      }),
+    );
+
+    await Effect.runPromise(bridge.launchInstance({ env: { ANTHROPIC_API_KEY: SECRET } }));
+    const client = await Effect.runPromise(
+      bridge.connect({ socketPath: NATIVE_PATH, clientName: "pylon/test" }),
+    );
+
+    const error = await Effect.runPromise(
+      Effect.flip(
+        bridge.trySdk({
+          operation: "getHistory",
+          sessionId: "session-1",
+          run: () => client.getHistory("session-1"),
+        }),
+      ),
+    );
+
+    expect(observableSurface(error)).not.toContain(SECRET);
+  });
+});
+
+describe("JcodeSdkBridge client boundary", () => {
+  it("rejects client calls with already-classified bridge errors", async () => {
+    const bridge = makeJcodeSdkBridge(
+      fakeSdk({
+        connect: async () =>
+          fakeClient({
+            attachSession: async () => {
+              throw new HarnessError("unknown_session", "no such session");
+            },
+            getHistory: async () => {
+              throw new HarnessError("internal", `failed reading ${NATIVE_PATH}`);
+            },
+          }),
+      }),
+    );
+
+    const client = await Effect.runPromise(
+      bridge.connect({ socketPath: NATIVE_PATH, clientName: "pylon/test" }),
+    );
+
+    const attachFailure = await client.attachSession("session-1").catch((error: unknown) => error);
+    expect(attachFailure).toBeInstanceOf(JcodeSessionNotFoundError);
+
+    const historyFailure = await client.getHistory("session-1").catch((error: unknown) => error);
+    expect(historyFailure).toBeInstanceOf(JcodeSdkOperationError);
+    expect(observableSurface(historyFailure as JcodeSdkBridgeError)).not.toContain(NATIVE_PATH);
+  });
+
+  it("does not re-wrap an already-classified bridge error", async () => {
+    const bridge = makeJcodeSdkBridge(
+      fakeSdk({
+        connect: async () =>
+          fakeClient({
+            attachSession: async () => {
+              throw new HarnessError("unknown_session", "no such session");
+            },
+          }),
+      }),
+    );
+
+    const client = await Effect.runPromise(
+      bridge.connect({ socketPath: NATIVE_PATH, clientName: "pylon/test" }),
+    );
+    const error = await Effect.runPromise(
+      Effect.flip(
+        bridge.trySdk({
+          operation: "attachSession",
+          sessionId: "session-1",
+          run: () => client.attachSession("session-1"),
+        }),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(JcodeSessionNotFoundError);
+    expect(asSessionNotFoundError(error).operation).toBe("attachSession");
+    expect(asSessionNotFoundError(error).sessionId).toBe("session-1");
+  });
+});
+
+describe("JcodeSdkBridge cleanup retries", () => {
+  it("retries close after a transient failure and latches only on success", async () => {
+    let closes = 0;
+    const bridge = makeJcodeSdkBridge(
+      fakeSdk({
+        connect: async () =>
+          fakeClient({
+            close: async () => {
+              closes += 1;
+              if (closes === 1) throw new Error("cleanup timed out");
+            },
+          }),
+      }),
+    );
+
+    const client = await Effect.runPromise(
+      bridge.connect({ socketPath: NATIVE_PATH, clientName: "pylon/test" }),
+    );
+
+    await expect(client.close()).rejects.toThrow();
+    await client.close();
+    await client.close();
+
+    expect(closes).toBe(2);
+  });
+
+  it("retries shutdown after a transient failure and latches only on success", async () => {
+    let shutdowns = 0;
+    const bridge = makeJcodeSdkBridge(
+      fakeSdk({
+        launchInstance: async () =>
+          ({
+            socketPath: NATIVE_PATH,
+            jcodeHome: "/private/var/folders/jcode-home-abc",
+            shutdown: async () => {
+              shutdowns += 1;
+              if (shutdowns === 1) throw new Error("cleanup timed out");
+            },
+          }) as unknown as LaunchedInstance,
+      }),
+    );
+
+    const instance = await Effect.runPromise(bridge.launchInstance({}));
+
+    await expect(instance.shutdown()).rejects.toThrow();
+    await instance.shutdown();
+    await instance.shutdown();
+
+    expect(shutdowns).toBe(2);
   });
 });
 
@@ -202,8 +387,43 @@ describe("JcodeSdkBridge error classification", () => {
       ),
     );
 
-    expect(asOperationError(error).detail).not.toContain(NATIVE_PATH);
-    expect(asOperationError(error).detail).toContain("internal");
+    expect(asOperationError(error).detail).toBe("internal: failed reading <path>");
+  });
+
+  it("classifies unknown_session even when the caller omits the session id", async () => {
+    const bridge = makeJcodeSdkBridge(fakeSdk());
+
+    const error = await Effect.runPromise(
+      Effect.flip(
+        bridge.trySdk({
+          operation: "getHistory",
+          run: async () => {
+            throw new HarnessError("unknown_session", "no such session");
+          },
+        }),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(JcodeSessionNotFoundError);
+    expect(asSessionNotFoundError(error).operation).toBe("getHistory");
+    expect(asSessionNotFoundError(error).sessionId).toBe("");
+  });
+
+  it("keeps single-segment paths and API routes readable while redacting native paths", async () => {
+    const bridge = makeJcodeSdkBridge(fakeSdk());
+
+    const error = await Effect.runPromise(
+      Effect.flip(
+        bridge.trySdk({
+          operation: "getHistory",
+          run: async () => {
+            throw new HarnessError("internal", `GET /health failed for ${NATIVE_PATH}`);
+          },
+        }),
+      ),
+    );
+
+    expect(asOperationError(error).detail).toBe("internal: GET /health failed for <path>");
   });
 
   it("maps connect failures to typed bridge errors", async () => {
@@ -264,12 +484,20 @@ describe("JcodeSdkBridge connect", () => {
         connect: async () =>
           fakeClient({
             events: async function* () {
-              yield { ev: "text_delta", session_id: "session-1", text: "hi" } as ApiEvent;
+              yield { ev: "text_delta", session_id: "session-1", text: "hi" } satisfies ApiEvent;
               yield {
                 ev: "some_future_event_kind",
                 session_id: "session-1",
+                payload: { nested: true },
               } as unknown as ApiEvent;
-              yield { ev: "turn_done", session_id: "session-1" } as unknown as ApiEvent;
+              yield {
+                ev: "tool_done",
+                session_id: "session-1",
+                call_id: "call-1",
+                name: "read_file",
+                output: "ok",
+              } satisfies ApiEvent;
+              yield { ev: "turn_done", session_id: "session-1" } satisfies ApiEvent;
             },
           }),
       }),
@@ -284,7 +512,7 @@ describe("JcodeSdkBridge connect", () => {
       kinds.push(event.ev);
     }
 
-    expect(kinds).toEqual(["text_delta", "turn_done"]);
+    expect(kinds).toEqual(["text_delta", "tool_done", "turn_done"]);
   });
 
   it("closes the underlying client at most once", async () => {
