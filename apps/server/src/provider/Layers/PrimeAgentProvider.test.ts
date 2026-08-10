@@ -244,6 +244,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         agentMessage: true,
         agentLiveActivity: true,
         compaction: true,
+        refinement: true,
         autoCompaction: true,
         goals: true,
       });
@@ -264,6 +265,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         "widget",
       ]);
       expect(snapshot.featureCapabilities?.inputQueue?.operations).toContain("set-modes");
+      expect(snapshot.featureCapabilities?.context?.operations).toContain("refine");
       expect(snapshot.requiresNewThreadForModelChange).toBe(false);
       expect(snapshot.supportedRuntimeModes).toEqual(["approval-required", "full-access"]);
       expect(snapshot.message).toBe("Checking Prime Agent CLI availability...");

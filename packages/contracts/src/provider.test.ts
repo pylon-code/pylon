@@ -5,6 +5,8 @@ import {
   PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
   ProviderCancelSessionAgentInput,
   ProviderEvent,
+  ProviderRefineSessionHarnessInput,
+  ProviderRefineSessionHarnessResult,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -12,6 +14,12 @@ import {
 
 const decodeProviderCancelSessionAgentInput = Schema.decodeUnknownSync(
   ProviderCancelSessionAgentInput,
+);
+const decodeProviderRefineSessionHarnessInput = Schema.decodeUnknownSync(
+  ProviderRefineSessionHarnessInput,
+);
+const decodeProviderRefineSessionHarnessResult = Schema.decodeUnknownSync(
+  ProviderRefineSessionHarnessResult,
 );
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
@@ -249,6 +257,36 @@ describe("ProviderCancelSessionAgentInput", () => {
       decodeProviderCancelSessionAgentInput({
         threadId: "thread-1",
         agentId: "x".repeat(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS + 1),
+      }),
+    ).toThrow();
+  });
+});
+
+describe("ProviderRefineSessionHarness", () => {
+  it("accepts only thread identity and a sanitized terminal result", () => {
+    expect(decodeProviderRefineSessionHarnessInput({ threadId: "thread-1" })).toEqual({
+      threadId: "thread-1",
+    });
+    expect(
+      decodeProviderRefineSessionHarnessResult({
+        appliedCount: 2,
+        failedCount: 1,
+        outcome: "partial",
+      }),
+    ).toEqual({ appliedCount: 2, failedCount: 1, outcome: "partial" });
+    expect(
+      decodeProviderRefineSessionHarnessInput({
+        threadId: "thread-1",
+        global: true,
+        instructions: "private",
+        rollbackId: "native-secret",
+      }),
+    ).toEqual({ threadId: "thread-1" });
+    expect(() =>
+      decodeProviderRefineSessionHarnessResult({
+        appliedCount: -1,
+        failedCount: 0,
+        outcome: "completed",
       }),
     ).toThrow();
   });

@@ -126,6 +126,8 @@ function fixture(options?: {
   readonly setSteeringModeImpl?: (mode: "all" | "one-at-a-time") => Promise<unknown>;
   readonly setFollowUpModeImpl?: (mode: "all" | "one-at-a-time") => Promise<unknown>;
   readonly compactImpl?: () => Promise<unknown>;
+  readonly refineImpl?: (options: { readonly global: false }) => Promise<unknown>;
+  readonly omitRefine?: boolean;
   readonly abortCompactionImpl?: () => Promise<unknown>;
   readonly setAutoCompactionImpl?: (enabled: boolean) => Promise<unknown>;
 }) {
@@ -197,6 +199,9 @@ function fixture(options?: {
       }
       if (options?.omitWatchSession === true) {
         Object.defineProperty(this, "watchSession", { value: undefined });
+      }
+      if (options?.omitRefine === true) {
+        Object.defineProperty(this, "refine", { value: undefined });
       }
     }
     static attach(
@@ -285,6 +290,20 @@ function fixture(options?: {
           details: { sessionFile: "/daemon/private/session.jsonl" },
           firstKeptId: "native-secret",
           tokensBefore: 1234,
+        })
+      );
+    }
+    refine(refineOptions: { readonly global: false }): Promise<unknown> {
+      captures.connectionCalls.push({ method: "refine", args: [refineOptions] });
+      return (
+        options?.refineImpl?.(refineOptions) ??
+        Promise.resolve({
+          appliedEdits: [
+            { applied: true, path: "/private/harness.md", instructions: "secret" },
+            { applied: false, error: "private failure" },
+          ],
+          proposalId: "native-secret",
+          scope: "local",
         })
       );
     }
@@ -1519,6 +1538,72 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         });
         expect(captures.connectionCalls).toContainEqual({ method: "getState", args: [] });
         expect(captures.order.filter((entry) => entry === "snapshot")).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("probes and invokes only local argument-free harness refinement", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture();
+        const runtime = yield* make();
+        expect(runtime.refinementAvailable).toBe(true);
+        expect(yield* runtime.refineLocalHarness).toEqual({
+          appliedCount: 1,
+          failedCount: 1,
+          outcome: "partial",
+        });
+        expect(captures.connectionCalls.filter((call) => call.method === "refine")).toEqual([
+          { method: "refine", args: [{ global: false }] },
+        ]);
+
+        const globalResult = fixture({
+          refineImpl: () => Promise.resolve({ appliedEdits: [], scope: "global" }),
+        });
+        const globalResultRuntime = yield* globalResult.make();
+        expect(yield* globalResultRuntime.refineLocalHarness.pipe(Effect.flip)).toMatchObject({
+          operation: "refine-local-harness",
+          reason: "invalid-response",
+        });
+
+        const rejected = fixture({
+          refineImpl: () => Promise.reject(new Error("/private/native/refinement")),
+        });
+        const rejectedRuntime = yield* rejected.make();
+        expect(yield* rejectedRuntime.refineLocalHarness.pipe(Effect.flip)).toMatchObject({
+          operation: "refine-local-harness",
+          reason: "request-failed",
+          detail: expect.not.stringContaining("/private"),
+        });
+
+        const missing = fixture({ omitRefine: true });
+        const unsupportedRuntime = yield* missing.make();
+        expect(unsupportedRuntime.refinementAvailable).toBe(false);
+        expect(yield* unsupportedRuntime.refineLocalHarness.pipe(Effect.flip)).toMatchObject({
+          operation: "refine-local-harness",
+          reason: "incompatible-api",
+        });
+
+        const restored = fixture();
+        const restoredRuntime = yield* restored.make(
+          PRIME_AGENT_DAEMON_RESUME_CURSOR,
+          undefined,
+          undefined,
+          "session-1",
+        );
+        expect(restoredRuntime.refinementAvailable).toBe(false);
+
+        const supervisedSnapshot = snapshot();
+        const supervised = fixture({ rawSnapshot: { ...supervisedSnapshot, children: [] } });
+        const supervisedRuntime = yield* supervised.make(
+          undefined,
+          ["/state/pylon/permission.mjs"],
+          {
+            path: "/state/pylon/permission.mjs",
+            markerCommand: "pylon-permission-gate-v1",
+          },
+        );
+        expect(supervisedRuntime.refinementAvailable).toBe(false);
       }),
     ),
   );

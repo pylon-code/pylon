@@ -17,6 +17,7 @@ import type {
   OrchestrationThreadShell,
   ProviderApprovalDecision,
   ProviderInteractionMode,
+  ProviderRefineSessionHarnessResult,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
   SessionInteractionRequestId,
@@ -109,6 +110,7 @@ export interface ThreadDetailScreenProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onReloadSessionResources: () => Promise<void>;
+  readonly onRefineSessionHarness: () => Promise<ProviderRefineSessionHarnessResult | null>;
   readonly onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onQueueFollowUp: () => Promise<MessageId | null>;
@@ -547,6 +549,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onRemoveDraftImage={props.onRemoveDraftImage}
               onStopThread={props.onStopThread}
               onReloadSessionResources={props.onReloadSessionResources}
+              onRefineSessionHarness={props.onRefineSessionHarness}
               onSetSessionAgentDepth={props.onSetSessionAgentDepth}
               onSendMessage={handleSendMessage}
               onQueueFollowUp={props.onQueueFollowUp}

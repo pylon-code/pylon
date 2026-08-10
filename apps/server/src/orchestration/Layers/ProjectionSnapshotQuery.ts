@@ -93,7 +93,10 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
     sequence: Schema.NullOr(NonNegativeInt),
   }),
 );
-const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
+const ProjectionThreadSessionDbRowSchema = Schema.Struct({
+  ...ProjectionThreadSession.fields,
+  restored: Schema.Number,
+});
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
@@ -300,6 +303,11 @@ function mapSessionRow(
     providerName: row.providerName,
     ...(row.providerInstanceId !== null ? { providerInstanceId: row.providerInstanceId } : {}),
     runtimeMode: row.runtimeMode,
+    ...(row.restored === 1 ? { restored: true } : {}),
+    ...(row.startedAt !== null ? { startedAt: row.startedAt } : {}),
+    ...(row.harnessRefinementStatus !== null
+      ? { harnessRefinementStatus: row.harnessRefinementStatus }
+      : {}),
     activeTurnId: row.activeTurnId,
     lastError: row.lastError,
     updatedAt: row.updatedAt,
@@ -591,6 +599,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           provider_session_id AS "providerSessionId",
           provider_thread_id AS "providerThreadId",
           runtime_mode AS "runtimeMode",
+          restored,
+          started_at AS "startedAt",
+          harness_refinement_status AS "harnessRefinementStatus",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           updated_at AS "updatedAt"
@@ -612,6 +623,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.provider_session_id AS "providerSessionId",
           sessions.provider_thread_id AS "providerThreadId",
           sessions.runtime_mode AS "runtimeMode",
+          sessions.restored,
+          sessions.started_at AS "startedAt",
+          sessions.harness_refinement_status AS "harnessRefinementStatus",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
@@ -637,6 +651,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.provider_session_id AS "providerSessionId",
           sessions.provider_thread_id AS "providerThreadId",
           sessions.runtime_mode AS "runtimeMode",
+          sessions.restored,
+          sessions.started_at AS "startedAt",
+          sessions.harness_refinement_status AS "harnessRefinementStatus",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
@@ -1031,6 +1048,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           provider_name AS "providerName",
           provider_instance_id AS "providerInstanceId",
           runtime_mode AS "runtimeMode",
+          restored,
+          started_at AS "startedAt",
+          harness_refinement_status AS "harnessRefinementStatus",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           updated_at AS "updatedAt"
@@ -1529,6 +1549,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     ? { providerInstanceId: row.providerInstanceId }
                     : {}),
                   runtimeMode: row.runtimeMode,
+                  ...(row.restored === 1 ? { restored: true } : {}),
+                  ...(row.startedAt !== null ? { startedAt: row.startedAt } : {}),
+                  ...(row.harnessRefinementStatus !== null
+                    ? { harnessRefinementStatus: row.harnessRefinementStatus }
+                    : {}),
                   activeTurnId: row.activeTurnId,
                   lastError: row.lastError,
                   updatedAt: row.updatedAt,

@@ -266,6 +266,7 @@ const SessionResourcesUpdatedType = Schema.Literal("session.resources.updated");
 const SessionAgentDepthUpdatedType = Schema.Literal("session.agent-depth.updated");
 const SessionInputQueueUpdatedType = Schema.Literal("session.input-queue.updated");
 const SessionCompactionUpdatedType = Schema.Literal("session.compaction.updated");
+const SessionHarnessRefinementUpdatedType = Schema.Literal("session.harness-refinement.updated");
 const SessionGoalUpdatedType = Schema.Literal("session.goal.updated");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
@@ -928,6 +929,21 @@ export const SessionCompactionUpdatedPayload = Schema.Struct({
 });
 export type SessionCompactionUpdatedPayload = typeof SessionCompactionUpdatedPayload.Type;
 
+export const SessionHarnessRefinementStatus = Schema.Literals([
+  "available",
+  "running",
+  "outcome-unknown",
+]);
+export type SessionHarnessRefinementStatus = typeof SessionHarnessRefinementStatus.Type;
+
+/** Session-incarnation lifecycle only; native proposals, edits, and results stay private. */
+export const SessionHarnessRefinementUpdatedPayload = Schema.Struct({
+  sessionStartedAt: IsoDateTime,
+  status: SessionHarnessRefinementStatus,
+});
+export type SessionHarnessRefinementUpdatedPayload =
+  typeof SessionHarnessRefinementUpdatedPayload.Type;
+
 export const PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
 
 export const SessionGoalStatus = Schema.Literals([
@@ -1395,6 +1411,16 @@ const ProviderRuntimeSessionCompactionUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionCompactionUpdatedEvent =
   typeof ProviderRuntimeSessionCompactionUpdatedEvent.Type;
 
+const ProviderRuntimeSessionHarnessRefinementUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionHarnessRefinementUpdatedType,
+  payload: SessionHarnessRefinementUpdatedPayload,
+});
+export type ProviderRuntimeSessionHarnessRefinementUpdatedEvent =
+  typeof ProviderRuntimeSessionHarnessRefinementUpdatedEvent.Type;
+
 const ProviderRuntimeSessionGoalUpdatedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   providerRefs: Schema.optional(Schema.Never),
@@ -1475,6 +1501,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionAgentDepthUpdatedEvent,
   ProviderRuntimeSessionInputQueueUpdatedEvent,
   ProviderRuntimeSessionCompactionUpdatedEvent,
+  ProviderRuntimeSessionHarnessRefinementUpdatedEvent,
   ProviderRuntimeSessionGoalUpdatedEvent,
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,

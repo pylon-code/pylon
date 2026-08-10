@@ -28,6 +28,8 @@ import type {
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderReloadSessionResourcesInput,
+  ProviderRefineSessionHarnessInput,
+  ProviderRefineSessionHarnessResult,
   ProviderSetSessionAgentDepthInput,
   ProviderSetSessionAutoCompactionInput,
   ProviderSetSessionInputQueueModeInput,
@@ -159,6 +161,10 @@ export interface ProviderServiceShape {
   readonly setSessionAutoCompaction: (
     input: ProviderSetSessionAutoCompactionInput,
   ) => Effect.Effect<SessionCompactionUpdatedPayload, ProviderServiceError>;
+
+  readonly refineSessionHarness: (
+    input: ProviderRefineSessionHarnessInput,
+  ) => Effect.Effect<ProviderRefineSessionHarnessResult, ProviderServiceError>;
 
   /**
    * Stop a provider session.

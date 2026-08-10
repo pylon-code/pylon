@@ -586,6 +586,11 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "session.harness-refinement.updated": {
+      // This safe lifecycle is projected on the session itself, not as an activity row.
+      return [];
+    }
+
     case "session.resources.updated": {
       return [
         {
@@ -2009,6 +2014,25 @@ const make = Effect.gen(function* () {
           : null;
 
       if (
+        event.type === "session.harness-refinement.updated" &&
+        shouldApplyThreadLifecycle &&
+        thread.session !== null &&
+        event.payload.sessionStartedAt === thread.session.startedAt
+      ) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId: yield* providerCommandId(event, "thread-session-refinement-set"),
+          threadId: thread.id,
+          session: {
+            ...thread.session,
+            harnessRefinementStatus: event.payload.status,
+            updatedAt: now,
+          },
+          createdAt: now,
+        });
+      }
+
+      if (
         event.type === "session.started" ||
         event.type === "session.state.changed" ||
         event.type === "session.exited" ||
@@ -2091,6 +2115,13 @@ const make = Effect.gen(function* () {
                 ? { providerInstanceId: event.providerInstanceId }
                 : {}),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
+              ...(thread.session?.restored === true ? { restored: true } : {}),
+              ...(thread.session?.startedAt !== undefined
+                ? { startedAt: thread.session.startedAt }
+                : {}),
+              ...(thread.session?.harnessRefinementStatus !== undefined
+                ? { harnessRefinementStatus: thread.session.harnessRefinementStatus }
+                : {}),
               activeTurnId: nextActiveTurnId,
               lastError,
               updatedAt: now,
@@ -2349,6 +2380,13 @@ const make = Effect.gen(function* () {
                 ? { providerInstanceId: event.providerInstanceId }
                 : {}),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
+              ...(thread.session?.restored === true ? { restored: true } : {}),
+              ...(thread.session?.startedAt !== undefined
+                ? { startedAt: thread.session.startedAt }
+                : {}),
+              ...(thread.session?.harnessRefinementStatus !== undefined
+                ? { harnessRefinementStatus: thread.session.harnessRefinementStatus }
+                : {}),
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
               updatedAt: now,

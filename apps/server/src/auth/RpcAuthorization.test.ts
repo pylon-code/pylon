@@ -73,6 +73,9 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.providerSetSessionAutoCompaction)).toBe(
       AuthOrchestrationOperateScope,
     );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerRefineSessionHarness)).toBe(
+      AuthOrchestrationOperateScope,
+    );
   });
 
   it("allows relay status reads without granting relay installation access", () => {

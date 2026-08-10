@@ -288,6 +288,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    refineSessionHarness: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:refine-session-harness",
+      tag: WS_METHODS.providerRefineSessionHarness,
+      scheduler,
+      concurrency,
+    }),
     stopSession: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:stop-session",
       execute: (input: StopThreadSessionInput) => stopThreadSession(input),

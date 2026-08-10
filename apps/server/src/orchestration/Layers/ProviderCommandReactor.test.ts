@@ -347,6 +347,7 @@ describe("ProviderCommandReactor", () => {
       compactSession: () => unsupported(),
       abortSessionCompaction: () => unsupported(),
       setSessionAutoCompaction: () => unsupported(),
+      refineSessionHarness: () => unsupported(),
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       listSessions: () => Effect.succeed(runtimeSessions),
       getCapabilities: (_provider) =>
@@ -2819,11 +2820,22 @@ describe("ProviderCommandReactor", () => {
       (activity) => activity.kind === "provider.interaction.respond.failed",
     );
     expect(failures).toHaveLength(2);
-    expect(failures?.[0]?.payload).toMatchObject({
+    expect(
+      failures?.find(
+        (activity) =>
+          (activity.payload as { readonly requestId?: unknown }).requestId ===
+          "interaction-unsupported",
+      )?.payload,
+    ).toMatchObject({
       requestId: "interaction-unsupported",
       detail: expect.stringContaining("not supported"),
     });
-    expect(failures?.[1]?.payload).toMatchObject({
+    expect(
+      failures?.find(
+        (activity) =>
+          (activity.payload as { readonly requestId?: unknown }).requestId === "interaction-stale",
+      )?.payload,
+    ).toMatchObject({
       requestId: "interaction-stale",
       detail: expect.stringContaining("Stale pending interaction request"),
     });

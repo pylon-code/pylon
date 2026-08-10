@@ -83,6 +83,7 @@ import {
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
+import type { SessionHarnessRefinementOutcome } from "../sessionHarnessRefinement";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -1283,6 +1284,9 @@ function ChatViewContent(props: ChatViewProps) {
       reportFailure: false,
     },
   );
+  const refineThreadSessionHarness = useAtomCommand(threadEnvironment.refineSessionHarness, {
+    reportFailure: false,
+  });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -5695,6 +5699,19 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadId, environmentId, runSessionCompactionCommand, setThreadSessionAutoCompaction],
   );
 
+  const onRefineSessionHarness =
+    useCallback(async (): Promise<SessionHarnessRefinementOutcome | null> => {
+      if (!activeThreadId) return null;
+      const result = await refineThreadSessionHarness({
+        environmentId,
+        input: { threadId: activeThreadId },
+      });
+      if (result._tag === "Failure") {
+        return "unknown";
+      }
+      return result.value.outcome;
+    }, [activeThreadId, environmentId, refineThreadSessionHarness]);
+
   const onCancelSessionAgent = useCallback(
     async (agentId: string) => {
       const agent = runtimeSubagents.find((candidate) => candidate.id === agentId);
@@ -7124,6 +7141,7 @@ function ChatViewContent(props: ChatViewProps) {
                             onCompactSession={onCompactSession}
                             onAbortSessionCompaction={onAbortSessionCompaction}
                             onSetSessionAutoCompaction={onSetSessionAutoCompaction}
+                            onRefineSessionHarness={onRefineSessionHarness}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             threadHandoffOffer={threadHandoffOffer}
                             isContinuingThreadOnAccount={isContinuingThreadOnAccount}

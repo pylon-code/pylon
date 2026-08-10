@@ -10,6 +10,7 @@ import {
   PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_CHARS,
   PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
   RUNTIME_RESOURCE_NAME_MAX_CHARS,
+  type ProviderRefineSessionHarnessResult,
   type ProviderSessionAgentActivityEntry,
   type ProviderSessionAgentDepthSource,
   type SessionAgentDepthUpdatedPayload,
@@ -230,6 +231,10 @@ const rlmMaxDepthStatusSchema = Schema.Struct({
 const agentMessageReceiptSchema = Schema.Struct({
   deliveryStatus: Schema.Literals(["delivered", "queued"]),
 });
+const refinementResultSchema = Schema.Struct({
+  appliedEdits: Schema.Array(Schema.Struct({ applied: Schema.Boolean })),
+  scope: Schema.optional(Schema.Literals(["local", "global"])),
+});
 
 const decodeThinkingLevel = Schema.decodeUnknownOption(thinkingLevelSchema);
 const decodeServiceTier = Schema.decodeUnknownOption(serviceTierSchema);
@@ -243,6 +248,7 @@ const decodeCommands = Schema.decodeUnknownOption(commandsSchema);
 const decodeSessionStats = Schema.decodeUnknownOption(sessionStatsSchema);
 const decodeRlmMaxDepthStatus = Schema.decodeUnknownOption(rlmMaxDepthStatusSchema);
 const decodeAgentMessageReceipt = Schema.decodeUnknownOption(agentMessageReceiptSchema);
+const decodeRefinementResult = Schema.decodeUnknownOption(refinementResultSchema);
 
 function providerAgentDepthSource(
   source: (typeof rlmMaxDepthStatusSchema.Type)["source"],
@@ -375,6 +381,7 @@ const runtimeErrorOperation = Schema.Literals([
   "set-input-queue-mode",
   "get-compaction-state",
   "compact",
+  "refine-local-harness",
   "abort-compaction",
   "set-auto-compaction",
   "abort",
@@ -504,6 +511,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly initialInputQueue: PrimeAgentDaemonInputQueue;
   readonly inputQueueModesAvailable: boolean;
   readonly compactionAvailable: boolean;
+  readonly refinementAvailable: boolean;
   readonly autoCompactionWritable: boolean;
   readonly initialCompactionState: PrimeAgentDaemonCompactionState;
   readonly getCompactionState: Effect.Effect<
@@ -512,6 +520,11 @@ export interface PrimeAgentDaemonSessionRuntime {
   >;
   /** Starts one argument-free manual compaction and discards every native result field. */
   readonly compact: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  /** Refines the local harness and retains only aggregate edit counts from the native result. */
+  readonly refineLocalHarness: Effect.Effect<
+    ProviderRefineSessionHarnessResult,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
   /** Requests native compaction cancellation without claiming a terminal outcome. */
   readonly abortCompaction: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   /** Prime persists this as the provider-wide default as well as current session state. */
@@ -1249,6 +1262,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       Predicate.isFunction(connection!.getState) &&
       Predicate.isFunction(connection!.compact) &&
       Predicate.isFunction(connection!.abortCompaction);
+    const refinementAvailable =
+      input.requiredExtension === undefined &&
+      !shouldContinue &&
+      Predicate.isFunction(connection!.refine);
     const autoCompactionWritable =
       input.requiredExtension === undefined &&
       Predicate.isFunction(connection!.getState) &&
@@ -1326,6 +1343,53 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         catch: () =>
           runtimeError("compact", "request-failed", "Prime Agent context compaction failed."),
       });
+    });
+
+    const refineLocalHarness = Effect.gen(function* () {
+      yield* ensureOpen("refine-local-harness");
+      if (!refinementAvailable) {
+        return yield* runtimeError(
+          "refine-local-harness",
+          "incompatible-api",
+          "The active Prime Agent session does not support local harness refinement.",
+        );
+      }
+      const method = yield* requireMethod("refine-local-harness", connection!.refine);
+      const rawResult = yield* Effect.tryPromise({
+        // Pylon never supplies instructions, rollback identities, or global scope. A rejected
+        // request is outcome-ambiguous because Prime may continue after its request timeout.
+        try: () => method.call(connection, { global: false }),
+        catch: () =>
+          runtimeError(
+            "refine-local-harness",
+            "request-failed",
+            "Prime Agent local harness refinement outcome is unavailable.",
+          ),
+      });
+      const decoded = decodeRefinementResult(rawResult);
+      if (
+        Option.isNone(decoded) ||
+        decoded.value.scope === "global" ||
+        decoded.value.appliedEdits.length > 128
+      ) {
+        return yield* runtimeError(
+          "refine-local-harness",
+          "invalid-response",
+          "Prime Agent returned an invalid local harness refinement result.",
+        );
+      }
+      const appliedCount = decoded.value.appliedEdits.filter((item) => item.applied).length;
+      const failedCount = decoded.value.appliedEdits.length - appliedCount;
+      return {
+        appliedCount,
+        failedCount,
+        outcome:
+          appliedCount > 0 && failedCount > 0
+            ? "partial"
+            : failedCount > 0
+              ? "failed"
+              : "completed",
+      } satisfies ProviderRefineSessionHarnessResult;
     });
 
     const abortCompaction = Effect.gen(function* () {
@@ -2244,10 +2308,12 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         typeof connection.setSteeringMode === "function" &&
         typeof connection.setFollowUpMode === "function",
       compactionAvailable,
+      refinementAvailable,
       autoCompactionWritable,
       initialCompactionState,
       getCompactionState,
       compact,
+      refineLocalHarness,
       abortCompaction,
       setAutoCompactionEnabled,
       reloadResources,

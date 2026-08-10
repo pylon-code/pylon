@@ -192,6 +192,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           provider_session_id,
           provider_thread_id,
           runtime_mode,
+          restored,
+          started_at,
+          harness_refinement_status,
           active_turn_id,
           last_error,
           updated_at
@@ -203,6 +206,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'provider-session-1',
           'provider-thread-1',
           'approval-required',
+          1,
+          '2026-02-24T00:00:02.500Z',
+          'outcome-unknown',
           'turn-1',
           NULL,
           '2026-02-24T00:00:07.000Z'
@@ -260,6 +266,23 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         `;
         sequence += 1;
       }
+
+      const sessionIdentityRows = yield* sql<{
+        readonly restored: number;
+        readonly startedAt: string | null;
+        readonly harnessRefinementStatus: string | null;
+      }>`SELECT
+        restored,
+        started_at AS "startedAt",
+        harness_refinement_status AS "harnessRefinementStatus"
+      FROM projection_thread_sessions`;
+      assert.deepEqual(sessionIdentityRows, [
+        {
+          restored: 1,
+          startedAt: "2026-02-24T00:00:02.500Z",
+          harnessRefinementStatus: "outcome-unknown",
+        },
+      ]);
 
       const snapshot = yield* snapshotQuery.getSnapshot();
 
@@ -375,6 +398,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             status: "running",
             providerName: "codex",
             runtimeMode: "approval-required",
+            restored: true,
+            startedAt: "2026-02-24T00:00:02.500Z",
+            harnessRefinementStatus: "outcome-unknown",
             activeTurnId: asTurnId("turn-1"),
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
@@ -448,6 +474,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             status: "running",
             providerName: "codex",
             runtimeMode: "approval-required",
+            restored: true,
+            startedAt: "2026-02-24T00:00:02.500Z",
+            harnessRefinementStatus: "outcome-unknown",
             activeTurnId: asTurnId("turn-1"),
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",

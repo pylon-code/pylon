@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -184,6 +185,11 @@ interface FakeCaptures {
   inputQueueModeTimedOut: boolean;
   inputQueueStatusFailure: boolean;
   compactionAvailable: boolean;
+  refinementAvailable: boolean;
+  refinementCalls: number;
+  refinementFailure: boolean;
+  refinementObserved: Queue.Queue<void> | undefined;
+  refinementRelease: Deferred.Deferred<void> | undefined;
   autoCompactionWritable: boolean;
   compactionState: {
     isCompacting: boolean;
@@ -289,6 +295,11 @@ function makeCaptures(): FakeCaptures {
     inputQueueModeTimedOut: false,
     inputQueueStatusFailure: false,
     compactionAvailable: true,
+    refinementAvailable: true,
+    refinementCalls: 0,
+    refinementFailure: false,
+    refinementObserved: undefined,
+    refinementRelease: undefined,
     autoCompactionWritable: true,
     compactionState: {
       isCompacting: false,
@@ -361,6 +372,36 @@ function fakeRuntimeFactory(
         initialInputQueue: captures.inputQueue,
         inputQueueModesAvailable: captures.inputQueueModesAvailable,
         compactionAvailable: captures.compactionAvailable,
+        refinementAvailable: captures.refinementAvailable && input.resumeCursor === undefined,
+        refineLocalHarness: Effect.gen(function* () {
+          captures.refinementCalls += 1;
+          if (captures.refinementObserved !== undefined) {
+            yield* Queue.offer(captures.refinementObserved, undefined);
+          }
+          if (captures.refinementRelease !== undefined) {
+            yield* Deferred.await(captures.refinementRelease);
+          }
+          if (captures.refinementFailure) {
+            return yield* new PrimeAgentDaemonSessionRuntimeError({
+              operation: "refine-local-harness",
+              reason: "request-failed",
+              detail: "refinement request failed",
+            });
+          }
+          yield* Effect.promise(() =>
+            NodeFSP.writeFile(
+              NodePath.join(
+                NodePath.dirname(input.sessionDir),
+                "session-artifacts",
+                "native-session-secret",
+                "harness",
+                "harness_state.json",
+              ),
+              "private harness",
+            ),
+          );
+          return { appliedCount: 2, failedCount: 1, outcome: "partial" };
+        }),
         autoCompactionWritable: captures.autoCompactionWritable,
         initialCompactionState: captures.compactionState,
         getCompactionState: Effect.suspend(() =>
@@ -1184,6 +1225,166 @@ describe("PrimeAgentDaemonAdapter", () => {
             yield* awaitObservedType(subscription.observed, "session.compaction.updated"),
           ),
         ).not.toContain("native-session-secret");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("runs one local refinement from the sanitized method result", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.refinementObserved = yield* Queue.unbounded<void>();
+        captures.refinementRelease = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const nativeSessionDir = captures.runtimeInputs.at(-1)!.sessionDir;
+        const harnessRoot = NodePath.join(
+          NodePath.dirname(nativeSessionDir),
+          "session-artifacts",
+          "native-session-secret",
+          "harness",
+        );
+        expect((yield* Effect.promise(() => NodeFSP.stat(harnessRoot))).mode & 0o777).toBe(0o700);
+        const eventStart = subscription.events.length;
+
+        const refinementFiber = yield* adapter.refineSessionHarness!(threadId).pipe(
+          Effect.forkChild,
+        );
+        yield* Queue.take(captures.refinementObserved);
+        expect(
+          yield* awaitObservedType(subscription.observed, "session.harness-refinement.updated"),
+        ).toMatchObject({ payload: { status: "running" } });
+        expect(yield* adapter.refineSessionHarness!(threadId).pipe(Effect.flip)).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          reason: "busy",
+        });
+        expect(captures.refinementCalls).toBe(1);
+        expect(
+          subscription.events.slice(eventStart).filter((event) => event.type === "item.started"),
+        ).toEqual([]);
+
+        // An unsolicited native lifecycle event remains observational and cannot satisfy or
+        // identify the pending RPC.
+        yield* offer(captures, { _tag: "RefinementCompleted", appliedCount: 2, failedCount: 1 });
+        const completed = yield* awaitObservedType(subscription.observed, "item.completed");
+        expect(completed.itemId).toBeUndefined();
+        expect(yield* adapter.refineSessionHarness!(threadId).pipe(Effect.flip)).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          reason: "busy",
+        });
+        expect(completed.payload).toEqual({
+          itemType: "refinement",
+          status: "completed",
+          title: "Harness refinement",
+          data: { appliedCount: 2, failedCount: 1, outcome: "partial" },
+        });
+        expect(encodeUnknownJson(completed)).not.toContain("native");
+        expect(encodeUnknownJson(completed)).not.toContain("/Users/");
+
+        yield* Deferred.succeed(captures.refinementRelease, undefined);
+        expect(yield* Fiber.join(refinementFiber)).toEqual({
+          appliedCount: 2,
+          failedCount: 1,
+          outcome: "partial",
+        });
+        expect(
+          yield* awaitObservedType(subscription.observed, "session.harness-refinement.updated"),
+        ).toMatchObject({ payload: { status: "available" } });
+        expect(
+          (yield* Effect.promise(() =>
+            NodeFSP.stat(NodePath.join(harnessRoot, "harness_state.json")),
+          )).mode & 0o777,
+        ).toBe(0o600);
+
+        const supervisedThread = ThreadId.make("thread-supervised-refinement");
+        yield* adapter.startSession({
+          threadId: supervisedThread,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        expect(
+          yield* adapter.refineSessionHarness!(supervisedThread).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterUnsupportedOperationError" });
+
+        const missingThread = ThreadId.make("thread-missing-refinement");
+        const unavailable = makeCaptures();
+        unavailable.refinementAvailable = false;
+        const unavailableAdapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(unavailable),
+        });
+        yield* unavailableAdapter.startSession({
+          threadId: missingThread,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        expect(
+          yield* unavailableAdapter.refineSessionHarness!(missingThread).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterUnsupportedOperationError" });
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("clears a pending refinement when the session stops", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.refinementObserved = yield* Queue.unbounded<void>();
+        captures.refinementRelease = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const refinementFiber = yield* adapter.refineSessionHarness!(threadId).pipe(
+          Effect.exit,
+          Effect.forkChild,
+        );
+        yield* Queue.take(captures.refinementObserved);
+        yield* adapter.stopSession(threadId);
+        expect(yield* Fiber.join(refinementFiber)).toMatchObject({ _tag: "Failure" });
+        expect(yield* adapter.hasSession(threadId)).toBe(false);
+        expect(captures.disposeCount).toBe(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps an ambiguous failed request reserved without inventing lifecycle", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.refinementFailure = true;
+        captures.refinementObserved = yield* Queue.unbounded<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const eventStart = subscription.events.length;
+        expect(yield* adapter.refineSessionHarness!(threadId).pipe(Effect.flip)).toMatchObject({
+          _tag: "ProviderAdapterRequestError",
+        });
+        expect(
+          yield* awaitObservedType(subscription.observed, "session.harness-refinement.updated"),
+        ).toMatchObject({ payload: { status: "running" } });
+        expect(
+          yield* awaitObservedType(subscription.observed, "session.harness-refinement.updated"),
+        ).toMatchObject({ payload: { status: "outcome-unknown" } });
+        expect(
+          subscription.events.slice(eventStart).filter((event) => event.type === "item.started"),
+        ).toEqual([]);
+        expect(yield* adapter.refineSessionHarness!(threadId).pipe(Effect.flip)).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          reason: "busy",
+        });
+        expect(captures.refinementCalls).toBe(1);
         yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),
@@ -3310,12 +3511,14 @@ describe("PrimeAgentDaemonAdapter", () => {
           NodeFSP.unlink(`${captures.runtimeInputs[0]!.sessionDir}/.pylon-prime-session.json`),
         );
         yield* adapter.stopSession(threadId);
-        yield* adapter.startSession({
+        const restoredWithoutIdentity = yield* adapter.startSession({
           threadId,
           cwd: process.cwd(),
           runtimeMode: "full-access",
           resumeCursor: session.resumeCursor,
         });
+        expect(session.restored).toBeUndefined();
+        expect(restoredWithoutIdentity.restored).toBe(true);
         expect(captures.runtimeInputs[1]).toMatchObject({
           resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
         });

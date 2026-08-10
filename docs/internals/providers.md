@@ -31,7 +31,9 @@ binds it to the exact stable Prime transcript identity and verifies the saved fi
 resume. On POSIX filesystems the thread session directory is owner-only, and its identity,
 managed-extension, and native transcript files are protected before the session becomes usable. Prime-native events terminate in
 `provider/prime/*` and map to provider-neutral runtime contracts; daemon identifiers, sockets,
-paths, request IDs, and native payloads never cross the provider boundary.
+paths, request IDs, and native payloads never cross the provider boundary. The
+[Prime Agent daemon parity ledger](prime-agent-daemon-parity.md) records every public API outcome
+that is integrated, deliberately folded into Pylon semantics, deferred, or unavailable upstream.
 
 A short-lived RPC probe discovers the qualified model catalog. Its synthetic `default` model means
 “do not force a model,” while discovered model metadata drives generic thinking and service-tier
@@ -83,7 +85,24 @@ simulating them as orchestration mutations. The same ingestion boundary drops co
 detail from other providers. Finite non-negative `turn.completed.totalCostUsd` values become stable,
 turn-linked `turn.cost` metadata activities. Retry and refinement events likewise cross the Prime
 boundary only as safe numeric lifecycle state; ingestion replaces stable provider-neutral rows and
-represents partially applied refinements separately from total failure. Clients exclude cost metadata from work logs and show the
+represents partially applied refinements separately from total failure. Explicit local harness
+refinement is an operate-scoped `provider.refineSessionHarness` RPC with only `{ threadId }` on the
+wire. The Prime runtime advertises it only when the public `DaemonAgentConnection.refine` method is
+present, and invokes that method exactly once with `{ global: false }`; Pylon has no instructions,
+rollback identity, or global-scope contract. Only new full-access daemon sessions are eligible:
+supervised, restored, ACP, missing-method, and concurrent-refinement paths fail closed. The sanitized
+public method response is authoritative for the RPC and retains only non-negative applied/failed
+counts plus `completed`/`partial`/`failed`; public `refine_complete` and `refine_failed` events remain
+uncorrelated observational lifecycle rows, so automatic or agent-initiated refinement cannot satisfy
+a Pylon request. A rejected or timed-out request is reported as outcome-unknown, never retried, and
+keeps the session reservation closed to another refinement until session teardown because Prime may
+still apply it after the client timeout. Pylon projects only `running`, `available`, or
+`outcome-unknown` on that safe session incarnation so remounted and remote clients share the same
+control barrier without persisting native refinement content. Before refinement is available, Pylon creates the derived
+native artifact and harness directories as owner-only; after confirmed success it also protects known
+harness files as owner-readable and writable only. Stop, close, disposal, and provider shutdown clear
+and fail the reservation. Proposals, instructions, summaries, paths, edit details, native identities,
+raw results, and logs terminate at the Prime boundary. Clients exclude cost metadata from work logs and show the
 provider-reported estimate only beside the terminal assistant message. Prime's retained-session
 statistics cost is never treated as a lifetime or per-turn total. The gate fails closed, but it is not an OS sandbox,
 so approved IPython and shell calls retain host access. ACP remains an explicit

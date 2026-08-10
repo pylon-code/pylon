@@ -108,6 +108,15 @@ Retry error text and refinement proposals, summaries, native IDs, paths, and edi
 copied to Pylon. A refinement that applies some changes and rejects others is shown as partially
 applied rather than wholly failed.
 
+For a new Full access daemon session, Pylon can also explicitly request **Refine local harness** when
+the loaded Prime Agent exposes that method. The request always uses Prime's local scope. Pylon does
+not accept refinement instructions, a rollback selection, or a global/local toggle, and it never
+copies Prime's proposal, summary, changed paths, native IDs, or logs into the response. Only applied
+and failed counts plus completed, partial, or failed outcome are returned. The control is unavailable
+for Supervised, restored, and ACP sessions, and Pylon never retries an uncertain request automatically.
+While an uncertain result remains reserved, every connected client keeps the control unavailable until
+that provider session ends.
+
 Completed daemon turns can show a **Reported cost** beside the terminal reply. This is Prime's
 model-pricing estimate for that turn as reported at completion, not an invoice or account-wide
 billing total. Very small estimates remain visible instead of rounding to zero; a reported zero can
@@ -148,6 +157,12 @@ instead of silently opening a blank or merely recent Prime session.
 - Prime's daemon-global pause/resume controls for inbound agent messages are intentionally not exposed;
   they can clear queued messages and reset limits across unrelated sessions.
 - Prime Agent is not used for Pylon's background text-generation helpers in Early Access.
+- Prime's requester-only side questions are not exposed because they cannot be recovered or listed
+  after reconnect. Native scoped-model cycling and transport controls are also omitted: Pylon's durable
+  model picker and environment connection remain authoritative. Direct session bash, system-prompt and
+  tool-definition reads, native recap text, retry-setting mutation, and Prime saved-session
+  import/export/navigation are not mirrored because they would duplicate or bypass Pylon's terminal,
+  thread history, checkpoints, privacy boundary, or multi-client state.
 - ACP compatibility mode is intentionally narrower: it hides daemon-only thinking and service-tier
   controls, cannot steer or switch models in a running session, supports only Full access, and does
   not expose native session UI or subagent hierarchy.

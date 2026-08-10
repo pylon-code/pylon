@@ -13,6 +13,7 @@ import type {
   ProviderCancelSessionAgentResult,
   ProviderFollowUpInput,
   ProviderMessageSessionAgentResult,
+  ProviderRefineSessionHarnessResult,
   ProviderSessionAgentActivitySnapshot,
   ProviderDriverKind,
   ProviderSetSessionAutoCompactionInput,
@@ -192,6 +193,11 @@ export interface ProviderAdapterShape<TError> {
   readonly setSessionAutoCompaction?: (
     input: ProviderSetSessionAutoCompactionInput,
   ) => Effect.Effect<SessionCompactionUpdatedPayload, TError>;
+
+  /** Refine only the active session's local harness with provider-private inputs. */
+  readonly refineSessionHarness?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderRefineSessionHarnessResult, TError>;
 
   /**
    * Stop one provider session.

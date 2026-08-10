@@ -83,6 +83,9 @@ import {
   ProviderGetSessionCompactionInput,
   ProviderGetSessionInputQueueInput,
   ProviderReloadSessionResourcesInput,
+  ProviderRefineSessionHarnessError,
+  ProviderRefineSessionHarnessInput,
+  ProviderRefineSessionHarnessResult,
   ProviderSessionAgentDepthError,
   ProviderSessionCompactionError,
   ProviderSessionInputQueueError,
@@ -274,6 +277,7 @@ export const WS_METHODS = {
   providerCompactSession: "provider.compactSession",
   providerAbortSessionCompaction: "provider.abortSessionCompaction",
   providerSetSessionAutoCompaction: "provider.setSessionAutoCompaction",
+  providerRefineSessionHarness: "provider.refineSessionHarness",
 
   // Server meta
   serverProbe: "server.probe",
@@ -456,6 +460,12 @@ export const WsProviderSetSessionAutoCompactionRpc = Rpc.make(
     error: Schema.Union([ProviderSessionCompactionError, EnvironmentAuthorizationError]),
   },
 );
+
+export const WsProviderRefineSessionHarnessRpc = Rpc.make(WS_METHODS.providerRefineSessionHarness, {
+  payload: ProviderRefineSessionHarnessInput,
+  success: ProviderRefineSessionHarnessResult,
+  error: Schema.Union([ProviderRefineSessionHarnessError, EnvironmentAuthorizationError]),
+});
 
 export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
   payload: ServerProviderUpdateInput,
@@ -1000,6 +1010,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderCompactSessionRpc,
   WsProviderAbortSessionCompactionRpc,
   WsProviderSetSessionAutoCompactionRpc,
+  WsProviderRefineSessionHarnessRpc,
   WsServerUpdateProviderRpc,
   WsServerStartProviderLoginRpc,
   WsServerSubmitProviderLoginCodeRpc,
