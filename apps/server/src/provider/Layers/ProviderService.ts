@@ -43,6 +43,7 @@ import {
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type RuntimeMode,
 } from "@t3tools/contracts";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as DateTime from "effect/DateTime";
@@ -110,6 +111,30 @@ function toValidationError(
     ...(cause !== undefined ? { cause } : {}),
   });
 }
+
+/**
+ * Refuse a runtime mode the instance's live snapshot does not publish.
+ *
+ * Both paths that start a provider session need this — a first start from client
+ * input and a recovery from a persisted binding — so the rule lives in one place
+ * and cannot drift between them. It stays provider-neutral: the only input is
+ * the mode list routing information derived from the provider's own snapshot, so
+ * no driver is ever named here. Callers pass their own operation, so the typed
+ * error still identifies which surface refused.
+ */
+const requireSupportedRuntimeMode = (
+  operation: string,
+  instanceInfo: ProviderAdapterRegistry.ProviderInstanceRoutingInfo,
+  runtimeMode: RuntimeMode,
+): Effect.Effect<void, ProviderValidationError> =>
+  instanceInfo.supportedRuntimeModes.includes(runtimeMode)
+    ? Effect.void
+    : Effect.fail(
+        toValidationError(
+          operation,
+          `Provider instance '${instanceInfo.instanceId}' does not support runtime mode '${runtimeMode}'. Supported modes: ${instanceInfo.supportedRuntimeModes.join(", ")}.`,
+        ),
+      );
 
 const decodeInputOrValidationError = <S extends Schema.Top>(input: {
   readonly operation: string;
@@ -389,6 +414,28 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       "provider.thread_id": input.binding.threadId,
     });
     return yield* Effect.gen(function* () {
+      // A binding stores the mode chosen when it was written, but support is
+      // read live, so a provider that narrowed its policy since then would
+      // otherwise be resumed into a mode it can no longer run. Validate the
+      // mode that would actually be handed to the adapter, and do it before
+      // `getByInstance`, `prepareMcpSession`, and `startSession`, so a refusal
+      // issues no credential and engages no provider process. `getInstanceInfo`
+      // fails with the same `ProviderUnsupportedError` as `getByInstance` for an
+      // unknown instance, so existence semantics are unchanged.
+      //
+      // The operation is the recovery path itself rather than the caller's
+      // (`input.operation`, e.g. `ProviderService.sendTurn`) because this
+      // refusal is about the persisted binding, not about the request that
+      // happened to wake it: the same stale mode refuses every caller, and
+      // naming the path is what tells an operator which of the two
+      // session-start gates fired.
+      const instanceInfo = yield* registry.getInstanceInfo(bindingInstanceId);
+      const effectiveRuntimeMode = input.binding.runtimeMode ?? "full-access";
+      yield* requireSupportedRuntimeMode(
+        "ProviderService.recoverSessionForThread",
+        instanceInfo,
+        effectiveRuntimeMode,
+      );
       const adapter = yield* registry.getByInstance(bindingInstanceId);
       const hasResumeCursor =
         input.binding.resumeCursor !== null && input.binding.resumeCursor !== undefined;
@@ -431,7 +478,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ...(persistedCwd ? { cwd: persistedCwd } : {}),
           ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
-          runtimeMode: input.binding.runtimeMode ?? "full-access",
+          runtimeMode: effectiveRuntimeMode,
         })
         .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));
       if (resumed.provider !== adapter.provider) {
@@ -591,12 +638,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         // publishes, so this stays provider-neutral — no driver is named here.
         // It runs before MCP preparation and before the adapter is touched so a
         // refusal leaves no credential issued and no provider process engaged.
-        if (!instanceInfo.supportedRuntimeModes.includes(input.runtimeMode)) {
-          return yield* toValidationError(
-            "ProviderService.startSession",
-            `Provider instance '${resolvedInstanceId}' does not support runtime mode '${input.runtimeMode}'. Supported modes: ${instanceInfo.supportedRuntimeModes.join(", ")}.`,
-          );
-        }
+        // Recovery applies the same rule through the same helper.
+        yield* requireSupportedRuntimeMode(
+          "ProviderService.startSession",
+          instanceInfo,
+          input.runtimeMode,
+        );
         const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
         const effectiveResumeCursor =
           input.resumeCursor ??

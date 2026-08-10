@@ -2359,6 +2359,10 @@ const activeMcpSessionLayer = McpSessionRegistry.layer.pipe(
 const gateCRuntimeModeLayer = Layer.mergeAll(activeMcpSessionLayer, NodeServices.layer);
 
 const makeRuntimeModeFixture = (supportedRuntimeModes: ReadonlyArray<RuntimeMode>) => {
+  // Read on every `getInstanceInfo` rather than captured once, so a test can
+  // narrow a provider's published policy mid-lifetime — the daemon→fallback
+  // transition the recovery gate exists for. Gate C callers ignore the holder.
+  const published = { current: supportedRuntimeModes };
   const codex = makeFakeCodexAdapter();
   const base = makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter });
   const registry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = {
@@ -2366,7 +2370,7 @@ const makeRuntimeModeFixture = (supportedRuntimeModes: ReadonlyArray<RuntimeMode
     getInstanceInfo: (instanceId) =>
       base
         .getInstanceInfo(instanceId)
-        .pipe(Effect.map((info) => ({ ...info, supportedRuntimeModes }))),
+        .pipe(Effect.map((info) => ({ ...info, supportedRuntimeModes: published.current }))),
   };
   const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
     Layer.provide(SqlitePersistenceMemory),
@@ -2384,7 +2388,7 @@ const makeRuntimeModeFixture = (supportedRuntimeModes: ReadonlyArray<RuntimeMode
       ),
     ),
   );
-  return { codex, layer };
+  return { codex, layer, published };
 };
 
 for (const rejectedMode of ["approval-required", "auto-accept-edits", "auto"] as const) {
@@ -2535,4 +2539,138 @@ it.effect("ProviderServiceLive reports a disabled instance before its runtime-mo
     assert.include(failure.issue, "is disabled");
     assert.equal(codex.startSession.mock.calls.length, 0);
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+// ---------------------------------------------------------------------------
+// Task 9 recovery gate: `recoverSessionForThread` is the second path that
+// starts a provider session, and it starts one from a *persisted* runtime mode.
+//
+// Because runtime-mode support is read live, a provider can narrow its policy
+// after a binding was written (a daemon that falls back to a more limited
+// transport is the real producer). Recovery must then refuse the stale mode
+// before it prepares MCP or asks the adapter to resume, exactly as first start
+// does. The service stays provider-neutral: no driver is named.
+// ---------------------------------------------------------------------------
+
+/**
+ * Drive a thread to "binding persisted, session stopped, MCP released".
+ *
+ * `stopSession` is the product path to that state, which matters for the MCP
+ * assertions: the credential minted by the initial start is revoked here, so a
+ * later `undefined` read attributes to recovery rather than to the fact that
+ * nothing ever issued one. The returned pre-state is asserted, not assumed.
+ */
+const stopSessionLeavingRecoverableBinding = Effect.fn("stopSessionLeavingRecoverableBinding")(
+  function* (threadId: ThreadId) {
+    const provider = yield* ProviderService.ProviderService;
+    yield* provider.stopSession({ threadId });
+    return McpProviderSession.readMcpProviderSession(threadId);
+  },
+);
+
+it.effect(
+  "ProviderServiceLive refuses to recover a thread whose persisted runtime mode is no longer supported",
+  () =>
+    Effect.gen(function* () {
+      yield* McpSessionRegistry.McpSessionRegistry;
+      const threadId = asThreadId("thread-recovery-mode-narrowed");
+      const fixture = makeRuntimeModeFixture(DEFAULT_SERVER_PROVIDER_RUNTIME_MODES);
+
+      const observed = yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+
+        // The binding is persisted while the instance still publishes `auto`.
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "auto",
+        });
+        const mcpAfterStop = yield* stopSessionLeavingRecoverableBinding(threadId);
+        fixture.codex.startSession.mockClear();
+
+        // The instance narrows its execution policy while the thread sleeps.
+        fixture.published.current = ["full-access"];
+
+        const failure = yield* Effect.flip(
+          provider.sendTurn({
+            threadId,
+            input: "resume after the policy narrowed",
+            attachments: [],
+          }),
+        );
+        return {
+          failure,
+          mcpAfterStop,
+          mcpAfterRecovery: McpProviderSession.readMcpProviderSession(threadId),
+        };
+      }).pipe(Effect.provide(fixture.layer));
+
+      // Precondition: recovery started from a genuinely empty MCP state.
+      assert.equal(observed.mcpAfterStop, undefined);
+
+      assert.instanceOf(observed.failure, ProviderValidationError);
+      assert.equal(observed.failure.operation, "ProviderService.recoverSessionForThread");
+      // Quoted so this cannot be satisfied by a message naming
+      // `auto-accept-edits` instead.
+      assert.include(observed.failure.issue, "'auto'");
+      assert.include(observed.failure.issue, "codex");
+      assert.include(observed.failure.issue, "full-access");
+
+      // The refusal precedes both side effects recovery would otherwise cause.
+      assert.equal(fixture.codex.startSession.mock.calls.length, 0);
+      assert.equal(observed.mcpAfterRecovery, undefined);
+      assert.equal(fixture.codex.sendTurn.mock.calls.length, 0);
+    }).pipe(Effect.provide(gateCRuntimeModeLayer)),
+);
+
+it.effect(
+  "ProviderServiceLive recovers a thread whose persisted runtime mode is still supported",
+  () =>
+    Effect.gen(function* () {
+      yield* McpSessionRegistry.McpSessionRegistry;
+      const threadId = asThreadId("thread-recovery-mode-still-supported");
+      const fixture = makeRuntimeModeFixture(DEFAULT_SERVER_PROVIDER_RUNTIME_MODES);
+
+      const observed = yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "auto",
+        });
+        const mcpAfterStop = yield* stopSessionLeavingRecoverableBinding(threadId);
+        fixture.codex.startSession.mockClear();
+
+        // Narrowed, but the persisted mode survives the cut — membership is
+        // what decides, not whether the policy changed.
+        fixture.published.current = ["auto", "full-access"];
+
+        yield* provider.sendTurn({
+          threadId,
+          input: "resume within the narrowed policy",
+          attachments: [],
+        });
+        return {
+          mcpAfterStop,
+          mcpAfterRecovery: McpProviderSession.readMcpProviderSession(threadId),
+        };
+      }).pipe(Effect.provide(fixture.layer));
+
+      assert.equal(observed.mcpAfterStop, undefined);
+
+      // Control for the rejection test: on the accepted path recovery really
+      // does resume the adapter and re-issue an MCP credential, so the two
+      // `undefined`/zero observations there are load-bearing.
+      assert.equal(fixture.codex.startSession.mock.calls.length, 1);
+      const resumeInput = fixture.codex.startSession.mock.calls[0]?.[0] as
+        | { readonly runtimeMode?: string }
+        | undefined;
+      assert.equal(resumeInput?.runtimeMode, "auto");
+      assert.notEqual(observed.mcpAfterRecovery, undefined);
+      assert.equal(observed.mcpAfterRecovery?.threadId, threadId);
+      assert.equal(fixture.codex.sendTurn.mock.calls.length, 1);
+    }).pipe(Effect.provide(gateCRuntimeModeLayer)),
 );
