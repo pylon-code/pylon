@@ -49,8 +49,10 @@ import type {
   MessageId,
   ModelSelection,
   OrchestrationThreadShell,
+  ProviderAskSessionSideQuestionResult,
   ProviderInteractionMode,
   ProviderRefineSessionHarnessResult,
+  ProviderSessionSideQuestionRequestId,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
@@ -149,6 +151,12 @@ import {
   sessionHarnessRefinementScopeKey as buildSessionHarnessRefinementScopeKey,
 } from "./sessionHarnessRefinementMenu";
 import { SessionAgentLiveActivityModal } from "./SessionAgentLiveActivityModal";
+import { QuickQuestionModal, QuickQuestionTrigger } from "./QuickQuestionModal";
+import {
+  canOpenQuickQuestion,
+  quickQuestionOpenScopeAfterAvailability,
+  quickQuestionSessionScopeKey,
+} from "./quickQuestionToolbar";
 
 const AGENT_MESSAGE_UNAVAILABLE_ERROR = "This agent is no longer available for direct messages.";
 
@@ -203,6 +211,13 @@ export interface ThreadComposerProps {
   readonly onStopThread: () => void;
   readonly onReloadSessionResources: () => Promise<void>;
   readonly onRefineSessionHarness: () => Promise<ProviderRefineSessionHarnessResult | null>;
+  readonly onAskSessionSideQuestion: (
+    requestId: ProviderSessionSideQuestionRequestId,
+    question: string,
+  ) => Promise<ProviderAskSessionSideQuestionResult | null>;
+  readonly onCancelSessionSideQuestion: (
+    requestId: ProviderSessionSideQuestionRequestId,
+  ) => Promise<void>;
   readonly onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onQueueFollowUp: () => Promise<MessageId | null>;
@@ -506,6 +521,23 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       props.serverConfig.providers.find((provider) => provider.instanceId === instanceId) ?? null
     );
   }, [props.selectedThread.session?.providerInstanceId, props.serverConfig]);
+  const quickQuestionAvailable = canOpenQuickQuestion({
+    connectionState: props.connectionState,
+    session: props.selectedThread.session,
+    provider: activeSessionProviderStatus,
+  });
+  const quickQuestionScopeKey = quickQuestionSessionScopeKey({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+    providerInstanceId: props.selectedThread.session?.providerInstanceId,
+    sessionStartedAt: props.selectedThread.session?.startedAt,
+  });
+  const [quickQuestionOpenScopeKey, setQuickQuestionOpenScopeKey] = useState<string | null>(null);
+  useEffect(() => {
+    setQuickQuestionOpenScopeKey((current) =>
+      quickQuestionOpenScopeAfterAvailability(current, quickQuestionAvailable),
+    );
+  }, [quickQuestionAvailable]);
   const sessionHarnessRefinementScopeKey = buildSessionHarnessRefinementScopeKey({
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
@@ -1777,6 +1809,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   onPress={() => void props.onPickDraftImages()}
                   showChevron={false}
                 />
+                {quickQuestionAvailable ? (
+                  <QuickQuestionTrigger
+                    onPress={() => setQuickQuestionOpenScopeKey(quickQuestionScopeKey)}
+                  />
+                ) : null}
                 <ComposerInlineControl
                   accessibilityLabel="Model and reasoning settings"
                   emphasized
@@ -1933,6 +1970,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </Animated.View>
         ) : null}
       </Animated.View>
+      <QuickQuestionModal
+        key={quickQuestionScopeKey}
+        scopeKey={quickQuestionScopeKey}
+        visible={quickQuestionOpenScopeKey === quickQuestionScopeKey && quickQuestionAvailable}
+        onAsk={props.onAskSessionSideQuestion}
+        onCancel={props.onCancelSessionSideQuestion}
+        onDismiss={() => setQuickQuestionOpenScopeKey(null)}
+      />
       {liveActivityOpen && selectedLiveActivityAgent !== null ? (
         <SessionAgentLiveActivityModal
           key={sessionAgentScopeKey}

@@ -118,7 +118,8 @@ export const migrationEntries = [
   // ids run one ahead because 36 is retired here, so it lands as 42
   // (pingdotgg/t3code#5775).
   [42, "ProjectionProjectFaviconPath", Migration0042],
-  [43, "ProjectionThreadSessionLifecycle", Migration0043],] as const;
+  [43, "ProjectionThreadSessionLifecycle", Migration0043],
+] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 

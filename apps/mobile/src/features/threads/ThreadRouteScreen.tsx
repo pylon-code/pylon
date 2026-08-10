@@ -7,7 +7,13 @@ import {
 } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
-import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  type ProjectScript,
+  type ProviderAskSessionSideQuestionResult,
+  type ProviderSessionSideQuestionRequestId,
+} from "@t3tools/contracts";
 import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
 import {
   requestOlderThreadTurns,
@@ -224,6 +230,19 @@ function ThreadRouteContent(
     reportDefect: false,
     reportFailure: false,
   });
+  const askThreadSessionSideQuestion = useAtomCommand(threadEnvironment.askSessionSideQuestion, {
+    label: "session side question",
+    reportDefect: false,
+    reportFailure: false,
+  });
+  const cancelThreadSessionSideQuestion = useAtomCommand(
+    threadEnvironment.cancelSessionSideQuestion,
+    {
+      label: "session side question cancellation",
+      reportDefect: false,
+      reportFailure: false,
+    },
+  );
   const setThreadSessionAgentDepth = useAtomCommand(
     threadEnvironment.setSessionAgentDepth,
     "session agent depth update",
@@ -527,6 +546,32 @@ function ThreadRouteContent(
     });
     return result._tag === "Success" ? result.value : null;
   }, [refineThreadSessionHarness, selectedThread]);
+
+  const handleAskSessionSideQuestion = useCallback(
+    async (
+      requestId: ProviderSessionSideQuestionRequestId,
+      question: string,
+    ): Promise<ProviderAskSessionSideQuestionResult | null> => {
+      if (!selectedThread) return null;
+      const result = await askThreadSessionSideQuestion({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, requestId, question },
+      });
+      return result._tag === "Success" ? result.value : null;
+    },
+    [askThreadSessionSideQuestion, selectedThread],
+  );
+
+  const handleCancelSessionSideQuestion = useCallback(
+    async (requestId: ProviderSessionSideQuestionRequestId): Promise<void> => {
+      if (!selectedThread) return;
+      await cancelThreadSessionSideQuestion({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, requestId },
+      });
+    },
+    [cancelThreadSessionSideQuestion, selectedThread],
+  );
 
   const handleSetSessionAgentDepth = useCallback(
     async (maxDepth: number) => {
@@ -863,6 +908,8 @@ function ThreadRouteContent(
           onStopThread={handleStopThread}
           onReloadSessionResources={handleReloadSessionResources}
           onRefineSessionHarness={handleRefineSessionHarness}
+          onAskSessionSideQuestion={handleAskSessionSideQuestion}
+          onCancelSessionSideQuestion={handleCancelSessionSideQuestion}
           onSetSessionAgentDepth={handleSetSessionAgentDepth}
           onSendMessage={composer.onSendMessage}
           onQueueFollowUp={composer.onQueueFollowUp}
