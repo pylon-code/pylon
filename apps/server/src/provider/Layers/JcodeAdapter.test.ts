@@ -1,0 +1,663 @@
+import type { ApiEvent, SessionInfo } from "@1jehuang/jcode-sdk";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { describe, expect, it } from "@effect/vitest";
+import {
+  ProviderInstanceId,
+  ProviderRuntimeEvent,
+  ThreadId,
+  TurnId,
+  type ProviderSessionStartInput,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+
+import * as ServerConfig from "../../config.ts";
+import type { JcodeInstanceManager, JcodeInstanceProbe } from "../jcode/JcodeInstanceManager.ts";
+import {
+  makeJcodeSdkBridge,
+  type JcodeSdkClientLike,
+  type JcodeSdkModule,
+} from "../jcode/JcodeSdkBridge.ts";
+import { makeJcodeAdapter, type JcodeAdapterShape } from "./JcodeAdapter.ts";
+
+const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
+
+const NATIVE_SOCKET = "/private/var/folders/jcode-home-abc/api.sock";
+const NATIVE_SESSION_ID = "native-session-abc";
+const INSTANCE_KEY = "jcode_local";
+const PROVIDER_INSTANCE_ID = ProviderInstanceId.make("jcode_local");
+const THREAD_ID = ThreadId.make("thread-1");
+const OTHER_THREAD_ID = ThreadId.make("thread-2");
+
+/** A hand-driven SDK event source so tests decide exactly when frames land. */
+class EventSource {
+  private readonly items: Array<{ readonly kind: "event" | "end"; readonly value?: ApiEvent }> = [];
+  private readonly waiters: Array<() => void> = [];
+
+  push(value: ApiEvent): void {
+    this.items.push({ kind: "event", value });
+    this.wake();
+  }
+
+  end(): void {
+    this.items.push({ kind: "end" });
+    this.wake();
+  }
+
+  private wake(): void {
+    for (const waiter of this.waiters.splice(0)) waiter();
+  }
+
+  iterator(): AsyncIterableIterator<ApiEvent> {
+    const self = this;
+    return (async function* () {
+      for (;;) {
+        while (self.items.length === 0) {
+          await new Promise<void>((resolve) => {
+            self.waiters.push(resolve);
+          });
+        }
+        const next = self.items.shift()!;
+        if (next.kind === "end") return;
+        yield next.value as ApiEvent;
+      }
+    })();
+  }
+}
+
+interface FakeClient {
+  readonly sessionId: string;
+  readonly source: EventSource;
+  readonly sent: Array<{ readonly sessionId: string; readonly content: string }>;
+  readonly setModels: Array<{ readonly sessionId: string; readonly model: string }>;
+  readonly setEfforts: Array<{ readonly sessionId: string; readonly effort: string }>;
+  readonly cancels: string[];
+  closes: number;
+}
+
+interface FakeSdk {
+  readonly sdk: JcodeSdkModule;
+  /** One entry per `connect`, so per-session lifetimes are countable. */
+  readonly clients: FakeClient[];
+}
+
+function sessionInfo(sessionId: string, workingDir?: string): SessionInfo {
+  return {
+    session_id: sessionId,
+    status: "idle",
+    ...(workingDir === undefined ? {} : { working_dir: workingDir }),
+  };
+}
+
+function makeFakeSdk(): FakeSdk {
+  const clients: FakeClient[] = [];
+  const sdk: JcodeSdkModule = {
+    launchInstance: async () => ({
+      socketPath: NATIVE_SOCKET,
+      jcodeHome: "/private/var/folders/jcode-home-abc",
+      shutdown: async () => {},
+    }),
+    connect: async () => {
+      const state: FakeClient = {
+        sessionId: `${NATIVE_SESSION_ID}-${clients.length + 1}`,
+        source: new EventSource(),
+        sent: [],
+        setModels: [],
+        setEfforts: [],
+        cancels: [],
+        closes: 0,
+      };
+      clients.push(state);
+      const client: JcodeSdkClientLike = {
+        server: "jcode-harness-api-bridge/0.1.0",
+        capabilities: ["sessions", "models"],
+        supports: () => true,
+        createSession: async (workingDir) => sessionInfo(state.sessionId, workingDir),
+        attachSession: async (sessionId) => sessionInfo(sessionId),
+        detachSession: async () => {},
+        listSessions: async () => [],
+        listModels: async () => ({ models: [] }),
+        getRuntimeInfo: async () => {
+          throw new Error("not used");
+        },
+        setModel: async (sessionId, model) => {
+          state.setModels.push({ sessionId, model });
+        },
+        setReasoningEffort: async (sessionId, effort) => {
+          state.setEfforts.push({ sessionId, effort });
+        },
+        sendMessage: async (sessionId, content) => {
+          state.sent.push({ sessionId, content });
+        },
+        cancel: async (sessionId) => {
+          state.cancels.push(sessionId);
+        },
+        getHistory: async () => [],
+        events: () => state.source.iterator(),
+        close: async () => {
+          state.closes += 1;
+          state.source.end();
+        },
+      };
+      return client;
+    },
+  };
+  return { sdk, clients };
+}
+
+const PROBE: JcodeInstanceProbe = {
+  server: "jcode 0.73.0",
+  protocolVersion: 1,
+  capabilities: ["sessions", "models"],
+  currentModel: "claude-opus-5",
+  models: [{ model: "claude-opus-5", provider: "anthropic", available: true }],
+};
+
+interface ManagerDouble {
+  readonly manager: JcodeInstanceManager;
+  /** Times the adapter asked for a fresh child connection. */
+  connects: () => number;
+  shutdowns: () => number;
+}
+
+function makeManagerDouble(fake: FakeSdk): {
+  readonly double: ManagerDouble;
+  readonly bridge: ReturnType<typeof makeJcodeSdkBridge>;
+} {
+  const bridge = makeJcodeSdkBridge(fake.sdk);
+  let connects = 0;
+  let shutdowns = 0;
+  const manager: JcodeInstanceManager = {
+    probe: Effect.succeed(PROBE),
+    connectSessionClient: Effect.suspend(() => {
+      connects += 1;
+      return bridge
+        .connect({ socketPath: NATIVE_SOCKET, clientName: "pylon-jcode-session/1" })
+        .pipe(Effect.orDie);
+    }),
+    shutdown: Effect.sync(() => {
+      shutdowns += 1;
+    }),
+  };
+  return {
+    double: { manager, connects: () => connects, shutdowns: () => shutdowns },
+    bridge,
+  };
+}
+
+const testLayer = Layer.mergeAll(
+  NodeServices.layer,
+  ServerConfig.layerTest(process.cwd(), { prefix: "jcode-adapter-" }).pipe(
+    Layer.provide(NodeServices.layer),
+  ),
+);
+
+interface Fixture {
+  readonly adapter: JcodeAdapterShape;
+  readonly fake: FakeSdk;
+  readonly manager: ManagerDouble;
+  readonly cwd: string;
+}
+
+/** Builds an adapter plus its fakes inside the caller's scope. */
+const fixture = (options: { readonly manager?: JcodeInstanceManager | undefined } = {}) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-adapter-cwd-" });
+    const fake = makeFakeSdk();
+    const { double, bridge } = makeManagerDouble(fake);
+    const adapter = yield* makeJcodeAdapter({
+      providerInstanceId: PROVIDER_INSTANCE_ID,
+      instanceKey: INSTANCE_KEY,
+      bridge,
+      manager: "manager" in options ? options.manager : double.manager,
+    });
+    return { adapter, fake, manager: double, cwd } satisfies Fixture;
+  });
+
+const startInput = (
+  overrides: Partial<ProviderSessionStartInput> & { readonly cwd: string },
+): ProviderSessionStartInput => ({
+  threadId: THREAD_ID,
+  runtimeMode: "full-access",
+  ...overrides,
+});
+
+/**
+ * Subscribes before the producer runs and collects exactly `count` events.
+ * `startImmediately` is what guarantees the subscription exists before the
+ * caller triggers the work that emits.
+ */
+const collectEvents = (adapter: JcodeAdapterShape, count: number) =>
+  Stream.runCollect(Stream.take(adapter.streamEvents, count)).pipe(
+    Effect.map((chunk) => Array.from(chunk).map((event) => decodeRuntimeEvent(event))),
+    Effect.forkChild({ startImmediately: true }),
+  );
+
+describe("makeJcodeAdapter", () => {
+  it.effect("declares the Jcode adapter contract", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter } = yield* fixture();
+
+        expect(adapter.provider).toBe("jcode");
+        expect(adapter.capabilities).toEqual({
+          sessionModelSwitch: "in-session",
+          conversationRollback: "unsupported",
+        });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("starts a full-access session and reports it ready", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, fake, manager, cwd } = yield* fixture();
+        const session = yield* adapter.startSession(startInput({ cwd }));
+
+        expect(session).toMatchObject({
+          provider: "jcode",
+          providerInstanceId: PROVIDER_INSTANCE_ID,
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          status: "ready",
+          cwd,
+        });
+        expect(manager.connects()).toBe(1);
+        expect(fake.clients).toHaveLength(1);
+        expect(yield* adapter.hasSession(THREAD_ID)).toBe(true);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("never leaks native session ids or socket paths through the session", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, cwd } = yield* fixture();
+        const session = yield* adapter.startSession(startInput({ cwd }));
+
+        // Serialize the whole value so a native identifier cannot hide at depth.
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - leak assertion, not decoding.
+        const serialized = JSON.stringify(session);
+        expect(serialized).not.toContain(NATIVE_SESSION_ID);
+        expect(serialized).not.toContain(NATIVE_SOCKET);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects every runtime mode other than full-access without connecting", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, manager, cwd } = yield* fixture();
+
+        for (const runtimeMode of ["approval-required", "auto-accept-edits", "auto"] as const) {
+          const result = yield* adapter
+            .startSession(startInput({ cwd, runtimeMode }))
+            .pipe(Effect.result);
+
+          expect(Result.isFailure(result), `${runtimeMode} must be rejected`).toBe(true);
+          if (Result.isFailure(result)) {
+            expect(result.failure._tag).toBe("ProviderAdapterValidationError");
+          }
+        }
+        // Defensive rejection must happen before any child connection is opened.
+        expect(manager.connects()).toBe(0);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("requires a working directory", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, manager } = yield* fixture();
+        const result = yield* adapter
+          .startSession({ threadId: THREAD_ID, runtimeMode: "full-access" })
+          .pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure._tag).toBe("ProviderAdapterValidationError");
+        }
+        expect(manager.connects()).toBe(0);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects a second session for a thread it already owns", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, manager, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        const result = yield* adapter.startSession(startInput({ cwd })).pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure._tag).toBe("ProviderAdapterValidationError");
+        }
+        expect(manager.connects()).toBe(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails startSession with a typed error when the private instance is unavailable", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, cwd } = yield* fixture({ manager: undefined });
+        const result = yield* adapter.startSession(startInput({ cwd })).pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure._tag).toBe("ProviderAdapterProcessError");
+        }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("emits turn.started itself, because the runtime never does", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, fake, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        const collector = yield* collectEvents(adapter, 1);
+
+        const started = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+        const events = yield* Fiber.join(collector);
+
+        expect(events).toHaveLength(1);
+        expect(events[0]?.type).toBe("turn.started");
+        expect(events[0]?.threadId).toBe(THREAD_ID);
+        expect(events[0]?.turnId).toBe(started.turnId);
+        expect(fake.clients[0]?.sent.map((entry) => entry.content)).toEqual(["hello"]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("owns the session status transition into running", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        const started = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+
+        const sessions = yield* adapter.listSessions();
+        expect(sessions[0]?.status).toBe("running");
+        expect(sessions[0]?.activeTurnId).toBe(started.turnId);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("forwards mapped runtime events from the session runtime", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, fake, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        // The adapter's own turn.started, then the pair the mapper makes of one
+        // assistant text delta.
+        const collector = yield* collectEvents(adapter, 3);
+
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+        const client = fake.clients[0]!;
+        client.source.push({
+          ev: "text_delta",
+          session_id: client.sessionId,
+          text: "hi",
+        } as ApiEvent);
+
+        const events = yield* Fiber.join(collector);
+        expect(events.map((event) => event.type)).toEqual([
+          "turn.started",
+          "item.started",
+          "content.delta",
+        ]);
+        // Mapped events must be correlated with the turn the adapter announced.
+        expect(events[2]?.turnId).toBe(events[0]?.turnId);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects a turn for an unknown thread", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter } = yield* fixture();
+        const result = yield* adapter
+          .sendTurn({ threadId: THREAD_ID, input: "hello" })
+          .pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure._tag).toBe("ProviderAdapterSessionNotFoundError");
+        }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects a concurrent turn on the same thread", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "first" });
+        const result = yield* adapter
+          .sendTurn({ threadId: THREAD_ID, input: "second" })
+          .pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure._tag).toBe("ProviderAdapterValidationError");
+        }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("passes the attached model on resume so the first turn issues no setModel", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, fake, cwd } = yield* fixture();
+        yield* adapter.startSession(
+          startInput({
+            cwd,
+            modelSelection: { instanceId: PROVIDER_INSTANCE_ID, model: "claude-opus-5" },
+          }),
+        );
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "hello",
+          modelSelection: { instanceId: PROVIDER_INSTANCE_ID, model: "claude-opus-5" },
+        });
+
+        expect(fake.clients[0]?.setModels).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("interrupts the active turn through the session runtime", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, fake, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        const started = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+        yield* adapter.interruptTurn(THREAD_ID, started.turnId);
+
+        expect(fake.clients[0]?.cancels).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails interruptTurn for an unknown thread", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter } = yield* fixture();
+        const result = yield* adapter.interruptTurn(THREAD_ID).pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure._tag).toBe("ProviderAdapterSessionNotFoundError");
+        }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("stops one session exactly once and forgets it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, fake, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        yield* adapter.stopSession(THREAD_ID);
+
+        // The runtime's close is idempotent and also runs as a scope finalizer;
+        // the adapter must not close the child client twice.
+        expect(fake.clients[0]?.closes).toBe(1);
+        expect(yield* adapter.hasSession(THREAD_ID)).toBe(false);
+        expect(yield* adapter.listSessions()).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails stopSession for an unknown thread", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter } = yield* fixture();
+        const result = yield* adapter.stopSession(THREAD_ID).pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure._tag).toBe("ProviderAdapterSessionNotFoundError");
+        }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("tracks independent sessions per thread and stops all of them", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, fake, manager, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+        yield* adapter.startSession(startInput({ cwd, threadId: OTHER_THREAD_ID }));
+
+        expect(manager.connects()).toBe(2);
+        expect((yield* adapter.listSessions()).map((session) => session.threadId).sort()).toEqual(
+          [THREAD_ID, OTHER_THREAD_ID].sort(),
+        );
+
+        yield* adapter.stopAll();
+
+        expect(fake.clients.map((client) => client.closes)).toEqual([1, 1]);
+        expect(yield* adapter.listSessions()).toEqual([]);
+        expect(yield* adapter.hasSession(THREAD_ID)).toBe(false);
+        expect(yield* adapter.hasSession(OTHER_THREAD_ID)).toBe(false);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("closes live sessions when the adapter scope closes", () =>
+    Effect.gen(function* () {
+      const captured: FakeSdk[] = [];
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const { adapter, fake, cwd } = yield* fixture();
+          captured.push(fake);
+          yield* adapter.startSession(startInput({ cwd }));
+        }),
+      );
+
+      expect(captured[0]?.clients[0]?.closes).toBe(1);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("reads an empty thread snapshot and refuses durable rollback", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+
+        expect(yield* adapter.readThread(THREAD_ID)).toEqual({
+          threadId: THREAD_ID,
+          turns: [],
+        });
+
+        const rollback = yield* adapter.rollbackThread(THREAD_ID, 1).pipe(Effect.result);
+        expect(Result.isFailure(rollback)).toBe(true);
+        if (
+          Result.isFailure(rollback) &&
+          rollback.failure._tag === "ProviderAdapterUnsupportedOperationError"
+        ) {
+          expect(rollback.failure.operation).toBe("rollbackThread");
+        } else {
+          expect.unreachable("rollbackThread must report a typed unsupported operation");
+        }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("returns typed unsupported errors for approvals and user input", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter, cwd } = yield* fixture();
+        yield* adapter.startSession(startInput({ cwd }));
+
+        const approval = yield* adapter
+          .respondToRequest(THREAD_ID, "request-1" as never, "approve" as never)
+          .pipe(Effect.result);
+        if (
+          Result.isFailure(approval) &&
+          approval.failure._tag === "ProviderAdapterUnsupportedOperationError"
+        ) {
+          expect(approval.failure.operation).toBe("respondToRequest");
+        } else {
+          expect.unreachable("respondToRequest must report a typed unsupported operation");
+        }
+
+        const userInput = yield* adapter
+          .respondToUserInput(THREAD_ID, "request-1" as never, {} as never)
+          .pipe(Effect.result);
+        if (
+          Result.isFailure(userInput) &&
+          userInput.failure._tag === "ProviderAdapterUnsupportedOperationError"
+        ) {
+          expect(userInput.failure.operation).toBe("respondToUserInput");
+        } else {
+          expect.unreachable("respondToUserInput must report a typed unsupported operation");
+        }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("omits every optional operation Jcode cannot honor", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { adapter } = yield* fixture();
+
+        // `ProviderService` treats an absent optional member as unsupported and
+        // returns `ProviderUnsupportedError`. Defining an always-failing member
+        // would instead read as "supported" to any presence check.
+        for (const operation of [
+          "respondToInteraction",
+          "reloadSessionResources",
+          "askSessionSideQuestion",
+          "cancelSessionSideQuestion",
+          "cancelSessionAgent",
+          "messageSessionAgent",
+          "watchSessionAgentActivity",
+          "getSessionAgentDepth",
+          "setSessionAgentDepth",
+          "followUp",
+          "getSessionInputQueue",
+          "clearSessionInputQueue",
+          "setSessionInputQueueMode",
+          "getSessionCompaction",
+          "compactSession",
+          "abortSessionCompaction",
+          "setSessionAutoCompaction",
+          "refineSessionHarness",
+        ] as const) {
+          expect(adapter[operation], `${operation} must stay unsupported`).toBeUndefined();
+        }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+});
