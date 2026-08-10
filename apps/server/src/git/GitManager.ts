@@ -935,10 +935,10 @@ export const make = Effect.gen(function* () {
         // Only skip when the branch is untracked as well: anything carrying an
         // upstream keeps the old behaviour.
         if (details.upstreamRef === null && (yield* isUnpublishedBranch(cwd, headContext))) {
-          return { latest: null, headContext };
+          return { latest: null, headContext, skipped: true };
         }
         const latest = yield* findLatestPrForHeadContext(cwd, headContext);
-        return { latest, headContext };
+        return { latest, headContext, skipped: false };
       });
     },
     {
@@ -1018,27 +1018,45 @@ export const make = Effect.gen(function* () {
     // `push -u`) must not orphan the fallback value for the same branch.
     const branchKey = `${cwd}\u0000${details.branch}`;
     return yield* Cache.get(prLookupCache, prLookupCacheKey(cwd, details)).pipe(
-      Effect.map(({ latest, headContext }) => {
-        if (!latest) return { pr: null, headContext };
+      Effect.map(({ latest, headContext, skipped }) => {
+        if (skipped) return { pr: null, headContext, skipped: true };
+        if (!latest) return { pr: null, headContext, skipped: false };
         // On the default branch, only surface open PRs.
         // Merged/closed matches are usually reverse-merge history, not the thread's PR context.
         if (details.isDefaultBranch && latest.state !== "open") {
-          return { pr: null, headContext };
+          return { pr: null, headContext, skipped: false };
         }
-        return { pr: toStatusPr(latest), headContext };
+        return { pr: toStatusPr(latest), headContext, skipped: false };
       }),
-      Effect.tap(({ pr, headContext }) =>
-        Effect.sync(() =>
-          rememberLastKnownPr(branchKey, {
-            pr,
-            upstreamRef: details.upstreamRef,
-            headBranch: headContext.headBranch,
-            remoteName: headContext.remoteName,
-            headRemoteUrlKey: headContext.headRemoteUrlKey,
-          }),
-        ),
+      // A skipped lookup means "we did not ask", not "there is no PR". A branch
+      // whose remote head was deleted on merge and then pruned is
+      // indistinguishable from one that was never published, so recording the
+      // skip as a null answer would drop a Merged badge and leave the thread
+      // waiting on a `changeRequestState` that never arrives. Treat it like a
+      // failed lookup: keep the fallback, and keep the saved API call.
+      Effect.tap(({ pr, headContext, skipped }) =>
+        skipped
+          ? Effect.void
+          : Effect.sync(() =>
+              rememberLastKnownPr(branchKey, {
+                pr,
+                upstreamRef: details.upstreamRef,
+                headBranch: headContext.headBranch,
+                remoteName: headContext.remoteName,
+                headRemoteUrlKey: headContext.headRemoteUrlKey,
+              }),
+            ),
       ),
-      Effect.map(({ pr }) => pr),
+      Effect.map(({ pr, headContext, skipped }) =>
+        skipped
+          ? resolveLastKnownPr(branchKey, {
+              upstreamRef: details.upstreamRef,
+              headBranch: headContext.headBranch,
+              remoteName: headContext.remoteName,
+              headRemoteUrlKey: headContext.headRemoteUrlKey,
+            })
+          : pr,
+      ),
       Effect.catch((error) =>
         Effect.logWarning("PR lookup failed; keeping last known PR state.").pipe(
           Effect.annotateLogs({

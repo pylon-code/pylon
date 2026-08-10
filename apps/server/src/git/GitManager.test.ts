@@ -1007,6 +1007,59 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("status keeps a merged PR after the remote branch is deleted and pruned", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/merged-then-pruned"]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/merged-then-pruned"]);
+
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListSequence: [
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 512,
+                title: "Merged then pruned",
+                url: "https://github.com/pingdotgg/t3code/pull/512",
+                baseRefName: "main",
+                headRefName: "feature/merged-then-pruned",
+                state: "MERGED",
+                mergedAt: "2026-04-02T10:00:00Z",
+                updatedAt: "2026-04-02T10:00:00Z",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const first = yield* manager.status({ cwd: repoDir });
+      expect(first.pr?.number).toBe(512);
+      expect(first.pr?.state).toBe("merged");
+
+      // Merging on the host deletes the remote head, and a prune drops the
+      // remote-tracking ref along with `@{upstream}`. From remote refs alone
+      // that is indistinguishable from a branch that was never published, so
+      // the unpublished-branch skip fires here. Skipping means "we did not
+      // ask", not "there is no PR": blanking the badge would also deny
+      // auto-settle the merged state it waits for.
+      yield* runGit(repoDir, ["push", "origin", "--delete", "feature/merged-then-pruned"]);
+      yield* runGit(repoDir, ["fetch", "--prune", "origin"]);
+
+      yield* manager.invalidateStatus(repoDir);
+      const second = yield* manager.status({ cwd: repoDir });
+
+      expect(second.pr?.number).toBe(512);
+      expect(second.pr?.state).toBe("merged");
+      // The saved API call is the point of the skip, so it must still be saved.
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+    }),
+  );
+
   it("backs off repeated PR lookup failures past the healthy refresh cadence", () => {
     expect(Duration.toMillis(GitManager.prLookupFailureTtl(1))).toBe(20_000);
     expect(Duration.toMillis(GitManager.prLookupFailureTtl(2))).toBe(40_000);
