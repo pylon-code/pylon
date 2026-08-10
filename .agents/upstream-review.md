@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "a7b0366cbe1e9eabc9e37eb079a38f6b6691f999"
+reviewed-through: "9afef94a61466422128da9c3b723b633d4c7ed1d"
 reviewed-through-date: "2026-08-11"
 ---
 
@@ -466,6 +466,36 @@ and its follow-up `a7b0366cb` / `#6049` were **deferred** rather than adopted
 or skipped, and are tracked in the deferred register below. The cursor
 advances because every candidate in the range now has a decision, and a
 deferral is one.
+
+## 2026-08-11 (second batch) — `a7b0366cbe1e9eabc9e37eb079a38f6b6691f999..9afef94a61466422128da9c3b723b633d4c7ed1d`
+
+One upstream commit, one change set, adopted. Upstream has been quiet since the
+sixty-commit range above closed.
+
+DEF-1 was re-evaluated against this head and **stays deferred**: it requires
+both of its gates and neither holds. The date is before 2026-08-25, and the
+fourteen-day churn check on the pull-request page files still returns
+`cad2c9361` and `a7b0366cb` themselves, so the surface has not settled.
+
+Housekeeping found during preflight: the local `pylon` ref was 101 commits
+behind `origin/pylon`, because the `subagent-observability` worktree held the
+branch checked out and was last fast-forwarded on 2026-08-07 while the
+2026-08-11 slices landed from the main checkout. Nothing was lost —
+`origin/pylon..pylon` was empty — and the ref was fast-forwarded before this
+batch branched. Worth remembering that a worktree holding `pylon` silently
+pins it.
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------- | --------------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1         | `9afef94a6` / `#5914` | adopted  | `64a2e27e9`     | Adds an "In 3 hours" snooze preset between "In an hour" and the calendar choices, closing a real gap: "This evening" is dropped once evening is near, so an early-afternoon snooze had nothing between one hour and tomorrow. Clean cherry-pick — all three touched files were byte-identical to upstream's parent. Every consumer maps the preset array generically, so the choice reaches the web sidebar row menu, the chat header menu, and the mobile swipe action without per-surface work. No DotMatrix, branding, migration, or contract overlap. |
+
+Verification: the two snooze test files pass (32 tests) and mobile
+`threadListV2.test.ts` passes (37 tests), since mobile resolves presets to
+match its swipe events and a widened `SnoozePresetId` union reaches it. Web and
+mobile typecheck clean; client-runtime reports only the pre-existing
+`relay/discovery.ts(243,16)` Effect suggestion, in a file this change does not
+touch. `vp lint` and `vp fmt --check` clean on all three changed files. A `vp i`
+was needed first — the 101-commit fast-forward moved the lockfile substantially.
 
 ## Deferred register
 
