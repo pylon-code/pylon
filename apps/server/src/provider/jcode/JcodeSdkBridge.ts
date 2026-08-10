@@ -292,23 +292,36 @@ export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
    * disconnect is the expected failure mode for a long-lived session, so it
    * goes through the same boundary as the promise methods rather than escaping
    * raw.
+   *
+   * The pull loop is manual so a rejected `next()` can be classified, which
+   * means this generator owes the source the cleanup `for await` would have
+   * performed for it: the `finally` runs whenever the consumer breaks,
+   * returns, or throws, and closes the source exactly once. The SDK's iterator
+   * teardown is its `return`, and skipping it leaks an event listener and an
+   * unbounded queue for the life of the process. A cleanup failure is
+   * deliberately swallowed: it must never replace the classified stream error
+   * the consumer is already being told about.
    */
   async function* knownEvents(
     source: AsyncIterableIterator<ApiEvent>,
     sessionId: string | undefined,
   ): AsyncIterableIterator<ApiEvent> {
     const iterator = source[Symbol.asyncIterator]();
-    for (;;) {
-      const next = await iterator.next().catch((error: unknown) => {
-        throw toBridgeError({
-          error,
-          operation: "events",
-          ...(sessionId === undefined ? {} : { sessionId }),
-          secrets: redactionLiterals,
+    try {
+      for (;;) {
+        const next = await iterator.next().catch((error: unknown) => {
+          throw toBridgeError({
+            error,
+            operation: "events",
+            ...(sessionId === undefined ? {} : { sessionId }),
+            secrets: redactionLiterals,
+          });
         });
-      });
-      if (next.done === true) return;
-      if (isKnownEvent(next.value as AnyApiEvent)) yield next.value;
+        if (next.done === true) return;
+        if (isKnownEvent(next.value as AnyApiEvent)) yield next.value;
+      }
+    } finally {
+      await iterator.return?.().catch(() => undefined);
     }
   }
 

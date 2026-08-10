@@ -343,6 +343,136 @@ describe("JcodeSdkBridge event stream", () => {
   });
 });
 
+/**
+ * A source stream that reports whether it was closed, mirroring the real SDK's
+ * iterator whose `return` is the teardown that unsubscribes its listeners.
+ */
+function countingSource(
+  events: ReadonlyArray<ApiEvent>,
+  options: { readonly failAfter?: unknown; readonly failCleanup?: unknown } = {},
+) {
+  let closes = 0;
+  let cleanedUp = false;
+  async function* generate(): AsyncGenerator<ApiEvent, void, unknown> {
+    try {
+      for (const event of events) yield event;
+      if (options.failAfter !== undefined) throw options.failAfter;
+    } finally {
+      cleanedUp = true;
+    }
+  }
+  const inner = generate();
+  const source: AsyncIterableIterator<ApiEvent> = {
+    [Symbol.asyncIterator]() {
+      return source;
+    },
+    next: () => inner.next(),
+    return: async (): Promise<IteratorResult<ApiEvent, void>> => {
+      closes += 1;
+      if (options.failCleanup !== undefined) throw options.failCleanup;
+      return inner.return(undefined);
+    },
+  };
+  return {
+    source,
+    closes: () => closes,
+    cleanedUp: () => cleanedUp,
+  };
+}
+
+function eventsBridge(source: AsyncIterableIterator<ApiEvent>) {
+  return makeJcodeSdkBridge(fakeSdk({ connect: async () => fakeClient({ events: () => source }) }));
+}
+
+describe("JcodeSdkBridge event stream cleanup", () => {
+  it("closes the underlying stream exactly once when the consumer breaks early", async () => {
+    const probe = countingSource([
+      { ev: "text_delta", session_id: "session-1", text: "one" },
+      { ev: "text_delta", session_id: "session-1", text: "two" },
+    ]);
+
+    const client = await Effect.runPromise(
+      eventsBridge(probe.source).connect({ socketPath: NATIVE_PATH, clientName: "pylon/test" }),
+    );
+
+    const seen: Array<string> = [];
+    for await (const event of client.events("session-1")) {
+      seen.push(event.ev);
+      break;
+    }
+
+    expect(seen).toEqual(["text_delta"]);
+    expect(probe.cleanedUp()).toBe(true);
+    expect(probe.closes()).toBe(1);
+  });
+
+  it("closes the underlying stream when the consumer throws", async () => {
+    const probe = countingSource([{ ev: "text_delta", session_id: "session-1", text: "one" }]);
+
+    const client = await Effect.runPromise(
+      eventsBridge(probe.source).connect({ socketPath: NATIVE_PATH, clientName: "pylon/test" }),
+    );
+
+    const consumerError = new Error("consumer exploded");
+    const thrown = await (async () => {
+      try {
+        for await (const _event of client.events("session-1")) {
+          void _event;
+          throw consumerError;
+        }
+        return undefined;
+      } catch (error: unknown) {
+        return error;
+      }
+    })();
+
+    expect(thrown).toBe(consumerError);
+    expect(probe.cleanedUp()).toBe(true);
+    expect(probe.closes()).toBe(1);
+  });
+
+  it("closes the underlying stream once on normal completion", async () => {
+    const probe = countingSource([{ ev: "turn_done", session_id: "session-1" }]);
+
+    const client = await Effect.runPromise(
+      eventsBridge(probe.source).connect({ socketPath: NATIVE_PATH, clientName: "pylon/test" }),
+    );
+
+    const seen: Array<string> = [];
+    for await (const event of client.events("session-1")) seen.push(event.ev);
+
+    expect(seen).toEqual(["turn_done"]);
+    expect(probe.cleanedUp()).toBe(true);
+    expect(probe.closes()).toBe(1);
+  });
+
+  it("preserves the classified stream error when cleanup also fails", async () => {
+    const probe = countingSource([{ ev: "text_delta", session_id: "session-1", text: "one" }], {
+      failAfter: new HarnessError("internal", `stream died at ${NATIVE_PATH}`),
+      failCleanup: new Error(`cleanup failed for ${NATIVE_PATH}`),
+    });
+
+    const client = await Effect.runPromise(
+      eventsBridge(probe.source).connect({ socketPath: NATIVE_PATH, clientName: "pylon/test" }),
+    );
+
+    const failure = await (async () => {
+      try {
+        for await (const _event of client.events("session-1")) void _event;
+        return undefined;
+      } catch (error: unknown) {
+        return error;
+      }
+    })();
+
+    expect(failure).toBeInstanceOf(JcodeSdkOperationError);
+    const operationFailure = asOperationError(failure as JcodeSdkBridgeError);
+    expect(operationFailure.operation).toBe("events");
+    expect(operationFailure.detail).toBe("internal: stream died at <path>");
+    expect(probe.closes()).toBe(1);
+  });
+});
+
 describe("JcodeSdkBridge client boundary", () => {
   it("rejects client calls with already-classified bridge errors", async () => {
     const bridge = makeJcodeSdkBridge(
