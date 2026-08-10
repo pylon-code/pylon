@@ -2,6 +2,9 @@ import type {
   ApprovalRequestId,
   EnvironmentId,
   ModelSelection,
+  ProviderAskSessionSideQuestionResult,
+  ProviderCancelSessionSideQuestionResult,
+  ProviderSessionSideQuestionRequestId,
   PreviewAnnotationPayload,
   ProviderApprovalDecision,
   ProviderInteractionMode,
@@ -268,6 +271,7 @@ import {
   BotIcon,
   CircleAlertIcon,
   PencilRulerIcon,
+  MessageCircleQuestionIcon,
   type LucideIcon,
   LockIcon,
   LockOpenIcon,
@@ -312,6 +316,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 import type { ThreadHandoffOffer } from "./ThreadHandoff.logic";
 import { ThreadHandoffTab } from "./ThreadHandoffTab";
+import { QuickQuestionDialog } from "./QuickQuestionDialog";
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -556,6 +561,8 @@ export interface ChatComposerHandle {
   openModelPicker: () => void;
   toggleModelPicker: () => void;
   isModelPickerOpen: () => boolean;
+  canOpenQuickQuestion: () => boolean;
+  openQuickQuestion: () => boolean;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -653,6 +660,10 @@ export interface ChatComposerProps {
   // Context window
   activeThreadActivities: Thread["activities"] | undefined;
 
+  // Ephemeral session side question
+  quickQuestionAvailable: boolean;
+  quickQuestionIdentity: string | null;
+
   // Misc
   resolvedTheme: "light" | "dark";
   settings: UnifiedSettings;
@@ -690,6 +701,13 @@ export interface ChatComposerProps {
   onRefineSessionHarness: () => Promise<
     import("../../sessionHarnessRefinement").SessionHarnessRefinementOutcome | null
   >;
+  onAskQuickQuestion: (
+    requestId: ProviderSessionSideQuestionRequestId,
+    question: string,
+  ) => Promise<ProviderAskSessionSideQuestionResult>;
+  onCancelQuickQuestion: (
+    requestId: ProviderSessionSideQuestionRequestId,
+  ) => Promise<ProviderCancelSessionSideQuestionResult>;
   onImplementPlanInNewThread: () => void;
   onContinueThreadOnAccount: () => void;
   onRespondToApproval: (
@@ -761,6 +779,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeProjectDefaultModelSelection,
     activeThreadModelSelection,
     activeThreadActivities,
+    quickQuestionAvailable,
+    quickQuestionIdentity,
     resolvedTheme,
     settings,
     keybindings,
@@ -785,6 +805,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onAbortSessionCompaction,
     onSetSessionAutoCompaction,
     onRefineSessionHarness,
+    onAskQuickQuestion,
+    onCancelQuickQuestion,
     onImplementPlanInNewThread,
     onContinueThreadOnAccount,
     onRespondToApproval,
@@ -803,6 +825,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onExpandImage,
   } = props;
   const isSendDisabled = sendDisabledReason !== null;
+  const [isQuickQuestionOpen, setIsQuickQuestionOpen] = useState(false);
 
   // ------------------------------------------------------------------
   // Store subscriptions (prompt / images / terminal contexts)
@@ -3201,6 +3224,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         setIsComposerModelPickerOpen((open) => !open);
       },
       isModelPickerOpen: () => isComposerModelPickerOpen,
+      canOpenQuickQuestion: () => quickQuestionAvailable,
+      openQuickQuestion: () => {
+        if (!quickQuestionAvailable) return false;
+        setIsQuickQuestionOpen(true);
+        return true;
+      },
       readSnapshot: () => {
         return readComposerSnapshot();
       },
@@ -3291,6 +3320,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       projectSelectionRequired,
       applyPromptReplacement,
       isComposerModelPickerOpen,
+      quickQuestionAvailable,
       readComposerSnapshot,
       selectedModel,
       selectedModelOptionsForDispatch,
@@ -3305,7 +3335,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Render
   // ------------------------------------------------------------------
   return (
-    <form
+    <>
+      <form
       ref={composerFormRef}
       onSubmit={submitComposer}
       className="relative mx-auto w-full min-w-0 max-w-3xl"
@@ -3844,6 +3875,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     />
                   </>
                 )}
+                {quickQuestionAvailable ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <ComposerControl
+                          type="button"
+                          data-testid="quick-question-trigger"
+                          aria-label="Quick question"
+                          className="shrink-0"
+                          onClick={() => setIsQuickQuestionOpen(true)}
+                        />
+                      }
+                    >
+                      <ComposerControlIcon icon={MessageCircleQuestionIcon} />
+                      {!isComposerFooterCompact ? <span>Quick question</span> : null}
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">Quick question</TooltipPopup>
+                  </Tooltip>
+                ) : null}
                 {showSessionAgentDepth && sessionAgentDepth !== null ? (
                   <Tooltip>
                     <Select
@@ -4014,6 +4064,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           )}
         </div>
       </div>
-    </form>
+      </form>
+      <QuickQuestionDialog
+        available={quickQuestionAvailable}
+        identity={quickQuestionIdentity}
+        open={isQuickQuestionOpen}
+        onOpenChange={setIsQuickQuestionOpen}
+        onAsk={onAskQuickQuestion}
+        onCancel={onCancelQuickQuestion}
+      />
+    </>
   );
 });

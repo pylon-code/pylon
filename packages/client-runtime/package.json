@@ -63,6 +63,10 @@
       "types": "./src/state/sessionResources.ts",
       "default": "./src/state/sessionResources.ts"
     },
+    "./state/session-side-question": {
+      "types": "./src/state/sessionSideQuestion.ts",
+      "default": "./src/state/sessionSideQuestion.ts"
+    },
     "./state/session-agent-depth": {
       "types": "./src/state/sessionAgentDepth.ts",
       "default": "./src/state/sessionAgentDepth.ts"

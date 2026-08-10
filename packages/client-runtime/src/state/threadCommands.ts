@@ -216,6 +216,20 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    askSessionSideQuestion: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:ask-session-side-question",
+      tag: WS_METHODS.providerAskSessionSideQuestion,
+      scheduler,
+      // The unary ask can remain open until the provider settles it. It must
+      // not occupy the thread's serial lane or its cancel command could not run.
+      concurrency: { mode: "parallel" },
+    }),
+    cancelSessionSideQuestion: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:cancel-session-side-question",
+      tag: WS_METHODS.providerCancelSessionSideQuestion,
+      scheduler,
+      concurrency: { mode: "parallel" },
+    }),
     cancelSessionAgent: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:commands:thread:cancel-session-agent",
       tag: WS_METHODS.providerCancelSessionAgent,

@@ -16,8 +16,10 @@ import type {
   ModelSelection,
   OrchestrationThreadShell,
   ProviderApprovalDecision,
+  ProviderAskSessionSideQuestionResult,
   ProviderInteractionMode,
   ProviderRefineSessionHarnessResult,
+  ProviderSessionSideQuestionRequestId,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
   SessionInteractionRequestId,
@@ -111,6 +113,13 @@ export interface ThreadDetailScreenProps {
   readonly onStopThread: () => void;
   readonly onReloadSessionResources: () => Promise<void>;
   readonly onRefineSessionHarness: () => Promise<ProviderRefineSessionHarnessResult | null>;
+  readonly onAskSessionSideQuestion: (
+    requestId: ProviderSessionSideQuestionRequestId,
+    question: string,
+  ) => Promise<ProviderAskSessionSideQuestionResult | null>;
+  readonly onCancelSessionSideQuestion: (
+    requestId: ProviderSessionSideQuestionRequestId,
+  ) => Promise<void>;
   readonly onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onQueueFollowUp: () => Promise<MessageId | null>;
@@ -550,6 +559,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onStopThread={props.onStopThread}
               onReloadSessionResources={props.onReloadSessionResources}
               onRefineSessionHarness={props.onRefineSessionHarness}
+              onAskSessionSideQuestion={props.onAskSessionSideQuestion}
+              onCancelSessionSideQuestion={props.onCancelSessionSideQuestion}
               onSetSessionAgentDepth={props.onSetSessionAgentDepth}
               onSendMessage={handleSendMessage}
               onQueueFollowUp={props.onQueueFollowUp}

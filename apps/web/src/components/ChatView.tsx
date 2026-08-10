@@ -9,6 +9,9 @@ import {
   type ProjectScript,
   type ProjectId,
   type ProviderApprovalDecision,
+  type ProviderAskSessionSideQuestionResult,
+  type ProviderCancelSessionSideQuestionResult,
+  type ProviderSessionSideQuestionRequestId,
   type PreviewAnnotationPayload,
   ProviderInstanceId,
   RuntimeTaskId,
@@ -31,6 +34,7 @@ import {
   type EnvironmentConnectionPresentation,
 } from "@t3tools/client-runtime/connection";
 import { deriveReportedTurnCosts } from "@t3tools/client-runtime/state/turn-costs";
+import { canAskSessionSideQuestion } from "@t3tools/client-runtime/state/session-side-question";
 import {
   effectiveSettled,
   effectiveSnoozed,
@@ -1287,6 +1291,14 @@ function ChatViewContent(props: ChatViewProps) {
   const refineThreadSessionHarness = useAtomCommand(threadEnvironment.refineSessionHarness, {
     reportFailure: false,
   });
+  const askThreadSessionSideQuestion = useAtomCommand(threadEnvironment.askSessionSideQuestion, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const cancelThreadSessionSideQuestion = useAtomCommand(
+    threadEnvironment.cancelSessionSideQuestion,
+    { reportFailure: false, reportDefect: false },
+  );
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -2263,6 +2275,19 @@ function ChatViewContent(props: ChatViewProps) {
     if (instanceId === undefined) return null;
     return serverConfig?.providers.find((provider) => provider.instanceId === instanceId) ?? null;
   }, [activeThread?.session?.providerInstanceId, serverConfig?.providers]);
+  const quickQuestionAvailable = canAskSessionSideQuestion(
+    activeSessionProviderStatus,
+    activeEnvironmentConnectionPhase === "connected" ? "connected" : "available",
+    activeThread?.session,
+  );
+  const quickQuestionIdentity = quickQuestionAvailable
+    ? JSON.stringify([
+        environmentId,
+        activeThreadId,
+        activeThread?.session?.startedAt,
+        activeThread?.session?.providerInstanceId,
+      ])
+    : null;
   const canCancelSessionAgents =
     agentSessionLive &&
     activeThread?.session?.runtimeMode === "full-access" &&
@@ -5712,6 +5737,45 @@ function ChatViewContent(props: ChatViewProps) {
       return result.value.outcome;
     }, [activeThreadId, environmentId, refineThreadSessionHarness]);
 
+  const onAskQuickQuestion = useCallback(
+    async (
+      requestId: ProviderSessionSideQuestionRequestId,
+      question: string,
+    ): Promise<ProviderAskSessionSideQuestionResult> => {
+      if (!activeThreadId || !quickQuestionAvailable) {
+        throw new Error("Quick question unavailable.");
+      }
+      const result = await askThreadSessionSideQuestion({
+        environmentId,
+        input: { threadId: activeThreadId, requestId, question },
+      });
+      if (result._tag === "Failure") {
+        throw new Error("Quick question transport failure.");
+      }
+      return result.value;
+    },
+    [activeThreadId, askThreadSessionSideQuestion, environmentId, quickQuestionAvailable],
+  );
+
+  const onCancelQuickQuestion = useCallback(
+    async (
+      requestId: ProviderSessionSideQuestionRequestId,
+    ): Promise<ProviderCancelSessionSideQuestionResult> => {
+      if (!activeThreadId) {
+        throw new Error("Quick question unavailable.");
+      }
+      const result = await cancelThreadSessionSideQuestion({
+        environmentId,
+        input: { threadId: activeThreadId, requestId },
+      });
+      if (result._tag === "Failure") {
+        throw new Error("Quick question cancellation transport failure.");
+      }
+      return result.value;
+    },
+    [activeThreadId, cancelThreadSessionSideQuestion, environmentId],
+  );
+
   const onCancelSessionAgent = useCallback(
     async (agentId: string) => {
       const agent = runtimeSubagents.find((candidate) => candidate.id === agentId);
@@ -7121,6 +7185,8 @@ function ChatViewContent(props: ChatViewProps) {
                             }
                             activeThreadModelSelection={activeThread?.modelSelection}
                             activeThreadActivities={activeThread?.activities}
+                            quickQuestionAvailable={quickQuestionAvailable}
+                            quickQuestionIdentity={quickQuestionIdentity}
                             resolvedTheme={resolvedTheme}
                             settings={settings}
                             keybindings={keybindings}
@@ -7142,6 +7208,8 @@ function ChatViewContent(props: ChatViewProps) {
                             onAbortSessionCompaction={onAbortSessionCompaction}
                             onSetSessionAutoCompaction={onSetSessionAutoCompaction}
                             onRefineSessionHarness={onRefineSessionHarness}
+                            onAskQuickQuestion={onAskQuickQuestion}
+                            onCancelQuickQuestion={onCancelQuickQuestion}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             threadHandoffOffer={threadHandoffOffer}
                             isContinuingThreadOnAccount={isContinuingThreadOnAccount}

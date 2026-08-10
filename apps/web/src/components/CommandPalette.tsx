@@ -34,6 +34,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   LinkIcon,
+  MessageCircleQuestionIcon,
   MessageSquareIcon,
   PaletteIcon,
   SettingsIcon,
@@ -553,6 +554,7 @@ function OpenCommandPaletteDialog(props: {
   readonly clearOpenIntent: () => void;
 }) {
   const navigate = useNavigate();
+  const composerHandleRef = useComposerHandleContext();
   const { clearOpenIntent, openIntent, openOverlayMode, setOpen } = props;
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -1404,6 +1406,25 @@ function OpenCommandPaletteDialog(props: {
       icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
       addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
+    });
+  }
+
+  if (composerHandleRef?.current?.canOpenQuickQuestion()) {
+    actionItems.push({
+      kind: "action",
+      value: "action:quick-question",
+      searchTerms: ["quick question", "temporary", "session", "side question"],
+      title: "Quick question",
+      description: "Ask the current session without adding to the thread",
+      icon: <MessageCircleQuestionIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => {
+            composerHandleRef?.current?.openQuickQuestion();
+            resolve();
+          });
+        });
+      },
     });
   }
 
