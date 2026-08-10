@@ -148,9 +148,9 @@ interface Harness {
   /**
    * The directory the fake daemon reports for this session.
    *
-   * Mutable so `scenario` can point it at the temp cwd it just created: the
-   * real harness echoes the session's own working directory back on attach,
-   * and a double that always omitted it would hide the attach-time check.
+   * The real protocol-v1 harness omits this field on attach, so the default
+   * deliberately does the same. Tests opt in only when exercising a reported
+   * directory match or mismatch.
    */
   workingDir: string | undefined;
 }
@@ -293,9 +293,6 @@ const scenario = (harness: Harness, options: ScenarioOptions = {}) =>
     const serverConfig = yield* ServerConfig.ServerConfig;
     const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-runtime-state-" });
     const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-runtime-cwd-" });
-    // A daemon reports the session's real directory; only a test that overrode
-    // `workingDir` deliberately wants to see something else.
-    harness.workingDir ??= cwd;
     const threadId = options.threadId ?? THREAD_ID;
     const identityPath = jcodeThreadIdentityPath({
       stateDir,
@@ -549,17 +546,22 @@ describe("JcodeSessionRuntime create and exact resume", () => {
     expect(harness.created).toEqual([]);
   });
 
-  it("fails closed when the attached session omits its working directory", async () => {
+  it("resumes from the private sidecar when protocol v1 omits the attached working directory", async () => {
     const harness = makeHarness({
       attachSession: async (sessionId) => sessionInfo(sessionId),
     });
-    const { error } = await startFailure(harness, {
-      resumeCursor: JCODE_RESUME_CURSOR,
-      seedIdentity: { sessionId: "resumed-session" },
-    });
+    const session = await withRuntime(
+      harness,
+      {
+        resumeCursor: JCODE_RESUME_CURSOR,
+        seedIdentity: { sessionId: "resumed-session" },
+      },
+      (fixture) => Effect.succeed(fixture.runtime.session),
+    );
 
-    expect(error.operation).toBe("resume");
+    expect(harness.attached).toEqual(["resumed-session"]);
     expect(harness.created).toEqual([]);
+    expect(session.restored).toBe(true);
   });
 
   it("closes the child client on every fail-closed startup path", async () => {

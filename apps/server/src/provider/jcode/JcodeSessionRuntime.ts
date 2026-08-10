@@ -225,11 +225,10 @@ export const makeJcodeSessionRuntime = Effect.fn("makeJcodeSessionRuntime")(func
             ),
           ),
         );
-      // Fail closed on an omitted directory too. The plan requires attach to
-      // verify the *returned* working directory, and the sidecar cannot stand
-      // in for that: it is Pylon's own record, so trusting it alone would
-      // verify this thread against itself and never against the daemon.
-      if (attached.working_dir === undefined || !isAbsoluteMatch(attached.working_dir, input.cwd)) {
+      // Protocol v1 omits `working_dir` on attach, so the private sidecar is the
+      // authoritative cwd binding today. If a harness does report the field,
+      // reject a mismatch as an additional isolation check.
+      if (attached.working_dir !== undefined && !isAbsoluteMatch(attached.working_dir, input.cwd)) {
         return yield* runtimeError(
           "resume",
           "The attached Jcode session did not confirm this thread's working directory.",

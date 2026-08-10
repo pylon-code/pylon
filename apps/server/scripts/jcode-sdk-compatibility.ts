@@ -169,10 +169,23 @@ async function main(): Promise<number> {
     });
 
     const sessions = await check("create_sessions", {}, async () => {
-      const first = await control.createSession(makeWorkingDir(jcodeHome, "alpha"));
-      const second = await control.createSession(makeWorkingDir(jcodeHome, "beta"));
-      assert(first.session_id !== second.session_id, "sessions share an id");
-      return { first: first.session_id, second: second.session_id };
+      // A protocol-v1 connection owns exactly one attached session. Create the
+      // two sessions through separate temporary clients, just as concurrent
+      // Pylon threads use separate child connections.
+      const [firstCreator, secondCreator] = await Promise.all([
+        JcodeClient.connect({ socketPath, clientName: "pylon-jcode-compat/create-1" }),
+        JcodeClient.connect({ socketPath, clientName: "pylon-jcode-compat/create-2" }),
+      ]);
+      try {
+        const [first, second] = await Promise.all([
+          firstCreator.createSession(makeWorkingDir(jcodeHome, "alpha")),
+          secondCreator.createSession(makeWorkingDir(jcodeHome, "beta")),
+        ]);
+        assert(first.session_id !== second.session_id, "sessions share an id");
+        return { first: first.session_id, second: second.session_id };
+      } finally {
+        await Promise.all([firstCreator.close(), secondCreator.close()]);
+      }
     });
     if (!sessions) return 1;
 
