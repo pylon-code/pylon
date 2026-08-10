@@ -88,9 +88,24 @@ export interface JcodeSdkModule {
   }) => Promise<JcodeSdkClientLike>;
 }
 
+/**
+ * Values the caller knows are credentials.
+ *
+ * Redaction is literal, so the bridge must be told what to redact rather than
+ * guessing. `LaunchOptions.env` is a full-process-environment passthrough on
+ * the real wiring path, and treating every value in it as a secret shreds
+ * `"1"`, `"a"`, and `"production"` out of every later message. A heuristic
+ * (minimum length, entropy) would instead silently miss a short credential.
+ * Naming them explicitly is the only option that is both readable and safe.
+ */
+export interface JcodeLaunchSecrets {
+  readonly credentialValues: ReadonlyArray<string>;
+}
+
 export interface JcodeSdkBridge {
   readonly launchInstance: (
     options: LaunchOptions,
+    secrets?: JcodeLaunchSecrets,
   ) => Effect.Effect<JcodeLaunchedInstance, JcodeSdkBridgeError>;
   readonly connect: (options: {
     readonly socketPath: string;
@@ -208,28 +223,27 @@ function once(task: () => Promise<void>): () => Promise<void> {
   };
 }
 
-/**
- * Drop event kinds this SDK version does not know about.
- *
- * The harness may add events within protocol v1, and a consumer switching on
- * `event.ev` must not fault on one it has never seen.
- */
-async function* knownEvents(
-  source: AsyncIterableIterator<ApiEvent>,
-): AsyncIterableIterator<ApiEvent> {
-  for await (const event of source) {
-    if (isKnownEvent(event as AnyApiEvent)) yield event;
-  }
-}
-
 export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
   /**
-   * Secrets handed to a launched instance, remembered for the bridge's whole
-   * life. The daemon can echo a launch env value back in any later failure, so
+   * Credentials handed to a launched instance, remembered for the bridge's
+   * whole life. The daemon can echo one back in any later failure, so
    * redaction has to be bridge-scoped rather than something each caller
-   * remembers to pass.
+   * remembers to pass. Kept longest-first so a credential that contains a
+   * shorter one is not pre-shredded by it, and deduplicated so repeat launches
+   * of the same instance cannot grow the set without bound.
    */
   const launchSecrets = new Set<string>();
+  let redactionLiterals: ReadonlyArray<string> = [];
+
+  function rememberSecrets(secrets: JcodeLaunchSecrets | undefined): void {
+    let added = false;
+    for (const value of secrets?.credentialValues ?? []) {
+      if (value.length === 0 || launchSecrets.has(value)) continue;
+      launchSecrets.add(value);
+      added = true;
+    }
+    if (added) redactionLiterals = [...launchSecrets].sort((a, b) => b.length - a.length);
+  }
 
   function tryPromise<A>(input: {
     readonly operation: string;
@@ -243,7 +257,7 @@ export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
           error,
           operation: input.operation,
           ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-          secrets: [...launchSecrets],
+          secrets: redactionLiterals,
         }),
     });
   }
@@ -264,9 +278,38 @@ export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
         error,
         operation,
         ...(sessionId === undefined ? {} : { sessionId }),
-        secrets: [...launchSecrets],
+        secrets: redactionLiterals,
       });
     });
+  }
+
+  /**
+   * Drop event kinds this SDK version does not know about, and classify a
+   * stream failure like any other SDK failure.
+   *
+   * The harness may add events within protocol v1, and a consumer switching on
+   * `event.ev` must not fault on one it has never seen. A mid-stream
+   * disconnect is the expected failure mode for a long-lived session, so it
+   * goes through the same boundary as the promise methods rather than escaping
+   * raw.
+   */
+  async function* knownEvents(
+    source: AsyncIterableIterator<ApiEvent>,
+    sessionId: string | undefined,
+  ): AsyncIterableIterator<ApiEvent> {
+    const iterator = source[Symbol.asyncIterator]();
+    for (;;) {
+      const next = await iterator.next().catch((error: unknown) => {
+        throw toBridgeError({
+          error,
+          operation: "events",
+          ...(sessionId === undefined ? {} : { sessionId }),
+          secrets: redactionLiterals,
+        });
+      });
+      if (next.done === true) return;
+      if (isKnownEvent(next.value as AnyApiEvent)) yield next.value;
+    }
   }
 
   function wrapClient(client: JcodeSdkClientLike): JcodeSdkClient {
@@ -298,14 +341,14 @@ export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
         guard("sendMessage", sessionId, () => client.sendMessage(sessionId, content, options)),
       cancel: (sessionId) => guard("cancel", sessionId, () => client.cancel(sessionId)),
       getHistory: (sessionId) => guard("getHistory", sessionId, () => client.getHistory(sessionId)),
-      events: (sessionId) => knownEvents(client.events(sessionId)),
+      events: (sessionId) => knownEvents(client.events(sessionId), sessionId),
       close,
     };
   }
 
   return {
-    launchInstance: (options) => {
-      for (const value of Object.values(options.env ?? {})) launchSecrets.add(value);
+    launchInstance: (options, secrets) => {
+      rememberSecrets(secrets);
       return Effect.map(
         tryPromise({
           operation: "launchInstance",

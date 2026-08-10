@@ -103,10 +103,13 @@ describe("JcodeSdkBridge launchInstance", () => {
 
     const error = await Effect.runPromise(
       Effect.flip(
-        bridge.launchInstance({
-          jcodeHome: "/private/var/folders/jcode-home-abc",
-          env: { ANTHROPIC_API_KEY: SECRET },
-        }),
+        bridge.launchInstance(
+          {
+            jcodeHome: "/private/var/folders/jcode-home-abc",
+            env: { ANTHROPIC_API_KEY: SECRET },
+          },
+          { credentialValues: [SECRET] },
+        ),
       ),
     );
 
@@ -129,10 +132,13 @@ describe("JcodeSdkBridge launchInstance", () => {
 
     const error = await Effect.runPromise(
       Effect.flip(
-        bridge.launchInstance({
-          jcodeHome: "/private/var/folders/jcode-home-abc",
-          env: { ANTHROPIC_API_KEY: SECRET },
-        }),
+        bridge.launchInstance(
+          {
+            jcodeHome: "/private/var/folders/jcode-home-abc",
+            env: { ANTHROPIC_API_KEY: SECRET },
+          },
+          { credentialValues: [SECRET] },
+        ),
       ),
     );
 
@@ -182,7 +188,9 @@ describe("JcodeSdkBridge secret scope", () => {
       }),
     );
 
-    await Effect.runPromise(bridge.launchInstance({ env: { ANTHROPIC_API_KEY: SECRET } }));
+    await Effect.runPromise(
+      bridge.launchInstance({ env: { ANTHROPIC_API_KEY: SECRET } }, { credentialValues: [SECRET] }),
+    );
     const client = await Effect.runPromise(
       bridge.connect({ socketPath: NATIVE_PATH, clientName: "pylon/test" }),
     );
@@ -198,6 +206,140 @@ describe("JcodeSdkBridge secret scope", () => {
     );
 
     expect(observableSurface(error)).not.toContain(SECRET);
+  });
+
+  it("redacts declared credentials without shredding ordinary process environment values", async () => {
+    const bridge = makeJcodeSdkBridge(fakeSdk());
+
+    await Effect.runPromise(
+      bridge.launchInstance(
+        {
+          env: {
+            NODE_ENV: "production",
+            TERM: "a",
+            JCODE_DEBUG: "1",
+            LANG: "en_US.UTF-8",
+            ANTHROPIC_API_KEY: SECRET,
+          },
+        },
+        { credentialValues: [SECRET] },
+      ),
+    );
+
+    const error = await Effect.runPromise(
+      Effect.flip(
+        bridge.trySdk({
+          operation: "getHistory",
+          sessionId: "session-1",
+          run: async () => {
+            throw new HarnessError(
+              "internal",
+              `request 1 failed in production mode after 12 attempts using key ${SECRET}`,
+            );
+          },
+        }),
+      ),
+    );
+
+    expect(asOperationError(error).detail).toBe(
+      "internal: request 1 failed in production mode after 12 attempts using key <redacted>",
+    );
+    expect(observableSurface(error)).not.toContain(SECRET);
+  });
+
+  it("redacts the longest credential first so overlapping literals are not pre-shredded", async () => {
+    const bridge = makeJcodeSdkBridge(fakeSdk());
+    const prefix = "sk-ant-secret";
+
+    await Effect.runPromise(
+      bridge.launchInstance({}, { credentialValues: [prefix, SECRET, SECRET] }),
+    );
+
+    const error = await Effect.runPromise(
+      Effect.flip(
+        bridge.trySdk({
+          operation: "getHistory",
+          run: async () => {
+            throw new HarnessError("internal", `rejected ${SECRET}`);
+          },
+        }),
+      ),
+    );
+
+    expect(asOperationError(error).detail).toBe("internal: rejected <redacted>");
+  });
+});
+
+describe("JcodeSdkBridge event stream", () => {
+  it("classifies and redacts a mid-stream operation failure", async () => {
+    const bridge = makeJcodeSdkBridge(
+      fakeSdk({
+        connect: async () =>
+          fakeClient({
+            events: async function* () {
+              yield { ev: "text_delta", session_id: "session-1", text: "hi" } satisfies ApiEvent;
+              throw new HarnessError("internal", `stream died at ${NATIVE_PATH} key ${SECRET}`);
+            },
+          }),
+      }),
+    );
+
+    await Effect.runPromise(bridge.launchInstance({}, { credentialValues: [SECRET] }));
+    const client = await Effect.runPromise(
+      bridge.connect({ socketPath: NATIVE_PATH, clientName: "pylon/test" }),
+    );
+
+    const seen: Array<string> = [];
+    const failure = await (async () => {
+      try {
+        for await (const event of client.events("session-1")) seen.push(event.ev);
+        return undefined;
+      } catch (error: unknown) {
+        return error;
+      }
+    })();
+
+    expect(seen).toEqual(["text_delta"]);
+    expect(failure).toBeInstanceOf(JcodeSdkOperationError);
+    const operationFailure = asOperationError(failure as JcodeSdkBridgeError);
+    expect(operationFailure.operation).toBe("events");
+    expect(operationFailure.code).toBe("internal");
+    expect(operationFailure.detail).toBe("internal: stream died at <path> key <redacted>");
+    expect(observableSurface(operationFailure)).not.toContain(SECRET);
+    expect(observableSurface(operationFailure)).not.toContain(NATIVE_PATH);
+  });
+
+  it("classifies a mid-stream unknown_session failure with the bound session id", async () => {
+    const bridge = makeJcodeSdkBridge(
+      fakeSdk({
+        connect: async () =>
+          fakeClient({
+            events: async function* () {
+              throw new HarnessError("unknown_session", "no such session");
+              // eslint-disable-next-line no-unreachable
+              yield { ev: "turn_done", session_id: "session-1" } satisfies ApiEvent;
+            },
+          }),
+      }),
+    );
+
+    const client = await Effect.runPromise(
+      bridge.connect({ socketPath: NATIVE_PATH, clientName: "pylon/test" }),
+    );
+
+    const failure = await (async () => {
+      try {
+        for await (const _event of client.events("session-1")) void _event;
+        return undefined;
+      } catch (error: unknown) {
+        return error;
+      }
+    })();
+
+    expect(failure).toBeInstanceOf(JcodeSessionNotFoundError);
+    const notFound = asSessionNotFoundError(failure as JcodeSdkBridgeError);
+    expect(notFound.operation).toBe("events");
+    expect(notFound.sessionId).toBe("session-1");
   });
 });
 
