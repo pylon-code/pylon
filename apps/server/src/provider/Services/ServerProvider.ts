@@ -9,3 +9,7 @@ export interface ServerProviderShape {
   readonly refresh: Effect.Effect<ServerProvider>;
   readonly streamChanges: Stream.Stream<ServerProvider>;
 }
+
+export interface ManagedServerProviderShape extends ServerProviderShape {
+  readonly publishModels: (models: ServerProvider["models"]) => Effect.Effect<void>;
+}

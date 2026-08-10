@@ -613,7 +613,7 @@ describe("PrimeAgentDaemonEvents", () => {
     });
   });
 
-  it("maps resync, replacement, side questions, connection, heartbeat, and close events", () => {
+  it("maps resync, replacement, connection, heartbeat, and close events", () => {
     expect(
       decodePrimeAgentDaemonEvent({
         type: "session_resynced",
@@ -677,7 +677,11 @@ describe("PrimeAgentDaemonEvents", () => {
         type: "side_question_event",
         event: { id: "q-1", question: "Why?", answer: "Because", status: "complete" },
       }),
-    ).toMatchObject({ _tag: "SideQuestionUpdated", status: "complete" });
+    ).toEqual({
+      _tag: "Ignored",
+      reason: "unknown-event",
+      sourceType: "side_question_event",
+    });
     expect(
       decodePrimeAgentDaemonEvent({
         type: "connection_status",

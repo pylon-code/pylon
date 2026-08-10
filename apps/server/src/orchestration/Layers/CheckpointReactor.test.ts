@@ -113,6 +113,8 @@ function createProviderServiceHarness(
     respondToUserInput: () => unsupported(),
     respondToInteraction: () => unsupported(),
     reloadSessionResources: () => unsupported(),
+    askSessionSideQuestion: () => unsupported(),
+    cancelSessionSideQuestion: () => unsupported(),
     cancelSessionAgent: () => unsupported(),
     messageSessionAgent: () => unsupported(),
     watchSessionAgentActivity: () => Stream.empty,

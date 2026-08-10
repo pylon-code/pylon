@@ -39,7 +39,7 @@ export interface PrimeAgentModelControlMetadata {
   readonly id: string;
   readonly api?: string | undefined;
   readonly reasoning?: boolean | undefined;
-  readonly thinkingLevelMap?: Readonly<Record<string, string | null>> | undefined;
+  readonly thinkingLevelMap?: Readonly<Partial<Record<string, string | null>>> | undefined;
 }
 
 export type PrimeAgentTurnControlsResult =

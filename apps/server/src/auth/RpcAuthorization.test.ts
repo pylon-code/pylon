@@ -37,6 +37,12 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.providerMessageSessionAgent)).toBe(
       AuthOrchestrationOperateScope,
     );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerAskSessionSideQuestion)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerCancelSessionSideQuestion)).toBe(
+      AuthOrchestrationOperateScope,
+    );
   });
 
   it("authorizes assistant-only live agent activity with read scope", () => {

@@ -29,6 +29,9 @@ function daemonModuleSource(options?: {
   readonly omitSessionStats?: boolean;
   readonly omitResourceCatalog?: boolean;
   readonly omitAgentMessaging?: boolean;
+  readonly omitModelCatalog?: boolean;
+  readonly omitAvailableModels?: boolean;
+  readonly omitSideQuestions?: boolean;
 }): string {
   return `
 export const VERSION = ${JSON.stringify(options?.version ?? "0.7.1")};
@@ -52,9 +55,12 @@ ${
   subscribe() { return () => {}; }
   async getInitialSnapshot() { return {}; }
   ${options?.omitResourceCatalog ? "" : "async getCommands() { return []; } async getResourceSnapshot() { return {}; } async reload() {}"}
+  ${options?.omitModelCatalog ? "" : "async getModelCatalog() { return { models: [], configuredProviders: [] }; }"}
+  ${options?.omitAvailableModels ? "" : "async getAvailableModels() { return []; }"}
   ${options?.omitSessionStats ? "" : "async getSessionStats() { return {}; }"}
   async promptAndWait() {}
   ${options?.omitAgentMessaging ? "" : 'async sendAgentMessage(targetActiveSessionId, message) { return { deliveryStatus: "delivered", targetActiveSessionId, message }; }'}
+  ${options?.omitSideQuestions ? "" : "async startSideQuestion(nativeId, question) { return { nativeId, question }; } async abortSideQuestion(nativeId) { return nativeId === 'known'; }"}
   async abort() {}
   async dispose() {}
 }`
@@ -152,6 +158,15 @@ describe("PrimeAgentDaemonBridge", () => {
         targetActiveSessionId: "active-child",
         message: "hello",
       });
+      expect(yield* Effect.promise(() => connection.getModelCatalog!())).toEqual({
+        models: [],
+        configuredProviders: [],
+      });
+      expect(yield* Effect.promise(() => connection.getAvailableModels!())).toEqual([]);
+      expect(
+        yield* Effect.promise(() => connection.startSideQuestion!("native-id", "question")),
+      ).toEqual({ nativeId: "native-id", question: "question" });
+      expect(yield* Effect.promise(() => connection.abortSideQuestion!("known"))).toBe(true);
       expect(client.isConnected).toBe(false);
     }),
   );
@@ -169,6 +184,43 @@ describe("PrimeAgentDaemonBridge", () => {
       );
 
       expect(connection.sendAgentMessage).toBeUndefined();
+    }),
+  );
+
+  it.effect("keeps side-question methods optional for compatible daemons", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({ omitSideQuestions: true }),
+      });
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+      const client = new bridge.DaemonClient("/tmp/test.sock");
+      const connection = yield* Effect.promise(() =>
+        bridge.DaemonAgentConnection.attach(client, "active-parent"),
+      );
+
+      expect(connection.startSideQuestion).toBeUndefined();
+      expect(connection.abortSideQuestion).toBeUndefined();
+    }),
+  );
+
+  it.effect("keeps both model discovery methods optional for compatible daemons", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({
+          omitModelCatalog: true,
+          omitAvailableModels: true,
+        }),
+      });
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+      const client = new bridge.DaemonClient("/tmp/test.sock");
+      const connection = yield* Effect.promise(() =>
+        bridge.DaemonAgentConnection.attach(client, "active-parent"),
+      );
+
+      expect(connection.getModelCatalog).toBeUndefined();
+      expect(connection.getAvailableModels).toBeUndefined();
     }),
   );
 

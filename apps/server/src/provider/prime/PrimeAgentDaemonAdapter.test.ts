@@ -9,6 +9,7 @@ import {
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionSideQuestionRequestId,
   type ProviderRuntimeEvent,
   RuntimeTaskId,
   SessionInteractionRequestId,
@@ -37,12 +38,15 @@ import type { PrimeDaemonEvent, PrimeDaemonMessage } from "./PrimeAgentDaemonEve
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import {
   makePrimeAgentDaemonAdapter,
+  PRIME_AGENT_SIDE_QUESTION_TIMEOUT_MS,
   type PrimeAgentDaemonAdapterLiveOptions,
 } from "./PrimeAgentDaemonAdapter.ts";
 import {
   PRIME_AGENT_DAEMON_RESUME_CURSOR,
+  type PrimeAgentDaemonCatalogModel,
   type PrimeAgentDaemonSessionRuntime,
   type PrimeAgentDaemonSessionStats,
+  type PrimeAgentDaemonSideQuestionResult,
   PrimeAgentDaemonSessionRuntimeError,
   type PrimeAgentDaemonSessionRuntimeInput,
 } from "./PrimeAgentDaemonSessionRuntime.ts";
@@ -243,6 +247,22 @@ interface FakeCaptures {
     | undefined;
   agentRosterFailure: boolean;
   sessionStats: PrimeAgentDaemonSessionStats;
+  modelDiscoveryModels: Array<PrimeAgentDaemonCatalogModel>;
+  modelDiscoveryFailure: boolean;
+  modelDiscoveryObserved: Queue.Queue<void> | undefined;
+  modelDiscoveryRelease: Deferred.Deferred<void> | undefined;
+  sideQuestionsAvailable: boolean;
+  sideQuestionCalls: Array<{ readonly nativeId: string; readonly question: string }>;
+  sideQuestionAbortCalls: Array<string>;
+  sideQuestionObserved: Queue.Queue<void> | undefined;
+  sideQuestionRelease:
+    | Deferred.Deferred<
+        | { readonly disposition: "answered"; readonly answer: string }
+        | { readonly disposition: "cancelled" }
+        | { readonly disposition: "response-too-large" }
+      >
+    | undefined;
+  sideQuestionFailure: boolean;
   promptObserved: Queue.Queue<void> | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
   startupEvents: Array<PrimeDaemonEvent>;
@@ -342,6 +362,16 @@ function makeCaptures(): FakeCaptures {
     sessionStats: {
       contextUsage: { usedTokens: 320, maxTokens: 200_000 },
     },
+    modelDiscoveryModels: [],
+    modelDiscoveryFailure: false,
+    modelDiscoveryObserved: undefined,
+    modelDiscoveryRelease: undefined,
+    sideQuestionsAvailable: true,
+    sideQuestionCalls: [],
+    sideQuestionAbortCalls: [],
+    sideQuestionObserved: undefined,
+    sideQuestionRelease: undefined,
+    sideQuestionFailure: false,
     promptObserved: undefined,
     queue: undefined,
     startupEvents: [],
@@ -359,6 +389,10 @@ function fakeRuntimeFactory(
       );
       const queue = yield* Queue.unbounded<PrimeDaemonEvent>();
       const promptObserved = yield* Queue.unbounded<void>();
+      const runtimeSideQuestions = new Map<
+        string,
+        { terminalObserved: boolean; abortRequested: boolean }
+      >();
       captures.queue = queue;
       captures.promptObserved = promptObserved;
       for (const event of captures.startupEvents) yield* Queue.offer(queue, event);
@@ -369,6 +403,64 @@ function fakeRuntimeFactory(
         activeSessionId: "native-active-secret",
         initialSnapshot: { ...initialSnapshot(), children: captures.agentRoster },
         initialResources: { available: true, skills: [], prompts: [], commands: [] },
+        sideQuestionsAvailable: captures.sideQuestionsAvailable,
+        askSideQuestion: (nativeId, question) => {
+          const state = { terminalObserved: false, abortRequested: false };
+          runtimeSideQuestions.set(nativeId, state);
+          return Effect.gen(function* () {
+            captures.sideQuestionCalls.push({ nativeId, question });
+            if (captures.sideQuestionObserved !== undefined) {
+              yield* Queue.offer(captures.sideQuestionObserved, undefined);
+            }
+            if (captures.sideQuestionFailure) {
+              return yield* new PrimeAgentDaemonSessionRuntimeError({
+                operation: "side-question",
+                reason: "request-failed",
+                detail: "private native side-question failure",
+              });
+            }
+            const result =
+              captures.sideQuestionRelease === undefined
+                ? ({ disposition: "answered", answer: "side answer" } as const)
+                : yield* Deferred.await(captures.sideQuestionRelease);
+            state.terminalObserved = result.disposition !== "response-too-large";
+            return result;
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (!state.terminalObserved && !state.abortRequested) {
+                  state.abortRequested = true;
+                  captures.sideQuestionAbortCalls.push(nativeId);
+                }
+                runtimeSideQuestions.delete(nativeId);
+              }),
+            ),
+          );
+        },
+        abortSideQuestion: (nativeId) =>
+          Effect.sync(() => {
+            const state = runtimeSideQuestions.get(nativeId);
+            if (state !== undefined && !state.terminalObserved && !state.abortRequested) {
+              state.abortRequested = true;
+              captures.sideQuestionAbortCalls.push(nativeId);
+            }
+          }),
+        discoverAvailableModels: Effect.gen(function* () {
+          if (captures.modelDiscoveryObserved !== undefined) {
+            yield* Queue.offer(captures.modelDiscoveryObserved, undefined);
+          }
+          if (captures.modelDiscoveryRelease !== undefined) {
+            yield* Deferred.await(captures.modelDiscoveryRelease);
+          }
+          if (captures.modelDiscoveryFailure) {
+            return yield* new PrimeAgentDaemonSessionRuntimeError({
+              operation: "model-catalog",
+              reason: "request-failed",
+              detail: "private catalog failure",
+            });
+          }
+          return captures.modelDiscoveryModels;
+        }),
         initialInputQueue: captures.inputQueue,
         inputQueueModesAvailable: captures.inputQueueModesAvailable,
         compactionAvailable: captures.compactionAvailable,
@@ -827,6 +919,233 @@ describe("PrimeAgentDaemonAdapter", () => {
           detail:
             "Prime Agent loaded an execution policy extension whose source integrity could not be verified.",
         });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("discovers models without delaying session start and publishes the active result", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.modelDiscoveryModels = [
+          {
+            provider: "openai-codex",
+            id: "gpt-5.4",
+            name: "GPT-5.4",
+            api: "openai-codex-responses",
+            reasoning: true,
+          },
+        ];
+        captures.modelDiscoveryObserved = yield* Queue.unbounded<void>();
+        captures.modelDiscoveryRelease = yield* Deferred.make<void>();
+        const published = yield* Queue.unbounded<ReadonlyArray<PrimeAgentDaemonCatalogModel>>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+          onModelsDiscovered: (models) => Queue.offer(published, models).pipe(Effect.asVoid),
+        });
+
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* Queue.take(captures.modelDiscoveryObserved);
+        expect(Option.isNone(yield* Queue.poll(published))).toBe(true);
+
+        yield* Deferred.succeed(captures.modelDiscoveryRelease, undefined);
+        expect(yield* Queue.take(published)).toEqual(captures.modelDiscoveryModels);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("does not hold the thread mutation lock while model publication is blocked", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.modelDiscoveryModels = [
+          {
+            provider: "anthropic",
+            id: "claude-sonnet-4-5",
+            name: "Claude Sonnet 4.5",
+            api: "anthropic-messages",
+            reasoning: true,
+          },
+        ];
+        const publicationObserved = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+          onModelsDiscovered: () =>
+            Deferred.succeed(publicationObserved, undefined).pipe(Effect.andThen(Effect.never)),
+        });
+
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* Deferred.await(publicationObserved);
+
+        const stopFiber = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* Effect.yieldNow;
+        expect(stopFiber.pollUnsafe()).toBeDefined();
+        yield* Fiber.join(stopFiber);
+        expect(captures.disposeCount).toBe(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("serializes in-flight catalog publications by discovery generation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const older = makeCaptures();
+        older.modelDiscoveryModels = [
+          {
+            provider: "anthropic",
+            id: "older",
+            name: "Older",
+            api: "anthropic-messages",
+            reasoning: false,
+          },
+        ];
+        older.modelDiscoveryObserved = yield* Queue.unbounded<void>();
+        older.modelDiscoveryRelease = yield* Deferred.make<void>();
+        const newer = makeCaptures();
+        newer.modelDiscoveryModels = [
+          {
+            provider: "openai-codex",
+            id: "newer",
+            name: "Newer",
+            api: "openai-codex-responses",
+            reasoning: true,
+          },
+        ];
+        newer.modelDiscoveryObserved = yield* Queue.unbounded<void>();
+        newer.modelDiscoveryRelease = yield* Deferred.make<void>();
+        const olderFactory = fakeRuntimeFactory(older);
+        const newerFactory = fakeRuntimeFactory(newer);
+        let runtimeCount = 0;
+        const olderPublicationObserved = yield* Deferred.make<void>();
+        const releaseOlderPublication = yield* Deferred.make<void>();
+        const published = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: (input) =>
+            runtimeCount++ === 0 ? olderFactory(input) : newerFactory(input),
+          onModelsDiscovered: (models) =>
+            Effect.gen(function* () {
+              const id = models[0]!.id;
+              if (id === "older") {
+                yield* Deferred.succeed(olderPublicationObserved, undefined);
+                yield* Deferred.await(releaseOlderPublication);
+              }
+              yield* Queue.offer(published, id);
+            }),
+        });
+        const newerThreadId = ThreadId.make("prime-daemon/thread-publication-newer");
+
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* Queue.take(older.modelDiscoveryObserved);
+        yield* Deferred.succeed(older.modelDiscoveryRelease, undefined);
+        yield* Deferred.await(olderPublicationObserved);
+
+        yield* adapter.startSession({
+          threadId: newerThreadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* Queue.take(newer.modelDiscoveryObserved);
+        yield* Deferred.succeed(newer.modelDiscoveryRelease, undefined);
+        yield* Effect.yieldNow;
+        expect(Option.isNone(yield* Queue.poll(published))).toBe(true);
+
+        yield* Deferred.succeed(releaseOlderPublication, undefined);
+        expect(yield* Queue.take(published)).toBe("older");
+        expect(yield* Queue.take(published)).toBe("newer");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("does not let an older live session overwrite a newer model catalog", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const older = makeCaptures();
+        older.modelDiscoveryModels = [
+          {
+            provider: "anthropic",
+            id: "older",
+            name: "Older",
+            api: "anthropic-messages",
+            reasoning: false,
+          },
+        ];
+        older.modelDiscoveryObserved = yield* Queue.unbounded<void>();
+        older.modelDiscoveryRelease = yield* Deferred.make<void>();
+        const newer = makeCaptures();
+        newer.modelDiscoveryModels = [
+          {
+            provider: "openai-codex",
+            id: "newer",
+            name: "Newer",
+            api: "openai-codex-responses",
+            reasoning: true,
+          },
+        ];
+        newer.modelDiscoveryObserved = yield* Queue.unbounded<void>();
+        newer.modelDiscoveryRelease = yield* Deferred.make<void>();
+        const olderFactory = fakeRuntimeFactory(older);
+        const newerFactory = fakeRuntimeFactory(newer);
+        let runtimeCount = 0;
+        const published = yield* Queue.unbounded<ReadonlyArray<PrimeAgentDaemonCatalogModel>>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: (input) =>
+            runtimeCount++ === 0 ? olderFactory(input) : newerFactory(input),
+          onModelsDiscovered: (models) => Queue.offer(published, models).pipe(Effect.asVoid),
+        });
+        const newerThreadId = ThreadId.make("prime-daemon/thread-newer");
+
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* Queue.take(older.modelDiscoveryObserved);
+        yield* adapter.startSession({
+          threadId: newerThreadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* Queue.take(newer.modelDiscoveryObserved);
+
+        yield* Deferred.succeed(newer.modelDiscoveryRelease, undefined);
+        expect(yield* Queue.take(published)).toEqual(newer.modelDiscoveryModels);
+        yield* Deferred.succeed(older.modelDiscoveryRelease, undefined);
+        yield* Effect.yieldNow;
+        expect(Option.isNone(yield* Queue.poll(published))).toBe(true);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("drops a model catalog that completes after its session stops", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.modelDiscoveryModels = [
+          {
+            provider: "anthropic",
+            id: "claude-sonnet-4-5",
+            name: "Claude Sonnet 4.5",
+            api: "anthropic-messages",
+            reasoning: true,
+          },
+        ];
+        captures.modelDiscoveryObserved = yield* Queue.unbounded<void>();
+        captures.modelDiscoveryRelease = yield* Deferred.make<void>();
+        const published = yield* Queue.unbounded<ReadonlyArray<PrimeAgentDaemonCatalogModel>>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+          onModelsDiscovered: (models) => Queue.offer(published, models).pipe(Effect.asVoid),
+        });
+
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* Queue.take(captures.modelDiscoveryObserved);
+        yield* adapter.stopSession(threadId);
+        yield* Deferred.succeed(captures.modelDiscoveryRelease, undefined);
+        yield* Effect.yieldNow;
+
+        expect(Option.isNone(yield* Queue.poll(published))).toBe(true);
       }),
     ).pipe(Effect.provide(testLayer)),
   );
@@ -4700,6 +5019,197 @@ describe("PrimeAgentDaemonAdapter", () => {
         const stoppedAgain = yield* adapter.stopSession(threadId).pipe(Effect.result);
         expect(stoppedAgain._tag).toBe("Failure");
         yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("asks only fresh approval-required sessions and keeps native ids private", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const requestId = ProviderSessionSideQuestionRequestId.make("public-side-1");
+
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        expect(yield* adapter.askSessionSideQuestion(threadId, requestId, "question")).toEqual({
+          requestId,
+          disposition: "answered",
+          answer: "side answer",
+        });
+        expect(captures.sideQuestionCalls).toHaveLength(1);
+        expect(captures.sideQuestionCalls[0]).toMatchObject({ question: "question" });
+        expect(captures.sideQuestionCalls[0]!.nativeId).not.toBe(requestId);
+        expect(captures.sideQuestionCalls[0]!.nativeId).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        );
+        expect(yield* adapter.cancelSessionSideQuestion(threadId, requestId)).toEqual({
+          requestId,
+          disposition: "already-settled",
+        });
+
+        yield* adapter.stopSession(threadId);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        expect(
+          yield* adapter.askSessionSideQuestion(threadId, requestId, "question").pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterUnsupportedOperationError" });
+
+        const fullSession = (yield* adapter.listSessions())[0]!;
+        yield* adapter.stopSession(threadId);
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+          resumeCursor: fullSession.resumeCursor,
+        });
+        expect(
+          yield* adapter.askSessionSideQuestion(threadId, requestId, "question").pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterUnsupportedOperationError" });
+
+        yield* adapter.stopSession(threadId);
+        captures.sideQuestionsAvailable = false;
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        expect(
+          yield* adapter.askSessionSideQuestion(threadId, requestId, "question").pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterUnsupportedOperationError" });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "keeps explicit cancellation pending for a native terminal and settles timeout/stop safely",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          captures.sideQuestionObserved = yield* Queue.unbounded<void>();
+          const cancelRelease = yield* Deferred.make<PrimeAgentDaemonSideQuestionResult>();
+          captures.sideQuestionRelease = cancelRelease;
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          yield* adapter.startSession({
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "approval-required",
+          });
+
+          const cancelId = ProviderSessionSideQuestionRequestId.make("public-cancel");
+          const cancelCompleted = yield* Deferred.make<void>();
+          const cancelled = yield* adapter
+            .askSessionSideQuestion(threadId, cancelId, "question")
+            .pipe(Effect.ensuring(Deferred.succeed(cancelCompleted, undefined)), Effect.forkChild);
+          yield* Queue.take(captures.sideQuestionObserved);
+          const busyId = ProviderSessionSideQuestionRequestId.make("public-busy");
+          expect(
+            yield* adapter.askSessionSideQuestion(threadId, busyId, "question").pipe(Effect.flip),
+          ).toMatchObject({ _tag: "ProviderAdapterValidationError", reason: "busy" });
+          expect(yield* adapter.cancelSessionSideQuestion(threadId, busyId)).toEqual({
+            requestId: busyId,
+            disposition: "already-settled",
+          });
+          expect(yield* adapter.cancelSessionSideQuestion(threadId, cancelId)).toEqual({
+            requestId: cancelId,
+            disposition: "cancel-requested",
+          });
+          expect(yield* Deferred.isDone(cancelCompleted)).toBe(false);
+          expect(captures.sideQuestionAbortCalls).toHaveLength(1);
+          expect(yield* adapter.cancelSessionSideQuestion(threadId, cancelId)).toEqual({
+            requestId: cancelId,
+            disposition: "cancel-requested",
+          });
+          expect(captures.sideQuestionAbortCalls).toHaveLength(1);
+          yield* Deferred.succeed(cancelRelease, { disposition: "cancelled" });
+          expect(yield* Fiber.join(cancelled)).toEqual({
+            requestId: cancelId,
+            disposition: "cancelled",
+          });
+
+          captures.sideQuestionRelease = yield* Deferred.make<PrimeAgentDaemonSideQuestionResult>();
+          const timeoutId = ProviderSessionSideQuestionRequestId.make("public-timeout");
+          const timedOut = yield* adapter
+            .askSessionSideQuestion(threadId, timeoutId, "question")
+            .pipe(Effect.forkChild);
+          yield* Queue.take(captures.sideQuestionObserved);
+          expect(yield* adapter.cancelSessionSideQuestion(threadId, timeoutId)).toEqual({
+            requestId: timeoutId,
+            disposition: "cancel-requested",
+          });
+          expect(captures.sideQuestionAbortCalls).toHaveLength(2);
+          yield* TestClock.adjust(PRIME_AGENT_SIDE_QUESTION_TIMEOUT_MS);
+          expect(yield* Fiber.join(timedOut)).toEqual({
+            requestId: timeoutId,
+            disposition: "timed-out",
+          });
+          expect(captures.sideQuestionAbortCalls).toHaveLength(2);
+
+          captures.sideQuestionRelease = yield* Deferred.make<PrimeAgentDaemonSideQuestionResult>();
+          const stopId = ProviderSessionSideQuestionRequestId.make("public-stop");
+          const stopped = yield* adapter
+            .askSessionSideQuestion(threadId, stopId, "question")
+            .pipe(Effect.forkChild);
+          yield* Queue.take(captures.sideQuestionObserved);
+          yield* adapter.stopSession(threadId);
+          expect(yield* Fiber.join(stopped)).toEqual({
+            requestId: stopId,
+            disposition: "outcome-unknown",
+          });
+          expect(captures.sideQuestionAbortCalls).toHaveLength(3);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("enforces a provider-wide cap of four active side questions", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.sideQuestionObserved = yield* Queue.unbounded<void>();
+        captures.sideQuestionRelease = yield* Deferred.make<PrimeAgentDaemonSideQuestionResult>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const threads = Array.from({ length: 5 }, (_, index) =>
+          ThreadId.make(`prime-daemon/side-${index}`),
+        );
+        for (const currentThreadId of threads) {
+          yield* adapter.startSession({
+            threadId: currentThreadId,
+            cwd: process.cwd(),
+            runtimeMode: "approval-required",
+          });
+        }
+        const activeFibers: Array<Fiber.Fiber<unknown, unknown>> = [];
+        for (let index = 0; index < 4; index += 1) {
+          const requestId = ProviderSessionSideQuestionRequestId.make(`public-cap-${index}`);
+          activeFibers.push(
+            yield* adapter
+              .askSessionSideQuestion(threads[index]!, requestId, "question")
+              .pipe(Effect.forkChild),
+          );
+          yield* Queue.take(captures.sideQuestionObserved);
+        }
+        const overflowId = ProviderSessionSideQuestionRequestId.make("public-cap-overflow");
+        expect(
+          yield* adapter
+            .askSessionSideQuestion(threads[4]!, overflowId, "question")
+            .pipe(Effect.flip),
+        ).toMatchObject({ _tag: "ProviderAdapterValidationError", reason: "busy" });
+
+        for (const fiber of activeFibers) yield* Fiber.interrupt(fiber);
+        yield* Effect.yieldNow;
+        expect(captures.sideQuestionAbortCalls).toHaveLength(4);
       }),
     ).pipe(Effect.provide(testLayer)),
   );

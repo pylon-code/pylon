@@ -334,6 +334,8 @@ describe("ProviderCommandReactor", () => {
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       respondToInteraction,
       reloadSessionResources: () => unsupported(),
+      askSessionSideQuestion: () => unsupported(),
+      cancelSessionSideQuestion: () => unsupported(),
       cancelSessionAgent: () => unsupported(),
       messageSessionAgent: () => unsupported(),
       watchSessionAgentActivity: () => Stream.empty,

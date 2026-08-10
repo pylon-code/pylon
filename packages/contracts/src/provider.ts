@@ -5,6 +5,7 @@ import {
   EventId,
   IsoDateTime,
   ProviderItemId,
+  RuntimeRequestId,
   RuntimeTaskId,
   ThreadId,
   TurnId,
@@ -110,6 +111,101 @@ export class ProviderSessionResourcesReloadError extends Schema.TaggedErrorClass
   {
     reason: Schema.Literals(["session-not-ready", "unsupported", "busy", "reload-failed"]),
   },
+) {}
+
+export const PROVIDER_SESSION_SIDE_QUESTION_REQUEST_ID_MAX_CHARS = 128;
+export const PROVIDER_SESSION_SIDE_QUESTION_MAX_CHARS = 4_096;
+export const PROVIDER_SESSION_SIDE_QUESTION_MAX_BYTES = 16_384;
+export const PROVIDER_SESSION_SIDE_QUESTION_ANSWER_MAX_CHARS = 8_192;
+export const PROVIDER_SESSION_SIDE_QUESTION_ANSWER_MAX_BYTES = 8_192;
+
+/** Public Pylon identity for one ephemeral side-question request. */
+export const ProviderSessionSideQuestionRequestId = RuntimeRequestId.check(
+  Schema.isMaxLength(PROVIDER_SESSION_SIDE_QUESTION_REQUEST_ID_MAX_CHARS),
+);
+export type ProviderSessionSideQuestionRequestId = typeof ProviderSessionSideQuestionRequestId.Type;
+
+const ProviderSessionSideQuestionText = TrimmedNonEmptyString.check(
+  Schema.makeFilter((value) => {
+    if (value.includes("\0")) return "A side question must not contain NUL characters.";
+    if ([...value].length > PROVIDER_SESSION_SIDE_QUESTION_MAX_CHARS) {
+      return `A side question must be at most ${PROVIDER_SESSION_SIDE_QUESTION_MAX_CHARS} Unicode code points.`;
+    }
+    if (new TextEncoder().encode(value).byteLength > PROVIDER_SESSION_SIDE_QUESTION_MAX_BYTES) {
+      return `A side question must be at most ${PROVIDER_SESSION_SIDE_QUESTION_MAX_BYTES} UTF-8 bytes.`;
+    }
+    return true;
+  }),
+);
+
+const ProviderSessionSideQuestionAnswer = Schema.String.check(
+  Schema.makeFilter((value) => {
+    if (value.includes("\0")) return "A side-question answer must not contain NUL characters.";
+    if ([...value].length > PROVIDER_SESSION_SIDE_QUESTION_ANSWER_MAX_CHARS) {
+      return `A side-question answer must be at most ${PROVIDER_SESSION_SIDE_QUESTION_ANSWER_MAX_CHARS} Unicode code points.`;
+    }
+    if (
+      new TextEncoder().encode(value).byteLength > PROVIDER_SESSION_SIDE_QUESTION_ANSWER_MAX_BYTES
+    ) {
+      return `A side-question answer must be at most ${PROVIDER_SESSION_SIDE_QUESTION_ANSWER_MAX_BYTES} UTF-8 bytes.`;
+    }
+    return true;
+  }),
+);
+
+export const ProviderAskSessionSideQuestionInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ProviderSessionSideQuestionRequestId,
+  question: ProviderSessionSideQuestionText,
+});
+export type ProviderAskSessionSideQuestionInput = typeof ProviderAskSessionSideQuestionInput.Type;
+
+export const ProviderCancelSessionSideQuestionInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ProviderSessionSideQuestionRequestId,
+});
+export type ProviderCancelSessionSideQuestionInput =
+  typeof ProviderCancelSessionSideQuestionInput.Type;
+
+const ProviderSessionSideQuestionAnsweredResult = Schema.Struct({
+  requestId: ProviderSessionSideQuestionRequestId,
+  disposition: Schema.Literal("answered"),
+  answer: ProviderSessionSideQuestionAnswer,
+});
+
+const ProviderSessionSideQuestionUnansweredResult = Schema.Struct({
+  requestId: ProviderSessionSideQuestionRequestId,
+  disposition: Schema.Literals(["cancelled", "timed-out", "response-too-large", "outcome-unknown"]),
+});
+
+export const ProviderAskSessionSideQuestionResult = Schema.Union([
+  ProviderSessionSideQuestionAnsweredResult,
+  ProviderSessionSideQuestionUnansweredResult,
+]);
+export type ProviderAskSessionSideQuestionResult = typeof ProviderAskSessionSideQuestionResult.Type;
+
+export const ProviderCancelSessionSideQuestionResult = Schema.Struct({
+  requestId: ProviderSessionSideQuestionRequestId,
+  disposition: Schema.Literals(["cancel-requested", "already-settled"]),
+});
+export type ProviderCancelSessionSideQuestionResult =
+  typeof ProviderCancelSessionSideQuestionResult.Type;
+
+const ProviderSessionSideQuestionErrorReason = Schema.Literals([
+  "session-not-ready",
+  "unsupported",
+  "busy",
+  "request-failed",
+]);
+
+export class ProviderAskSessionSideQuestionError extends Schema.TaggedErrorClass<ProviderAskSessionSideQuestionError>()(
+  "ProviderAskSessionSideQuestionError",
+  { reason: ProviderSessionSideQuestionErrorReason },
+) {}
+
+export class ProviderCancelSessionSideQuestionError extends Schema.TaggedErrorClass<ProviderCancelSessionSideQuestionError>()(
+  "ProviderCancelSessionSideQuestionError",
+  { reason: ProviderSessionSideQuestionErrorReason },
 ) {}
 
 export const PROVIDER_AGENT_CONTROL_ID_MAX_CHARS = 512;

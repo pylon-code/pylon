@@ -90,6 +90,11 @@ import { toProviderSessionCompactionError } from "./provider/providerSessionComp
 import { toProviderRefineSessionHarnessError } from "./provider/providerRefineSessionHarnessRpcError.ts";
 import { toProviderSessionInputQueueError } from "./provider/providerSessionInputQueueRpcError.ts";
 import {
+  toProviderAskSessionSideQuestionError,
+  toProviderCancelSessionSideQuestionError,
+} from "./provider/providerSessionSideQuestionRpcError.ts";
+import { makeSessionSideQuestionOwnership } from "./provider/sessionSideQuestionOwnership.ts";
+import {
   ProviderLoginCoordinator,
   ProviderLoginCoordinatorLive,
 } from "./provider/providerLoginCoordinator.ts";
@@ -382,6 +387,7 @@ const makeWsRpcLayer = (
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerService = yield* ProviderService.ProviderService;
+      const sideQuestionOwnership = makeSessionSideQuestionOwnership();
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const providerLogin = yield* ProviderLoginCoordinator;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
@@ -1428,6 +1434,38 @@ const makeWsRpcLayer = (
               : providerRegistry.refresh()
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.providerAskSessionSideQuestion]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerAskSessionSideQuestion,
+            Effect.sync(() => sideQuestionOwnership.register(input.threadId, input.requestId)).pipe(
+              Effect.andThen(providerService.askSessionSideQuestion(input)),
+              Effect.ensuring(
+                Effect.sync(() =>
+                  sideQuestionOwnership.unregister(input.threadId, input.requestId),
+                ),
+              ),
+              Effect.mapError(toProviderAskSessionSideQuestionError),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerCancelSessionSideQuestion]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerCancelSessionSideQuestion,
+            Effect.suspend(() =>
+              sideQuestionOwnership.match(input.threadId, input.requestId, {
+                owned: () =>
+                  providerService
+                    .cancelSessionSideQuestion(input)
+                    .pipe(Effect.mapError(toProviderCancelSessionSideQuestionError)),
+                unowned: () =>
+                  Effect.succeed({
+                    requestId: input.requestId,
+                    disposition: "already-settled" as const,
+                  }),
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
           ),
         [WS_METHODS.providerReloadSessionResources]: (input) =>
           observeRpcEffect(

@@ -62,6 +62,7 @@ export function stampPrimeAgentBackendSnapshot(
         readonly refinement: boolean;
         readonly autoCompaction: boolean;
         readonly goals: boolean;
+        readonly sideQuestions: boolean;
       }
     | { readonly runtime: "acp"; readonly fallbackMessage?: string },
 ): ServerProviderDraft {
@@ -81,6 +82,7 @@ export function stampPrimeAgentBackendSnapshot(
       refinement: backend.runtime === "daemon" && backend.refinement,
       autoCompaction: backend.runtime === "daemon" && backend.autoCompaction,
       goals: backend.runtime === "daemon" && backend.goals,
+      sideQuestions: backend.runtime === "daemon" && backend.sideQuestions,
     }),
     models:
       backend.runtime === "daemon"
@@ -142,6 +144,47 @@ function qualifyPrimeAgentModelSlug(provider: string, id: string): string {
   return `${provider}/${id}`;
 }
 
+export interface PrimeAgentDiscoveredModel {
+  readonly provider: string;
+  readonly id: string;
+  readonly name: string;
+  readonly api?: string | undefined;
+  readonly reasoning?: boolean | undefined;
+  readonly thinkingLevelMap?: Readonly<Partial<Record<string, string | null>>> | undefined;
+}
+
+export function primeAgentServerModelsFromDiscoveredModels(
+  discoveredModels: ReadonlyArray<PrimeAgentDiscoveredModel>,
+): ReadonlyArray<ServerProviderModel> {
+  const seen = new Set(PRIME_AGENT_BUILT_IN_MODELS.map((model) => model.slug));
+  const models: ServerProviderModel[] = [];
+  for (const model of discoveredModels) {
+    const provider = model.provider.trim();
+    const id = model.id.trim();
+    if (!provider || !id) continue;
+
+    const slug = qualifyPrimeAgentModelSlug(provider, id);
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    models.push({
+      slug,
+      name: model.name.trim() || slug,
+      subProvider: provider,
+      isCustom: false,
+      capabilities: makePrimeAgentModelCapabilities({
+        provider,
+        id,
+        ...(model.api === undefined ? {} : { api: model.api }),
+        ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
+        ...(model.thinkingLevelMap === undefined
+          ? {}
+          : { thinkingLevelMap: model.thinkingLevelMap }),
+      }),
+    });
+  }
+  return models;
+}
+
 export function parsePrimeAgentModelDiscoveryOutput(
   output: string,
 ): ReadonlyArray<ServerProviderModel> | undefined {
@@ -152,33 +195,7 @@ export function parsePrimeAgentModelDiscoveryOutput(
     const decoded = decodePrimeAgentModelDiscoveryResponse(trimmed);
     if (Option.isNone(decoded)) continue;
 
-    const seen = new Set(PRIME_AGENT_BUILT_IN_MODELS.map((model) => model.slug));
-    const models: ServerProviderModel[] = [];
-    for (const model of decoded.value.data.models) {
-      const provider = model.provider.trim();
-      const id = model.id.trim();
-      if (!provider || !id) continue;
-
-      const slug = qualifyPrimeAgentModelSlug(provider, id);
-      if (seen.has(slug)) continue;
-      seen.add(slug);
-      models.push({
-        slug,
-        name: model.name.trim() || slug,
-        subProvider: provider,
-        isCustom: false,
-        capabilities: makePrimeAgentModelCapabilities({
-          provider,
-          id,
-          ...(model.api === undefined ? {} : { api: model.api }),
-          ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
-          ...(model.thinkingLevelMap === undefined
-            ? {}
-            : { thinkingLevelMap: model.thinkingLevelMap }),
-        }),
-      });
-    }
-    return models;
+    return primeAgentServerModelsFromDiscoveredModels(decoded.value.data.models);
   }
   return undefined;
 }
@@ -294,9 +311,26 @@ const discoverPrimeAgentModels = (
     };
   }).pipe(Effect.scoped);
 
+const PRIME_AGENT_MODEL_DISCOVERY_FALLBACK_MESSAGES = new Set([
+  "Prime Agent CLI is ready, but model discovery failed; using the fallback model catalog.",
+  "Prime Agent CLI is ready, but model discovery timed out; using the fallback model catalog.",
+]);
+
+export function reconcilePrimeAgentDaemonCatalogSnapshot(snapshot: ServerProvider): ServerProvider {
+  if (
+    snapshot.message === undefined ||
+    !PRIME_AGENT_MODEL_DISCOVERY_FALLBACK_MESSAGES.has(snapshot.message)
+  ) {
+    return snapshot;
+  }
+  const { message: _message, ...reconciled } = snapshot;
+  return reconciled;
+}
+
 export const checkPrimeAgentProviderStatus = Effect.fn("checkPrimeAgentProviderStatus")(function* (
   settings: PrimeAgentSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  options?: { readonly discoverModels?: boolean },
 ): Effect.fn.Return<ServerProviderDraft, never, ChildProcessSpawner.ChildProcessSpawner> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const models = primeAgentModelsFromSettings(settings.customModels);
@@ -387,34 +421,36 @@ ${versionOutput.stderr}`);
     });
   }
 
-  const discoveryResult = yield* discoverPrimeAgentModels(settings, environment).pipe(
-    Effect.timeoutOption(MODEL_DISCOVERY_TIMEOUT_MS),
-    Effect.result,
-  );
-
   let discoveredModels: ReadonlyArray<ServerProviderModel> | undefined;
   let discoveryMessage: string | undefined;
-  if (Result.isFailure(discoveryResult)) {
-    yield* Effect.logWarning("Prime Agent RPC model discovery failed.");
-    discoveryMessage =
-      "Prime Agent CLI is ready, but model discovery failed; using the fallback model catalog.";
-  } else if (Option.isNone(discoveryResult.success)) {
-    yield* Effect.logWarning(
-      `Prime Agent RPC model discovery timed out after ${MODEL_DISCOVERY_TIMEOUT_MS}ms.`,
+  if (options?.discoverModels !== false) {
+    const discoveryResult = yield* discoverPrimeAgentModels(settings, environment).pipe(
+      Effect.timeoutOption(MODEL_DISCOVERY_TIMEOUT_MS),
+      Effect.result,
     );
-    discoveryMessage =
-      "Prime Agent CLI is ready, but model discovery timed out; using the fallback model catalog.";
-  } else {
-    const discovery = discoveryResult.success.value;
-    discoveredModels = discovery.models;
-    if (discoveredModels === undefined) {
-      yield* Effect.logWarning("Prime Agent RPC model discovery returned no usable response.", {
-        exitCode: discovery.exitCode,
-        stdoutLength: discovery.stdoutLength,
-        stderrLength: discovery.stderrLength,
-      });
+
+    if (Result.isFailure(discoveryResult)) {
+      yield* Effect.logWarning("Prime Agent RPC model discovery failed.");
       discoveryMessage =
         "Prime Agent CLI is ready, but model discovery failed; using the fallback model catalog.";
+    } else if (Option.isNone(discoveryResult.success)) {
+      yield* Effect.logWarning(
+        `Prime Agent RPC model discovery timed out after ${MODEL_DISCOVERY_TIMEOUT_MS}ms.`,
+      );
+      discoveryMessage =
+        "Prime Agent CLI is ready, but model discovery timed out; using the fallback model catalog.";
+    } else {
+      const discovery = discoveryResult.success.value;
+      discoveredModels = discovery.models;
+      if (discoveredModels === undefined) {
+        yield* Effect.logWarning("Prime Agent RPC model discovery returned no usable response.", {
+          exitCode: discovery.exitCode,
+          stdoutLength: discovery.stdoutLength,
+          stderrLength: discovery.stderrLength,
+        });
+        discoveryMessage =
+          "Prime Agent CLI is ready, but model discovery failed; using the fallback model catalog.";
+      }
     }
   }
 

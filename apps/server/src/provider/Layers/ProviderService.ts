@@ -15,7 +15,9 @@ import {
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   ThreadId,
   ProviderAbortSessionCompactionInput,
+  ProviderAskSessionSideQuestionInput,
   ProviderCancelSessionAgentInput,
+  ProviderCancelSessionSideQuestionInput,
   ProviderClearSessionInputQueueInput,
   ProviderCompactSessionInput,
   ProviderFollowUpInput,
@@ -949,6 +951,70 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* reload(routed.threadId);
   });
 
+  const askSessionSideQuestion: ProviderServiceMethod<"askSessionSideQuestion"> = Effect.fn(
+    "askSessionSideQuestion",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.askSessionSideQuestion",
+      schema: ProviderAskSessionSideQuestionInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.askSessionSideQuestion",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.askSessionSideQuestion",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const ask = routed.adapter.askSessionSideQuestion;
+    if (ask === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "ask-session-side-question",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+    });
+    return yield* ask(routed.threadId, input.requestId, input.question);
+  });
+
+  const cancelSessionSideQuestion: ProviderServiceMethod<"cancelSessionSideQuestion"> = Effect.fn(
+    "cancelSessionSideQuestion",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.cancelSessionSideQuestion",
+      schema: ProviderCancelSessionSideQuestionInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.cancelSessionSideQuestion",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.cancelSessionSideQuestion",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const cancel = routed.adapter.cancelSessionSideQuestion;
+    if (cancel === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "cancel-session-side-question",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+    });
+    return yield* cancel(routed.threadId, input.requestId);
+  });
+
   const cancelSessionAgent: ProviderServiceMethod<"cancelSessionAgent"> = Effect.fn(
     "cancelSessionAgent",
   )(function* (rawInput) {
@@ -1675,6 +1741,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToUserInput,
     respondToInteraction,
     reloadSessionResources,
+    askSessionSideQuestion,
+    cancelSessionSideQuestion,
     cancelSessionAgent,
     messageSessionAgent,
     watchSessionAgentActivity,

@@ -38,6 +38,7 @@ export function makePrimeAgentFeatureCapabilities(input: {
   readonly refinement?: boolean;
   readonly autoCompaction: boolean;
   readonly goals: boolean;
+  readonly sideQuestions: boolean;
 }): ProviderFeatureCapabilities {
   if (input.runtime === "acp") {
     return {
@@ -84,6 +85,14 @@ export function makePrimeAgentFeatureCapabilities(input: {
         "set-depth",
       ],
     },
+    automation: input.sideQuestions
+      ? {
+          support: "read-write",
+          reason:
+            "Pylon can ask one bounded, ephemeral side question at a time only in fresh approval-required daemon sessions; full-access, restored, and ACP sessions are unavailable.",
+          operations: ["side-questions"],
+        }
+      : unavailable("The loaded Prime Agent daemon does not expose compatible side questions."),
     goals: input.goals
       ? {
           support: "read-only",

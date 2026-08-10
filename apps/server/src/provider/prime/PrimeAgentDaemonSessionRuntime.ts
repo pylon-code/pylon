@@ -18,6 +18,7 @@ import {
   type SessionInputQueueUpdatedPayload,
   type SessionResourcesUpdatedPayload,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
@@ -51,6 +52,16 @@ import {
 export { PRIME_AGENT_DAEMON_RESUME_CURSOR } from "./PrimeAgentResumeCursor.ts";
 
 const COMMAND_TIMEOUT_MS = 30_000;
+const SIDE_QUESTION_TERMINAL_MAX_BYTES = 8_192;
+const SIDE_QUESTION_TERMINAL_MAX_CODEPOINTS = 8_192;
+const SIDE_QUESTION_MAX_UPDATES = 512;
+const SIDE_QUESTION_MAX_CUMULATIVE_BYTES = 4 * 1_024 * 1_024;
+const SIDE_QUESTION_EVENT_ID_MAX_CODE_UNITS = 64;
+const SIDE_QUESTION_EVENT_ANSWER_MAX_CODE_UNITS = 16_384;
+const SIDE_QUESTION_PRESTART_ABORT_MAX = 4;
+const SIDE_QUESTION_ABORT_TIMEOUT_MS = 2_000;
+const SIDE_QUESTION_NATIVE_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const PRIME_AGENT_LIVE_ACTIVITY_REFRESH_DELAY_MS = 500;
 const PRIME_AGENT_LIVE_ACTIVITY_PENDING_EVENT_MAX = 64;
 const liveActivityTextEncoder = new TextEncoder();
@@ -167,6 +178,37 @@ const modelSchema = Schema.Struct({
   name: Schema.String,
   provider: Schema.String,
 });
+const catalogProviderStringSchema = Schema.String.check(Schema.isMaxLength(128));
+const catalogModelStringSchema = Schema.String.check(Schema.isMaxLength(512));
+const catalogThinkingValueSchema = Schema.NullOr(catalogProviderStringSchema);
+const catalogThinkingLevelMapSchema = Schema.Struct({
+  off: Schema.optional(catalogThinkingValueSchema),
+  minimal: Schema.optional(catalogThinkingValueSchema),
+  low: Schema.optional(catalogThinkingValueSchema),
+  medium: Schema.optional(catalogThinkingValueSchema),
+  high: Schema.optional(catalogThinkingValueSchema),
+  xhigh: Schema.optional(catalogThinkingValueSchema),
+  max: Schema.optional(catalogThinkingValueSchema),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const catalogModelSchema = Schema.Struct({
+  id: catalogModelStringSchema,
+  name: catalogModelStringSchema,
+  provider: catalogProviderStringSchema,
+  api: catalogProviderStringSchema,
+  reasoning: Schema.Boolean,
+  thinkingLevelMap: Schema.optional(catalogThinkingLevelMapSchema),
+});
+const AVAILABLE_MODEL_CATALOG_MAX_ITEMS = 512;
+const COMPLETE_MODEL_CATALOG_MAX_ITEMS = 2_048;
+const availableModelsSchema = Schema.Array(catalogModelSchema).check(
+  Schema.isMaxLength(AVAILABLE_MODEL_CATALOG_MAX_ITEMS),
+);
+const modelCatalogSchema = Schema.Struct({
+  models: Schema.Array(catalogModelSchema).check(
+    Schema.isMaxLength(COMPLETE_MODEL_CATALOG_MAX_ITEMS),
+  ),
+  configuredProviders: Schema.Array(catalogProviderStringSchema).check(Schema.isMaxLength(128)),
+});
 const resourceSourceInfoSchema = Schema.Struct({
   scope: Schema.Literals(["user", "project", "temporary"]),
 });
@@ -243,6 +285,8 @@ const decodeExtensionUiResponse = Schema.decodeUnknownOption(extensionUiResponse
 const decodeCreateSuccess = Schema.decodeUnknownOption(createSuccessSchema);
 const decodeCreateFailure = Schema.decodeUnknownOption(createFailureSchema);
 const decodeModel = Schema.decodeUnknownOption(modelSchema);
+const decodeAvailableModels = Schema.decodeUnknownOption(availableModelsSchema);
+const decodeModelCatalog = Schema.decodeUnknownOption(modelCatalogSchema);
 const decodeResourceSnapshot = Schema.decodeUnknownOption(resourceSnapshotSchema);
 const decodeCommands = Schema.decodeUnknownOption(commandsSchema);
 const decodeSessionStats = Schema.decodeUnknownOption(sessionStatsSchema);
@@ -386,6 +430,9 @@ const runtimeErrorOperation = Schema.Literals([
   "set-auto-compaction",
   "abort",
   "abort-and-clear-queue",
+  "side-question",
+  "abort-side-question",
+  "model-catalog",
   "set-model",
   "set-thinking-level",
   "set-service-tier",
@@ -445,10 +492,26 @@ export interface PrimeAgentDaemonPromptInput {
   readonly signal?: AbortSignal;
 }
 
+export type PrimeAgentDaemonSideQuestionResult =
+  | { readonly disposition: "answered"; readonly answer: string }
+  | { readonly disposition: "cancelled" }
+  | { readonly disposition: "response-too-large" };
+
 export interface PrimeAgentDaemonSafeModel {
   readonly id: string;
   readonly name: string;
   readonly provider: string;
+}
+
+export interface PrimeAgentDaemonCatalogModel {
+  readonly id: string;
+  readonly name: string;
+  readonly provider: string;
+  readonly api: string;
+  readonly reasoning: boolean;
+  readonly thinkingLevelMap?:
+    | Readonly<Partial<Record<PrimeAgentDaemonThinkingLevel, string | null>>>
+    | undefined;
 }
 
 export type PrimeAgentDaemonSessionResources = SessionResourcesUpdatedPayload;
@@ -592,6 +655,19 @@ export interface PrimeAgentDaemonSessionRuntime {
   }) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly abort: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly abortAndClearQueue: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  readonly sideQuestionsAvailable: boolean;
+  /** Runs one requester-scoped unary question; native prompt/error/id fields never escape. */
+  readonly askSideQuestion: (
+    nativeId: string,
+    question: string,
+  ) => Effect.Effect<PrimeAgentDaemonSideQuestionResult, PrimeAgentDaemonSessionRuntimeError>;
+  readonly abortSideQuestion: (
+    nativeId: string,
+  ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  readonly discoverAvailableModels: Effect.Effect<
+    ReadonlyArray<PrimeAgentDaemonCatalogModel>,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
   readonly setModel: (
     model: string,
   ) => Effect.Effect<PrimeAgentDaemonSafeModel, PrimeAgentDaemonSessionRuntimeError>;
@@ -690,6 +766,82 @@ function splitModelSelector(
     provider: selector.slice(0, separator),
     modelId: selector.slice(separator + 1),
   });
+}
+
+function safeCatalogModel(model: typeof catalogModelSchema.Type): PrimeAgentDaemonCatalogModel {
+  const thinkingLevelMap = model.thinkingLevelMap;
+  return {
+    id: model.id.trim(),
+    name: model.name.trim(),
+    provider: model.provider.trim(),
+    api: model.api.trim(),
+    reasoning: model.reasoning,
+    ...(thinkingLevelMap === undefined
+      ? {}
+      : {
+          thinkingLevelMap: {
+            ...(thinkingLevelMap.off === undefined
+              ? {}
+              : { off: thinkingLevelMap.off === null ? null : thinkingLevelMap.off.trim() }),
+            ...(thinkingLevelMap.minimal === undefined
+              ? {}
+              : {
+                  minimal:
+                    thinkingLevelMap.minimal === null ? null : thinkingLevelMap.minimal.trim(),
+                }),
+            ...(thinkingLevelMap.low === undefined
+              ? {}
+              : { low: thinkingLevelMap.low === null ? null : thinkingLevelMap.low.trim() }),
+            ...(thinkingLevelMap.medium === undefined
+              ? {}
+              : {
+                  medium: thinkingLevelMap.medium === null ? null : thinkingLevelMap.medium.trim(),
+                }),
+            ...(thinkingLevelMap.high === undefined
+              ? {}
+              : { high: thinkingLevelMap.high === null ? null : thinkingLevelMap.high.trim() }),
+            ...(thinkingLevelMap.xhigh === undefined
+              ? {}
+              : {
+                  xhigh: thinkingLevelMap.xhigh === null ? null : thinkingLevelMap.xhigh.trim(),
+                }),
+            ...(thinkingLevelMap.max === undefined
+              ? {}
+              : { max: thinkingLevelMap.max === null ? null : thinkingLevelMap.max.trim() }),
+          },
+        }),
+  };
+}
+
+const catalogNulCharacter = String.fromCharCode(0);
+
+function safeCatalogModels(
+  models: ReadonlyArray<typeof catalogModelSchema.Type>,
+): Option.Option<ReadonlyArray<PrimeAgentDaemonCatalogModel>> {
+  const safeModels: PrimeAgentDaemonCatalogModel[] = [];
+  const qualifiedIds = new Set<string>();
+  for (const model of models) {
+    const safeModel = safeCatalogModel(model);
+    if (
+      safeModel.provider.length === 0 ||
+      safeModel.id.length === 0 ||
+      safeModel.api.length === 0 ||
+      safeModel.provider.includes(catalogNulCharacter) ||
+      safeModel.id.includes(catalogNulCharacter) ||
+      safeModel.name.includes(catalogNulCharacter) ||
+      safeModel.api.includes(catalogNulCharacter) ||
+      Object.values(safeModel.thinkingLevelMap ?? {}).some(
+        (value) => value !== null && (value.length === 0 || value.includes(catalogNulCharacter)),
+      )
+    ) {
+      return Option.none();
+    }
+    const qualifiedId = `${safeModel.provider}/${safeModel.id}`;
+    if (qualifiedIds.has(qualifiedId)) return Option.none();
+    qualifiedIds.add(qualifiedId);
+    safeModels.push(safeModel);
+  }
+  return Option.some(safeModels);
 }
 
 export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemonSessionRuntime")(
@@ -960,6 +1112,123 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let lastSnapshotSequence: number | undefined;
     const knownAgentRoster = new Map<string, PrimeAgentDaemonChild>();
 
+    interface ActivePrivateSideQuestion {
+      readonly completion: Deferred.Deferred<
+        PrimeAgentDaemonSideQuestionResult,
+        PrimeAgentDaemonSessionRuntimeError
+      >;
+      updateCount: number;
+      cumulativeAnswerBytes: number;
+      settled: boolean;
+      terminalObserved: boolean;
+      abortRequested: boolean;
+    }
+    const activePrivateSideQuestions = new Map<string, ActivePrivateSideQuestion>();
+    const prestartAbortedSideQuestionIds = new Set<string>();
+    const recentlySettledSideQuestionIds = new Set<string>();
+    const rememberSettledSideQuestionId = (nativeId: string) => {
+      recentlySettledSideQuestionIds.delete(nativeId);
+      recentlySettledSideQuestionIds.add(nativeId);
+      if (recentlySettledSideQuestionIds.size > SIDE_QUESTION_PRESTART_ABORT_MAX) {
+        const oldest = recentlySettledSideQuestionIds.values().next().value;
+        if (oldest !== undefined) recentlySettledSideQuestionIds.delete(oldest);
+      }
+    };
+    const privateSideQuestionEventSchema = Schema.Struct({
+      type: Schema.Literal("side_question_event"),
+      event: Schema.Struct({
+        id: Schema.String.check(Schema.isMaxLength(SIDE_QUESTION_EVENT_ID_MAX_CODE_UNITS)),
+        answer: Schema.String.check(Schema.isMaxLength(SIDE_QUESTION_EVENT_ANSWER_MAX_CODE_UNITS)),
+        status: Schema.Literals(["running", "complete", "cancelled", "error"]),
+      }),
+    });
+    const decodePrivateSideQuestionEvent = Schema.decodeUnknownOption(
+      privateSideQuestionEventSchema,
+    );
+    const privateSideQuestionFailure = () =>
+      runtimeError(
+        "side-question",
+        "request-failed",
+        "The Prime Agent side question did not complete safely.",
+      );
+    const failActivePrivateSideQuestions = () =>
+      Effect.forEach(activePrivateSideQuestions.values(), (active) => {
+        active.settled = true;
+        return Deferred.fail(active.completion, privateSideQuestionFailure());
+      }).pipe(Effect.asVoid);
+
+    /**
+     * Privacy boundary for requester-only native side-question traffic. This method
+     * consumes the entire envelope before generic decoding, retaining only the exact
+     * private correlation match, cumulative answer snapshot, and terminal status.
+     */
+    const handlePrivateSideQuestionEvent = (raw: unknown): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        if (!Predicate.isObject(raw)) return false;
+        if (raw.type === "side_question_event") {
+          const decoded = decodePrivateSideQuestionEvent(raw);
+          if (Option.isNone(decoded)) {
+            yield* failActivePrivateSideQuestions();
+            return true;
+          }
+          const active = activePrivateSideQuestions.get(decoded.value.event.id);
+          if (active === undefined || active.settled) return true;
+
+          active.updateCount += 1;
+          const answerBytes = liveActivityTextEncoder.encode(decoded.value.event.answer).byteLength;
+          active.cumulativeAnswerBytes += answerBytes;
+          const snapshotByteLimitBreached = answerBytes > SIDE_QUESTION_TERMINAL_MAX_BYTES;
+          const answerCodepoints = snapshotByteLimitBreached
+            ? 0
+            : [...decoded.value.event.answer].length;
+          if (
+            active.updateCount > SIDE_QUESTION_MAX_UPDATES ||
+            active.cumulativeAnswerBytes > SIDE_QUESTION_MAX_CUMULATIVE_BYTES ||
+            snapshotByteLimitBreached ||
+            answerCodepoints > SIDE_QUESTION_TERMINAL_MAX_CODEPOINTS ||
+            decoded.value.event.answer.includes("\0")
+          ) {
+            active.settled = true;
+            yield* Deferred.succeed(active.completion, {
+              disposition: "response-too-large",
+            });
+            return true;
+          }
+
+          switch (decoded.value.event.status) {
+            case "running":
+              return true;
+            case "complete":
+              active.settled = true;
+              active.terminalObserved = true;
+              yield* Deferred.succeed(active.completion, {
+                disposition: "answered",
+                answer: decoded.value.event.answer,
+              });
+              return true;
+            case "cancelled":
+              active.settled = true;
+              active.terminalObserved = true;
+              yield* Deferred.succeed(active.completion, { disposition: "cancelled" });
+              return true;
+            case "error":
+              active.settled = true;
+              active.terminalObserved = true;
+              yield* Deferred.fail(active.completion, privateSideQuestionFailure());
+              return true;
+          }
+        }
+        if (
+          raw.type === "session_resynced" ||
+          raw.type === "session_replaced" ||
+          raw.type === "closed" ||
+          (raw.type === "connection_status" && raw.status === "reconnecting")
+        ) {
+          yield* failActivePrivateSideQuestions();
+        }
+        return false;
+      });
+
     const trackAgentRoster = (event: PrimeDaemonEvent) => {
       if (event._tag === "SessionResynced") {
         knownAgentRoster.clear();
@@ -980,6 +1249,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       trackAgentRoster(event);
       return Queue.offer(eventQueue, event).pipe(Effect.asVoid);
     };
+    const routeRawEvent = (raw: unknown) =>
+      handlePrivateSideQuestionEvent(raw).pipe(
+        Effect.flatMap((handled) => (handled ? Effect.void : offerDecoded(raw))),
+      );
 
     // DaemonAgentConnection serializes its normalized listener callbacks. Returning
     // the Promise preserves their order after initialization.
@@ -988,7 +1261,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         bufferedEvents.push(event);
         return;
       }
-      return runPromise(offerDecoded(event));
+      return runPromise(routeRawEvent(event));
     });
 
     const rawSnapshot = yield* Effect.tryPromise({
@@ -1045,7 +1318,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     while (bufferedEvents.length > 0) {
       const batch = bufferedEvents.splice(0);
       for (const bufferedEvent of batch) {
-        yield* offerDecoded(bufferedEvent);
+        yield* routeRawEvent(bufferedEvent);
       }
     }
     // No callback can interleave between the final empty check and this assignment.
@@ -2114,6 +2387,113 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
     });
 
+    const sideQuestionsAvailable =
+      Predicate.isFunction(connection!.startSideQuestion) &&
+      Predicate.isFunction(connection!.abortSideQuestion);
+
+    const bestEffortAbortSideQuestion = (nativeId: string, active: ActivePrivateSideQuestion) =>
+      Effect.suspend(() => {
+        if (active.abortRequested || active.terminalObserved) return Effect.void;
+        active.abortRequested = true;
+        return Effect.tryPromise({
+          try: () => connection!.abortSideQuestion!.call(connection, nativeId),
+          catch: () => undefined,
+        }).pipe(Effect.timeoutOption(SIDE_QUESTION_ABORT_TIMEOUT_MS), Effect.ignore);
+      });
+
+    const askSideQuestion = Effect.fn("PrimeAgentDaemonSessionRuntime.askSideQuestion")(function* (
+      nativeId: string,
+      question: string,
+    ) {
+      yield* ensureOpen("side-question");
+      if (!SIDE_QUESTION_NATIVE_ID_PATTERN.test(nativeId) || question.trim().length === 0) {
+        return yield* runtimeError(
+          "side-question",
+          "invalid-input",
+          "The side-question request is invalid.",
+        );
+      }
+      const start = yield* requireMethod("side-question", connection!.startSideQuestion);
+      yield* requireMethod("abort-side-question", connection!.abortSideQuestion);
+      if (activePrivateSideQuestions.has(nativeId)) {
+        return yield* runtimeError(
+          "side-question",
+          "invalid-input",
+          "The side-question request is already active.",
+        );
+      }
+
+      const completion = yield* Deferred.make<
+        PrimeAgentDaemonSideQuestionResult,
+        PrimeAgentDaemonSessionRuntimeError
+      >();
+      const active: ActivePrivateSideQuestion = {
+        completion,
+        updateCount: 0,
+        cumulativeAnswerBytes: 0,
+        settled: false,
+        terminalObserved: false,
+        abortRequested: false,
+      };
+      // No yield may occur between consuming a pre-start abort and registration.
+      if (prestartAbortedSideQuestionIds.delete(nativeId)) {
+        rememberSettledSideQuestionId(nativeId);
+        return { disposition: "cancelled" } as const;
+      }
+      activePrivateSideQuestions.set(nativeId, active);
+
+      const terminal = Deferred.await(completion);
+      return yield* Effect.raceFirst(
+        Effect.tryPromise({
+          // Deliberately pass no transcript: a defensive unary request has no native follow-ups.
+          try: () => start.call(connection, nativeId, question),
+          catch: () => privateSideQuestionFailure(),
+        }).pipe(Effect.andThen(terminal)),
+        terminal,
+      ).pipe(
+        Effect.ensuring(
+          bestEffortAbortSideQuestion(nativeId, active).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                activePrivateSideQuestions.delete(nativeId);
+                rememberSettledSideQuestionId(nativeId);
+              }),
+            ),
+          ),
+        ),
+      );
+    });
+
+    const abortSideQuestion = Effect.fn("PrimeAgentDaemonSessionRuntime.abortSideQuestion")(
+      function* (nativeId: string) {
+        yield* ensureOpen("abort-side-question");
+        if (!SIDE_QUESTION_NATIVE_ID_PATTERN.test(nativeId)) {
+          return yield* runtimeError(
+            "abort-side-question",
+            "invalid-input",
+            "The side-question cancellation request is invalid.",
+          );
+        }
+        yield* requireMethod("abort-side-question", connection!.abortSideQuestion);
+        const active = activePrivateSideQuestions.get(nativeId);
+        if (active !== undefined) {
+          yield* bestEffortAbortSideQuestion(nativeId, active);
+          return;
+        }
+        if (
+          recentlySettledSideQuestionIds.has(nativeId) ||
+          prestartAbortedSideQuestionIds.has(nativeId)
+        ) {
+          return;
+        }
+        if (prestartAbortedSideQuestionIds.size >= SIDE_QUESTION_PRESTART_ABORT_MAX) {
+          const oldest = prestartAbortedSideQuestionIds.values().next().value;
+          if (oldest !== undefined) prestartAbortedSideQuestionIds.delete(oldest);
+        }
+        prestartAbortedSideQuestionIds.add(nativeId);
+      },
+    );
+
     const reloadResources = Effect.gen(function* () {
       yield* ensureOpen("reload-resources");
       if (input.requiredExtension !== undefined) {
@@ -2155,6 +2535,120 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         resources: safeSessionResources(resources.value, commands.value, false),
         agentDepth: safeAgentDepth(agentDepth.value, true),
       };
+    });
+
+    const discoverAvailableModels = Effect.gen(function* () {
+      yield* ensureOpen("model-catalog");
+      const catalogMethod = connection!.getModelCatalog;
+      const availableMethod = connection!.getAvailableModels;
+      if (!Predicate.isFunction(catalogMethod) && !Predicate.isFunction(availableMethod)) {
+        return yield* runtimeError(
+          "model-catalog",
+          "incompatible-api",
+          "The installed Prime Agent connection does not support model discovery.",
+        );
+      }
+
+      const result = yield* Effect.tryPromise({
+        try: async () => {
+          if (Predicate.isFunction(catalogMethod)) {
+            try {
+              return { kind: "catalog" as const, value: await catalogMethod.call(connection) };
+            } catch {
+              if (!Predicate.isFunction(availableMethod)) throw new Error("model catalog failed");
+            }
+          }
+          return { kind: "available" as const, value: await availableMethod!.call(connection) };
+        },
+        catch: () =>
+          runtimeError(
+            "model-catalog",
+            "request-failed",
+            "Could not read the Prime Agent model catalog.",
+          ),
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: COMMAND_TIMEOUT_MS,
+          orElse: () =>
+            runtimeError(
+              "model-catalog",
+              "request-timed-out",
+              "Timed out while reading the Prime Agent model catalog.",
+            ),
+        }),
+      );
+
+      if (result.kind === "available") {
+        const decoded = decodeAvailableModels(result.value);
+        if (Option.isNone(decoded)) {
+          return yield* runtimeError(
+            "model-catalog",
+            "invalid-response",
+            "Prime Agent returned an invalid model catalog.",
+          );
+        }
+        const models = safeCatalogModels(decoded.value);
+        if (Option.isNone(models)) {
+          return yield* runtimeError(
+            "model-catalog",
+            "invalid-response",
+            "Prime Agent returned an invalid model catalog.",
+          );
+        }
+        return models.value;
+      }
+
+      const decoded = decodeModelCatalog(result.value);
+      if (Option.isNone(decoded)) {
+        return yield* runtimeError(
+          "model-catalog",
+          "invalid-response",
+          "Prime Agent returned an invalid model catalog.",
+        );
+      }
+      const models = safeCatalogModels(decoded.value.models);
+      if (Option.isNone(models)) {
+        return yield* runtimeError(
+          "model-catalog",
+          "invalid-response",
+          "Prime Agent returned an invalid model catalog.",
+        );
+      }
+      const configuredProviders = new Set<string>();
+      for (const rawProvider of decoded.value.configuredProviders) {
+        const provider = rawProvider.trim();
+        if (
+          provider.length === 0 ||
+          provider.includes(catalogNulCharacter) ||
+          configuredProviders.has(provider)
+        ) {
+          return yield* runtimeError(
+            "model-catalog",
+            "invalid-response",
+            "Prime Agent returned an invalid model catalog.",
+          );
+        }
+        configuredProviders.add(provider);
+      }
+      const representedProviders = new Set(models.value.map((model) => model.provider));
+      if ([...configuredProviders].some((provider) => !representedProviders.has(provider))) {
+        return yield* runtimeError(
+          "model-catalog",
+          "invalid-response",
+          "Prime Agent returned an invalid model catalog.",
+        );
+      }
+      const configuredModels = models.value.filter((model) =>
+        configuredProviders.has(model.provider),
+      );
+      if (configuredModels.length > AVAILABLE_MODEL_CATALOG_MAX_ITEMS) {
+        return yield* runtimeError(
+          "model-catalog",
+          "invalid-response",
+          "Prime Agent returned an invalid model catalog.",
+        );
+      }
+      return configuredModels;
     });
 
     const setModel = Effect.fn("PrimeAgentDaemonSessionRuntime.setModel")(function* (
@@ -2267,25 +2761,36 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       if (disposed || disposeStarted) return Effect.void;
       disposeStarted = true;
       unsubscribe?.();
-      return Effect.tryPromise({
-        try: () => connection!.dispose(),
-        catch: () =>
-          runtimeError("dispose", "request-failed", "Could not dispose the daemon session."),
-      }).pipe(
-        Effect.flatMap((output) =>
-          output === undefined
-            ? Effect.void
-            : Effect.fail(
-                runtimeError(
-                  "dispose",
-                  "invalid-response",
-                  "The daemon dispose operation returned an invalid response.",
-                ),
-              ),
+      const nativeSideQuestions = [...activePrivateSideQuestions.entries()];
+      return Effect.forEach(nativeSideQuestions, ([nativeId, active]) =>
+        bestEffortAbortSideQuestion(nativeId, active),
+      ).pipe(
+        Effect.andThen(failActivePrivateSideQuestions()),
+        Effect.andThen(
+          Effect.tryPromise({
+            try: () => connection!.dispose(),
+            catch: () =>
+              runtimeError("dispose", "request-failed", "Could not dispose the daemon session."),
+          }).pipe(
+            Effect.flatMap((output) =>
+              output === undefined
+                ? Effect.void
+                : Effect.fail(
+                    runtimeError(
+                      "dispose",
+                      "invalid-response",
+                      "The daemon dispose operation returned an invalid response.",
+                    ),
+                  ),
+            ),
+          ),
         ),
         Effect.ensuring(
           Effect.gen(function* () {
             disposed = true;
+            activePrivateSideQuestions.clear();
+            prestartAbortedSideQuestionIds.clear();
+            recentlySettledSideQuestionIds.clear();
             client.close();
             yield* Queue.shutdown(eventQueue);
           }),
@@ -2335,6 +2840,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       setInputQueueMode,
       abort,
       abortAndClearQueue,
+      sideQuestionsAvailable,
+      askSideQuestion,
+      abortSideQuestion,
+      discoverAvailableModels,
       setModel,
       setThinkingLevel,
       setServiceTier,

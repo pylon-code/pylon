@@ -16,6 +16,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       compaction: true,
       autoCompaction: true,
       goals: true,
+      sideQuestions: true,
     });
 
     expect(capabilities.executionPolicy).toMatchObject({
@@ -32,6 +33,11 @@ describe("PrimeAgentFeatureCapabilities", () => {
       support: "read-only",
       operations: ["observe"],
     });
+    expect(capabilities.automation).toMatchObject({
+      support: "read-write",
+      operations: ["side-questions"],
+    });
+    expect(capabilities.automation?.reason).toContain("approval-required");
     expect(capabilities.resources).toMatchObject({
       support: "read-write",
       operations: ["commands", "reload"],
@@ -74,12 +80,14 @@ describe("PrimeAgentFeatureCapabilities", () => {
       compaction: false,
       autoCompaction: false,
       goals: false,
+      sideQuestions: false,
     });
     expect(capabilities.inputQueue).toMatchObject({
       support: "unavailable",
       operations: [],
     });
     expect(capabilities.goals).toMatchObject({ support: "unavailable", operations: [] });
+    expect(capabilities.automation).toMatchObject({ support: "unavailable", operations: [] });
     expect(capabilities.agents?.operations).not.toContain("live-activity");
   });
 
@@ -95,6 +103,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       compaction: false,
       autoCompaction: false,
       goals: true,
+      sideQuestions: false,
     });
 
     expect(capabilities.executionPolicy).toMatchObject({

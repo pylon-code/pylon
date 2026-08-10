@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { PrimeAgentSettings } from "@t3tools/contracts";
+import { PrimeAgentSettings, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -15,6 +15,8 @@ import {
   checkPrimeAgentProviderStatus,
   parsePrimeAgentModelDiscoveryOutput,
   primeAgentModelsFromSettings,
+  primeAgentServerModelsFromDiscoveredModels,
+  reconcilePrimeAgentDaemonCatalogSnapshot,
   stampPrimeAgentBackendSnapshot,
 } from "./PrimeAgentProvider.ts";
 
@@ -168,6 +170,34 @@ describe("PrimeAgentProvider models", () => {
     expect(models?.[1]?.capabilities?.optionDescriptors).toEqual([]);
   });
 
+  it("maps sanitized daemon models through the provider-neutral catalog", () => {
+    const nativeModel = {
+      provider: "openai-codex",
+      id: "gpt-5.4",
+      name: "GPT-5.4",
+      api: "openai-codex-responses",
+      reasoning: true,
+      thinkingLevelMap: { xhigh: "xhigh" },
+      baseUrl: "https://private.example/token",
+      headers: { authorization: "secret" },
+    };
+    const models = primeAgentServerModelsFromDiscoveredModels([nativeModel, nativeModel]);
+
+    expect(models).toHaveLength(1);
+    expect(models[0]).toMatchObject({
+      slug: "openai-codex/gpt-5.4",
+      name: "GPT-5.4",
+      subProvider: "openai-codex",
+      isCustom: false,
+    });
+    expect(models[0]?.capabilities?.optionDescriptors?.map((descriptor) => descriptor.id)).toEqual([
+      "thinkingLevel",
+      "serviceTier",
+    ]);
+    expect(JSON.stringify(models)).not.toContain("private.example");
+    expect(JSON.stringify(models)).not.toContain("secret");
+  });
+
   it("rejects a matching response whose configured model records fail the schema", () => {
     expect(
       parsePrimeAgentModelDiscoveryOutput(
@@ -247,6 +277,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         refinement: true,
         autoCompaction: true,
         goals: true,
+        sideQuestions: true,
       });
 
       expect(snapshot.featureCapabilities?.version).toBe(1);
@@ -254,6 +285,27 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
       expect(snapshot.featureCapabilities?.goals).toMatchObject({
         support: "read-only",
         operations: ["observe"],
+      });
+      expect(snapshot.featureCapabilities?.automation).toMatchObject({
+        support: "read-write",
+        operations: ["side-questions"],
+      });
+      const withoutSideQuestionMethods = stampPrimeAgentBackendSnapshot(initial, {
+        runtime: "daemon",
+        inputQueue: true,
+        inputQueueModes: true,
+        agentCancel: true,
+        agentMessage: true,
+        agentLiveActivity: true,
+        compaction: true,
+        refinement: true,
+        autoCompaction: true,
+        goals: true,
+        sideQuestions: false,
+      });
+      expect(withoutSideQuestionMethods.featureCapabilities?.automation).toMatchObject({
+        support: "unavailable",
+        operations: [],
       });
       expect(snapshot.featureCapabilities?.agents?.operations).toContain("message");
       expect(snapshot.featureCapabilities?.reasoning?.support).toBe("read-only");
@@ -437,6 +489,70 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
       Effect.provide(
         mockPrimeAgentSpawner({
           rpcOutput: "Provider          Model\nanthropic       claude-sonnet\n",
+          calls,
+          stdin,
+        }),
+      ),
+    );
+  });
+
+  it.effect("skips RPC model discovery after a daemon catalog is published", () => {
+    const calls: Array<{
+      readonly command: string;
+      readonly args: ReadonlyArray<string>;
+      readonly cwd?: string;
+    }> = [];
+    const stdin: string[] = [];
+
+    return Effect.gen(function* () {
+      const snapshot = yield* checkPrimeAgentProviderStatus(
+        decodeSettings({ binaryPath: "/mock/prime-agent", customModels: ["custom-model"] }),
+        process.env,
+        { discoverModels: false },
+      );
+
+      expect(calls).toEqual([{ command: "/mock/prime-agent", args: ["--version"] }]);
+      expect(stdin).toEqual([]);
+      expect(snapshot.status).toBe("ready");
+      expect(snapshot.message).toBeUndefined();
+      expect(snapshot.models.map((model) => model.slug)).toEqual(["default", "custom-model"]);
+    }).pipe(
+      Effect.provide(
+        mockPrimeAgentSpawner({
+          rpcOutput: "not a catalog",
+          calls,
+          stdin,
+        }),
+      ),
+    );
+  });
+
+  it.effect("clears only stale RPC discovery warnings when a daemon catalog publishes", () => {
+    const calls: Array<{
+      readonly command: string;
+      readonly args: ReadonlyArray<string>;
+      readonly cwd?: string;
+    }> = [];
+    const stdin: string[] = [];
+
+    return Effect.gen(function* () {
+      const fallbackDraft = yield* checkPrimeAgentProviderStatus(
+        decodeSettings({ binaryPath: "/mock/prime-agent" }),
+      );
+      const fallback = {
+        ...fallbackDraft,
+        instanceId: ProviderInstanceId.make("prime-agent"),
+        driver: ProviderDriverKind.make("primeAgent"),
+      };
+      expect(fallback.message).toContain("model discovery failed");
+      expect(reconcilePrimeAgentDaemonCatalogSnapshot(fallback).message).toBeUndefined();
+
+      const unrelated = { ...fallback, message: "Provider update available." };
+      expect(reconcilePrimeAgentDaemonCatalogSnapshot(unrelated)).toEqual(unrelated);
+    }).pipe(
+      Effect.provide(
+        mockPrimeAgentSpawner({
+          rpcOutput: "not a catalog",
           calls,
           stdin,
         }),
