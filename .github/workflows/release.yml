@@ -817,7 +817,9 @@ jobs:
     # publish must not withhold it. A failed one still does.
     if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.publish_cli.result == 'success' || needs.publish_cli.result == 'skipped') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Uploading the desktop artifacts regularly outruns 10 minutes, and it does
+    # so after a 90-minute build (pingdotgg/t3code#6034).
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
