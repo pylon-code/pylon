@@ -13,7 +13,11 @@
  */
 import type {
   ProviderAbortSessionCompactionInput,
+  ProviderAskSessionSideQuestionInput,
+  ProviderAskSessionSideQuestionResult,
   ProviderCancelSessionAgentInput,
+  ProviderCancelSessionSideQuestionInput,
+  ProviderCancelSessionSideQuestionResult,
   ProviderCancelSessionAgentResult,
   ProviderClearSessionInputQueueInput,
   ProviderCompactSessionInput,
@@ -109,6 +113,14 @@ export interface ProviderServiceShape {
   readonly reloadSessionResources: (
     input: ProviderReloadSessionResourcesInput,
   ) => Effect.Effect<SessionResourcesUpdatedPayload, ProviderServiceError>;
+
+  readonly askSessionSideQuestion: (
+    input: ProviderAskSessionSideQuestionInput,
+  ) => Effect.Effect<ProviderAskSessionSideQuestionResult, ProviderServiceError>;
+
+  readonly cancelSessionSideQuestion: (
+    input: ProviderCancelSessionSideQuestionInput,
+  ) => Effect.Effect<ProviderCancelSessionSideQuestionResult, ProviderServiceError>;
 
   readonly cancelSessionAgent: (
     input: ProviderCancelSessionAgentInput,

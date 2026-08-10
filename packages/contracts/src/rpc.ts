@@ -67,9 +67,15 @@ import {
   OrchestrationGetWorkflowScriptError,
 } from "./orchestration.ts";
 import {
+  ProviderAskSessionSideQuestionError,
+  ProviderAskSessionSideQuestionInput,
+  ProviderAskSessionSideQuestionResult,
   ProviderCancelSessionAgentError,
   ProviderCancelSessionAgentInput,
   ProviderCancelSessionAgentResult,
+  ProviderCancelSessionSideQuestionError,
+  ProviderCancelSessionSideQuestionInput,
+  ProviderCancelSessionSideQuestionResult,
   ProviderMessageSessionAgentError,
   ProviderMessageSessionAgentInput,
   ProviderMessageSessionAgentResult,
@@ -290,6 +296,8 @@ export const WS_METHODS = {
 
   // Provider session methods
   providerReloadSessionResources: "provider.reloadSessionResources",
+  providerAskSessionSideQuestion: "provider.askSessionSideQuestion",
+  providerCancelSessionSideQuestion: "provider.cancelSessionSideQuestion",
   providerCancelSessionAgent: "provider.cancelSessionAgent",
   providerMessageSessionAgent: "provider.messageSessionAgent",
   providerWatchSessionAgentActivity: "provider.watchSessionAgentActivity",
@@ -414,6 +422,24 @@ export const WsProviderReloadSessionResourcesRpc = Rpc.make(
     payload: ProviderReloadSessionResourcesInput,
     success: SessionResourcesUpdatedPayload,
     error: Schema.Union([ProviderSessionResourcesReloadError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsProviderAskSessionSideQuestionRpc = Rpc.make(
+  WS_METHODS.providerAskSessionSideQuestion,
+  {
+    payload: ProviderAskSessionSideQuestionInput,
+    success: ProviderAskSessionSideQuestionResult,
+    error: Schema.Union([ProviderAskSessionSideQuestionError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsProviderCancelSessionSideQuestionRpc = Rpc.make(
+  WS_METHODS.providerCancelSessionSideQuestion,
+  {
+    payload: ProviderCancelSessionSideQuestionInput,
+    success: ProviderCancelSessionSideQuestionResult,
+    error: Schema.Union([ProviderCancelSessionSideQuestionError, EnvironmentAuthorizationError]),
   },
 );
 
@@ -1166,6 +1192,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
   WsProviderReloadSessionResourcesRpc,
+  WsProviderAskSessionSideQuestionRpc,
+  WsProviderCancelSessionSideQuestionRpc,
   WsProviderCancelSessionAgentRpc,
   WsProviderMessageSessionAgentRpc,
   WsProviderWatchSessionAgentActivityRpc,

@@ -634,7 +634,6 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
     case "BashStarted":
     case "BashOutput":
     case "BashCompleted":
-    case "SideQuestionUpdated":
     case "SessionReplaced":
     case "SessionResynced":
     case "SessionStatus":

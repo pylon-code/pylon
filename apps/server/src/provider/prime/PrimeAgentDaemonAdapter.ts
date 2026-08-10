@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   EventId,
+  ProviderAskSessionSideQuestionInput,
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
   PROVIDER_SESSION_AGENT_ACTIVITY_LIFETIME_MAX_CHARS,
@@ -8,6 +9,9 @@ import {
   PROVIDER_SESSION_AGENT_ACTIVITY_MAX_CONCURRENT_WATCHERS,
   PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
   type PrimeAgentSettings,
+  type ProviderAskSessionSideQuestionResult,
+  type ProviderCancelSessionSideQuestionResult,
+  type ProviderSessionSideQuestionRequestId,
   type ProviderRefineSessionHarnessResult,
   type ProviderRuntimeEvent,
   type ProviderSession,
@@ -83,6 +87,7 @@ import {
 } from "./PrimeAgentPermissionExtension.ts";
 import {
   makePrimeAgentDaemonSessionRuntime,
+  type PrimeAgentDaemonCatalogModel,
   type PrimeAgentDaemonChild,
   type PrimeAgentDaemonSessionRuntime,
   type PrimeAgentDaemonSessionRuntimeError,
@@ -99,6 +104,9 @@ import {
 
 const PROVIDER = ProviderDriverKind.make("primeAgent");
 const SESSION_STATS_TIMEOUT_MS = 1_000;
+const MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+export const PRIME_AGENT_SIDE_QUESTION_TIMEOUT_MS = 2 * 60_000;
+const PRIME_AGENT_SIDE_QUESTION_MAX_ACTIVE = 4;
 const unavailableSessionGoal: SessionGoalUpdatedPayload = {
   available: false,
   active: false,
@@ -121,6 +129,9 @@ export interface PrimeAgentDaemonAdapterLiveOptions {
     PrimeAgentDaemonSessionRuntimeError,
     Scope.Scope
   >;
+  readonly onModelsDiscovered?: (
+    models: ReadonlyArray<PrimeAgentDaemonCatalogModel>,
+  ) => Effect.Effect<void>;
 }
 
 interface PrimeAgentDaemonActiveTurn {
@@ -153,6 +164,9 @@ type PrimeAgentDaemonExtensionProjection =
   | { readonly _tag: "Presentation"; readonly presentation: SessionPresentation };
 
 const decodeSessionInteractionRequest = Schema.decodeUnknownOption(SessionInteractionRequest);
+const decodeAskSessionSideQuestionInput = Schema.decodeUnknownOption(
+  ProviderAskSessionSideQuestionInput,
+);
 const decodeSessionInteractionResponse = Schema.decodeUnknownOption(SessionInteractionResponse);
 const decodeSessionPresentation = Schema.decodeUnknownOption(SessionPresentation);
 
@@ -314,6 +328,14 @@ interface PrimeAgentDaemonSessionContext {
   exitEmitted: boolean;
 }
 
+interface PrimeAgentDaemonActiveSideQuestion {
+  readonly requestId: ProviderSessionSideQuestionRequestId;
+  readonly nativeId: string;
+  readonly context: PrimeAgentDaemonSessionContext;
+  readonly sessionEnded: Deferred.Deferred<void>;
+  cancelRequested: boolean;
+}
+
 type PrimeAgentDaemonChildDurableProjection = {
   readonly status: PrimeAgentDaemonChild["status"];
   readonly label: string;
@@ -450,6 +472,10 @@ export function makePrimeAgentDaemonAdapter(
     void options?.environment;
 
     const sessions = new Map<ThreadId, PrimeAgentDaemonSessionContext>();
+    const activeSideQuestions = new Map<ThreadId, PrimeAgentDaemonActiveSideQuestion>();
+    let nextModelDiscoveryGeneration = 0;
+    let publishedModelDiscoveryGeneration = 0;
+    const modelPublicationSemaphore = yield* Semaphore.make(1);
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
@@ -515,6 +541,51 @@ export function makePrimeAgentDaemonAdapter(
         ),
       );
 
+    const refreshDiscoveredModels = (context: PrimeAgentDaemonSessionContext) => {
+      const publish = options?.onModelsDiscovered;
+      if (publish === undefined) return Effect.void;
+
+      const generation = ++nextModelDiscoveryGeneration;
+      return context.runtime.discoverAvailableModels.pipe(
+        Effect.timeoutOption(MODEL_DISCOVERY_TIMEOUT_MS),
+        Effect.flatMap(
+          Option.match({
+            onNone: () =>
+              Effect.logWarning(
+                "Prime Agent daemon model discovery timed out; keeping the last catalog.",
+              ),
+            onSome: (models) =>
+              modelPublicationSemaphore.withPermits(1)(
+                withThreadLock(
+                  context.threadId,
+                  Effect.sync(() => {
+                    if (
+                      sessions.get(context.threadId) !== context ||
+                      context.stopped ||
+                      context.stopRequested ||
+                      generation < publishedModelDiscoveryGeneration
+                    ) {
+                      return false;
+                    }
+                    publishedModelDiscoveryGeneration = generation;
+                    return models.length > 0;
+                  }),
+                ).pipe(
+                  Effect.flatMap((shouldPublish) =>
+                    shouldPublish ? publish(models) : Effect.void,
+                  ),
+                ),
+              ),
+          }),
+        ),
+        Effect.catch(() =>
+          Effect.logWarning("Prime Agent daemon model discovery failed; keeping the last catalog."),
+        ),
+        Effect.forkIn(context.scope),
+        Effect.asVoid,
+      );
+    };
+
     const logNativeKind = (threadId: ThreadId, event: PrimeDaemonEvent) =>
       Effect.gen(function* () {
         if (!nativeEventLogger) return;
@@ -549,6 +620,31 @@ export function makePrimeAgentDaemonAdapter(
         ? Effect.fail(new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId }))
         : Effect.succeed(context);
     };
+
+    /** Must be called with the thread lock held. */
+    const requestActiveSideQuestionAbortLocked = (context: PrimeAgentDaemonSessionContext) =>
+      Effect.gen(function* () {
+        const active = activeSideQuestions.get(context.threadId);
+        if (active === undefined || active.context !== context) return false;
+        if (!active.cancelRequested) {
+          active.cancelRequested = true;
+          yield* context.runtime.abortSideQuestion(active.nativeId).pipe(Effect.ignore);
+        }
+        return true;
+      });
+
+    /** Must be called with the thread lock held. */
+    const endActiveSideQuestionLocked = (context: PrimeAgentDaemonSessionContext) =>
+      Effect.gen(function* () {
+        const active = activeSideQuestions.get(context.threadId);
+        if (active === undefined || active.context !== context) return false;
+        if (!active.cancelRequested) {
+          active.cancelRequested = true;
+          yield* context.runtime.abortSideQuestion(active.nativeId).pipe(Effect.ignore);
+        }
+        yield* Deferred.succeed(active.sessionEnded, undefined);
+        return true;
+      });
 
     const publishSessionResources = (
       threadId: ThreadId,
@@ -1791,6 +1887,7 @@ export function makePrimeAgentDaemonAdapter(
       Effect.gen(function* () {
         if (sessions.get(context.threadId) !== context || context.stopped) return;
         context.stopRequested = true;
+        yield* endActiveSideQuestionLocked(context);
         for (const watchedAgentId of new Set([
           ...context.activityWatchStops.keys(),
           ...context.sharedActivityStreams.keys(),
@@ -2312,6 +2409,7 @@ export function makePrimeAgentDaemonAdapter(
 
           context.lifecycleStarted = true;
           yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+          yield* refreshDiscoveredModels(context);
           return session;
         }).pipe(Effect.scoped),
       );
@@ -2847,6 +2945,137 @@ export function makePrimeAgentDaemonAdapter(
         context.agentDepth = projected;
         if (changed) yield* publishSessionAgentDepth(context.threadId, projected);
       });
+
+    const askSessionSideQuestion: NonNullable<PrimeAgentAdapterShape["askSessionSideQuestion"]> = (
+      threadId,
+      requestId,
+      question,
+    ) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const decoded = decodeAskSessionSideQuestionInput({ threadId, requestId, question });
+          if (Option.isNone(decoded)) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "askSessionSideQuestion",
+              issue: "The side-question request is invalid.",
+            });
+          }
+          const safeQuestion = decoded.value.question;
+          const sessionEnded = yield* Deferred.make<void>();
+          const nativeId = yield* randomUUIDv4;
+          const reserved = yield* withThreadMutationLock(
+            threadId,
+            Effect.gen(function* () {
+              const context = yield* requireSession(threadId);
+              if (
+                context.session.runtimeMode !== "approval-required" ||
+                context.permissionToken === undefined ||
+                context.restored ||
+                !context.runtime.sideQuestionsAvailable
+              ) {
+                return yield* new ProviderAdapterUnsupportedOperationError({
+                  provider: PROVIDER,
+                  operation: "askSessionSideQuestion",
+                });
+              }
+              if (
+                activeSideQuestions.has(threadId) ||
+                activeSideQuestions.size >= PRIME_AGENT_SIDE_QUESTION_MAX_ACTIVE
+              ) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "askSessionSideQuestion",
+                  reason: "busy",
+                  issue: "The Prime Agent side-question capacity is currently busy.",
+                });
+              }
+              const active: PrimeAgentDaemonActiveSideQuestion = {
+                requestId,
+                nativeId,
+                context,
+                sessionEnded,
+                cancelRequested: false,
+              };
+              activeSideQuestions.set(threadId, active);
+              return active;
+            }),
+          );
+
+          const nativeResult = reserved.context.runtime
+            .askSideQuestion(nativeId, safeQuestion)
+            .pipe(
+              Effect.map(
+                (result): ProviderAskSessionSideQuestionResult =>
+                  result.disposition === "answered"
+                    ? { requestId, disposition: "answered", answer: result.answer }
+                    : { requestId, disposition: result.disposition },
+              ),
+              Effect.orElseSucceed(
+                (): ProviderAskSessionSideQuestionResult => ({
+                  requestId,
+                  disposition: "outcome-unknown",
+                }),
+              ),
+            );
+          const sessionEndedResult = Deferred.await(sessionEnded).pipe(
+            Effect.as<ProviderAskSessionSideQuestionResult>({
+              requestId,
+              disposition: "outcome-unknown",
+            }),
+          );
+          const boundedResult = Effect.raceFirst(nativeResult, sessionEndedResult).pipe(
+            Effect.timeoutOption(PRIME_AGENT_SIDE_QUESTION_TIMEOUT_MS),
+            Effect.map(
+              Option.match({
+                onNone: (): ProviderAskSessionSideQuestionResult => ({
+                  requestId,
+                  disposition: "timed-out",
+                }),
+                onSome: (result) => result,
+              }),
+            ),
+          );
+
+          return yield* restore(boundedResult).pipe(
+            Effect.ensuring(
+              withThreadLock(
+                threadId,
+                Effect.sync(() => {
+                  if (activeSideQuestions.get(threadId) === reserved) {
+                    activeSideQuestions.delete(threadId);
+                  }
+                }),
+              ),
+            ),
+          );
+        }),
+      );
+
+    const cancelSessionSideQuestion: NonNullable<
+      PrimeAgentAdapterShape["cancelSessionSideQuestion"]
+    > = (threadId, requestId) =>
+      Effect.uninterruptible(
+        withThreadMutationLock(
+          threadId,
+          Effect.gen(function* (): Effect.fn.Return<
+            ProviderCancelSessionSideQuestionResult,
+            ProviderAdapterError
+          > {
+            const context = yield* requireSession(threadId);
+            const active = activeSideQuestions.get(threadId);
+            if (
+              active === undefined ||
+              active.context !== context ||
+              active.requestId !== requestId
+            ) {
+              return { requestId, disposition: "already-settled" };
+            }
+            yield* requestActiveSideQuestionAbortLocked(context);
+            return { requestId, disposition: "cancel-requested" };
+          }),
+        ),
+      );
 
     const cancelSessionAgent: NonNullable<PrimeAgentAdapterShape["cancelSessionAgent"]> = (
       threadId,
@@ -4184,6 +4413,8 @@ export function makePrimeAgentDaemonAdapter(
       respondToUserInput,
       respondToInteraction,
       reloadSessionResources,
+      askSessionSideQuestion,
+      cancelSessionSideQuestion,
       cancelSessionAgent,
       messageSessionAgent,
       watchSessionAgentActivity,

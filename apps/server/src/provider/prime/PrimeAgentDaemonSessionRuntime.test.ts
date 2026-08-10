@@ -4,6 +4,7 @@ import {
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
 } from "@t3tools/contracts";
 
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
@@ -96,6 +97,12 @@ interface Captures {
   watcherCloseCount: number;
   watcherUnsubscribeCount: number;
   readonly watchedActiveSessionIds: string[];
+  readonly sideQuestionStarts: Array<{
+    readonly nativeId: string;
+    readonly question: string;
+    readonly argumentCount: number;
+  }>;
+  readonly sideQuestionAborts: string[];
   watcherMessageReads: number;
 }
 
@@ -108,6 +115,15 @@ function fixture(options?: {
   readonly attachFailure?: boolean;
   readonly resourceSnapshot?: unknown;
   readonly commands?: unknown;
+  readonly modelCatalog?: unknown;
+  readonly availableModels?: unknown;
+  readonly getModelCatalogImpl?: () => Promise<unknown>;
+  readonly getAvailableModelsImpl?: () => Promise<unknown>;
+  readonly omitModelCatalog?: boolean;
+  readonly omitAvailableModels?: boolean;
+  readonly omitSideQuestions?: boolean;
+  readonly startSideQuestionImpl?: (nativeId: string, question: string) => Promise<unknown>;
+  readonly abortSideQuestionImpl?: (nativeId: string) => Promise<unknown>;
   readonly reloadImpl?: () => Promise<unknown>;
   readonly rlmDepth?: number;
   readonly rlmStatus?: unknown;
@@ -145,6 +161,8 @@ function fixture(options?: {
     watcherCloseCount: 0,
     watcherUnsubscribeCount: 0,
     watchedActiveSessionIds: [],
+    sideQuestionStarts: [],
+    sideQuestionAborts: [],
     watcherMessageReads: 0,
   };
   let listener: ((event: unknown) => void | Promise<void>) | undefined;
@@ -203,6 +221,16 @@ function fixture(options?: {
       if (options?.omitRefine === true) {
         Object.defineProperty(this, "refine", { value: undefined });
       }
+      if (options?.omitModelCatalog === true) {
+        Object.defineProperty(this, "getModelCatalog", { value: undefined });
+      }
+      if (options?.omitAvailableModels === true) {
+        Object.defineProperty(this, "getAvailableModels", { value: undefined });
+      }
+      if (options?.omitSideQuestions === true) {
+        Object.defineProperty(this, "startSideQuestion", { value: undefined });
+        Object.defineProperty(this, "abortSideQuestion", { value: undefined });
+      }
     }
     static attach(
       _client: PrimeAgentDaemonClient,
@@ -256,6 +284,18 @@ function fixture(options?: {
     followUp(message: string, images?: ReadonlyArray<PrimeAgentDaemonImage>): Promise<unknown> {
       captures.connectionCalls.push({ method: "followUp", args: [message, images] });
       return Promise.resolve(undefined);
+    }
+    startSideQuestion(nativeId: string, question: string): Promise<unknown> {
+      captures.sideQuestionStarts.push({
+        nativeId,
+        question,
+        argumentCount: arguments.length,
+      });
+      return options?.startSideQuestionImpl?.(nativeId, question) ?? Promise.resolve(undefined);
+    }
+    abortSideQuestion(nativeId: string): Promise<unknown> {
+      captures.sideQuestionAborts.push(nativeId);
+      return options?.abortSideQuestionImpl?.(nativeId) ?? Promise.resolve(false);
     }
     abort(): Promise<unknown> {
       captures.connectionCalls.push({ method: "abort", args: [] });
@@ -339,6 +379,17 @@ function fixture(options?: {
     ): Promise<unknown> {
       captures.connectionCalls.push({ method: "extension", args: [requestId, response] });
       return Promise.resolve(undefined);
+    }
+    getModelCatalog(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getModelCatalog", args: [] });
+      return (
+        options?.getModelCatalogImpl?.() ??
+        Promise.resolve(options?.modelCatalog ?? { models: [], configuredProviders: [] })
+      );
+    }
+    getAvailableModels(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getAvailableModels", args: [] });
+      return options?.getAvailableModelsImpl?.() ?? Promise.resolve(options?.availableModels ?? []);
     }
     getCommands(): Promise<unknown> {
       captures.connectionCalls.push({ method: "getCommands", args: [] });
@@ -1441,6 +1492,249 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect("discovers only configured catalog models and strips native fields", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({
+          modelCatalog: {
+            configuredProviders: [" openai ", "prime"],
+            models: [
+              {
+                provider: " openai ",
+                id: " gpt-5 ",
+                name: " GPT 5 ",
+                api: " responses ",
+                reasoning: true,
+                thinkingLevelMap: {
+                  off: null,
+                  minimal: " minimal ",
+                  low: "low",
+                  medium: "medium",
+                  high: "high",
+                  xhigh: "xhigh",
+                  max: " max ",
+                },
+                baseUrl: "https://native-secret.invalid",
+                headers: { authorization: "secret" },
+              },
+              {
+                provider: "prime",
+                id: "model-1",
+                name: "   ",
+                api: "anthropic-messages",
+                reasoning: false,
+              },
+              {
+                provider: "unconfigured",
+                id: "hidden",
+                name: "Hidden",
+                api: "unconfigured-api",
+                reasoning: false,
+              },
+            ],
+          },
+        });
+        const runtime = yield* make();
+
+        const models = yield* runtime.discoverAvailableModels;
+
+        expect(models).toEqual([
+          {
+            provider: "openai",
+            id: "gpt-5",
+            name: "GPT 5",
+            api: "responses",
+            reasoning: true,
+            thinkingLevelMap: {
+              off: null,
+              minimal: "minimal",
+              low: "low",
+              medium: "medium",
+              high: "high",
+              xhigh: "xhigh",
+              max: "max",
+            },
+          },
+          {
+            provider: "prime",
+            id: "model-1",
+            name: "",
+            api: "anthropic-messages",
+            reasoning: false,
+          },
+        ]);
+        expect(models[0]).not.toHaveProperty("baseUrl");
+        expect(models[0]).not.toHaveProperty("headers");
+        expect(
+          captures.connectionCalls.filter((call) =>
+            ["getModelCatalog", "getAvailableModels"].includes(call.method),
+          ),
+        ).toEqual([{ method: "getModelCatalog", args: [] }]);
+      }),
+    ),
+  );
+
+  it.effect("bounds the configured result after filtering a larger complete catalog", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const unconfigured = Array.from({ length: 600 }, (_, index) => ({
+          provider: "unconfigured",
+          id: `model-${index}`,
+          name: `Model ${index}`,
+          api: "openai-completions",
+          reasoning: false,
+        }));
+        const { make } = fixture({
+          modelCatalog: {
+            configuredProviders: ["configured"],
+            models: [
+              ...unconfigured,
+              {
+                provider: "configured",
+                id: "usable",
+                name: "Usable",
+                api: "anthropic-messages",
+                reasoning: true,
+              },
+            ],
+          },
+        });
+        const runtime = yield* make();
+
+        expect(yield* runtime.discoverAvailableModels).toEqual([
+          {
+            provider: "configured",
+            id: "usable",
+            name: "Usable",
+            api: "anthropic-messages",
+            reasoning: true,
+          },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("falls back to the legacy available-models method when catalog discovery rejects", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({
+          getModelCatalogImpl: () => Promise.reject(new Error("private daemon failure")),
+          availableModels: [
+            {
+              provider: " legacy ",
+              id: " model ",
+              name: " Legacy Model ",
+              api: " legacy-api ",
+              reasoning: true,
+            },
+          ],
+        });
+        const runtime = yield* make();
+
+        expect(yield* runtime.discoverAvailableModels).toEqual([
+          {
+            provider: "legacy",
+            id: "model",
+            name: "Legacy Model",
+            api: "legacy-api",
+            reasoning: true,
+          },
+        ]);
+        expect(
+          captures.connectionCalls.filter((call) =>
+            ["getModelCatalog", "getAvailableModels"].includes(call.method),
+          ),
+        ).toEqual([
+          { method: "getModelCatalog", args: [] },
+          { method: "getAvailableModels", args: [] },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("rejects malformed or unbounded model catalogs without exposing native values", () =>
+    Effect.gen(function* () {
+      const model = (overrides: Readonly<Record<string, unknown>> = {}) => ({
+        provider: "provider",
+        id: "model",
+        name: "Model",
+        api: "test-api",
+        reasoning: false,
+        ...overrides,
+      });
+      const invalidCatalogs: ReadonlyArray<unknown> = [
+        { models: [model({ provider: " " })], configuredProviders: [] },
+        { models: [model({ id: " " })], configuredProviders: [] },
+        {
+          models: [model(), model({ provider: " provider ", id: " model " })],
+          configuredProviders: [],
+        },
+        { models: [model()], configuredProviders: ["provider", " provider "] },
+        { models: [model()], configuredProviders: ["missing-provider"] },
+        { models: [model({ provider: `provider\u0000secret` })], configuredProviders: [] },
+        { models: [model({ provider: "p".repeat(129) })], configuredProviders: [] },
+        { models: [model({ id: "i".repeat(513) })], configuredProviders: [] },
+        { models: [model({ name: "n".repeat(513) })], configuredProviders: [] },
+        { models: [model({ api: "a".repeat(129) })], configuredProviders: [] },
+        { models: [model({ api: " " })], configuredProviders: [] },
+        { models: [model({ thinkingLevelMap: { high: " " } })], configuredProviders: [] },
+        {
+          models: [{ provider: "provider", id: "model", name: "Model", reasoning: false }],
+          configuredProviders: [],
+        },
+        {
+          models: [{ provider: "provider", id: "model", name: "Model", api: "test-api" }],
+          configuredProviders: [],
+        },
+        {
+          models: [model({ thinkingLevelMap: { high: "h".repeat(129) } })],
+          configuredProviders: [],
+        },
+        { models: [model({ thinkingLevelMap: { ultra: "secret" } })], configuredProviders: [] },
+        {
+          models: Array.from({ length: 2_049 }, (_, index) => model({ id: `model-${index}` })),
+          configuredProviders: [],
+        },
+        {
+          models: Array.from({ length: 513 }, (_, index) => model({ id: `model-${index}` })),
+          configuredProviders: ["provider"],
+        },
+        {
+          models: [model()],
+          configuredProviders: Array.from({ length: 129 }, (_, index) => `provider-${index}`),
+        },
+      ];
+
+      for (const modelCatalog of invalidCatalogs) {
+        const error = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { make } = fixture({ modelCatalog });
+            const runtime = yield* make();
+            return yield* Effect.flip(runtime.discoverAvailableModels);
+          }),
+        );
+        expect(error.operation).toBe("model-catalog");
+        expect(error.reason).toBe("invalid-response");
+        expect(error.detail).toBe("Prime Agent returned an invalid model catalog.");
+        expect(error.detail).not.toContain("secret");
+      }
+    }),
+  );
+
+  it.effect("reports model discovery as incompatible only when neither method exists", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { make } = fixture({ omitModelCatalog: true, omitAvailableModels: true });
+        const runtime = yield* make();
+
+        const error = yield* Effect.flip(runtime.discoverAvailableModels);
+
+        expect(error.operation).toBe("model-catalog");
+        expect(error.reason).toBe("incompatible-api");
+      }),
+    ),
+  );
+
   it.effect(
     "projects queue counts without retaining prompt previews and clears without aborting",
     () =>
@@ -2217,6 +2511,334 @@ describe("Prime Agent live activity privacy boundary", () => {
           .watchAgentActivity("gone-child")
           .pipe(Stream.runDrain, Effect.flip);
         expect(failure.reason).toBe("request-failed");
+      }),
+    ),
+  );
+
+  it.effect("keeps side-question methods optional and unavailable as a pair", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { make } = fixture({ omitSideQuestions: true });
+        const runtime = yield* make();
+        expect(runtime.sideQuestionsAvailable).toBe(false);
+        const error = yield* Effect.flip(
+          runtime.askSideQuestion("11111111-1111-4111-8111-111111111111", "question"),
+        );
+        expect(error).toMatchObject({ operation: "side-question", reason: "incompatible-api" });
+      }),
+    ),
+  );
+
+  it.effect(
+    "evicts stale pre-registration aborts so the latest cancellation always prevents native start",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const side = fixture();
+          const runtime = yield* side.make();
+          const staleIds = [
+            "20000000-0000-4000-8000-000000000001",
+            "20000000-0000-4000-8000-000000000002",
+            "20000000-0000-4000-8000-000000000003",
+            "20000000-0000-4000-8000-000000000004",
+          ];
+          for (const staleId of staleIds) yield* runtime.abortSideQuestion(staleId);
+
+          const latestId = "20000000-0000-4000-8000-000000000005";
+          yield* runtime.abortSideQuestion(latestId);
+          expect(yield* runtime.askSideQuestion(latestId, "question")).toEqual({
+            disposition: "cancelled",
+          });
+          expect(side.captures.sideQuestionStarts).toEqual([]);
+          expect(side.captures.sideQuestionAborts).toEqual([]);
+        }),
+      ),
+  );
+
+  it.effect(
+    "subscribes before start, filters exact ids, strips prompt/error fields, and handles terminal-before-ack",
+    () => {
+      let emitFromStart: (event: unknown) => Promise<void>;
+      const nativeId = "11111111-1111-4111-8111-111111111111";
+      const side = fixture({
+        startSideQuestionImpl: async () => {
+          await emitFromStart({
+            type: "side_question_event",
+            event: {
+              id: "22222222-2222-4222-8222-222222222222",
+              question: "private unrelated prompt",
+              answer: "unrelated answer",
+              status: "complete",
+              errorMessage: "private unrelated error",
+            },
+          });
+          await emitFromStart({
+            type: "side_question_event",
+            event: {
+              id: nativeId,
+              question: "private echoed prompt",
+              answer: "partial",
+              status: "running",
+              errorMessage: "private running error",
+            },
+          });
+          await emitFromStart({ type: "session_status", recap: "safe recap" });
+          await emitFromStart({
+            type: "side_question_event",
+            event: {
+              id: nativeId,
+              question: "private final prompt",
+              answer: "safe answer",
+              status: "complete",
+              errorMessage: "private terminal error",
+            },
+          });
+          await new Promise<unknown>(() => undefined);
+        },
+      });
+      emitFromStart = (event) => side.emit(event);
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* side.make();
+          const eventsFiber = yield* collectEvents(runtime, 2).pipe(Effect.forkChild);
+          expect(yield* runtime.askSideQuestion(nativeId, "public question")).toEqual({
+            disposition: "answered",
+            answer: "safe answer",
+          });
+          expect(side.captures.sideQuestionStarts).toEqual([
+            { nativeId, question: "public question", argumentCount: 2 },
+          ]);
+          const genericEvents = yield* Fiber.join(eventsFiber);
+          expect(genericEvents.map((event) => event._tag)).toEqual([
+            "SessionResynced",
+            "SessionStatus",
+          ]);
+          expect(genericEvents[1]).toMatchObject({ _tag: "SessionStatus", recap: "safe recap" });
+          expect(side.captures.sideQuestionAborts).toEqual([]);
+
+          // Late terminal traffic remains private and cannot resettle the completed request.
+          yield* Effect.promise(() =>
+            side.emit({
+              type: "side_question_event",
+              event: {
+                id: nativeId,
+                question: "late private prompt",
+                answer: "late answer",
+                status: "error",
+                errorMessage: "late private error",
+              },
+            }),
+          );
+          expect(side.captures.sideQuestionAborts).toEqual([]);
+        }),
+      );
+    },
+  );
+
+  it.effect("fails side questions generically on native errors and transport invalidation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativeFailure = fixture();
+        const failedRuntime = yield* nativeFailure.make();
+        const failedId = "66666666-6666-4666-8666-666666666666";
+        const failedFiber = yield* failedRuntime
+          .askSideQuestion(failedId, "question")
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* Effect.promise(() =>
+          nativeFailure.emit({
+            type: "side_question_event",
+            event: {
+              id: failedId,
+              question: "private prompt",
+              answer: "partial",
+              status: "error",
+              errorMessage: "private native error",
+            },
+          }),
+        );
+        const nativeError = yield* Fiber.join(failedFiber);
+        expect(nativeError.detail).toBe("The Prime Agent side question did not complete safely.");
+        expect(nativeFailure.captures.sideQuestionAborts).toEqual([]);
+
+        const malformed = fixture();
+        const malformedRuntime = yield* malformed.make();
+        const malformedId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        const malformedFiber = yield* malformedRuntime
+          .askSideQuestion(malformedId, "question")
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* Effect.promise(() =>
+          malformed.emit({
+            type: "side_question_event",
+            event: {
+              id: malformedId,
+              question: "private prompt",
+              answer: "x".repeat(16_385),
+              status: "running",
+              errorMessage: "private native error",
+            },
+          }),
+        );
+        expect(yield* Fiber.join(malformedFiber)).toMatchObject({
+          operation: "side-question",
+          reason: "request-failed",
+          detail: "The Prime Agent side question did not complete safely.",
+        });
+        expect(malformed.captures.sideQuestionAborts).toEqual([malformedId]);
+
+        for (const invalidation of [
+          { type: "connection_status", status: "reconnecting", error: "private disconnect" },
+          { type: "session_resynced", snapshot: snapshot(9) },
+          { type: "session_replaced", state: snapshot().state, messages: [] },
+          { type: "closed", error: "private close" },
+        ] as const) {
+          const side = fixture();
+          const runtime = yield* side.make();
+          const nativeId = "33333333-3333-4333-8333-333333333333";
+          const askFiber = yield* runtime
+            .askSideQuestion(nativeId, "question")
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* Effect.yieldNow;
+          yield* Effect.promise(() => side.emit(invalidation));
+          const error = yield* Fiber.join(askFiber);
+          expect(error).toMatchObject({
+            operation: "side-question",
+            reason: "request-failed",
+            detail: "The Prime Agent side question did not complete safely.",
+          });
+          expect(side.captures.sideQuestionAborts).toEqual([nativeId]);
+        }
+      }),
+    ),
+  );
+
+  it.effect("bounds every answer snapshot and aborts exactly once on interruption", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const side = fixture();
+        const runtime = yield* side.make();
+        const nativeId = "44444444-4444-4444-8444-444444444444";
+        const oversizedFiber = yield* runtime
+          .askSideQuestion(nativeId, "question")
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* Effect.promise(() =>
+          side.emit({
+            type: "side_question_event",
+            event: {
+              id: nativeId,
+              question: "private",
+              answer: "a".repeat(8_193),
+              status: "running",
+              errorMessage: "private",
+            },
+          }),
+        );
+        expect(yield* Fiber.join(oversizedFiber)).toEqual({ disposition: "response-too-large" });
+        expect(side.captures.sideQuestionAborts).toEqual([nativeId]);
+
+        const nulId = "77777777-7777-4777-8777-777777777777";
+        const nulFiber = yield* runtime.askSideQuestion(nulId, "question").pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* Effect.promise(() =>
+          side.emit({
+            type: "side_question_event",
+            event: {
+              id: nulId,
+              question: "private",
+              answer: "unsafe\0answer",
+              status: "running",
+            },
+          }),
+        );
+        expect(yield* Fiber.join(nulFiber)).toEqual({ disposition: "response-too-large" });
+        expect(side.captures.sideQuestionAborts).toEqual([nativeId, nulId]);
+
+        const cumulativeId = "88888888-8888-4888-8888-888888888888";
+        const cumulativeFiber = yield* runtime
+          .askSideQuestion(cumulativeId, "question")
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        const boundedSnapshot = "b".repeat(8_192);
+        for (let index = 0; index < 513; index += 1) {
+          yield* Effect.promise(() =>
+            side.emit({
+              type: "side_question_event",
+              event: {
+                id: cumulativeId,
+                question: "private",
+                answer: boundedSnapshot,
+                status: "running",
+              },
+            }),
+          );
+        }
+        expect(yield* Fiber.join(cumulativeFiber)).toEqual({
+          disposition: "response-too-large",
+        });
+        expect(side.captures.sideQuestionAborts).toEqual([nativeId, nulId, cumulativeId]);
+
+        const interruptedId = "55555555-5555-4555-8555-555555555555";
+        const interrupted = yield* runtime
+          .askSideQuestion(interruptedId, "question")
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* Fiber.interrupt(interrupted);
+        expect(side.captures.sideQuestionAborts).toEqual([
+          nativeId,
+          nulId,
+          cumulativeId,
+          interruptedId,
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("bounds a never-resolving best-effort abort to two seconds", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const side = fixture({
+          abortSideQuestionImpl: () => new Promise<unknown>(() => undefined),
+        });
+        const runtime = yield* side.make();
+        const nativeId = "99999999-9999-4999-8999-999999999999";
+        const askFiber = yield* runtime
+          .askSideQuestion(nativeId, "question")
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        const interrupted = yield* Deferred.make<void>();
+        const interruptFiber = yield* Fiber.interrupt(askFiber).pipe(
+          Effect.ensuring(Deferred.succeed(interrupted, undefined)),
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        expect(yield* Deferred.isDone(interrupted)).toBe(false);
+        yield* TestClock.adjust(1_999);
+        expect(yield* Deferred.isDone(interrupted)).toBe(false);
+        yield* TestClock.adjust(1);
+        yield* Fiber.join(interruptFiber);
+        expect(yield* Deferred.isDone(interrupted)).toBe(true);
+        expect(side.captures.sideQuestionAborts).toEqual([nativeId]);
+      }),
+    ),
+  );
+
+  it.effect("deduplicates explicit abort, dispose, and ask finalization", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const side = fixture();
+        const runtime = yield* side.make();
+        const nativeId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const askFiber = yield* runtime
+          .askSideQuestion(nativeId, "question")
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* runtime.abortSideQuestion(nativeId);
+        yield* runtime.dispose;
+        const error = yield* Fiber.join(askFiber);
+        expect(error).toMatchObject({ operation: "side-question", reason: "request-failed" });
+        expect(side.captures.sideQuestionAborts).toEqual([nativeId]);
       }),
     ),
   );

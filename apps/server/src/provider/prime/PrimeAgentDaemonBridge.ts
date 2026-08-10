@@ -111,6 +111,8 @@ export interface PrimeAgentDaemonAgentConnection {
   ) => Promise<unknown>;
   readonly abort: () => Promise<unknown>;
   readonly abortAndClearQueue?: () => Promise<unknown>;
+  readonly startSideQuestion?: (nativeId: string, question: string) => Promise<unknown>;
+  readonly abortSideQuestion?: (nativeId: string) => Promise<unknown>;
   readonly cancelRlmChild?: (childId: string) => Promise<unknown>;
   readonly sendAgentMessage?: (targetActiveSessionId: string, message: string) => Promise<unknown>;
   /** Public read-only attachment to another live session; never receives client input directly. */
@@ -134,6 +136,8 @@ export interface PrimeAgentDaemonAgentConnection {
   ) => Promise<unknown>;
   readonly getCommands: () => Promise<unknown>;
   readonly getResourceSnapshot: () => Promise<unknown>;
+  readonly getModelCatalog?: () => Promise<unknown>;
+  readonly getAvailableModels?: () => Promise<unknown>;
   readonly reload: () => Promise<unknown>;
   readonly getSessionStats: () => Promise<unknown>;
   readonly getRlmMaxDepthStatus?: () => Promise<unknown>;

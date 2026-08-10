@@ -18,6 +18,9 @@ import {
   buildInitialPrimeAgentProviderSnapshot,
   checkPrimeAgentProviderStatus,
   enrichPrimeAgentSnapshot,
+  primeAgentModelsFromSettings,
+  primeAgentServerModelsFromDiscoveredModels,
+  reconcilePrimeAgentDaemonCatalogSnapshot,
   stampPrimeAgentBackendSnapshot,
 } from "../Layers/PrimeAgentProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
@@ -127,18 +130,6 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
           makeManager: makePrimeAgentDaemonManager,
         },
       );
-      const adapterOptions = {
-        environment: processEnv,
-        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
-        instanceId,
-      } as const;
-      const adapter =
-        backend.runtime === "daemon"
-          ? yield* makePrimeAgentDaemonAdapter(effectiveConfig, backend.manager, adapterOptions)
-          : yield* makePrimeAgentAdapter(effectiveConfig, {
-              ...adapterOptions,
-              ...(backend.fallbackMessage ? { startupWarning: backend.fallbackMessage } : {}),
-            });
       const stampBackendSnapshot = (snapshot: ServerProviderDraft) =>
         stampPrimeAgentBackendSnapshot(
           snapshot,
@@ -184,6 +175,12 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
                 // GoalState is part of the public daemon session snapshot/event baseline
                 // accepted by the negotiated daemon protocol.
                 goals: true,
+                sideQuestions: ["startSideQuestion", "abortSideQuestion"].every(
+                  (method) =>
+                    typeof backend.manager.bridge.DaemonAgentConnection.prototype[
+                      method as "startSideQuestion" | "abortSideQuestion"
+                    ] === "function",
+                ),
               }
             : {
                 runtime: "acp",
@@ -198,6 +195,14 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         Effect.map(stampSnapshot),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       );
+      const checkProviderWithPublishedModels = checkPrimeAgentProviderStatus(
+        effectiveConfig,
+        processEnv,
+        { discoverModels: false },
+      ).pipe(
+        Effect.map(stampSnapshot),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       const snapshot = yield* makeManagedServerProvider<
         ProviderSnapshotSettings<PrimeAgentSettings>
@@ -209,6 +214,8 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         initialSnapshot: (settings) =>
           buildInitialPrimeAgentProviderSnapshot(settings.provider).pipe(Effect.map(stampSnapshot)),
         checkProvider,
+        checkProviderWithPublishedModels,
+        reconcilePublishedModels: reconcilePrimeAgentDaemonCatalogSnapshot,
         enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
           enrichPrimeAgentSnapshot({
             snapshot: currentSnapshot,
@@ -228,6 +235,28 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
             }),
         ),
       );
+
+      const adapterOptions = {
+        environment: processEnv,
+        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+        instanceId,
+      } as const;
+      const adapter =
+        backend.runtime === "daemon"
+          ? yield* makePrimeAgentDaemonAdapter(effectiveConfig, backend.manager, {
+              ...adapterOptions,
+              onModelsDiscovered: (models) =>
+                snapshot.publishModels(
+                  primeAgentModelsFromSettings(
+                    effectiveConfig.customModels,
+                    primeAgentServerModelsFromDiscoveredModels(models),
+                  ),
+                ),
+            })
+          : yield* makePrimeAgentAdapter(effectiveConfig, {
+              ...adapterOptions,
+              ...(backend.fallbackMessage ? { startupWarning: backend.fallbackMessage } : {}),
+            });
 
       return {
         instanceId,

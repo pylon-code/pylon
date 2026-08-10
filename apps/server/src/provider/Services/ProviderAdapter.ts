@@ -10,6 +10,9 @@
 import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
+  ProviderAskSessionSideQuestionResult,
+  ProviderCancelSessionSideQuestionResult,
+  ProviderSessionSideQuestionRequestId,
   ProviderCancelSessionAgentResult,
   ProviderFollowUpInput,
   ProviderMessageSessionAgentResult,
@@ -123,6 +126,19 @@ export interface ProviderAdapterShape<TError> {
   readonly reloadSessionResources?: (
     threadId: ThreadId,
   ) => Effect.Effect<SessionResourcesUpdatedPayload, TError>;
+
+  /** Ask one ephemeral question against an already-active provider session. */
+  readonly askSessionSideQuestion?: (
+    threadId: ThreadId,
+    requestId: ProviderSessionSideQuestionRequestId,
+    question: string,
+  ) => Effect.Effect<ProviderAskSessionSideQuestionResult, TError>;
+
+  /** Cancel one in-flight ephemeral side question. */
+  readonly cancelSessionSideQuestion?: (
+    threadId: ThreadId,
+    requestId: ProviderSessionSideQuestionRequestId,
+  ) => Effect.Effect<ProviderCancelSessionSideQuestionResult, TError>;
 
   /** Cancel one known active provider agent belonging to this session. */
   readonly cancelSessionAgent?: (

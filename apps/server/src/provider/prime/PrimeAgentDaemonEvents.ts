@@ -431,16 +431,6 @@ const extensionPayload = Schema.Struct({
 export const PrimeAgentDaemonConnectionEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("session_event"), event: agentSessionEvent }),
   Schema.Struct({
-    type: Schema.Literal("side_question_event"),
-    event: Schema.Struct({
-      id: Schema.String,
-      question: Schema.String,
-      answer: Schema.String,
-      status: Schema.Literals(["running", "complete", "cancelled", "error"]),
-      errorMessage: Schema.optional(Schema.String),
-    }),
-  }),
-  Schema.Struct({
     type: Schema.Literal("session_replaced"),
     state: sessionState,
     messages: Schema.Array(Schema.Unknown),
@@ -477,7 +467,6 @@ const decodeEventType = Schema.decodeUnknownOption(Schema.Struct({ type: Schema.
 
 const knownConnectionEventTypes = new Set([
   "session_event",
-  "side_question_event",
   "session_replaced",
   "session_resynced",
   "session_status",
@@ -811,14 +800,6 @@ export type PrimeDaemonEvent =
       readonly failedCount: number;
     }
   | { readonly _tag: "RefinementFailed" }
-  | {
-      readonly _tag: "SideQuestionUpdated";
-      readonly id: string;
-      readonly question: string;
-      readonly answer: string;
-      readonly status: "running" | "complete" | "cancelled" | "error";
-      readonly errorMessage?: string | undefined;
-    }
   | {
       readonly _tag: "SessionReplaced";
       readonly state: PrimeDaemonSessionState;
@@ -1314,15 +1295,6 @@ export function mapPrimeAgentDaemonConnectionEvent(
   switch (event.type) {
     case "session_event":
       return mapSessionEvent(event.event);
-    case "side_question_event":
-      return {
-        _tag: "SideQuestionUpdated",
-        id: bounded(event.event.id, MAX_PREVIEW_LENGTH),
-        question: bounded(event.event.question, MAX_PREVIEW_LENGTH),
-        answer: bounded(event.event.answer),
-        status: event.event.status,
-        errorMessage: optionalBounded(event.event.errorMessage),
-      };
     case "session_replaced":
       return {
         _tag: "SessionReplaced",
