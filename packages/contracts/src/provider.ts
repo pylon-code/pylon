@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ApprovalRequestId,
   EventId,
@@ -46,6 +46,8 @@ export const ProviderSession = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   threadId: ThreadId,
   resumeCursor: Schema.optional(Schema.Unknown),
+  /** True when the provider attached this runtime from a durable continuation. */
+  restored: Schema.optional(Schema.Boolean),
   activeTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -320,6 +322,23 @@ export type ProviderSetSessionAutoCompactionInput =
 
 export class ProviderSessionCompactionError extends Schema.TaggedErrorClass<ProviderSessionCompactionError>()(
   "ProviderSessionCompactionError",
+  {
+    reason: Schema.Literals(["session-not-ready", "unsupported", "busy", "request-failed"]),
+  },
+) {}
+
+export const ProviderRefineSessionHarnessInput = Schema.Struct({ threadId: ThreadId });
+export type ProviderRefineSessionHarnessInput = typeof ProviderRefineSessionHarnessInput.Type;
+
+export const ProviderRefineSessionHarnessResult = Schema.Struct({
+  appliedCount: NonNegativeInt,
+  failedCount: NonNegativeInt,
+  outcome: Schema.Literals(["completed", "partial", "failed"]),
+});
+export type ProviderRefineSessionHarnessResult = typeof ProviderRefineSessionHarnessResult.Type;
+
+export class ProviderRefineSessionHarnessError extends Schema.TaggedErrorClass<ProviderRefineSessionHarnessError>()(
+  "ProviderRefineSessionHarnessError",
   {
     reason: Schema.Literals(["session-not-ready", "unsupported", "busy", "request-failed"]),
   },

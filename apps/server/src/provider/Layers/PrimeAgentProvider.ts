@@ -59,6 +59,7 @@ export function stampPrimeAgentBackendSnapshot(
         readonly agentMessage: boolean;
         readonly agentLiveActivity?: boolean;
         readonly compaction: boolean;
+        readonly refinement: boolean;
         readonly autoCompaction: boolean;
         readonly goals: boolean;
       }
@@ -77,6 +78,7 @@ export function stampPrimeAgentBackendSnapshot(
       agentMessage: backend.runtime === "daemon" && backend.agentMessage,
       agentLiveActivity: backend.runtime === "daemon" && (backend.agentLiveActivity ?? false),
       compaction: backend.runtime === "daemon" && backend.compaction,
+      refinement: backend.runtime === "daemon" && backend.refinement,
       autoCompaction: backend.runtime === "daemon" && backend.autoCompaction,
       goals: backend.runtime === "daemon" && backend.goals,
     }),

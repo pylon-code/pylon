@@ -172,6 +172,9 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
                       method as "getState" | "compact" | "abortCompaction"
                     ] === "function",
                 ),
+                refinement:
+                  typeof backend.manager.bridge.DaemonAgentConnection.prototype.refine ===
+                  "function",
                 autoCompaction: ["getState", "setAutoCompactionEnabled"].every(
                   (method) =>
                     typeof backend.manager.bridge.DaemonAgentConnection.prototype[

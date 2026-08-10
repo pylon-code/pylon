@@ -122,6 +122,7 @@ export interface PrimeAgentDaemonAgentConnection {
   readonly setSteeringMode?: (mode: PrimeAgentDaemonQueueMode) => Promise<unknown>;
   readonly setFollowUpMode?: (mode: PrimeAgentDaemonQueueMode) => Promise<unknown>;
   readonly compact?: () => Promise<unknown>;
+  readonly refine?: (options: { readonly global: false }) => Promise<unknown>;
   readonly abortCompaction?: () => Promise<unknown>;
   readonly setAutoCompactionEnabled?: (enabled: boolean) => Promise<unknown>;
   readonly setModel?: (provider: string, modelId: string) => Promise<unknown>;

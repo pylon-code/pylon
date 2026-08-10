@@ -1,4 +1,5 @@
 import type { SessionCompactionUpdatedPayload } from "@t3tools/contracts";
+import { useId } from "react";
 import { cn } from "~/lib/utils";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
@@ -26,6 +27,47 @@ export type ContextCompactionControlProps = {
   readonly onAbort: () => void;
   readonly onSetAuto: (enabled: boolean) => void;
 };
+
+export type HarnessRefinementControlProps = {
+  readonly pending: boolean;
+  readonly outcomeUnknown: boolean;
+  readonly canRefine: boolean;
+  readonly onRefine: () => void;
+};
+
+export function HarnessRefinementControls(props: {
+  readonly control: HarnessRefinementControlProps;
+}) {
+  const { control } = props;
+  const descriptionId = useId();
+  return (
+    <div className="mt-1 grid gap-2 border-border/70 border-t pt-2">
+      <div className="grid gap-1 text-xs">
+        <span className="font-medium text-muted-foreground">Local session harness</span>
+        <p id={descriptionId} className="text-pretty text-secondary-label text-[11px] leading-4">
+          Improves only this thread&apos;s private session harness. This may take time and cannot be
+          cancelled or rolled back here.
+        </p>
+      </div>
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        disabled={!control.canRefine || control.pending}
+        onClick={control.onRefine}
+        aria-describedby={descriptionId}
+      >
+        <span aria-live="polite">
+          {control.pending
+            ? "Refining…"
+            : control.outcomeUnknown
+              ? "Outcome unavailable"
+              : "Refine local harness"}
+        </span>
+      </Button>
+    </div>
+  );
+}
 
 export function ContextCompactionControls(props: {
   readonly control: ContextCompactionControlProps;
@@ -98,6 +140,7 @@ export function ContextWindowMeter(props: {
   providerDisplayName?: string | null;
   timestampFormat: TimestampFormat;
   compaction?: ContextCompactionControlProps | null;
+  harnessRefinement?: HarnessRefinementControlProps | null;
 }) {
   const { usage, providerDisplayName } = props;
   const usedPercentage = formatPercentage(usage?.usedPercentage ?? null);
@@ -131,7 +174,11 @@ export function ContextWindowMeter(props: {
                 ? `Context window ${usedPercentage} used`
                 : usage !== null
                   ? `Context window ${formatContextWindowTokens(usage.usedTokens)} tokens used`
-                  : "Context window and compaction controls"
+                  : props.compaction && props.harnessRefinement
+                    ? "Context window, compaction, and harness controls"
+                    : props.harnessRefinement
+                      ? "Context window and harness controls"
+                      : "Context window and compaction controls"
             }
           >
             <span className="relative flex size-5 items-center justify-center">
@@ -221,6 +268,9 @@ export function ContextWindowMeter(props: {
             </div>
           ) : null}
           {props.compaction ? <ContextCompactionControls control={props.compaction} /> : null}
+          {props.harnessRefinement ? (
+            <HarnessRefinementControls control={props.harnessRefinement} />
+          ) : null}
         </div>
       </PopoverPopup>
     </Popover>

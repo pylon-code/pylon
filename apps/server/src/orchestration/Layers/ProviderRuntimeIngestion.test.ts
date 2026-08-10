@@ -129,6 +129,7 @@ function createProviderServiceHarness() {
     compactSession: () => unsupported(),
     abortSessionCompaction: () => unsupported(),
     setSessionAutoCompaction: () => unsupported(),
+    refineSessionHarness: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
@@ -308,6 +309,23 @@ it("maps session compaction to one stable privacy-safe control snapshot", () => 
   expect(JSON.stringify(activities)).not.toContain("private compaction contents");
   expect(JSON.stringify(activities)).not.toContain("sessionFile");
   expect(JSON.stringify(activities)).not.toContain("/Users/");
+});
+
+it("keeps harness refinement lifecycle out of activity history", () => {
+  expect(
+    runtimeEventToActivities({
+      type: "session.harness-refinement.updated",
+      eventId: EventId.make("evt-refinement-lifecycle"),
+      provider: ProviderDriverKind.make("primeAgent"),
+      providerInstanceId: ProviderInstanceId.make("prime-work"),
+      threadId: ThreadId.make("thread-1"),
+      createdAt: "2026-08-09T00:00:00.000Z",
+      payload: {
+        sessionStartedAt: "2026-01-01T00:00:00.000Z",
+        status: "outcome-unknown",
+      },
+    }),
+  ).toEqual([]);
 });
 
 it("persists only provider-neutral per-agent message availability", () => {
@@ -719,6 +737,67 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("ready");
     expect(thread.session?.lastError).toBeNull();
+  });
+
+  it("projects harness refinement lifecycle on the session incarnation", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "session.harness-refinement.updated",
+      eventId: asEventId("evt-session-refinement-unknown"),
+      provider: ProviderDriverKind.make("primeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: {
+        sessionStartedAt: "2026-01-01T00:00:00.000Z",
+        status: "outcome-unknown",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.harnessRefinementStatus === "outcome-unknown",
+    );
+    expect(thread.session?.harnessRefinementStatus).toBe("outcome-unknown");
+    expect(thread.activities.some((activity) => activity.kind.includes("harness-refinement"))).toBe(
+      false,
+    );
+
+    const replacementStartedAt = "2026-01-01T00:00:01.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-refinement-replacement"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "primeAgent",
+          runtimeMode: "full-access",
+          startedAt: replacementStartedAt,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: replacementStartedAt,
+        },
+        createdAt: replacementStartedAt,
+      }),
+    );
+    harness.emit({
+      type: "session.harness-refinement.updated",
+      eventId: asEventId("evt-session-refinement-delayed-old"),
+      provider: ProviderDriverKind.make("primeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: replacementStartedAt,
+      payload: {
+        sessionStartedAt: "2026-01-01T00:00:00.000Z",
+        status: "outcome-unknown",
+      },
+    });
+    await harness.drain();
+    const replacement = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(replacement?.session?.startedAt).toBe(replacementStartedAt);
+    expect(replacement?.session?.harnessRefinementStatus).toBeUndefined();
   });
 
   it("clears active turn when provider session becomes ready", async () => {
@@ -2940,7 +3019,7 @@ describe("ProviderRuntimeIngestion", () => {
         ),
     );
 
-    const events = await Effect.runPromise(
+    const events = await harness.runEffect(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),
       ),

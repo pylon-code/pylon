@@ -35,6 +35,7 @@ export function makePrimeAgentFeatureCapabilities(input: {
   readonly agentMessage: boolean;
   readonly agentLiveActivity?: boolean;
   readonly compaction: boolean;
+  readonly refinement?: boolean;
   readonly autoCompaction: boolean;
   readonly goals: boolean;
 }): ProviderFeatureCapabilities {
@@ -108,22 +109,25 @@ export function makePrimeAgentFeatureCapabilities(input: {
             : ["observe", "follow-up", "steer", "clear"],
         }
       : unavailable("The loaded Prime Agent daemon does not expose compatible input queue APIs."),
-    context: input.compaction
-      ? {
-          support: "read-write",
-          reason: input.autoCompaction
-            ? "Pylon can compact idle full-access sessions, request native compaction cancellation, and configure automatic compaction for the current session and provider default without retaining native contents."
-            : "Pylon can compact idle full-access sessions and request native compaction cancellation without retaining native contents; automatic compaction settings are unavailable with the loaded daemon.",
-          operations: input.autoCompaction
-            ? ["observe", "compact", "abort-compaction", "configure-compaction"]
-            : ["observe", "compact", "abort-compaction"],
-        }
-      : {
-          support: "read-only",
-          reason:
-            "Pylon shows Prime Agent compaction, retry, and refinement lifecycle without persisting native instructions or summaries; the loaded daemon does not expose compatible compaction controls.",
-          operations: ["observe"],
-        },
+    context:
+      input.compaction || input.refinement === true
+        ? {
+            support: "read-write",
+            reason:
+              "Pylon can request supported full-access context operations without retaining Prime's private instructions, summaries, paths, or native identifiers.",
+            operations: [
+              "observe",
+              ...(input.compaction ? (["compact", "abort-compaction"] as const) : []),
+              ...(input.autoCompaction ? (["configure-compaction"] as const) : []),
+              ...(input.refinement === true ? (["refine"] as const) : []),
+            ],
+          }
+        : {
+            support: "read-only",
+            reason:
+              "Pylon shows Prime Agent compaction, retry, and refinement lifecycle without persisting native instructions or summaries; the loaded daemon does not expose compatible context controls.",
+            operations: ["observe"],
+          },
     model: {
       support: "read-write",
       operations: ["select", "thinking", "service-tier"],

@@ -126,6 +126,7 @@ function createProviderServiceHarness(
     compactSession: () => unsupported(),
     abortSessionCompaction: () => unsupported(),
     setSessionAutoCompaction: () => unsupported(),
+    refineSessionHarness: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions,
     getCapabilities: () =>

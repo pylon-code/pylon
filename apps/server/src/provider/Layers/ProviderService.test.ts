@@ -248,6 +248,9 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
         return compaction;
       }),
   );
+  const refineSessionHarness = vi.fn((_threadId: ThreadId) =>
+    Effect.succeed({ appliedCount: 2, failedCount: 1, outcome: "partial" as const }),
+  );
 
   let inputQueue: SessionInputQueueUpdatedPayload = {
     steeringCount: 0,
@@ -350,6 +353,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     compactSession,
     abortSessionCompaction,
     setSessionAutoCompaction,
+    refineSessionHarness,
     stopSession,
     listSessions,
     hasSession,
@@ -396,6 +400,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     compactSession,
     abortSessionCompaction,
     setSessionAutoCompaction,
+    refineSessionHarness,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -1172,6 +1177,12 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.deepEqual(routing.codex.setSessionAutoCompaction.mock.calls, [
         [{ threadId: session.threadId, enabled: false }],
       ]);
+      assert.deepEqual(yield* provider.refineSessionHarness({ threadId: session.threadId }), {
+        appliedCount: 2,
+        failedCount: 1,
+        outcome: "partial",
+      });
+      assert.deepEqual(routing.codex.refineSessionHarness.mock.calls, [[session.threadId]]);
 
       yield* provider.rollbackConversation({
         threadId: session.threadId,

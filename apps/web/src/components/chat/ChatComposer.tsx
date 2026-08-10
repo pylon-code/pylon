@@ -277,6 +277,14 @@ import {
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
+import {
+  canRefineSessionHarness,
+  harnessRefinementToast,
+  isCurrentSessionHarnessRefinementRequest,
+  sessionHarnessRefinementControlState,
+  sessionHarnessRefinementScopeKey as buildSessionHarnessRefinementScopeKey,
+  SESSION_HARNESS_REFINEMENT_CONFIRMATION,
+} from "../../sessionHarnessRefinement";
 import { getProviderDisplayName, getProviderInteractionModeToggle } from "../../providerModels";
 import {
   applyProviderInstanceSettings,
@@ -474,6 +482,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   activeProviderUsageAccounts: readonly ProviderUsageAccount[];
   timestampFormat: UnifiedSettings["timestampFormat"];
   contextCompaction: import("./ContextWindowMeter").ContextCompactionControlProps | null;
+  harnessRefinement: import("./ContextWindowMeter").HarnessRefinementControlProps | null;
   sessionGoal: import("@t3tools/client-runtime/state/session-goal").SessionGoalSnapshot | null;
   isPreparingWorktree: boolean;
   pendingAction: {
@@ -501,12 +510,13 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   return (
     <>
       {props.sessionGoal ? <SessionGoalControl snapshot={props.sessionGoal} /> : null}
-      {props.activeContextWindow || props.contextCompaction ? (
+      {props.activeContextWindow || props.contextCompaction || props.harnessRefinement ? (
         <ContextWindowMeter
           usage={props.activeContextWindow}
           providerDisplayName={props.activeThreadProviderDisplayName}
           timestampFormat={props.timestampFormat}
           compaction={props.contextCompaction}
+          harnessRefinement={props.harnessRefinement}
         />
       ) : null}
       {props.isPreparingWorktree ? (
@@ -677,6 +687,9 @@ export interface ChatComposerProps {
   onCompactSession: () => Promise<SessionCompactionUpdatedPayload | null>;
   onAbortSessionCompaction: () => Promise<SessionCompactionUpdatedPayload | null>;
   onSetSessionAutoCompaction: (enabled: boolean) => Promise<SessionCompactionUpdatedPayload | null>;
+  onRefineSessionHarness: () => Promise<
+    import("../../sessionHarnessRefinement").SessionHarnessRefinementOutcome | null
+  >;
   onImplementPlanInNewThread: () => void;
   onContinueThreadOnAccount: () => void;
   onRespondToApproval: (
@@ -771,6 +784,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onCompactSession,
     onAbortSessionCompaction,
     onSetSessionAutoCompaction,
+    onRefineSessionHarness,
     onImplementPlanInNewThread,
     onContinueThreadOnAccount,
     onRespondToApproval,
@@ -1326,6 +1340,115 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           },
         }
       : null;
+
+  const sessionHarnessRefinementScopeKey = buildSessionHarnessRefinementScopeKey({
+    sessionScopeKey: sessionCompactionScopeKey,
+    sessionStartedAt: activeThread?.session?.startedAt,
+  });
+  const sessionHarnessRefinementScopeRef = useRef(sessionHarnessRefinementScopeKey);
+  sessionHarnessRefinementScopeRef.current = sessionHarnessRefinementScopeKey;
+  const sessionHarnessRefinementLifecycle =
+    activeThread?.session?.harnessRefinementStatus ?? "available";
+  const sessionHarnessRefinementLifecycleRef = useRef(sessionHarnessRefinementLifecycle);
+  sessionHarnessRefinementLifecycleRef.current = sessionHarnessRefinementLifecycle;
+  const sessionHarnessRefinementRequestIdRef = useRef(0);
+  const pendingSessionHarnessRefinementRef = useRef<{
+    readonly scopeKey: string;
+    readonly id: number;
+  } | null>(null);
+  const [pendingSessionHarnessRefinement, setPendingSessionHarnessRefinement] = useState<{
+    readonly scopeKey: string;
+    readonly id: number;
+  } | null>(null);
+  const sessionHarnessRefinementUnknownScopeRef = useRef<string | null>(null);
+  const [sessionHarnessRefinementUnknownScope, setSessionHarnessRefinementUnknownScope] = useState<
+    string | null
+  >(null);
+  const sessionHarnessRefinementAvailable = canRefineSessionHarness({
+    provider: activeSessionProviderStatus,
+    hasActiveThread: activeThreadId !== null,
+    runtimeMode: activeThread?.session?.runtimeMode ?? runtimeMode,
+    sessionStatus: activeThread?.session?.status,
+    isConnecting,
+    environmentAvailable: environmentUnavailable === null,
+    restored: activeThread?.session?.restored === true,
+    sessionStartedAt: activeThread?.session?.startedAt,
+  });
+  const harnessRefinementControlState = sessionHarnessRefinementControlState({
+    lifecycle: sessionHarnessRefinementLifecycle,
+    locallyPending: pendingSessionHarnessRefinement?.scopeKey === sessionHarnessRefinementScopeKey,
+    locallyOutcomeUnknown:
+      sessionHarnessRefinementUnknownScope === sessionHarnessRefinementScopeKey,
+  });
+
+  useEffect(() => {
+    sessionHarnessRefinementRequestIdRef.current += 1;
+    pendingSessionHarnessRefinementRef.current = null;
+    sessionHarnessRefinementUnknownScopeRef.current = null;
+    setPendingSessionHarnessRefinement(null);
+    setSessionHarnessRefinementUnknownScope(null);
+  }, [sessionHarnessRefinementScopeKey]);
+
+  useEffect(() => {
+    if (sessionHarnessRefinementLifecycle === "available") {
+      sessionHarnessRefinementUnknownScopeRef.current = null;
+      setSessionHarnessRefinementUnknownScope(null);
+    }
+  }, [sessionHarnessRefinementLifecycle]);
+
+  const refineSessionHarness = useCallback(async () => {
+    const scopeKey = sessionHarnessRefinementScopeRef.current;
+    if (
+      !scopeKey ||
+      !sessionHarnessRefinementAvailable ||
+      pendingSessionHarnessRefinementRef.current?.scopeKey === scopeKey ||
+      sessionHarnessRefinementUnknownScopeRef.current === scopeKey ||
+      sessionHarnessRefinementLifecycleRef.current !== "available" ||
+      !globalThis.confirm(SESSION_HARNESS_REFINEMENT_CONFIRMATION)
+    ) {
+      return;
+    }
+    const request = {
+      scopeKey,
+      id: ++sessionHarnessRefinementRequestIdRef.current,
+    } as const;
+    pendingSessionHarnessRefinementRef.current = request;
+    setPendingSessionHarnessRefinement(request);
+    try {
+      const outcome = await onRefineSessionHarness();
+      if (
+        outcome &&
+        isCurrentSessionHarnessRefinementRequest(
+          sessionHarnessRefinementScopeRef.current,
+          sessionHarnessRefinementRequestIdRef.current,
+          request,
+        ) &&
+        pendingSessionHarnessRefinementRef.current?.id === request.id
+      ) {
+        if (outcome === "unknown") {
+          sessionHarnessRefinementUnknownScopeRef.current = scopeKey;
+          setSessionHarnessRefinementUnknownScope(scopeKey);
+        }
+        toastManager.add(harnessRefinementToast(outcome));
+      }
+    } finally {
+      if (pendingSessionHarnessRefinementRef.current?.id === request.id) {
+        pendingSessionHarnessRefinementRef.current = null;
+      }
+      setPendingSessionHarnessRefinement((current) =>
+        current?.id === request.id ? null : current,
+      );
+    }
+  }, [onRefineSessionHarness, sessionHarnessRefinementAvailable]);
+
+  const sessionHarnessRefinementControl = sessionHarnessRefinementAvailable
+    ? {
+        pending: harnessRefinementControlState.pending,
+        outcomeUnknown: harnessRefinementControlState.outcomeUnknown,
+        canRefine: harnessRefinementControlState.canRefine,
+        onRefine: () => void refineSessionHarness(),
+      }
+    : null;
 
   const sessionResources = useMemo(
     () => deriveLatestSessionResources(activeThreadActivities ?? [], selectedInstanceId),
@@ -3863,6 +3986,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   activeProviderUsageAccounts={activeProviderUsageAccounts}
                   timestampFormat={settings.timestampFormat}
                   contextCompaction={contextCompactionControl}
+                  harnessRefinement={sessionHarnessRefinementControl}
                   sessionGoal={sessionGoal}
                   pendingAction={pendingPrimaryAction}
                   isRunning={phase === "running"}

@@ -182,6 +182,7 @@ describe("ProviderSessionReaper", () => {
       compactSession: () => unsupported(),
       abortSessionCompaction: () => unsupported(),
       setSessionAutoCompaction: () => unsupported(),
+      refineSessionHarness: () => unsupported(),
       stopSession,
       listSessions: () => Effect.succeed([]),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),

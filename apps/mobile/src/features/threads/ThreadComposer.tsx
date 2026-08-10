@@ -50,6 +50,7 @@ import type {
   ModelSelection,
   OrchestrationThreadShell,
   ProviderInteractionMode,
+  ProviderRefineSessionHarnessResult,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
@@ -141,6 +142,12 @@ import {
 } from "./sessionCompactionMenu";
 import { buildSessionAgentMenuActions, parseSessionAgentMenuAction } from "./sessionAgentMenu";
 import { buildSessionGoalMenuActions } from "./sessionGoalMenu";
+import {
+  buildSessionHarnessRefinementMenuActions,
+  canRefineSessionHarness,
+  parseSessionHarnessRefinementAction,
+  sessionHarnessRefinementScopeKey as buildSessionHarnessRefinementScopeKey,
+} from "./sessionHarnessRefinementMenu";
 import { SessionAgentLiveActivityModal } from "./SessionAgentLiveActivityModal";
 
 const AGENT_MESSAGE_UNAVAILABLE_ERROR = "This agent is no longer available for direct messages.";
@@ -195,6 +202,7 @@ export interface ThreadComposerProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onReloadSessionResources: () => Promise<void>;
+  readonly onRefineSessionHarness: () => Promise<ProviderRefineSessionHarnessResult | null>;
   readonly onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onQueueFollowUp: () => Promise<MessageId | null>;
@@ -498,6 +506,147 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       props.serverConfig.providers.find((provider) => provider.instanceId === instanceId) ?? null
     );
   }, [props.selectedThread.session?.providerInstanceId, props.serverConfig]);
+  const sessionHarnessRefinementScopeKey = buildSessionHarnessRefinementScopeKey({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+    providerInstanceId: props.selectedThread.session?.providerInstanceId,
+    sessionStartedAt: props.selectedThread.session?.startedAt,
+  });
+  const sessionHarnessRefinementAvailable = canRefineSessionHarness({
+    connectionState: props.connectionState,
+    session: props.selectedThread.session,
+    provider: activeSessionProviderStatus,
+  });
+  const [sessionHarnessRefinementPendingScopeKey, setSessionHarnessRefinementPendingScopeKey] =
+    useState<string | null>(null);
+  const sessionHarnessRefinementPendingRef = useRef<string | null>(null);
+  const sessionHarnessRefinementOutcomeUnknownRef = useRef<string | null>(null);
+  const [
+    sessionHarnessRefinementOutcomeUnknownScopeKey,
+    setSessionHarnessRefinementOutcomeUnknownScopeKey,
+  ] = useState<string | null>(null);
+  const sessionHarnessRefinementControlRef = useRef({
+    scopeKey: sessionHarnessRefinementScopeKey,
+    available:
+      sessionHarnessRefinementAvailable &&
+      (props.selectedThread.session?.harnessRefinementStatus === undefined ||
+        props.selectedThread.session.harnessRefinementStatus === "available"),
+    onRefine: props.onRefineSessionHarness,
+  });
+  sessionHarnessRefinementControlRef.current = {
+    scopeKey: sessionHarnessRefinementScopeKey,
+    available:
+      sessionHarnessRefinementAvailable &&
+      (props.selectedThread.session?.harnessRefinementStatus === undefined ||
+        props.selectedThread.session.harnessRefinementStatus === "available"),
+    onRefine: props.onRefineSessionHarness,
+  };
+  useEffect(() => {
+    sessionHarnessRefinementPendingRef.current = null;
+    sessionHarnessRefinementOutcomeUnknownRef.current = null;
+    setSessionHarnessRefinementPendingScopeKey(null);
+    setSessionHarnessRefinementOutcomeUnknownScopeKey(null);
+  }, [sessionHarnessRefinementScopeKey]);
+  useEffect(() => {
+    if (
+      props.selectedThread.session?.harnessRefinementStatus === undefined ||
+      props.selectedThread.session.harnessRefinementStatus === "available"
+    ) {
+      sessionHarnessRefinementOutcomeUnknownRef.current = null;
+      setSessionHarnessRefinementOutcomeUnknownScopeKey(null);
+    }
+  }, [props.selectedThread.session?.harnessRefinementStatus]);
+
+  const sessionHarnessRefinementActions = useMemo(
+    () =>
+      buildSessionHarnessRefinementMenuActions({
+        scopeKey: sessionHarnessRefinementScopeKey,
+        connectionState: props.connectionState,
+        session: props.selectedThread.session ?? null,
+        provider: activeSessionProviderStatus,
+        pendingScopeKey: sessionHarnessRefinementPendingScopeKey,
+        outcomeUnknownScopeKey: sessionHarnessRefinementOutcomeUnknownScopeKey,
+      }),
+    [
+      activeSessionProviderStatus,
+      props.connectionState,
+      props.selectedThread.session,
+      sessionHarnessRefinementOutcomeUnknownScopeKey,
+      sessionHarnessRefinementPendingScopeKey,
+      sessionHarnessRefinementScopeKey,
+    ],
+  );
+  const runSessionHarnessRefinement = useCallback(async (expectedScopeKey: string) => {
+    const control = sessionHarnessRefinementControlRef.current;
+    if (
+      control.scopeKey !== expectedScopeKey ||
+      !control.available ||
+      sessionHarnessRefinementPendingRef.current !== null ||
+      sessionHarnessRefinementOutcomeUnknownRef.current === expectedScopeKey
+    ) {
+      return;
+    }
+    sessionHarnessRefinementPendingRef.current = expectedScopeKey;
+    setSessionHarnessRefinementPendingScopeKey(expectedScopeKey);
+    let result: ProviderRefineSessionHarnessResult | null = null;
+    try {
+      result = await control.onRefine();
+    } catch {
+      result = null;
+    }
+    if (sessionHarnessRefinementControlRef.current.scopeKey !== expectedScopeKey) return;
+    sessionHarnessRefinementPendingRef.current = null;
+    setSessionHarnessRefinementPendingScopeKey(null);
+    if (result?.outcome === "completed") {
+      Alert.alert("Local harness refined", "This thread's private session harness was improved.");
+      return;
+    }
+    if (result?.outcome === "partial") {
+      Alert.alert(
+        "Local harness partly refined",
+        "Some private session harness improvements could not be completed.",
+      );
+      return;
+    }
+    if (result?.outcome === "failed") {
+      Alert.alert(
+        "Local harness refinement failed",
+        "The private refinement for this thread could not be completed.",
+      );
+      return;
+    }
+    sessionHarnessRefinementOutcomeUnknownRef.current = expectedScopeKey;
+    setSessionHarnessRefinementOutcomeUnknownScopeKey(expectedScopeKey);
+    Alert.alert(
+      "Refinement outcome unavailable",
+      "Pylon could not confirm whether the private refinement completed and will not retry it automatically.",
+    );
+  }, []);
+  const confirmSessionHarnessRefinement = useCallback(
+    (expectedScopeKey: string) => {
+      const control = sessionHarnessRefinementControlRef.current;
+      if (
+        control.scopeKey !== expectedScopeKey ||
+        !control.available ||
+        sessionHarnessRefinementPendingRef.current !== null ||
+        sessionHarnessRefinementOutcomeUnknownRef.current === expectedScopeKey
+      ) {
+        return;
+      }
+      Alert.alert(
+        "Refine local harness?",
+        "This privately improves only this thread's session harness. It may take time, and it cannot be cancelled or rolled back here.",
+        [
+          { text: "Not now", style: "cancel" },
+          {
+            text: "Refine",
+            onPress: () => void runSessionHarnessRefinement(expectedScopeKey),
+          },
+        ],
+      );
+    },
+    [runSessionHarnessRefinement],
+  );
   const sessionQueueCount = sessionInputQueueCount(props.sessionInputQueue);
   const showSessionInputQueue =
     props.sessionInputQueue !== null &&
@@ -1387,6 +1536,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
     }),
     [
+      confirmSessionHarnessRefinement,
       currentModelSelection,
       currentRuntimeMode,
       props.onUpdateModelSelection,

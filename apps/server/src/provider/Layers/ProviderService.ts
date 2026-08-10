@@ -27,6 +27,7 @@ import {
   ProviderGetSessionInputQueueInput,
   ProviderInterruptTurnInput,
   ProviderReloadSessionResourcesInput,
+  ProviderRefineSessionHarnessInput,
   ProviderSetSessionAgentDepthInput,
   ProviderSetSessionAutoCompactionInput,
   ProviderSetSessionInputQueueModeInput,
@@ -1423,6 +1424,38 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* setAutoCompaction({ ...input, threadId: routed.threadId });
   });
 
+  const refineSessionHarness: ProviderServiceMethod<"refineSessionHarness"> = Effect.fn(
+    "refineSessionHarness",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.refineSessionHarness",
+      schema: ProviderRefineSessionHarnessInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.refineSessionHarness",
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.refineSessionHarness",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const refine = routed.adapter.refineSessionHarness;
+    if (refine === undefined) {
+      return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "refine-session-harness",
+      "provider.kind": routed.adapter.provider,
+      "provider.instance_id": routed.instanceId,
+      "provider.thread_id": input.threadId,
+    });
+    return yield* refine(routed.threadId);
+  });
+
   const stopSession: ProviderServiceMethod<"stopSession"> = Effect.fn("stopSession")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1686,6 +1719,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     compactSession,
     abortSessionCompaction,
     setSessionAutoCompaction,
+    refineSessionHarness,
     stopSession,
     listSessions,
     getCapabilities,

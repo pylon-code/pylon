@@ -2,6 +2,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 
@@ -12,6 +14,15 @@ import {
   DeleteProjectionThreadSessionInput,
   GetProjectionThreadSessionInput,
 } from "../Services/ProjectionThreadSessions.ts";
+
+const ProjectionThreadSessionDbRow = Schema.Struct({
+  ...ProjectionThreadSession.fields,
+  restored: Schema.Number,
+});
+
+const toProjectionThreadSession = (
+  row: Schema.Schema.Type<typeof ProjectionThreadSessionDbRow>,
+): ProjectionThreadSession => ({ ...row, restored: row.restored === 1 });
 
 const makeProjectionThreadSessionRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -26,6 +37,9 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_name,
           provider_instance_id,
           runtime_mode,
+          restored,
+          started_at,
+          harness_refinement_status,
           active_turn_id,
           last_error,
           updated_at
@@ -36,6 +50,9 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.providerName},
           ${row.providerInstanceId},
           ${row.runtimeMode},
+          ${row.restored ? 1 : 0},
+          ${row.startedAt},
+          ${row.harnessRefinementStatus},
           ${row.activeTurnId},
           ${row.lastError},
           ${row.updatedAt}
@@ -46,6 +63,9 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_name = excluded.provider_name,
           provider_instance_id = excluded.provider_instance_id,
           runtime_mode = excluded.runtime_mode,
+          restored = excluded.restored,
+          started_at = excluded.started_at,
+          harness_refinement_status = excluded.harness_refinement_status,
           active_turn_id = excluded.active_turn_id,
           last_error = excluded.last_error,
           updated_at = excluded.updated_at
@@ -54,7 +74,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
 
   const getProjectionThreadSessionRow = SqlSchema.findOneOption({
     Request: GetProjectionThreadSessionInput,
-    Result: ProjectionThreadSession,
+    Result: ProjectionThreadSessionDbRow,
     execute: ({ threadId }) =>
       sql`
         SELECT
@@ -63,6 +83,9 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_name AS "providerName",
           provider_instance_id AS "providerInstanceId",
           runtime_mode AS "runtimeMode",
+          restored,
+          started_at AS "startedAt",
+          harness_refinement_status AS "harnessRefinementStatus",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           updated_at AS "updatedAt"
@@ -90,6 +113,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadSessionRepository.getByThreadId:query"),
       ),
+      Effect.map(Option.map(toProjectionThreadSession)),
     );
 
   const deleteByThreadId: ProjectionThreadSessionRepositoryShape["deleteByThreadId"] = (input) =>

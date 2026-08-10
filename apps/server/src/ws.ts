@@ -87,6 +87,7 @@ import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import { toProviderMessageSessionAgentError } from "./provider/providerMessageSessionAgentRpcError.ts";
 import { toProviderSessionCompactionError } from "./provider/providerSessionCompactionRpcError.ts";
+import { toProviderRefineSessionHarnessError } from "./provider/providerRefineSessionHarnessRpcError.ts";
 import { toProviderSessionInputQueueError } from "./provider/providerSessionInputQueueRpcError.ts";
 import {
   ProviderLoginCoordinator,
@@ -1643,6 +1644,15 @@ const makeWsRpcLayer = (
             providerService
               .setSessionAutoCompaction(input)
               .pipe(Effect.mapError(toProviderSessionCompactionError)),
+            { "rpc.aggregate": "provider" },
+          ),
+
+        [WS_METHODS.providerRefineSessionHarness]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerRefineSessionHarness,
+            providerService
+              .refineSessionHarness(input)
+              .pipe(Effect.mapError(toProviderRefineSessionHarnessError)),
             { "rpc.aggregate": "provider" },
           ),
 

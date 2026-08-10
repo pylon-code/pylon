@@ -8,6 +8,7 @@ import {
   PROVIDER_SESSION_AGENT_ACTIVITY_MAX_CONCURRENT_WATCHERS,
   PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
   type PrimeAgentSettings,
+  type ProviderRefineSessionHarnessResult,
   type ProviderRuntimeEvent,
   type ProviderSession,
   ProviderDriverKind,
@@ -20,6 +21,7 @@ import {
   type SessionAgentDepthUpdatedPayload,
   type SessionCompactionUpdatedPayload,
   type SessionGoalUpdatedPayload,
+  type SessionHarnessRefinementUpdatedPayload,
   type SessionInputQueueUpdatedPayload,
   type ProviderSessionAgentActivitySnapshot,
   type ProviderTurnStartResult,
@@ -295,6 +297,15 @@ interface PrimeAgentDaemonSessionContext {
   activeActivityWatcherCount: number;
   agentRosterProjected: boolean;
   resourceReloadCompletion: Deferred.Deferred<void> | undefined;
+  readonly restored: boolean;
+  activeRefinement:
+    | {
+        readonly completion: Deferred.Deferred<
+          ProviderRefineSessionHarnessResult,
+          ProviderAdapterRequestError
+        >;
+      }
+    | undefined;
   activeCompactionScope: { readonly turnId?: TurnId | undefined } | undefined;
   manualCompactionRequestActive: boolean;
   compactionAbortRequested: boolean;
@@ -576,6 +587,21 @@ export function makePrimeAgentDaemonAdapter(
       Effect.gen(function* () {
         yield* offerRuntimeEvent({
           type: "session.compaction.updated",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          providerInstanceId: boundInstanceId,
+          threadId,
+          payload,
+        });
+      });
+
+    const publishSessionHarnessRefinement = (
+      threadId: ThreadId,
+      payload: SessionHarnessRefinementUpdatedPayload,
+    ) =>
+      Effect.gen(function* () {
+        yield* offerRuntimeEvent({
+          type: "session.harness-refinement.updated",
           ...(yield* makeEventStamp()),
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
@@ -1584,6 +1610,18 @@ export function makePrimeAgentDaemonAdapter(
                 { steeringCount: 0, followUpCount: 0 },
                 { preserveModes: false },
               );
+              if (context.activeRefinement !== undefined) {
+                const activeRefinement = context.activeRefinement;
+                context.activeRefinement = undefined;
+                yield* Deferred.fail(
+                  activeRefinement.completion,
+                  new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "session/refine-harness",
+                    detail: "Prime Agent session stopped before harness refinement completed.",
+                  }),
+                );
+              }
               const disposeExit = yield* context.runtime.dispose.pipe(Effect.exit);
               context.stopped = true;
               context.stopRequested = true;
@@ -1776,6 +1814,18 @@ export function makePrimeAgentDaemonAdapter(
           { steeringCount: 0, followUpCount: 0 },
           { preserveModes: false },
         );
+        if (context.activeRefinement !== undefined) {
+          const activeRefinement = context.activeRefinement;
+          context.activeRefinement = undefined;
+          yield* Deferred.fail(
+            activeRefinement.completion,
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/refine-harness",
+              detail: "Prime Agent session stopped before harness refinement completed.",
+            }),
+          );
+        }
         const disposeExit = yield* context.runtime.dispose.pipe(Effect.exit);
         context.stopped = true;
         if (context.eventFiber !== undefined) yield* Fiber.interrupt(context.eventFiber);
@@ -2066,6 +2116,38 @@ export function makePrimeAgentDaemonAdapter(
                 }),
             ),
           );
+          if (runtime.refinementAvailable) {
+            if (
+              runtime.sessionId === "." ||
+              runtime.sessionId === ".." ||
+              path.basename(runtime.sessionId) !== runtime.sessionId
+            ) {
+              return yield* new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+                detail: "Prime Agent returned an invalid local harness identity.",
+              });
+            }
+            const artifactRoot = path.join(
+              path.dirname(sessionDir),
+              "session-artifacts",
+              runtime.sessionId,
+            );
+            const harnessRoot = path.join(artifactRoot, "harness");
+            yield* fileSystem.makeDirectory(harnessRoot, { recursive: true }).pipe(
+              Effect.andThen(fileSystem.chmod(artifactRoot, 0o700)),
+              Effect.andThen(fileSystem.chmod(harnessRoot, 0o700)),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterProcessError({
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    detail: "Failed to protect the Prime Agent local harness directory.",
+                    cause,
+                  }),
+              ),
+            );
+          }
           const identitySource = encodePrimeAgentSessionIdentity(
             sessionDir,
             runtime.sessionId,
@@ -2106,6 +2188,7 @@ export function makePrimeAgentDaemonAdapter(
             model,
             threadId: input.threadId,
             resumeCursor: runtime.resumeCursor,
+            ...(input.resumeCursor !== undefined ? { restored: true } : {}),
             createdAt: now,
             updatedAt: now,
           };
@@ -2166,6 +2249,8 @@ export function makePrimeAgentDaemonAdapter(
             activeActivityWatcherCount: 0,
             agentRosterProjected: false,
             resourceReloadCompletion: undefined,
+            restored: input.resumeCursor !== undefined,
+            activeRefinement: undefined,
             activeCompactionScope: runtime.initialSnapshot.state.isCompacting ? {} : undefined,
             manualCompactionRequestActive: false,
             compactionAbortRequested: false,
@@ -3495,6 +3580,120 @@ export function makePrimeAgentDaemonAdapter(
         ),
       );
 
+    const refineSessionHarness: NonNullable<PrimeAgentAdapterShape["refineSessionHarness"]> = (
+      threadId,
+    ) =>
+      Effect.gen(function* () {
+        const completion = yield* Deferred.make<
+          ProviderRefineSessionHarnessResult,
+          ProviderAdapterRequestError
+        >();
+        const reserved = yield* Effect.uninterruptible(
+          withThreadMutationLock(
+            threadId,
+            Effect.gen(function* () {
+              const context = yield* requireSession(threadId);
+              if (
+                context.session.runtimeMode !== "full-access" ||
+                context.restored ||
+                !context.runtime.refinementAvailable
+              ) {
+                return yield* new ProviderAdapterUnsupportedOperationError({
+                  provider: PROVIDER,
+                  operation: "refineSessionHarness",
+                });
+              }
+              if (context.activeRefinement !== undefined) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "refineSessionHarness",
+                  reason: "busy",
+                  issue: "A harness refinement is already active for this session.",
+                });
+              }
+              context.activeRefinement = { completion };
+              return context;
+            }),
+          ),
+        );
+
+        yield* publishSessionHarnessRefinement(threadId, {
+          sessionStartedAt: reserved.session.createdAt,
+          status: "running",
+        });
+        const request = reserved.runtime.refineLocalHarness.pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              // A rejected or timed-out public request is outcome-ambiguous. Keep the
+              // reservation until session stop so a late apply cannot overlap a newer call.
+              Effect.gen(function* () {
+                yield* publishSessionHarnessRefinement(threadId, {
+                  sessionStartedAt: reserved.session.createdAt,
+                  status: "outcome-unknown",
+                });
+                yield* Deferred.fail(
+                  completion,
+                  new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "session/refine-harness",
+                    detail: "Prime Agent local harness refinement outcome is unavailable.",
+                    cause: error,
+                  }),
+                );
+              }).pipe(Effect.asVoid),
+            onSuccess: (result) =>
+              Effect.gen(function* () {
+                const harnessRoot = path.join(
+                  path.dirname(path.dirname(reserved.runtime.sessionFile)),
+                  "session-artifacts",
+                  reserved.runtime.sessionId,
+                  "harness",
+                );
+                for (const fileName of ["harness_state.json", "refinements.jsonl"]) {
+                  const filePath = path.join(harnessRoot, fileName);
+                  if (yield* fileSystem.exists(filePath)) {
+                    yield* fileSystem.chmod(filePath, 0o600);
+                  }
+                }
+                yield* withThreadMutationLock(
+                  threadId,
+                  Effect.gen(function* () {
+                    if (
+                      sessions.get(threadId) === reserved &&
+                      reserved.activeRefinement?.completion === completion
+                    ) {
+                      reserved.activeRefinement = undefined;
+                    }
+                    yield* publishSessionHarnessRefinement(threadId, {
+                      sessionStartedAt: reserved.session.createdAt,
+                      status: "available",
+                    });
+                    yield* Deferred.succeed(completion, result);
+                  }),
+                );
+              }).pipe(Effect.asVoid),
+          }),
+          Effect.catchCause(() =>
+            Effect.gen(function* () {
+              yield* publishSessionHarnessRefinement(threadId, {
+                sessionStartedAt: reserved.session.createdAt,
+                status: "outcome-unknown",
+              });
+              yield* Deferred.fail(
+                completion,
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "session/refine-harness",
+                  detail: "Prime Agent local harness refinement outcome is unavailable.",
+                }),
+              );
+            }).pipe(Effect.asVoid),
+          ),
+        );
+        yield* Effect.uninterruptible(Effect.forkIn(request, reserved.scope));
+        return yield* Deferred.await(completion);
+      });
+
     /** Must be called with the thread lock held. */
     const applyCompactionStateLocked = (
       context: PrimeAgentDaemonSessionContext,
@@ -3998,6 +4197,7 @@ export function makePrimeAgentDaemonAdapter(
       compactSession,
       abortSessionCompaction,
       setSessionAutoCompaction,
+      refineSessionHarness,
       readThread,
       rollbackThread,
       stopSession,

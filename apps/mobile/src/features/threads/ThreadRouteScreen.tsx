@@ -219,6 +219,11 @@ function ThreadRouteContent(
     threadEnvironment.reloadSessionResources,
     "session resource reload",
   );
+  const refineThreadSessionHarness = useAtomCommand(threadEnvironment.refineSessionHarness, {
+    label: "session harness refinement",
+    reportDefect: false,
+    reportFailure: false,
+  });
   const setThreadSessionAgentDepth = useAtomCommand(
     threadEnvironment.setSessionAgentDepth,
     "session agent depth update",
@@ -513,6 +518,15 @@ function ThreadRouteContent(
       input: { threadId: selectedThread.id },
     });
   }, [reloadThreadSessionResources, selectedThread]);
+
+  const handleRefineSessionHarness = useCallback(async () => {
+    if (!selectedThread) return null;
+    const result = await refineThreadSessionHarness({
+      environmentId: selectedThread.environmentId,
+      input: { threadId: selectedThread.id },
+    });
+    return result._tag === "Success" ? result.value : null;
+  }, [refineThreadSessionHarness, selectedThread]);
 
   const handleSetSessionAgentDepth = useCallback(
     async (maxDepth: number) => {
@@ -848,6 +862,7 @@ function ThreadRouteContent(
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
           onReloadSessionResources={handleReloadSessionResources}
+          onRefineSessionHarness={handleRefineSessionHarness}
           onSetSessionAgentDepth={handleSetSessionAgentDepth}
           onSendMessage={composer.onSendMessage}
           onQueueFollowUp={composer.onQueueFollowUp}
