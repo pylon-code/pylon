@@ -39,3 +39,4 @@ node_modules/
 
 # Agent worktrees (created by EnterWorktree / git worktree)
 .claude/worktrees/
+.prime/
