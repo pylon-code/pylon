@@ -53,6 +53,7 @@ import Migration0038 from "./Migrations/038_ProjectionThreadsContinuedFrom.ts";
 import Migration0039 from "./Migrations/039_ProjectionTurnsKeysetIndex.ts";
 import Migration0040 from "./Migrations/040_ProjectionThreadsPinOrderKey.ts";
 import Migration0041 from "./Migrations/041_ProjectionProjectsDefaultThreadEnvMode.ts";
+import Migration0042 from "./Migrations/042_ProjectionProjectFaviconPath.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -113,6 +114,10 @@ export const migrationEntries = [
   // here instead (pingdotgg/t3code#5766). Reusing 39 would let environments
   // that already recorded it silently skip the new column.
   [41, "ProjectionProjectsDefaultThreadEnvMode", Migration0041],
+  // Upstream shipped this as 40, immediately after its own 39 (#5766). Pylon's
+  // ids run one ahead because 36 is retired here, so it lands as 42
+  // (pingdotgg/t3code#5775).
+  [42, "ProjectionProjectFaviconPath", Migration0042],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
