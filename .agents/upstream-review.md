@@ -417,3 +417,25 @@ for that provider session indefinitely. Bounding it needs a product call on
 whether aborting a turn should also stop background work, so it is left as
 upstream shipped it. Revisit if provider processes are seen surviving long
 past their last turn.
+
+## 2026-08-11 — `2c7267ad43a05cf3e30343400c76fd9ac47698e7..a7b0366cb` (in progress)
+
+Sixty upstream commits across roughly three days. Reviewed as one range and
+adopted in themed slices rather than a single batch, so each slice lands
+verified. **The cursor is deliberately not advanced yet:** three candidates
+still have no decision — `cad2c9361` / `#4849` (multi-provider pull requests
+page with in-app reviews), its follow-up `a7b0366cb` / `#6049`, and
+`1b120f352` / `#6034` (extend the release publish timeout, T3 release
+infrastructure). Advancing before those are decided would silently mark them
+reviewed.
+
+Skipped by decision (slice 7): `49964e38c` / `#5761` and `7b2cf4374` / `#5763`
+(T3 contributor vouches, same class as F24/G4), `78f462c4e` (v0.0.33 release
+prep — Pylon versions independently), `963ebf5bd` / `#5465` (label-gated
+hosted-web preview deploys, T3 hosting), `73b2e8fdd` / `#5609` (automated
+production mobile EAS releases), and `b91a000a1` / `#6013` (a duplicate action
+on the T3-named default theme).
+
+| Slice | Upstream                                          | Decision | Pylon reference | Notes                                                                                                                                                                                                                                                                                                        |
+| ----- | ------------------------------------------------- | -------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| S1    | `deb901d63` / `#5538`, `062b4618c` / `#5782`, `2abe66800` / `#5916` | adopted  | _pending_       | Security and performance, all three clean cherry-picks. `#5916` adds `default-src 'none'; style-src 'unsafe-inline'; sandbox` to SVG asset responses; Pylon's `http.ts` was identical to upstream, so it applied unchanged. **This is the mitigation for `#5775`** (manually chosen project icons in S5): an SVG served same-origin can carry inline script, so S5 must not land without it. `#5538` stops favicon resolution pinning the event loop and `#5782` bounds the file-link label so bracket runs stop rescanning — both matter for Pylon's "performance without compromise" line. |
