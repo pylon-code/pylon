@@ -1,6 +1,6 @@
 ---
 name: review-t3-upstream
-description: Review T3 Code upstream changes for selective adoption into Pylon. Use when the user asks what changed upstream, whether Pylon should sync or update, which T3 commits or pull requests are worth adopting, how the forks differ, or asks to integrate selected upstream work. Fetch the protected upstream remote, consult the durable review ledger, group and assess candidate changes, wait for an explicit user decision, and then selectively port approved work with Pylon-first conflict resolution.
+description: Review T3 Code upstream changes for selective adoption into Pylon. Use when the user asks what changed upstream, whether Pylon should sync or update, which T3 commits or pull requests are worth adopting, how the forks differ, whether previously deferred upstream work is ready to revisit, or asks to integrate selected upstream work. Fetch the protected upstream remote, consult the durable review ledger, re-evaluate deferred work against its recorded revisit conditions, group and assess candidate changes, wait for an explicit user decision, and then selectively port approved work with Pylon-first conflict resolution.
 ---
 
 # Review T3 Upstream
@@ -33,6 +33,7 @@ Confirm:
 - `origin` fetches and pushes `pylon-code/pylon`;
 - `t3code-upstream` fetches `pingdotgg/t3code` and has a disabled push URL;
 - `.agents/upstream-review.md` contains a `reviewed-through` commit;
+- the ledger contains a `## Deferred register` section;
 - the current checkout belongs to Pylon.
 
 A dirty tree does not block read-only review, but it blocks integration. Never stash, discard, or commit unrelated work to make the tree clean.
@@ -64,6 +65,45 @@ git cherry -v pylon t3code-upstream/main <cursor>
 
 Record the exact upstream head used for the report. Never describe a moving branch without its commit SHA.
 
+## Phase 2.5: Re-evaluate deferred work
+
+Deferred work is not decided work. It is a promise to look again, and a
+deferral nobody revisits is indistinguishable from having lost it. Run this
+phase on every review, including a review that finds no new commits.
+
+Read the `## Deferred register` in `.agents/upstream-review.md`. For each open
+entry:
+
+1. Read its `Revisit when` condition and evaluate it against the current
+   upstream head, not against memory. The condition names what to check, so
+   check it — usually `git log`, `git show --stat`, or a path filter over
+   `<deferred sha>..t3code-upstream/main`:
+
+   ```bash
+   git log --oneline --since="<deferred on>" t3code-upstream/main -- <paths from the condition>
+   ```
+
+2. Classify the entry as **due** (condition met), **not yet** (condition
+   unmet, with the specific evidence), or **stale** (the upstream work was
+   superseded, reverted, or has drifted so far that the original deferral no
+   longer describes it).
+
+3. Re-check the dependency and conflict picture. A deferral that has sat for
+   weeks may now conflict with Pylon work that landed since, or may have
+   grown follow-up commits that belong with it. Report the current shape, not
+   the shape recorded when it was deferred.
+
+Report every open entry in the decision brief, due or not, so nothing decays
+silently. A **due** entry is a first-class candidate: give it the same
+treatment as a new change set, including a concrete recommendation. A **not
+yet** entry gets one line naming the evidence that keeps it waiting. A
+**stale** entry should be proposed for outright skip, with the reason, so the
+register does not accumulate work nobody intends to do.
+
+Never adopt a deferred entry just because its condition came due. The
+condition earns it a fresh review, not automatic approval — the user still
+decides.
+
 ## Phase 3: Understand the changes
 
 Group commits into coherent change sets before presenting them. A pull request, a dependency chain, or several commits implementing one behavior should normally be one decision.
@@ -86,8 +126,14 @@ Lead with a compact summary:
 - upstream head and review range;
 - number of commits and coherent change sets;
 - patch-equivalent or already-adopted work;
+- **deferred entries that are now due**, named up front rather than buried
+  after the new candidates — they have already waited once;
 - highest-value recommendations;
 - areas likely to conflict with Pylon.
+
+Give deferred work its own section, before or after the new change sets but
+never merged into them, so the user can tell "this is back again" from "this is
+new". Report the register's full state there: due, not yet, and stale.
 
 For each change set, report:
 
@@ -107,6 +153,29 @@ End with an explicit decision request keyed by candidate ID. Do not integrate wh
 After the user decides every candidate through the reported upstream head, prepare one ledger batch and the new `reviewed-through` value. Do not modify the ledger yet when an approved integration still needs a clean branch setup.
 
 Record each change set as adopted, skipped, or deferred with its upstream SHA or PR, rationale, and eventual Pylon branch or commit when known. Deferred work remains visible in the ledger even though the cursor advances.
+
+A deferral is a decision, so it does not block the cursor. What it does require
+is an entry in the `## Deferred register` before the batch is considered closed.
+Keep the register current in both directions:
+
+- **Add** an entry for every newly deferred change set, keyed `DEF-<n>` so
+  register ids never collide with a batch's change-set ids, with a
+  `Revisit when` condition that a later session can actually check — name the
+  paths, the command, or the observable event. "Revisit later" is not a
+  condition, and neither is anything that depends on remembering this
+  conversation. Beware a condition that reads as satisfied the day it is
+  written: "no commits touching X recently" is also true one minute after
+  deferring, so pair a quiet-period check with an explicit earliest-revisit
+  date.
+- **Move out** an entry as soon as it is adopted or skipped for good: record
+  the outcome in that batch's table and delete the register row. The register
+  holds open questions only.
+- **Carry forward** everything else untouched, including its original
+  `Deferred on` date, so the age of a deferral stays visible.
+
+An entry whose condition has come due repeatedly without anyone acting on it is
+a signal the answer is really "skip" — say so rather than deferring a fourth
+time.
 
 Do not advance the cursor when:
 
@@ -153,4 +222,9 @@ Keep the review ledger and final handoff aligned. Report:
 - Pylon branch and commits created;
 - adaptations made for Pylon;
 - checks run and unresolved risks;
-- whether anything remains deferred.
+- the deferred register's state after this review: what was added, what came
+  due and what happened to it, what was retired, and what is still waiting
+  with its next check.
+
+Closing without mentioning the register is an incomplete handoff, even when
+nothing in it changed.
