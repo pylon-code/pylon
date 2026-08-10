@@ -1,9 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeOS from "node:os";
+import { inspect } from "node:util";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 // @ts-expect-error -- Vite Plus provides the Vitest runner transitively to server tests.
 import { describe, expect, it } from "vitest";
@@ -222,6 +224,110 @@ describe("JcodeSessionIdentity", () => {
     expect(sessionIds).toContain(observed.identity!.sessionId);
     expect(observed.identity!.workingDir).toBe(WORKING_DIR);
     expect(observed.entries).toEqual(["b64-dGhyZWFkLTE.json"]);
+  });
+
+  it("hardens every directory it creates, not just the leaf", async () => {
+    if (!POSIX) return;
+    const observed = await runScoped(({ fs, path, root }) =>
+      Effect.gen(function* () {
+        const instanceRoot = path.join(root, "provider-sessions", "jcode", "b64-aW5zdGFuY2U");
+        const filePath = path.join(instanceRoot, "threads", "b64-dGhyZWFkLTE.json");
+        yield* writeJcodeSessionIdentity({
+          filePath,
+          sessionId: "session-1",
+          workingDir: WORKING_DIR,
+        });
+        // Every ancestor this write materialized is user-controlled layout: an
+        // encoded instance ID decodes straight back to plaintext.
+        const created = [
+          path.join(root, "provider-sessions"),
+          path.join(root, "provider-sessions", "jcode"),
+          instanceRoot,
+          path.dirname(filePath),
+        ];
+        return yield* Effect.all(
+          created.map((directory) =>
+            fs.stat(directory).pipe(Effect.map((stat) => [directory, stat.mode & 0o777] as const)),
+          ),
+        );
+      }),
+    );
+
+    for (const [directory, mode] of observed) {
+      expect(mode, directory).toBe(0o700);
+    }
+  });
+
+  it("removes temp residue and stays path-free when the write itself fails", async () => {
+    const observed = await runScoped(({ fs, path, root }) =>
+      Effect.gen(function* () {
+        const survivor = path.join(root, "b64-c3Vydml2b3I.json");
+        yield* writeJcodeSessionIdentity({
+          filePath: survivor,
+          sessionId: "session-1",
+          workingDir: WORKING_DIR,
+        });
+
+        // A non-empty directory at the destination makes `rename` fail after the
+        // temp file exists, which is the only way to reach the cleanup branch.
+        const filePath = path.join(root, "b64-dGhyZWFkLTE.json");
+        yield* fs.makeDirectory(filePath, { recursive: true });
+        yield* fs.writeFileString(path.join(filePath, "occupant"), "x");
+
+        const failure = yield* writeJcodeSessionIdentity({
+          filePath,
+          sessionId: "session-2",
+          workingDir: WORKING_DIR,
+        }).pipe(Effect.flip);
+
+        return {
+          failure,
+          // @effect-diagnostics-next-line preferSchemaOverJson:off - renders the error the way a logger would.
+          rendered: `${inspect(failure, { depth: 10 })}${JSON.stringify(failure)}${String(failure)}`,
+          entries: yield* fs.readDirectory(root),
+          survivor: yield* readJcodeSessionIdentity(survivor),
+        };
+      }),
+    );
+
+    expect(observed.failure._tag).toBe("JcodeSessionIdentityError");
+    // No temp file survives the failure, and the unrelated sidecar is untouched.
+    expect(observed.entries.filter((entry) => entry.includes(".tmp"))).toEqual([]);
+    expect(observed.entries.toSorted()).toEqual(["b64-c3Vydml2b3I.json", "b64-dGhyZWFkLTE.json"]);
+    expect(observed.survivor).toEqual({ sessionId: "session-1", workingDir: WORKING_DIR });
+    // The rendered error must not leak the private layout it was raised about.
+    expect(observed.rendered).not.toContain("b64-");
+    expect(observed.rendered).not.toContain(".tmp");
+  });
+
+  it("distinguishes an unreadable sidecar from an absent one", async () => {
+    const observed = await runScoped(({ fs, path, root }) =>
+      Effect.gen(function* () {
+        const missing = path.join(root, "missing.json");
+        // A directory where a sidecar belongs fails with EISDIR, not ENOENT.
+        const unreadable = path.join(root, "b64-dGhyZWFkLTE.json");
+        yield* fs.makeDirectory(unreadable, { recursive: true });
+
+        const logs: Array<string> = [];
+        const capture = Logger.make<unknown, void>(({ message }) => {
+          logs.push(Array.isArray(message) ? message.join(" ") : String(message));
+        });
+
+        const results = yield* Effect.all([
+          readJcodeSessionIdentity(missing),
+          readJcodeSessionIdentity(unreadable),
+        ]).pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
+
+        return { missing: results[0], unreadable: results[1], logs };
+      }),
+    );
+
+    expect(observed.missing).toBe(undefined);
+    expect(observed.unreadable).toBe(undefined);
+    // Absence is silent; an unreadable sidecar gets one operator signal.
+    expect(observed.logs).toHaveLength(1);
+    expect(observed.logs[0]).toContain("Jcode session identity");
+    expect(observed.logs[0]).not.toContain("b64-");
   });
 
   it("reads a missing or corrupt sidecar as absent rather than failing", async () => {

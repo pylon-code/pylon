@@ -33,10 +33,37 @@ const EXPECTED_KEYS = ["schemaVersion", "sessionId", "workingDir"] as const;
 const MAX_SESSION_ID_LENGTH = 256;
 const MAX_WORKING_DIR_LENGTH = 4096;
 
+/**
+ * Platform errors embed the absolute destination and temp paths, and an encoded
+ * segment decodes straight back to the plaintext instance or thread ID. Keeping
+ * the raw error as `cause` would leak the exact layout this module exists to
+ * keep private the moment a consumer logs or serializes it, so only a
+ * non-identifying discriminator survives.
+ */
 export class JcodeSessionIdentityError extends Data.TaggedError("JcodeSessionIdentityError")<{
   readonly detail: string;
-  readonly cause?: unknown;
+  readonly reason?: string;
 }> {}
+
+function failureReason(error: unknown): string {
+  if (typeof error !== "object" || error === null) return "Unknown";
+  const reason = (error as { readonly reason?: unknown }).reason;
+  if (typeof reason !== "object" || reason === null) return "Unknown";
+  const { _tag, module, method } = reason as {
+    readonly _tag?: unknown;
+    readonly module?: unknown;
+    readonly method?: unknown;
+  };
+  const operation =
+    typeof module === "string" && typeof method === "string" ? `${module}.${method}` : "unknown";
+  return `${typeof _tag === "string" ? _tag : "Unknown"}: ${operation}`;
+}
+
+function isNotFound(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const reason = (error as { readonly reason?: { readonly _tag?: unknown } }).reason;
+  return typeof reason === "object" && reason !== null && reason._tag === "NotFound";
+}
 
 export interface JcodePrivateSessionIdentity {
   readonly sessionId: string;
@@ -119,13 +146,17 @@ export const writeJcodeSessionIdentity = (input: {
     const path = yield* Path.Path;
     const directory = path.dirname(input.filePath);
 
-    yield* fs.makeDirectory(directory, { recursive: true }).pipe(
+    // `recursive` also materializes `provider-sessions/`, `jcode/`, and the
+    // encoded instance root. Those names are user-controlled layout, so the mode
+    // has to be applied at creation for every ancestor, not just chmod'd on the
+    // leaf; the chmod still covers a directory that already existed.
+    yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 }).pipe(
       Effect.andThen(fs.chmod(directory, 0o700)),
       Effect.mapError(
-        (cause) =>
+        (error) =>
           new JcodeSessionIdentityError({
             detail: "Failed to prepare the private Jcode identity directory.",
-            cause,
+            reason: failureReason(error),
           }),
       ),
     );
@@ -138,14 +169,14 @@ export const writeJcodeSessionIdentity = (input: {
       Effect.andThen(fs.chmod(tempPath, 0o600)),
       Effect.andThen(fs.rename(tempPath, input.filePath)),
       // The rename consumes the temp path on success; cleanup only matters on failure.
-      Effect.catch((cause) =>
+      Effect.catch((error) =>
         fs.remove(tempPath).pipe(
           Effect.ignore,
           Effect.andThen(
             Effect.fail(
               new JcodeSessionIdentityError({
                 detail: "Failed to persist the private Jcode session identity.",
-                cause,
+                reason: failureReason(error),
               }),
             ),
           ),
@@ -154,9 +185,26 @@ export const writeJcodeSessionIdentity = (input: {
     );
   });
 
+/**
+ * Reads are total: absence, corruption, and an unreadable file all mean "no
+ * session to continue". Only absence is expected, so every other cause gets one
+ * operator signal, redacted to a reason discriminator, rather than silently
+ * looking like a fresh thread.
+ */
 export const readJcodeSessionIdentity = (filePath: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const source = yield* fs.readFileString(filePath).pipe(Effect.option);
-    return Option.isNone(source) ? undefined : decodeJcodeSessionIdentity(source.value);
+    const source = yield* fs
+      .readFileString(filePath)
+      .pipe(
+        Effect.catch((error) =>
+          (isNotFound(error)
+            ? Effect.void
+            : Effect.logWarning(
+                `Failed to read a Jcode session identity (${failureReason(error)}).`,
+              )
+          ).pipe(Effect.as(undefined)),
+        ),
+      );
+    return source === undefined ? undefined : decodeJcodeSessionIdentity(source);
   });
