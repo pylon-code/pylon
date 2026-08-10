@@ -12,8 +12,9 @@
 
 ## Global Constraints
 
-- Implement on `research/prime-agent-integration`, after the current owner commits its in-progress provider-agent messaging changes. Use one writer on this branch at a time.
-- The audited Prime base `851cb8c80` is stale. The last clean reviewed checkpoint was `1a9bd180d`, with later uncommitted work observed in shared provider contracts and services. Never reset, stash, amend, or commit another agent's changes.
+- Implement on `research/prime-agent-integration`. Use one writer on this branch at a time.
+- The committed implementation base is `d40530040`, recorded by Task 0 and carrying the proven acceptance baseline. Earlier references to `851cb8c80` and `1a9bd180d` are superseded; the mid-Task-0 SHA `5250c85d4` was amended away by the previous owner and is unreachable from `HEAD`. Never reset, stash, amend, or commit another agent's changes.
+- The coordinator executing this plan now holds exclusive write ownership of the branch. This is established by evidence, not by a handoff confirmation from the former owner: all previous implementation workers have terminated, the worktree is clean, `HEAD` has remained stable at `acd647448` since Task 0's commit, and this coordinator will not permit another writer while the plan runs. Re-verify a clean worktree and an unchanged `HEAD` before each task.
 - Pin the published SDK exactly to `@1jehuang/jcode-sdk@1.1.0`. Do not use the unpublished repository version `1.2.0` without a fresh source and package audit.
 - Require an independently installed `jcode` executable for Early Access. Remove the SDK's six optional platform runtime packages through pnpm overrides and verify packaged artifacts do not contain them.
 - Use `launchInstance()`, not `JcodeClient.launch()`, because Pylon needs the private socket path for one child connection per active thread.
@@ -191,7 +192,7 @@ vp run --filter @t3tools/mobile typecheck
 vp run --filter @t3tools/desktop typecheck
 ```
 
-Expected: all 22 files run and pass, and every named package actually executes its typecheck. At review time the real dirty branch had 433 passing tests and one inherited failure in `ProviderCommandReactor.test.ts` where unsupported/stale interaction failures arrived in the opposite order from the assertion. Contracts, shared, server, and desktop typechecks passed; web and mobile failed because the in-progress Prime changes referenced a missing `createdAt` field. Treat every remaining failure as inherited owner work and stop before adding Jcode so the final release gate has an attributable baseline.
+Expected: all 22 files run and pass, and every named package actually executes its typecheck. The accepted baseline observed at `d40530040` is 22 test files passing with 438 tests passing, and all six package typechecks passing (`@t3tools/contracts`, `@t3tools/shared`, `t3`, `@t3tools/web`, `@t3tools/mobile`, `@t3tools/desktop`). Compare later gates against those numbers. Earlier plan-review notes describing 433 passing tests, an ordering failure in `ProviderCommandReactor.test.ts`, and web/mobile typecheck failures on a missing `createdAt` field are stale; the owner fixed all three before the base was recorded. Server and desktop still emit Effect lint-style suggestions that do not affect exit status. Treat any new failure as inherited owner work and stop before adding Jcode so the final release gate has an attributable baseline.
 
 - [ ] **Step 3: Copy this plan into the branch**
 
@@ -293,15 +294,16 @@ Add to `apps/server/package.json` dependencies:
 "@1jehuang/jcode-sdk": "1.1.0"
 ```
 
-Add to `pnpm-workspace.yaml` overrides:
+Add these six keys under the existing top-level `overrides:` mapping in `pnpm-workspace.yaml`, keeping the two-space indentation shown here. The `overrides:` line already exists in the file; do not add a second one.
 
 ```yaml
-"@1jehuang/jcode-sdk>@1jehuang/jcode-darwin-arm64": "-"
-"@1jehuang/jcode-sdk>@1jehuang/jcode-darwin-x64": "-"
-"@1jehuang/jcode-sdk>@1jehuang/jcode-linux-arm64": "-"
-"@1jehuang/jcode-sdk>@1jehuang/jcode-linux-x64": "-"
-"@1jehuang/jcode-sdk>@1jehuang/jcode-win32-arm64": "-"
-"@1jehuang/jcode-sdk>@1jehuang/jcode-win32-x64": "-"
+overrides:
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-darwin-arm64": "-"
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-darwin-x64": "-"
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-linux-arm64": "-"
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-linux-x64": "-"
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-win32-arm64": "-"
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-win32-x64": "-"
 ```
 
 Run:
