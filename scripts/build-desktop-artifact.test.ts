@@ -2,11 +2,14 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { parse as parseYaml } from "yaml";
 
 import {
   BuildCommandFailedError,
@@ -47,7 +50,21 @@ import {
   WINDOWS_ASAR_UNPACK,
 } from "./build-desktop-artifact.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
+import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+
+// Each of these is a ~100MB bundled Jcode executable shipped as an optional
+// platform dependency of the SDK. Pylon always launches the user's installed
+// Jcode runtime, so a desktop artifact that stages any of them is carrying a
+// second copy of a runtime it will never execute.
+const forbiddenJcodeRuntimePackages = [
+  "@1jehuang/jcode-darwin-arm64",
+  "@1jehuang/jcode-darwin-x64",
+  "@1jehuang/jcode-linux-arm64",
+  "@1jehuang/jcode-linux-x64",
+  "@1jehuang/jcode-win32-arm64",
+  "@1jehuang/jcode-win32-x64",
+] as const;
 
 function mockProcess(exitCode: number) {
   return ChildProcessSpawner.makeHandle({
@@ -648,6 +665,71 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(win.signAndEditExecutable, true);
       assert.notProperty(win, "azureSignOptions");
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  // The Jcode runtime is external by design: Pylon launches the binary the user
+  // already installed. Nothing in the staged dependency set, the staged install
+  // overrides, or the copied artifact files may pull a platform runtime package
+  // back in, or every desktop artifact grows by a bundled executable.
+  it.effect("keeps the Jcode platform runtimes out of the desktop artifact", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
+
+      const workspaceConfig = parseYaml(
+        yield* fs.readFileString(path.join(repoRoot, "pnpm-workspace.yaml")),
+      ) as {
+        catalog?: Record<string, string>;
+        overrides?: Record<string, string>;
+      };
+      const catalog = workspaceConfig.catalog ?? {};
+      const overrides = workspaceConfig.overrides ?? {};
+
+      const serverPackageJson = JSON.parse(
+        yield* fs.readFileString(path.join(repoRoot, "apps/server/package.json")),
+      ) as { dependencies: Record<string, string> };
+      const desktopPackageJson = JSON.parse(
+        yield* fs.readFileString(path.join(repoRoot, "apps/desktop/package.json")),
+      ) as { dependencies: Record<string, string> };
+
+      // The SDK itself is a plain JS package and must still be staged; it is the
+      // runtime packages beside it that must not be.
+      assert.equal(serverPackageJson.dependencies["@1jehuang/jcode-sdk"], "1.1.0");
+
+      const stagedDependencies = {
+        ...resolveCatalogDependencies(serverPackageJson.dependencies, catalog, "apps/server"),
+        ...resolveDesktopRuntimeDependencies(desktopPackageJson.dependencies, catalog),
+      };
+      const stageWorkspaceConfig = createStageWorkspaceConfig({
+        platform: "mac",
+        arch: "arm64",
+        overrides: resolveCatalogDependencies(overrides, catalog, "apps/desktop"),
+      });
+      const lockfile = yield* fs.readFileString(path.join(repoRoot, "pnpm-lock.yaml"));
+
+      for (const forbidden of forbiddenJcodeRuntimePackages) {
+        assert.notProperty(stagedDependencies, forbidden);
+        assert.equal(
+          overrides[`@1jehuang/jcode-sdk>${forbidden}`],
+          "-",
+          `${forbidden} must be excluded by a workspace override`,
+        );
+        // The staged install runs in its own directory with its own workspace
+        // yaml, so the exclusions have to travel with it.
+        assert.equal(stageWorkspaceConfig.overrides?.[`@1jehuang/jcode-sdk>${forbidden}`], "-");
+        // A `-` override leaves the override key in the lockfile but must not
+        // produce a resolution, snapshot, or importer entry for the package.
+        assert.notInclude(lockfile, `'${forbidden}@`);
+        for (const exclusion of DESKTOP_FILE_EXCLUSIONS) {
+          assert.notInclude(exclusion, forbidden);
+        }
+        for (const resource of DESKTOP_EXTRA_RESOURCES) {
+          assert.notInclude(resource.from, forbidden);
+          assert.notInclude(resource.to, forbidden);
+        }
+      }
+    }),
   );
 
   it("stages the resource monitor as an external executable resource", () => {

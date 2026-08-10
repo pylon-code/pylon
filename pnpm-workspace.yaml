@@ -78,6 +78,12 @@ minimumReleaseAgeExclude:
   - effect@4.0.0-beta.103
 
 overrides:
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-darwin-arm64": "-"
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-darwin-x64": "-"
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-linux-arm64": "-"
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-linux-x64": "-"
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-win32-arm64": "-"
+  "@1jehuang/jcode-sdk>@1jehuang/jcode-win32-x64": "-"
   "@clerk/backend": "catalog:"
   "@clerk/clerk-js": "catalog:"
   "@clerk/clerk-js>@base-org/account": "-"
