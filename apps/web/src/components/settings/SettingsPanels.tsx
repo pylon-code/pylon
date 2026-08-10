@@ -492,6 +492,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.enableLegacyTokenStreaming
         ? ["Stream token by token"]
         : []),
+      ...(settings.legacySidebarEnabled !== DEFAULT_UNIFIED_SETTINGS.legacySidebarEnabled
+        ? ["Sidebar (legacy)"]
+        : []),
       ...(settings.enableProviderUpdateChecks !==
       DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks
         ? ["Provider update checks"]
@@ -535,6 +538,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.fontSizeTerminal,
       settings.glassOpacity,
       settings.enableLegacyTokenStreaming,
+      settings.legacySidebarEnabled,
       settings.enableProviderUpdateChecks,
       settings.sidebarAutoSettleAfterDays,
       settings.sidebarProjectGroupingMode,
@@ -619,6 +623,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       enableLegacyTokenStreaming: DEFAULT_UNIFIED_SETTINGS.enableLegacyTokenStreaming,
+      legacySidebarEnabled: DEFAULT_UNIFIED_SETTINGS.legacySidebarEnabled,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
       backgroundActivityProfile: DEFAULT_UNIFIED_SETTINGS.backgroundActivityProfile,
