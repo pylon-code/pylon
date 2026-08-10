@@ -520,6 +520,33 @@ export const PrimeAgentSettings = makeProviderSettingsSchema(
 );
 export type PrimeAgentSettings = typeof PrimeAgentSettings.Type;
 
+export const JcodeSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("jcode").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Jcode executable used by this provider instance.",
+        providerSettingsForm: { placeholder: "jcode", clearWhenEmpty: "omit" },
+      }),
+    ),
+    inheritLogins: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({
+        title: "Inherit provider logins",
+        description:
+          "Share recognized host credential files with this private Jcode instance. This can spend the connected accounts' quota.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
+  },
+  { order: ["binaryPath", "inheritLogins"] },
+);
+export type JcodeSettings = typeof JcodeSettings.Type;
+
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -646,6 +673,7 @@ export const ServerSettings = Schema.Struct({
     grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     primeAgent: PrimeAgentSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    jcode: JcodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
@@ -757,6 +785,12 @@ const PrimeAgentSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const JcodeSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  inheritLogins: Schema.optionalKey(Schema.Boolean),
+});
+
 export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
@@ -798,6 +832,7 @@ export const ServerSettingsPatch = Schema.Struct({
       grok: Schema.optionalKey(GrokSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
       primeAgent: Schema.optionalKey(PrimeAgentSettingsPatch),
+      jcode: Schema.optionalKey(JcodeSettingsPatch),
     }),
   ),
   // Whole-map replacement for the new instance config. Patching individual

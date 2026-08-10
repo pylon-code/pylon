@@ -162,6 +162,46 @@ describe("ServerSettings Prime Agent provider", () => {
   });
 });
 
+describe("ServerSettings Jcode provider", () => {
+  it("hydrates the legacy Jcode slot with safe CLI defaults", () => {
+    expect(decodeServerSettings({}).providers.jcode).toEqual({
+      enabled: true,
+      binaryPath: "jcode",
+      inheritLogins: true,
+    });
+  });
+
+  // Inherited logins spend the connected accounts' quota, so an explicit opt-out
+  // has to survive a decode round-trip rather than snapping back to the default.
+  it("round-trips an explicit inheritLogins opt-out", () => {
+    expect(
+      decodeServerSettings({ providers: { jcode: { inheritLogins: false } } }).providers.jcode,
+    ).toEqual({
+      enabled: true,
+      binaryPath: "jcode",
+      inheritLogins: false,
+    });
+  });
+
+  it("decodes and normalizes Jcode provider patches", () => {
+    expect(
+      decodeServerSettingsPatch({
+        providers: {
+          jcode: {
+            enabled: false,
+            binaryPath: "  /opt/bin/jcode  ",
+            inheritLogins: false,
+          },
+        },
+      }).providers?.jcode,
+    ).toEqual({
+      enabled: false,
+      binaryPath: "/opt/bin/jcode",
+      inheritLogins: false,
+    });
+  });
+});
+
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults text generation to Luna at low reasoning effort", () => {
     expect(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection).toEqual({
