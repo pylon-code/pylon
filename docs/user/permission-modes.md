@@ -53,9 +53,11 @@ approve an IPython cell or command, that call still has normal host access. Prim
 compatibility mode supports only **Full access**.
 
 Jcode supports only **Full access**. It cannot hold a command or edit for approval, so no approval
-prompts appear on a Jcode thread. Set the mode to **Full access** before sending; starting a Jcode
-session in another mode is refused with an explanation rather than quietly downgraded to something
-you did not pick. See [Jcode](./providers-jcode.md).
+prompts appear on a Jcode thread. You do not need to switch modes yourself: on a Jcode thread the
+mode control offers only **Full access**, and a thread carrying another mode is moved to it when
+you open the thread. A session that somehow still starts in an unsupported mode is refused with an
+explanation rather than quietly downgraded to something you did not pick.
+See [Jcode](./providers-jcode.md).
 
 Mobile offers the same four modes. It labels the first one **Approve actions** rather than
 **Supervised**.

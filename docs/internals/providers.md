@@ -146,12 +146,19 @@ MCP credential is issued or any provider process is engaged. Clients _coerce_: t
 snapshot and resolves a selection to a supported one, so a normal user-driven start does not reach
 the server's refusal. The helper names no driver, and Jcode adds no branch to it.
 
-The coerce half is currently pinned on mobile only, through `resolveModelSelectionRuntimeMode` in
-`apps/mobile/src/lib/modelOptions.ts`. Web does not consult `supportedRuntimeModes` before starting
-a session today, so on web a stale or unsupported persisted mode surfaces as the server's typed
-refusal rather than as a narrowed control. Rejection is the correct backstop either way — for stale
-persisted state and for a provider that narrows its policy after a choice was made — but the web
-half of the coercion story is a known gap, not a design claim.
+Both clients coerce, through that same helper, so neither has a Jcode branch. Web reads the
+published set with `getServerProviderSupportedRuntimeModes` off the selected instance's snapshot and
+narrows the composer's runtime-mode control to it, then calls `resolveServerProviderRuntimeMode` and
+rewrites a differing stored mode in an effect (`apps/web/src/components/chat/ChatComposer.tsx`).
+Mobile does the same through `resolveModelSelectionRuntimeMode` in
+`apps/mobile/src/lib/modelOptions.ts`. The user-visible consequence on both clients is that a Jcode
+thread offers exactly one mode, and a thread carrying an unsupported persisted mode is corrected on
+render rather than failing at send.
+
+Server rejection is therefore the backstop, not the normal path: it covers state that never passed
+through a client control — a stale binding on recovery, a non-UI caller, or a provider that narrows
+its policy after a choice was already made. Keep both halves. Narrowing alone would trust the
+client, and rejecting alone would show users an error where a disabled option belongs.
 
 The [Jcode SDK blocker ledger](jcode-sdk-blockers.md) records the exact SDK requirements that must
 land before each withheld capability can be enabled.

@@ -5,10 +5,18 @@ with Pylon, and this integration is **Early Access**.
 
 ## Install
 
-Install Jcode on the environment host. The Early Access integration is tested with Jcode `0.73.0`:
+Install Jcode on the environment host.
+
+macOS and Linux:
 
 ```bash
-npm install --global jcode@0.73.0
+curl -fsSL https://jcode.sh/install | bash
+```
+
+Windows 11 (PowerShell 5.1 or newer):
+
+```powershell
+irm https://jcode.sh/install.ps1 | iex
 ```
 
 Start it once in a terminal to confirm it runs:
@@ -17,13 +25,17 @@ Start it once in a terminal to confirm it runs:
 jcode --version
 ```
 
+Pylon needs Jcode `0.71.1` or newer. An older build is reported as unsupported with a prompt to
+update. The Early Access integration is tested through `0.73.0`; a newer Jcode still runs, and
+Pylon marks it as newer than the build it has tested rather than refusing it.
+
 ## Configure Pylon
 
 Open **Settings → Providers → Jcode**. The default provider normally needs no changes:
 
 ```text
 Display name: Jcode
-Binary path: jcode
+Binary path: (empty — the field shows `jcode` as a greyed-out placeholder)
 Inherit provider logins: on
 ```
 
@@ -36,9 +48,8 @@ often has a shorter `PATH` than your terminal. If `jcode` runs in your terminal 
 the provider as not installed, set **Binary path** to the complete path of the executable. `which
 jcode` in your terminal prints it.
 
-On Windows, set **Binary path** to a real executable if launching through the npm `.cmd` shim
-fails. A global npm install creates a `jcode.cmd` wrapper rather than an executable, and some
-launch configurations cannot start it.
+The same applies on Windows. If Pylon cannot launch Jcode, set **Binary path** to the full path of
+the Jcode executable rather than relying on `PATH`. `where.exe jcode` in a terminal prints it.
 
 ### Inherit provider logins
 
@@ -67,10 +78,13 @@ network, and act outside the workspace without asking.
 Full access is not an operating-system sandbox. Give Jcode work in a worktree, a container, or a
 checkout you are willing to lose.
 
-If a thread already carries a mode Jcode cannot run — because you switched it to Jcode, or picked
-the mode before choosing the provider — set it to **Full access** before sending. Starting a Jcode
-session in an unsupported mode is refused with an explanation rather than quietly downgraded to
-something you did not pick.
+You do not have to select the mode yourself. On a Jcode thread the mode control offers **Full
+access** and nothing else, and a thread that already carried a different mode — because you
+switched it to Jcode, or picked the mode before choosing the provider — is moved to **Full access**
+when you open it. Web and mobile both behave this way.
+
+If a session is somehow still started in a mode Jcode cannot run, Pylon refuses it with an
+explanation rather than quietly running your work under a mode you did not pick.
 
 ## Sessions and state
 
