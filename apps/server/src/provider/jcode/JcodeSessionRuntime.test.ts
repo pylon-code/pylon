@@ -958,8 +958,20 @@ describe("JcodeSessionRuntime interruption and disconnect", () => {
     expect(serialized).not.toContain(SECRET);
     expect(serialized).not.toContain(NATIVE_SOCKET);
     expect(serialized).not.toContain(NATIVE_SESSION_ID);
+    // Exactly one abort and one exit, and a turn the daemon never finished is
+    // never reported as completed.
+    expect(types.filter((type) => type === "turn.aborted")).toHaveLength(1);
+    expect(types.filter((type) => type === "session.exited")).toHaveLength(1);
+    expect(types).not.toContain("turn.completed");
+    // No retried write and no synthesized history to paper over the gap.
+    expect(harness.sent).toHaveLength(1);
+    expect(harness.histories).toEqual([]);
+    // `withRuntime` closes the scope before it resolves, so teardown was
+    // idempotent across the transport failure, the runtime finalizer, and the
+    // scope finalizer, and the event source was started once and returned once.
     expect(harness.closes).toBe(1);
     expect(harness.source.starts).toBe(1);
+    expect(harness.source.returns).toBe(1);
   });
 
   it("closes without synthesizing history when the transport fails while idle", async () => {
@@ -1145,56 +1157,22 @@ describe("JcodeSessionRuntime cold restart", () => {
   });
 });
 
+/**
+ * The mid-turn half of active disconnect lives in the "interruption and
+ * disconnect" block above ("aborts the active turn, reports the error, and
+ * exits on transport failure"), which owns the same scenario plus its ordering
+ * and redaction assertions. This block covers the case that scenario cannot:
+ * a transport death *after* the daemon already completed the turn.
+ */
 describe("JcodeSessionRuntime active disconnect", () => {
-  it("ends a live turn on a mid-turn transport failure and closes once with its scope", async () => {
-    const harness = makeHarness();
-    // Waiting on the runtime's own events and then on scope closure is the whole
-    // synchronization here: no sleep, no polling, no deadline.
-    const events = await runScoped(() =>
-      Effect.gen(function* () {
-        const built = yield* scenario(harness, {});
-        return yield* Effect.scoped(
-          Effect.gen(function* () {
-            const runtime = yield* makeJcodeSessionRuntime(built.input);
-            const collector = yield* collectAll(runtime).pipe(
-              Effect.forkChild({ startImmediately: true }),
-            );
-            yield* runtime.sendTurn(turnInput());
-            harness.source.push(textDelta("partial"));
-            harness.source.fail(new Error(`socket closed at ${NATIVE_SOCKET} for ${SECRET}`));
-            return yield* Fiber.join(collector);
-          }),
-        );
-      }),
-    );
-
-    const types = events.map((event) => event.type);
-    expect(types.filter((type) => type === "turn.aborted")).toHaveLength(1);
-    expect(types.filter((type) => type === "session.exited")).toHaveLength(1);
-    // A turn the daemon never finished must not be reported as completed.
-    expect(types).not.toContain("turn.completed");
-    expect(types.at(-1)).toBe("session.exited");
-    for (const event of events) expect(() => decodeRuntimeEvent(event)).not.toThrow();
-    // No reconnect, no retried write, no synthesized history.
-    expect(harness.source.starts).toBe(1);
-    expect(harness.sent).toHaveLength(1);
-    expect(harness.histories).toEqual([]);
-    // The scope has closed by now, and teardown was idempotent across the
-    // transport failure, the runtime finalizer, and the scope finalizer.
-    expect(harness.closes).toBe(1);
-    expect(harness.source.returns).toBe(1);
-  });
-
   it("reports exactly one completion and one exit when the transport dies after a turn", async () => {
     const harness = makeHarness();
-    const events = await runScoped(() =>
+    const events = await withRuntime(harness, {}, (fixture) =>
       Effect.gen(function* () {
-        const built = yield* scenario(harness, {});
-        const runtime = yield* makeJcodeSessionRuntime(built.input);
-        const collector = yield* collectAll(runtime).pipe(
+        const collector = yield* collectAll(fixture.runtime).pipe(
           Effect.forkChild({ startImmediately: true }),
         );
-        yield* runtime.sendTurn(turnInput());
+        yield* fixture.runtime.sendTurn(turnInput());
         harness.source.push({ ev: "turn_done", session_id: NATIVE_SESSION_ID });
         harness.source.fail(new Error("socket closed"));
         return yield* Fiber.join(collector);
@@ -1207,9 +1185,13 @@ describe("JcodeSessionRuntime active disconnect", () => {
     expect(types.filter((type) => type === "turn.completed")).toHaveLength(1);
     expect(types.filter((type) => type === "session.exited")).toHaveLength(1);
     expect(types).not.toContain("turn.aborted");
+    // No retry, no reconnect, no synthesized history.
     expect(harness.sent).toHaveLength(1);
     expect(harness.source.starts).toBe(1);
     expect(harness.histories).toEqual([]);
+    // The scope has closed by the time `withRuntime` resolves.
+    expect(harness.closes).toBe(1);
+    expect(harness.source.returns).toBe(1);
   });
 });
 

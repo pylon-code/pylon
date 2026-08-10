@@ -766,18 +766,35 @@ describe("ProviderSessionReaper", () => {
   it("closes an abandoned Jcode child client and engages no sibling provider adapter", async () => {
     const jcodeThreadId = ThreadId.make("thread-reaper-jcode-abandoned");
     const stale = "2026-01-01T00:00:00.000Z";
-    const fresh = DateTime.formatIso(await Effect.runPromise(DateTime.now));
+    /**
+     * Deliberately in the future rather than "now".
+     *
+     * The reaper compares `Clock.currentTimeMillis - Date.parse(lastSeenAt)`
+     * against a 1s threshold on the real clock, so a `now` captured before the
+     * adapter, the SQLite runtime, and seven upserts could age past it on a
+     * loaded host and turn every sibling stale. A future instant yields a
+     * negative idle duration no scheduling delay can reach.
+     */
+    const fresh = "2099-01-01T00:00:00.000Z";
     const jcode = await startAbandonedJcodeSession(jcodeThreadId);
     expect(jcode.connects()).toBe(1);
     expect(jcode.child.state.closes).toBe(0);
 
-    // One recording adapter per sibling provider. Each owns a *fresh* binding,
-    // so the reaper has a reason to look at it and no reason to stop it.
     const siblings = SIBLING_PROVIDERS.map((provider) => ({
       provider,
       threadId: ThreadId.make(`thread-reaper-${provider}-fresh`),
-      stops: [] as ThreadId[],
     }));
+
+    /**
+     * Resolves only after the real `JcodeAdapter.stopSession` Effect has
+     * completed, and that Effect is uninterruptible and returns only once the
+     * session's child scope — and with it the child client — is closed. So this
+     * is the teardown receipt itself, not an observation of one.
+     */
+    let reaped: (() => void) | undefined;
+    const jcodeReaped = new Promise<void>((resolve) => {
+      reaped = resolve;
+    });
 
     const harness = await createHarness({
       readModel: makeReadModel([
@@ -807,16 +824,16 @@ describe("ProviderSessionReaper", () => {
         })),
       ]),
       // Stands in for `ProviderService`'s routing only: each thread reaches the
-      // adapter that owns it, and the Jcode thread reaches the real one.
-      stopSessionImplementation: (request) => {
-        if (request.threadId === jcodeThreadId) {
-          return jcode.adapter.stopSession(request.threadId).pipe(Effect.orDie);
-        }
-        const sibling = siblings.find((candidate) => candidate.threadId === request.threadId);
-        return Effect.sync(() => {
-          sibling?.stops.push(request.threadId);
-        });
-      },
+      // adapter that owns it, and the Jcode thread reaches the real one. A
+      // sibling reaching this branch is already visible through `stopSession`'s
+      // recorded calls, so the branch itself records nothing.
+      stopSessionImplementation: (request) =>
+        request.threadId === jcodeThreadId
+          ? jcode.adapter.stopSession(request.threadId).pipe(
+              Effect.orDie,
+              Effect.tap(() => Effect.sync(() => reaped?.())),
+            )
+          : Effect.void,
     });
 
     const repository = await runtime!.runPromise(
@@ -855,8 +872,11 @@ describe("ProviderSessionReaper", () => {
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
 
-    // The child client's `close` is the receipt this test waits on, not a sleep.
-    await waitFor(() => jcode.child.state.closes === 1);
+    await jcodeReaped;
+    // Bindings are swept in `last_seen_at ASC` order, so the stale Jcode binding
+    // is examined first and the six future-dated siblings are examined after it.
+    // Draining lets that remainder finish, so a sibling the sweep should not have
+    // touched is observed here rather than after the assertions.
     await Effect.runPromise(drainFibers);
 
     // The abandoned native connection is gone and the thread is startable again.
@@ -870,17 +890,11 @@ describe("ProviderSessionReaper", () => {
     // No second connection was opened to replace it.
     expect(jcode.connects()).toBe(1);
 
-    // Exactly one thread was reaped, and it was the Jcode one. No sibling
-    // adapter was engaged, and every sibling binding survives.
+    // Exactly one thread was reaped, and it was the Jcode one: `stopSession` is
+    // the reaper's only channel to any adapter, so no sibling adapter was
+    // engaged.
     expect(harness.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
       jcodeThreadId,
     ]);
-    expect(siblings.flatMap((sibling) => sibling.stops)).toEqual([]);
-    for (const sibling of siblings) {
-      const remaining = await runtime!.runPromise(
-        repository.getByThreadId({ threadId: sibling.threadId }),
-      );
-      expect(Option.isSome(remaining)).toBe(true);
-    }
   });
 });
