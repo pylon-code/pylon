@@ -587,6 +587,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             `Provider instance '${resolvedInstanceId}' is disabled in Pylon settings.`,
           );
         }
+        // Runtime-mode support is whatever the instance's live snapshot
+        // publishes, so this stays provider-neutral — no driver is named here.
+        // It runs before MCP preparation and before the adapter is touched so a
+        // refusal leaves no credential issued and no provider process engaged.
+        if (!instanceInfo.supportedRuntimeModes.includes(input.runtimeMode)) {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            `Provider instance '${resolvedInstanceId}' does not support runtime mode '${input.runtimeMode}'. Supported modes: ${instanceInfo.supportedRuntimeModes.join(", ")}.`,
+          );
+        }
         const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
         const effectiveResumeCursor =
           input.resumeCursor ??

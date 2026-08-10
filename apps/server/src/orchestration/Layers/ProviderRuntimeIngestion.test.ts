@@ -4,6 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import {
+  DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
   OrchestrationReadModel,
   ProviderDriverKind,
   ProviderRuntimeEvent,
@@ -145,6 +146,7 @@ function createProviderServiceHarness() {
           driverKind,
           continuationKey: `${driverKind}:instance:${instanceId}`,
         },
+        supportedRuntimeModes: DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
       });
     },
     rollbackConversation: () => unsupported(),

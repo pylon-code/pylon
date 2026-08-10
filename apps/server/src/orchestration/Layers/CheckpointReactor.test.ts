@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
 
 import {
+  DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
   ProviderDriverKind,
   ProviderRuntimeEvent,
   ProviderSession,
@@ -143,6 +144,7 @@ function createProviderServiceHarness(
           driverKind: ProviderDriverKind.make(providerName),
           continuationKey: `${providerName}:instance:${instanceId}`,
         },
+        supportedRuntimeModes: DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
       }),
     rollbackConversation,
     get streamEvents() {

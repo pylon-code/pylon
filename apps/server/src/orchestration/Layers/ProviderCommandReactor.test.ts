@@ -4,6 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import {
+  DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
   ModelSelection,
   ProviderRuntimeEvent,
   ProviderSession,
@@ -373,6 +374,7 @@ describe("ProviderCommandReactor", () => {
                 ? "codex:home:/shared-codex"
                 : `${driverKind}:instance:${instanceId}`,
           },
+          supportedRuntimeModes: DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
         });
       },
       rollbackConversation: () => unsupported(),

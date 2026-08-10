@@ -19,7 +19,7 @@
  *
  * @module ProviderAdapterRegistry
  */
-import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import type { ProviderDriverKind, ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as PubSub from "effect/PubSub";
@@ -37,6 +37,17 @@ export interface ProviderInstanceRoutingInfo {
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;
   readonly continuationIdentity: ProviderContinuationIdentity;
+  /**
+   * Runtime modes this instance's live snapshot says it can actually run.
+   *
+   * Server-authoritative: derived from the provider's published execution
+   * policy (`getServerProviderSupportedRuntimeModes`), not from anything the
+   * client asked for. `ProviderService` refuses a mode outside this list
+   * before it prepares MCP or touches the adapter, which is how a
+   * full-access-only provider stays provider-neutral to orchestration.
+   * Providers that publish no policy keep the full legacy mode set.
+   */
+  readonly supportedRuntimeModes: ReadonlyArray<RuntimeMode>;
 }
 
 /**

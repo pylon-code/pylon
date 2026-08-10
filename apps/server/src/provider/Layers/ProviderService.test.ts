@@ -9,11 +9,14 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderTurnStartResult,
+  RuntimeMode,
   SessionCompactionUpdatedPayload,
   SessionInputQueueUpdatedPayload,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
+  DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
+  EnvironmentId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -39,6 +42,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
+import { HttpServer } from "effect/unstable/http";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
@@ -61,6 +65,9 @@ import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
@@ -565,6 +572,7 @@ it.effect("ProviderServiceLive rejects new sessions for disabled providers", () 
                 driverKind: CLAUDE_AGENT_DRIVER,
                 continuationKey: "claudeAgent:instance:claudeAgent",
               },
+              supportedRuntimeModes: DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
             })
           : registryBase.getInstanceInfo(instanceId),
     };
@@ -634,6 +642,7 @@ it.effect(
                   driverKind,
                   continuationKey: "codex:/Users/example/.codex",
                 },
+                supportedRuntimeModes: DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
               })
             : Effect.fail(unsupported()),
         listInstances: () => Effect.succeed([instanceId]),
@@ -713,6 +722,7 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
                 driverKind,
                 continuationKey: "codex:/Users/example/.codex",
               },
+              supportedRuntimeModes: DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
             })
           : Effect.fail(unsupported()),
       listInstances: () => Effect.succeed([instanceId]),
@@ -2310,3 +2320,219 @@ validation.layer("ProviderServiceLive validation", (it) => {
     }),
   );
 });
+
+// ---------------------------------------------------------------------------
+// Gate C: server-authoritative runtime-mode enforcement.
+//
+// `ProviderService` stays provider-neutral: it never names a driver. The only
+// thing it knows is the mode list the routing information published, which the
+// adapter registry read off the live provider snapshot. A mode outside that
+// list must be refused before any side effect — no MCP credential is issued
+// and the adapter is never asked to start a session.
+// ---------------------------------------------------------------------------
+
+const gateCHttpServer = HttpServer.HttpServer.of({
+  address: { _tag: "TcpAddress", hostname: "127.0.0.1", port: 43199 },
+  serve: (() => Effect.void) as HttpServer.HttpServer["Service"]["serve"],
+});
+
+const gateCServerEnvironment = ServerEnvironment.ServerEnvironment.of({
+  getEnvironmentId: Effect.succeed(EnvironmentId.make("environment-gate-c")),
+  getDescriptor: Effect.die("unused"),
+});
+
+/**
+ * Install a live `McpSessionRegistry` so MCP preparation becomes observable.
+ *
+ * Without an active registry `issueActiveMcpCredential` is a no-op and a test
+ * asserting "no MCP preparation happened" would pass vacuously. With it
+ * installed, a prepared session is readable through
+ * `McpProviderSession.readMcpProviderSession`, which the accepted-mode control
+ * test asserts is populated.
+ */
+const activeMcpSessionLayer = McpSessionRegistry.layer.pipe(
+  Layer.provide(Layer.succeed(HttpServer.HttpServer, gateCHttpServer)),
+  Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, gateCServerEnvironment)),
+  Layer.provide(NodeServices.layer),
+);
+
+const gateCRuntimeModeLayer = Layer.mergeAll(activeMcpSessionLayer, NodeServices.layer);
+
+const makeRuntimeModeFixture = (supportedRuntimeModes: ReadonlyArray<RuntimeMode>) => {
+  const codex = makeFakeCodexAdapter();
+  const base = makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter });
+  const registry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = {
+    ...base,
+    getInstanceInfo: (instanceId) =>
+      base
+        .getInstanceInfo(instanceId)
+        .pipe(Effect.map((info) => ({ ...info, supportedRuntimeModes }))),
+  };
+  const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+    Layer.provide(SqlitePersistenceMemory),
+  );
+  const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+  const layer = makeProviderServiceLive().pipe(
+    Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+    Layer.provide(directoryLayer),
+    Layer.provide(defaultServerSettingsLayer),
+    Layer.provide(AnalyticsService.layerTest),
+    Layer.provide(
+      Layer.succeed(
+        ProviderEventLoggers.ProviderEventLoggers,
+        ProviderEventLoggers.NoOpProviderEventLoggers,
+      ),
+    ),
+  );
+  return { codex, layer };
+};
+
+for (const rejectedMode of ["approval-required", "auto-accept-edits", "auto"] as const) {
+  it.effect(
+    `ProviderServiceLive rejects runtime mode '${rejectedMode}' for a full-access-only instance`,
+    () =>
+      Effect.gen(function* () {
+        // Forces the MCP layer to build so `activeMcpSessionRegistry` is
+        // installed; otherwise Effect prunes an unrequired layer and the
+        // "no credential was issued" assertion would hold vacuously.
+        yield* McpSessionRegistry.McpSessionRegistry;
+        const threadId = asThreadId(`thread-runtime-mode-${rejectedMode}`);
+        const fixture = makeRuntimeModeFixture(["full-access"]);
+
+        // The MCP state has to be read while the provider-service layer is
+        // still up: its shutdown finalizer revokes every credential, which
+        // would make an "undefined" read after teardown meaningless.
+        const observed = yield* Effect.gen(function* () {
+          const provider = yield* ProviderService.ProviderService;
+          const failure = yield* Effect.flip(
+            provider.startSession(threadId, {
+              provider: CODEX_DRIVER,
+              providerInstanceId: codexInstanceId,
+              threadId,
+              runtimeMode: rejectedMode,
+            }),
+          );
+          return {
+            failure,
+            mcpSession: McpProviderSession.readMcpProviderSession(threadId),
+          };
+        }).pipe(Effect.provide(fixture.layer));
+
+        assert.instanceOf(observed.failure, ProviderValidationError);
+        assert.equal(observed.failure.operation, "ProviderService.startSession");
+        assert.include(observed.failure.issue, rejectedMode);
+        assert.include(observed.failure.issue, "codex");
+        assert.include(observed.failure.issue, "full-access");
+
+        // No adapter call and no MCP credential: the rejection precedes both.
+        assert.equal(fixture.codex.startSession.mock.calls.length, 0);
+        assert.equal(observed.mcpSession, undefined);
+      }).pipe(Effect.provide(gateCRuntimeModeLayer)),
+  );
+}
+
+it.effect("ProviderServiceLive accepts the one runtime mode a restricted instance supports", () =>
+  Effect.gen(function* () {
+    yield* McpSessionRegistry.McpSessionRegistry;
+    const threadId = asThreadId("thread-runtime-mode-accepted");
+    const fixture = makeRuntimeModeFixture(["full-access"]);
+
+    const observed = yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      return {
+        session,
+        mcpSession: McpProviderSession.readMcpProviderSession(threadId),
+      };
+    }).pipe(Effect.provide(fixture.layer));
+
+    assert.equal(observed.session.runtimeMode, "full-access");
+    assert.equal(fixture.codex.startSession.mock.calls.length, 1);
+    // Control for the rejection assertions above: on the accepted path MCP
+    // preparation really does run, so `undefined` there is load-bearing.
+    assert.notEqual(observed.mcpSession, undefined);
+    assert.equal(observed.mcpSession?.threadId, threadId);
+  }).pipe(Effect.provide(gateCRuntimeModeLayer)),
+);
+
+it.effect("ProviderServiceLive keeps every mode a fully capable instance publishes", () =>
+  Effect.gen(function* () {
+    const fixture = makeRuntimeModeFixture(DEFAULT_SERVER_PROVIDER_RUNTIME_MODES);
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      for (const runtimeMode of DEFAULT_SERVER_PROVIDER_RUNTIME_MODES) {
+        const threadId = asThreadId(`thread-runtime-mode-open-${runtimeMode}`);
+        const session = yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode,
+        });
+        assert.equal(session.runtimeMode, runtimeMode);
+      }
+    }).pipe(Effect.provide(fixture.layer));
+
+    assert.equal(
+      fixture.codex.startSession.mock.calls.length,
+      DEFAULT_SERVER_PROVIDER_RUNTIME_MODES.length,
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("ProviderServiceLive reports a disabled instance before its runtime-mode policy", () =>
+  Effect.gen(function* () {
+    const threadId = asThreadId("thread-runtime-mode-disabled");
+    const codex = makeFakeCodexAdapter();
+    const base = makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter });
+    const registry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = {
+      ...base,
+      getInstanceInfo: (instanceId) =>
+        base.getInstanceInfo(instanceId).pipe(
+          Effect.map((info) => ({
+            ...info,
+            enabled: false,
+            supportedRuntimeModes: ["full-access"] as ReadonlyArray<RuntimeMode>,
+          })),
+        ),
+    };
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+
+    const failure = yield* Effect.flip(
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        return yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "auto",
+        });
+      }).pipe(Effect.provide(providerLayer)),
+    );
+
+    // Enabled-ness is the earlier gate, so the message must still name it.
+    assert.instanceOf(failure, ProviderValidationError);
+    assert.include(failure.issue, "is disabled");
+    assert.equal(codex.startSession.mock.calls.length, 0);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);

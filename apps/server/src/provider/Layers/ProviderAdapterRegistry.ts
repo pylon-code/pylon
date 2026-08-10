@@ -17,6 +17,7 @@
  */
 import {
   defaultInstanceIdForDriver,
+  getServerProviderSupportedRuntimeModes,
   ProviderInstanceId,
   type ProviderDriverKind,
 } from "@t3tools/contracts";
@@ -55,14 +56,21 @@ const makeProviderAdapterRegistry = Effect.fn("makeProviderAdapterRegistry")(fun
                 provider: instanceId,
               }),
             )
-          : Effect.succeed({
-              instanceId: instance.instanceId,
-              driverKind: instance.driverKind,
-              displayName: instance.displayName,
-              accentColor: instance.accentColor,
-              enabled: instance.enabled,
-              continuationIdentity: instance.continuationIdentity,
-            }),
+          : // Read the snapshot per call rather than caching it, for the same
+            // reason the whole facade looks up dynamically: a provider that
+            // only learns its execution policy once its daemon comes up must
+            // not stay pinned to whatever it published at boot.
+            instance.snapshot.getSnapshot.pipe(
+              Effect.map((snapshot) => ({
+                instanceId: instance.instanceId,
+                driverKind: instance.driverKind,
+                displayName: instance.displayName,
+                accentColor: instance.accentColor,
+                enabled: instance.enabled,
+                continuationIdentity: instance.continuationIdentity,
+                supportedRuntimeModes: getServerProviderSupportedRuntimeModes(snapshot),
+              })),
+            ),
       ),
     );
 

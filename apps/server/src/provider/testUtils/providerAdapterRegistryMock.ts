@@ -14,6 +14,7 @@
  * @module provider/testUtils/providerAdapterRegistryMock
  */
 import {
+  DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
   defaultInstanceIdForDriver,
   ProviderDriverKind,
   type ProviderInstanceId,
@@ -77,6 +78,10 @@ export const makeAdapterRegistryMock = (adapters: KindAdapterMap): ProviderAdapt
           driverKind: ProviderDriverKind.make(adapter.provider),
           continuationKey: `${adapter.provider}:instance:${instanceId}`,
         },
+        // Legacy fixtures describe providers that publish no execution policy,
+        // which the contract reads as "every mode". Tests that need a narrower
+        // policy override this field on the returned shape.
+        supportedRuntimeModes: DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
       });
     },
     listInstances: () => Effect.succeed(Array.from(byInstanceId.keys())),

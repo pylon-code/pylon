@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
   ProjectId,
   ThreadId,
   TurnId,
@@ -189,6 +190,7 @@ describe("ProviderSessionReaper", () => {
             driverKind,
             continuationKey: `${driverKind}:instance:${instanceId}`,
           },
+          supportedRuntimeModes: DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
         });
       },
       rollbackConversation: () => unsupported(),
