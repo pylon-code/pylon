@@ -5,6 +5,7 @@ import { SessionInteractionRequestId } from "@t3tools/contracts";
 import {
   acquireInteractionSubmissionLock,
   beginInteractionSubmission,
+  deriveInteractionSubmissionView,
   interactionCommandAccepted,
   reconcileInteractionSubmission,
   releaseInteractionSubmissionLock,
@@ -13,6 +14,14 @@ import {
 const requestId = SessionInteractionRequestId.make("opaque-1");
 
 describe("interaction submission lifecycle", () => {
+  it("renders an idle thread without dereferencing a missing submission", () => {
+    expect(deriveInteractionSubmissionView(null, null, null)).toEqual({
+      submitting: false,
+      error: null,
+      canRetry: false,
+    });
+  });
+
   it("synchronously rejects a same-tick duplicate response", () => {
     const lock: { current: typeof requestId | null } = { current: null };
     expect(acquireInteractionSubmissionLock(lock, requestId)).toBe(true);

@@ -10,6 +10,26 @@ export interface InteractionSubmissionState {
   readonly failureIdAtStart: string | null;
 }
 
+export interface InteractionSubmissionView {
+  readonly submitting: boolean;
+  readonly error: string | null;
+  readonly canRetry: boolean;
+}
+
+export function deriveInteractionSubmissionView(
+  state: InteractionSubmissionState | null,
+  activeRequestId: SessionInteractionRequestId | null,
+  activeFailure: SessionInteractionFailure | null,
+): InteractionSubmissionView {
+  const isActive =
+    state !== null && activeRequestId !== null && state.requestId === activeRequestId;
+  return {
+    submitting: isActive && state.phase === "submitting",
+    error: isActive ? state.error : (activeFailure?.message ?? null),
+    canRetry: isActive && state.phase === "error",
+  };
+}
+
 export function beginInteractionSubmission(
   requestId: SessionInteractionRequestId,
   response: SessionInteractionResponse,

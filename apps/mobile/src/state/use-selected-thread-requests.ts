@@ -23,6 +23,7 @@ import {
 import {
   acquireInteractionSubmissionLock,
   beginInteractionSubmission,
+  deriveInteractionSubmissionView,
   interactionCommandAccepted,
   interactionCommandFailed,
   reconcileInteractionSubmission,
@@ -300,6 +301,12 @@ export function useSelectedThreadRequests() {
     return onRespondToInteraction(interactionSubmission.requestId, interactionSubmission.response);
   }, [interactionSubmission, onRespondToInteraction]);
 
+  const interactionSubmissionView = deriveInteractionSubmissionView(
+    interactionSubmission,
+    activePendingInteraction?.requestId ?? null,
+    activeInteractionFailure,
+  );
+
   return {
     activePendingApproval,
     activePendingUserInput,
@@ -307,16 +314,9 @@ export function useSelectedThreadRequests() {
     activePendingUserInputAnswers,
     activePendingInteraction,
     sessionInteractionPresentation: sessionInteractionState,
-    interactionSubmitting:
-      interactionSubmission?.requestId === activePendingInteraction?.requestId &&
-      interactionSubmission.phase === "submitting",
-    interactionError:
-      interactionSubmission?.requestId === activePendingInteraction?.requestId
-        ? interactionSubmission.error
-        : (activeInteractionFailure?.message ?? null),
-    interactionCanRetry:
-      interactionSubmission?.requestId === activePendingInteraction?.requestId &&
-      interactionSubmission.phase === "error",
+    interactionSubmitting: interactionSubmissionView.submitting,
+    interactionError: interactionSubmissionView.error,
+    interactionCanRetry: interactionSubmissionView.canRetry,
     respondingApprovalId,
     respondingUserInputId,
     onRespondToApproval,
