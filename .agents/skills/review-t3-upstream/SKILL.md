@@ -188,13 +188,11 @@ If the user selects no integration, update the ledger as the only intended sourc
 
 ## Phase 6: Integrate only approved change sets
 
-Before modifying the ledger or source, require a clean worktree, then refresh the private product branch without rewriting history:
+Before modifying the ledger or source, require a clean worktree, then branch from the freshly fetched remote ref. Branching from `origin/pylon` avoids checking out `pylon` at all, which matters because a branch checked out in one worktree is pinned there:
 
 ```bash
 git fetch origin pylon
-git switch pylon
-git pull --ff-only origin pylon
-git switch -c upstream/<yyyy-mm-dd>-<topic>
+git switch -c upstream/<yyyy-mm-dd>-<topic> origin/pylon
 ```
 
 Choose the smallest faithful integration method:
@@ -209,7 +207,7 @@ Use `pylon-branding` for asset or visible-name conflicts and `effect-server` for
 
 Run the smallest relevant tests, lint, formatting, typechecks, asset checks, and real-client verification required by `AGENTS.md`. Do not claim upstream tests prove the adapted Pylon behavior.
 
-Show the integrated diff, validation results, and remaining risks. Do not merge into `pylon`, push, or open a pull request unless the user explicitly requests that publishing step.
+Show the integrated diff, validation results, and remaining risks, then land the branch through the standard workflow in `AGENTS.md`: push the integration branch and open a pull request against `pylon`. Do not merge it or fast-forward `pylon` yourself until checks are green and the developer approves.
 
 ## Finish with traceability
 
