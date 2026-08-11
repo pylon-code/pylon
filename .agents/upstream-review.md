@@ -601,6 +601,8 @@ so `L1` and `L2` may merge in either order.
 DEF-1 and DEF-2 were re-evaluated against this head and both **stay deferred**.
 Neither gate holds: the date is before 2026-08-25, and the fourteen-day churn
 check on the pull-requests files still returns `cad2c9361` and `a7b0366cb`.
+_Superseded the same day: the developer chose to adopt both anyway — see the
+sixth batch below._
 
 | Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ---------- | --------------------- | -------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -614,7 +616,61 @@ Verification: `themePalette`, `themeBoot`, `vscodeThemeImport`, and
 after the color-space change. Palette math that computes cleanly can still shift
 perceptibly, so L2 wants one pass in a real client after merge.
 
+## 2026-08-11 (sixth batch) — deferred work adopted: `#4849`, `#6049`, `#6061`
+
+**DEF-1 and DEF-2 adopted, closing the deferred register.** The developer chose
+to bring them in ahead of the recorded revisit gates, which had not come due —
+the date gate was 2026-08-25 and the churn check was still non-empty. That is a
+deliberate override, not a gate that passed, and it is recorded as such: the
+pull-requests surface may still move upstream, so expect follow-up commits.
+
+No new upstream range is involved, so the cursor does not move. Every commit
+here sits at or before the current `reviewed-through`.
+
+| Change set | Upstream                          | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                           |
+| ---------- | --------------------------------- | -------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1         | `cad2c9361` / `#4849`             | adopted  | (this branch)   | Multi-provider pull requests page with in-app reviews: 143 files, 34,133 insertions, covering GitHub, GitLab, Bitbucket, and Azure DevOps providers plus the diff-comment review surface. Only **three** conflicts against a much-changed `pylon`, all resolved Pylon-first — see below. |
+| M2         | `a7b0366cb` / `#6049`             | adopted  | (this branch)   | PR page header accounts for Windows window controls. Clean once M1 was in; it conflicted only because it patches a file M1 creates.                                                                                                                                                      |
+| M3         | `f5fce7416` / `#6061` (was DEF-2) | adopted  | (this branch)   | Routes self-hosted GitLab remotes through the pull-requests service. Clean once M1 supplied `PullRequestService.ts`, which is exactly why it was deferred with DEF-1 rather than skipped.                                                                                                |
+
+Conflict resolutions, all Pylon-first:
+
+- **`index.css`** — upstream reintroduces `--animate-status-pulse` alongside a
+  new `--animate-ghost-pulse`. **Only `ghost-pulse` was taken.** The new
+  `PullRequestGhosts.tsx` depends on it in six places, whereas
+  `animate-status-pulse` is the continuously repainting dot Pylon deliberately
+  replaced with DotMatrix, and `ServerUpdateAction.test.tsx` asserts its
+  absence. Pylon's `-1s` skeleton delay was kept over upstream's undelayed one.
+- **`SidebarChrome.tsx`** — kept Pylon's usage Back button from K9 and added
+  upstream's `pullRequestsSupported` Pull Requests entry. **This also completes
+  `#6031`:** K9 took only its usage half because Pylon had no PR page, so the
+  pull-requests Back button is now restored, giving that page the same way out.
+- **`RightPanelTabs.tsx`** — kept Pylon's "Pylon desktop app" wording and took
+  upstream's new `terminal` disabled-reason key, which neither side had before.
+
+Verification: server `pullRequest` and `sourceControl`, contracts
+`pullRequest`, and client-runtime `pullRequestDiffHttp` pass (496 tests); web
+`pullRequest`, `diffs`, `openPullRequestLink`, `rightPanelStore`,
+`reviewCommentContext`, `useLiveRefresh`, and `ServerUpdateAction` pass (198).
+Contracts, client-runtime, web, mobile, and server typecheck with no errors —
+the two `pullRequest` Effect diagnostics are upstream suggestions, not errors.
+Lint clean and format clean across all 145 changed files. The generated
+`routeTree.gen.ts` carries the new route.
+
+Cheaper than the original DEF-1 assessment feared: **no lockfile change, no new
+external dependency, no `vite.config.ts` change, and no migrations.** The only
+manifest edit is a `./state/pull-requests` subpath export in
+`packages/client-runtime/package.json`.
+
+**Not verified:** nothing here was exercised in a real client. This adds a whole
+product surface across web, desktop, and mobile, and its remote and
+multi-environment behavior is untested in Pylon.
+
 ## Deferred register
+
+_The register is currently empty: DEF-1 and DEF-2 were adopted on 2026-08-11
+(see the sixth batch above). Entries are removed once adopted or skipped, so an
+empty register means nothing is waiting._
 
 Upstream work that has been reviewed and consciously _not_ adopted yet, with
 the condition that should trigger a fresh look. Entries stay here until they
@@ -625,7 +681,5 @@ Every review must read this register before reporting new candidates,
 re-evaluate each `Revisit when` against the current upstream head, and report
 the outcome. See Phase 2.5 of the `review-t3-upstream` skill.
 
-| ID    | Upstream                                        | Deferred on | Revisit when                                                                                                                                                                                                                                                                                                                                                                                                                                                | Why deferred                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| ----- | ----------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| DEF-1 | `cad2c9361` / `#4849` and `a7b0366cb` / `#6049` | 2026-08-11  | **Both** gates must hold, because an empty log alone is also what day one looks like: (1) the date is on or after **2026-08-25**, and (2) `git log --oneline --since="14 days ago" t3code-upstream/main -- apps/web/src/routes/_chat.pull-requests.tsx packages/contracts/src/pullRequest.ts packages/client-runtime/src/state/pullRequests.ts` is empty. Then review as its own dedicated batch with a real product decision, not as part of a range sync. | Multi-provider pull requests page with in-app reviews: **34,121 insertions across 143 files**, larger than the other 59 commits of the 2026-08-11 range combined. It is a new product surface, not a fix — an 800-line `pullRequest.ts` contract, ~149 lines of new RPC, new HTTP endpoints, new client-runtime state, new dependencies, a `vite.config.ts` change — and Pylon would own all of it across web, desktop, mobile, and every connection mode. Three reasons to wait rather than skip: (1) **it will churn** — in this same range upstream rewrote `UsagePage` (`#5823`) and deleted the project-settings routes it had just added (`#5923`) within days, and `#4849` landed one day before the reviewed head with `#6049` already following it; (2) it touches `openPullRequestLink` and `sourceControlPresentation`, the same area as the merged-badge/auto-settle fix made in the previous batch, so landing it now risks masking that; (3) there is no security, correctness, or provider-compatibility pressure. "Does Pylon want in-app PR review?" deserves its own product decision, not a line in a 60-commit sync. |
-| DEF-2 | `f5fce7416` / `#6061`                           | 2026-08-11  | Adopt together with DEF-1, as part of the same dedicated pull-requests batch. It has no standalone revisit condition: without the pull-requests surface there is no `PullRequestService.ts` to patch.                                                                                                                                                                                                                                                       | Routes self-hosted GitLab remotes through the pull-requests service. Two of its five files (`apps/server/src/pullRequest/PullRequestService.ts` and its test) do not exist in Pylon. The `SourceControlProviderRegistry` half could in principle be lifted out, but it exists to serve the PR service and carries no benefit alone. First application of the standing policy: work that depends on the deferred pull-requests surface is deferred with it, never skipped, so it is not lost when DEF-1 is eventually taken.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ID  | Upstream | Deferred on | Revisit when | Why deferred |
+| --- | -------- | ----------- | ------------ | ------------ |
