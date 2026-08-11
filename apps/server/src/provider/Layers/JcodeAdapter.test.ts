@@ -212,6 +212,8 @@ interface ManagerDouble {
   readonly manager: JcodeInstanceManager;
   /** Times the adapter asked for a fresh child connection. */
   connects: () => number;
+  /** Times the adapter released a child connection back to the manager. */
+  releases: () => number;
   shutdowns: () => number;
 }
 
@@ -221,6 +223,7 @@ function makeManagerDouble(fake: FakeSdk): {
 } {
   const bridge = makeJcodeSdkBridge(fake.sdk);
   let connects = 0;
+  let releases = 0;
   let shutdowns = 0;
   const manager: JcodeInstanceManager = {
     probe: Effect.succeed(PROBE),
@@ -230,12 +233,21 @@ function makeManagerDouble(fake: FakeSdk): {
         .connect({ socketPath: NATIVE_SOCKET, clientName: "pylon-jcode-session/1" })
         .pipe(Effect.orDie);
     }),
+    releaseSessionClient: () =>
+      Effect.sync(() => {
+        releases += 1;
+      }),
     shutdown: Effect.sync(() => {
       shutdowns += 1;
     }),
   };
   return {
-    double: { manager, connects: () => connects, shutdowns: () => shutdowns },
+    double: {
+      manager,
+      connects: () => connects,
+      releases: () => releases,
+      shutdowns: () => shutdowns,
+    },
     bridge,
   };
 }
@@ -797,13 +809,14 @@ describe("makeJcodeAdapter", () => {
   it.effect("stops one session exactly once and forgets it", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { adapter, fake, cwd } = yield* fixture();
+        const { adapter, fake, manager, cwd } = yield* fixture();
         yield* adapter.startSession(startInput({ cwd }));
         yield* adapter.stopSession(THREAD_ID);
 
         // The runtime's close is idempotent and also runs as a scope finalizer;
-        // the adapter must not close the child client twice.
+        // the adapter must not close the child client or release manager ownership twice.
         expect(fake.clients[0]?.closes).toBe(1);
+        expect(manager.releases()).toBe(1);
         expect(yield* adapter.hasSession(THREAD_ID)).toBe(false);
         expect(yield* adapter.listSessions()).toEqual([]);
       }),
@@ -839,6 +852,7 @@ describe("makeJcodeAdapter", () => {
         yield* adapter.stopAll();
 
         expect(fake.clients.map((client) => client.closes)).toEqual([1, 1]);
+        expect(manager.releases()).toBe(2);
         expect(yield* adapter.listSessions()).toEqual([]);
         expect(yield* adapter.hasSession(THREAD_ID)).toBe(false);
         expect(yield* adapter.hasSession(OTHER_THREAD_ID)).toBe(false);
@@ -849,15 +863,19 @@ describe("makeJcodeAdapter", () => {
   it.effect("closes live sessions when the adapter scope closes", () =>
     Effect.gen(function* () {
       const captured: FakeSdk[] = [];
+      const managers: ManagerDouble[] = [];
       yield* Effect.scoped(
         Effect.gen(function* () {
-          const { adapter, fake, cwd } = yield* fixture();
+          const { adapter, fake, manager, cwd } = yield* fixture();
           captured.push(fake);
+          managers.push(manager);
           yield* adapter.startSession(startInput({ cwd }));
+          expect(manager.releases()).toBe(0);
         }),
       );
 
       expect(captured[0]?.clients[0]?.closes).toBe(1);
+      expect(managers[0]?.releases()).toBe(1);
     }).pipe(Effect.provide(testLayer)),
   );
 

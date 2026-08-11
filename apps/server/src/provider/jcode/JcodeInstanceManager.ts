@@ -107,6 +107,7 @@ export class JcodeInstanceManagerError extends Data.TaggedError("JcodeInstanceMa
 export interface JcodeInstanceManager {
   readonly probe: Effect.Effect<JcodeInstanceProbe, JcodeInstanceManagerError>;
   readonly connectSessionClient: Effect.Effect<JcodeSdkClient, JcodeInstanceManagerError>;
+  readonly releaseSessionClient: (client: JcodeSdkClient) => Effect.Effect<void>;
   readonly shutdown: Effect.Effect<void, JcodeInstanceManagerError>;
 }
 
@@ -674,6 +675,11 @@ export const makeJcodeInstanceManager = Effect.fn("makeJcodeInstanceManager")(fu
     },
   );
 
+  const releaseSessionClient = (client: JcodeSdkClient): Effect.Effect<void> =>
+    Effect.sync(() => {
+      children.delete(client);
+    });
+
   const connectSessionClient: Effect.Effect<JcodeSdkClient, JcodeInstanceManagerError> =
     Effect.suspend(() =>
       stopped
@@ -697,5 +703,5 @@ export const makeJcodeInstanceManager = Effect.fn("makeJcodeInstanceManager")(fu
           ),
     );
 
-  return { probe, connectSessionClient, shutdown };
+  return { probe, connectSessionClient, releaseSessionClient, shutdown };
 });

@@ -647,6 +647,7 @@ export function mapJcodeRuntimeEvent(
               payload: {
                 taskId: id,
                 status: "completed",
+                taskType: "shell",
                 summary: summary ?? description,
               },
             },
@@ -666,6 +667,7 @@ export function mapJcodeRuntimeEvent(
                 taskId: id,
                 description,
                 status: "running",
+                taskType: "shell",
                 ...(summary === undefined ? {} : { summary }),
               },
             },
@@ -686,7 +688,7 @@ export function mapJcodeRuntimeEvent(
           {
             ...base(context),
             type: "task.started",
-            payload: { taskId: id, description },
+            payload: { taskId: id, description, taskType: "shell" },
           },
         ],
         context,

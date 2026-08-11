@@ -791,6 +791,23 @@ describe("JcodeInstanceManager session clients", () => {
     expect(harness.clients[2]!.attached).toEqual(["thread-2"]);
   });
 
+  it("releases a session client from manager-owned shutdown after adapter cleanup owns it", async () => {
+    const harness = makeHarness();
+    await runScoped(({ stateDir }) =>
+      Effect.gen(function* () {
+        const manager = yield* makeManager({ harness, stateDir });
+        const client = yield* manager.connectSessionClient;
+        yield* manager.releaseSessionClient(client);
+        yield* Effect.promise(() => client.close());
+        yield* manager.shutdown;
+      }),
+    );
+
+    expect(harness.clients[1]!.closed).toBe(1);
+    expect(harness.events.filter((event) => event === "close:client-2")).toHaveLength(1);
+    expect(harness.shutdowns).toBe(1);
+  });
+
   it("closes children before the control client, then shuts the instance down once", async () => {
     const harness = makeHarness();
     await runScoped(({ stateDir }) =>
@@ -1009,7 +1026,12 @@ describe("JcodeInstanceManager cross-provider isolation", () => {
     // The bridge is a narrowing boundary rather than a passthrough, so no pid,
     // no kill, and no sibling manager survives into anything Jcode can hold.
     expect(observed.launched).toEqual(["jcodeHome", "shutdown", "socketPath"]);
-    expect(observed.surface).toEqual(["connectSessionClient", "probe", "shutdown"]);
+    expect(observed.surface).toEqual([
+      "connectSessionClient",
+      "probe",
+      "releaseSessionClient",
+      "shutdown",
+    ]);
   });
 });
 

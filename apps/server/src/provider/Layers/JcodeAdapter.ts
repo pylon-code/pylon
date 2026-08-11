@@ -264,6 +264,7 @@ export const makeJcodeAdapter = Effect.fn("makeJcodeAdapter")(function* (
               }),
           ),
         );
+        yield* Scope.addFinalizer(sessionScope, manager.releaseSessionClient(client));
         const runtime = yield* makeJcodeSessionRuntime({
           bridge: options.bridge,
           client,

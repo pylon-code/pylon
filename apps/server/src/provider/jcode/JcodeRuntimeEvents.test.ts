@@ -517,6 +517,9 @@ describe("JcodeRuntimeEvents", () => {
     expect(result.events[2]).toMatchObject({
       payload: { taskId: TASK_ID, status: "completed", summary: "finished" },
     });
+    for (const event of result.events as [TaskStarted, TaskProgress, TaskCompleted]) {
+      expect(event.payload.taskType).toBe("shell");
+    }
     expect(result.state.startedTasks.size).toBe(0);
     decodeAll(result.events);
   });

@@ -235,6 +235,7 @@ describe("JcodeDriver.create", () => {
           models: [{ model: "claude-opus-5", provider: "anthropic", available: true }],
         }),
         connectSessionClient: Effect.die("not used"),
+        releaseSessionClient: () => Effect.void,
         shutdown: Effect.void,
       };
       const driver = makeJcodeDriver({ makeInstanceManager: () => Effect.succeed(manager) });
@@ -307,6 +308,7 @@ describe("JcodeDriver.create", () => {
               });
         }),
         connectSessionClient: Effect.die("not used"),
+        releaseSessionClient: () => Effect.void,
         shutdown: Effect.void,
       };
       const driver = makeJcodeDriver({ makeInstanceManager: () => Effect.succeed(manager) });

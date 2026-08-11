@@ -327,11 +327,18 @@ describe("buildJcodeProviderSnapshot", () => {
     expect(snapshot.message).toContain(JCODE_MIN_RUNTIME_VERSION);
   });
 
-  it("advises about an untested newer runtime while protocol 1 still applies", () => {
-    const snapshot = readySnapshot({ version: "0.74.0" });
+  it("does not warn for the runtime exercised by the compatibility matrix", () => {
+    const snapshot = readySnapshot({ version: "0.75.2-dev" });
 
     expect(snapshot.status).toBe("ready");
-    expect(snapshot.message).toContain("0.74.0");
+    expect(snapshot.message).toBe(JCODE_APPROVALS_WARNING);
+  });
+
+  it("advises about an untested newer runtime while protocol 1 still applies", () => {
+    const snapshot = readySnapshot({ version: "0.76.0" });
+
+    expect(snapshot.status).toBe("ready");
+    expect(snapshot.message).toContain("0.76.0");
     expect(snapshot.message).toContain(JCODE_TESTED_RUNTIME_VERSION);
     expect(snapshot.message).toContain(JCODE_APPROVALS_WARNING);
   });

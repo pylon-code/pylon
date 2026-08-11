@@ -274,6 +274,7 @@ describe("ProviderSessionReaper", () => {
           clientName: "pylon-jcode-session/1",
         })
         .pipe(Effect.orDie),
+      releaseSessionClient: () => Effect.void,
       shutdown: Effect.void,
     };
 
