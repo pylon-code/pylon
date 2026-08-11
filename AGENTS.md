@@ -138,9 +138,31 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 - The server is event-sourced and its async flows emit typed receipts. Wait on receipts and worker drains, never on sleeps or polling. A test that needs a timeout to pass is wrong.
 - Upon request, user-visible frontend changes should get one integrated pass in a real client: `test-pylon-app` for web, `test-pylon-mobile` for mobile. The primary agent does this once after integrating. Subagents do not launch their own dev servers. Ask permission before doing computer use or spinning up browsers.
 
+## Landing changes
+
+Every change lands the same way, and you do not need to be asked each time. Do
+not commit directly to `pylon`, and do not fast-forward a task branch onto it.
+
+1. **Branch from the latest `pylon`.** `git fetch origin pylon`, then branch
+   from `origin/pylon` — never from a stale local ref, which may sit well
+   behind. Name the branch for the work: `fix/<topic>`, `feat/<topic>`,
+   `docs/<topic>`, or `upstream/<yyyy-mm-dd>-<topic>` for adopted upstream work.
+2. **Build and verify on the branch**, per Verifying above.
+3. **Open a PR against `pylon`.** Push the branch and open it. This workflow is
+   the standing ask, so opening one needs no separate request.
+4. **Merge once checks are green and the developer approves.** Delete the branch
+   afterwards.
+
+`pylon` only ever moves by merging a PR. If you are about to run
+`git push origin pylon`, stop — closing that path is the point of this section.
+
+A branch checked out in a worktree is pinned there and cannot advance elsewhere,
+so keep `pylon` checked out in the main repository and give worktrees their own
+task branches. A worktree left sitting on `pylon` silently holds the branch back
+while work lands from elsewhere.
+
 ## Pull requests
 
-- Never make a PR unless the developer explicitly asks you to do so.
 - Conventional commit titles, plain language: `fix(web): new threads no longer spike CPU`.
 - Body: the problem in a sentence or two, then how you fixed it. End with the model and harness that did the work.
 - **Rebase onto the latest `pylon` branch before opening.** Stale branches conflict and burn a review round. Never rebase a Pylon branch directly onto a T3 remote.
