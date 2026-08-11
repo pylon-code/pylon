@@ -26,7 +26,7 @@ jcode --version
 ```
 
 Pylon needs Jcode `0.71.1` or newer. An older build is reported as unsupported with a prompt to
-update. The Early Access integration is tested through `0.73.0`; a newer Jcode still runs, and
+update. The Early Access integration is tested through `0.75.2`; a newer Jcode still runs, and
 Pylon marks it as newer than the build it has tested rather than refusing it.
 
 ## Configure Pylon

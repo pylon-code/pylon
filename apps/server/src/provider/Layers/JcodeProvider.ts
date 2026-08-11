@@ -23,7 +23,7 @@ import {
 /** Oldest Jcode build whose API surface Pylon's pinned SDK bridge supports. */
 export const JCODE_MIN_RUNTIME_VERSION = "0.71.1";
 /** Newest Jcode build Pylon has actually exercised. */
-export const JCODE_TESTED_RUNTIME_VERSION = "0.75.2-dev";
+export const JCODE_TESTED_RUNTIME_VERSION = "0.75.2";
 /** API protocol major version the pinned SDK speaks. */
 export const JCODE_SUPPORTED_PROTOCOL_VERSION = 1;
 export const JCODE_VERSION_PROBE_TIMEOUT_MS = 4_000;

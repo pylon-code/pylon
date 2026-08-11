@@ -327,10 +327,15 @@ describe("buildJcodeProviderSnapshot", () => {
     expect(snapshot.message).toContain(JCODE_MIN_RUNTIME_VERSION);
   });
 
-  it("does not warn for the runtime exercised by the compatibility matrix", () => {
-    const snapshot = readySnapshot({ version: "0.75.2-dev" });
+  it("does not warn for real output from the runtime exercised by the compatibility matrix", () => {
+    const version = parseJcodeVersionOutput("jcode v0.75.2-dev (d218d84fe)\n");
+    if (version === undefined) throw new Error("Expected the exercised Jcode version to parse.");
+    expect(version).toBe("0.75.2");
+
+    const snapshot = readySnapshot({ version });
 
     expect(snapshot.status).toBe("ready");
+    expect(snapshot.version).toBe("0.75.2");
     expect(snapshot.message).toBe(JCODE_APPROVALS_WARNING);
   });
 
