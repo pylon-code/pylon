@@ -95,6 +95,7 @@ export interface JcodeEventMappingState {
   readonly assistantStarted: boolean;
   readonly reasoningStarted: boolean;
   readonly openTools: ReadonlyMap<string, JcodeOpenToolCall>;
+  readonly openRetryItemId?: RuntimeItemId;
   readonly startedTasks: ReadonlySet<string>;
   readonly completedTasks: ReadonlySet<string>;
   /** Distinguishes assistant/reasoning items across `turn_done` boundaries. */
@@ -390,6 +391,19 @@ const THREAD_STATE_BY_STATUS: ReadonlyMap<string, "active" | "idle" | "error"> =
   ["failed", "error"],
 ]);
 
+function retryCompletionDraft(
+  itemId: RuntimeItemId,
+  status: "completed" | "failed",
+  context: JcodeEventMappingContext,
+): JcodeRuntimeEventDraft {
+  return {
+    ...base(context),
+    type: "item.completed",
+    itemId,
+    payload: { itemType: "retry", status, title: "Provider retry" },
+  };
+}
+
 /** Completions synthesized for whatever was still open when the turn ended. */
 function closeOpenItems(
   state: JcodeEventMappingState,
@@ -415,7 +429,20 @@ function closeOpenItems(
   for (const [callId, call] of state.openTools) {
     drafts.push(abandonedToolDraft(state, call, callId, UNFINISHED_TOOL_DETAIL, context));
   }
+  if (state.openRetryItemId !== undefined) {
+    drafts.push(retryCompletionDraft(state.openRetryItemId, "completed", context));
+  }
   return drafts;
+}
+
+/**
+ * After a reset, an untracked continuation is indistinguishable from a frame
+ * still draining from the invalidated attempt. A current-generation tool must
+ * therefore establish its identity with `tool_start` before it can be updated
+ * or completed. Generation zero retains the SDK's pre-existing tolerant order.
+ */
+function isPostResetToolStraggler(state: JcodeEventMappingState, callId: string): boolean {
+  return state.attemptGeneration > 0 && !state.openTools.has(callId);
 }
 
 /**
@@ -497,9 +524,13 @@ export function mapJcodeRuntimeEvent(
         segment: (state.segment + 1) % MAX_TURN_SEGMENTS,
         attemptGeneration: state.attemptGeneration + 1,
       };
+      const nextRetryItemId = retryItemId(nextState, retryContext);
       return result(
-        nextState,
+        { ...nextState, openRetryItemId: nextRetryItemId },
         [
+          ...(state.openRetryItemId === undefined
+            ? []
+            : [retryCompletionDraft(state.openRetryItemId, "failed", retryContext)]),
           {
             ...base(retryContext),
             turnId: retryContext.turnId,
@@ -509,7 +540,7 @@ export function mapJcodeRuntimeEvent(
           {
             ...base(retryContext),
             type: "item.started",
-            itemId: retryItemId(nextState, retryContext),
+            itemId: nextRetryItemId,
             payload: {
               itemType: "retry",
               status: "inProgress",
@@ -608,6 +639,7 @@ export function mapJcodeRuntimeEvent(
     }
 
     case "tool_input_delta": {
+      if (isPostResetToolStraggler(state, event.call_id)) return ignored(state);
       const existing = state.openTools.get(event.call_id);
       const accumulated = bounded(`${existing?.input ?? ""}${event.delta}`, MAX_TOOL_INPUT_LENGTH);
       const name = existing?.name;
@@ -638,6 +670,7 @@ export function mapJcodeRuntimeEvent(
     }
 
     case "tool_exec": {
+      if (isPostResetToolStraggler(state, event.call_id)) return ignored(state);
       const name = boundedNonEmpty(event.name, MAX_SCALAR_LENGTH);
       const existing = state.openTools.get(event.call_id);
       const { openTools, evictions } = trackOpenTool(
@@ -666,6 +699,7 @@ export function mapJcodeRuntimeEvent(
     }
 
     case "tool_done": {
+      if (isPostResetToolStraggler(state, event.call_id)) return ignored(state);
       // Tolerant by design: a `tool_done` for a call this mapper never opened
       // still completes. The harness owns call identity, and a client that saw
       // the start through another path would otherwise hold a row that never

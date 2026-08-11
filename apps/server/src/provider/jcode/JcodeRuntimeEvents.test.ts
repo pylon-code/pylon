@@ -835,6 +835,105 @@ describe("JcodeRuntimeEvents", () => {
     expect(serialized).not.toContain(NATIVE_CALL_ID);
   });
 
+  it("terminates the previous retry before resetting into the next retry", () => {
+    const result = run([retryRollback(1, 3), retryRollback(2, 3)]);
+    const retryRows = result.events.filter(
+      (event) =>
+        (event.type === "item.started" || event.type === "item.completed") &&
+        event.payload.itemType === "retry",
+    );
+
+    expect(result.events.map((event) => event.type)).toEqual([
+      "turn.output-reset",
+      "item.started",
+      "item.completed",
+      "turn.output-reset",
+      "item.started",
+    ]);
+    expect(retryRows).toHaveLength(3);
+    expect(retryRows[2]?.itemId).not.toBe(retryRows[0]?.itemId);
+    expect(retryRows[1]).toMatchObject({
+      type: "item.completed",
+      itemId: retryRows[0]?.itemId,
+      payload: { itemType: "retry", status: "failed", title: "Provider retry" },
+    });
+    expect(result.events[3]).toMatchObject({ type: "turn.output-reset" });
+    expect(result.events[4]).toMatchObject({
+      type: "item.started",
+      itemId: retryRows[2]?.itemId,
+      payload: { itemType: "retry", status: "inProgress" },
+    });
+    decodeAll(result.events);
+  });
+
+  it("terminates the active retry before turn.completed", () => {
+    const result = run([retryRollback(1, 3), turnDone()]);
+    const retryStarted = result.events.find(
+      (event) => event.type === "item.started" && event.payload.itemType === "retry",
+    );
+    const retryCompleted = result.events.find(
+      (event) => event.type === "item.completed" && event.payload.itemType === "retry",
+    );
+
+    expect(result.events.map((event) => event.type)).toEqual([
+      "turn.output-reset",
+      "item.started",
+      "item.completed",
+      "turn.completed",
+    ]);
+    expect(retryCompleted).toMatchObject({
+      itemId: retryStarted?.itemId,
+      payload: { itemType: "retry", status: "completed", title: "Provider retry" },
+    });
+    decodeAll(result.events);
+  });
+
+  it("drops post-reset tool stragglers until the current generation starts the call", () => {
+    const result = run([
+      toolStart("bash"),
+      retryRollback(1, 3),
+      toolInputDelta('{"late":true}'),
+      {
+        ev: "tool_exec",
+        session_id: NATIVE_SESSION_ID,
+        call_id: NATIVE_CALL_ID,
+        name: "bash",
+      },
+      {
+        ev: "tool_done",
+        session_id: NATIVE_SESSION_ID,
+        call_id: NATIVE_CALL_ID,
+        name: "bash",
+        output: "stale",
+      },
+      toolStart("bash"),
+      toolInputDelta('{"fresh":true}'),
+      {
+        ev: "tool_done",
+        session_id: NATIVE_SESSION_ID,
+        call_id: NATIVE_CALL_ID,
+        name: "bash",
+        output: "fresh",
+      },
+    ]);
+    const freshToolId = toolItemIdFor(NATIVE_CALL_ID, 1);
+    const freshToolRows = result.events.filter((event) => event.itemId === freshToolId);
+
+    expect(freshToolRows.map((event) => event.type)).toEqual([
+      "item.started",
+      "item.updated",
+      "item.completed",
+    ]);
+    expect(freshToolRows[1]).toMatchObject({
+      payload: { data: { fresh: true }, status: "inProgress" },
+    });
+    expect(freshToolRows[2]).toMatchObject({
+      payload: { detail: "fresh", status: "completed" },
+    });
+    expect(result.state.openTools.size).toBe(0);
+    decodeAll(result.events);
+  });
+
   it("treats correction frames without an authoritative turn id as fatal", () => {
     for (const correction of [textReplace("corrected"), retryRollback(1, 3)]) {
       const result = mapJcodeRuntimeEvent(

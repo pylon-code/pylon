@@ -1090,6 +1090,7 @@ describe("JcodeSessionRuntime event mapping", () => {
       "item.started",
       "content.delta",
       "item.completed",
+      "item.completed",
       "turn.completed",
       "session.exited",
     ]);
@@ -1101,6 +1102,14 @@ describe("JcodeSessionRuntime event mapping", () => {
       type: "item.started",
       payload: { itemType: "retry", status: "inProgress" },
     });
+    const retryCompletedIndex = events.findIndex(
+      (event) => event.type === "item.completed" && event.payload.itemType === "retry",
+    );
+    expect(events[retryCompletedIndex]).toMatchObject({
+      itemId: events[resetIndex + 1]?.itemId,
+      payload: { itemType: "retry", status: "completed" },
+    });
+    expect(retryCompletedIndex).toBe(events.length - 3);
     for (const event of events) expect(() => decodeRuntimeEvent(event)).not.toThrow();
     expect(JSON.stringify(events)).not.toContain(NATIVE_SESSION_ID);
   });
