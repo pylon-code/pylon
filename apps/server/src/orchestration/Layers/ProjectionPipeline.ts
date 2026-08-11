@@ -847,6 +847,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.message-sent":
+        case "thread.message-replaced":
+        case "thread.turn-output-reset":
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
         case "thread.approval-response-requested":
@@ -983,6 +985,46 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.message-replaced": {
+          const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
+            messageId: event.payload.messageId,
+          });
+          if (Option.isNone(existingMessage) || existingMessage.value.role !== "assistant") {
+            return;
+          }
+          yield* projectionThreadMessageRepository.upsert({
+            ...existingMessage.value,
+            turnId: event.payload.turnId,
+            text: event.payload.text,
+            isStreaming: event.payload.streaming,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.turn-output-reset": {
+          const existingRows = yield* projectionThreadMessageRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          const keptRows = existingRows.filter(
+            (message) => message.role !== "assistant" || message.turnId !== event.payload.turnId,
+          );
+          if (keptRows.length === existingRows.length) {
+            return;
+          }
+          yield* projectionThreadMessageRepository.deleteByThreadId({
+            threadId: event.payload.threadId,
+          });
+          yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
+            concurrency: 1,
+          }).pipe(Effect.asVoid);
+          attachmentSideEffects.prunedThreadRelativePaths.set(
+            event.payload.threadId,
+            collectThreadAttachmentRelativePaths(event.payload.threadId, keptRows),
+          );
+          return;
+        }
+
         case "thread.reverted": {
           const existingRows = yield* projectionThreadMessageRepository.listByThreadId({
             threadId: event.payload.threadId,
@@ -1091,6 +1133,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             createdAt: event.payload.activity.createdAt,
           });
           return;
+
+        case "thread.turn-output-reset": {
+          const existingRows = yield* projectionThreadActivityRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          const keptRows = existingRows.filter(
+            (activity) => activity.turnId !== event.payload.turnId,
+          );
+          if (keptRows.length === existingRows.length) {
+            return;
+          }
+          yield* projectionThreadActivityRepository.deleteByThreadId({
+            threadId: event.payload.threadId,
+          });
+          yield* Effect.forEach(keptRows, projectionThreadActivityRepository.upsert, {
+            concurrency: 1,
+          }).pipe(Effect.asVoid);
+          return;
+        }
 
         case "thread.reverted": {
           const existingRows = yield* projectionThreadActivityRepository.listByThreadId({

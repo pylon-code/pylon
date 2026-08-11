@@ -489,6 +489,292 @@ describe("orchestration projector", () => {
     expect(message?.updatedAt).toBe(completeAt);
   });
 
+  it("replaces assistant message text without ending the stream", async () => {
+    const createdAt = "2026-08-11T09:00:00.000Z";
+    const replacedAt = "2026-08-11T09:00:01.000Z";
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-correction",
+          occurredAt: createdAt,
+          commandId: "cmd-create-correction",
+          payload: {
+            threadId: "thread-correction",
+            projectId: "project-1",
+            title: "correction",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5.3-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+    const afterWrongText = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-correction",
+          occurredAt: createdAt,
+          commandId: "cmd-wrong-text",
+          payload: {
+            threadId: "thread-correction",
+            messageId: "assistant-correction",
+            role: "assistant",
+            text: "wrong text",
+            turnId: "turn-a",
+            streaming: true,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+
+    const afterReplacement = await Effect.runPromise(
+      projectEvent(
+        afterWrongText,
+        makeEvent({
+          sequence: 3,
+          type: "thread.message-replaced",
+          aggregateKind: "thread",
+          aggregateId: "thread-correction",
+          occurredAt: replacedAt,
+          commandId: "cmd-replace-text",
+          payload: {
+            threadId: "thread-correction",
+            messageId: "assistant-correction",
+            text: "correct text",
+            turnId: "turn-a",
+            streaming: true,
+            createdAt,
+            updatedAt: replacedAt,
+          },
+        }),
+      ),
+    );
+
+    expect(afterReplacement.threads[0]?.messages).toMatchObject([
+      {
+        id: "assistant-correction",
+        text: "correct text",
+        turnId: "turn-a",
+        streaming: true,
+        createdAt,
+        updatedAt: replacedAt,
+      },
+    ]);
+  });
+
+  it("removes only assistant messages and activities for the reset turn idempotently", async () => {
+    const createdAt = "2026-08-11T10:00:00.000Z";
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-reset",
+          occurredAt: createdAt,
+          commandId: "cmd-create-reset",
+          payload: {
+            threadId: "thread-reset",
+            projectId: "project-1",
+            title: "reset",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5.3-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+    const events: ReadonlyArray<OrchestrationEvent> = [
+      makeEvent({
+        sequence: 2,
+        type: "thread.message-sent",
+        aggregateKind: "thread",
+        aggregateId: "thread-reset",
+        occurredAt: "2026-08-11T10:00:01.000Z",
+        commandId: "cmd-user-a",
+        payload: {
+          threadId: "thread-reset",
+          messageId: "user-a",
+          role: "user",
+          text: "try the provider",
+          turnId: "turn-a",
+          streaming: false,
+          createdAt: "2026-08-11T10:00:01.000Z",
+          updatedAt: "2026-08-11T10:00:01.000Z",
+        },
+      }),
+      makeEvent({
+        sequence: 3,
+        type: "thread.message-sent",
+        aggregateKind: "thread",
+        aggregateId: "thread-reset",
+        occurredAt: "2026-08-11T10:00:02.000Z",
+        commandId: "cmd-assistant-a-1",
+        payload: {
+          threadId: "thread-reset",
+          messageId: "assistant-a-1",
+          role: "assistant",
+          text: "invalid first fragment",
+          turnId: "turn-a",
+          streaming: true,
+          createdAt: "2026-08-11T10:00:02.000Z",
+          updatedAt: "2026-08-11T10:00:02.000Z",
+        },
+      }),
+      makeEvent({
+        sequence: 4,
+        type: "thread.message-sent",
+        aggregateKind: "thread",
+        aggregateId: "thread-reset",
+        occurredAt: "2026-08-11T10:00:03.000Z",
+        commandId: "cmd-assistant-a-2",
+        payload: {
+          threadId: "thread-reset",
+          messageId: "assistant-a-2",
+          role: "assistant",
+          text: "invalid second fragment",
+          turnId: "turn-a",
+          streaming: true,
+          createdAt: "2026-08-11T10:00:03.000Z",
+          updatedAt: "2026-08-11T10:00:03.000Z",
+        },
+      }),
+      makeEvent({
+        sequence: 5,
+        type: "thread.activity-appended",
+        aggregateKind: "thread",
+        aggregateId: "thread-reset",
+        occurredAt: "2026-08-11T10:00:04.000Z",
+        commandId: "cmd-activity-a",
+        payload: {
+          threadId: "thread-reset",
+          activity: {
+            id: "activity-a",
+            tone: "tool",
+            kind: "tool.started",
+            summary: "invalid tool activity",
+            payload: { toolKind: "command" },
+            turnId: "turn-a",
+            createdAt: "2026-08-11T10:00:04.000Z",
+          },
+        },
+      }),
+      makeEvent({
+        sequence: 6,
+        type: "thread.message-sent",
+        aggregateKind: "thread",
+        aggregateId: "thread-reset",
+        occurredAt: "2026-08-11T10:00:05.000Z",
+        commandId: "cmd-assistant-b",
+        payload: {
+          threadId: "thread-reset",
+          messageId: "assistant-b",
+          role: "assistant",
+          text: "other turn output",
+          turnId: "turn-b",
+          streaming: true,
+          createdAt: "2026-08-11T10:00:05.000Z",
+          updatedAt: "2026-08-11T10:00:05.000Z",
+        },
+      }),
+      makeEvent({
+        sequence: 7,
+        type: "thread.activity-appended",
+        aggregateKind: "thread",
+        aggregateId: "thread-reset",
+        occurredAt: "2026-08-11T10:00:06.000Z",
+        commandId: "cmd-activity-b",
+        payload: {
+          threadId: "thread-reset",
+          activity: {
+            id: "activity-b",
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "other turn activity",
+            payload: { toolKind: "command" },
+            turnId: "turn-b",
+            createdAt: "2026-08-11T10:00:06.000Z",
+          },
+        },
+      }),
+      makeEvent({
+        sequence: 8,
+        type: "thread.turn-output-reset",
+        aggregateKind: "thread",
+        aggregateId: "thread-reset",
+        occurredAt: "2026-08-11T10:00:07.000Z",
+        commandId: "cmd-reset-a",
+        payload: {
+          threadId: "thread-reset",
+          turnId: "turn-a",
+          attempt: 1,
+          max: 3,
+        },
+      }),
+      makeEvent({
+        sequence: 9,
+        type: "thread.turn-output-reset",
+        aggregateKind: "thread",
+        aggregateId: "thread-reset",
+        occurredAt: "2026-08-11T10:00:08.000Z",
+        commandId: "cmd-reset-a-again",
+        payload: {
+          threadId: "thread-reset",
+          turnId: "turn-a",
+          attempt: 1,
+          max: 3,
+        },
+      }),
+    ];
+
+    const afterReset = await events.reduce<Promise<ReturnType<typeof createEmptyReadModel>>>(
+      (statePromise, event) =>
+        statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
+      Promise.resolve(afterCreate),
+    );
+    const thread = afterReset.threads[0];
+    expect(
+      thread?.messages.map(({ id, role, turnId: messageTurnId }) => ({
+        id,
+        role,
+        turnId: messageTurnId,
+      })),
+    ).toEqual([
+      { id: "user-a", role: "user", turnId: "turn-a" },
+      { id: "assistant-b", role: "assistant", turnId: "turn-b" },
+    ]);
+    expect(
+      thread?.activities.map(({ id, turnId: activityTurnId }) => ({
+        id,
+        turnId: activityTurnId,
+      })),
+    ).toEqual([{ id: "activity-b", turnId: "turn-b" }]);
+    expect(thread?.updatedAt).toBe("2026-08-11T10:00:08.000Z");
+  });
+
   it("prunes reverted turn messages from in-memory thread snapshot", async () => {
     const createdAt = "2026-02-23T10:00:00.000Z";
     const model = createEmptyReadModel(createdAt);

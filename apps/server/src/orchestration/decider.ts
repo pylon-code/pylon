@@ -1342,6 +1342,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.message.assistant.replace": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.message-replaced",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          text: command.text,
+          turnId: command.turnId ?? null,
+          streaming: command.streaming,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.message.assistant.complete": {
       yield* requireThread({
         readModel,
@@ -1365,6 +1391,41 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           streaming: false,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.turn.output.reset": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const activeTurn = thread.latestTurn;
+      if (
+        activeTurn?.state !== "running" ||
+        activeTurn.turnId !== command.turnId ||
+        thread.session?.status !== "running" ||
+        thread.session.activeTurnId !== command.turnId
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' does not have matching active turn '${command.turnId}' for output reset.`,
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.turn-output-reset",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          attempt: command.attempt,
+          max: command.max,
         },
       };
     }

@@ -4,6 +4,8 @@ import {
   OrchestrationMessage,
   OrchestrationSession,
   OrchestrationThread,
+  ThreadMessageReplacedPayload,
+  ThreadTurnOutputResetPayload,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -541,6 +543,70 @@ export function projectEvent(
           }),
         };
       });
+
+    case "thread.message-replaced":
+      return decodeForEvent(
+        ThreadMessageReplacedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          const existingMessage = thread?.messages.find(
+            (entry) => entry.id === payload.messageId && entry.role === "assistant",
+          );
+          if (!thread || !existingMessage) {
+            return nextBase;
+          }
+
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              messages: thread.messages.map((message) =>
+                message.id === payload.messageId
+                  ? {
+                      ...message,
+                      text: payload.text,
+                      turnId: payload.turnId,
+                      streaming: payload.streaming,
+                      updatedAt: payload.updatedAt,
+                    }
+                  : message,
+              ),
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.turn-output-reset":
+      return decodeForEvent(
+        ThreadTurnOutputResetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              messages: thread.messages.filter(
+                (message) => message.role !== "assistant" || message.turnId !== payload.turnId,
+              ),
+              activities: thread.activities.filter(
+                (activity) => activity.turnId !== payload.turnId,
+              ),
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
 
     case "thread.session-set":
       return Effect.gen(function* () {

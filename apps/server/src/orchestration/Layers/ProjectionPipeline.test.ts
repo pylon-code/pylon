@@ -2266,6 +2266,324 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("compensates replaced and reset provider output in persisted projections", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      const threadId = ThreadId.make("thread-stream-correction");
+      const turnA = TurnId.make("turn-correction-a");
+      const turnB = TurnId.make("turn-correction-b");
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-stream-correction-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-stream-correction"),
+        occurredAt: "2026-08-11T11:00:00.000Z",
+        commandId: CommandId.make("cmd-stream-correction-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-stream-correction"),
+          title: "Stream correction",
+          workspaceRoot: "/tmp/project-stream-correction",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-08-11T11:00:00.000Z",
+          updatedAt: "2026-08-11T11:00:00.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-stream-correction-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:01.000Z",
+        commandId: CommandId.make("cmd-stream-correction-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-stream-correction"),
+          title: "Stream correction",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-08-11T11:00:01.000Z",
+          updatedAt: "2026-08-11T11:00:01.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-stream-correction-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:02.000Z",
+        commandId: CommandId.make("cmd-stream-correction-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("user-stream-correction-a"),
+          role: "user",
+          text: "retry this provider turn",
+          turnId: turnA,
+          streaming: false,
+          createdAt: "2026-08-11T11:00:02.000Z",
+          updatedAt: "2026-08-11T11:00:02.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-stream-correction-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:03.000Z",
+        commandId: CommandId.make("cmd-stream-correction-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("assistant-stream-correction-a-1"),
+          role: "assistant",
+          text: "wrong text",
+          turnId: turnA,
+          streaming: true,
+          createdAt: "2026-08-11T11:00:03.000Z",
+          updatedAt: "2026-08-11T11:00:03.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.message-replaced",
+        eventId: EventId.make("evt-stream-correction-5"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:04.000Z",
+        commandId: CommandId.make("cmd-stream-correction-5"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-5"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("assistant-stream-correction-a-1"),
+          text: "correct text",
+          turnId: turnA,
+          streaming: true,
+          createdAt: "2026-08-11T11:00:03.000Z",
+          updatedAt: "2026-08-11T11:00:04.000Z",
+        },
+      });
+
+      const replacedRows = yield* sql<{
+        readonly text: string;
+        readonly isStreaming: number;
+      }>`
+        SELECT text, is_streaming AS "isStreaming"
+        FROM projection_thread_messages
+        WHERE message_id = 'assistant-stream-correction-a-1'
+      `;
+      assert.deepEqual(replacedRows, [{ text: "correct text", isStreaming: 1 }]);
+
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-stream-correction-6"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:05.000Z",
+        commandId: CommandId.make("cmd-stream-correction-6"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-6"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("assistant-stream-correction-a-2"),
+          role: "assistant",
+          text: "more invalid output",
+          turnId: turnA,
+          streaming: true,
+          createdAt: "2026-08-11T11:00:05.000Z",
+          updatedAt: "2026-08-11T11:00:05.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-stream-correction-7"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:06.000Z",
+        commandId: CommandId.make("cmd-stream-correction-7"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-7"),
+        metadata: {},
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-stream-correction-a"),
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "Invalid provider request",
+            payload: {
+              requestId: "request-stream-correction-a",
+              questions: [
+                {
+                  id: "retry_mode",
+                  header: "Retry",
+                  question: "Retry this attempt?",
+                  options: [{ label: "yes", description: "Retry now" }],
+                },
+              ],
+            },
+            turnId: turnA,
+            createdAt: "2026-08-11T11:00:06.000Z",
+          },
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-stream-correction-8"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:07.000Z",
+        commandId: CommandId.make("cmd-stream-correction-8"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-8"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("assistant-stream-correction-b"),
+          role: "assistant",
+          text: "other turn output",
+          turnId: turnB,
+          streaming: true,
+          createdAt: "2026-08-11T11:00:07.000Z",
+          updatedAt: "2026-08-11T11:00:07.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-stream-correction-9"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:08.000Z",
+        commandId: CommandId.make("cmd-stream-correction-9"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-9"),
+        metadata: {},
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-stream-correction-b"),
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "Other turn activity",
+            payload: { toolKind: "command" },
+            turnId: turnB,
+            createdAt: "2026-08-11T11:00:08.000Z",
+          },
+        },
+      });
+
+      const beforeResetShellRows = yield* sql<{ readonly pendingUserInputCount: number }>`
+        SELECT pending_user_input_count AS "pendingUserInputCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-stream-correction'
+      `;
+      assert.deepEqual(beforeResetShellRows, [{ pendingUserInputCount: 1 }]);
+
+      for (const [index, occurredAt] of [
+        "2026-08-11T11:00:09.000Z",
+        "2026-08-11T11:00:10.000Z",
+      ].entries()) {
+        yield* appendAndProject({
+          type: "thread.turn-output-reset",
+          eventId: EventId.make(`evt-stream-correction-reset-${index + 1}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt,
+          commandId: CommandId.make(`cmd-stream-correction-reset-${index + 1}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-stream-correction-reset-${index + 1}`),
+          metadata: {},
+          payload: {
+            threadId,
+            turnId: turnA,
+            attempt: 1,
+            max: 3,
+          },
+        });
+      }
+
+      const messageRows = yield* sql<{
+        readonly messageId: string;
+        readonly role: string;
+        readonly turnId: string | null;
+      }>`
+        SELECT
+          message_id AS "messageId",
+          role,
+          turn_id AS "turnId"
+        FROM projection_thread_messages
+        WHERE thread_id = 'thread-stream-correction'
+        ORDER BY created_at ASC, message_id ASC
+      `;
+      assert.deepEqual(messageRows, [
+        { messageId: "user-stream-correction-a", role: "user", turnId: "turn-correction-a" },
+        {
+          messageId: "assistant-stream-correction-b",
+          role: "assistant",
+          turnId: "turn-correction-b",
+        },
+      ]);
+
+      const activityRows = yield* sql<{
+        readonly activityId: string;
+        readonly turnId: string | null;
+      }>`
+        SELECT activity_id AS "activityId", turn_id AS "turnId"
+        FROM projection_thread_activities
+        WHERE thread_id = 'thread-stream-correction'
+        ORDER BY created_at ASC, activity_id ASC
+      `;
+      assert.deepEqual(activityRows, [
+        { activityId: "activity-stream-correction-b", turnId: "turn-correction-b" },
+      ]);
+
+      const shellRows = yield* sql<{
+        readonly latestUserMessageAt: string | null;
+        readonly pendingUserInputCount: number;
+        readonly updatedAt: string;
+      }>`
+        SELECT
+          latest_user_message_at AS "latestUserMessageAt",
+          pending_user_input_count AS "pendingUserInputCount",
+          updated_at AS "updatedAt"
+        FROM projection_threads
+        WHERE thread_id = 'thread-stream-correction'
+      `;
+      assert.deepEqual(shellRows, [
+        {
+          latestUserMessageAt: "2026-08-11T11:00:02.000Z",
+          pendingUserInputCount: 0,
+          updatedAt: "2026-08-11T11:00:10.000Z",
+        },
+      ]);
+    }),
+  );
+
   it.effect("does not fallback-retain messages whose turnId is removed by revert", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

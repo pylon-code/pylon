@@ -1140,12 +1140,33 @@ const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadMessageAssistantReplaceCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.assistant.replace"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  text: Schema.String,
+  turnId: Schema.optional(TurnId),
+  streaming: Schema.Literal(true),
+  createdAt: IsoDateTime,
+});
+
 const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.message.assistant.complete"),
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
   turnId: Schema.optional(TurnId),
+  createdAt: IsoDateTime,
+});
+
+const ThreadTurnOutputResetCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.output.reset"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  attempt: PositiveInt,
+  max: PositiveInt,
   createdAt: IsoDateTime,
 });
 
@@ -1198,7 +1219,9 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
+  ThreadMessageAssistantReplaceCommand,
   ThreadMessageAssistantCompleteCommand,
+  ThreadTurnOutputResetCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
@@ -1232,6 +1255,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
+  "thread.message-replaced",
+  "thread.turn-output-reset",
   "thread.turn-start-requested",
   "thread.input-queue-follow-up-requested",
   "thread.turn-interrupt-requested",
@@ -1399,6 +1424,23 @@ export const ThreadMessageSentPayload = Schema.Struct({
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+});
+
+export const ThreadMessageReplacedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  text: Schema.String,
+  turnId: Schema.NullOr(TurnId),
+  streaming: Schema.Literal(true),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadTurnOutputResetPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  attempt: PositiveInt,
+  max: PositiveInt,
 });
 
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
@@ -1602,6 +1644,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.message-sent"),
     payload: ThreadMessageSentPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.message-replaced"),
+    payload: ThreadMessageReplacedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.turn-output-reset"),
+    payload: ThreadTurnOutputResetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
