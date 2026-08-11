@@ -175,10 +175,10 @@ git commit -m "feat(api): advertise stream corrections"
 Cover these exact cases:
 
 ```rust
-json!({"ev":"text_replace","text":"corrected"})
+json!({"type":"text_replace","text":"corrected"})
 // -> ApiEvent::TextReplace { session_id: "session-1", text: "corrected" }
 
-json!({"ev":"retry_rollback","attempt":2,"max":4})
+json!({"type":"retry_rollback","attempt":2,"max":4})
 // -> ApiEvent::RetryRollback { session_id: "session-1", attempt: 2, max: 4 }
 ```
 
@@ -212,6 +212,49 @@ Expected: all selected tests pass.
 git add crates/jcode-harness-api-server/src/translate.rs \
   crates/jcode-harness-api-server/src/translate_tests.rs
 git commit -m "feat(api): forward stream corrections"
+```
+
+---
+
+### Task 2A: Bound OpenAI websocket-fallback rollback attempts
+
+**Files:**
+
+- Modify: `crates/jcode-provider-openai-runtime/src/openai_provider_impl.rs`
+- Modify: the narrowest existing OpenAI transport test module under `crates/jcode-provider-openai-runtime/src/openai_tests/`
+
+**Interfaces:**
+
+- Consumes: the OpenAI websocket `FallbackToHttps` path after partial output.
+- Produces: `RetryRollback` only when another retry will actually run, with `attempt <= max`.
+
+- [ ] **Step 1: Write a failing focused regression test**
+
+Cover the final configured attempt and at least one earlier attempt. Prove that a websocket fallback after partial output:
+
+- emits the expected rollback counter while another HTTPS replay remains,
+- emits no rollback on the final attempt, where no replay can follow,
+- never produces `attempt > max`.
+
+Prefer the existing transport/runtime harness. Extract a tiny pure retry-counter helper only if exercising the loop directly would require broad mocking; do not redesign provider retries.
+
+- [ ] **Step 2: Run RED**
+
+Run the narrow OpenAI runtime test filter that selects the new regression. Expected: the final fallback currently exposes `attempt: 4, max: 3` or otherwise proves the invalid rollback decision.
+
+- [ ] **Step 3: Implement the minimal emitter fix**
+
+Gate websocket-fallback rollback emission on another configured attempt actually remaining, consistent with the existing retryable-error branch. Do not clamp malformed counters in the public bridge and do not weaken `attempt <= max` validation.
+
+- [ ] **Step 4: Run GREEN and package checks**
+
+Run package-local formatting, the new focused regression, and the full `jcode-provider-openai-runtime` test package. Read the output rather than relying on exit status alone.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/jcode-provider-openai-runtime
+git commit -m "fix(openai): bound fallback rollback attempts"
 ```
 
 ---
