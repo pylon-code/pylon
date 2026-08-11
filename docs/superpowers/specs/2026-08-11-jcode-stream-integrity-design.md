@@ -85,6 +85,12 @@ The bridge stamps the attached public `session_id`; it does not expose a legacy/
 
 Malformed correction events are dropped rather than synthesized. In particular, `retry_rollback` requires integer `attempt` and `max`, both greater than zero, and `attempt <= max`. The internal daemon currently emits valid values; validation protects the stable facade from malformed legacy traffic.
 
+## Pylon SDK compatibility during local proof
+
+The Jcode source tree already reports TypeScript SDK `1.2.0`, but npm currently publishes `1.1.0`. Pylon must not commit an absolute `file:` dependency or an unreproducible local tarball.
+
+The published SDK's transport already forwards unknown event frames through `events()` even though its return type is the known `ApiEvent` union. Until a release containing these two tags is published, `JcodeSdkBridge` will widen its internal event iterator to `AnyApiEvent` and apply a small capability-gated runtime decoder for exactly `text_replace` and `retry_rollback`. This decoder stays inside the adapter boundary and rejects malformed shapes. Once the SDK release is available, Pylon pins that release and replaces the compatibility decoder with the SDK's typed union in a focused cleanup commit.
+
 ## Pylon provider runtime contract
 
 Add two provider-neutral event types.
