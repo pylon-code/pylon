@@ -71,23 +71,56 @@ JCODE_COMPAT_HOME=/tmp/jcode-compat node apps/server/scripts/jcode-sdk-compatibi
 JCODE_COMPAT_LIVE_TURNS=1 node apps/server/scripts/jcode-sdk-compatibility.ts
 ```
 
-| Check                                       | Required  | Result  |
-| ------------------------------------------- | --------- | ------- |
-| `launch_instance`                           | yes       | Not run |
-| `connect_control_client`                    | yes       | Not run |
-| `ping`                                      | yes       | Not run |
-| `create_sessions` (two working directories) | yes       | Not run |
-| `attach_children_concurrently`              | yes       | Not run |
-| `list_models`                               | yes       | Not run |
-| `runtime_info`                              | yes       | Not run |
-| `detach_reattach_exact_session`             | yes       | Not run |
-| `clean_shutdown`                            | yes       | Not run |
-| `live_text_turn`                            | live only | Not run |
-| `live_reasoning_turn`                       | live only | Not run |
-| `live_tool_turn`                            | live only | Not run |
-| `live_image_turn`                           | live only | Not run |
-| `live_cancel_turn`                          | live only | Not run |
-| Observed Jcode runtime version              | —         | Not run |
+`/tmp/jcode-compat` is short enough to bind its own sockets, so that command
+takes the direct path and never exercises the alias described below. Use a home
+under a deep checkout to exercise it, and read `durableHomeFitsSocketLimit` in
+the `environment` record to see which path a run actually took: `false` is what
+proves the alias was used.
+
+| Check                                       | Required  | Result on macOS ARM64 |
+| ------------------------------------------- | --------- | --------------------- |
+| `launch_instance`                           | yes       | Pass                  |
+| `connect_control_client`                    | yes       | Pass                  |
+| `ping`                                      | yes       | Pass                  |
+| `create_sessions` (two working directories) | yes       | Pass                  |
+| `attach_children_concurrently`              | yes       | Pass                  |
+| `list_models`                               | yes       | Pass                  |
+| `runtime_info`                              | yes       | Pass                  |
+| `detach_reattach_exact_session`             | yes       | Pass                  |
+| `clean_shutdown`                            | yes       | Pass                  |
+| `live_text_turn`                            | live only | Not run               |
+| `live_reasoning_turn`                       | live only | Not run               |
+| `live_tool_turn`                            | live only | Not run               |
+| `live_image_turn`                           | live only | Not run               |
+| `live_cancel_turn`                          | live only | Not run               |
+| Observed Jcode runtime version              | —         | `0.75.2-dev`          |
+
+The nine non-live checks were observed passing (`{"pass":10,"fail":0,"skipped":5}`
+including the `environment` record, exit code 0) on `Darwin arm64`, Node
+`v22.22.3`, against binary `0.75.2-dev (d218d84fe)`. Linux and Windows rows are
+absent rather than assumed: neither has been run.
 
 Live-turn checks spend real model quota and only execute when
-`JCODE_COMPAT_LIVE_TURNS=1` is set.
+`JCODE_COMPAT_LIVE_TURNS=1` is set. They remain unrun.
+
+### Unix socket path length
+
+The daemon binds `<launch home>/run/jcode-debug.sock`, and `sun_path` holds 104
+bytes including its NUL terminator, so 103 is the longest bindable path. This is
+not theoretical: a home 82 characters long binds and one 83 characters long does
+not, and for a realistic state directory and instance ID Pylon's own durable home
+(`<stateDir>/provider-sessions/jcode/<instance>/home`) yields a socket path of
+137-145 bytes, which is 34-42 bytes past the limit.
+
+When the durable home does not fit, the daemon is launched from a short alias
+under `/tmp/pylon-jcode-<uid>` that resolves to it, so sessions, credentials and
+`servers.json` still live in the durable home while the bind path stays bounded.
+Verified on macOS ARM64 by driving `JcodeInstanceManager` against the real
+runtime with a durable home whose socket path is 207 bytes: launch, runtime
+status, model list, two session clients, exact-session detach/reattach and clean
+shutdown all pass, binding from a 58-byte socket path instead.
+
+The failure this prevents is silent. The daemon exits with `path must be shorter
+than SUN_LEN`, `api-bridge` carries on assuming an already-running server, and
+every request then fails with an opaque `EPIPE` that names neither the path nor
+the limit.

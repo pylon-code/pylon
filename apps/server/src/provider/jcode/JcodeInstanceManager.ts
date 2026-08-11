@@ -2,6 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 
 import type { JcodeSettings } from "@t3tools/contracts";
+import { isHostWindows } from "@t3tools/shared/hostProcess";
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -12,7 +13,13 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import { sanitizeJcodeLaunchEnvironment } from "./JcodeEnvironment.ts";
-import { jcodeHomePath, jcodeProviderRoot } from "./JcodePaths.ts";
+import {
+  jcodeDefaultLaunchAliasBase,
+  jcodeHomePath,
+  jcodeLaunchAliasPath,
+  jcodeLaunchHomeFitsUnixLimit,
+  jcodeProviderRoot,
+} from "./JcodePaths.ts";
 import {
   JcodeSdkOperationError,
   JcodeSessionNotFoundError,
@@ -121,6 +128,11 @@ export interface JcodeInstanceManagerInput {
    * and guessing from name or entropy would silently miss a short credential.
    */
   readonly credentialValues: ReadonlyArray<string>;
+  /**
+   * Where bounded launch aliases live. Defaults to `/tmp/pylon-jcode-<uid>`;
+   * tests point it at a private directory.
+   */
+  readonly launchAliasBase?: string;
 }
 
 function tagOf(error: unknown): string | undefined {
@@ -208,6 +220,120 @@ export function decodeJcodeProbeIdentity(source: string): JcodeProbeIdentity | u
   return { schemaVersion: 1, sessionId: identity.value.sessionId };
 }
 
+/**
+ * Point one bounded alias at this instance's durable home.
+ *
+ * The alias is the only thing standing between a deep state directory and an
+ * unbindable socket, so every outcome is handled explicitly:
+ *
+ * - already the right link: left alone, which is what makes a restart reuse
+ *   one alias per instance rather than accumulating one per launch;
+ * - a link somewhere else: replaced, because a leftover from an earlier layout
+ *   would silently redirect this instance at a home that is not its own;
+ * - anything that is not a link: refused. Replacing it means deleting whatever
+ *   is there, and no path length problem justifies destroying a directory this
+ *   manager did not create.
+ *
+ * The base directory is created owner-only and then re-read and required to be
+ * a real owner-only directory, since on Unix it lives under a world-writable
+ * `/tmp`. Nothing here rewrites a path this manager did not just create, so a
+ * base another account raced into place can only make the launch fail.
+ */
+export const ensureLaunchAlias = Effect.fn("ensureLaunchAlias")(function* (input: {
+  readonly aliasPath: string;
+  readonly target: string;
+  /**
+   * Optional so a caller outside the manager (the compatibility script) can
+   * reuse this exact preparation without inventing its own error vocabulary.
+   */
+  readonly managerError?: (
+    operation: JcodeInstanceManagerError["operation"],
+    detail: string,
+    cause?: unknown,
+  ) => JcodeInstanceManagerError;
+}): Effect.fn.Return<void, JcodeInstanceManagerError, FileSystem.FileSystem | Path.Path> {
+  const { aliasPath, target } = input;
+  const managerError =
+    input.managerError ??
+    ((operation, detail) => new JcodeInstanceManagerError({ operation, detail }));
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const aliasBase = path.dirname(aliasPath);
+
+  // A launch from here could not bind its sockets, and the resulting failure is
+  // an opaque EPIPE several steps later. Refuse now, while the reason is known.
+  if (!jcodeLaunchHomeFitsUnixLimit({ launchHome: aliasPath, join: (...s) => path.join(...s) })) {
+    return yield* managerError(
+      "launch",
+      "The Jcode runtime directory is too long for this platform's socket limit.",
+    );
+  }
+
+  // On Unix the base lives under a world-writable directory, so another
+  // account can plant this name first. Nothing here changes a path Pylon did
+  // not just create: `makeDirectory` applies the owner-only mode at creation,
+  // and the state is then re-read and required to be a real, owner-only
+  // directory. Deliberately no `chmod`. A `chmod` would be a second syscall on
+  // a path another account can swap between the check and the act, and it
+  // would tighten a directory Pylon does not own; refusing is both safer and
+  // simpler. The residual race can therefore only make this launch fail, never
+  // modify a third party's directory.
+  yield* fs
+    .makeDirectory(aliasBase, { recursive: true, mode: 0o700 })
+    .pipe(
+      Effect.mapError(() =>
+        managerError("launch", "Failed to prepare the private Jcode runtime directory."),
+      ),
+    );
+
+  if (Option.isSome(yield* fs.readLink(aliasBase).pipe(Effect.option))) {
+    return yield* managerError(
+      "launch",
+      "The private Jcode runtime directory is a link rather than a directory.",
+    );
+  }
+
+  const baseInfo = yield* fs
+    .stat(aliasBase)
+    .pipe(
+      Effect.mapError(() =>
+        managerError("launch", "Failed to inspect the private Jcode runtime directory."),
+      ),
+    );
+  if (baseInfo.type !== "Directory") {
+    return yield* managerError("launch", "The private Jcode runtime directory is not a directory.");
+  }
+  // A pre-existing base with a looser mode is one this manager did not create.
+  if ((baseInfo.mode & 0o777) !== 0o700) {
+    return yield* managerError("launch", "The private Jcode runtime directory is not owner-only.");
+  }
+
+  const existing = yield* fs.readLink(aliasPath).pipe(Effect.option);
+  if (Option.isSome(existing)) {
+    if (existing.value === target) return;
+    yield* fs
+      .remove(aliasPath, { force: true })
+      .pipe(
+        Effect.mapError(() =>
+          managerError("launch", "Failed to replace a stale private Jcode runtime link."),
+        ),
+      );
+  } else if (yield* fs.exists(aliasPath).pipe(Effect.orElseSucceed(() => false))) {
+    return yield* managerError(
+      "launch",
+      "The private Jcode runtime path is occupied by something this instance did not create.",
+    );
+  }
+
+  yield* fs
+    .symlink(target, aliasPath)
+    .pipe(
+      Effect.mapError(() =>
+        managerError("launch", "Failed to prepare the private Jcode runtime directory."),
+      ),
+    );
+});
+
 export const makeJcodeInstanceManager = Effect.fn("makeJcodeInstanceManager")(function* (
   input: JcodeInstanceManagerInput,
 ): Effect.fn.Return<
@@ -248,13 +374,65 @@ export const makeJcodeInstanceManager = Effect.fn("makeJcodeInstanceManager")(fu
     ),
   );
 
+  /**
+   * The home the SDK is launched from, which is not always the durable one.
+   *
+   * The daemon binds `<home>/run/jcode-debug.sock`, and the durable home sits
+   * under a user-chosen state directory that routinely exceeds the platform's
+   * Unix socket path limit. On Unix the daemon is therefore launched from a
+   * short alias that resolves to the durable home. Windows has no such limit
+   * and creating a symlink there needs a privilege Pylon must not require, so
+   * it launches from the durable home directly.
+   */
+  const onWindows = yield* isHostWindows;
+  const launchHome = onWindows
+    ? instanceHome
+    : jcodeLaunchAliasPath({
+        aliasBase:
+          input.launchAliasBase ??
+          jcodeDefaultLaunchAliasBase({ uid: process.getuid?.() ?? 0, join }),
+        stateDir: input.stateDir,
+        instanceId: input.instanceId,
+        join,
+      });
+
+  if (!onWindows) {
+    // Inheritance runs against the durable directory before the alias exists:
+    // the SDK refuses a symlink as an inheritance target, and credentials have
+    // to be in place before the daemon starts or the first turn has none.
+    if (input.settings.inheritLogins) {
+      const userHome = yield* bridge.userJcodeHome.pipe(
+        Effect.mapError(() =>
+          managerError("launch", "Could not locate the Jcode home to inherit logins from."),
+        ),
+      );
+      yield* bridge
+        .inheritCredentials(
+          { fromHome: userHome, toHome: instanceHome },
+          { credentialValues: input.credentialValues },
+        )
+        .pipe(
+          Effect.mapError((error) =>
+            managerError(
+              "launch",
+              `Could not share the existing Jcode logins with this instance (${failureDetail(error)}).`,
+              error,
+            ),
+          ),
+        );
+    }
+    yield* ensureLaunchAlias({ aliasPath: launchHome, target: instanceHome, managerError });
+  }
+
   const binaryPath = input.settings.binaryPath.trim();
   const instance: JcodeLaunchedInstance = yield* bridge
     .launchInstance(
       {
         ...(binaryPath === "" ? {} : { binary: binaryPath }),
-        jcodeHome: instanceHome,
-        inheritLogins: input.settings.inheritLogins,
+        jcodeHome: launchHome,
+        // Already done above on Unix, against the durable home rather than the
+        // alias. Asking the SDK to repeat it would fail on the symlink.
+        inheritLogins: onWindows ? input.settings.inheritLogins : false,
         // Sanitized here even though callers claim to sanitize: a reserved
         // variable reaching the daemon would silently redirect this private
         // instance at the user's live interactive Jcode.

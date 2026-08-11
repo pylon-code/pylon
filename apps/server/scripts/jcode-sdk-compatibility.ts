@@ -20,14 +20,30 @@
  * any required check fails. Only the public SDK is used: no TUI scraping, no
  * private daemon frames.
  */
-import * as NodeFs from "node:fs";
-import * as NodeOs from "node:os";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeProcess from "node:process";
 
-import { JcodeClient, launchInstance, type LaunchedInstance } from "@1jehuang/jcode-sdk";
+import {
+  inheritCredentials,
+  JcodeClient,
+  launchInstance,
+  userJcodeHome,
+  type LaunchedInstance,
+} from "@1jehuang/jcode-sdk";
+
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Effect from "effect/Effect";
 
 import { sanitizeJcodeLaunchEnvironment } from "../src/provider/jcode/JcodeEnvironment.ts";
+import { ensureLaunchAlias } from "../src/provider/jcode/JcodeInstanceManager.ts";
+import {
+  jcodeDefaultLaunchAliasBase,
+  jcodeLaunchAliasPath,
+  jcodeLaunchHomeFitsUnixLimit,
+  jcodeLongestRuntimeSocketPath,
+} from "../src/provider/jcode/JcodePaths.ts";
 
 type CheckStatus = "pass" | "fail" | "skipped";
 
@@ -92,18 +108,48 @@ function assert(condition: boolean, message: string): void {
 function resolveCompatHome(): string {
   const configured = NodeProcess.env.JCODE_COMPAT_HOME?.trim();
   if (configured) {
-    NodeFs.mkdirSync(configured, { recursive: true, mode: 0o700 });
+    NodeFS.mkdirSync(configured, { recursive: true, mode: 0o700 });
     return configured;
   }
-  const fallback = NodePath.join(NodeOs.tmpdir(), "pylon-jcode-compat");
-  NodeFs.mkdirSync(fallback, { recursive: true, mode: 0o700 });
+  const fallback = NodePath.join(NodeOS.tmpdir(), "pylon-jcode-compat");
+  NodeFS.mkdirSync(fallback, { recursive: true, mode: 0o700 });
   return fallback;
 }
 
 function makeWorkingDir(home: string, name: string): string {
   const dir = NodePath.join(home, "workspaces", name);
-  NodeFs.mkdirSync(dir, { recursive: true });
+  NodeFS.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/**
+ * The home the daemon is actually launched from, mirroring what the provider
+ * does in production.
+ *
+ * A compatibility home derived from `$PWD` is as deep as the checkout, and the
+ * daemon binds `<home>/run/jcode-debug.sock` into a 104-byte `sun_path`. When
+ * the durable home does not fit, the launch goes through a short alias that
+ * resolves to it, exactly as `JcodeInstanceManager` does. Sessions still live
+ * in the stable home, so the detach/reattach evidence keeps its meaning.
+ */
+async function resolveLaunchHome(
+  jcodeHome: string,
+): Promise<{ launchHome: string; aliased: boolean }> {
+  if (NodeProcess.platform === "win32" || jcodeLaunchHomeFitsUnixLimit({ launchHome: jcodeHome })) {
+    return { launchHome: jcodeHome, aliased: false };
+  }
+  const aliasBase = jcodeDefaultLaunchAliasBase({ uid: NodeProcess.getuid?.() ?? 0 });
+  const alias = jcodeLaunchAliasPath({ aliasBase, stateDir: jcodeHome, instanceId: "compat" });
+  // The provider's own preparation, not a copy of it: same owner-only base
+  // handling, same refusal of a symlinked base or an occupied alias name, same
+  // length guard before anything is created. A second implementation here would
+  // drift from the one that matters.
+  await Effect.runPromise(
+    ensureLaunchAlias({ aliasPath: alias, target: jcodeHome }).pipe(
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+  return { launchHome: alias, aliased: true };
 }
 
 async function main(): Promise<number> {
@@ -128,6 +174,10 @@ async function main(): Promise<number> {
       platform: NodeProcess.platform,
       arch: NodeProcess.arch,
       sdkVersion: "1.1.0",
+      // Recorded so a passing run says whether it exercised the alias path or
+      // a home that already fit; the two are not the same evidence.
+      durableHomeFitsSocketLimit: jcodeLaunchHomeFitsUnixLimit({ launchHome: jcodeHome }),
+      longestRuntimeSocketBytes: jcodeLongestRuntimeSocketPath({ launchHome: jcodeHome }).length,
     },
   });
 
@@ -136,10 +186,15 @@ async function main(): Promise<number> {
 
   try {
     instance = await check("launch_instance", {}, async () => {
+      const { launchHome, aliased } = await resolveLaunchHome(jcodeHome);
+      // The SDK refuses a symlink as an inheritance target, so when the launch
+      // goes through an alias the logins are shared with the stable home first
+      // and the launch itself is told not to repeat the work.
+      if (aliased && inheritLogins) inheritCredentials(userJcodeHome(), jcodeHome);
       const launched = await launchInstance({
         binary,
-        jcodeHome,
-        inheritLogins,
+        jcodeHome: launchHome,
+        inheritLogins: aliased ? false : inheritLogins,
         env: sanitizedEnv,
       });
       assert(

@@ -7,7 +7,14 @@
  * should be classified. The SDK's own `HarnessError.code` is the only signal
  * used for classification: message text is not stable and must never be matched.
  */
-import { HarnessError, isKnownEvent, JcodeClient, launchInstance } from "@1jehuang/jcode-sdk";
+import {
+  HarnessError,
+  inheritCredentials,
+  isKnownEvent,
+  JcodeClient,
+  launchInstance,
+  userJcodeHome,
+} from "@1jehuang/jcode-sdk";
 import type {
   AnyApiEvent,
   ApiEvent,
@@ -86,6 +93,16 @@ export interface JcodeSdkModule {
     readonly socketPath: string;
     readonly clientName: string;
   }) => Promise<JcodeSdkClientLike>;
+  /** The user's real Jcode home, which is the only source of inherited logins. */
+  readonly userJcodeHome: () => string;
+  /**
+   * Copy or link the user's provider logins into an instance home.
+   *
+   * Synchronous and throwing in the SDK, and it refuses a home that is a
+   * symlink, so Pylon calls it against the durable directory itself rather
+   * than letting a launch do it through an alias.
+   */
+  readonly inheritCredentials: (fromHome: string, toHome: string) => ReadonlyArray<string>;
 }
 
 /**
@@ -111,6 +128,11 @@ export interface JcodeSdkBridge {
     readonly socketPath: string;
     readonly clientName: string;
   }) => Effect.Effect<JcodeSdkClient, JcodeSdkBridgeError>;
+  readonly userJcodeHome: Effect.Effect<string, JcodeSdkBridgeError>;
+  readonly inheritCredentials: (
+    input: { readonly fromHome: string; readonly toHome: string },
+    secrets?: JcodeLaunchSecrets,
+  ) => Effect.Effect<ReadonlyArray<string>, JcodeSdkBridgeError>;
   readonly trySdk: <A>(input: {
     readonly operation: string;
     readonly sessionId?: string;
@@ -263,6 +285,29 @@ export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
   }
 
   /**
+   * The synchronous half of the same boundary.
+   *
+   * `userJcodeHome` and `inheritCredentials` throw rather than reject, and
+   * their messages carry the instance home and, on an inheritance failure, the
+   * path of a credential file. They go through the identical redaction as the
+   * promise methods so no consumer has to classify a raw throw.
+   */
+  function trySync<A>(input: {
+    readonly operation: string;
+    readonly run: () => A;
+  }): Effect.Effect<A, JcodeSdkBridgeError> {
+    return Effect.try({
+      try: () => input.run(),
+      catch: (error) =>
+        toBridgeError({
+          error,
+          operation: input.operation,
+          secrets: redactionLiterals,
+        }),
+    });
+  }
+
+  /**
    * Bind an operation name (and session) to a client promise so its rejection
    * is already a `JcodeSdkBridgeError`. Consumers cannot get a raw SDK
    * rejection out of a wrapped client, whichever Effect combinator they reach
@@ -376,6 +421,14 @@ export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
     },
     connect: (options) =>
       Effect.map(tryPromise({ operation: "connect", run: () => sdk.connect(options) }), wrapClient),
+    userJcodeHome: trySync({ operation: "userJcodeHome", run: () => sdk.userJcodeHome() }),
+    inheritCredentials: (input, secrets) => {
+      rememberSecrets(secrets);
+      return trySync({
+        operation: "inheritCredentials",
+        run: () => sdk.inheritCredentials(input.fromHome, input.toHome),
+      });
+    },
     trySdk: (input) =>
       tryPromise({
         operation: input.operation,
@@ -390,6 +443,8 @@ export const defaultJcodeSdkModule: JcodeSdkModule = {
   launchInstance: (options) => launchInstance(options),
   connect: (options) =>
     JcodeClient.connect({ socketPath: options.socketPath, clientName: options.clientName }),
+  userJcodeHome: () => userJcodeHome(),
+  inheritCredentials: (fromHome, toHome) => inheritCredentials(fromHome, toHome),
 };
 
 export const jcodeSdkBridge: JcodeSdkBridge = makeJcodeSdkBridge(defaultJcodeSdkModule);

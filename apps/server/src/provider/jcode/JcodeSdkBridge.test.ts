@@ -87,9 +87,65 @@ function fakeSdk(overrides: Partial<JcodeSdkModule> = {}): JcodeSdkModule {
         shutdown: async () => {},
       }) as unknown as LaunchedInstance,
     connect: async () => fakeClient(),
+    userJcodeHome: () => "/Users/someone/.jcode",
+    inheritCredentials: () => ["auth.json"],
     ...overrides,
   };
 }
+
+describe("JcodeSdkBridge credential inheritance", () => {
+  it("reports the inherited names through the same typed boundary", async () => {
+    const calls: Array<{ from: string; to: string }> = [];
+    const bridge = makeJcodeSdkBridge(
+      fakeSdk({
+        userJcodeHome: () => "/Users/someone/.jcode",
+        inheritCredentials: (fromHome: string, toHome: string) => {
+          calls.push({ from: fromHome, to: toHome });
+          return ["auth.json", "config.toml"];
+        },
+      }),
+    );
+
+    const home = await Effect.runPromise(bridge.userJcodeHome);
+    const inherited = await Effect.runPromise(
+      bridge.inheritCredentials({ fromHome: home, toHome: "/state/home" }),
+    );
+
+    expect(home).toBe("/Users/someone/.jcode");
+    expect(inherited).toEqual(["auth.json", "config.toml"]);
+    expect(calls).toEqual([{ from: "/Users/someone/.jcode", to: "/state/home" }]);
+  });
+
+  it("maps a synchronous inheritance failure without leaking the native path or secret", async () => {
+    const bridge = makeJcodeSdkBridge(
+      fakeSdk({
+        inheritCredentials: () => {
+          throw new HarnessError(
+            "invalid_instance_home",
+            `instance home must be a real directory, not a link or file: ${NATIVE_PATH} for ${SECRET}`,
+          );
+        },
+      }),
+    );
+
+    const error = asOperationError(
+      await Effect.runPromise(
+        Effect.flip(
+          bridge.inheritCredentials(
+            { fromHome: "/Users/someone/.jcode", toHome: NATIVE_PATH },
+            { credentialValues: [SECRET] },
+          ),
+        ),
+      ),
+    );
+
+    expect(error.operation).toBe("inheritCredentials");
+    expect(error.code).toBe("invalid_instance_home");
+    const surface = observableSurface(error);
+    expect(surface).not.toContain(SECRET);
+    expect(surface).not.toContain(NATIVE_PATH);
+  });
+});
 
 describe("JcodeSdkBridge launchInstance", () => {
   it("maps launch failures to a typed operation error without leaking env values or native paths", async () => {

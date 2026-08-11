@@ -210,6 +210,8 @@ function makeJcodeDaemonDouble(input: { readonly socketPath: string; readonly mo
   const launches: LaunchOptions[] = [];
   const connects: Array<{ readonly socketPath: string; readonly clientName: string }> = [];
   const clients: JcodeSdkClientLike[] = [];
+  /** Durable homes this instance was asked to share the user's logins with. */
+  const inherits: string[] = [];
   const state = { shutdowns: 0 };
 
   const sessionInfo = (sessionId: string): SessionInfo => ({
@@ -246,6 +248,11 @@ function makeJcodeDaemonDouble(input: { readonly socketPath: string; readonly mo
         },
       };
     },
+    userJcodeHome: () => "/Users/someone/.jcode",
+    inheritCredentials: (_fromHome: string, toHome: string) => {
+      inherits.push(toHome);
+      return ["auth.json"];
+    },
     connect: async (options: { readonly socketPath: string; readonly clientName: string }) => {
       connects.push(options);
       const client: JcodeSdkClientLike = {
@@ -277,6 +284,7 @@ function makeJcodeDaemonDouble(input: { readonly socketPath: string; readonly mo
     launches,
     connects,
     clients,
+    inherits,
     socketPath: input.socketPath,
     shutdowns: () => state.shutdowns,
   };
@@ -320,15 +328,6 @@ describe("ProviderInstanceRegistryLive — multi-instance jcode slice", () => {
     const personal = daemons.get(String(personalId))!;
     const work = daemons.get(String(workId))!;
 
-    // The real instance manager, pointed at this instance's own fake daemon.
-    const driver = makeJcodeDriver({
-      makeInstanceManager: (input) =>
-        makeJcodeInstanceManager({
-          ...input,
-          bridge: makeJcodeSdkBridge(daemons.get(String(input.instanceId))!.sdk),
-        }),
-    });
-
     const personalEntry = {
       driver: jcodeDriverKind,
       displayName: "Jcode (personal)",
@@ -364,6 +363,24 @@ describe("ProviderInstanceRegistryLive — multi-instance jcode slice", () => {
 
       yield* Effect.scoped(
         Effect.gen(function* () {
+          // Short like the production default and unique per run, so the bounded
+          // launch alias is exercised without two runs sharing machine state.
+          // Rooting it under the deep test state directory would trip the very
+          // socket-length guard this fix adds. Acquired inside the scope so it
+          // is removed even if the body throws before the registry is built.
+          const aliasBase = yield* fs.makeTempDirectoryScoped({
+            directory: "/tmp",
+            prefix: "pj-",
+          });
+          // The real instance manager, pointed at this instance's own fake daemon.
+          const driver = makeJcodeDriver({
+            makeInstanceManager: (managerInput) =>
+              makeJcodeInstanceManager({
+                ...managerInput,
+                bridge: makeJcodeSdkBridge(daemons.get(String(managerInput.instanceId))!.sdk),
+                launchAliasBase: aliasBase,
+              }),
+          });
           const { registry, mutator } = yield* makeProviderInstanceRegistry({
             drivers: [driver],
             configMap,
@@ -377,8 +394,16 @@ describe("ProviderInstanceRegistryLive — multi-instance jcode slice", () => {
           expect(personal.launches).toHaveLength(1);
           expect(work.launches).toHaveLength(1);
           expect(homes.personal).not.toBe(homes.work);
-          expect(personal.launches[0]!.jcodeHome).toBe(homes.personal);
-          expect(work.launches[0]!.jcodeHome).toBe(homes.work);
+          // Each instance launches from its own bounded alias, and each alias
+          // resolves to that instance's own durable home, so the daemons stay
+          // separate whether or not the launch path is the durable one.
+          expect(personal.launches[0]!.jcodeHome).not.toBe(work.launches[0]!.jcodeHome);
+          expect(yield* fs.realPath(personal.launches[0]!.jcodeHome!)).toBe(
+            yield* fs.realPath(homes.personal),
+          );
+          expect(yield* fs.realPath(work.launches[0]!.jcodeHome!)).toBe(
+            yield* fs.realPath(homes.work),
+          );
           expect(yield* fs.exists(homes.personal)).toBe(true);
           expect(yield* fs.exists(homes.work)).toBe(true);
 
@@ -386,8 +411,14 @@ describe("ProviderInstanceRegistryLive — multi-instance jcode slice", () => {
           // launch, and neither launch carries the other's secret.
           expect(personal.launches[0]!.binary).toBe("/opt/jcode-personal/bin/jcode");
           expect(work.launches[0]!.binary).toBe("/opt/jcode-work/bin/jcode");
-          expect(personal.launches[0]!.inheritLogins).toBe(true);
+          // On Unix the SDK is never asked to inherit: the launch home is a
+          // link and the SDK refuses one. The configured credential mode shows
+          // up as an explicit inheritance into the durable home instead, so
+          // "personal shares logins, work does not" still holds per instance.
+          expect(personal.launches[0]!.inheritLogins).toBe(false);
           expect(work.launches[0]!.inheritLogins).toBe(false);
+          expect(personal.inherits).toEqual([homes.personal]);
+          expect(work.inherits).toEqual([]);
           const personalEnv = Object.values(personal.launches[0]!.env ?? {});
           const workEnv = Object.values(work.launches[0]!.env ?? {});
           expect(personalEnv).toContain(PERSONAL_SECRET);

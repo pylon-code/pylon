@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodePath from "node:path";
 import { inspect } from "node:util";
 
 import { HarnessError } from "@1jehuang/jcode-sdk";
@@ -15,13 +16,21 @@ import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+
 import {
   makeJcodeSdkBridge,
   type JcodeSdkBridge,
   type JcodeSdkClientLike,
   type JcodeSdkModule,
 } from "./JcodeSdkBridge.ts";
-import { jcodeHomePath, jcodeProviderRoot } from "./JcodePaths.ts";
+import {
+  JCODE_MAX_UNIX_SOCKET_PATH,
+  jcodeHomePath,
+  jcodeLaunchAliasPath,
+  jcodeLongestRuntimeSocketPath,
+  jcodeProviderRoot,
+} from "./JcodePaths.ts";
 import {
   JCODE_INSTANCE_SHUTDOWN_TIMEOUT,
   JCODE_LAUNCH_TIMEOUT,
@@ -88,7 +97,12 @@ interface Harness {
   currentModel: string;
   /** Session ids the fake daemon considers live. */
   readonly liveSessions: Set<string>;
+  /** Every explicit credential inheritance the manager asked the SDK to run. */
+  readonly inheritCalls: Array<{ readonly fromHome: string; readonly toHome: string }>;
 }
+
+/** Stands in for the user's live interactive Jcode home. */
+const USER_JCODE_HOME = "/Users/someone/.jcode";
 
 interface HarnessOptions {
   readonly attachFailure?: (sessionId: string) => unknown;
@@ -100,6 +114,8 @@ interface HarnessOptions {
   readonly onLaunchEnter?: () => void;
   readonly onShutdownEnter?: () => void;
   readonly capabilities?: ReadonlyArray<string>;
+  /** Raised by the real SDK when a launch home is a link rather than a directory. */
+  readonly inheritFailure?: (toHome: string) => unknown;
 }
 
 function makeHarness(options: HarnessOptions = {}): Harness {
@@ -116,6 +132,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     runtimeCalls: [],
     currentModel: "claude-fable-5",
     liveSessions: new Set<string>(),
+    inheritCalls: [],
   };
 
   function makeClient(name: string): JcodeSdkClientLike {
@@ -205,6 +222,14 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       clientCounter += 1;
       return makeClient(`client-${clientCounter}`);
     },
+    userJcodeHome: () => USER_JCODE_HOME,
+    inheritCredentials: (fromHome: string, toHome: string) => {
+      harness.inheritCalls.push({ fromHome, toHome });
+      harness.events.push("inherit-credentials");
+      const failure = options.inheritFailure?.(toHome);
+      if (failure !== undefined) throw failure;
+      return ["auth.json", "config.toml"];
+    },
   };
 
   return harness;
@@ -216,6 +241,8 @@ interface FixtureInput {
   readonly instanceId?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly credentialValues?: ReadonlyArray<string>;
+  readonly launchAliasBase?: string;
+  readonly inheritLogins?: boolean;
 }
 
 function makeManager(input: FixtureInput) {
@@ -223,10 +250,57 @@ function makeManager(input: FixtureInput) {
     bridge: makeJcodeSdkBridge(input.harness.sdk),
     instanceId: input.instanceId ?? "instance-a",
     stateDir: input.stateDir,
-    settings: { binaryPath: "/usr/local/bin/jcode", inheritLogins: true },
+    settings: {
+      binaryPath: "/usr/local/bin/jcode",
+      inheritLogins: input.inheritLogins ?? true,
+    },
     environment: input.environment ?? { PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET },
     credentialValues: input.credentialValues ?? [SECRET],
+    // Always this scenario's own short scoped base, never the production
+    // `/tmp/pylon-jcode-<uid>`: a unit test must not write to the path a real
+    // instance on this machine is using.
+    launchAliasBase: input.launchAliasBase ?? requireAliasBase(),
   });
+}
+
+/**
+ * A short, unique, self-deleting alias base.
+ *
+ * Launch aliases exist to stay inside the platform socket limit, so a test that
+ * nested one under the system temp directory would spend the whole budget
+ * proving nothing. It is deliberately not the production
+ * `/tmp/pylon-jcode-<uid>` name, so a test run can never collide with a real
+ * instance on the same machine.
+ */
+const scopedAliasBase = Effect.fnUntraced(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const base = yield* fs.makeTempDirectoryScoped({ directory: "/tmp", prefix: "pj-test-" });
+  currentAliasBase = base;
+  return base;
+});
+
+/**
+ * The alias base the current scenario is using.
+ *
+ * Set by the scoped runners so the many `makeManager({ harness, stateDir })`
+ * call sites do not each have to thread it through. Reading a fixture-local
+ * default is the smaller evil here; the alternative is repeating the same
+ * argument in thirty places.
+ */
+let currentAliasBase: string | undefined;
+
+/**
+ * The scenario's alias base, or a loud failure.
+ *
+ * A literal fallback would silently create and leave that path on a developer's
+ * machine the first time a scenario forgot its scoped runner. Failing names the
+ * mistake instead of littering.
+ */
+function requireAliasBase(): string {
+  if (currentAliasBase === undefined) {
+    throw new Error("no scoped alias base: run this scenario through runScoped");
+  }
+  return currentAliasBase;
 }
 
 /** Runs one scoped scenario against a private temp state directory. */
@@ -235,6 +309,7 @@ function runScoped<A, E>(
     readonly fs: FileSystem.FileSystem;
     readonly path: Path.Path;
     readonly stateDir: string;
+    readonly aliasBase: string;
   }) => Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | Scope.Scope>,
 ): Promise<A> {
   return Effect.runPromise(
@@ -243,7 +318,8 @@ function runScoped<A, E>(
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-instance-" });
-        return yield* body({ fs, path, stateDir });
+        const aliasBase = yield* scopedAliasBase();
+        return yield* body({ fs, path, stateDir, aliasBase });
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -266,6 +342,7 @@ function runScopedWithTestClock<A, E>(
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "jcode-instance-" });
+        yield* scopedAliasBase();
         return yield* body({ fs, path, stateDir });
       }),
     ).pipe(Effect.provide(Layer.merge(NodeServices.layer, TestClock.layer()))),
@@ -286,47 +363,74 @@ function probePath(stateDir: string, instanceId: string): string {
 }
 
 describe("JcodeInstanceManager launch", () => {
-  it("launches exactly one private instance under the provider-instance home", async () => {
+  it("launches exactly one private instance resolving to the provider-instance home", async () => {
     const harness = makeHarness();
-    const observed = await runScoped(({ stateDir }) =>
+    const observed = await runScoped(({ fs, path, stateDir }) =>
       Effect.gen(function* () {
-        const manager = yield* makeManager({ harness, stateDir });
+        const manager = yield* makeManager({
+          harness,
+          stateDir,
+          launchAliasBase: path.join(stateDir, "alias"),
+        });
         // Two consumers must not provoke a second launch.
         yield* manager.probe;
         yield* manager.connectSessionClient;
-        return { stateDir };
+        const durableHome = jcodeHomePath({ stateDir, instanceId: "instance-a" });
+        return {
+          durableHome,
+          durableResolved: yield* fs.realPath(durableHome),
+          launchResolved: yield* fs.realPath(harness.launches[0]!.jcodeHome!),
+        };
       }),
     );
 
     expect(harness.launches).toHaveLength(1);
     const launch = harness.launches[0]!;
-    expect(launch.jcodeHome).toBe(
-      jcodeHomePath({ stateDir: observed.stateDir, instanceId: "instance-a" }),
-    );
+    // The launch home is bounded, but it still resolves to the durable home,
+    // so sessions and credentials stay in the provider namespace.
+    expect(observed.launchResolved).toBe(observed.durableResolved);
+    if (POSIX) {
+      expect(launch.jcodeHome).not.toBe(observed.durableHome);
+      // Inheritance already ran against the durable directory.
+      expect(launch.inheritLogins).toBe(false);
+    } else {
+      expect(launch.jcodeHome).toBe(observed.durableHome);
+      expect(launch.inheritLogins).toBe(true);
+    }
     expect(launch.binary).toBe("/usr/local/bin/jcode");
-    expect(launch.inheritLogins).toBe(true);
     expect(launch.inheritStderr).toBe(false);
   });
 
   it("gives two provider instances different private homes and separate instances", async () => {
     const first = makeHarness();
     const second = makeHarness();
-    const homes = await runScoped(({ stateDir }) =>
+    const homes = await runScoped(({ fs, path, stateDir }) =>
       Effect.gen(function* () {
-        yield* makeManager({ harness: first, stateDir, instanceId: "instance-a" });
-        yield* makeManager({ harness: second, stateDir, instanceId: "instance-b" });
+        const launchAliasBase = path.join(stateDir, "alias");
+        yield* makeManager({ harness: first, stateDir, instanceId: "instance-a", launchAliasBase });
+        yield* makeManager({
+          harness: second,
+          stateDir,
+          instanceId: "instance-b",
+          launchAliasBase,
+        });
         return {
-          a: jcodeHomePath({ stateDir, instanceId: "instance-a" }),
-          b: jcodeHomePath({ stateDir, instanceId: "instance-b" }),
+          a: yield* fs.realPath(jcodeHomePath({ stateDir, instanceId: "instance-a" })),
+          b: yield* fs.realPath(jcodeHomePath({ stateDir, instanceId: "instance-b" })),
+          launchedA: yield* fs.realPath(first.launches[0]!.jcodeHome!),
+          launchedB: yield* fs.realPath(second.launches[0]!.jcodeHome!),
         };
       }),
     );
 
     expect(first.launches).toHaveLength(1);
     expect(second.launches).toHaveLength(1);
-    expect(first.launches[0]!.jcodeHome).toBe(homes.a);
-    expect(second.launches[0]!.jcodeHome).toBe(homes.b);
+    // Distinct instances keep distinct durable homes, and each launch resolves
+    // to its own: one alias base must never merge two instances.
+    expect(homes.launchedA).toBe(homes.a);
+    expect(homes.launchedB).toBe(homes.b);
     expect(homes.a).not.toBe(homes.b);
+    expect(first.launches[0]!.jcodeHome).not.toBe(second.launches[0]!.jcodeHome);
   });
 
   it("strips reserved Jcode variables even when the caller claims a sanitized environment", async () => {
@@ -397,6 +501,7 @@ describe("JcodeInstanceManager launch", () => {
           settings: { binaryPath: "jcode", inheritLogins: false },
           environment: { ANTHROPIC_API_KEY: SECRET },
           credentialValues: [SECRET],
+          launchAliasBase: NodePath.join(stateDir, ".launch-alias"),
         }),
       ),
     );
@@ -771,6 +876,7 @@ describe("JcodeInstanceManager session clients", () => {
           environment: { ANTHROPIC_API_KEY: SECRET },
           // Only this manager's own credential is known to its own bridge.
           credentialValues: [SECRET],
+          launchAliasBase: requireAliasBase(),
         }),
       ),
     );
@@ -887,6 +993,7 @@ describe("JcodeInstanceManager cross-provider isolation", () => {
           settings: { binaryPath: "jcode", inheritLogins: true },
           environment: { PATH: "/usr/bin" },
           credentialValues: [SECRET],
+          launchAliasBase: requireAliasBase(),
         });
         yield* manager.shutdown;
         return {
@@ -949,5 +1056,297 @@ describe("JcodeInstanceManager deadlines", () => {
     expect(error.operation).toBe("shutdown");
     // The bounded shutdown never reported a completed native stop.
     expect(harness.shutdowns).toBe(0);
+  });
+});
+
+/**
+ * The durable home sits under the Pylon provider namespace, which on a real
+ * installation is far longer than a Unix socket path may be. The daemon binds
+ * `<home>/run/jcode-debug.sock`, so the launch home the SDK is handed has to be
+ * bounded independently of how deep the state directory is.
+ */
+describe.skipIf(!POSIX)("JcodeInstanceManager launch home", () => {
+  /** A state directory as deep as the real one, built inside the test temp dir. */
+  const deepLeaf = NodePath.join(
+    "a-fairly-long-directory-name",
+    "another-long-directory-name",
+    "userdata",
+  );
+
+  it("launches from a bounded alias while durable state stays in the provider namespace", async () => {
+    const harness = makeHarness();
+    const observed = await runScoped(({ fs, path, stateDir }) =>
+      Effect.gen(function* () {
+        const deepStateDir = path.join(stateDir, deepLeaf);
+        yield* fs.makeDirectory(deepStateDir, { recursive: true });
+        const aliasBase = path.join(stateDir, "alias");
+        yield* makeManager({ harness, stateDir: deepStateDir, launchAliasBase: aliasBase });
+
+        const launched = harness.launches[0]!.jcodeHome!;
+        const durableHome = jcodeHomePath({ stateDir: deepStateDir, instanceId: "instance-a" });
+        // Resolved inside the scope: the temp state directory is removed when
+        // the scope closes, so a realpath afterwards would fail on ENOENT.
+        return {
+          launched,
+          durableHome,
+          resolved: yield* fs.realPath(launched),
+          durableResolved: yield* fs.realPath(durableHome),
+          durableExists: yield* fs.exists(durableHome),
+        };
+      }),
+    );
+
+    // The SDK is handed the alias, not the durable home.
+    expect(observed.launched).not.toBe(observed.durableHome);
+    // The longest socket the daemon binds fits the platform limit.
+    expect(
+      jcodeLongestRuntimeSocketPath({ launchHome: observed.launched }).length,
+    ).toBeLessThanOrEqual(JCODE_MAX_UNIX_SOCKET_PATH);
+    // The alias resolves to the durable home, so state is not duplicated.
+    expect(observed.resolved).toBe(observed.durableResolved);
+    expect(observed.durableExists).toBe(true);
+    // Durable state still lives under the existing Pylon provider namespace.
+    expect(observed.durableHome).toContain(NodePath.join("provider-sessions", "jcode"));
+  });
+
+  it("inherits credentials into the durable home and never through the alias", async () => {
+    const harness = makeHarness();
+    const observed = await runScoped(({ fs, path, stateDir }) =>
+      Effect.gen(function* () {
+        const deepStateDir = path.join(stateDir, deepLeaf);
+        yield* fs.makeDirectory(deepStateDir, { recursive: true });
+        yield* makeManager({
+          harness,
+          stateDir: deepStateDir,
+          launchAliasBase: path.join(stateDir, "alias"),
+        });
+        return { durableHome: jcodeHomePath({ stateDir: deepStateDir, instanceId: "instance-a" }) };
+      }),
+    );
+
+    // The real SDK refuses a symlink as an inheritance target, so Pylon must
+    // inherit into the durable directory itself and then launch without asking
+    // the SDK to repeat the work.
+    expect(harness.inheritCalls).toEqual([
+      { fromHome: USER_JCODE_HOME, toHome: observed.durableHome },
+    ]);
+    expect(harness.launches[0]!.inheritLogins).toBe(false);
+    // Inheritance happens before the daemon starts, or the first turn has no
+    // credentials to use.
+    expect(harness.events.indexOf("inherit-credentials")).toBeLessThan(
+      harness.events.indexOf("launch"),
+    );
+  });
+
+  it("does not inherit credentials when the instance is configured not to", async () => {
+    const harness = makeHarness();
+    await runScoped(({ fs, path, stateDir }) =>
+      Effect.gen(function* () {
+        const deepStateDir = path.join(stateDir, deepLeaf);
+        yield* fs.makeDirectory(deepStateDir, { recursive: true });
+        yield* makeManager({
+          harness,
+          stateDir: deepStateDir,
+          launchAliasBase: path.join(stateDir, "alias"),
+          inheritLogins: false,
+        });
+      }),
+    );
+
+    expect(harness.inheritCalls).toEqual([]);
+    expect(harness.launches[0]!.inheritLogins).toBe(false);
+  });
+
+  it("reuses one stable alias across restarts of the same instance", async () => {
+    const first = makeHarness();
+    const second = makeHarness();
+    const observed = await runScoped(({ fs, path, stateDir }) =>
+      Effect.gen(function* () {
+        const deepStateDir = path.join(stateDir, deepLeaf);
+        yield* fs.makeDirectory(deepStateDir, { recursive: true });
+        const aliasBase = path.join(stateDir, "alias");
+        yield* Scope.provide(
+          Effect.gen(function* () {
+            const manager = yield* makeManager({
+              harness: first,
+              stateDir: deepStateDir,
+              launchAliasBase: aliasBase,
+            });
+            yield* manager.shutdown;
+          }),
+          yield* Scope.make(),
+        );
+        yield* makeManager({ harness: second, stateDir: deepStateDir, launchAliasBase: aliasBase });
+        return { entries: yield* fs.readDirectory(aliasBase) };
+      }),
+    );
+
+    expect(second.launches[0]!.jcodeHome).toBe(first.launches[0]!.jcodeHome);
+    // One alias per instance, not one per launch.
+    expect(observed.entries).toHaveLength(1);
+  });
+
+  it("repoints a stale alias that still targets a previous home", async () => {
+    const harness = makeHarness();
+    const observed = await runScoped(({ fs, path, stateDir }) =>
+      Effect.gen(function* () {
+        const deepStateDir = path.join(stateDir, deepLeaf);
+        yield* fs.makeDirectory(deepStateDir, { recursive: true });
+        const aliasBase = path.join(stateDir, "alias");
+        const stolen = path.join(stateDir, "somewhere-else");
+        yield* fs.makeDirectory(stolen, { recursive: true });
+        // Owner-only, as the manager itself would have created it: a looser base
+        // is refused rather than tightened.
+        yield* fs.makeDirectory(aliasBase, { recursive: true, mode: 0o700 });
+        // A leftover link from an older layout must not silently redirect this
+        // instance at a home that is not its own.
+        const alias = jcodeLaunchAliasPath({
+          aliasBase,
+          stateDir: deepStateDir,
+          instanceId: "instance-a",
+        });
+        yield* fs.symlink(stolen, alias);
+
+        yield* makeManager({ harness, stateDir: deepStateDir, launchAliasBase: aliasBase });
+        const durableHome = jcodeHomePath({ stateDir: deepStateDir, instanceId: "instance-a" });
+        return {
+          resolved: yield* fs.realPath(harness.launches[0]!.jcodeHome!),
+          durableResolved: yield* fs.realPath(durableHome),
+          stolenResolved: yield* fs.realPath(stolen),
+        };
+      }),
+    );
+
+    expect(observed.resolved).not.toBe(observed.stolenResolved);
+    expect(observed.resolved).toBe(observed.durableResolved);
+  });
+
+  it("refuses to launch when the alias name is occupied by a real directory", async () => {
+    const harness = makeHarness();
+    const error = await runScoped(({ fs, path, stateDir }) =>
+      Effect.gen(function* () {
+        const deepStateDir = path.join(stateDir, deepLeaf);
+        yield* fs.makeDirectory(deepStateDir, { recursive: true });
+        const aliasBase = path.join(stateDir, "alias");
+        const alias = jcodeLaunchAliasPath({
+          aliasBase,
+          stateDir: deepStateDir,
+          instanceId: "instance-a",
+        });
+        // Not a link this manager made. Replacing it could destroy somebody
+        // else's data, so the launch fails closed instead.
+        yield* fs.makeDirectory(alias, { recursive: true });
+        return yield* Effect.flip(
+          makeManager({ harness, stateDir: deepStateDir, launchAliasBase: aliasBase }),
+        );
+      }),
+    );
+
+    expect(error._tag).toBe("JcodeInstanceManagerError");
+    expect(error.operation).toBe("launch");
+    expect(harness.launches).toHaveLength(0);
+    // A native path would name the user's machine in a remote-visible error.
+    expect(error.detail).not.toContain("/");
+  });
+
+  it("refuses a symlinked alias base instead of hardening whatever it points at", async () => {
+    const harness = makeHarness();
+    const observed = await runScoped(({ fs, path, stateDir }) =>
+      Effect.gen(function* () {
+        const deepStateDir = path.join(stateDir, deepLeaf);
+        yield* fs.makeDirectory(deepStateDir, { recursive: true });
+        // The production alias base sits under a world-writable `/tmp`, so
+        // another account can plant that name first. A pre-planted link must be
+        // refused rather than followed, and nothing may be written through it.
+        // This covers the planted case; the manager additionally never rewrites
+        // a base it did not just create, so a link raced in mid-flight can only
+        // make the launch fail.
+        const victim = path.join(stateDir, "someone-elses-directory");
+        yield* fs.makeDirectory(victim, { recursive: true, mode: 0o755 });
+        const aliasBase = path.join(stateDir, "planted-base");
+        yield* fs.symlink(victim, aliasBase);
+
+        const error = yield* Effect.flip(
+          makeManager({ harness, stateDir: deepStateDir, launchAliasBase: aliasBase }),
+        );
+        return { error, mode: (yield* fs.stat(victim)).mode };
+      }),
+    );
+
+    expect(observed.error._tag).toBe("JcodeInstanceManagerError");
+    expect(observed.error.operation).toBe("launch");
+    expect(harness.launches).toHaveLength(0);
+    expect(observed.error.detail).not.toContain("/");
+    // The planted target keeps the permissions it had.
+    expect(observed.mode & 0o777).toBe(0o755);
+  });
+
+  it("refuses a pre-existing alias base that is not owner-only rather than hardening it", async () => {
+    const harness = makeHarness();
+    const observed = await runScoped(({ fs, path, stateDir }) =>
+      Effect.gen(function* () {
+        const deepStateDir = path.join(stateDir, deepLeaf);
+        yield* fs.makeDirectory(deepStateDir, { recursive: true });
+        // A base that already exists with a loose mode is a directory Pylon did
+        // not create. Tightening it would be acting on someone else's
+        // directory, and the check-then-act window between deciding it is safe
+        // and changing it is exactly where a raced symlink would land. Refusing
+        // is strictly safer, and it keeps the race able to cause only a launch
+        // failure.
+        const aliasBase = path.join(stateDir, "loose-base");
+        yield* fs.makeDirectory(aliasBase, { recursive: true, mode: 0o777 });
+        // Read back rather than assumed: umask trims the requested mode, and
+        // what matters is that Pylon leaves it exactly as it found it.
+        const modeBefore = (yield* fs.stat(aliasBase)).mode & 0o777;
+
+        const error = yield* Effect.flip(
+          makeManager({ harness, stateDir: deepStateDir, launchAliasBase: aliasBase }),
+        );
+        return {
+          error,
+          modeBefore,
+          modeAfter: (yield* fs.stat(aliasBase)).mode & 0o777,
+          entries: yield* fs.readDirectory(aliasBase),
+        };
+      }),
+    );
+
+    expect(observed.error._tag).toBe("JcodeInstanceManagerError");
+    expect(observed.error.operation).toBe("launch");
+    expect(harness.launches).toHaveLength(0);
+    expect(observed.error.detail).not.toContain("/");
+    // Left exactly as found: not tightened, and no alias written into it.
+    expect(observed.modeAfter).toBe(observed.modeBefore);
+    expect(observed.modeAfter).not.toBe(0o700);
+    expect(observed.entries).toEqual([]);
+  });
+});
+
+describe("JcodeInstanceManager launch home on Windows", () => {
+  it("launches from the durable home without needing a symlink", async () => {
+    const harness = makeHarness();
+    const observed = await runScoped(({ fs, path, stateDir }) =>
+      Effect.gen(function* () {
+        const deepStateDir = path.join(stateDir, "a-long-directory-name", "userdata");
+        yield* fs.makeDirectory(deepStateDir, { recursive: true });
+        yield* makeManager({
+          harness,
+          stateDir: deepStateDir,
+          // Present but unused: Windows must not depend on it.
+          launchAliasBase: path.join(stateDir, "alias"),
+        }).pipe(Effect.provideService(HostProcessPlatform, "win32"));
+        return {
+          durableHome: jcodeHomePath({ stateDir: deepStateDir, instanceId: "instance-a" }),
+          aliasBaseExists: yield* fs.exists(path.join(stateDir, "alias")),
+        };
+      }),
+    );
+
+    // No alias, no symlink, and therefore no privileged Windows operation.
+    expect(harness.launches[0]!.jcodeHome).toBe(observed.durableHome);
+    expect(observed.aliasBaseExists).toBe(false);
+    // Windows keeps the SDK's own inheritance, which needs no link there.
+    expect(harness.launches[0]!.inheritLogins).toBe(true);
+    expect(harness.inheritCalls).toEqual([]);
   });
 });

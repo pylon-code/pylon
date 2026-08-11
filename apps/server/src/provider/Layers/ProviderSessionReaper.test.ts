@@ -260,6 +260,10 @@ describe("ProviderSessionReaper", () => {
         connects += 1;
         return child.client;
       },
+      userJcodeHome: () => "/Users/someone/.jcode",
+      inheritCredentials: () => {
+        throw new Error("The reaper test never inherits credentials.");
+      },
     };
     const bridge = makeJcodeSdkBridge(sdk);
     const manager: JcodeInstanceManager = {

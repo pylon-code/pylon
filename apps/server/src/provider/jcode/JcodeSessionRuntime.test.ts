@@ -243,6 +243,8 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       shutdown: async () => {},
     }),
     connect: async () => client,
+    userJcodeHome: () => "/Users/someone/.jcode",
+    inheritCredentials: () => [],
   };
   return harness;
 }

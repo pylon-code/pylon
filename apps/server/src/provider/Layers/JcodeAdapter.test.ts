@@ -146,6 +146,8 @@ function makeFakeSdk(options: FakeSdkOptions = {}): FakeSdk {
         shutdown: async () => {},
       };
     },
+    userJcodeHome: () => "/Users/someone/.jcode",
+    inheritCredentials: () => ["auth.json"],
     connect: async () => {
       const state: FakeClient = {
         sessionId: `${NATIVE_SESSION_ID}-${clients.length + 1}`,
@@ -314,6 +316,10 @@ const concurrentFixture = () =>
       settings: { binaryPath: "/usr/local/bin/jcode", inheritLogins: true },
       environment: { PATH: "/usr/bin" },
       credentialValues: [],
+      // A private alias base, short like the production default and removed
+      // with the scope. Rooting it under the deep test state directory would
+      // trip the very socket-length guard this fix adds.
+      launchAliasBase: yield* fs.makeTempDirectoryScoped({ directory: "/tmp", prefix: "pj-" }),
     }).pipe(Effect.orDie);
     const adapter = yield* makeJcodeAdapter({
       providerInstanceId: PROVIDER_INSTANCE_ID,
