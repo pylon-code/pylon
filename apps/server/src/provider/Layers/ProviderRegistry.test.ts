@@ -1714,7 +1714,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             Layer.updateService(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
               ChildProcessSpawner.make((command) => {
                 const commandPath = (command as { readonly command: string }).command;
-                spawnedCommands.push(commandPath);
+                if (commandPath === firstMissing || commandPath === secondMissing) {
+                  spawnedCommands.push(commandPath);
+                }
                 if (commandPath === secondMissing) {
                   Deferred.doneUnsafe(secondProbeSpawned, Effect.void);
                 }
@@ -1944,7 +1946,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 "codex",
                 "cursor",
                 "grok",
+                "jcode",
                 "opencode",
+                "primeAgent",
               ]);
               assert.strictEqual(cursorProvider?.enabled, false);
               assert.strictEqual(cursorProvider?.status, "disabled");
