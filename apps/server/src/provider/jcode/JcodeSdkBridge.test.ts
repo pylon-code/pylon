@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  decodeJcodeSdkEvent,
   JcodeSdkOperationError,
   type JcodeSdkBridgeError,
   JcodeSessionNotFoundError,
@@ -813,6 +814,34 @@ describe("JcodeSdkBridge connect", () => {
     expect(client.supports("permissions")).toBe(false);
   });
 
+  it("decodes the producer-authoritative correction frame bytes", () => {
+    // Keep these exact JSON bytes aligned with
+    // crates/jcode-harness-api-server/src/framing_tests.rs.
+    const frames = [
+      JSON.parse(
+        '{"v":1,"ev":"text_replace","session_id":"attached-session","text":"corrected public text"}',
+      ) as AnyApiEvent,
+      JSON.parse(
+        '{"v":1,"ev":"retry_rollback","session_id":"attached-session","attempt":2,"max":4}',
+      ) as AnyApiEvent,
+    ];
+
+    expect(frames.map((frame) => decodeJcodeSdkEvent(frame, ["stream_corrections"]))).toEqual(
+      frames,
+    );
+  });
+
+  it("keeps accepting envelope-free correction compatibility fixtures", () => {
+    const frames: ReadonlyArray<AnyApiEvent> = [
+      { ev: "text_replace", session_id: "session-1", text: "corrected" },
+      { ev: "retry_rollback", session_id: "session-1", attempt: 2, max: 3 },
+    ];
+
+    expect(frames.map((frame) => decodeJcodeSdkEvent(frame, ["stream_corrections"]))).toEqual(
+      frames,
+    );
+  });
+
   it("ignores unknown future event kinds rather than crashing the stream", async () => {
     const bridge = makeJcodeSdkBridge(
       fakeSdk({
@@ -852,8 +881,8 @@ describe("JcodeSdkBridge connect", () => {
 
   it("decodes additive correction frames when stream_corrections is advertised", async () => {
     const frames: ReadonlyArray<AnyApiEvent> = [
-      { ev: "text_replace", session_id: "session-1", text: "corrected" },
-      { ev: "retry_rollback", session_id: "session-1", attempt: 2, max: 3 },
+      { v: 1, ev: "text_replace", session_id: "session-1", text: "corrected" },
+      { v: 1, ev: "retry_rollback", session_id: "session-1", attempt: 2, max: 3 },
     ];
     const client = await Effect.runPromise(
       eventsBridge(countingSource(frames).source, ["sessions", "stream_corrections"]).connect({
@@ -870,15 +899,28 @@ describe("JcodeSdkBridge connect", () => {
 
   it("rejects malformed additive correction frames", async () => {
     const valid: ReadonlyArray<AnyApiEvent> = [
-      { ev: "text_replace", session_id: "session-1", text: "corrected" },
-      { ev: "retry_rollback", session_id: "session-1", attempt: 2, max: 3 },
+      {
+        v: 1,
+        reply_to: 7,
+        ev: "text_replace",
+        session_id: "session-1",
+        text: "corrected",
+      },
+      {
+        v: 1,
+        reply_to: 8,
+        ev: "retry_rollback",
+        session_id: "session-1",
+        attempt: 2,
+        max: 3,
+      },
     ];
     const malformed: ReadonlyArray<AnyApiEvent> = [
       { ev: "text_replace", text: "missing session" },
       { ev: "text_replace", session_id: "", text: "empty session" },
       { ev: "text_replace", session_id: 42, text: "wrong id type" },
       { ev: "text_replace", session_id: "session-1", text: 42 },
-      { ev: "text_replace", session_id: "session-1", text: "extra", extra: true },
+      { v: 1, ev: "text_replace", session_id: "session-1", text: "extra", extra: true },
       { ev: "retry_rollback", attempt: 1, max: 3 },
       { ev: "retry_rollback", session_id: "", attempt: 1, max: 3 },
       { ev: "retry_rollback", session_id: 42, attempt: 1, max: 3 },
@@ -888,7 +930,14 @@ describe("JcodeSdkBridge connect", () => {
       { ev: "retry_rollback", session_id: "session-1", attempt: 1, max: 0 },
       { ev: "retry_rollback", session_id: "session-1", attempt: 1.5, max: 3 },
       { ev: "retry_rollback", session_id: "session-1", attempt: 4, max: 3 },
-      { ev: "retry_rollback", session_id: "session-1", attempt: 2, max: 3, extra: true },
+      {
+        v: 1,
+        ev: "retry_rollback",
+        session_id: "session-1",
+        attempt: 2,
+        max: 3,
+        extra: true,
+      },
     ];
     const client = await Effect.runPromise(
       eventsBridge(countingSource([...valid, ...malformed]).source, ["stream_corrections"]).connect(
@@ -907,8 +956,8 @@ describe("JcodeSdkBridge connect", () => {
 
   it("rejects additive correction frames when the capability is absent", async () => {
     const frames: ReadonlyArray<AnyApiEvent> = [
-      { ev: "text_replace", session_id: "session-1", text: "corrected" },
-      { ev: "retry_rollback", session_id: "session-1", attempt: 1, max: 3 },
+      { v: 1, ev: "text_replace", session_id: "session-1", text: "corrected" },
+      { v: 1, ev: "retry_rollback", session_id: "session-1", attempt: 1, max: 3 },
     ];
     const client = await Effect.runPromise(
       eventsBridge(countingSource(frames).source, ["sessions"]).connect({

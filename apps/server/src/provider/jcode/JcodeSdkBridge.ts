@@ -37,12 +37,21 @@ const PositiveSafeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 const JcodeSessionId = Schema.String.check(
   Schema.makeFilter((value) => value.length > 0 || "Session id must not be empty"),
 );
+const JcodeFrameEnvelope = {
+  // Jcode flattens every ApiEvent into ServerFrame, so protocol envelope fields
+  // reach the SDK alongside event fields. Declare them so strict decoding still
+  // rejects genuinely unknown properties.
+  v: Schema.optional(Schema.Number),
+  reply_to: Schema.optional(Schema.Number),
+};
 const JcodeTextReplaceEvent = Schema.Struct({
+  ...JcodeFrameEnvelope,
   ev: Schema.Literal("text_replace"),
   session_id: JcodeSessionId,
   text: Schema.String,
 }).annotate({ parseOptions: { onExcessProperty: "error" } });
 const JcodeRetryRollbackEvent = Schema.Struct({
+  ...JcodeFrameEnvelope,
   ev: Schema.Literal("retry_rollback"),
   session_id: JcodeSessionId,
   attempt: PositiveSafeInteger,
