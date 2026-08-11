@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "9afef94a61466422128da9c3b723b633d4c7ed1d"
+reviewed-through: "9c7622dac3d1a385351e6c74354a9e6b9c2037d5"
 reviewed-through-date: "2026-08-11"
 ---
 
@@ -496,6 +496,38 @@ mobile typecheck clean; client-runtime reports only the pre-existing
 `relay/discovery.ts(243,16)` Effect suggestion, in a file this change does not
 touch. `vp lint` and `vp fmt --check` clean on all three changed files. A `vp i`
 was needed first — the 101-commit fast-forward moved the lockfile substantially.
+
+## 2026-08-11 (third batch) — `9afef94a61466422128da9c3b723b633d4c7ed1d..9c7622dac3d1a385351e6c74354a9e6b9c2037d5`
+
+Seven upstream commits, all adopted, all fixes. These landed while the previous
+batch was being verified — this machine fetches `t3code-upstream` on a timer,
+so the head moved from `9afef94a6` to `9c7622dac` mid-session. Every one is a
+correctness or performance fix with no branding, migration, versioning, or T3
+infrastructure entanglement, and all seven cherry-picked without conflicts.
+
+DEF-1 remains deferred; its gates are unchanged and this range does not touch
+the pull-request surface.
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------- | --------------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| J1         | `e5c82d79a` / `#5988` | adopted  | `25c645708`     | Mobile chat composer no longer sits under the Android gesture bar. Keys the safe-area inset on keyboard visibility via `useKeyboardState` rather than focus, because Android's back gesture closes the keyboard while the editor stays focused. **Verified the installed `react-native-keyboard-controller@1.21.13` exports the hook** — it is patched in Pylon, so the export could not be assumed from the version alone. |
+| J2         | `2ea51bd31` / `#5072` | adopted  | `0d92f153d`     | OpenCode model parsing no longer drops models whose id contains a slash in the JSON body. Provider correctness, and the kind of adapter-boundary bug that is invisible until a specific model is used.                                                                                                                                                                                                                      |
+| J3         | `59d0c922e` / `#5136` | adopted  | `4094c0b1a`     | The sidebar settled and snoozed shelves remember their collapse state across reloads — a reverse state that previously reset every session. Applied cleanly despite `Sidebar.tsx` being heavily diverged. **The `t3code:sidebar-v2:*` localStorage keys were kept**, consistent with the F10 precedent that `t3code:` storage keys are compatibility identifiers; renaming them would orphan preferences.                   |
+| J4         | `f9730979c` / `#5220` | adopted  | `f37ac25ca`     | Skips base64 encoding for image candidates already over budget, estimating the data-URL length from blob size instead of encoding first. Changes `encodeWithinBudget` to return `null` rather than an over-budget encoding, so the caller drops it explicitly. Pylon had not diverged on this file.                                                                                                                         |
+| J5         | `1fa315ea9` / `#5354` | adopted  | `3f456c2ce`     | Resource telemetry stops running Linux libc detection on Windows and macOS.                                                                                                                                                                                                                                                                                                                                                 |
+| J6         | `c14bcca10` / `#5693` | adopted  | `b3d77dbea`     | Terminals advertise a 256-color `TERM` on Windows.                                                                                                                                                                                                                                                                                                                                                                          |
+| J7         | `9c7622dac` / `#5944` | adopted  | `34f101f3a`     | VCS status handles an unborn HEAD, so a freshly `git init`-ed project with no commits stops erroring and falls back to `symbolic-ref`. `GitVcsDriverCore.ts` is diverged by 93 lines but the hunk applied cleanly; **both prerequisites (`isUnbornHeadStderr`, `runGitStdout`) were confirmed present in Pylon** before the pick.                                                                                           |
+
+Verification: server tests for all four touched areas pass (70), web sidebar,
+snooze, backdrop, and `useLocalStorage` pass (113), web `imageCompression`
+passes (12). Web, mobile, and server typecheck report no errors — the server's
+15 `TS377019` Effect suggestions are pre-existing and none is in a touched
+file. `vp lint` and `vp fmt --check` clean across all 11 changed files.
+
+Note for future sessions: `vp lint "$files"` with a newline-joined variable is
+a silent no-op under zsh, which does not word-split unquoted expansions. It
+prints `No files found to lint` and exits 0. Pass explicit paths and confirm
+the reported file count.
 
 ## Deferred register
 
