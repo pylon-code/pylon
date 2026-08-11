@@ -3206,6 +3206,8 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.session).toMatchObject({ status: "running", activeTurnId: turnId });
   });
 
+  // The test harness deliberately bypasses ProviderRuntimeEvent schema decoding.
+  // Missing turnId is schema-impossible in production, so this is defense-in-depth.
   it("warns and ignores a replacement without an authoritative turn id", async () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
     const now = "2026-08-11T10:02:30.000Z";
