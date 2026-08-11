@@ -118,9 +118,6 @@ thread all see the same outcome.
   Switching models inside a running session is supported.
 - Image attachments.
 - Stopping a turn.
-- Stream corrections when the installed Jcode advertises them: replacement text updates in place,
-  and retries remove partial assistant text and tool rows from the aborted attempt before fresh
-  output continues.
 - Durable per-thread sessions and exact resume, as described above.
 - Multiple Jcode provider instances, each with its own binary path, credentials, and state.
 - Remote web and mobile clients: Jcode runs on the environment host, not on the device showing
@@ -128,6 +125,9 @@ thread all see the same outcome.
 
 ## What is not supported yet
 
+- Recovering cleanly when a provider retries mid-answer. If the connection drops partway through a
+  reply, the retried answer can appear alongside the partial one. Support for this is built and
+  waiting on a Jcode release that reports the capability.
 - Approvals and permission modes other than **Full access**.
 - Plan mode.
 - Rolling a conversation back to an earlier point, and reverting through Jcode's own history.
