@@ -176,10 +176,12 @@ const ProviderRuntimeEventType = Schema.Literals([
   "turn.proposed.delta",
   "turn.proposed.completed",
   "turn.diff.updated",
+  "turn.output-reset",
   "item.started",
   "item.updated",
   "item.completed",
   "content.delta",
+  "content.replaced",
   "request.opened",
   "request.resolved",
   "user-input.requested",
@@ -232,10 +234,12 @@ const TurnPlanUpdatedType = Schema.Literal("turn.plan.updated");
 const TurnProposedDeltaType = Schema.Literal("turn.proposed.delta");
 const TurnProposedCompletedType = Schema.Literal("turn.proposed.completed");
 const TurnDiffUpdatedType = Schema.Literal("turn.diff.updated");
+const TurnOutputResetType = Schema.Literal("turn.output-reset");
 const ItemStartedType = Schema.Literal("item.started");
 const ItemUpdatedType = Schema.Literal("item.updated");
 const ItemCompletedType = Schema.Literal("item.completed");
 const ContentDeltaType = Schema.Literal("content.delta");
+const ContentReplacedType = Schema.Literal("content.replaced");
 const RequestOpenedType = Schema.Literal("request.opened");
 const RequestResolvedType = Schema.Literal("request.resolved");
 const UserInputRequestedType = Schema.Literal("user-input.requested");
@@ -436,6 +440,17 @@ const TurnDiffUpdatedPayload = Schema.Struct({
 });
 export type TurnDiffUpdatedPayload = typeof TurnDiffUpdatedPayload.Type;
 
+const TurnOutputResetPayload = Schema.Struct({
+  reason: Schema.Literal("provider_retry"),
+  attempt: PositiveInt,
+  max: PositiveInt,
+}).check(
+  Schema.makeFilter(
+    ({ attempt, max }) => attempt <= max || "Retry attempt must not exceed retry maximum",
+  ),
+);
+export type TurnOutputResetPayload = typeof TurnOutputResetPayload.Type;
+
 export const ItemLifecyclePayload = Schema.Struct({
   itemType: CanonicalItemType,
   status: Schema.optional(RuntimeItemStatus),
@@ -459,6 +474,12 @@ const ContentDeltaPayload = Schema.Struct({
   summaryIndex: Schema.optional(Schema.Int),
 });
 export type ContentDeltaPayload = typeof ContentDeltaPayload.Type;
+
+const ContentReplacedPayload = Schema.Struct({
+  streamKind: Schema.Literal("assistant_text"),
+  text: Schema.String,
+});
+export type ContentReplacedPayload = typeof ContentReplacedPayload.Type;
 
 const RequestOpenedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
@@ -1150,6 +1171,14 @@ const ProviderRuntimeTurnDiffUpdatedEvent = Schema.Struct({
 });
 export type ProviderRuntimeTurnDiffUpdatedEvent = typeof ProviderRuntimeTurnDiffUpdatedEvent.Type;
 
+const ProviderRuntimeTurnOutputResetEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  turnId: TurnId,
+  type: TurnOutputResetType,
+  payload: TurnOutputResetPayload,
+});
+export type ProviderRuntimeTurnOutputResetEvent = typeof ProviderRuntimeTurnOutputResetEvent.Type;
+
 const ProviderRuntimeItemStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: ItemStartedType,
@@ -1177,6 +1206,15 @@ const ProviderRuntimeContentDeltaEvent = Schema.Struct({
   payload: ContentDeltaPayload,
 });
 export type ProviderRuntimeContentDeltaEvent = typeof ProviderRuntimeContentDeltaEvent.Type;
+
+const ProviderRuntimeContentReplacedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  turnId: TurnId,
+  itemId: RuntimeItemId,
+  type: ContentReplacedType,
+  payload: ContentReplacedPayload,
+});
+export type ProviderRuntimeContentReplacedEvent = typeof ProviderRuntimeContentReplacedEvent.Type;
 
 const ProviderRuntimeRequestOpenedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
@@ -1467,10 +1505,12 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTurnProposedDeltaEvent,
   ProviderRuntimeTurnProposedCompletedEvent,
   ProviderRuntimeTurnDiffUpdatedEvent,
+  ProviderRuntimeTurnOutputResetEvent,
   ProviderRuntimeItemStartedEvent,
   ProviderRuntimeItemUpdatedEvent,
   ProviderRuntimeItemCompletedEvent,
   ProviderRuntimeContentDeltaEvent,
+  ProviderRuntimeContentReplacedEvent,
   ProviderRuntimeRequestOpenedEvent,
   ProviderRuntimeRequestResolvedEvent,
   ProviderRuntimeUserInputRequestedEvent,

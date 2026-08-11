@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
+import { EventId, RuntimeItemId, ThreadId, TurnId } from "./baseSchemas.ts";
 import { classifyTaskAgentKind, ProviderRuntimeEvent } from "./providerRuntime.ts";
 
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 const encodeRuntimeEvent = Schema.encodeSync(ProviderRuntimeEvent);
+const eventId = Schema.decodeUnknownSync(EventId)("event-stream-correction");
+const threadId = Schema.decodeUnknownSync(ThreadId)("thread-stream-correction");
+const turnId = Schema.decodeUnknownSync(TurnId)("turn-stream-correction");
+const itemId = Schema.decodeUnknownSync(RuntimeItemId)("item-stream-correction");
 
 describe("ProviderRuntimeEvent", () => {
   it("accepts fork-provided driver kinds as branded slugs", () => {
@@ -299,6 +304,110 @@ describe("ProviderRuntimeEvent", () => {
         createdAt: "2026-02-28T00:00:05.000Z",
         threadId: "thread-1",
         payload: { reason: "native-private-reason" },
+      }),
+    ).toThrow();
+  });
+
+  it("round-trips provider-neutral stream correction events", () => {
+    const events = [
+      {
+        type: "content.replaced",
+        eventId,
+        provider: "primeAgent",
+        createdAt: "2026-08-11T00:00:00.000Z",
+        threadId,
+        turnId,
+        itemId,
+        payload: {
+          streamKind: "assistant_text",
+          text: "authoritative replacement",
+        },
+      },
+      {
+        type: "content.replaced",
+        eventId,
+        provider: "primeAgent",
+        createdAt: "2026-08-11T00:00:00.000Z",
+        threadId,
+        turnId,
+        itemId,
+        payload: {
+          streamKind: "assistant_text",
+          text: "",
+        },
+      },
+      {
+        type: "turn.output-reset",
+        eventId,
+        provider: "primeAgent",
+        createdAt: "2026-08-11T00:00:00.000Z",
+        threadId,
+        turnId,
+        payload: {
+          reason: "provider_retry",
+          attempt: 2,
+          max: 3,
+        },
+      },
+    ];
+
+    for (const event of events) {
+      expect(encodeRuntimeEvent(decodeRuntimeEvent(event))).toEqual(event);
+    }
+  });
+
+  it("rejects malformed provider-neutral stream correction events", () => {
+    const replacementEvent = {
+      type: "content.replaced",
+      eventId,
+      provider: "primeAgent",
+      createdAt: "2026-08-11T00:00:00.000Z",
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        text: "authoritative replacement",
+      },
+    };
+    const resetEvent = {
+      type: "turn.output-reset",
+      eventId,
+      provider: "primeAgent",
+      createdAt: "2026-08-11T00:00:00.000Z",
+      threadId,
+      turnId,
+      payload: {
+        reason: "provider_retry",
+        attempt: 2,
+        max: 3,
+      },
+    };
+
+    const { turnId: _turnId, ...replacementWithoutTurnId } = replacementEvent;
+    expect(() => decodeRuntimeEvent(replacementWithoutTurnId)).toThrow();
+    expect(() =>
+      decodeRuntimeEvent({
+        ...replacementEvent,
+        payload: { ...replacementEvent.payload, text: 42 },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeRuntimeEvent({
+        ...resetEvent,
+        payload: { ...resetEvent.payload, attempt: 0 },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeRuntimeEvent({
+        ...resetEvent,
+        payload: { ...resetEvent.payload, max: 0 },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeRuntimeEvent({
+        ...resetEvent,
+        payload: { ...resetEvent.payload, attempt: 4 },
       }),
     ).toThrow();
   });
