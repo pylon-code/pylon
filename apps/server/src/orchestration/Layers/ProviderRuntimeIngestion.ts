@@ -1524,6 +1524,9 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const replaceBufferedAssistantText = (messageId: MessageId, text: string) =>
+    Cache.set(bufferedAssistantTextByMessageId, messageId, text);
+
   const takeBufferedAssistantText = (messageId: MessageId) =>
     Cache.getOption(bufferedAssistantTextByMessageId, messageId).pipe(
       Effect.flatMap((existingText) =>
@@ -2131,6 +2134,55 @@ const make = Effect.gen(function* () {
             },
             createdAt: now,
           });
+        }
+      }
+
+      if (event.type === "turn.output-reset" && eventTurnId) {
+        const assistantMessageIds = yield* getAssistantMessageIdsForTurn(thread.id, eventTurnId);
+        yield* Effect.forEach(assistantMessageIds, clearAssistantMessageState, {
+          concurrency: 1,
+        }).pipe(Effect.asVoid);
+        yield* clearAssistantMessageIdsForTurn(thread.id, eventTurnId);
+        yield* clearAssistantSegmentStateForTurn(thread.id, eventTurnId);
+        yield* orchestrationEngine.dispatch({
+          type: "thread.turn.output.reset",
+          commandId: yield* providerCommandId(event, "thread-turn-output-reset"),
+          threadId: thread.id,
+          turnId: eventTurnId,
+          attempt: event.payload.attempt,
+          max: event.payload.max,
+          createdAt: now,
+        });
+      }
+
+      if (event.type === "content.replaced" && event.payload.streamKind === "assistant_text") {
+        const turnId = eventTurnId;
+        if (turnId) {
+          const assistantMessageId = yield* getOrCreateAssistantMessageId({
+            threadId: thread.id,
+            event,
+            turnId,
+          });
+          yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
+
+          const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
+            serverSettingsService.getSettings,
+            (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
+          );
+          if (assistantDeliveryMode === "buffered") {
+            yield* replaceBufferedAssistantText(assistantMessageId, event.payload.text);
+          } else {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.message.assistant.replace",
+              commandId: yield* providerCommandId(event, "assistant-replace"),
+              threadId: thread.id,
+              messageId: assistantMessageId,
+              text: event.payload.text,
+              turnId,
+              streaming: true,
+              createdAt: now,
+            });
+          }
         }
       }
 
