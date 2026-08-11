@@ -607,6 +607,9 @@ export function projectEvent(
               activities: thread.activities.filter(
                 (activity) => activity.turnId !== payload.turnId,
               ),
+              proposedPlans: thread.proposedPlans.filter(
+                (proposedPlan) => proposedPlan.turnId !== payload.turnId,
+              ),
               latestTurn:
                 thread.latestTurn?.turnId === payload.turnId
                   ? { ...thread.latestTurn, assistantMessageId: null }

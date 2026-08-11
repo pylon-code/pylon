@@ -1085,6 +1085,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           });
           return;
 
+        case "thread.turn-output-reset": {
+          const existingRows = yield* projectionThreadProposedPlanRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          const keptRows = existingRows.filter(
+            (proposedPlan) => proposedPlan.turnId !== event.payload.turnId,
+          );
+          if (keptRows.length === existingRows.length) {
+            return;
+          }
+
+          yield* projectionThreadProposedPlanRepository.deleteByThreadId({
+            threadId: event.payload.threadId,
+          });
+          yield* Effect.forEach(keptRows, projectionThreadProposedPlanRepository.upsert, {
+            concurrency: 1,
+          }).pipe(Effect.asVoid);
+          return;
+        }
+
         case "thread.reverted": {
           const existingRows = yield* projectionThreadProposedPlanRepository.listByThreadId({
             threadId: event.payload.threadId,

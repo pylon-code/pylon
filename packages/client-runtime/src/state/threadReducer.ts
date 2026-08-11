@@ -432,6 +432,10 @@ export function applyThreadDetailEvent(
             thread.activities,
             (activity) => activity.turnId !== event.payload.turnId,
           ),
+          proposedPlans: Arr.filter(
+            thread.proposedPlans,
+            (proposedPlan) => proposedPlan.turnId !== event.payload.turnId,
+          ),
           latestTurn,
           updatedAt: event.occurredAt,
         },

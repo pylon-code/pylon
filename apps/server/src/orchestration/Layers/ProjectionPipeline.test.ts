@@ -2606,6 +2606,75 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           },
         },
       });
+      yield* appendAndProject({
+        type: "thread.proposed-plan-upserted",
+        eventId: EventId.make("evt-stream-correction-plan-a"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:08.100Z",
+        commandId: CommandId.make("cmd-stream-correction-plan-a"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-plan-a"),
+        metadata: {},
+        payload: {
+          threadId,
+          proposedPlan: {
+            id: "plan-stream-correction-a",
+            turnId: turnA,
+            planMarkdown: "Invalid aborted plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-08-11T11:00:08.100Z",
+            updatedAt: "2026-08-11T11:00:08.100Z",
+          },
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.proposed-plan-upserted",
+        eventId: EventId.make("evt-stream-correction-plan-b"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:08.200Z",
+        commandId: CommandId.make("cmd-stream-correction-plan-b"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-plan-b"),
+        metadata: {},
+        payload: {
+          threadId,
+          proposedPlan: {
+            id: "plan-stream-correction-b",
+            turnId: turnB,
+            planMarkdown: "Other turn plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-08-11T11:00:08.200Z",
+            updatedAt: "2026-08-11T11:00:08.200Z",
+          },
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.proposed-plan-upserted",
+        eventId: EventId.make("evt-stream-correction-plan-turnless"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:08.300Z",
+        commandId: CommandId.make("cmd-stream-correction-plan-turnless"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-plan-turnless"),
+        metadata: {},
+        payload: {
+          threadId,
+          proposedPlan: {
+            id: "plan-stream-correction-turnless",
+            turnId: null,
+            planMarkdown: "Turnless plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-08-11T11:00:08.300Z",
+            updatedAt: "2026-08-11T11:00:08.300Z",
+          },
+        },
+      });
 
       const beforeResetShellRows = yield* sql<{
         readonly pendingApprovalCount: number;
@@ -2655,6 +2724,19 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         WHERE thread_id = 'thread-stream-correction'
       `;
       assert.deepEqual(afterFirstResetShellRows, [{ pendingApprovalCount: 0 }]);
+      const afterFirstResetProposedPlanRows = yield* sql<{
+        readonly planId: string;
+        readonly turnId: string | null;
+      }>`
+        SELECT plan_id AS "planId", turn_id AS "turnId"
+        FROM projection_thread_proposed_plans
+        WHERE thread_id = 'thread-stream-correction'
+        ORDER BY plan_id ASC
+      `;
+      assert.deepEqual(afterFirstResetProposedPlanRows, [
+        { planId: "plan-stream-correction-b", turnId: "turn-correction-b" },
+        { planId: "plan-stream-correction-turnless", turnId: null },
+      ]);
 
       yield* appendAndProject({
         type: "thread.activity-appended",
@@ -2740,6 +2822,17 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           turnId: "turn-correction-b",
         },
       ]);
+
+      const proposedPlanRows = yield* sql<{
+        readonly planId: string;
+        readonly turnId: string | null;
+      }>`
+        SELECT plan_id AS "planId", turn_id AS "turnId"
+        FROM projection_thread_proposed_plans
+        WHERE thread_id = 'thread-stream-correction'
+        ORDER BY plan_id ASC
+      `;
+      assert.deepEqual(proposedPlanRows, afterFirstResetProposedPlanRows);
 
       const turnRows = yield* sql<{
         readonly assistantMessageId: string | null;

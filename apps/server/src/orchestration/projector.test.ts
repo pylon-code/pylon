@@ -581,7 +581,7 @@ describe("orchestration projector", () => {
     ]);
   });
 
-  it("removes only assistant messages and activities for the reset turn idempotently", async () => {
+  it("removes only projected output and plans for the reset turn idempotently", async () => {
     const createdAt = "2026-08-11T10:00:00.000Z";
     const afterCreate = await Effect.runPromise(
       projectEvent(
@@ -632,6 +632,35 @@ describe("orchestration projector", () => {
           assistantMessageId: MessageId.make("assistant-a-2"),
         },
         checkpoints: [checkpoint],
+        proposedPlans: [
+          {
+            id: "plan-a",
+            turnId: TurnId.make("turn-a"),
+            planMarkdown: "Invalid aborted plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-08-11T10:00:04.500Z",
+            updatedAt: "2026-08-11T10:00:04.500Z",
+          },
+          {
+            id: "plan-b",
+            turnId: TurnId.make("turn-b"),
+            planMarkdown: "Other turn plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-08-11T10:00:05.500Z",
+            updatedAt: "2026-08-11T10:00:05.500Z",
+          },
+          {
+            id: "plan-turnless",
+            turnId: null,
+            planMarkdown: "Turnless plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-08-11T10:00:05.750Z",
+            updatedAt: "2026-08-11T10:00:05.750Z",
+          },
+        ],
       })),
     };
     const events: ReadonlyArray<OrchestrationEvent> = [
@@ -836,6 +865,15 @@ describe("orchestration projector", () => {
         turnId: activityTurnId,
       })),
     ).toEqual([{ id: "activity-b", turnId: "turn-b" }]);
+    expect(
+      thread?.proposedPlans.map(({ id, turnId: proposedPlanTurnId }) => ({
+        id,
+        turnId: proposedPlanTurnId,
+      })),
+    ).toEqual([
+      { id: "plan-b", turnId: "turn-b" },
+      { id: "plan-turnless", turnId: null },
+    ]);
     expect(thread?.latestTurn).toEqual({
       turnId: "turn-a",
       state: "running",

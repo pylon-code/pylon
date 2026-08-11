@@ -524,7 +524,7 @@ describe("applyThreadDetailEvent", () => {
       }
     });
 
-    it("resets target-turn output while preserving completed null-turn history and turn metadata", () => {
+    it("resets target-turn output and plans without deleting unrelated projected state", () => {
       const targetTurnId = TurnId.make("turn-reset");
       const otherTurnId = TurnId.make("turn-other");
       const checkpoint = {
@@ -547,6 +547,35 @@ describe("applyThreadDetailEvent", () => {
           assistantMessageId: MessageId.make("assistant-target"),
         },
         checkpoints: [checkpoint],
+        proposedPlans: [
+          {
+            id: "plan-target",
+            turnId: targetTurnId,
+            planMarkdown: "Invalid target plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-04-01T06:00:02.500Z",
+            updatedAt: "2026-04-01T06:00:02.500Z",
+          },
+          {
+            id: "plan-other",
+            turnId: otherTurnId,
+            planMarkdown: "Other turn plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-04-01T06:00:03.500Z",
+            updatedAt: "2026-04-01T06:00:03.500Z",
+          },
+          {
+            id: "plan-turnless",
+            turnId: null,
+            planMarkdown: "Turnless plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-04-01T06:00:03.750Z",
+            updatedAt: "2026-04-01T06:00:03.750Z",
+          },
+        ],
         messages: [
           {
             id: MessageId.make("user-target"),
@@ -639,6 +668,10 @@ describe("applyThreadDetailEvent", () => {
           "assistant-other",
         ]);
         expect(result.thread.activities.map((activity) => activity.id)).toEqual(["activity-other"]);
+        expect(result.thread.proposedPlans.map((plan) => plan.id)).toEqual([
+          "plan-other",
+          "plan-turnless",
+        ]);
         expect(result.thread.latestTurn).toEqual({
           turnId: targetTurnId,
           state: "running",
@@ -649,6 +682,29 @@ describe("applyThreadDetailEvent", () => {
         });
         expect(result.thread.checkpoints).toEqual([checkpoint]);
         expect(result.thread.updatedAt).toBe("2026-04-01T06:01:00.000Z");
+
+        const repeated = applyThreadDetailEvent(result.thread, {
+          ...baseEventFields,
+          eventId: EventId.make("event-reset-again"),
+          sequence: 12,
+          occurredAt: "2026-04-01T06:02:00.000Z",
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          type: "thread.turn-output-reset",
+          payload: {
+            threadId: ThreadId.make("thread-1"),
+            turnId: targetTurnId,
+            attempt: 2,
+            max: 4,
+          },
+        });
+        expect(repeated.kind).toBe("updated");
+        if (repeated.kind === "updated") {
+          expect(repeated.thread.proposedPlans.map((plan) => plan.id)).toEqual([
+            "plan-other",
+            "plan-turnless",
+          ]);
+        }
       }
     });
   });
