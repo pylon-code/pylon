@@ -1992,6 +1992,8 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      // Deliberate provider-neutral fallback: any provider's turnless assistant
+      // output belongs to the active turn only while that session is running.
       const assistantTurnId =
         eventTurnId ??
         (thread.session?.status === "running" && activeTurnId !== null ? activeTurnId : undefined);

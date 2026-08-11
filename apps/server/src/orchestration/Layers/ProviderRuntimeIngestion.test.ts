@@ -3169,6 +3169,43 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe(false);
   });
 
+  it("attributes turnless assistant output from non-Jcode providers to the running turn", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-08-11T10:02:00.000Z";
+    const turnId = asTurnId("turn-provider-neutral-turnless");
+    const itemId = asItemId("item-provider-neutral-turnless");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-provider-neutral-turnless"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-delta-provider-neutral-turnless"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      itemId,
+      payload: { streamKind: "assistant_text", delta: "provider-neutral output" },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.find(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-provider-neutral-turnless",
+      ),
+    ).toMatchObject({ text: "provider-neutral output", streaming: true, turnId });
+    expect(thread?.session).toMatchObject({ status: "running", activeTurnId: turnId });
+  });
+
   it("warns and ignores a replacement without an authoritative turn id", async () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
     const now = "2026-08-11T10:02:30.000Z";
