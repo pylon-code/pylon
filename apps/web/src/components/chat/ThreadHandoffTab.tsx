@@ -53,7 +53,11 @@ export const ThreadHandoffTab = memo(function ThreadHandoffTab({
             type="button"
             aria-label={`${offer.spentAccountName} is out of capacity — continue on ${offer.targetAccountName}`}
             className={cn(
-              "absolute -top-3 right-3 z-10 inline-flex h-6 items-center gap-1.5 rounded-t-md rounded-b-none",
+              // The composer frame is rounded-[22px], so the inset has to clear
+              // that radius: anything smaller lands the tab on the curve, where
+              // its square bottom edge cannot sit flush and it reads as floating
+              // beside the composer rather than attached to it.
+              "absolute -top-3 right-6 z-10 inline-flex h-6 items-center gap-1.5 rounded-t-md rounded-b-none",
               "border border-b-0 border-warning/30 bg-warning/12 px-2 text-xs font-medium text-warning",
               "hover:bg-warning/18",
             )}
