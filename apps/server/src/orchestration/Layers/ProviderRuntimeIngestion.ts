@@ -1335,6 +1335,15 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed(""),
   });
 
+  const assistantDeliveryModeByMessageId = yield* Cache.make<MessageId, AssistantDeliveryMode>({
+    capacity: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY,
+    timeToLive: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL,
+    lookup: () =>
+      Effect.die(
+        new Error("assistant delivery mode should be read through getOption before initialization"),
+      ),
+  });
+
   const assistantSegmentStateByTurnKey = yield* Cache.make<string, AssistantSegmentState>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
     timeToLive: TURN_MESSAGE_IDS_BY_TURN_TTL,
@@ -1439,6 +1448,23 @@ const make = Effect.gen(function* () {
 
   const clearAssistantSegmentStateForTurn = (threadId: ThreadId, turnId: TurnId) =>
     Cache.invalidate(assistantSegmentStateByTurnKey, providerTurnKey(threadId, turnId));
+
+  const resolveAssistantDeliveryMode = (messageId: MessageId) =>
+    Cache.getOption(assistantDeliveryModeByMessageId, messageId).pipe(
+      Effect.flatMap((existingMode) =>
+        Option.match(existingMode, {
+          onNone: () =>
+            serverSettingsService.getSettings.pipe(
+              Effect.map(
+                (settings): AssistantDeliveryMode =>
+                  settings.enableAssistantStreaming ? "streaming" : "buffered",
+              ),
+              Effect.tap((mode) => Cache.set(assistantDeliveryModeByMessageId, messageId, mode)),
+            ),
+          onSome: Effect.succeed,
+        }),
+      ),
+    );
 
   const getActiveAssistantMessageIdForTurn = (threadId: ThreadId, turnId: TurnId) =>
     getAssistantSegmentStateForTurn(threadId, turnId).pipe(
@@ -1564,7 +1590,10 @@ const make = Effect.gen(function* () {
     Cache.invalidate(bufferedProposedPlanById, planId);
 
   const clearAssistantMessageState = (messageId: MessageId) =>
-    clearBufferedAssistantText(messageId);
+    Effect.all([
+      clearBufferedAssistantText(messageId),
+      Cache.invalidate(assistantDeliveryModeByMessageId, messageId),
+    ]).pipe(Effect.asVoid);
 
   const flushBufferedAssistantMessage = (input: {
     event: ProviderRuntimeEvent;
@@ -2138,12 +2167,6 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "turn.output-reset" && eventTurnId) {
-        const assistantMessageIds = yield* getAssistantMessageIdsForTurn(thread.id, eventTurnId);
-        yield* Effect.forEach(assistantMessageIds, clearAssistantMessageState, {
-          concurrency: 1,
-        }).pipe(Effect.asVoid);
-        yield* clearAssistantMessageIdsForTurn(thread.id, eventTurnId);
-        yield* clearAssistantSegmentStateForTurn(thread.id, eventTurnId);
         yield* orchestrationEngine.dispatch({
           type: "thread.turn.output.reset",
           commandId: yield* providerCommandId(event, "thread-turn-output-reset"),
@@ -2153,11 +2176,26 @@ const make = Effect.gen(function* () {
           max: event.payload.max,
           createdAt: now,
         });
+        const assistantMessageIds = yield* getAssistantMessageIdsForTurn(thread.id, eventTurnId);
+        yield* Effect.forEach(assistantMessageIds, clearAssistantMessageState, {
+          concurrency: 1,
+        }).pipe(Effect.asVoid);
+        yield* clearAssistantMessageIdsForTurn(thread.id, eventTurnId);
+        yield* clearAssistantSegmentStateForTurn(thread.id, eventTurnId);
+        yield* clearBufferedProposedPlan(proposedPlanIdForTurn(thread.id, eventTurnId));
       }
 
       if (event.type === "content.replaced" && event.payload.streamKind === "assistant_text") {
         const turnId = eventTurnId;
-        if (turnId) {
+        if (!turnId) {
+          yield* Effect.logWarning(
+            "provider runtime ingestion ignored replacement without an authoritative turn id",
+            {
+              eventId: event.eventId,
+              threadId: thread.id,
+            },
+          );
+        } else {
           const assistantMessageId = yield* getOrCreateAssistantMessageId({
             threadId: thread.id,
             event,
@@ -2165,23 +2203,38 @@ const make = Effect.gen(function* () {
           });
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
 
-          const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
-            serverSettingsService.getSettings,
-            (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
-          );
-          if (assistantDeliveryMode === "buffered") {
+          const detailedThread = yield* getLoadedThreadDetail();
+          const hasProjectedMessage =
+            findMessageById(detailedThread?.messages ?? [], assistantMessageId) !== undefined;
+          const assistantDeliveryMode = yield* resolveAssistantDeliveryMode(assistantMessageId);
+          if (assistantDeliveryMode === "buffered" && !hasProjectedMessage) {
             yield* replaceBufferedAssistantText(assistantMessageId, event.payload.text);
           } else {
-            yield* orchestrationEngine.dispatch({
-              type: "thread.message.assistant.replace",
-              commandId: yield* providerCommandId(event, "assistant-replace"),
-              threadId: thread.id,
-              messageId: assistantMessageId,
-              text: event.payload.text,
-              turnId,
-              streaming: true,
-              createdAt: now,
-            });
+            if (assistantDeliveryMode === "buffered") {
+              yield* clearBufferedAssistantText(assistantMessageId);
+            }
+            if (hasProjectedMessage) {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.message.assistant.replace",
+                commandId: yield* providerCommandId(event, "assistant-replace"),
+                threadId: thread.id,
+                messageId: assistantMessageId,
+                text: event.payload.text,
+                turnId,
+                streaming: true,
+                createdAt: now,
+              });
+            } else if (hasRenderableAssistantText(event.payload.text)) {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.message.assistant.delta",
+                commandId: yield* providerCommandId(event, "assistant-replacement-materialize"),
+                threadId: thread.id,
+                messageId: assistantMessageId,
+                delta: event.payload.text,
+                turnId,
+                createdAt: now,
+              });
+            }
           }
         }
       }
@@ -2204,10 +2257,7 @@ const make = Effect.gen(function* () {
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
         }
 
-        const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
-          serverSettingsService.getSettings,
-          (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
-        );
+        const assistantDeliveryMode = yield* resolveAssistantDeliveryMode(assistantMessageId);
         if (assistantDeliveryMode === "buffered") {
           const spillChunk = yield* appendBufferedAssistantText(assistantMessageId, assistantDelta);
           if (spillChunk.length > 0) {
@@ -2242,10 +2292,13 @@ const make = Effect.gen(function* () {
           : undefined;
       if (pauseForUserTurnId) {
         const detailedThread = yield* getLoadedThreadDetail();
-        const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
-          serverSettingsService.getSettings,
-          (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
+        const activeAssistantMessageId = yield* getActiveAssistantMessageIdForTurn(
+          thread.id,
+          pauseForUserTurnId,
         );
+        const assistantDeliveryMode = Option.isSome(activeAssistantMessageId)
+          ? yield* resolveAssistantDeliveryMode(activeAssistantMessageId.value)
+          : "streaming";
         const flushedMessageIds =
           assistantDeliveryMode === "buffered"
             ? yield* flushBufferedAssistantMessagesForTurn({

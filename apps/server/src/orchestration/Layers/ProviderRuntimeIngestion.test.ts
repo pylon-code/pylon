@@ -30,6 +30,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
@@ -362,7 +363,10 @@ it("persists only provider-neutral per-agent message availability", () => {
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderRuntimeIngestionService
+    | ProjectionSnapshotQuery
+    | ServerSettingsService,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -393,6 +397,10 @@ describe("ProviderRuntimeIngestion", () => {
     NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
     const providerRegistry = createProviderRegistryHarness();
+    const logs: Array<{ readonly level: string; readonly message: unknown }> = [];
+    const logger = Logger.make(({ logLevel, message }) => {
+      logs.push({ level: String(logLevel), message });
+    });
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
@@ -418,11 +426,13 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(Logger.layer([logger], { mergeWithExisting: false })),
     );
     runtime = ManagedRuntime.make(layer);
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+    const serverSettings = await runtime.runPromise(Effect.service(ServerSettingsService));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
@@ -494,6 +504,9 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       setProviderSession: provider.setSession,
       rateLimitCalls: providerRegistry.rateLimitCalls,
+      logs,
+      updateServerSettings: (patch: Parameters<typeof serverSettings.updateSettings>[0]) =>
+        runtime!.runPromise(serverSettings.updateSettings(patch)),
       runEffect,
       drain,
     };
@@ -2428,6 +2441,391 @@ describe("ProviderRuntimeIngestion", () => {
     expect(JSON.stringify(events)).not.toContain('"delta":"wrong"');
   });
 
+  it("materializes a streaming replacement before any delta and completes the same message", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-08-11T10:01:10.000Z";
+    const turnId = asTurnId("turn-replacement-first");
+    const itemId = asItemId("item-replacement-first");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-replacement-first"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    harness.emit({
+      type: "content.replaced",
+      eventId: asEventId("evt-content-replaced-replacement-first"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "assistant_text", text: "correct answer" },
+    });
+    await harness.drain();
+
+    let thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.find(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:item-replacement-first",
+      ),
+    ).toMatchObject({
+      text: "correct answer",
+      streaming: true,
+      turnId,
+    });
+
+    let events = await harness.runEffect(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "thread.message-sent" &&
+          event.payload.messageId === "assistant:item-replacement-first",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({ text: "correct answer", streaming: true, turnId }),
+      }),
+    ]);
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-item-completed-replacement-first"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+    await harness.drain();
+
+    thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.find(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:item-replacement-first",
+      ),
+    ).toMatchObject({ text: "correct answer", streaming: false, turnId });
+
+    events = await harness.runEffect(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const assistantEvents = events.filter(
+      (event) =>
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === "assistant:item-replacement-first",
+    );
+    expect(assistantEvents).toHaveLength(2);
+    expect(assistantEvents[0]?.payload).toMatchObject({ text: "correct answer", streaming: true });
+    expect(assistantEvents[1]?.payload).toMatchObject({ text: "", streaming: false });
+  });
+
+  it("replaces a spilled buffered row and buffers only later suffix deltas", async () => {
+    const harness = await createHarness();
+    const now = "2026-08-11T10:01:20.000Z";
+    const turnId = asTurnId("turn-spilled-replacement");
+    const itemId = asItemId("item-spilled-replacement");
+    const spilledWrongText = `wrong ${"x".repeat(24_000)}`;
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-spilled-replacement"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-delta-spilled-replacement"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "assistant_text", delta: spilledWrongText },
+    });
+    await harness.drain();
+
+    let thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.find(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-spilled-replacement",
+      ),
+    ).toMatchObject({ text: spilledWrongText, streaming: true, turnId });
+
+    harness.emit({
+      type: "content.replaced",
+      eventId: asEventId("evt-content-replaced-spilled-replacement"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "assistant_text", text: "correct" },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-delta-suffix-spilled-replacement"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "assistant_text", delta: " answer" },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-item-completed-spilled-replacement"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+    await harness.drain();
+
+    thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.filter(
+        (message: ProviderRuntimeTestMessage) =>
+          message.role === "assistant" && message.turnId === turnId,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        id: "assistant:item-spilled-replacement",
+        text: "correct answer",
+        streaming: false,
+      }),
+    ]);
+
+    const events = await harness.runEffect(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const spillIndex = events.findIndex(
+      (event) =>
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === "assistant:item-spilled-replacement" &&
+        event.payload.text === spilledWrongText,
+    );
+    const replacementIndex = events.findIndex(
+      (event) =>
+        event.type === "thread.message-replaced" &&
+        event.payload.messageId === "assistant:item-spilled-replacement",
+    );
+    const suffixIndex = events.findIndex(
+      (event) =>
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === "assistant:item-spilled-replacement" &&
+        event.payload.text === " answer",
+    );
+    expect(spillIndex).toBeGreaterThanOrEqual(0);
+    expect(replacementIndex).toBeGreaterThan(spillIndex);
+    expect(suffixIndex).toBeGreaterThan(replacementIndex);
+    expect(events[replacementIndex]?.payload).toMatchObject({ text: "correct", streaming: true });
+  });
+
+  it("pins streaming delivery for the active segment when settings switch to buffered", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-08-11T10:01:30.000Z";
+    const turnId = asTurnId("turn-streaming-mode-pin");
+    const itemId = asItemId("item-streaming-mode-pin");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-mode-pin"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-delta-wrong-streaming-mode-pin"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "assistant_text", delta: "wrong" },
+    });
+    await harness.drain();
+    await harness.updateServerSettings({ enableAssistantStreaming: false });
+
+    harness.emit({
+      type: "content.replaced",
+      eventId: asEventId("evt-content-replaced-streaming-mode-pin"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "assistant_text", text: "correct" },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-delta-answer-streaming-mode-pin"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "assistant_text", delta: " answer" },
+    });
+    await harness.drain();
+
+    let thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.find(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:item-streaming-mode-pin",
+      ),
+    ).toMatchObject({ text: "correct answer", streaming: true, turnId });
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-item-completed-streaming-mode-pin"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+    await harness.drain();
+
+    thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.find(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:item-streaming-mode-pin",
+      ),
+    ).toMatchObject({ text: "correct answer", streaming: false, turnId });
+  });
+
+  it("pins buffered delivery for the active segment when settings switch to streaming", async () => {
+    const harness = await createHarness();
+    const now = "2026-08-11T10:01:40.000Z";
+    const turnId = asTurnId("turn-buffered-mode-pin");
+    const itemId = asItemId("item-buffered-mode-pin");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-buffered-mode-pin"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-delta-wrong-buffered-mode-pin"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "assistant_text", delta: "wrong" },
+    });
+    await harness.drain();
+    await harness.updateServerSettings({ enableAssistantStreaming: true });
+
+    harness.emit({
+      type: "content.replaced",
+      eventId: asEventId("evt-content-replaced-buffered-mode-pin"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "assistant_text", text: "correct" },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-delta-answer-buffered-mode-pin"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "assistant_text", delta: " answer" },
+    });
+    await harness.drain();
+
+    let thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.some(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:item-buffered-mode-pin",
+      ),
+    ).toBe(false);
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-item-completed-buffered-mode-pin"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+    await harness.drain();
+
+    thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.find(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:item-buffered-mode-pin",
+      ),
+    ).toMatchObject({ text: "correct answer", streaming: false, turnId });
+
+    const events = await harness.runEffect(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "thread.message-sent" &&
+          event.payload.messageId === "assistant:item-buffered-mode-pin",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({ text: "correct answer", streaming: true, turnId }),
+      }),
+      expect.objectContaining({
+        payload: expect.objectContaining({ text: "", streaming: false, turnId }),
+      }),
+    ]);
+  });
+
   it("compensates aborted output before ingesting retry activity and fresh output", async () => {
     const harness = await createHarness();
     const now = "2026-08-11T10:02:00.000Z";
@@ -2597,6 +2995,233 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resetIndex).toBeGreaterThanOrEqual(0);
     expect(retryIndex).toBeGreaterThan(resetIndex);
     expect(freshOutputIndex).toBeGreaterThan(retryIndex);
+  });
+
+  it("applies duplicate output resets without remembered messages and clears the aborted plan buffer", async () => {
+    const harness = await createHarness();
+    const now = "2026-08-11T10:02:10.000Z";
+    const turnId = asTurnId("turn-duplicate-output-reset");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-duplicate-output-reset"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    harness.emit({
+      type: "turn.proposed.delta",
+      eventId: asEventId("evt-old-plan-duplicate-output-reset"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { delta: "old plan" },
+    });
+    harness.emit({
+      type: "turn.output-reset",
+      eventId: asEventId("evt-first-duplicate-output-reset"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { reason: "provider_retry", attempt: 2, max: 3 },
+    });
+    harness.emit({
+      type: "turn.output-reset",
+      eventId: asEventId("evt-second-duplicate-output-reset"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { reason: "provider_retry", attempt: 2, max: 3 },
+    });
+    harness.emit({
+      type: "turn.proposed.delta",
+      eventId: asEventId("evt-fresh-plan-duplicate-output-reset"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { delta: "fresh plan" },
+    });
+    harness.emit({
+      type: "turn.proposed.completed",
+      eventId: asEventId("evt-plan-completed-duplicate-output-reset"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.messages.filter((message) => message.turnId === turnId)).toEqual([]);
+    expect(
+      thread?.proposedPlans.find(
+        (plan: ProviderRuntimeTestProposedPlan) =>
+          plan.id === "plan:thread-1:turn:turn-duplicate-output-reset",
+      ),
+    ).toMatchObject({ planMarkdown: "fresh plan", turnId });
+    expect(thread?.session).toMatchObject({ status: "running", activeTurnId: turnId });
+    expect(thread?.latestTurn).toMatchObject({ turnId, state: "running" });
+
+    const events = await harness.runEffect(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const resetEvents = events.filter(
+      (event) => event.type === "thread.turn-output-reset" && event.payload.turnId === turnId,
+    );
+    expect(resetEvents).toHaveLength(2);
+    expect(resetEvents.map((event) => event.payload)).toEqual([
+      expect.objectContaining({ turnId, attempt: 2, max: 3 }),
+      expect.objectContaining({ turnId, attempt: 2, max: 3 }),
+    ]);
+    const secondResetIndex = events.indexOf(resetEvents[1]!);
+    const planIndex = events.findIndex(
+      (event) =>
+        event.type === "thread.proposed-plan-upserted" &&
+        event.payload.proposedPlan.id === "plan:thread-1:turn:turn-duplicate-output-reset",
+    );
+    expect(planIndex).toBeGreaterThan(secondResetIndex);
+  });
+
+  it("preserves cached output when a reset does not match the active turn", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-08-11T10:02:20.000Z";
+    const activeTurnId = asTurnId("turn-active-during-rejected-reset");
+    const mismatchedTurnId = asTurnId("turn-mismatched-output-reset");
+    const itemId = asItemId("item-mismatched-output-reset");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-rejected-output-reset"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: activeTurnId,
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-delta-rejected-output-reset"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: mismatchedTurnId,
+      itemId,
+      payload: { streamKind: "assistant_text", delta: "preserved output" },
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "turn.output-reset",
+      eventId: asEventId("evt-rejected-output-reset"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: mismatchedTurnId,
+      payload: { reason: "provider_retry", attempt: 2, max: 3 },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-completed-after-rejected-output-reset"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: mismatchedTurnId,
+      itemId,
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.find(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-mismatched-output-reset",
+      ),
+    ).toMatchObject({
+      text: "preserved output",
+      streaming: false,
+      turnId: mismatchedTurnId,
+    });
+    expect(thread?.session).toMatchObject({ status: "running", activeTurnId });
+    expect(thread?.latestTurn).toMatchObject({ turnId: activeTurnId, state: "running" });
+
+    const events = await harness.runEffect(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "thread.turn-output-reset" && event.payload.turnId === mismatchedTurnId,
+      ),
+    ).toBe(false);
+  });
+
+  it("warns and ignores a replacement without an authoritative turn id", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-08-11T10:02:30.000Z";
+    const turnId = asTurnId("turn-turnless-replacement");
+    const itemId = asItemId("item-turnless-replacement");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-turnless-replacement"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-delta-turnless-replacement"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "assistant_text", delta: "original" },
+    });
+    harness.emit({
+      type: "content.replaced",
+      eventId: asEventId("evt-content-replaced-without-turn"),
+      provider: ProviderDriverKind.make("jcode"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      itemId,
+      payload: { streamKind: "assistant_text", text: "must not use active fallback" },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.find(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-turnless-replacement",
+      ),
+    ).toMatchObject({ text: "original", streaming: true, turnId });
+    expect(thread?.session).toMatchObject({ status: "running", activeTurnId: turnId });
+    expect(
+      harness.logs.filter(
+        (entry) =>
+          entry.level === "Warn" &&
+          JSON.stringify(entry.message).includes("replacement without an authoritative turn id") &&
+          JSON.stringify(entry.message).includes("evt-content-replaced-without-turn"),
+      ),
+    ).toHaveLength(1);
   });
 
   it("buffers assistant deltas by default until completion", async () => {
