@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "35172010b131510d36d0cef54e174926e38a3013"
+reviewed-through: "2db08457f2f4eaaa713a067b2ea480ca2b583025"
 reviewed-through-date: "2026-08-11"
 ---
 
@@ -590,6 +590,29 @@ Setup notes discovered during that pass, since they will bite the next session:
   fail with `FBSimulatorHIDEvent does not support touch move events`. Sheet rows
   that the accessibility tree does not expose are unreachable by gesture; deep
   links such as `pylon-code-dev://new/draft` are the reliable way in.
+
+## 2026-08-11 (fifth batch) — `35172010b131510d36d0cef54e174926e38a3013..2db08457f2f4eaaa713a067b2ea480ca2b583025`
+
+Two upstream commits, both adopted. **First batch to land through the pull
+request workflow** rather than a fast-forward onto `pylon`, per the `Landing
+changes` section added to `AGENTS.md` in PR #1. Each change set is its own PR,
+so `L1` and `L2` may merge in either order.
+
+DEF-1 and DEF-2 were re-evaluated against this head and both **stay deferred**.
+Neither gate holds: the date is before 2026-08-25, and the fourteen-day churn
+check on the pull-requests files still returns `cad2c9361` and `a7b0366cb`.
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------- | --------------------- | -------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L1         | `2db08457f` / `#6207` | adopted  | PR #2           | The Push quick action had no icon case and fell through to the generic `InfoIcon`; it now uses `CloudUploadIcon`, matching how push is already drawn elsewhere in the same file. Direct follow-up to K6 / `#6194`.                                                                                                                                                                                                                                                                                                                    |
+| L2         | `083fa4ab2` / `#6036` | adopted  | PR #3           | Palette generation moves to OKLCH, adding `culori` and `@types/culori`. Clean cherry-pick despite five diverged files. **K11 / `#6183` is an ancestor of this commit**, which is why it applies against the theme-aware artwork adopted in the fourth batch — taking them out of order would have fought. **`index.html` verified Pylon-first:** the diff adds no visible T3 branding and leaves `<title>Pylon (Alpha)</title>` untouched; the `t3-chat-dark` id and boot-script comments are pre-existing compatibility identifiers. |
+
+Verification: `themePalette`, `themeBoot`, `vscodeThemeImport`, and
+`SidebarStageBackdrop` pass (78 tests). Web typecheck, lint, and format clean.
+
+**Not proven by tests:** whether the five built-in themes still _look_ right
+after the color-space change. Palette math that computes cleanly can still shift
+perceptibly, so L2 wants one pass in a real client after merge.
 
 ## Deferred register
 
