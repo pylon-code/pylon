@@ -382,6 +382,62 @@ export function applyThreadDetailEvent(
       };
     }
 
+    case "thread.message-replaced": {
+      const existingMessage = thread.messages.find(
+        (message) => message.id === event.payload.messageId && message.role === "assistant",
+      );
+      if (!existingMessage) {
+        return { kind: "unchanged" };
+      }
+
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          messages: Arr.map(thread.messages, (message) =>
+            message.id === event.payload.messageId
+              ? {
+                  ...message,
+                  text: event.payload.text,
+                  turnId: event.payload.turnId,
+                  streaming: event.payload.streaming,
+                  updatedAt: event.payload.updatedAt,
+                }
+              : message,
+          ),
+          updatedAt: event.occurredAt,
+        },
+      };
+    }
+
+    case "thread.turn-output-reset": {
+      const latestTurn =
+        thread.latestTurn?.turnId === event.payload.turnId
+          ? { ...thread.latestTurn, assistantMessageId: null }
+          : thread.latestTurn;
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          messages: Arr.filter(
+            thread.messages,
+            (message) =>
+              message.role !== "assistant" ||
+              // Null-turn rows can predate active-turn binding. Only streaming
+              // rows are safe to treat as current partial provider output.
+              (message.turnId !== event.payload.turnId &&
+                !(message.turnId === null && message.streaming)),
+          ),
+          activities: Arr.filter(
+            thread.activities,
+            (activity) => activity.turnId !== event.payload.turnId,
+          ),
+          latestTurn,
+          updatedAt: event.occurredAt,
+        },
+      };
+    }
+
     // ── Session ─────────────────────────────────────────────────────
     case "thread.session-set": {
       // Leaving the "running" session status is the turn-end signal: settle a

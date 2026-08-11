@@ -1,4 +1,5 @@
 import {
+  ApprovalRequestId,
   CheckpointRef,
   CommandId,
   CorrelationId,
@@ -2326,6 +2327,29 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
       yield* appendAndProject({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-stream-correction-session-running"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:01.500Z",
+        commandId: CommandId.make("cmd-stream-correction-session-running"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-session-running"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: turnA,
+            lastError: null,
+            updatedAt: "2026-08-11T11:00:01.500Z",
+          },
+        },
+      });
+      yield* appendAndProject({
         type: "thread.message-sent",
         eventId: EventId.make("evt-stream-correction-3"),
         aggregateKind: "thread",
@@ -2420,6 +2444,69 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
       yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-stream-correction-null-streaming"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:05.250Z",
+        commandId: CommandId.make("cmd-stream-correction-null-streaming"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-null-streaming"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("assistant-stream-correction-null-streaming"),
+          role: "assistant",
+          text: "invalid orphan streaming output",
+          turnId: null,
+          streaming: true,
+          createdAt: "2026-08-11T11:00:05.250Z",
+          updatedAt: "2026-08-11T11:00:05.250Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-stream-correction-null-completed"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:05.500Z",
+        commandId: CommandId.make("cmd-stream-correction-null-completed"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-null-completed"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("assistant-stream-correction-null-completed"),
+          role: "assistant",
+          text: "completed historical orphan output",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-08-11T11:00:05.500Z",
+          updatedAt: "2026-08-11T11:00:05.500Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.turn-diff-completed",
+        eventId: EventId.make("evt-stream-correction-checkpoint"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:05.750Z",
+        commandId: CommandId.make("cmd-stream-correction-checkpoint"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-checkpoint"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId: turnA,
+          checkpointTurnCount: 4,
+          checkpointRef: CheckpointRef.make("checkpoint-stream-correction-a"),
+          status: "ready",
+          files: [],
+          assistantMessageId: MessageId.make("assistant-stream-correction-a-2"),
+          completedAt: "2026-08-11T11:00:05.750Z",
+        },
+      });
+      yield* appendAndProject({
         type: "thread.activity-appended",
         eventId: EventId.make("evt-stream-correction-7"),
         aggregateKind: "thread",
@@ -2449,6 +2536,29 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
             },
             turnId: turnA,
             createdAt: "2026-08-11T11:00:06.000Z",
+          },
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-stream-correction-approval-a"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:06.500Z",
+        commandId: CommandId.make("cmd-stream-correction-approval-a"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-approval-a"),
+        metadata: { requestId: ApprovalRequestId.make("approval-stream-correction-a") },
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-stream-correction-approval-a"),
+            tone: "info",
+            kind: "approval.requested",
+            summary: "Invalid provider approval",
+            payload: { requestId: ApprovalRequestId.make("approval-stream-correction-a") },
+            turnId: turnA,
+            createdAt: "2026-08-11T11:00:06.500Z",
           },
         },
       });
@@ -2497,35 +2607,95 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
-      const beforeResetShellRows = yield* sql<{ readonly pendingUserInputCount: number }>`
-        SELECT pending_user_input_count AS "pendingUserInputCount"
+      const beforeResetShellRows = yield* sql<{
+        readonly pendingApprovalCount: number;
+        readonly pendingUserInputCount: number;
+      }>`
+        SELECT
+          pending_approval_count AS "pendingApprovalCount",
+          pending_user_input_count AS "pendingUserInputCount"
         FROM projection_threads
         WHERE thread_id = 'thread-stream-correction'
       `;
-      assert.deepEqual(beforeResetShellRows, [{ pendingUserInputCount: 1 }]);
+      assert.deepEqual(beforeResetShellRows, [
+        { pendingApprovalCount: 1, pendingUserInputCount: 1 },
+      ]);
 
-      for (const [index, occurredAt] of [
-        "2026-08-11T11:00:09.000Z",
-        "2026-08-11T11:00:10.000Z",
-      ].entries()) {
-        yield* appendAndProject({
-          type: "thread.turn-output-reset",
-          eventId: EventId.make(`evt-stream-correction-reset-${index + 1}`),
-          aggregateKind: "thread",
-          aggregateId: threadId,
-          occurredAt,
-          commandId: CommandId.make(`cmd-stream-correction-reset-${index + 1}`),
-          causationEventId: null,
-          correlationId: CorrelationId.make(`cmd-stream-correction-reset-${index + 1}`),
-          metadata: {},
-          payload: {
-            threadId,
-            turnId: turnA,
-            attempt: 1,
-            max: 3,
+      yield* appendAndProject({
+        type: "thread.turn-output-reset",
+        eventId: EventId.make("evt-stream-correction-reset-1"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:09.000Z",
+        commandId: CommandId.make("cmd-stream-correction-reset-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-reset-1"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId: turnA,
+          attempt: 1,
+          max: 3,
+        },
+      });
+
+      const afterFirstResetApprovalRows = yield* sql<{
+        readonly requestId: string;
+      }>`
+        SELECT request_id AS "requestId"
+        FROM projection_pending_approvals
+        WHERE thread_id = 'thread-stream-correction'
+      `;
+      assert.deepEqual(afterFirstResetApprovalRows, []);
+      const afterFirstResetShellRows = yield* sql<{
+        readonly pendingApprovalCount: number;
+      }>`
+        SELECT pending_approval_count AS "pendingApprovalCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-stream-correction'
+      `;
+      assert.deepEqual(afterFirstResetShellRows, [{ pendingApprovalCount: 0 }]);
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-stream-correction-approval-b"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:09.500Z",
+        commandId: CommandId.make("cmd-stream-correction-approval-b"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-approval-b"),
+        metadata: { requestId: ApprovalRequestId.make("approval-stream-correction-b") },
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-stream-correction-approval-b"),
+            tone: "info",
+            kind: "approval.requested",
+            summary: "Other turn approval",
+            payload: { requestId: ApprovalRequestId.make("approval-stream-correction-b") },
+            turnId: turnB,
+            createdAt: "2026-08-11T11:00:09.500Z",
           },
-        });
-      }
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.turn-output-reset",
+        eventId: EventId.make("evt-stream-correction-reset-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-11T11:00:10.000Z",
+        commandId: CommandId.make("cmd-stream-correction-reset-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stream-correction-reset-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId: turnA,
+          attempt: 1,
+          max: 3,
+        },
+      });
 
       const messageRows = yield* sql<{
         readonly messageId: string;
@@ -2542,6 +2712,11 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.deepEqual(messageRows, [
         { messageId: "user-stream-correction-a", role: "user", turnId: "turn-correction-a" },
+        {
+          messageId: "assistant-stream-correction-null-completed",
+          role: "assistant",
+          turnId: null,
+        },
         {
           messageId: "assistant-stream-correction-b",
           role: "assistant",
@@ -2560,15 +2735,72 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.deepEqual(activityRows, [
         { activityId: "activity-stream-correction-b", turnId: "turn-correction-b" },
+        {
+          activityId: "activity-stream-correction-approval-b",
+          turnId: "turn-correction-b",
+        },
+      ]);
+
+      const turnRows = yield* sql<{
+        readonly assistantMessageId: string | null;
+        readonly state: string;
+        readonly checkpointTurnCount: number | null;
+        readonly checkpointRef: string | null;
+        readonly checkpointStatus: string | null;
+        readonly checkpointFiles: string;
+      }>`
+        SELECT
+          assistant_message_id AS "assistantMessageId",
+          state,
+          checkpoint_turn_count AS "checkpointTurnCount",
+          checkpoint_ref AS "checkpointRef",
+          checkpoint_status AS "checkpointStatus",
+          checkpoint_files_json AS "checkpointFiles"
+        FROM projection_turns
+        WHERE thread_id = 'thread-stream-correction'
+          AND turn_id = 'turn-correction-a'
+      `;
+      assert.deepEqual(turnRows, [
+        {
+          assistantMessageId: null,
+          state: "running",
+          checkpointTurnCount: 4,
+          checkpointRef: "checkpoint-stream-correction-a",
+          checkpointStatus: "ready",
+          checkpointFiles: "[]",
+        },
+      ]);
+
+      const pendingApprovalRows = yield* sql<{
+        readonly requestId: string;
+        readonly turnId: string | null;
+        readonly status: string;
+      }>`
+        SELECT
+          request_id AS "requestId",
+          turn_id AS "turnId",
+          status
+        FROM projection_pending_approvals
+        WHERE thread_id = 'thread-stream-correction'
+        ORDER BY request_id ASC
+      `;
+      assert.deepEqual(pendingApprovalRows, [
+        {
+          requestId: "approval-stream-correction-b",
+          turnId: "turn-correction-b",
+          status: "pending",
+        },
       ]);
 
       const shellRows = yield* sql<{
         readonly latestUserMessageAt: string | null;
+        readonly pendingApprovalCount: number;
         readonly pendingUserInputCount: number;
         readonly updatedAt: string;
       }>`
         SELECT
           latest_user_message_at AS "latestUserMessageAt",
+          pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           updated_at AS "updatedAt"
         FROM projection_threads
@@ -2577,6 +2809,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.deepEqual(shellRows, [
         {
           latestUserMessageAt: "2026-08-11T11:00:02.000Z",
+          pendingApprovalCount: 1,
           pendingUserInputCount: 0,
           updatedAt: "2026-08-11T11:00:10.000Z",
         },

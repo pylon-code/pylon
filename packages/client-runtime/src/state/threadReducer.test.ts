@@ -454,6 +454,205 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("stream correction events", () => {
+    it("replaces assistant text and appends later deltas to the replacement", () => {
+      const turnId = TurnId.make("turn-replacement");
+      const messageId = MessageId.make("assistant-replacement");
+      const threadWithMessage: OrchestrationThread = {
+        ...baseThread,
+        messages: [
+          {
+            id: messageId,
+            role: "assistant",
+            text: "wrong text",
+            turnId,
+            streaming: true,
+            createdAt: "2026-04-01T06:00:00.000Z",
+            updatedAt: "2026-04-01T06:00:00.000Z",
+          },
+        ],
+      };
+
+      const replaced = applyThreadDetailEvent(threadWithMessage, {
+        ...baseEventFields,
+        sequence: 9,
+        occurredAt: "2026-04-01T06:01:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-replaced",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId,
+          text: "correct text",
+          turnId,
+          streaming: true,
+          createdAt: "2026-04-01T06:00:00.000Z",
+          updatedAt: "2026-04-01T06:01:00.000Z",
+        },
+      });
+
+      expect(replaced.kind).toBe("updated");
+      if (replaced.kind !== "updated") return;
+      expect(replaced.thread.messages[0]).toMatchObject({
+        text: "correct text",
+        streaming: true,
+        updatedAt: "2026-04-01T06:01:00.000Z",
+      });
+
+      const withLaterDelta = applyThreadDetailEvent(replaced.thread, {
+        ...baseEventFields,
+        sequence: 10,
+        occurredAt: "2026-04-01T06:02:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-sent",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId,
+          role: "assistant",
+          text: " answer",
+          turnId,
+          streaming: true,
+          createdAt: "2026-04-01T06:00:00.000Z",
+          updatedAt: "2026-04-01T06:02:00.000Z",
+        },
+      });
+
+      expect(withLaterDelta.kind).toBe("updated");
+      if (withLaterDelta.kind === "updated") {
+        expect(withLaterDelta.thread.messages[0]?.text).toBe("correct text answer");
+      }
+    });
+
+    it("resets target-turn output while preserving completed null-turn history and turn metadata", () => {
+      const targetTurnId = TurnId.make("turn-reset");
+      const otherTurnId = TurnId.make("turn-other");
+      const checkpoint = {
+        turnId: targetTurnId,
+        checkpointTurnCount: 4,
+        checkpointRef: CheckpointRef.make("checkpoint-reset"),
+        status: "ready" as const,
+        files: [],
+        assistantMessageId: MessageId.make("assistant-target"),
+        completedAt: "2026-04-01T06:00:30.000Z",
+      };
+      const threadWithOutput: OrchestrationThread = {
+        ...baseThread,
+        latestTurn: {
+          turnId: targetTurnId,
+          state: "running",
+          requestedAt: "2026-04-01T06:00:00.000Z",
+          startedAt: "2026-04-01T06:00:01.000Z",
+          completedAt: null,
+          assistantMessageId: MessageId.make("assistant-target"),
+        },
+        checkpoints: [checkpoint],
+        messages: [
+          {
+            id: MessageId.make("user-target"),
+            role: "user",
+            text: "retry",
+            turnId: targetTurnId,
+            streaming: false,
+            createdAt: "2026-04-01T06:00:00.000Z",
+            updatedAt: "2026-04-01T06:00:00.000Z",
+          },
+          {
+            id: MessageId.make("assistant-target"),
+            role: "assistant",
+            text: "invalid target output",
+            turnId: targetTurnId,
+            streaming: true,
+            createdAt: "2026-04-01T06:00:01.000Z",
+            updatedAt: "2026-04-01T06:00:01.000Z",
+          },
+          {
+            id: MessageId.make("assistant-null-streaming"),
+            role: "assistant",
+            text: "invalid orphan output",
+            turnId: null,
+            streaming: true,
+            createdAt: "2026-04-01T06:00:02.000Z",
+            updatedAt: "2026-04-01T06:00:02.000Z",
+          },
+          {
+            id: MessageId.make("assistant-null-completed"),
+            role: "assistant",
+            text: "historical completed output",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-03-31T06:00:00.000Z",
+            updatedAt: "2026-03-31T06:00:01.000Z",
+          },
+          {
+            id: MessageId.make("assistant-other"),
+            role: "assistant",
+            text: "other turn output",
+            turnId: otherTurnId,
+            streaming: true,
+            createdAt: "2026-04-01T06:00:03.000Z",
+            updatedAt: "2026-04-01T06:00:03.000Z",
+          },
+        ],
+        activities: [
+          {
+            id: EventId.make("activity-target"),
+            tone: "tool",
+            kind: "tool.started",
+            summary: "invalid target activity",
+            payload: {},
+            turnId: targetTurnId,
+            createdAt: "2026-04-01T06:00:04.000Z",
+          },
+          {
+            id: EventId.make("activity-other"),
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "other turn activity",
+            payload: {},
+            turnId: otherTurnId,
+            createdAt: "2026-04-01T06:00:05.000Z",
+          },
+        ],
+      };
+
+      const result = applyThreadDetailEvent(threadWithOutput, {
+        ...baseEventFields,
+        sequence: 11,
+        occurredAt: "2026-04-01T06:01:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.turn-output-reset",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          turnId: targetTurnId,
+          attempt: 2,
+          max: 4,
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages.map((message) => message.id)).toEqual([
+          "user-target",
+          "assistant-null-completed",
+          "assistant-other",
+        ]);
+        expect(result.thread.activities.map((activity) => activity.id)).toEqual(["activity-other"]);
+        expect(result.thread.latestTurn).toEqual({
+          turnId: targetTurnId,
+          state: "running",
+          requestedAt: "2026-04-01T06:00:00.000Z",
+          startedAt: "2026-04-01T06:00:01.000Z",
+          completedAt: null,
+          assistantMessageId: null,
+        });
+        expect(result.thread.checkpoints).toEqual([checkpoint]);
+        expect(result.thread.updatedAt).toBe("2026-04-01T06:01:00.000Z");
+      }
+    });
+  });
+
   describe("thread.session-set", () => {
     it("settles a running latestTurn when the session leaves the running status", () => {
       const threadWithRunningTurn: OrchestrationThread = {

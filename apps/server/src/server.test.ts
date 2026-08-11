@@ -29,6 +29,7 @@ import {
   ProviderInstanceId,
   ResolvedKeybindingRule,
   ThreadId,
+  TurnId,
   WS_METHODS,
   WsRpcGroup,
   EditorId,
@@ -6368,6 +6369,82 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
+  it.effect("delivers live stream correction events to thread subscribers", () =>
+    Effect.gen(function* () {
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const liveEvents = yield* Queue.unbounded<OrchestrationEvent>();
+      const replacementEvent = {
+        sequence: 2,
+        eventId: EventId.make("event-live-message-replaced"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.message-replaced",
+        payload: {
+          threadId: defaultThreadId,
+          messageId: MessageId.make("assistant-live"),
+          text: "corrected live text",
+          turnId: TurnId.make("turn-live"),
+          streaming: true,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.message-replaced" }>;
+      const resetEvent = {
+        sequence: 3,
+        eventId: EventId.make("event-live-turn-output-reset"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.turn-output-reset",
+        payload: {
+          threadId: defaultThreadId,
+          turnId: TurnId.make("turn-live"),
+          attempt: 2,
+          max: 4,
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.turn-output-reset" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromQueue(liveEvents),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.gen(function* () {
+                yield* Queue.offer(liveEvents, replacementEvent);
+                yield* Queue.offer(liveEvents, resetEvent);
+                return Option.some({ snapshotSequence: 1, thread });
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.deepEqual(
+        Array.from(items, (item) => (item.kind === "event" ? item.event.type : item.kind)),
+        ["snapshot", "thread.message-replaced", "thread.turn-output-reset"],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
   it.effect("subscribeThread sends a fresh snapshot instead of replaying a large gap", () =>
     Effect.gen(function* () {
       let readEventsCalls = 0;
@@ -6508,6 +6585,76 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // The replay is bounded to the head captured before the read, not
       // Number.MAX_SAFE_INTEGER.
       assert.equal(replayLimit, 50);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("replays stream correction events during thread subscription catch-up", () =>
+    Effect.gen(function* () {
+      const now = "2026-01-01T00:00:00.000Z";
+      const replacementEvent = {
+        sequence: 2,
+        eventId: EventId.make("event-catch-up-message-replaced"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.message-replaced",
+        payload: {
+          threadId: defaultThreadId,
+          messageId: MessageId.make("assistant-catch-up"),
+          text: "corrected catch-up text",
+          turnId: TurnId.make("turn-catch-up"),
+          streaming: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.message-replaced" }>;
+      const resetEvent = {
+        sequence: 3,
+        eventId: EventId.make("event-catch-up-turn-output-reset"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.turn-output-reset",
+        payload: {
+          threadId: defaultThreadId,
+          turnId: TurnId.make("turn-catch-up"),
+          attempt: 2,
+          max: 4,
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.turn-output-reset" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(3),
+            readEvents: () => Stream.make(replacementEvent, resetEvent),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 0,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      );
+
+      assert.deepEqual(
+        Array.from(items, (item) => (item.kind === "event" ? item.event.type : item.kind)),
+        ["thread.message-replaced", "thread.turn-output-reset", "synchronized"],
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

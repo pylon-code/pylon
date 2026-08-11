@@ -1960,6 +1960,9 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      const assistantTurnId =
+        eventTurnId ??
+        (thread.session?.status === "running" && activeTurnId !== null ? activeTurnId : undefined);
       const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
         threadId: thread.id,
       });
@@ -2139,7 +2142,7 @@ const make = Effect.gen(function* () {
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
       if (assistantDelta && assistantDelta.length > 0) {
-        const turnId = toTurnId(event.turnId);
+        const turnId = assistantTurnId;
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
           event,
@@ -2258,7 +2261,7 @@ const make = Effect.gen(function* () {
       if (assistantCompletion) {
         const detailedThread = yield* getLoadedThreadDetail();
         const messages = detailedThread?.messages ?? [];
-        const turnId = toTurnId(event.turnId);
+        const turnId = assistantTurnId;
         const activeAssistantMessageId = turnId
           ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
           : Option.none<MessageId>();

@@ -597,11 +597,20 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               messages: thread.messages.filter(
-                (message) => message.role !== "assistant" || message.turnId !== payload.turnId,
+                (message) =>
+                  message.role !== "assistant" ||
+                  // Null-turn rows can predate active-turn binding. Only streaming
+                  // rows are safe to treat as current partial provider output.
+                  (message.turnId !== payload.turnId &&
+                    !(message.turnId === null && message.streaming)),
               ),
               activities: thread.activities.filter(
                 (activity) => activity.turnId !== payload.turnId,
               ),
+              latestTurn:
+                thread.latestTurn?.turnId === payload.turnId
+                  ? { ...thread.latestTurn, assistantMessageId: null }
+                  : thread.latestTurn,
               updatedAt: event.occurredAt,
             }),
           };

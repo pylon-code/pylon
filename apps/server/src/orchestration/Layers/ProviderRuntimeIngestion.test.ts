@@ -2821,6 +2821,80 @@ describe("ProviderRuntimeIngestion", () => {
     expect(finalMessage?.streaming).toBe(false);
   });
 
+  it("binds assistant output without a provider turn id to the active running turn", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    const activeTurnId = asTurnId("turn-active-fallback");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-active-fallback"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: activeTurnId,
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" && thread.session.activeTurnId === activeTurnId,
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-active-fallback"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      itemId: asItemId("item-active-fallback"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "bound to active turn",
+      },
+    });
+
+    const streamingThread = await waitForThread(harness.readModel, (thread) =>
+      thread.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-active-fallback" && message.streaming,
+      ),
+    );
+    expect(
+      streamingThread.messages.find(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:item-active-fallback",
+      )?.turnId,
+    ).toBe(activeTurnId);
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-message-completed-active-fallback"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      itemId: asItemId("item-active-fallback"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const finalThread = await waitForThread(harness.readModel, (thread) =>
+      thread.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-active-fallback" && !message.streaming,
+      ),
+    );
+    expect(
+      finalThread.messages.find(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:item-active-fallback",
+      ),
+    ).toMatchObject({
+      text: "bound to active turn",
+      turnId: activeTurnId,
+      streaming: false,
+    });
+  });
+
   it("spills oversized buffered deltas and still finalizes full assistant text", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

@@ -1984,6 +1984,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
     yield* sql`DELETE FROM projection_thread_messages`;
     yield* sql`DELETE FROM projection_thread_activities`;
     yield* sql`DELETE FROM projection_state`;
+    yield* sql`DELETE FROM orchestration_events`;
 
     yield* sql`
       INSERT INTO projection_projects (
@@ -2089,6 +2090,88 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
         assert.equal(snapshot.value.thread.messages.length, 9);
         assert.equal(snapshot.value.thread.activities.length, 6);
         assert.equal(snapshot.value.snapshotSequence, 42);
+      }
+    }),
+  );
+
+  it.effect("uses both stream correction events in the thread detail watermark", () =>
+    Effect.gen(function* () {
+      yield* seedFanOutThread();
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      let streamVersion = 0;
+      const insertThreadEvent = (eventId: string, eventType: string) => {
+        const eventStreamVersion = streamVersion;
+        streamVersion += 1;
+        return sql`
+          INSERT INTO orchestration_events (
+            event_id,
+            aggregate_kind,
+            stream_id,
+            stream_version,
+            event_type,
+            occurred_at,
+            command_id,
+            causation_event_id,
+            correlation_id,
+            actor_kind,
+            payload_json,
+            metadata_json
+          )
+          VALUES (
+            ${EventId.make(eventId)},
+            'thread',
+            ${threadW},
+            ${eventStreamVersion},
+            ${eventType},
+            '2026-03-01T00:10:00.000Z',
+            NULL,
+            NULL,
+            NULL,
+            'server',
+            '{}',
+            '{}'
+          )
+        `;
+      };
+      const sequenceFor = (eventId: string) =>
+        sql<{ readonly sequence: number }>`
+          SELECT sequence
+          FROM orchestration_events
+          WHERE event_id = ${EventId.make(eventId)}
+        `.pipe(Effect.map((rows) => rows[0]!.sequence));
+
+      yield* insertThreadEvent("event-watermark-message-replaced", "thread.message-replaced");
+      const replacementSequence = yield* sequenceFor("event-watermark-message-replaced");
+      yield* insertThreadEvent("event-watermark-meta-after-replacement", "thread.meta-updated");
+      const firstHead = yield* sequenceFor("event-watermark-meta-after-replacement");
+      yield* sql`
+        UPDATE projection_state
+        SET last_applied_sequence = ${firstHead}
+      `;
+
+      const afterReplacement = yield* snapshotQuery.getThreadDetailSnapshot(threadW, {
+        turnLimit: 2,
+      });
+      assert.equal(afterReplacement._tag, "Some");
+      if (afterReplacement._tag === "Some") {
+        assert.equal(afterReplacement.value.page?.threadSequence, replacementSequence);
+      }
+
+      yield* insertThreadEvent("event-watermark-turn-output-reset", "thread.turn-output-reset");
+      const resetSequence = yield* sequenceFor("event-watermark-turn-output-reset");
+      yield* insertThreadEvent("event-watermark-meta-after-reset", "thread.meta-updated");
+      const secondHead = yield* sequenceFor("event-watermark-meta-after-reset");
+      yield* sql`
+        UPDATE projection_state
+        SET last_applied_sequence = ${secondHead}
+      `;
+
+      const afterReset = yield* snapshotQuery.getThreadDetailSnapshot(threadW, { turnLimit: 2 });
+      assert.equal(afterReset._tag, "Some");
+      if (afterReset._tag === "Some") {
+        assert.equal(afterReset.value.page?.threadSequence, resetSequence);
       }
     }),
   );

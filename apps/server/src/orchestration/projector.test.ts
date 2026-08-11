@@ -1,9 +1,12 @@
 import {
+  CheckpointRef,
   CommandId,
   EventId,
+  MessageId,
   ProjectId,
   ProviderDriverKind,
   ThreadId,
+  TurnId,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -607,6 +610,30 @@ describe("orchestration projector", () => {
         }),
       ),
     );
+    const checkpoint = {
+      turnId: TurnId.make("turn-a"),
+      checkpointTurnCount: 4,
+      checkpointRef: CheckpointRef.make("checkpoint-turn-a"),
+      status: "ready" as const,
+      files: [],
+      assistantMessageId: MessageId.make("assistant-a-2"),
+      completedAt: "2026-08-11T10:00:06.500Z",
+    };
+    const seeded = {
+      ...afterCreate,
+      threads: afterCreate.threads.map((thread) => ({
+        ...thread,
+        latestTurn: {
+          turnId: TurnId.make("turn-a"),
+          state: "running" as const,
+          requestedAt: "2026-08-11T10:00:01.000Z",
+          startedAt: "2026-08-11T10:00:02.000Z",
+          completedAt: null,
+          assistantMessageId: MessageId.make("assistant-a-2"),
+        },
+        checkpoints: [checkpoint],
+      })),
+    };
     const events: ReadonlyArray<OrchestrationEvent> = [
       makeEvent({
         sequence: 2,
@@ -722,10 +749,46 @@ describe("orchestration projector", () => {
       }),
       makeEvent({
         sequence: 8,
+        type: "thread.message-sent",
+        aggregateKind: "thread",
+        aggregateId: "thread-reset",
+        occurredAt: "2026-08-11T10:00:06.500Z",
+        commandId: "cmd-assistant-null-streaming",
+        payload: {
+          threadId: "thread-reset",
+          messageId: "assistant-null-streaming",
+          role: "assistant",
+          text: "invalid orphan streaming output",
+          turnId: null,
+          streaming: true,
+          createdAt: "2026-08-11T10:00:06.500Z",
+          updatedAt: "2026-08-11T10:00:06.500Z",
+        },
+      }),
+      makeEvent({
+        sequence: 9,
+        type: "thread.message-sent",
+        aggregateKind: "thread",
+        aggregateId: "thread-reset",
+        occurredAt: "2026-08-10T10:00:00.000Z",
+        commandId: "cmd-assistant-null-completed",
+        payload: {
+          threadId: "thread-reset",
+          messageId: "assistant-null-completed",
+          role: "assistant",
+          text: "historical completed output",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-08-10T10:00:00.000Z",
+          updatedAt: "2026-08-10T10:00:01.000Z",
+        },
+      }),
+      makeEvent({
+        sequence: 10,
         type: "thread.turn-output-reset",
         aggregateKind: "thread",
         aggregateId: "thread-reset",
-        occurredAt: "2026-08-11T10:00:07.000Z",
+        occurredAt: "2026-08-11T10:00:09.000Z",
         commandId: "cmd-reset-a",
         payload: {
           threadId: "thread-reset",
@@ -735,11 +798,11 @@ describe("orchestration projector", () => {
         },
       }),
       makeEvent({
-        sequence: 9,
+        sequence: 11,
         type: "thread.turn-output-reset",
         aggregateKind: "thread",
         aggregateId: "thread-reset",
-        occurredAt: "2026-08-11T10:00:08.000Z",
+        occurredAt: "2026-08-11T10:00:10.000Z",
         commandId: "cmd-reset-a-again",
         payload: {
           threadId: "thread-reset",
@@ -753,7 +816,7 @@ describe("orchestration projector", () => {
     const afterReset = await events.reduce<Promise<ReturnType<typeof createEmptyReadModel>>>(
       (statePromise, event) =>
         statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
-      Promise.resolve(afterCreate),
+      Promise.resolve(seeded),
     );
     const thread = afterReset.threads[0];
     expect(
@@ -765,6 +828,7 @@ describe("orchestration projector", () => {
     ).toEqual([
       { id: "user-a", role: "user", turnId: "turn-a" },
       { id: "assistant-b", role: "assistant", turnId: "turn-b" },
+      { id: "assistant-null-completed", role: "assistant", turnId: null },
     ]);
     expect(
       thread?.activities.map(({ id, turnId: activityTurnId }) => ({
@@ -772,7 +836,16 @@ describe("orchestration projector", () => {
         turnId: activityTurnId,
       })),
     ).toEqual([{ id: "activity-b", turnId: "turn-b" }]);
-    expect(thread?.updatedAt).toBe("2026-08-11T10:00:08.000Z");
+    expect(thread?.latestTurn).toEqual({
+      turnId: "turn-a",
+      state: "running",
+      requestedAt: "2026-08-11T10:00:01.000Z",
+      startedAt: "2026-08-11T10:00:02.000Z",
+      completedAt: null,
+      assistantMessageId: null,
+    });
+    expect(thread?.checkpoints).toEqual([checkpoint]);
+    expect(thread?.updatedAt).toBe("2026-08-11T10:00:10.000Z");
   });
 
   it("prunes reverted turn messages from in-memory thread snapshot", async () => {

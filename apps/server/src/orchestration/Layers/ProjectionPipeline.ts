@@ -1007,7 +1007,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
           });
           const keptRows = existingRows.filter(
-            (message) => message.role !== "assistant" || message.turnId !== event.payload.turnId,
+            (message) =>
+              message.role !== "assistant" ||
+              // Null-turn rows can predate active-turn binding. Only streaming
+              // rows are safe to treat as current partial provider output.
+              (message.turnId !== event.payload.turnId &&
+                !(message.turnId === null && message.isStreaming)),
           );
           if (keptRows.length === existingRows.length) {
             return;
@@ -1417,6 +1422,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.turn-output-reset": {
+          const existingTurn = yield* projectionTurnRepository.getByTurnId({
+            threadId: event.payload.threadId,
+            turnId: event.payload.turnId,
+          });
+          if (Option.isNone(existingTurn)) {
+            return;
+          }
+          yield* projectionTurnRepository.upsertByTurnId({
+            ...existingTurn.value,
+            assistantMessageId: null,
+          });
+          return;
+        }
+
         case "thread.turn-interrupt-requested": {
           if (event.payload.turnId === undefined) {
             return;
@@ -1659,6 +1679,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : event.payload.createdAt,
             resolvedAt: event.payload.createdAt,
           });
+          return;
+        }
+
+        case "thread.turn-output-reset": {
+          const existingRows = yield* projectionPendingApprovalRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          yield* Effect.forEach(
+            existingRows.filter((row) => row.turnId === event.payload.turnId),
+            (row) =>
+              projectionPendingApprovalRepository.deleteByRequestId({
+                requestId: row.requestId,
+              }),
+            { concurrency: 1 },
+          ).pipe(Effect.asVoid);
           return;
         }
 

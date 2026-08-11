@@ -183,4 +183,36 @@ it.layer(NodeServices.layer)("stream correction decider", (it) => {
       }
     }),
   );
+
+  it.effect("rejects reset when latestTurn matches but the session active turn differs", () =>
+    Effect.gen(function* () {
+      const model = readModel();
+      const thread = model.threads[0]!;
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.output.reset",
+          commandId: CommandId.make("cmd-reset-session-mismatch"),
+          threadId,
+          turnId,
+          attempt: 1,
+          max: 3,
+          createdAt: NOW,
+        },
+        readModel: {
+          ...model,
+          threads: [
+            {
+              ...thread,
+              session: {
+                ...thread.session!,
+                activeTurnId: TurnId.make("turn-session-other"),
+              },
+            },
+          ],
+        },
+      }).pipe(Effect.flip);
+
+      expect(error).toMatchObject({ _tag: "OrchestrationCommandInvariantError" });
+    }),
+  );
 });
