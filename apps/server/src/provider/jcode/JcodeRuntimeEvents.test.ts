@@ -18,6 +18,7 @@ import {
   type JcodeEventMappingContext,
   type JcodeEventMappingState,
 } from "./JcodeRuntimeEvents.ts";
+import type { JcodeStreamCorrectionEvent } from "./JcodeSdkBridge.ts";
 
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 
@@ -60,7 +61,7 @@ interface FoldResult {
 
 /** Folds a whole SDK event sequence the way the session runtime will. */
 function run(
-  events: ReadonlyArray<ApiEvent>,
+  events: ReadonlyArray<ApiEvent | JcodeStreamCorrectionEvent>,
   overrides: Partial<JcodeEventMappingContext> = {},
   initial: JcodeEventMappingState = initialJcodeEventMappingState,
 ): FoldResult {
@@ -103,11 +104,22 @@ const toolInputDelta = (delta: string, callId = NATIVE_CALL_ID): ApiEvent => ({
   delta,
 });
 const turnDone = (): ApiEvent => ({ ev: "turn_done", session_id: NATIVE_SESSION_ID });
+const textReplace = (text: string): JcodeStreamCorrectionEvent => ({
+  ev: "text_replace",
+  session_id: NATIVE_SESSION_ID,
+  text,
+});
+const retryRollback = (attempt: number, max: number): JcodeStreamCorrectionEvent => ({
+  ev: "retry_rollback",
+  session_id: NATIVE_SESSION_ID,
+  attempt,
+  max,
+});
 
-const TOOL_ITEM_ID = `jcode-tool:${Buffer.from(NATIVE_CALL_ID, "utf8").toString("base64url")}`;
 const TASK_ID = `jcode-task:${Buffer.from(NATIVE_TASK_ID, "utf8").toString("base64url")}`;
-const toolItemIdFor = (callId: string) =>
-  `jcode-tool:${Buffer.from(callId, "utf8").toString("base64url")}`;
+const toolItemIdFor = (callId: string, attemptGeneration = 0) =>
+  `jcode-tool:${attemptGeneration}:${Buffer.from(callId, "utf8").toString("base64url")}`;
+const TOOL_ITEM_ID = toolItemIdFor(NATIVE_CALL_ID);
 
 type ItemStarted = Extract<ProviderRuntimeEvent, { type: "item.started" }>;
 type ItemUpdated = Extract<ProviderRuntimeEvent, { type: "item.updated" }>;
@@ -116,6 +128,7 @@ type TaskStarted = Extract<ProviderRuntimeEvent, { type: "task.started" }>;
 type TaskProgress = Extract<ProviderRuntimeEvent, { type: "task.progress" }>;
 type TaskCompleted = Extract<ProviderRuntimeEvent, { type: "task.completed" }>;
 type ContentDelta = Extract<ProviderRuntimeEvent, { type: "content.delta" }>;
+type ContentReplaced = Extract<ProviderRuntimeEvent, { type: "content.replaced" }>;
 type ThreadStateChanged = Extract<ProviderRuntimeEvent, { type: "thread.state.changed" }>;
 
 describe("JcodeRuntimeEvents", () => {
@@ -138,6 +151,48 @@ describe("JcodeRuntimeEvents", () => {
     const itemIds = new Set(result.events.map((event) => event.itemId));
     expect(itemIds.size).toBe(1);
     expect(result.state.assistantStarted).toBe(true);
+    decodeAll(result.events);
+  });
+
+  it("starts and keeps open an assistant item for replacement text", () => {
+    const result = run([textReplace("corrected answer")]);
+
+    expect(result.events.map((event) => event.type)).toEqual(["item.started", "content.replaced"]);
+    expect(result.events[0]).toMatchObject({
+      type: "item.started",
+      payload: { itemType: "assistant_message", status: "inProgress" },
+    });
+    expect(result.events[1]).toMatchObject({
+      type: "content.replaced",
+      payload: { streamKind: "assistant_text", text: "corrected answer" },
+    });
+    expect(result.events[0]?.itemId).toBe(result.events[1]?.itemId);
+    expect(result.state.assistantStarted).toBe(true);
+    decodeAll(result.events);
+  });
+
+  it("appends later assistant deltas to the item whose content was replaced", () => {
+    const result = run([textReplace("corrected"), textDelta(" tail")]);
+
+    expect(result.events.map((event) => event.type)).toEqual([
+      "item.started",
+      "content.replaced",
+      "content.delta",
+    ]);
+    expect(result.events[1]).toMatchObject({ payload: { text: "corrected" } });
+    expect(result.events[2]).toMatchObject({ payload: { delta: " tail" } });
+    expect(new Set(result.events.map((event) => event.itemId)).size).toBe(1);
+    expect(result.state.assistantStarted).toBe(true);
+    decodeAll(result.events);
+  });
+
+  it("bounds replacement text with the canonical assistant text limit", () => {
+    const result = run([textReplace("r".repeat(250_000))]);
+    const replaced = result.events.find(
+      (event): event is ContentReplaced => event.type === "content.replaced",
+    );
+
+    expect(replaced?.payload.text).toHaveLength(100_000);
     decodeAll(result.events);
   });
 
@@ -704,6 +759,100 @@ describe("JcodeRuntimeEvents", () => {
     );
     expect(missing.events).toEqual([]);
     expect(missing.state.currentModel).toBe("sonnet");
+  });
+
+  it("resets attempt-local output before retry lifecycle and preserves session state", () => {
+    const result = run([
+      textDelta("discarded answer"),
+      reasoningDelta("discarded reasoning"),
+      toolStart("bash"),
+      {
+        ev: "background_progress",
+        session_id: NATIVE_SESSION_ID,
+        task_id: NATIVE_TASK_ID,
+        label: "Indexing repository",
+        summary: "running",
+      },
+      { ev: "model_info", session_id: NATIVE_SESSION_ID, model: "sonnet" },
+      retryRollback(2, 3),
+      textDelta("fresh answer"),
+      reasoningDelta("fresh reasoning"),
+      toolStart("bash"),
+    ]);
+
+    const resetIndex = result.events.findIndex((event) => event.type === "turn.output-reset");
+    const retryIndex = result.events.findIndex(
+      (event) => event.type === "item.started" && event.payload.itemType === "retry",
+    );
+    expect(resetIndex).toBeGreaterThan(-1);
+    expect(retryIndex).toBe(resetIndex + 1);
+    expect(result.events[resetIndex]).toMatchObject({
+      turnId: "turn-1",
+      payload: { reason: "provider_retry", attempt: 2, max: 3 },
+    });
+    expect(result.events[retryIndex]).toMatchObject({
+      payload: {
+        itemType: "retry",
+        status: "inProgress",
+        title: "Provider retry",
+        data: { attempt: 2, maxAttempts: 3 },
+      },
+    });
+
+    const assistantIds = result.events
+      .filter(
+        (event): event is ItemStarted =>
+          event.type === "item.started" && event.payload.itemType === "assistant_message",
+      )
+      .map((event) => event.itemId);
+    const reasoningIds = result.events
+      .filter(
+        (event): event is ItemStarted =>
+          event.type === "item.started" && event.payload.itemType === "reasoning",
+      )
+      .map((event) => event.itemId);
+    const toolIds = result.events
+      .filter(
+        (event): event is ItemStarted =>
+          event.type === "item.started" && event.payload.itemType === "command_execution",
+      )
+      .map((event) => event.itemId);
+    expect(new Set(assistantIds).size).toBe(2);
+    expect(new Set(reasoningIds).size).toBe(2);
+    expect(toolIds).toEqual([toolItemIdFor(NATIVE_CALL_ID, 0), toolItemIdFor(NATIVE_CALL_ID, 1)]);
+
+    expect(result.state.assistantStarted).toBe(true);
+    expect(result.state.reasoningStarted).toBe(true);
+    expect(result.state.openTools.size).toBe(1);
+    expect(result.state.startedTasks).toEqual(new Set([NATIVE_TASK_ID]));
+    expect(result.state.currentModel).toBe("sonnet");
+    expect(result.state.segment).toBe(1);
+    expect(result.state.attemptGeneration).toBe(1);
+    decodeAll(result.events);
+
+    const serialized = JSON.stringify(result.events);
+    expect(serialized).not.toContain(NATIVE_SESSION_ID);
+    expect(serialized).not.toContain(NATIVE_CALL_ID);
+  });
+
+  it("treats correction frames without an authoritative turn id as fatal", () => {
+    for (const correction of [textReplace("corrected"), retryRollback(1, 3)]) {
+      const result = mapJcodeRuntimeEvent(
+        initialJcodeEventMappingState,
+        correction,
+        context({ turnId: undefined }),
+      );
+
+      expect(result.fatal, correction.ev).toBe(true);
+      expect(result.events, correction.ev).toHaveLength(1);
+      expect(result.events[0]).toMatchObject({
+        type: "runtime.error",
+        payload: { class: "validation_error" },
+      });
+      expect(result.events.some((event) => event.type === "turn.output-reset")).toBe(false);
+      expect(result.state).toBe(initialJcodeEventMappingState);
+      decodeAll(result.events);
+    }
   });
 
   it("completes every open item before turn.completed and resets per-turn state", () => {

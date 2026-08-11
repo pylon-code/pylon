@@ -1,8 +1,8 @@
 /**
  * Pure mapping from Jcode SDK events to canonical provider runtime events.
  *
- * Everything Jcode-native stops here. The session runtime feeds one `ApiEvent`
- * plus a stamp into `mapJcodeRuntimeEvent` and gets back complete
+ * Everything Jcode-native stops here. The session runtime feeds one decoded
+ * Jcode SDK event plus a stamp into `mapJcodeRuntimeEvent` and gets back complete
  * `ProviderRuntimeEvent` values; no wire schema, client state, or
  * provider-specific contract is introduced by this file.
  *
@@ -39,6 +39,8 @@ import {
   type ToolLifecycleItemType,
   type TurnId,
 } from "@t3tools/contracts";
+
+import type { JcodeStreamCorrectionEvent } from "./JcodeSdkBridge.ts";
 
 const JCODE_PROVIDER = ProviderDriverKind.make("jcode");
 
@@ -97,6 +99,8 @@ export interface JcodeEventMappingState {
   readonly completedTasks: ReadonlySet<string>;
   /** Distinguishes assistant/reasoning items across `turn_done` boundaries. */
   readonly segment: number;
+  /** Distinguishes regenerated assistant, reasoning, and tool items after retries. */
+  readonly attemptGeneration: number;
   readonly currentModel?: string;
 }
 
@@ -114,6 +118,7 @@ export const initialJcodeEventMappingState: JcodeEventMappingState = {
   startedTasks: new Set(),
   completedTasks: new Set(),
   segment: 0,
+  attemptGeneration: 0,
 };
 
 type RuntimeEventDraft<Event> = Event extends ProviderRuntimeEvent ? Omit<Event, "eventId"> : never;
@@ -142,8 +147,10 @@ function opaqueId(prefix: string, nativeId: string): string {
   return `${prefix}:${Buffer.from(nativeId, "utf8").toString("base64url")}`;
 }
 
-function toolItemId(callId: string): RuntimeItemId {
-  return RuntimeItemId.make(opaqueId("jcode-tool", callId));
+function toolItemId(state: JcodeEventMappingState, callId: string): RuntimeItemId {
+  return RuntimeItemId.make(
+    `jcode-tool:${state.attemptGeneration}:${Buffer.from(callId, "utf8").toString("base64url")}`,
+  );
 }
 
 function taskId(nativeTaskId: string): RuntimeTaskId {
@@ -162,7 +169,7 @@ function assistantItemId(
   context: JcodeEventMappingContext,
 ): RuntimeItemId {
   return RuntimeItemId.make(
-    `jcode-assistant:${context.turnId ?? context.threadId}:${state.segment}`,
+    `jcode-assistant:${context.turnId ?? context.threadId}:${state.segment}:${state.attemptGeneration}`,
   );
 }
 
@@ -171,7 +178,16 @@ function reasoningItemId(
   context: JcodeEventMappingContext,
 ): RuntimeItemId {
   return RuntimeItemId.make(
-    `jcode-reasoning:${context.turnId ?? context.threadId}:${state.segment}`,
+    `jcode-reasoning:${context.turnId ?? context.threadId}:${state.segment}:${state.attemptGeneration}`,
+  );
+}
+
+function retryItemId(
+  state: JcodeEventMappingState,
+  context: JcodeEventMappingContext & { readonly turnId: TurnId },
+): RuntimeItemId {
+  return RuntimeItemId.make(
+    `jcode-retry:${context.turnId}:${state.segment}:${state.attemptGeneration}`,
   );
 }
 
@@ -298,6 +314,7 @@ const EVICTED_TOOL_DETAIL =
 
 /** The terminal row for a tool item this mapper opened but never saw finish. */
 function abandonedToolDraft(
+  state: JcodeEventMappingState,
   call: JcodeOpenToolCall,
   callId: string,
   detail: string,
@@ -307,7 +324,7 @@ function abandonedToolDraft(
   return {
     ...base(context),
     type: "item.completed",
-    itemId: toolItemId(callId),
+    itemId: toolItemId(state, callId),
     payload: {
       itemType: canonicalToolItemType(call.name),
       status: "failed",
@@ -343,7 +360,7 @@ function trackOpenTool(
     if (oldest.done === true) break;
     const [evictedId, evicted] = oldest.value;
     next.delete(evictedId);
-    evictions.push(abandonedToolDraft(evicted, evictedId, EVICTED_TOOL_DETAIL, context));
+    evictions.push(abandonedToolDraft(state, evicted, evictedId, EVICTED_TOOL_DETAIL, context));
   }
   return { openTools: next, evictions };
 }
@@ -396,7 +413,7 @@ function closeOpenItems(
     });
   }
   for (const [callId, call] of state.openTools) {
-    drafts.push(abandonedToolDraft(call, callId, UNFINISHED_TOOL_DETAIL, context));
+    drafts.push(abandonedToolDraft(state, call, callId, UNFINISHED_TOOL_DETAIL, context));
   }
   return drafts;
 }
@@ -410,10 +427,101 @@ function closeOpenItems(
  */
 export function mapJcodeRuntimeEvent(
   state: JcodeEventMappingState,
-  event: ApiEvent,
+  event: ApiEvent | JcodeStreamCorrectionEvent,
   context: JcodeEventMappingContext,
 ): JcodeEventMappingResult {
   switch (event.ev) {
+    case "text_replace": {
+      if (context.turnId === undefined) {
+        return result(
+          state,
+          [
+            {
+              ...base(context),
+              type: "runtime.error",
+              payload: {
+                message: "Jcode reported replacement text without an active Pylon turn.",
+                class: "validation_error",
+              },
+            },
+          ],
+          context,
+          true,
+        );
+      }
+      const text = bounded(event.text);
+      const itemId = assistantItemId(state, context);
+      const drafts: JcodeRuntimeEventDraft[] = [];
+      if (!state.assistantStarted) {
+        drafts.push({
+          ...base(context),
+          type: "item.started",
+          itemId,
+          payload: { itemType: "assistant_message", status: "inProgress" },
+        });
+      }
+      drafts.push({
+        ...base(context),
+        turnId: context.turnId,
+        type: "content.replaced",
+        itemId,
+        payload: { streamKind: "assistant_text", text },
+      });
+      return result({ ...state, assistantStarted: true }, drafts, context);
+    }
+
+    case "retry_rollback": {
+      if (context.turnId === undefined) {
+        return result(
+          state,
+          [
+            {
+              ...base(context),
+              type: "runtime.error",
+              payload: {
+                message: "Jcode reported a retry without an active Pylon turn.",
+                class: "validation_error",
+              },
+            },
+          ],
+          context,
+          true,
+        );
+      }
+      const retryContext = { ...context, turnId: context.turnId };
+      const nextState: JcodeEventMappingState = {
+        ...state,
+        assistantStarted: false,
+        reasoningStarted: false,
+        openTools: new Map(),
+        segment: (state.segment + 1) % MAX_TURN_SEGMENTS,
+        attemptGeneration: state.attemptGeneration + 1,
+      };
+      return result(
+        nextState,
+        [
+          {
+            ...base(retryContext),
+            turnId: retryContext.turnId,
+            type: "turn.output-reset",
+            payload: { reason: "provider_retry", attempt: event.attempt, max: event.max },
+          },
+          {
+            ...base(retryContext),
+            type: "item.started",
+            itemId: retryItemId(nextState, retryContext),
+            payload: {
+              itemType: "retry",
+              status: "inProgress",
+              title: "Provider retry",
+              data: { attempt: event.attempt, maxAttempts: event.max },
+            },
+          },
+        ],
+        retryContext,
+      );
+    }
+
     case "text_delta": {
       const delta = bounded(event.text);
       const itemId = assistantItemId(state, context);
@@ -487,7 +595,7 @@ export function mapJcodeRuntimeEvent(
           {
             ...base(context),
             type: "item.started",
-            itemId: toolItemId(event.call_id),
+            itemId: toolItemId(state, event.call_id),
             payload: {
               itemType: canonicalToolItemType(name),
               status: "inProgress",
@@ -516,7 +624,7 @@ export function mapJcodeRuntimeEvent(
           {
             ...base(context),
             type: "item.updated",
-            itemId: toolItemId(event.call_id),
+            itemId: toolItemId(state, event.call_id),
             payload: {
               itemType: canonicalToolItemType(name),
               status: "inProgress",
@@ -545,7 +653,7 @@ export function mapJcodeRuntimeEvent(
           {
             ...base(context),
             type: "item.updated",
-            itemId: toolItemId(event.call_id),
+            itemId: toolItemId(state, event.call_id),
             payload: {
               itemType: canonicalToolItemType(name),
               status: "inProgress",
@@ -572,7 +680,7 @@ export function mapJcodeRuntimeEvent(
           {
             ...base(context),
             type: "item.completed",
-            itemId: toolItemId(event.call_id),
+            itemId: toolItemId(state, event.call_id),
             payload: {
               itemType: canonicalToolItemType(title),
               status: failure === undefined ? "completed" : "failed",

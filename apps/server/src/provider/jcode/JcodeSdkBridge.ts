@@ -27,9 +27,51 @@ import type {
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 
 /** The only SDK error code that authoritatively means "this session is gone". */
 const UNKNOWN_SESSION_CODE = "unknown_session";
+const STREAM_CORRECTIONS_CAPABILITY = "stream_corrections";
+
+const PositiveSafeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
+const JcodeSessionId = Schema.String.check(
+  Schema.makeFilter((value) => value.length > 0 || "Session id must not be empty"),
+);
+const JcodeTextReplaceEvent = Schema.Struct({
+  ev: Schema.Literal("text_replace"),
+  session_id: JcodeSessionId,
+  text: Schema.String,
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const JcodeRetryRollbackEvent = Schema.Struct({
+  ev: Schema.Literal("retry_rollback"),
+  session_id: JcodeSessionId,
+  attempt: PositiveSafeInteger,
+  max: PositiveSafeInteger,
+})
+  .check(
+    Schema.makeFilter(
+      ({ attempt, max }) => attempt <= max || "Retry attempt must not exceed retry maximum",
+    ),
+  )
+  .annotate({ parseOptions: { onExcessProperty: "error" } });
+const JcodeStreamCorrectionEventSchema = Schema.Union([
+  JcodeTextReplaceEvent,
+  JcodeRetryRollbackEvent,
+]);
+const isJcodeStreamCorrectionEvent = Schema.is(JcodeStreamCorrectionEventSchema);
+
+export type JcodeStreamCorrectionEvent = typeof JcodeStreamCorrectionEventSchema.Type;
+export type JcodeSdkEvent = ApiEvent | JcodeStreamCorrectionEvent;
+
+/** Decode the published SDK's additive correction frames without widening known events. */
+export function decodeJcodeSdkEvent(
+  event: AnyApiEvent,
+  capabilities: ReadonlyArray<string>,
+): JcodeSdkEvent | undefined {
+  if (isKnownEvent(event)) return event;
+  if (!capabilities.includes(STREAM_CORRECTIONS_CAPABILITY)) return undefined;
+  return isJcodeStreamCorrectionEvent(event) ? event : undefined;
+}
 
 export class JcodeSessionNotFoundError extends Data.TaggedError("JcodeSessionNotFoundError")<{
   readonly operation: string;
@@ -70,11 +112,13 @@ export interface JcodeSdkClientLike {
   ) => Promise<void>;
   readonly cancel: (sessionId: string) => Promise<void>;
   readonly getHistory: (sessionId: string) => Promise<HistoryMessage[]>;
-  readonly events: (sessionId?: string) => AsyncIterableIterator<ApiEvent>;
+  readonly events: (sessionId?: string) => AsyncIterableIterator<AnyApiEvent>;
   readonly close: () => Promise<void>;
 }
 
-export type JcodeSdkClient = JcodeSdkClientLike;
+export interface JcodeSdkClient extends Omit<JcodeSdkClientLike, "events"> {
+  readonly events: (sessionId?: string) => AsyncIterableIterator<JcodeSdkEvent>;
+}
 
 export interface JcodeLaunchedInstance {
   readonly socketPath: string;
@@ -329,8 +373,9 @@ export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
   }
 
   /**
-   * Drop event kinds this SDK version does not know about, and classify a
-   * stream failure like any other SDK failure.
+   * Preserve known SDK events, decode the capability-gated additive correction
+   * frames, drop everything else, and classify a stream failure like any other
+   * SDK failure.
    *
    * The harness may add events within protocol v1, and a consumer switching on
    * `event.ev` must not fault on one it has never seen. A mid-stream
@@ -347,10 +392,11 @@ export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
    * deliberately swallowed: it must never replace the classified stream error
    * the consumer is already being told about.
    */
-  async function* knownEvents(
-    source: AsyncIterableIterator<ApiEvent>,
+  async function* supportedEvents(
+    source: AsyncIterableIterator<AnyApiEvent>,
     sessionId: string | undefined,
-  ): AsyncIterableIterator<ApiEvent> {
+    capabilities: ReadonlyArray<string>,
+  ): AsyncIterableIterator<JcodeSdkEvent> {
     const iterator = source[Symbol.asyncIterator]();
     try {
       for (;;) {
@@ -363,7 +409,8 @@ export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
           });
         });
         if (next.done === true) return;
-        if (isKnownEvent(next.value as AnyApiEvent)) yield next.value;
+        const event = decodeJcodeSdkEvent(next.value, capabilities);
+        if (event !== undefined) yield event;
       }
     } finally {
       await iterator.return?.().catch(() => undefined);
@@ -399,7 +446,8 @@ export function makeJcodeSdkBridge(sdk: JcodeSdkModule): JcodeSdkBridge {
         guard("sendMessage", sessionId, () => client.sendMessage(sessionId, content, options)),
       cancel: (sessionId) => guard("cancel", sessionId, () => client.cancel(sessionId)),
       getHistory: (sessionId) => guard("getHistory", sessionId, () => client.getHistory(sessionId)),
-      events: (sessionId) => knownEvents(client.events(sessionId), sessionId),
+      events: (sessionId) =>
+        supportedEvents(client.events(sessionId), sessionId, client.capabilities),
       close,
     };
   }

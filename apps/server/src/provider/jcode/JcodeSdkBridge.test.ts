@@ -1,7 +1,7 @@
 import { inspect } from "node:util";
 
 import { HarnessError } from "@1jehuang/jcode-sdk";
-import type { ApiEvent, LaunchedInstance, SessionInfo } from "@1jehuang/jcode-sdk";
+import type { AnyApiEvent, ApiEvent, LaunchedInstance, SessionInfo } from "@1jehuang/jcode-sdk";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 // @ts-expect-error -- Vite Plus provides the Vitest runner transitively to server tests.
@@ -404,12 +404,12 @@ describe("JcodeSdkBridge event stream", () => {
  * iterator whose `return` is the teardown that unsubscribes its listeners.
  */
 function countingSource(
-  events: ReadonlyArray<ApiEvent>,
+  events: ReadonlyArray<AnyApiEvent>,
   options: { readonly failAfter?: unknown; readonly failCleanup?: unknown } = {},
 ) {
   let closes = 0;
   let cleanedUp = false;
-  async function* generate(): AsyncGenerator<ApiEvent, void, unknown> {
+  async function* generate(): AsyncGenerator<AnyApiEvent, void, unknown> {
     try {
       for (const event of events) yield event;
       if (options.failAfter !== undefined) throw options.failAfter;
@@ -418,12 +418,12 @@ function countingSource(
     }
   }
   const inner = generate();
-  const source: AsyncIterableIterator<ApiEvent> = {
+  const source: AsyncIterableIterator<AnyApiEvent> = {
     [Symbol.asyncIterator]() {
       return source;
     },
     next: () => inner.next(),
-    return: async (): Promise<IteratorResult<ApiEvent, void>> => {
+    return: async (): Promise<IteratorResult<AnyApiEvent, void>> => {
       closes += 1;
       if (options.failCleanup !== undefined) throw options.failCleanup;
       return inner.return(undefined);
@@ -436,8 +436,15 @@ function countingSource(
   };
 }
 
-function eventsBridge(source: AsyncIterableIterator<ApiEvent>) {
-  return makeJcodeSdkBridge(fakeSdk({ connect: async () => fakeClient({ events: () => source }) }));
+function eventsBridge(
+  source: AsyncIterableIterator<AnyApiEvent>,
+  capabilities: ReadonlyArray<string> = ["sessions", "models"],
+) {
+  return makeJcodeSdkBridge(
+    fakeSdk({
+      connect: async () => fakeClient({ capabilities, events: () => source }),
+    }),
+  );
 }
 
 describe("JcodeSdkBridge event stream cleanup", () => {
@@ -841,6 +848,79 @@ describe("JcodeSdkBridge connect", () => {
     }
 
     expect(kinds).toEqual(["text_delta", "tool_done", "turn_done"]);
+  });
+
+  it("decodes additive correction frames when stream_corrections is advertised", async () => {
+    const frames: ReadonlyArray<AnyApiEvent> = [
+      { ev: "text_replace", session_id: "session-1", text: "corrected" },
+      { ev: "retry_rollback", session_id: "session-1", attempt: 2, max: 3 },
+    ];
+    const client = await Effect.runPromise(
+      eventsBridge(countingSource(frames).source, ["sessions", "stream_corrections"]).connect({
+        socketPath: NATIVE_PATH,
+        clientName: "pylon/test",
+      }),
+    );
+
+    const seen: AnyApiEvent[] = [];
+    for await (const event of client.events("session-1")) seen.push(event);
+
+    expect(seen).toEqual(frames);
+  });
+
+  it("rejects malformed additive correction frames", async () => {
+    const valid: ReadonlyArray<AnyApiEvent> = [
+      { ev: "text_replace", session_id: "session-1", text: "corrected" },
+      { ev: "retry_rollback", session_id: "session-1", attempt: 2, max: 3 },
+    ];
+    const malformed: ReadonlyArray<AnyApiEvent> = [
+      { ev: "text_replace", text: "missing session" },
+      { ev: "text_replace", session_id: "", text: "empty session" },
+      { ev: "text_replace", session_id: 42, text: "wrong id type" },
+      { ev: "text_replace", session_id: "session-1", text: 42 },
+      { ev: "text_replace", session_id: "session-1", text: "extra", extra: true },
+      { ev: "retry_rollback", attempt: 1, max: 3 },
+      { ev: "retry_rollback", session_id: "", attempt: 1, max: 3 },
+      { ev: "retry_rollback", session_id: 42, attempt: 1, max: 3 },
+      { ev: "retry_rollback", session_id: "session-1", attempt: "1", max: 3 },
+      { ev: "retry_rollback", session_id: "session-1", attempt: 1, max: "3" },
+      { ev: "retry_rollback", session_id: "session-1", attempt: 0, max: 3 },
+      { ev: "retry_rollback", session_id: "session-1", attempt: 1, max: 0 },
+      { ev: "retry_rollback", session_id: "session-1", attempt: 1.5, max: 3 },
+      { ev: "retry_rollback", session_id: "session-1", attempt: 4, max: 3 },
+      { ev: "retry_rollback", session_id: "session-1", attempt: 2, max: 3, extra: true },
+    ];
+    const client = await Effect.runPromise(
+      eventsBridge(countingSource([...valid, ...malformed]).source, ["stream_corrections"]).connect(
+        {
+          socketPath: NATIVE_PATH,
+          clientName: "pylon/test",
+        },
+      ),
+    );
+
+    const seen: AnyApiEvent[] = [];
+    for await (const event of client.events("session-1")) seen.push(event);
+
+    expect(seen).toEqual(valid);
+  });
+
+  it("rejects additive correction frames when the capability is absent", async () => {
+    const frames: ReadonlyArray<AnyApiEvent> = [
+      { ev: "text_replace", session_id: "session-1", text: "corrected" },
+      { ev: "retry_rollback", session_id: "session-1", attempt: 1, max: 3 },
+    ];
+    const client = await Effect.runPromise(
+      eventsBridge(countingSource(frames).source, ["sessions"]).connect({
+        socketPath: NATIVE_PATH,
+        clientName: "pylon/test",
+      }),
+    );
+
+    const seen: AnyApiEvent[] = [];
+    for await (const event of client.events("session-1")) seen.push(event);
+
+    expect(seen).toEqual([]);
   });
 
   it("closes the underlying client at most once", async () => {

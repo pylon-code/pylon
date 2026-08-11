@@ -2,7 +2,7 @@
 import { inspect } from "node:util";
 
 import { HarnessError } from "@1jehuang/jcode-sdk";
-import type { ApiEvent, SendMessageOptions, SessionInfo } from "@1jehuang/jcode-sdk";
+import type { AnyApiEvent, ApiEvent, SendMessageOptions, SessionInfo } from "@1jehuang/jcode-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -75,7 +75,7 @@ function sessionInfo(sessionId: string, workingDir?: string): SessionInfo {
 }
 
 type SourceItem =
-  | { readonly kind: "event"; readonly value: ApiEvent }
+  | { readonly kind: "event"; readonly value: AnyApiEvent }
   | { readonly kind: "error"; readonly error: unknown }
   | { readonly kind: "end" };
 
@@ -88,7 +88,7 @@ class EventSource {
   /** Times the iterator was torn down. Proves cleanup runs exactly once. */
   returns = 0;
 
-  push(value: ApiEvent): void {
+  push(value: AnyApiEvent): void {
     this.items.push({ kind: "event", value });
     this.wake();
   }
@@ -107,7 +107,7 @@ class EventSource {
     for (const waiter of this.waiters.splice(0)) waiter();
   }
 
-  iterator(): AsyncIterableIterator<ApiEvent> {
+  iterator(): AsyncIterableIterator<AnyApiEvent> {
     this.starts += 1;
     const self = this;
     return (async function* () {
@@ -163,6 +163,7 @@ interface HarnessOptions {
   readonly setReasoningEffort?: (sessionId: string, effort: string) => Promise<void>;
   readonly cancel?: (sessionId: string) => Promise<void>;
   readonly workingDir?: string;
+  readonly capabilities?: ReadonlyArray<string>;
 }
 
 function makeHarness(options: HarnessOptions = {}): Harness {
@@ -181,10 +182,11 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     workingDir: options.workingDir,
   };
 
+  const capabilities = options.capabilities ?? ["sessions", "models"];
   const client: JcodeSdkClientLike = {
     server: "jcode-harness-api-bridge/0.1.0",
-    capabilities: ["sessions", "models"],
-    supports: () => true,
+    capabilities,
+    supports: (capability) => capabilities.includes(capability),
     createSession: async (workingDir) => {
       harness.created.push(workingDir ?? "");
       if (options.createSession) return options.createSession(workingDir);
@@ -1050,6 +1052,57 @@ describe("JcodeSessionRuntime event mapping", () => {
     const ids = events.map((event) => event.eventId);
     expect(new Set(ids).size).toBe(ids.length);
     for (const event of events) expect(() => decodeRuntimeEvent(event)).not.toThrow();
+  });
+
+  it("maps advertised additive correction frames through the adapter boundary", async () => {
+    const harness = makeHarness({
+      capabilities: ["sessions", "models", "stream_corrections"],
+    });
+    const events = await withRuntime(harness, {}, (fixture) =>
+      Effect.gen(function* () {
+        const collector = yield* collectAll(fixture.runtime).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* fixture.runtime.sendTurn(turnInput());
+        harness.source.push({
+          ev: "text_replace",
+          session_id: NATIVE_SESSION_ID,
+          text: "corrected answer",
+        });
+        harness.source.push({
+          ev: "retry_rollback",
+          session_id: NATIVE_SESSION_ID,
+          attempt: 2,
+          max: 3,
+        });
+        harness.source.push(textDelta("fresh answer"));
+        harness.source.push({ ev: "turn_done", session_id: NATIVE_SESSION_ID });
+        harness.source.end();
+        return yield* Fiber.join(collector);
+      }),
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "item.started",
+      "content.replaced",
+      "turn.output-reset",
+      "item.started",
+      "item.started",
+      "content.delta",
+      "item.completed",
+      "turn.completed",
+      "session.exited",
+    ]);
+    const resetIndex = events.findIndex((event) => event.type === "turn.output-reset");
+    expect(events[resetIndex]).toMatchObject({
+      payload: { reason: "provider_retry", attempt: 2, max: 3 },
+    });
+    expect(events[resetIndex + 1]).toMatchObject({
+      type: "item.started",
+      payload: { itemType: "retry", status: "inProgress" },
+    });
+    for (const event of events) expect(() => decodeRuntimeEvent(event)).not.toThrow();
+    expect(JSON.stringify(events)).not.toContain(NATIVE_SESSION_ID);
   });
 
   it("aborts and closes when the mapper reports a fatal permission request", async () => {

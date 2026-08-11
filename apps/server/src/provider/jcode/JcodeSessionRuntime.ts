@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
 
-import type { ApiEvent, ImageAttachment, SessionInfo } from "@1jehuang/jcode-sdk";
+import type { ImageAttachment, SessionInfo } from "@1jehuang/jcode-sdk";
 import {
   EventId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -40,6 +40,7 @@ import {
   JcodeSessionNotFoundError,
   type JcodeSdkBridge,
   type JcodeSdkClient,
+  type JcodeSdkEvent,
 } from "./JcodeSdkBridge.ts";
 import { readJcodeSessionIdentity, writeJcodeSessionIdentity } from "./JcodeSessionIdentity.ts";
 
@@ -341,7 +342,7 @@ export const makeJcodeSessionRuntime = Effect.fn("makeJcodeSessionRuntime")(func
       yield* Queue.end(queue);
     });
 
-  const handleEvent = (event: ApiEvent) =>
+  const handleEvent = (event: JcodeSdkEvent) =>
     Effect.gen(function* () {
       if (terminated) return;
       const createdAt = yield* nowIso;
