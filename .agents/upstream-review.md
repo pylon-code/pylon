@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "65b005f1e4bfccb6a404b3b1e5bfa363d534ac2a"
+reviewed-through: "35172010b131510d36d0cef54e174926e38a3013"
 reviewed-through-date: "2026-08-11"
 ---
 
@@ -531,13 +531,7 @@ the reported file count.
 
 ## 2026-08-11 (fourth batch) — `9c7622dac3d1a385351e6c74354a9e6b9c2037d5..35172010b131510d36d0cef54e174926e38a3013`
 
-Fourteen upstream commits. Nine adopted, one deferred, one skipped, and
-**three still awaiting a decision**, so the cursor advances only to
-`65b005f1e` — the third commit in the range, because the fourth
-(`6676f9c83`, K12) is undecided. Everything adopted below sits later in
-history than the cursor and is recorded here by upstream SHA; a future
-session re-reviewing this range will see them already present via
-`git cherry`.
+Fourteen upstream commits. Twelve adopted, one deferred, and one skipped.
 
 **Standing policy set this session: DEF-1 is wanted eventually, but not until
 that surface is stable. Anything that depends on or modifies the pull-requests
@@ -558,23 +552,44 @@ application of that rule.
 | K13        | `f5fce7416` / `#6061` | deferred | `—`             | Routes self-hosted GitLab remotes, but patches `PullRequestService.ts`, which Pylon does not have. Deferred with DEF-1 under the standing policy rather than skipped, so it lands when the pull-requests surface does. Tracked as DEF-2.                                                                                                                                                                    |
 | K14        | `3da7f9c5c` / `#6177` | skipped  | `—`             | Bumps the mobile app to 1.0.3 and adds App Store release guards to the EAS production workflow. Pylon versions independently (precedent F20, F23) and the guard is written around upstream's release cadence. Revisit only as a Pylon-owned release guard, not as a version bump.                                                                                                                           |
 
-Awaiting decision, and the reason the cursor stops at `65b005f1e`:
+The three remaining candidates were decided in a follow-up pass and are
+recorded below, which is what allows the cursor to reach `35172010b`.
 
-- **K10 `c842c6f5b` / `#6170`** — hourly past-24-hour usage view. Sixteen files
-  across contracts, server aggregation, web, and mobile. A feature, not a fix.
-- **K11 `b30a9bc41` / `#6183`** — theme-aware environment artwork. Twelve files
-  including `index.css` (+173), `themePalette`, and `SidebarStageBackdrop`.
-  Highest conflict risk in the range: it overlaps Pylon's adopted theme library
-  (F10) and its DotMatrix work.
-- **K12 `6676f9c83` / `#5986`** — mobile composer and interaction
-  stabilization. Thirty-seven files plus four native `patches/`,
-  `pnpm-workspace.yaml`, the lockfile, and package bumps. Native-affecting, so
-  it needs a real mobile verification pass rather than a typecheck.
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------- | --------------------- | -------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| K10        | `c842c6f5b` / `#6170` | adopted  | `718a9be1a`     | Hourly past-24-hour usage view across contracts, server aggregation, web, and mobile. Clean cherry-pick. **Incidentally repairs a corrupted file:** `usageAggregation.ts` carried three stray NUL bytes, which is why git diffs it as binary; the new revision is clean text. Upstream's own history shows the same binary diff, so this predates Pylon.                                                                                                                                                                                                 |
+| K11        | `b30a9bc41` / `#6183` | adopted  | `833732cd1`     | Theme-aware environment artwork. Clean cherry-pick despite five diverged files. **Overlap reviewed before accepting:** the diff makes no contact with DotMatrix anywhere (no `DotMatrix`, `dot-matrix`, or `animate-status-pulse` reference), so Pylon's status language is untouched. Its real change is moving `sidebarArtwork` from a user-editable theme-file field to a maintainer-controlled built-in property — custom and imported themes can no longer opt in, and the five built-ins declare it instead. Pylon's F10 theme ids are unaffected. |
+| K12        | `6676f9c83` / `#5986` | adopted  | `f2fa51c6d`     | Mobile composer and interaction stabilization: 37 files, four native patches, and a `@legendapp/list` 3.3.3 → catalog 3.3.5 move. **Confirmed the `package.json` edits are catalog moves, not app version bumps**, so the F20/F23 versioning rule does not apply. Adds `thread-settings-menu.ts` and `pendingUserInputLayout.ts` with tests. Verified on the iOS Simulator, not by typecheck alone — see below.                                                                                                                                          |
 
 Verification: shared `path` and `sourceControl`, web `Sidebar.logic`,
 `threadActionMenu.logic`, `SettingsPanels.logic`, and `ThreadErrorBanner` pass
-(145 tests). Web and shared typecheck clean. `vp lint` and `vp fmt --check`
-clean across all 23 changed files.
+(145 tests); usage and theme suites pass (79); mobile threads, lib, and updates
+suites pass (231). Web, mobile, shared, and contracts typecheck clean; the
+server reports no errors. `vp lint` and `vp fmt --check` clean across all 60
+changed files.
+
+K12 was additionally validated on a booted iOS Simulator against a disposable
+environment: the dev client built and installed, paired to a seeded project,
+and the draft composer, its safe-area toolbar clearance, and the new thread
+settings menu all rendered and responded. No agent task was started, so nothing
+ran against the working tree.
+
+Setup notes discovered during that pass, since they will bite the next session:
+
+- **CocoaPods needs a UTF-8 locale.** With `LANG` unset, `pod install` dies with
+  `Unicode Normalization not appropriate for ASCII-8BIT` and the failure can
+  surface as exit code 0 through a pipeline. Run iOS builds with
+  `LANG=en_US.UTF-8`.
+- **The `test-pylon-mobile` skill's iOS identifiers are stale for Pylon.** The
+  real values are bundle id `com.pylon.code.dev`, scheme `pylon-code-dev`, and
+  workspace `apps/mobile/ios/PylonDev.xcworkspace` — not the `com.t3tools.*`,
+  `t3code-dev`, and `T3CodeDev` names the skill still documents. Note
+  `apps/mobile/src/App.tsx` still registers `t3code://` linking prefixes, which
+  is a genuine compatibility identifier and was left alone.
+- **This simulator's HID backend rejects touch-move**, so `drag` and `swipe`
+  fail with `FBSimulatorHIDEvent does not support touch move events`. Sheet rows
+  that the accessibility tree does not expose are unreachable by gesture; deep
+  links such as `pylon-code-dev://new/draft` are the reliable way in.
 
 ## Deferred register
 
