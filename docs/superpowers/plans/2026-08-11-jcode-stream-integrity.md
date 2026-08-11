@@ -216,19 +216,19 @@ git commit -m "feat(api): forward stream corrections"
 
 ---
 
-### Task 3: Update the TypeScript and Rust SDK parity surfaces
+### Task 3: Add TypeScript and Rust SDK regression coverage
 
 **Files:**
 
-- Modify: `sdk/typescript/src/protocol.ts`
+- Read only: `sdk/typescript/src/protocol.ts`
 - Modify: `sdk/typescript/test/schema-parity.test.ts`
 - Modify: `sdk/typescript/test/client.test.ts`
 - Modify: `crates/jcode-sdk/src/sdk_tests/parity.rs`
 
 **Interfaces:**
 
-- Consumes: public `text_replace` and `retry_rollback` frames.
-- Produces: narrowed typed `ApiEvent` members and complete known-event parity.
+- Consumes: public `text_replace` and `retry_rollback` frames already mirrored by Task 1's mandatory Rust schema-parity gate.
+- Produces: explicit TypeScript iterator coverage and complete Rust/TypeScript known-event regression coverage.
 
 - [ ] **Step 1: Write failing parity and iterator tests**
 
@@ -241,23 +241,29 @@ assert.equal(isKnownEvent({ ev: "retry_rollback", session_id: "s", attempt: 1, m
 
 Using `mock-harness.ts`, emit both frames and assert `client.events("s")` yields them with their typed fields unchanged and in order. Add explicit source-parity assertions that the TypeScript known-event list and Rust `ApiEvent` source both contain `text_replace` and `retry_rollback`.
 
-- [ ] **Step 2: Run RED**
+- [ ] **Step 2: Prove the new coverage detects drift**
+
+Task 1 necessarily added the union members, known tags, and mirrored API minor version because `cargo test -p jcode-harness-api` reads the TypeScript source and refuses an unmirrored Rust event. A natural missing-production RED is therefore no longer obtainable at this task boundary.
+
+After adding the tests, make a temporary uncommitted mutation that removes `retry_rollback` from `KNOWN_EVENT_KINDS`, then run:
 
 ```bash
 cd sdk/typescript
 npm test
 ```
 
-Expected: the new tags are not in `ApiEvent` or `KNOWN_EVENT_KINDS`.
+Expected: the new parity test fails on the missing known tag. Restore only the temporary mutation with `git restore src/protocol.ts`, confirm the Task 1 production definitions are intact, and do not commit the mutation.
 
-- [ ] **Step 3: Add the two union members and known tags**
+- [ ] **Step 3: Complete the regression tests**
+
+Keep the Task 1 production union members and known tags unchanged:
 
 ```ts
 | { ev: "text_replace"; session_id: string; text: string }
 | { ev: "retry_rollback"; session_id: string; attempt: number; max: number }
 ```
 
-Add both strings immediately after `text_delta` in `KNOWN_EVENT_KINDS` in protocol order.
+The committed Task 3 diff should contain tests only unless the new coverage exposes a genuine production defect.
 
 - [ ] **Step 4: Run GREEN and Rust parity**
 
