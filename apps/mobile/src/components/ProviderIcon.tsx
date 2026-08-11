@@ -1,5 +1,9 @@
+import {
+  JCODE_MARK_DOTS,
+  JCODE_MARK_VIEW_BOX,
+} from "@t3tools/client-runtime/presentation/provider-marks";
 import { useColorScheme } from "react-native";
-import { Circle, Path, Rect, Svg } from "react-native-svg";
+import { Circle, Path, Svg } from "react-native-svg";
 
 import { providerIconKind } from "./providerIconKind";
 
@@ -81,29 +85,20 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  // Jcode's provider mark: a rounded terminal frame containing `>_`. Same
-  // monochrome line drawing as the web `JcodeIcon`, expressed with
-  // react-native-svg primitives so both clients present one mark.
+  // Static coarse-halftone adaptation of Jcode's animated website mark.
   if (iconKind === "jcode") {
     return (
-      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-        <Rect
-          x="2.75"
-          y="4.25"
-          width="18.5"
-          height="15.5"
-          rx="3.5"
-          stroke={mono}
-          strokeWidth="1.6"
-        />
-        <Path
-          d="M7.5 9.75 10.25 12 7.5 14.25"
-          stroke={mono}
-          strokeWidth="1.6"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <Path d="M12.75 15h4" stroke={mono} strokeWidth="1.6" strokeLinecap="round" />
+      <Svg width={size} height={size} viewBox={JCODE_MARK_VIEW_BOX} fill="none">
+        {JCODE_MARK_DOTS.map(([centerX, centerY, radius, opacity]) => (
+          <Circle
+            key={`${centerX}:${centerY}`}
+            cx={centerX}
+            cy={centerY}
+            r={radius}
+            fill={mono}
+            opacity={opacity}
+          />
+        ))}
       </Svg>
     );
   }

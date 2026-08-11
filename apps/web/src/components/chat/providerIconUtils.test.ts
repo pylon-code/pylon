@@ -33,7 +33,7 @@ describe("Jcode provider presentation", () => {
     });
   });
 
-  it("uses the Jcode terminal mark in chat, sidebar, and model presentation", () => {
+  it("uses the Jcode static halftone mark in chat, sidebar, and model presentation", () => {
     // Asserted defined first: a missing export would otherwise make the
     // identity check pass vacuously with `undefined === undefined`.
     expect(typeof JcodeIcon).toBe("function");

@@ -18,7 +18,7 @@ describe("mobile provider icon selection", () => {
     expect(providerIconKind("codex")).toBe("codex");
   });
 
-  it("selects the Jcode terminal mark explicitly", () => {
+  it("selects the Jcode static halftone mark explicitly", () => {
     expect(providerIconKind("jcode")).toBe("jcode");
   });
 });

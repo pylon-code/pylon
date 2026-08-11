@@ -35,6 +35,10 @@
       "types": "./src/platform/index.ts",
       "default": "./src/platform/index.ts"
     },
+    "./presentation/provider-marks": {
+      "types": "./src/presentation/providerMarks.ts",
+      "default": "./src/presentation/providerMarks.ts"
+    },
     "./relay": {
       "types": "./src/relay/index.ts",
       "default": "./src/relay/index.ts"
