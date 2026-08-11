@@ -20,6 +20,26 @@ a tested Jcode runtime version here before
 | Runtime dependency | `ajv@^8.20.0`                 |
 | Consumer           | `apps/server`                 |
 
+## Local stream-correction boundary
+
+The isolated Jcode integration branch is verified at commit
+`6d878f8fb32c5f23fadb222f2ddd2b89484aedcd`. That local source exposes harness
+API major `1`, minor `1`, advertises capability `stream_corrections`, and types
+both additive correction events: `text_replace` and `retry_rollback`.
+
+This is local implementation evidence, not a published-runtime matrix result.
+Pylon remains pinned to the published `@1jehuang/jcode-sdk@1.1.0`, whose
+`ApiEvent` union does not yet contain those two events. Its transport does
+preserve unknown frames, so `JcodeSdkBridge` temporarily widens the internal
+iterator to `AnyApiEvent` and applies a strict, capability-gated decoder for
+exactly those two shapes. Malformed frames and correction frames received
+without `stream_corrections` are dropped at the adapter boundary.
+
+Remove that compatibility decoder and the `AnyApiEvent` iterator widening once
+a published `@1jehuang/jcode-sdk` release contains both typed events. The same
+cleanup commit should pin that release and consume the SDK's typed `ApiEvent`
+union directly.
+
 ## Environment observed while pinning
 
 These describe the machine that produced the packaging evidence below, not a

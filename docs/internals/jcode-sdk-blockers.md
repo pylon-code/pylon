@@ -11,6 +11,20 @@ only when the provider can be observed to satisfy it. Simulating a capability by
 guessed approval, a reconstructed history, an assumed queue — is worse than reporting it
 unavailable, because a client cannot tell a wrong answer from a real one.
 
+## Stream-correction status
+
+The stream-integrity gap is resolved on the isolated Jcode integration branch at commit
+`6d878f8fb32c5f23fadb222f2ddd2b89484aedcd`. Its additive harness API major `1`, minor `1`
+advertises `stream_corrections` and exposes typed `text_replace` and `retry_rollback` events.
+Pylon maps those events into provider-neutral replacement and output-reset compensation, so a
+provider retry does not leave aborted assistant text or tool activity projected as valid output.
+
+The remaining compatibility work is SDK publication, not another protocol design blocker. Pylon
+is still pinned to published `@1jehuang/jcode-sdk@1.1.0`, so `JcodeSdkBridge` temporarily receives
+the additive frames as `AnyApiEvent` and decodes them only when `stream_corrections` is advertised.
+Once a published SDK release contains both typed events, pin that release and remove the temporary
+decoder and iterator widening.
+
 ## Requirements before enabling
 
 1. **Sequenced event replay and reconnect cursors.** Protocol v1 has no per-session event sequence
@@ -71,6 +85,8 @@ unavailable, because a client cannot tell a wrong answer from a real one.
   because absence is this repo's established unsupported signal.
 - Every unprojected capability group carries an explicit reason string, so clients explain the gap
   instead of interpreting provider errors.
+- Stream corrections are capability-gated, strictly decoded at the adapter boundary, and projected
+  through provider-neutral replacement and output-reset events.
 - Native session ids, socket paths, and daemon identifiers terminate at the adapter boundary.
 
 ## Client presentation
