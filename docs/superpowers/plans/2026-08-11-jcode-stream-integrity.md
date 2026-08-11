@@ -343,13 +343,15 @@ git commit -m "feat(sdk): type stream correction events"
 
 Start a private legacy listener in the test, attach the public bridge, emit a valid `text_replace` followed by `retry_rollback`, and assert the public NDJSON client receives both in order with the attached session ID. This test must cross the real framing and `handle_api_client` loop rather than calling `BridgeState` directly.
 
-- [ ] **Step 2: Run the socket test RED, then GREEN**
+- [ ] **Step 2: Prove the socket test detects missing translation, then run GREEN**
+
+Task 2 already added the production bridge arms, so a natural missing-production RED is no longer available at this task boundary. After adding the socket-level test, temporarily remove or disable only the two correction match arms in `translate.rs`, run:
 
 ```bash
 cargo test -p jcode-harness-api-server framing_tests -- --nocapture
 ```
 
-Expected before implementation: no public correction frames. Expected after implementation: both frames arrive in order.
+Expected RED: the real public connection receives no correction frames or the test otherwise fails on the missing translation. Restore only the temporary mutation with `git restore crates/jcode-harness-api-server/src/translate.rs`, confirm Task 2's production blob is intact, then rerun the same command GREEN. Do not commit the mutation.
 
 - [ ] **Step 3: Build the real selfdev binary**
 
@@ -363,14 +365,25 @@ Expected: `target/selfdev/jcode` exists.
 
 ```bash
 SCRATCH="${JCODE_SCRATCH_DIR:-$HOME/.jcode/scratch}/stream-corrections"
-mkdir -p "$SCRATCH"
+HOME_DIR="$SCRATCH/home"
+mkdir -p "$SCRATCH" "$HOME_DIR"
 SOCKET="$SCRATCH/jcode.sock"
 API_SOCKET="$SCRATCH/jcode-api.sock"
 rm -f "$SOCKET" "$API_SOCKET"
-JCODE_RUNTIME_DIR="$SCRATCH" JCODE_SOCKET="$SOCKET" \
-  ./target/selfdev/jcode run --no-update --socket "$SOCKET" >"$SCRATCH/daemon.log" 2>&1 &
-DAEMON_PID=$!
-trap 'kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true' EXIT
+JCODE_HOME="$HOME_DIR" JCODE_RUNTIME_DIR="$SCRATCH" \
+JCODE_SOCKET="$SOCKET" JCODE_API_SOCKET="$API_SOCKET" \
+  ./target/selfdev/jcode --no-update --socket "$SOCKET" \
+  api-bridge --api-socket "$API_SOCKET" >"$SCRATCH/bridge.log" 2>&1 &
+BRIDGE_PID=$!
+cleanup() {
+  JCODE_HOME="$HOME_DIR" JCODE_RUNTIME_DIR="$SCRATCH" \
+  JCODE_SOCKET="$SOCKET" JCODE_API_SOCKET="$API_SOCKET" \
+    ./target/selfdev/jcode --no-update --socket "$SOCKET" \
+    server stop --force >/dev/null 2>&1 || true
+  kill "$BRIDGE_PID" 2>/dev/null || true
+  wait "$BRIDGE_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
 for _ in $(seq 1 100); do test -S "$API_SOCKET" && break; sleep 0.1; done
 test -S "$API_SOCKET"
 cd sdk/typescript
@@ -378,7 +391,7 @@ npm run build
 JCODE_API_SOCKET="$API_SOCKET" node test/live-capabilities.mjs
 ```
 
-Extend the live script's initial assertions so `client.supports("stream_corrections")` must be true. Read the output and daemon log; do not rely only on the exit code.
+This probe must use the disposable `JCODE_HOME` and the two private sockets above. Never point the built binary at the user's live Jcode home or shared daemon. The API bridge may best-effort spawn a private daemon; cleanup must stop only that private socket and the captured bridge PID. Extend the live script's initial assertions so `client.supports("stream_corrections")` must be true. Read the script output and `bridge.log`; do not rely only on the exit code.
 
 - [ ] **Step 5: Commit runtime coverage**
 
