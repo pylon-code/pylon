@@ -252,10 +252,12 @@ function RightPanelEmptyState(props: {
       const target = event.target;
       if (target instanceof HTMLElement) {
         if (target.closest("input, textarea, select")) return;
-        // An empty contenteditable (the chat composer at rest) does not
-        // count as typing; letters only become text once a draft exists.
-        const editable = target.isContentEditable ? target : target.closest("[contenteditable]");
-        if (editable && (editable.textContent ?? "").trim().length > 0) return;
+        // A focused text surface always keeps its own keystrokes, empty or
+        // not. The composer is an empty contenteditable at rest, so gating on
+        // "has a draft" would eat the first letter of any message starting
+        // with a shortcut letter — and stopPropagation means nothing
+        // downstream could put it back.
+        if (target.isContentEditable || target.closest("[contenteditable]")) return;
       }
       const action = shortcutActionsRef.current.find(
         (candidate) => candidate.shortcut.toLowerCase() === event.key.toLowerCase(),
