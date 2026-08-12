@@ -50,7 +50,6 @@ export type FollowUpThreadInputQueueInput = CommandInput<"thread.input-queue.fol
 export type InterruptThreadTurnInput = CommandInput<"thread.turn.interrupt">;
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
-export type RespondToThreadInteractionInput = CommandInput<"thread.interaction.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
 export type StopThreadSessionInput = CommandInput<"thread.session.stop">;
 
@@ -317,17 +316,6 @@ export const respondToThreadUserInput: (input: RespondToThreadUserInputInput) =>
     return yield* dispatch({
       ...input,
       type: "thread.user-input.respond",
-      commandId: metadata.commandId,
-      createdAt: metadata.createdAt,
-    });
-  });
-
-export const respondToThreadInteraction: (input: RespondToThreadInteractionInput) => CommandEffect =
-  Effect.fn("EnvironmentCommands.respondToThreadInteraction")(function* (input) {
-    const metadata = yield* timestampedCommandMetadata(input);
-    return yield* dispatch({
-      ...input,
-      type: "thread.interaction.respond",
       commandId: metadata.commandId,
       createdAt: metadata.createdAt,
     });

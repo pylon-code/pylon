@@ -75,6 +75,8 @@ function renderSendButton() {
       compact: true,
       pendingAction: null,
       isRunning: false,
+      canQueueFollowUp: false,
+      onQueueFollowUp: () => {},
       showPlanFollowUpPrompt: false,
       promptHasText: true,
       isSendBusy: false,

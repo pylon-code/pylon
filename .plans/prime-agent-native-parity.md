@@ -14,13 +14,13 @@ Use the independently installed Prime Agent package and its public detached-daem
 - import `DaemonClient` and `DaemonAgentConnection` from that exact installation at runtime;
 - never add or bundle the 260+ MiB Prime package as a Pylon dependency;
 - launch one private, scoped daemon per configured Prime provider instance;
-- use a short, stable Pylon-owned socket/pipe name so the user's normal Prime daemon is untouched;
+- use a short, stable Pylon-owned socket/pipe name so the user's normal Prime daemon is untouched; contain POSIX sockets in an owner-only directory below a trusted private or sticky temporary root;
 - strip every inherited `PRIME_AGENT_INTERNAL_*` variable before launch, because Pylon may itself be running inside a Prime worker;
 - create one client-owned Prime daemon session per live Pylon thread;
 - persist exact Prime session identity in a server-private thread sidecar while keeping the client-visible provider resume cursor opaque, then rehydrate after server restart;
-- keep ACP only as an explicit compatibility fallback for installations without the supported daemon API.
+- keep ACP as an explicit compatibility fallback for installations without the supported daemon API and for Windows until Prime's named pipe has verifiable per-user access control or peer authentication.
 
-Prime Agent 0.7.1 exposes `prime-agent.daemon` protocol 7, schema revision 13. Pylon accepts protocol 7 or newer through the installed high-level client and negotiates server capabilities rather than pinning an internal wire schema.
+Prime Agent 0.7.2 exposes `prime-agent.daemon` protocol 7, schema revision 16. Pylon accepts protocol 7 or newer through the installed high-level client and negotiates server capabilities rather than pinning an internal wire schema.
 
 ## Upstream-resilient boundary
 
@@ -28,7 +28,7 @@ The main Pylon code must not learn Prime RPC command names or Prime-shaped paylo
 
 1. `apps/server/src/provider/prime/*` owns dynamic loading, process/socket lifecycle, runtime validation, reconnect, and Prime event normalization.
 2. The Prime provider adapter translates normalized events and typed operations to the generic `ProviderAdapterShape` and canonical runtime events.
-3. `ProviderRuntimeIngestion` converts canonical runtime events to pure orchestration commands.
+3. `ProviderRuntimeIngestion` converts durable-safe canonical runtime events to pure orchestration commands. Sensitive interaction responses use a direct provider RPC; only their redacted resolution outcome reaches ingestion.
 4. Deciders, projectors, and clients consume provider-neutral contracts.
 5. Web adds one generic Session panel seam; mobile uses shared client-runtime folds and native sheets/cards. No growing list of `driver === "primeAgent"` branches in `ChatView`.
 
@@ -40,11 +40,12 @@ The main Pylon code must not learn Prime RPC command names or Prime-shaped paylo
 
 - create, attach, reconnect, snapshot replay, stop, and resume;
 - prompt, image input, interrupt, steer, follow-up, queue inspection/control, and queue modes;
-- extension select/confirm/input/editor requests and bounded nonblocking status/notification/widget updates.
+- extension select/confirm/input requests and bounded nonblocking status/notification/widget updates;
+- cancel editor-replacement requests until their potentially sensitive prefills have a requester-owned, non-durable transport.
 
 ### Model and transparency
 
-- model catalog and live model selection;
+- model catalog, read-only configured-provider authentication readiness, and live model selection;
 - thinking levels, scoped models, service tier/fast mode, and transport where supported;
 - streamed answer and reasoning separation;
 - token/cache/context/cost usage, compaction, retry, and refinement.
@@ -60,7 +61,8 @@ The main Pylon code must not learn Prime RPC command names or Prime-shaped paylo
 
 ### Authentication and execution policy
 
-- use exported `AuthStorage` callback flows where stable and keep environment auth separate from provider auth;
+- report configured-provider readiness from sanitized model catalogs without treating it as live network verification;
+- keep sign-in/sign-out in the Prime Agent CLI until exported `AuthStorage` callbacks have explicit provider-instance environment, locking, reload, and multi-session ownership;
 - never scrape the TUI or expose secrets to clients;
 - Prime remains full-access until a Pylon permission-gate extension proves pre-execution enforcement;
 - only then advertise approval-required/host-gated runtime modes;
@@ -68,7 +70,7 @@ The main Pylon code must not learn Prime RPC command names or Prime-shaped paylo
 
 ## Known Prime API gaps
 
-These cannot be honestly synthesized in Pylon 0.7.1 and should become small upstream contributions:
+These cannot be honestly synthesized from the Prime Agent 0.7.2 daemon connection and should become small upstream contributions:
 
 - unified daemon auth and MCP CRUD/OAuth;
 - deterministic client-side RLM child spawn;

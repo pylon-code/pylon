@@ -18,7 +18,6 @@ import {
   EventId,
   MessageId,
   ProjectId,
-  SessionInteractionRequestId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -2732,114 +2731,6 @@ describe("ProviderCommandReactor", () => {
       answers: {
         sandbox_mode: "workspace-write",
       },
-    });
-  });
-
-  it("routes interaction responses and records unsupported and stale failures", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
-    await harness.runEffect(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.make("cmd-session-set-for-interaction"),
-        threadId: ThreadId.make("thread-1"),
-        session: {
-          threadId: ThreadId.make("thread-1"),
-          status: "running",
-          providerName: "codex",
-          runtimeMode: "approval-required",
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: now,
-        },
-        createdAt: now,
-      }),
-    );
-
-    await harness.runEffect(
-      harness.engine.dispatch({
-        type: "thread.interaction.respond",
-        commandId: CommandId.make("cmd-interaction-respond-success"),
-        threadId: ThreadId.make("thread-1"),
-        requestId: SessionInteractionRequestId.make("interaction-success"),
-        response: { kind: "confirmed", confirmed: true },
-        createdAt: now,
-      }),
-    );
-    await harness.drain();
-    expect(harness.respondToInteraction.mock.calls[0]?.[0]).toEqual({
-      threadId: "thread-1",
-      requestId: "interaction-success",
-      response: { kind: "confirmed", confirmed: true },
-    });
-
-    harness.respondToInteraction.mockImplementation(() =>
-      Effect.fail(
-        new ProviderAdapterRequestError({
-          provider: ProviderDriverKind.make("codex"),
-          method: "session/interaction/respond",
-          detail: "Session interaction responses are not supported by this provider adapter.",
-        }),
-      ),
-    );
-    await harness.runEffect(
-      harness.engine.dispatch({
-        type: "thread.interaction.respond",
-        commandId: CommandId.make("cmd-interaction-respond-unsupported"),
-        threadId: ThreadId.make("thread-1"),
-        requestId: SessionInteractionRequestId.make("interaction-unsupported"),
-        response: { kind: "cancelled" },
-        createdAt: now,
-      }),
-    );
-    await harness.drain();
-
-    harness.respondToInteraction.mockImplementation(() =>
-      Effect.fail(
-        new ProviderAdapterRequestError({
-          provider: ProviderDriverKind.make("codex"),
-          method: "session/interaction/respond",
-          detail: "Unknown pending interaction request: interaction-stale",
-        }),
-      ),
-    );
-    await harness.runEffect(
-      harness.engine.dispatch({
-        type: "thread.interaction.respond",
-        commandId: CommandId.make("cmd-interaction-respond-stale"),
-        threadId: ThreadId.make("thread-1"),
-        requestId: SessionInteractionRequestId.make("interaction-stale"),
-        response: { kind: "cancelled" },
-        createdAt: now,
-      }),
-    );
-    await harness.drain();
-
-    const thread = (await harness.readModel()).threads.find(
-      (entry) => entry.id === ThreadId.make("thread-1"),
-    );
-    const failures = thread?.activities.filter(
-      (activity) => activity.kind === "provider.interaction.respond.failed",
-    );
-    expect(failures).toHaveLength(2);
-    expect(
-      failures?.find(
-        (activity) =>
-          (activity.payload as { readonly requestId?: unknown }).requestId ===
-          "interaction-unsupported",
-      )?.payload,
-    ).toMatchObject({
-      requestId: "interaction-unsupported",
-      detail: expect.stringContaining("not supported"),
-    });
-    expect(
-      failures?.find(
-        (activity) =>
-          (activity.payload as { readonly requestId?: unknown }).requestId === "interaction-stale",
-      )?.payload,
-    ).toMatchObject({
-      requestId: "interaction-stale",
-      detail: expect.stringContaining("Stale pending interaction request"),
     });
   });
 

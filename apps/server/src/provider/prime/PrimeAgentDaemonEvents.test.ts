@@ -586,6 +586,21 @@ describe("PrimeAgentDaemonEvents", () => {
     });
     expect(JSON.stringify(event)).not.toContain("secret");
 
+    const editor = decodePrimeAgentDaemonEvent({
+      type: "extension_ui_request",
+      request: {
+        id: "editor-1",
+        method: "editor",
+        payload: { title: "Sensitive draft", prefill: "EDITOR_SECRET_MARKER" },
+      },
+    });
+    expect(editor).toMatchObject({
+      _tag: "ExtensionRequest",
+      request: { id: "editor-1", method: "editor", title: "Sensitive draft" },
+    });
+    expect(JSON.stringify(editor)).not.toContain("EDITOR_SECRET_MARKER");
+    expect(JSON.stringify(editor)).not.toContain("prefill");
+
     expect(
       decodePrimeAgentDaemonEvent({
         type: "extension_ui_request",

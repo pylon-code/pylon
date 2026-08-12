@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -192,6 +194,8 @@ function managerFixture(options?: {
   readonly existingLive?: boolean;
   readonly readinessFailures?: number;
   readonly restoreConnectionOnSpawn?: boolean;
+  readonly tempDir?: string;
+  readonly platform?: NodeJS.Platform;
 }) {
   const commands: CapturedCommand[] = [];
   const processes: FakeProcess[] = [];
@@ -203,8 +207,8 @@ function managerFixture(options?: {
   const paths = derivePrimeAgentDaemonPaths({
     stateDir: "/tmp/pylon-state",
     providerInstanceId: ProviderInstanceId.make("prime-work"),
-    platform: "linux",
-    tempDir: "/tmp",
+    platform: options?.platform ?? "linux",
+    tempDir: options?.tempDir ?? "/tmp",
   });
   const bridge = fakeBridge({
     socket: paths.socket,
@@ -243,8 +247,8 @@ function managerFixture(options?: {
     },
     stateDir: "/tmp/pylon-state",
     providerInstanceId: ProviderInstanceId.make("prime-work"),
-    platform: "linux",
-    tempDir: "/tmp",
+    platform: options?.platform ?? "linux",
+    tempDir: options?.tempDir ?? "/tmp",
     readinessRetryDelay: Duration.zero,
     readinessRetries: 4,
     shutdownTimeout: Duration.zero,
@@ -271,7 +275,7 @@ describe("PrimeAgentDaemonManager paths and environment", () => {
     const unix = derivePrimeAgentDaemonPaths({ ...input, platform: "linux" });
     const windows = derivePrimeAgentDaemonPaths({ ...input, platform: "win32" });
 
-    expect(unix.socket).toMatch(/^\/tmp\/pylon-prime-agent-[a-f0-9]{20}\.sock$/);
+    expect(unix.socket).toMatch(/^\/tmp\/pylon-prime-agent-[a-f0-9]{20}\/daemon\.sock$/);
     expect(unix.socket.length).toBeLessThan(80);
     expect(windows.socket).toMatch(/^\\\\\.\\pipe\\pylon-prime-agent-[a-f0-9]{20}$/);
     expect(windows.sessionDir).toBe(unix.sessionDir);
@@ -297,6 +301,18 @@ describe("PrimeAgentDaemonManager paths and environment", () => {
 });
 
 describe("PrimeAgentDaemonManager lifecycle", () => {
+  it.effect("fails closed on Windows before spawning an unauthenticated named-pipe daemon", () => {
+    const fixture = managerFixture({ platform: "win32" });
+    return Effect.gen(function* () {
+      const error = yield* Effect.flip(fixture.make);
+      expect(error).toMatchObject({
+        reason: "transport-security-unavailable",
+        detail: expect.stringContaining("verified per-user ACL or authenticated handshake"),
+      });
+      expect(fixture.commands).toHaveLength(0);
+    });
+  });
+
   it.effect("does not touch a stable socket when the lazy manager was never opened", () => {
     const fixture = managerFixture({ existingLive: true });
     return Effect.scoped(Effect.asVoid(fixture.make)).pipe(
@@ -341,8 +357,59 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
         });
         expect(command.options.env).not.toHaveProperty("PRIME_AGENT_INTERNAL_ROLE");
         expect(command.options.env).not.toHaveProperty("PRIME_AGENT_INTERNAL_TOKEN");
+        const socketDirectory = yield* Effect.promise(() =>
+          NodeFSP.stat(NodePath.dirname(manager.socket)),
+        );
+        expect(socketDirectory.isDirectory()).toBe(true);
+        expect(socketDirectory.mode & 0o777).toBe(0o700);
       }).pipe(Effect.scoped);
     },
+  );
+
+  it.effect("rejects a shared non-sticky temporary directory without spawning", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pylon-prime-unsafe-"))),
+      (tempDir) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() => NodeFSP.chmod(tempDir, 0o777));
+          const fixture = managerFixture({ tempDir });
+          const manager = yield* fixture.make;
+          const error = yield* Effect.flip(manager.openClient());
+
+          expect(error.reason).toBe("state-directory-failed");
+          expect(error.detail).toContain("does not safely contain");
+          expect(fixture.commands).toHaveLength(0);
+          yield* Effect.promise(() =>
+            NodeFSP.access(NodePath.dirname(manager.socket)).then(
+              () => Promise.reject(new Error("socket directory should not be created")),
+              () => undefined,
+            ),
+          );
+        }).pipe(Effect.scoped),
+      (tempDir) => Effect.promise(() => NodeFSP.rm(tempDir, { recursive: true, force: true })),
+    ),
+  );
+
+  it.effect("rejects a pre-existing socket-directory symlink without spawning", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pylon-prime-socket-"))),
+      (tempDir) =>
+        Effect.gen(function* () {
+          const fixture = managerFixture({ tempDir });
+          const socketDirectory = NodePath.dirname(fixture.paths.socket);
+          const attackerDirectory = NodePath.join(tempDir, "attacker-owned");
+          yield* Effect.promise(() => NodeFSP.mkdir(attackerDirectory, { mode: 0o700 }));
+          yield* Effect.promise(() => NodeFSP.symlink(attackerDirectory, socketDirectory));
+
+          const manager = yield* fixture.make;
+          const error = yield* Effect.flip(manager.openClient());
+
+          expect(error.reason).toBe("state-directory-failed");
+          expect(error.detail).toContain("not a real directory");
+          expect(fixture.commands).toHaveLength(0);
+        }).pipe(Effect.scoped),
+      (tempDir) => Effect.promise(() => NodeFSP.rm(tempDir, { recursive: true, force: true })),
+    ),
   );
 
   it.effect(

@@ -1202,30 +1202,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
-    case "thread.interaction.respond": {
-      yield* requireThread({
-        readModel,
-        command,
-        threadId: command.threadId,
-      });
-      return {
-        ...(yield* withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-          metadata: {},
-        })),
-        type: "thread.interaction-response-requested",
-        payload: {
-          threadId: command.threadId,
-          requestId: command.requestId,
-          response: command.response,
-          createdAt: command.createdAt,
-        },
-      };
-    }
-
     case "thread.checkpoint.revert": {
       yield* requireThread({
         readModel,

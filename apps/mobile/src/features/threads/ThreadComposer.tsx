@@ -1,4 +1,3 @@
-import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import {
   formatSessionGoalStatus,
@@ -105,12 +104,12 @@ import {
   ComposerToolbarRow,
   ComposerToolbarScroller,
 } from "../../components/ComposerToolbar";
-import { ControlPill } from "../../components/ControlPill";
+import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import {
   buildModelOptions,
-  getModelSelectionSupportedRuntimeModes,
+  type ModelOption,
   groupByProvider,
   resolveModelSelectionRuntimeMode,
   showModelSelectionInteractionModeToggle,
@@ -487,17 +486,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     currentModelSelection,
     props.selectedThread.runtimeMode,
   );
-  const supportedRuntimeModes = getModelSelectionSupportedRuntimeModes(
-    props.serverConfig,
-    currentModelSelection,
-  );
   const showInteractionModeToggle = showModelSelectionInteractionModeToggle(
     props.serverConfig,
     currentModelSelection,
   );
-  const currentInteractionMode = showInteractionModeToggle
-    ? (props.selectedThread.interactionMode ?? "default")
-    : "default";
   const connectionStatus = composerConnectionStatus({
     connectionError: props.connectionError,
     connectionState: props.connectionState,
@@ -521,6 +513,23 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       props.serverConfig.providers.find((provider) => provider.instanceId === instanceId) ?? null
     );
   }, [props.selectedThread.session?.providerInstanceId, props.serverConfig]);
+  const modelChangesLocked =
+    props.selectedThread.session != null &&
+    (selectedProviderStatus?.requiresNewThreadForModelChange === true ||
+      activeSessionProviderStatus?.requiresNewThreadForModelChange === true);
+  const getModelChangeDisabledReason = useCallback(
+    (option: ModelOption) => {
+      const isCurrent =
+        option.selection.instanceId === currentModelSelection.instanceId &&
+        option.selection.model === currentModelSelection.model;
+      return !isCurrent &&
+        props.selectedThread.session != null &&
+        (modelChangesLocked || option.requiresNewThreadForModelChange)
+        ? "Start a new thread to use this model"
+        : undefined;
+    },
+    [currentModelSelection, modelChangesLocked, props.selectedThread.session],
+  );
   const quickQuestionAvailable = canOpenQuickQuestion({
     connectionState: props.connectionState,
     session: props.selectedThread.session,
@@ -1566,11 +1575,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         props.onUpdateModelSelection({ ...currentModelSelection, options }),
       runtimeMode: currentRuntimeMode,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+      getModelDisabledReason: getModelChangeDisabledReason,
     }),
     [
       confirmSessionHarnessRefinement,
       currentModelSelection,
       currentRuntimeMode,
+      getModelChangeDisabledReason,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
       providerOptionDescriptors,
@@ -1824,9 +1835,31 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   maxWidth={152}
                   onPress={openSettings}
                 />
+                {sessionHarnessRefinementActions.length > 0 ? (
+                  <ControlPillMenu
+                    title="Local harness"
+                    actions={sessionHarnessRefinementActions}
+                    onPressAction={({ nativeEvent }) => {
+                      if (
+                        parseSessionHarnessRefinementAction(
+                          nativeEvent.event,
+                          sessionHarnessRefinementScopeKey,
+                        ) === "refine"
+                      ) {
+                        confirmSessionHarnessRefinement(sessionHarnessRefinementScopeKey);
+                      }
+                    }}
+                  >
+                    <ComposerToolbarButton
+                      accessibilityLabel="Local harness refinement"
+                      icon="wand.and.stars"
+                      label="Refine"
+                    />
+                  </ControlPillMenu>
+                ) : null}
                 {props.sessionGoal ? (
                   <ControlPillMenu title="Session goal · Read-only" actions={sessionGoalActions}>
-                    <ComposerToolbarTrigger
+                    <ComposerToolbarButton
                       accessibilityLabel={`Goal ${formatSessionGoalStatus(props.sessionGoal.status).toLowerCase()}. Read-only.`}
                       icon="target"
                       label={`Goal ${formatSessionGoalStatus(props.sessionGoal.status)}`}
@@ -1843,7 +1876,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                         handleSessionCompactionAction(nativeEvent.event)
                       }
                     >
-                      <ComposerToolbarTrigger
+                      <ComposerToolbarButton
                         accessibilityLabel={`${
                           contextWindowPresentation?.accessibilityText ??
                           "Context usage unavailable."
@@ -1866,7 +1899,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     actions={[...sessionAgentActions]}
                     onPressAction={({ nativeEvent }) => handleSessionAgentAction(nativeEvent.event)}
                   >
-                    <ComposerToolbarTrigger
+                    <ComposerToolbarButton
                       accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. View live activity, message, or stop an agent.`}
                       icon="person.2"
                       label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
@@ -1881,7 +1914,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       handleSessionInputQueueAction(nativeEvent.event)
                     }
                   >
-                    <ComposerToolbarTrigger
+                    <ComposerToolbarButton
                       accessibilityLabel={`Session input delivery. ${sessionQueueCount} pending. Steering ${props.sessionInputQueue.steeringMode === "all-at-once" ? "all at once" : "one at a time"}. Follow-ups ${props.sessionInputQueue.followUpMode === "all-at-once" ? "all at once" : "one at a time"}.`}
                       icon="text.badge.plus"
                       label={sessionQueueCount > 0 ? `Inputs ${sessionQueueCount}` : "Inputs"}
@@ -1896,7 +1929,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       void setSessionAgentDepth(nativeEvent.event)
                     }
                   >
-                    <ComposerToolbarTrigger
+                    <ComposerToolbarButton
                       accessibilityLabel={
                         !props.sessionAgentDepth.writable
                           ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, fixed by session policy`

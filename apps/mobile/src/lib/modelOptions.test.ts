@@ -13,7 +13,6 @@ import {
 } from "./modelOptions";
 
 describe("mobile model options", () => {
-
   it("presents the default Prime Agent instance with its product name", () => {
     const config = {
       providers: [
@@ -23,13 +22,23 @@ describe("mobile model options", () => {
           enabled: true,
           installed: true,
           auth: { status: "unknown" },
-          models: [{ slug: "default", name: "Prime Agent Default", isCustom: false, capabilities: null }],
+          supportedRuntimeModes: ["approval-required", "full-access"],
+          requiresNewThreadForModelChange: true,
+          models: [
+            { slug: "default", name: "Prime Agent Default", isCustom: false, capabilities: null },
+          ],
         },
       ],
     } as unknown as ServerConfig;
 
     expect(buildModelOptions(config, null)).toMatchObject([
-      { providerLabel: "Prime Agent", providerDriver: "primeAgent", label: "Prime Agent Default" },
+      {
+        providerLabel: "Prime Agent",
+        providerDriver: "primeAgent",
+        label: "Prime Agent Default",
+        supportedRuntimeModes: ["approval-required", "full-access"],
+        requiresNewThreadForModelChange: true,
+      },
     ]);
   });
 

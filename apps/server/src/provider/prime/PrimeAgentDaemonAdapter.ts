@@ -147,7 +147,7 @@ interface PrimeAgentDaemonActiveTurn {
   readonly command?: "compact" | undefined;
 }
 
-type PrimeAgentDaemonBlockingInteractionMethod = "select" | "confirm" | "input" | "editor";
+type PrimeAgentDaemonBlockingInteractionMethod = "select" | "confirm" | "input";
 
 interface PrimeAgentDaemonPendingInteraction {
   readonly nativeId: string;
@@ -210,19 +210,6 @@ function projectExtensionRequest(
       return Option.map(decoded, (value) => ({
         _tag: "Blocking",
         method: "input",
-        request: value,
-      }));
-    }
-    case "editor": {
-      const decoded = decodeSessionInteractionRequest({
-        kind: "editor",
-        title: request.title,
-        ...(request.prefill === undefined ? {} : { prefill: request.prefill }),
-        ...(request.timeoutMs === undefined ? {} : { timeout: request.timeoutMs }),
-      });
-      return Option.map(decoded, (value) => ({
-        _tag: "Blocking",
-        method: "editor",
         request: value,
       }));
     }
@@ -568,7 +555,7 @@ export function makePrimeAgentDaemonAdapter(
                       return false;
                     }
                     publishedModelDiscoveryGeneration = generation;
-                    return models.length > 0;
+                    return true;
                   }),
                 ).pipe(
                   Effect.flatMap((shouldPublish) =>
@@ -650,88 +637,88 @@ export function makePrimeAgentDaemonAdapter(
       threadId: ThreadId,
       payload: PrimeAgentDaemonSessionRuntime["initialResources"],
     ) =>
-      Effect.gen(function* () {
-        yield* offerRuntimeEvent({
+      Effect.flatMap(makeEventStamp(), (eventStamp) =>
+        offerRuntimeEvent({
           type: "session.resources.updated",
-          ...(yield* makeEventStamp()),
+          ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId,
           payload,
-        });
-      });
+        }),
+      );
 
     const publishSessionAgentDepth = (
       threadId: ThreadId,
       payload: SessionAgentDepthUpdatedPayload,
     ) =>
-      Effect.gen(function* () {
-        yield* offerRuntimeEvent({
+      Effect.flatMap(makeEventStamp(), (eventStamp) =>
+        offerRuntimeEvent({
           type: "session.agent-depth.updated",
-          ...(yield* makeEventStamp()),
+          ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId,
           payload,
-        });
-      });
+        }),
+      );
 
     const publishSessionCompaction = (
       threadId: ThreadId,
       payload: SessionCompactionUpdatedPayload,
     ) =>
-      Effect.gen(function* () {
-        yield* offerRuntimeEvent({
+      Effect.flatMap(makeEventStamp(), (eventStamp) =>
+        offerRuntimeEvent({
           type: "session.compaction.updated",
-          ...(yield* makeEventStamp()),
+          ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId,
           payload,
-        });
-      });
+        }),
+      );
 
     const publishSessionHarnessRefinement = (
       threadId: ThreadId,
       payload: SessionHarnessRefinementUpdatedPayload,
     ) =>
-      Effect.gen(function* () {
-        yield* offerRuntimeEvent({
+      Effect.flatMap(makeEventStamp(), (eventStamp) =>
+        offerRuntimeEvent({
           type: "session.harness-refinement.updated",
-          ...(yield* makeEventStamp()),
+          ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId,
           payload,
-        });
-      });
+        }),
+      );
 
     const publishSessionGoal = (threadId: ThreadId, payload: SessionGoalUpdatedPayload) =>
-      Effect.gen(function* () {
-        yield* offerRuntimeEvent({
+      Effect.flatMap(makeEventStamp(), (eventStamp) =>
+        offerRuntimeEvent({
           type: "session.goal.updated",
-          ...(yield* makeEventStamp()),
+          ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId,
           payload,
-        });
-      });
+        }),
+      );
 
     const publishSessionInputQueue = (
       threadId: ThreadId,
       payload: SessionInputQueueUpdatedPayload,
     ) =>
-      Effect.gen(function* () {
-        yield* offerRuntimeEvent({
+      Effect.flatMap(makeEventStamp(), (eventStamp) =>
+        offerRuntimeEvent({
           type: "session.input-queue.updated",
-          ...(yield* makeEventStamp()),
+          ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId,
           payload,
-        });
-      });
+        }),
+      );
 
     /** Must be called with the thread lock held. */
     const updateInputQueueProjection = (
@@ -1412,11 +1399,12 @@ export function makePrimeAgentDaemonAdapter(
           }
 
           const projection = projectExtensionRequest(event.request);
+          const unsupportedEditor = event.request.method === "editor";
           const isBlocking =
             event.request.method === "select" ||
             event.request.method === "confirm" ||
             event.request.method === "input" ||
-            event.request.method === "editor";
+            unsupportedEditor;
           const validNativeId = event.request.id.trim().length > 0;
 
           if (
@@ -1483,9 +1471,11 @@ export function makePrimeAgentDaemonAdapter(
                   threadId: context.threadId,
                   ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
                   payload: {
-                    message: isBlocking
-                      ? "Prime Agent sent a malformed interaction request; it was ignored."
-                      : "Prime Agent sent an unsupported interaction update; it was ignored.",
+                    message: unsupportedEditor
+                      ? "Prime Agent editor interactions are disabled because their prefills cannot be stored safely."
+                      : isBlocking
+                        ? "Prime Agent sent a malformed interaction request; it was ignored."
+                        : "Prime Agent sent an unsupported interaction update; it was ignored.",
                   },
                 });
               }),
@@ -2825,6 +2815,7 @@ export function makePrimeAgentDaemonAdapter(
               provider: PROVIDER,
               method: "session/interaction-response",
               detail: `Unknown or stale Prime Agent interaction '${requestId}' for thread '${threadId}'.`,
+              reason: "stale",
             });
           }
           const decodedResponse = decodeSessionInteractionResponse(response);
@@ -2833,6 +2824,7 @@ export function makePrimeAgentDaemonAdapter(
               provider: PROVIDER,
               method: "session/interaction-response",
               detail: `The response is invalid for interaction '${requestId}'.`,
+              reason: "stale",
             });
           }
           const normalizedResponse = decodedResponse.value;
@@ -2844,6 +2836,7 @@ export function makePrimeAgentDaemonAdapter(
               provider: PROVIDER,
               method: "session/interaction-response",
               detail: `The selected value is not an exact offered option for interaction '${requestId}'.`,
+              reason: "stale",
             });
           }
 
@@ -2863,6 +2856,7 @@ export function makePrimeAgentDaemonAdapter(
                 provider: PROVIDER,
                 method: "session/interaction-response",
                 detail: `The selected value is not offered by interaction '${requestId}'.`,
+                reason: "stale",
               });
             }
             safeResponse = { kind: "selected", value: normalizedResponse.value };
@@ -2870,17 +2864,15 @@ export function makePrimeAgentDaemonAdapter(
           } else if (pending.method === "confirm" && normalizedResponse.kind === "confirmed") {
             safeResponse = { kind: "confirmed", confirmed: normalizedResponse.confirmed };
             nativeResponse = { confirmed: normalizedResponse.confirmed };
-          } else if (
-            (pending.method === "input" || pending.method === "editor") &&
-            normalizedResponse.kind === "submitted"
-          ) {
-            safeResponse = { kind: "submitted", value: normalizedResponse.value };
+          } else if (pending.method === "input" && normalizedResponse.kind === "submitted") {
+            safeResponse = { kind: "submitted", value: "" };
             nativeResponse = { value: normalizedResponse.value };
           } else {
             return yield* new ProviderAdapterRequestError({
               provider: PROVIDER,
               method: "session/interaction-response",
               detail: `The response kind does not match interaction '${requestId}'.`,
+              reason: "stale",
             });
           }
 

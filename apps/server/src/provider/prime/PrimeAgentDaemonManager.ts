@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -31,7 +32,6 @@ import {
 
 const PRIME_AGENT_HOME_ENV = "PRIME_AGENT_CODING_AGENT_DIR";
 const SOCKET_HASH_LENGTH = 20;
-const LOG_LINE_LIMIT = 4_096;
 
 export const PRIME_AGENT_REQUIRED_DAEMON_CAPABILITIES = [
   "attach_snapshot",
@@ -44,6 +44,7 @@ export const PRIME_AGENT_REQUIRED_DAEMON_CAPABILITIES = [
 
 const managerErrorReason = Schema.Literals([
   "state-directory-failed",
+  "transport-security-unavailable",
   "spawn-failed",
   "process-status-failed",
   "readiness-failed",
@@ -136,7 +137,7 @@ export function derivePrimeAgentDaemonPaths(input: {
     socket:
       platform === "win32"
         ? `\\\\.\\pipe\\pylon-prime-agent-${identity}`
-        : NodePath.join(tempDir, `pylon-prime-agent-${identity}.sock`),
+        : NodePath.join(tempDir, `pylon-prime-agent-${identity}`, "daemon.sock"),
     sessionDir: NodePath.join(stateDir, "provider-sessions", "prime-agent", identity, "sessions"),
   };
 }
@@ -245,14 +246,11 @@ function drainProcessOutput(
   stream: Stream.Stream<Uint8Array, unknown>,
   streamName: "stdout" | "stderr",
 ): Effect.Effect<void> {
+  // Daemon output may contain prompts, tool arguments, provider errors, or
+  // local paths. Drain it to prevent child-process backpressure, but never copy
+  // its contents into Pylon logs.
   return stream.pipe(
-    Stream.decodeText(),
-    Stream.splitLines,
-    Stream.runForEach((line) =>
-      Effect.logDebug(
-        line.length <= LOG_LINE_LIMIT ? line : `${line.slice(0, LOG_LINE_LIMIT)}…`,
-      ).pipe(Effect.annotateLogs({ provider: "primeAgent", daemonStream: streamName })),
-    ),
+    Stream.runDrain,
     Effect.catch((cause) =>
       Effect.logWarning("Prime Agent daemon output drain failed.").pipe(
         Effect.annotateLogs({ provider: "primeAgent", daemonStream: streamName, cause }),
@@ -283,6 +281,13 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
         : paths.socket.replace(/\.sock$/, "-pylon-private.sock")
       : paths.socket;
   const sessionDir = paths.sessionDir;
+  if (platform === "win32") {
+    return yield* managerError(
+      socket,
+      "transport-security-unavailable",
+      "Prime Agent daemon mode is disabled on Windows until its named pipe has a verified per-user ACL or authenticated handshake.",
+    );
+  }
   const timeoutMs = input.connectTimeoutMs ?? 10_000;
   const readinessSchedule = Schedule.max([
     Schedule.spaced(input.readinessRetryDelay ?? Duration.millis(50)),
@@ -294,20 +299,159 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
   let closing = false;
 
   const removeSocket = () =>
-    platform === "win32"
-      ? Effect.void
-      : fileSystem
-          .remove(socket, { force: true })
-          .pipe(
-            Effect.mapError((cause) =>
-              managerError(
-                socket,
-                "state-directory-failed",
-                "Could not clean the daemon socket.",
-                cause,
-              ),
-            ),
-          );
+    fileSystem
+      .remove(socket, { force: true })
+      .pipe(
+        Effect.mapError((cause) =>
+          managerError(
+            socket,
+            "state-directory-failed",
+            "Could not clean the daemon socket.",
+            cause,
+          ),
+        ),
+      );
+
+  const ensurePrivateSocketDirectory = Effect.fn(
+    "PrimeAgentDaemonManager.ensurePrivateSocketDirectory",
+  )(function* () {
+    const socketDirectory = NodePath.dirname(socket);
+    const configuredTempDirectory = input.tempDir ?? NodeOS.tmpdir();
+    const resolvedTempDirectory = yield* fileSystem
+      .realPath(configuredTempDirectory)
+      .pipe(
+        Effect.mapError((cause) =>
+          managerError(
+            socket,
+            "state-directory-failed",
+            "Could not resolve the configured temporary directory.",
+            cause,
+          ),
+        ),
+      );
+    const currentUid = process.getuid?.();
+    const tempDirectoryInfo = yield* Effect.tryPromise({
+      try: () => NodeFSP.lstat(resolvedTempDirectory),
+      catch: (cause) =>
+        managerError(
+          socket,
+          "state-directory-failed",
+          "Could not inspect the configured temporary directory.",
+          cause,
+        ),
+    });
+    const tempOwnerIsTrusted =
+      currentUid === undefined ||
+      tempDirectoryInfo.uid === currentUid ||
+      tempDirectoryInfo.uid === 0;
+    const sharedWritable = (tempDirectoryInfo.mode & 0o022) !== 0;
+    const sticky = (tempDirectoryInfo.mode & 0o1000) !== 0;
+    if (
+      !tempDirectoryInfo.isDirectory() ||
+      tempDirectoryInfo.isSymbolicLink() ||
+      !tempOwnerIsTrusted ||
+      (sharedWritable && !sticky)
+    ) {
+      return yield* managerError(
+        socket,
+        "state-directory-failed",
+        "The configured temporary directory does not safely contain private daemon sockets.",
+      );
+    }
+    yield* fileSystem
+      .makeDirectory(socketDirectory, { recursive: true, mode: 0o700 })
+      .pipe(
+        Effect.mapError((cause) =>
+          managerError(
+            socket,
+            "state-directory-failed",
+            "Could not create the private daemon socket directory.",
+            cause,
+          ),
+        ),
+      );
+    const inspectSocketDirectory = Effect.tryPromise({
+      try: () => NodeFSP.lstat(socketDirectory),
+      catch: (cause) =>
+        managerError(
+          socket,
+          "state-directory-failed",
+          "Could not inspect the private daemon socket directory.",
+          cause,
+        ),
+    });
+    const before = yield* inspectSocketDirectory;
+    if (!before.isDirectory() || before.isSymbolicLink()) {
+      return yield* managerError(
+        socket,
+        "state-directory-failed",
+        "The private daemon socket path is not a real directory.",
+      );
+    }
+    if (currentUid !== undefined && before.uid !== currentUid) {
+      return yield* managerError(
+        socket,
+        "state-directory-failed",
+        "The private daemon socket directory is owned by another OS user.",
+      );
+    }
+    const resolvedSocketDirectory = yield* fileSystem
+      .realPath(socketDirectory)
+      .pipe(
+        Effect.mapError((cause) =>
+          managerError(
+            socket,
+            "state-directory-failed",
+            "Could not verify the private daemon socket directory.",
+            cause,
+          ),
+        ),
+      );
+    const expectedDirectory = NodePath.join(
+      resolvedTempDirectory,
+      NodePath.basename(socketDirectory),
+    );
+    if (resolvedSocketDirectory !== expectedDirectory) {
+      return yield* managerError(
+        socket,
+        "state-directory-failed",
+        "The private daemon socket directory resolves outside the configured temporary directory.",
+      );
+    }
+    yield* fileSystem
+      .chmod(socketDirectory, 0o700)
+      .pipe(
+        Effect.mapError((cause) =>
+          managerError(
+            socket,
+            "state-directory-failed",
+            "Could not restrict the private daemon socket directory.",
+            cause,
+          ),
+        ),
+      );
+    const restricted = yield* inspectSocketDirectory;
+    if (
+      !restricted.isDirectory() ||
+      restricted.isSymbolicLink() ||
+      restricted.dev !== before.dev ||
+      restricted.ino !== before.ino ||
+      (currentUid !== undefined && restricted.uid !== currentUid)
+    ) {
+      return yield* managerError(
+        socket,
+        "state-directory-failed",
+        "The private daemon socket directory changed while it was being secured.",
+      );
+    }
+    if ((restricted.mode & 0o077) !== 0) {
+      return yield* managerError(
+        socket,
+        "state-directory-failed",
+        "The private daemon socket directory is accessible to other OS users.",
+      );
+    }
+  });
 
   const closeProcessScope = (state: RunningDaemon) =>
     Scope.close(state.scope, Exit.void).pipe(Effect.ignore);
@@ -497,18 +641,18 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       }
     }
 
-    yield* fileSystem
-      .makeDirectory(sessionDir, { recursive: true })
-      .pipe(
-        Effect.mapError((cause) =>
-          managerError(
-            socket,
-            "state-directory-failed",
-            `Could not create shared Prime Agent session directory '${sessionDir}'.`,
-            cause,
-          ),
+    yield* ensurePrivateSocketDirectory();
+    yield* fileSystem.makeDirectory(sessionDir, { recursive: true, mode: 0o700 }).pipe(
+      Effect.andThen(fileSystem.chmod(sessionDir, 0o700)),
+      Effect.mapError((cause) =>
+        managerError(
+          socket,
+          "state-directory-failed",
+          `Could not create shared Prime Agent session directory '${sessionDir}'.`,
+          cause,
         ),
-      );
+      ),
+    );
     const existing = yield* probeExistingDaemon();
     if (Option.isSome(existing)) {
       yield* retireExistingDaemon(existing.value);

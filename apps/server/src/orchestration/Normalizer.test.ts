@@ -5,7 +5,6 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
-  SessionInteractionRequestId,
   ThreadId,
 } from "@t3tools/contracts";
 
@@ -70,20 +69,5 @@ describe("canonicalizeClientCommandTimestamps", () => {
     }
     expect(result.createdAt).toBe(serverReceivedAt);
     expect(result.bootstrap?.createThread?.createdAt).toBe(serverReceivedAt);
-  });
-  it("normalizes interaction response timestamps without changing typed payloads", () => {
-    const command: ClientOrchestrationCommand = {
-      type: "thread.interaction.respond",
-      commandId: CommandId.make("command-interaction"),
-      threadId: ThreadId.make("thread-1"),
-      requestId: SessionInteractionRequestId.make("interaction-1"),
-      response: { kind: "submitted", value: "answer" },
-      createdAt: clientCreatedAt,
-    };
-
-    expect(canonicalizeClientCommandTimestamps(command, serverReceivedAt)).toEqual({
-      ...command,
-      createdAt: serverReceivedAt,
-    });
   });
 });

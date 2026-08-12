@@ -461,6 +461,13 @@ export const ProviderRespondToInteractionInput = Schema.Struct({
 });
 export type ProviderRespondToInteractionInput = typeof ProviderRespondToInteractionInput.Type;
 
+export class ProviderRespondToInteractionError extends Schema.TaggedErrorClass<ProviderRespondToInteractionError>()(
+  "ProviderRespondToInteractionError",
+  {
+    reason: Schema.Literals(["session-not-ready", "unsupported", "stale", "request-failed"]),
+  },
+) {}
+
 const ProviderEventKind = Schema.Literals(["session", "notification", "request", "error"]);
 
 export const ProviderEvent = Schema.Struct({

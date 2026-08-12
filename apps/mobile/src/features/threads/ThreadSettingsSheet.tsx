@@ -56,7 +56,11 @@ import {
   NATIVE_MAIL_SEARCH_TOOLBAR_CONTENT_INSET,
   NATIVE_MAIL_SEARCH_TOOLBAR_SUPPORTED,
 } from "../layout/native-mail-search-toolbar";
-import { RUNTIME_MODE_CHOICES, selectableChoices } from "./thread-settings-options";
+import {
+  RUNTIME_MODE_CHOICES,
+  runtimeChoicesFor,
+  selectableChoices,
+} from "./thread-settings-options";
 import {
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
@@ -90,6 +94,7 @@ const THREAD_SETTINGS_HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects
 function ModelRow(props: {
   readonly option: ModelOption;
   readonly selected: boolean;
+  readonly disabledReason?: string | undefined;
   readonly onPress: () => void;
   readonly isFirst: boolean;
   readonly isLast: boolean;
@@ -99,17 +104,25 @@ function ModelRow(props: {
     <Pressable
       accessibilityLabel={props.option.label}
       accessibilityRole="radio"
-      accessibilityState={{ checked: props.selected }}
+      accessibilityState={{ checked: props.selected, disabled: props.disabledReason !== undefined }}
+      accessibilityHint={props.disabledReason}
+      disabled={props.disabledReason !== undefined}
       onPress={props.onPress}
       className={cn(
         "mx-4 min-h-11 flex-row items-center gap-2 bg-card px-4 py-2 active:bg-subtle",
         props.isFirst && "rounded-t-2xl",
         props.isLast ? "rounded-b-2xl" : "border-b border-border-subtle",
+        props.disabledReason ? "opacity-40" : undefined,
       )}
     >
       <Text className="min-w-0 shrink text-base font-t3-medium text-foreground" numberOfLines={1}>
         {props.option.label}
       </Text>
+      {props.disabledReason ? (
+        <Text className="max-w-[45%] text-right text-3xs text-foreground-muted" numberOfLines={2}>
+          {props.disabledReason}
+        </Text>
+      ) : null}
       {props.option.isDefault ? (
         <View className="rounded-md bg-subtle-strong px-1.5 py-0.5">
           <Text className="text-3xs font-t3-bold text-foreground-muted">Default</Text>
@@ -287,6 +300,7 @@ type ThreadSettingsSessionProps = {
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly selectedModel: ModelSelection | null;
   readonly onSelectModel: (option: ModelOption) => void;
+  readonly getModelDisabledReason?: (option: ModelOption) => string | undefined;
   readonly optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
@@ -337,7 +351,9 @@ export function useExistingThreadSettingsRoutePresentation() {
 type ThreadSettingsSessionValue = {
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly runtimeMode: RuntimeMode;
+  readonly runtimeChoices: typeof RUNTIME_MODE_CHOICES;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  readonly getModelDisabledReason?: (option: ModelOption) => string | undefined;
   readonly displayedDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly providerExpansionOverrides: ReadonlySet<string>;
   readonly hasLegacyModels: boolean;
@@ -381,6 +397,17 @@ function ThreadSettingsSessionProvider(
     (option: ModelOption) => (pendingModel ? option.key === pendingModel.key : isApplied(option)),
     [isApplied, pendingModel],
   );
+
+  const displayedModel =
+    pendingModel ??
+    props.providerGroups.flatMap((group) => group.models).find((option) => isApplied(option)) ??
+    null;
+  const runtimeChoices = runtimeChoicesFor(
+    displayedModel?.supportedRuntimeModes ?? RUNTIME_MODE_CHOICES.map((choice) => choice.mode),
+  );
+  const displayedRuntimeMode = runtimeChoices.some((choice) => choice.mode === props.runtimeMode)
+    ? props.runtimeMode
+    : (runtimeChoices[0]?.mode ?? props.runtimeMode);
 
   // While a model is staged, the settings rows describe and edit the staged
   // model's options (kept on its pending selection); Save applies model and
@@ -439,6 +466,7 @@ function ThreadSettingsSessionProvider(
 
   const pressModel = useCallback(
     (option: ModelOption) => {
+      if (props.getModelDisabledReason?.(option)) return;
       void Haptics.selectionAsync();
       setPendingModel((current) =>
         pendingModelAfterPress({
@@ -448,14 +476,16 @@ function ThreadSettingsSessionProvider(
         }),
       );
     },
-    [isApplied],
+    [isApplied, props.getModelDisabledReason],
   );
 
   const value = useMemo<ThreadSettingsSessionValue>(
     () => ({
       providerGroups: props.providerGroups,
-      runtimeMode: props.runtimeMode,
+      runtimeMode: displayedRuntimeMode,
+      runtimeChoices,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+      getModelDisabledReason: props.getModelDisabledReason,
       displayedDescriptors,
       providerExpansionOverrides,
       hasLegacyModels,
@@ -484,9 +514,11 @@ function ThreadSettingsSessionProvider(
       pendingModel,
       pressModel,
       providerFilter,
+      props.getModelDisabledReason,
       props.onUpdateRuntimeMode,
       props.providerGroups,
-      props.runtimeMode,
+      displayedRuntimeMode,
+      runtimeChoices,
       searchQuery,
       showLegacyToggle,
       toggleProvider,
@@ -558,6 +590,7 @@ function ThreadSettingsModelListRow(props: {
       onPress={onPress}
       option={props.option}
       selected={session.isDisplayed(props.option)}
+      disabledReason={session.getModelDisabledReason?.(props.option)}
     />
   );
 }
@@ -861,7 +894,7 @@ function ThreadSettingsChoiceContent(props: {
   const submenuContent =
     props.submenu.kind === "runtime"
       ? {
-          rows: RUNTIME_MODE_CHOICES.map((choice) => ({
+          rows: session.runtimeChoices.map((choice) => ({
             id: choice.mode,
             label: choice.label,
             description: choice.description,

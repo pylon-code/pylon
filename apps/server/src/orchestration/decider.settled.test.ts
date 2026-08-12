@@ -4,7 +4,6 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
-  SessionInteractionRequestId,
   ThreadId,
   type OrchestrationReadModel,
   type OrchestrationSession,
@@ -204,28 +203,6 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
         }).pipe(Effect.flip);
         expect(interactionError._tag).toBe("OrchestrationCommandInvariantError");
       }),
-  );
-
-  it.effect("decides provider-neutral interaction response intents", () =>
-    Effect.gen(function* () {
-      const event = yield* decideOrchestrationCommand({
-        command: {
-          type: "thread.interaction.respond",
-          commandId: CommandId.make("cmd-interaction-response"),
-          threadId: ThreadId.make("thread-1"),
-          requestId: SessionInteractionRequestId.make("interaction-1"),
-          response: { kind: "confirmed", confirmed: true },
-          createdAt: NOW,
-        },
-        readModel: makeReadModel(null),
-      });
-      const events = Array.isArray(event) ? event : [event];
-      expect(events).toHaveLength(1);
-      expect(events[0]?.type).toBe("thread.interaction-response-requested");
-      if (events[0]?.type === "thread.interaction-response-requested") {
-        expect(events[0].payload.response).toEqual({ kind: "confirmed", confirmed: true });
-      }
-    }),
   );
 
   it.effect("clears an open request when its respond failure marks it stale", () =>

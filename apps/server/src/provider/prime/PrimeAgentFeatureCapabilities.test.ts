@@ -19,6 +19,10 @@ describe("PrimeAgentFeatureCapabilities", () => {
       sideQuestions: true,
     });
 
+    expect(capabilities.authentication).toMatchObject({
+      support: "read-only",
+      operations: ["status"],
+    });
     expect(capabilities.executionPolicy).toMatchObject({
       support: "read-write",
       operations: ["inspect", "select"],
@@ -65,6 +69,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       "status",
       "widget",
     ]);
+    expect(capabilities.sessionUi?.reason).toContain("editor replacement");
     expect(capabilities.history?.support).toBe("unavailable");
   });
 
@@ -106,6 +111,10 @@ describe("PrimeAgentFeatureCapabilities", () => {
       sideQuestions: false,
     });
 
+    expect(capabilities.authentication).toMatchObject({
+      support: "read-only",
+      operations: ["status"],
+    });
     expect(capabilities.executionPolicy).toMatchObject({
       support: "read-only",
       runtimeModes: ["full-access"],

@@ -454,7 +454,7 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
         '{"id":"pylon-prime-agent-models","type":"get_available_models"}\n',
       );
       expect(snapshot.status).toBe("ready");
-      expect(snapshot.auth.status).toBe("unknown");
+      expect(snapshot.auth.status).toBe("authenticated");
       expect(snapshot.message).toBeUndefined();
       expect(snapshot.models.map((model) => model.slug)).toEqual([
         "default",
@@ -462,6 +462,32 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
         "prime-inference/openai/gpt-5",
         "custom-model",
       ]);
+    }).pipe(Effect.provide(mockPrimeAgentSpawner({ rpcOutput, calls, stdin })));
+  });
+
+  it.effect("reports an actionable unauthenticated state for a valid empty catalog", () => {
+    const calls: Array<{
+      readonly command: string;
+      readonly args: ReadonlyArray<string>;
+      readonly cwd?: string;
+    }> = [];
+    const stdin: string[] = [];
+    const rpcOutput = JSON.stringify({
+      id: "pylon-prime-agent-models",
+      type: "response",
+      command: "get_available_models",
+      success: true,
+      data: { models: [] },
+    });
+
+    return Effect.gen(function* () {
+      const snapshot = yield* checkPrimeAgentProviderStatus(
+        decodeSettings({ binaryPath: "/mock/prime-agent", customModels: ["custom-model"] }),
+      );
+      expect(snapshot.status).toBe("ready");
+      expect(snapshot.auth.status).toBe("unauthenticated");
+      expect(snapshot.message).toContain("use `/login`");
+      expect(snapshot.models.map((model) => model.slug)).toEqual(["default", "custom-model"]);
     }).pipe(Effect.provide(mockPrimeAgentSpawner({ rpcOutput, calls, stdin })));
   });
 
@@ -545,10 +571,39 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
         driver: ProviderDriverKind.make("primeAgent"),
       };
       expect(fallback.message).toContain("model discovery failed");
-      expect(reconcilePrimeAgentDaemonCatalogSnapshot(fallback).message).toBeUndefined();
+      const emptyCatalog = reconcilePrimeAgentDaemonCatalogSnapshot(fallback);
+      expect(emptyCatalog.auth.status).toBe("unauthenticated");
+      expect(emptyCatalog.message).toContain("use `/login`");
+
+      const published = reconcilePrimeAgentDaemonCatalogSnapshot({
+        ...fallback,
+        models: [
+          ...fallback.models,
+          {
+            slug: "anthropic/claude-sonnet",
+            name: "Claude Sonnet",
+            subProvider: "anthropic",
+            isCustom: false,
+            capabilities: fallback.models[0]!.capabilities,
+          },
+        ],
+      });
+      expect(published.auth.status).toBe("authenticated");
+      expect(published.message).toBeUndefined();
 
       const unrelated = { ...fallback, message: "Provider update available." };
-      expect(reconcilePrimeAgentDaemonCatalogSnapshot(unrelated)).toEqual(unrelated);
+      expect(reconcilePrimeAgentDaemonCatalogSnapshot(unrelated)).toMatchObject({
+        auth: { status: "unauthenticated" },
+        message: expect.stringMatching(/Provider update available\..*use `\/login`/u),
+      });
+
+      const unhealthy = {
+        ...published,
+        status: "error" as const,
+        auth: { status: "unknown" as const },
+        message: "Prime Agent CLI is installed but failed to run.",
+      };
+      expect(reconcilePrimeAgentDaemonCatalogSnapshot(unhealthy)).toEqual(unhealthy);
     }).pipe(
       Effect.provide(
         mockPrimeAgentSpawner({

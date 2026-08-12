@@ -1,5 +1,8 @@
 # Prime Agent integration investigation
 
+> **Historical investigation:** This plan records the original Prime Agent 0.7.1 ACP spike.
+> The shipped direction is the daemon-first native parity plan and current 0.7.2 parity ledger.
+
 ## Conclusion
 
 Prime Agent can be added to Pylon. The shortest path is a first-party `primeAgent` provider driver that launches `prime-agent --mode acp` and reuses Pylon's existing Agent Client Protocol runtime and canonical event mapping.

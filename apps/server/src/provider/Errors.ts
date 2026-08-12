@@ -77,6 +77,7 @@ export class ProviderAdapterRequestError extends Schema.TaggedErrorClass<Provide
     provider: Schema.String,
     method: Schema.String,
     detail: Schema.String,
+    reason: Schema.optional(Schema.Literals(["unsupported", "stale"])),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

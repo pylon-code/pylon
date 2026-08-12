@@ -18,6 +18,8 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
+  type SessionInteractionRequest,
+  type SessionInteractionResponse,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -45,6 +47,27 @@ import {
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+
+/**
+ * Thread activities are durable and replicated to every authenticated client
+ * connected to the environment. Keep the prompt shape needed to close pending
+ * UI, but never retain provider editor prefills or submitted input/editor text.
+ */
+export function redactSessionInteractionRequestForActivity(
+  request: SessionInteractionRequest,
+): SessionInteractionRequest {
+  if (request.kind !== "editor" || request.prefill === undefined) {
+    return request;
+  }
+  const { prefill: _prefill, ...safeRequest } = request;
+  return safeRequest;
+}
+
+export function redactSessionInteractionResponseForActivity(
+  response: SessionInteractionResponse,
+): SessionInteractionResponse {
+  return response.kind === "submitted" ? { kind: "submitted", value: "" } : response;
+}
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -756,7 +779,7 @@ export function runtimeEventToActivities(
           summary: event.payload.request.title,
           payload: {
             requestId: event.requestId,
-            request: event.payload.request,
+            request: redactSessionInteractionRequestForActivity(event.payload.request),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -774,7 +797,7 @@ export function runtimeEventToActivities(
           summary: "Interaction resolved",
           payload: {
             requestId: event.requestId,
-            response: event.payload.response,
+            response: redactSessionInteractionResponseForActivity(event.payload.response),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

@@ -955,6 +955,24 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("publishes an authoritative empty configured-model catalog", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.modelDiscoveryModels = [];
+        const published = yield* Queue.unbounded<ReadonlyArray<PrimeAgentDaemonCatalogModel>>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+          onModelsDiscovered: (models) => Queue.offer(published, models).pipe(Effect.asVoid),
+        });
+
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        expect(yield* Queue.take(published)).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("does not hold the thread mutation lock while model publication is blocked", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -4608,9 +4626,10 @@ describe("PrimeAgentDaemonAdapter", () => {
           const input = yield* awaitObservedType(subscription.observed, "interaction.requested");
           yield* adapter.respondToInteraction!(threadId, input.requestId!, {
             kind: "submitted",
-            value: "feature/safe",
+            value: "submitted-secret-marker",
           });
           yield* awaitObservedType(subscription.observed, "interaction.resolved");
+          expect(encodeUnknownJson(subscription.events)).not.toContain("submitted-secret-marker");
 
           yield* offer(captures, {
             _tag: "ExtensionRequest",
@@ -4618,21 +4637,21 @@ describe("PrimeAgentDaemonAdapter", () => {
               id: "native-editor-secret",
               method: "editor",
               title: "Plan",
-              prefill: "# Draft",
             },
           });
-          const editor = yield* awaitObservedType(subscription.observed, "interaction.requested");
-          yield* adapter.respondToInteraction!(threadId, editor.requestId!, {
-            kind: "submitted",
-            value: "# Final",
+          const editorWarning = yield* awaitObservedType(subscription.observed, "runtime.warning");
+          expect(editorWarning).toMatchObject({
+            payload: { message: expect.stringContaining("prefills cannot be stored safely") },
           });
-          yield* awaitObservedType(subscription.observed, "interaction.resolved");
 
           expect(captures.extensions.slice(1)).toEqual([
             { id: "native-confirm-secret", response: { confirmed: false } },
-            { id: "native-input-secret", response: { value: "feature/safe" } },
-            { id: "native-editor-secret", response: { value: "# Final" } },
+            { id: "native-input-secret", response: { value: "submitted-secret-marker" } },
+            { id: "native-editor-secret", response: { cancelled: true } },
           ]);
+          expect(
+            subscription.events.filter((event) => event.type === "interaction.requested"),
+          ).toHaveLength(3);
           yield* Fiber.interrupt(subscription.fiber);
         }),
       ).pipe(Effect.provide(testLayer)),

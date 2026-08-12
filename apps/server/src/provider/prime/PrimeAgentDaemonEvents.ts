@@ -826,7 +826,6 @@ export type PrimeDaemonEvent =
         readonly options?: ReadonlyArray<string> | undefined;
         readonly timeoutMs?: number | undefined;
         readonly placeholder?: string | undefined;
-        readonly prefill?: string | undefined;
         readonly notifyType?: "info" | "warning" | "error" | undefined;
         readonly statusKey?: string | undefined;
         readonly statusText?: string | undefined;
@@ -1333,7 +1332,6 @@ export function mapPrimeAgentDaemonConnectionEvent(
             .map((item) => bounded(item, MAX_PREVIEW_LENGTH)),
           timeoutMs: event.request.payload.timeout,
           placeholder: optionalBounded(event.request.payload.placeholder, MAX_PREVIEW_LENGTH),
-          prefill: optionalBounded(event.request.payload.prefill),
           notifyType: event.request.payload.notifyType,
           statusKey: optionalBounded(event.request.payload.statusKey, MAX_PREVIEW_LENGTH),
           statusText: optionalBounded(event.request.payload.statusText, MAX_PREVIEW_LENGTH),

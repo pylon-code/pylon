@@ -936,6 +936,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           provider: routed.adapter.provider,
           method: "session/interaction/respond",
           detail: "Session interaction responses are not supported by this provider adapter.",
+          reason: "unsupported",
         });
       }
       yield* respond(routed.threadId, input.requestId, input.response);

@@ -44,3 +44,8 @@ export function selectableChoices(
     (option) => !injected.has(option.id) && !HIDDEN_EFFORT_OPTION_IDS.has(option.id),
   );
 }
+
+export function runtimeChoicesFor(supportedModes: ReadonlyArray<RuntimeMode>) {
+  const supported = new Set(supportedModes);
+  return RUNTIME_MODE_CHOICES.filter((choice) => supported.has(choice.mode));
+}

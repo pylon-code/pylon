@@ -1056,15 +1056,6 @@ const ThreadUserInputRespondCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-const ThreadInteractionRespondCommand = Schema.Struct({
-  type: Schema.Literal("thread.interaction.respond"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  requestId: SessionInteractionRequestId,
-  response: SessionInteractionResponse,
-  createdAt: IsoDateTime,
-});
-
 const ThreadCheckpointRevertCommand = Schema.Struct({
   type: Schema.Literal("thread.checkpoint.revert"),
   commandId: CommandId,
@@ -1109,7 +1100,6 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
-  ThreadInteractionRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
 ]);
@@ -1139,7 +1129,6 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
-  ThreadInteractionRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
 ]);

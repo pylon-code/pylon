@@ -60,7 +60,6 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
-      | "thread.interaction-response-requested"
       | "thread.session-stop-requested";
   }
 >;
@@ -293,19 +292,8 @@ function isUnknownPendingUserInputRequestError(cause: Cause.Cause<ProviderServic
   );
 }
 
-function isUnknownPendingInteractionRequestError(
-  cause: Cause.Cause<ProviderServiceError>,
-): boolean {
-  const error = findProviderAdapterRequestError(cause);
-  const detail = error?.detail.toLowerCase() ?? Cause.pretty(cause).toLowerCase();
-  return (
-    detail.includes("unknown pending interaction request") ||
-    detail.includes("stale pending interaction request")
-  );
-}
-
 function stalePendingRequestDetail(
-  requestKind: "approval" | "user-input" | "interaction",
+  requestKind: "approval" | "user-input",
   requestId: string,
 ): string {
   return `Stale pending ${requestKind} request: ${requestId}. Provider callback state does not survive app restarts or recovered sessions. Restart the turn to continue.`;
@@ -370,7 +358,6 @@ const make = Effect.gen(function* () {
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
-      | "provider.interaction.respond.failed"
       | "provider.session.stop.failed";
     readonly summary: string;
     readonly detail: string;
@@ -1357,51 +1344,6 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const processInteractionResponseRequested = Effect.fn("processInteractionResponseRequested")(
-    function* (
-      event: Extract<ProviderIntentEvent, { type: "thread.interaction-response-requested" }>,
-    ) {
-      const thread = yield* resolveThread(event.payload.threadId);
-      if (!thread) {
-        return;
-      }
-      const hasSession = thread.session && thread.session.status !== "stopped";
-      if (!hasSession) {
-        return yield* appendProviderFailureActivity({
-          threadId: event.payload.threadId,
-          kind: "provider.interaction.respond.failed",
-          summary: "Provider interaction response failed",
-          detail: "No active provider session is bound to this thread.",
-          turnId: null,
-          createdAt: event.payload.createdAt,
-          requestId: event.payload.requestId,
-        });
-      }
-
-      yield* providerService
-        .respondToInteraction({
-          threadId: event.payload.threadId,
-          requestId: event.payload.requestId,
-          response: event.payload.response,
-        })
-        .pipe(
-          Effect.catchCause((cause) =>
-            appendProviderFailureActivity({
-              threadId: event.payload.threadId,
-              kind: "provider.interaction.respond.failed",
-              summary: "Provider interaction response failed",
-              detail: isUnknownPendingInteractionRequestError(cause)
-                ? stalePendingRequestDetail("interaction", event.payload.requestId)
-                : formatFailureDetail(cause),
-              turnId: null,
-              createdAt: event.payload.createdAt,
-              requestId: event.payload.requestId,
-            }),
-          ),
-        );
-    },
-  );
-
   const processSessionStopRequested = Effect.fn("processSessionStopRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
   ) {
@@ -1481,9 +1423,6 @@ const make = Effect.gen(function* () {
       case "thread.user-input-response-requested":
         yield* processUserInputResponseRequested(event);
         return;
-      case "thread.interaction-response-requested":
-        yield* processInteractionResponseRequested(event);
-        return;
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
         return;
@@ -1526,7 +1465,6 @@ const make = Effect.gen(function* () {
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
-        event.type === "thread.interaction-response-requested" ||
         event.type === "thread.session-stop-requested"
       ) {
         return yield* worker.enqueue(event);

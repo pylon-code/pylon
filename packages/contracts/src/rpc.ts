@@ -89,6 +89,8 @@ import {
   ProviderGetSessionCompactionInput,
   ProviderGetSessionInputQueueInput,
   ProviderReloadSessionResourcesInput,
+  ProviderRespondToInteractionError,
+  ProviderRespondToInteractionInput,
   ProviderRefineSessionHarnessError,
   ProviderRefineSessionHarnessInput,
   ProviderRefineSessionHarnessResult,
@@ -296,6 +298,7 @@ export const WS_METHODS = {
 
   // Provider session methods
   providerReloadSessionResources: "provider.reloadSessionResources",
+  providerRespondToInteraction: "provider.respondToInteraction",
   providerAskSessionSideQuestion: "provider.askSessionSideQuestion",
   providerCancelSessionSideQuestion: "provider.cancelSessionSideQuestion",
   providerCancelSessionAgent: "provider.cancelSessionAgent",
@@ -424,6 +427,11 @@ export const WsProviderReloadSessionResourcesRpc = Rpc.make(
     error: Schema.Union([ProviderSessionResourcesReloadError, EnvironmentAuthorizationError]),
   },
 );
+
+export const WsProviderRespondToInteractionRpc = Rpc.make(WS_METHODS.providerRespondToInteraction, {
+  payload: ProviderRespondToInteractionInput,
+  error: Schema.Union([ProviderRespondToInteractionError, EnvironmentAuthorizationError]),
+});
 
 export const WsProviderAskSessionSideQuestionRpc = Rpc.make(
   WS_METHODS.providerAskSessionSideQuestion,
@@ -1192,6 +1200,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
   WsProviderReloadSessionResourcesRpc,
+  WsProviderRespondToInteractionRpc,
   WsProviderAskSessionSideQuestionRpc,
   WsProviderCancelSessionSideQuestionRpc,
   WsProviderCancelSessionAgentRpc,

@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, View } from "react-native";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
-import { ComposerToolbarButton } from "../../components/ComposerToolbarTrigger";
+import { ComposerToolbarButton } from "../../components/ComposerToolbar";
 import { uuidv4 } from "../../lib/uuid";
 import {
   beginQuickQuestion,

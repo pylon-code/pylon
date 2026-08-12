@@ -743,6 +743,22 @@ describe("ProviderRuntimeIngestion", () => {
 
   it("projects harness refinement lifecycle on the session incarnation", async () => {
     const harness = await createHarness();
+    const initialThread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    if (initialThread?.session === null || initialThread?.session === undefined) {
+      throw new Error("Expected seeded provider session");
+    }
+    const sessionStartedAt = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-refinement-incarnation"),
+        threadId: ThreadId.make("thread-1"),
+        session: { ...initialThread.session, startedAt: sessionStartedAt },
+        createdAt: sessionStartedAt,
+      }),
+    );
     harness.emit({
       type: "session.harness-refinement.updated",
       eventId: asEventId("evt-session-refinement-unknown"),
@@ -750,19 +766,19 @@ describe("ProviderRuntimeIngestion", () => {
       threadId: asThreadId("thread-1"),
       createdAt: "2026-01-01T00:00:00.000Z",
       payload: {
-        sessionStartedAt: "2026-01-01T00:00:00.000Z",
+        sessionStartedAt,
         status: "outcome-unknown",
       },
     });
+    await harness.drain();
 
-    const thread = await waitForThread(
-      harness.readModel,
-      (entry) => entry.session?.harnessRefinementStatus === "outcome-unknown",
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
     );
-    expect(thread.session?.harnessRefinementStatus).toBe("outcome-unknown");
-    expect(thread.activities.some((activity) => activity.kind.includes("harness-refinement"))).toBe(
-      false,
-    );
+    expect(thread?.session?.harnessRefinementStatus).toBe("outcome-unknown");
+    expect(
+      thread?.activities.some((activity) => activity.kind.includes("harness-refinement")),
+    ).toBe(false);
 
     const replacementStartedAt = "2026-01-01T00:00:01.000Z";
     await harness.runEffect(

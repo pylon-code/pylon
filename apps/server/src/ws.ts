@@ -89,6 +89,7 @@ import { toProviderMessageSessionAgentError } from "./provider/providerMessageSe
 import { toProviderSessionCompactionError } from "./provider/providerSessionCompactionRpcError.ts";
 import { toProviderRefineSessionHarnessError } from "./provider/providerRefineSessionHarnessRpcError.ts";
 import { toProviderSessionInputQueueError } from "./provider/providerSessionInputQueueRpcError.ts";
+import { toProviderRespondToInteractionError } from "./provider/providerInteractionResponseRpcError.ts";
 import {
   toProviderAskSessionSideQuestionError,
   toProviderCancelSessionSideQuestionError,
@@ -1499,6 +1500,14 @@ const makeWsRpcLayer = (
                   }),
               }),
             ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerRespondToInteraction]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerRespondToInteraction,
+            providerService
+              .respondToInteraction(input)
+              .pipe(Effect.mapError(toProviderRespondToInteractionError)),
             { "rpc.aggregate": "provider" },
           ),
         [WS_METHODS.providerReloadSessionResources]: (input) =>

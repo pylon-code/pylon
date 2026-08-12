@@ -11,12 +11,15 @@ const unavailable = (reason: string) => ({
 
 const shared = {
   version: PROVIDER_FEATURE_CAPABILITIES_VERSION,
-  authentication: unavailable(
-    "Prime Agent does not expose unified daemon authentication controls yet.",
-  ),
+  authentication: {
+    support: "read-only" as const,
+    reason:
+      "Pylon reports whether Prime Agent has a configured model provider; sign-in and sign-out remain owned by the Prime Agent CLI.",
+    operations: ["status"] as const,
+  },
   planning: unavailable("Prime Agent does not expose a Pylon-compatible plan mode."),
   goals: unavailable("Goal state is not projected into Pylon yet."),
-  gates: unavailable("Autonomous gate mutation is not exposed by Prime Agent 0.7.1."),
+  gates: unavailable("Autonomous gate mutation is not exposed by the loaded Prime Agent runtime."),
   automation: unavailable("Prime Agent automations are not projected into Pylon yet."),
   resources: unavailable("Prime Agent resources are not projected into Pylon yet."),
   inputQueue: unavailable("Prime Agent input queues are not projected into Pylon yet."),
@@ -156,6 +159,8 @@ export function makePrimeAgentFeatureCapabilities(input: {
     sessionUi: input.sessionUi
       ? {
           support: "read-write",
+          reason:
+            "Pylon supports select, confirm, and input dialogs; editor replacement is cancelled until sensitive prefills have a non-durable transport.",
           operations: ["dialog", "notification", "status", "widget"],
         }
       : unavailable("Prime Agent extension UI responses are not wired into Pylon yet."),

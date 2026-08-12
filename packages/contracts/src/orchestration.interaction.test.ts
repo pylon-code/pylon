@@ -33,16 +33,17 @@ const requestedActivity = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
-it("decodes thread.interaction.respond commands", () => {
-  const decoded = decodeCommand({
-    type: "thread.interaction.respond",
-    commandId: "cmd-interaction-1",
-    threadId: ThreadId.make("thread-1"),
-    requestId: "interaction-1",
-    response: { kind: "selected", value: "A" },
-    createdAt: "2026-01-01T00:00:00.000Z",
-  });
-  assert.equal(decoded.type, "thread.interaction.respond");
+it("rejects durable thread interaction response commands", () => {
+  assert.throws(() =>
+    decodeCommand({
+      type: "thread.interaction.respond",
+      commandId: "cmd-interaction-1",
+      threadId: ThreadId.make("thread-1"),
+      requestId: "interaction-1",
+      response: { kind: "selected", value: "A" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
 });
 
 it("strictly decodes bounded interaction activities", () => {
