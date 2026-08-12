@@ -98,8 +98,16 @@ jobs:
             echo "Transfer budget report was not produced." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # Non-fatal on purpose. This is a few KB of JSON whose only consumer is
+      # thread-transfer-report.yml, which turns it into a PR comment. Account
+      # artifact storage is a shared, org-wide resource that something else can
+      # exhaust, and when it is exhausted every upload fails — so leaving this
+      # step fatal lets an unrelated storage condition fail a run whose tests
+      # passed, which is what happened to #9. Losing the transfer comment is the
+      # correct way to degrade; blocking code review is not.
       - name: Upload thread transfer result
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: thread-transfer-results
