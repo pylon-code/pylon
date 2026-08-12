@@ -765,11 +765,62 @@ test reads `index.css` and regex-matches it; Pylon's `index.css` diverges
 (DotMatrix keyframes replaced `status-pulse`), but both markers it slices
 between survive, and it passes.
 
-**Not verified in a real client.** `O1`'s compacted footer, `O7`'s launcher and
-its guard fix, `O11`'s themed Clerk surfaces, and `O12`'s double-click reset all
-have had no browser pass, and no mobile pass ran for `O3`/`O6`. `O1` and `O7`
-are the two worth looking at, since both changed interaction rather than only
-layout.
+**Verified in real clients.** A web pass ran against a `VACUUM INTO` copy of the
+developer's real database (9 threads), and an iOS pass ran on a purpose-booted
+iPhone 17 Pro simulator. Migrations 37–42 applied cleanly over that real
+database on first boot. Six change sets were confirmed against live behavior
+rather than only by test:
+
+- **O1** — the footer is one 48px row (`flex-direction: row`) with three 32px
+  icon buttons, replacing three stacked labeled rows. Crucially, **the
+  Pylon-first Back behavior was confirmed**: from a thread, Usage → Back
+  returned to `/cec0464d…/6531739c…`, the exact thread, not `/`. Upstream's
+  version would have landed on root. On a footer page the row correctly
+  collapses to a single Back.
+- **O2** — at the sidebar's 208px minimum, `.sidebar-brand` computes to
+  `display: flex` and renders 58px wide. The retired 13.5rem (216px) container
+  gate would have hidden it there.
+- **O5** — the model picker's glyphs sit at x=294 against prompt text at x=293,
+  a 1px delta; the button box still extends 10px further left for the hit
+  target, which is the intent.
+- **O7** — the launcher renders with its six Kbd badges, and availability
+  gating is correct: `data-surface-launcher-keys="TFDA"` on a non-desktop
+  client with no PR, so Browser and Pull request stay visible-but-disabled
+  without claiming their letters. **Both guard paths were then confirmed** —
+  with the empty composer focused, `t` typed into the composer and no surface
+  opened; with focus on the launcher, `t` opened the Terminal. That is exactly
+  the defect described above and its fix.
+- **O12** — double-clicking the rail cleared the persisted width (`208` →
+  `null`) and reset the live sidebar 208px → 256px.
+- **O3** — a real end-to-end round trip on iOS. Long-pressing a thread row
+  showed the native menu as Un-settle / **Regenerate title** / Delete, and
+  tapping it regenerated the title through the provider: _"Fork T3 Code With
+  Pylon Branding"_ → _"Build and Update Pylon Desktop Fork"_, with
+  `title_regeneration_started_at` returning to `null` and the new title
+  rendering in the list.
+
+Still unproven, each with the reason:
+
+- **O6 cannot be verified on this host at all.** It is gated to
+  `Platform.OS === "android"`, so on iOS `includeOrderedLists` is `false` and
+  the changed path is inert — an iOS pass gives it zero coverage. There is no
+  Android SDK or `adb` on this machine. It rests on its unit tests until
+  someone runs an Android emulator.
+- **O11 and O8 are structurally unreachable locally.** `window.Clerk` is
+  `undefined` because Pylon has no Clerk application (see `E21`), and the
+  hosted-static onboarding route does not exist in local mode. Both need a
+  hosted deployment, not a better test.
+- **O10 was not reached.** Only one thread in the real database carries
+  file-edit activities (80 of them), its earlier turns sit behind `E10`'s
+  pagination, and the thread is heavy enough that driving it wedged the
+  automation bridge twice. It rests on its class-level unit test.
+- **O1's update pill was not exercised.** `SidebarUpdatePill` returns `null`
+  outside Electron, so the round icon button, its checking spinner, and the
+  release-notes tooltip need a desktop pass.
+
+Incidental confirmation: `E10`'s "Load earlier turns" header renders on the
+large thread, and `F10`'s themes plus this batch's palette work coexist without
+a contrast regression.
 
 Tooling note: `vp lint` exits **0 even when it reports warnings**, so its exit
 code proves nothing. This session confirmed the command reports real findings by
@@ -777,6 +828,20 @@ feeding it a deliberate unused variable before trusting a clean result on the
 changed files — worth repeating rather than reading silence as success. Separately,
 `vitest` parses a leading-dash test filter (`-chatIndexTitlebar`) as a CLI flag
 and dies; drop the dash.
+
+Mobile-environment notes for the next iOS pass, both of which cost time here:
+
+- **The mobile dev bundle id is Pylon-owned: `com.rynfar.pylon.dev`**, not the
+  `com.t3tools.t3code.dev` that `test-pylon-mobile` documents. The URL scheme
+  `t3code-dev://` _is_ still compatibility-named and works. Probing for the
+  T3 bundle id reports "no dev client installed" on a simulator that has one.
+- **`ios/Pods` goes stale whenever `vp i` changes a pnpm patch hash.** The Pods
+  project hardcodes absolute store paths, so the build fails with "Build input
+  files cannot be found" pointing at a `patch_hash=` directory that no longer
+  exists (here `@react-native-menu/menu` moved `5ea3ae4bf…` → `c7f66d121…`).
+  `pod install` fixes it and touches no tracked files. On this host CocoaPods
+  1.17.0 additionally crashes under Ruby 4.0.6 with `Unicode Normalization not
+appropriate for ASCII-8BIT` unless `LANG`/`LC_ALL` are set to a UTF-8 locale.
 
 | Change set | Upstream              | Decision | Pylon reference          | Rationale or revisit condition                                                                                                                                                                                                                                                                                                  |
 | ---------- | --------------------- | -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
