@@ -86,7 +86,8 @@ Both CLI flows start at the hosted `/connect` page (`buildConnectAuthorizeReques
 `packages/shared/src/connectAuth.ts`), which waits for a Clerk session and then forwards the request
 to Clerk's `/oauth/authorize`. The CLI never opens `/oauth/authorize` directly: a signed-out browser
 sent there goes through Clerk's sign-in redirect, which drops the authorize query parameters and
-fails the flow with `unsupported_response_type` or an empty `state` (#5051). The loopback flow marks
+fails the flow with `unsupported_response_type` or an empty `state`
+([upstream #5051](https://github.com/pingdotgg/t3code/issues/5051)). The loopback flow marks
 the request with a `port` fragment parameter so the hosted page asks Clerk to redirect the
 authorization code straight to `http://127.0.0.1:<port>/callback`; the out-of-band flow omits it and
 uses the hosted `/connect/callback` page instead. The CLI derives Clerk's frontend API URL from the
