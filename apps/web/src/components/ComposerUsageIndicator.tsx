@@ -89,9 +89,16 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
           </button>
         }
       />
-      <PopoverPopup align="end" side="top" className="w-[22rem] p-3">
-        <div className="grid gap-2.5">
-          <div className="text-xs font-medium text-muted-foreground">Subscription capacity</div>
+      {/*
+        Wide enough that a long window name down the left cannot squeeze the
+        account names beside it into initials, and capped so a narrow phone
+        viewport still gets the whole card.
+      */}
+      <PopoverPopup align="end" side="top" className="w-[min(25rem,calc(100vw-2rem))] p-3.5">
+        <div className="grid gap-3">
+          <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            Subscription capacity
+          </div>
           {accounts.length > 0 ? (
             <ProviderUsageAccounts
               accounts={accounts}
