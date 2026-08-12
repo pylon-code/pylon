@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "c196f422ed387a1cc2cdb671b0472782e5610339"
+reviewed-through: "b73232bdd31e83914a8a943960c7dc4b6390b39b"
 reviewed-through-date: "2026-08-12"
 ---
 
@@ -699,11 +699,171 @@ function that silently returns nothing for some file queries. It fails as a
 false negative, not an error, which makes "I searched and found nothing" claims
 unsafe. Use `/usr/bin/grep` when a negative result is load-bearing.
 
+## 2026-08-12 (eighth batch) — `c196f422ed387a1cc2cdb671b0472782e5610339..b73232bdd31e83914a8a943960c7dc4b6390b39b`
+
+Twelve upstream commits, twelve independent change sets — no dependency chains
+this round. Eleven adopted onto `upstream/2026-08-12-batch`, one skipped. Ten
+cherry-picked clean; only `O1` conflicted.
+
+The deferred register was empty going in, so there was nothing to re-evaluate,
+and nothing new was deferred — it stays empty.
+
+Upstream is in polish mode: nine of the twelve are `fix`, mostly single-file
+alignment and overlap repairs. `git merge-tree` against `pylon` predicted the
+conflict set up front, which made the split between clean picks and manual work
+cheap to decide.
+
+**`O1` is a product-direction change wearing a `feat` label.** It collapses the
+sidebar footer's three labeled rows into one icon row and turns the update pill
+into a round icon button that doubles as Check for updates. Ported by hand
+because it collided with Pylon three ways: it deletes `useCanGoBack` and makes
+Back always navigate to `/`, **reverting Pylon's own fix** for Back landing
+somewhere the user never came from; Pylon's `SidebarAccountDrainPill` has no
+upstream counterpart and had to stay in the footer stack; and the file also
+holds `PylonMark`, so a careless resolution was a branding risk. Upstream's
+removal of "Dismiss until next launch" was taken along with it — the pill is no
+longer a full-width banner competing with the sidebar, so there is nothing left
+to dismiss. `SidebarUpdatePill.tsx` was still byte-identical to upstream's
+parent, so that half was taken wholesale rather than merged.
+
+`animate-spin` on the refresh icon was kept rather than converted to DotMatrix.
+It runs only while a check is actually in flight, so it is a bounded progress
+indicator rather than the continuous idle repaint Pylon's motion rules forbid
+(contrast `E3`, where upstream's forever-pulsing `animate-status-pulse` dot
+_was_ replaced).
+
+**`O7` shipped with a real defect, fixed on this branch rather than carried
+in.** The new right-panel launcher claims bare B/T/F/D/P/A on a capture-phase
+`window` listener and treated an empty contenteditable as "not typing". Pylon's
+composer is a Lexical `ContentEditable` that is empty at rest, so with a thread
+open and the right panel empty, a message starting with any of those six
+letters lost its first keystroke to a surface opening instead — and
+`stopPropagation` meant nothing downstream could recover it. A focused text
+surface now always keeps its own keystrokes; the shortcuts still work when
+focus is outside a text surface, which is the case the feature is for.
+
+`O9` is a genuine upstream bug fix (`#5051`) but **inert in Pylon** until Pylon
+owns a Clerk application — `E21` was skipped precisely so a fresh clone does not
+point at T3 infrastructure. Taken for drift reduction in shared code. Its added
+prose landed in a section Pylon had not rewritten, so the "Pylon Connect"
+rebranding and the removed `.env.example` recipe both survived; the bare `#5051`
+was qualified as an upstream issue link so it does not read as a Pylon issue.
+
+Verification: typecheck clean across web, mobile, shared, and contracts. The
+server package reports **0 errors** — only `effect` diagnostic _suggestions_, all
+in files this batch does not touch. Note the pre-existing
+`HostPowerMonitor.ts(69,9)` error recorded under the 2026-08-07 second batch is
+gone; something since then fixed it. Tests: **web 2324 (244 files)**, **mobile
+657 (105 files)**, shared `connectAuth` 7, server `publicConfig` 12 — all
+passing. `vp lint` clean over all 33 changed TypeScript files and
+`vp fmt --check` clean over all 36 changed files.
+
+`O11`'s bundled test asserts ≥4.5:1 contrast across every built-in palette, and
+it **passes against Pylon's F10-tuned palettes** rather than only upstream's —
+that was the open question when this was recommended, and it is closed. `O2`'s
+test reads `index.css` and regex-matches it; Pylon's `index.css` diverges
+(DotMatrix keyframes replaced `status-pulse`), but both markers it slices
+between survive, and it passes.
+
+**Verified in real clients.** A web pass ran against a `VACUUM INTO` copy of the
+developer's real database (9 threads), and an iOS pass ran on a purpose-booted
+iPhone 17 Pro simulator. Migrations 37–42 applied cleanly over that real
+database on first boot. Six change sets were confirmed against live behavior
+rather than only by test:
+
+- **O1** — the footer is one 48px row (`flex-direction: row`) with three 32px
+  icon buttons, replacing three stacked labeled rows. Crucially, **the
+  Pylon-first Back behavior was confirmed**: from a thread, Usage → Back
+  returned to `/cec0464d…/6531739c…`, the exact thread, not `/`. Upstream's
+  version would have landed on root. On a footer page the row correctly
+  collapses to a single Back.
+- **O2** — at the sidebar's 208px minimum, `.sidebar-brand` computes to
+  `display: flex` and renders 58px wide. The retired 13.5rem (216px) container
+  gate would have hidden it there.
+- **O5** — the model picker's glyphs sit at x=294 against prompt text at x=293,
+  a 1px delta; the button box still extends 10px further left for the hit
+  target, which is the intent.
+- **O7** — the launcher renders with its six Kbd badges, and availability
+  gating is correct: `data-surface-launcher-keys="TFDA"` on a non-desktop
+  client with no PR, so Browser and Pull request stay visible-but-disabled
+  without claiming their letters. **Both guard paths were then confirmed** —
+  with the empty composer focused, `t` typed into the composer and no surface
+  opened; with focus on the launcher, `t` opened the Terminal. That is exactly
+  the defect described above and its fix.
+- **O12** — double-clicking the rail cleared the persisted width (`208` →
+  `null`) and reset the live sidebar 208px → 256px.
+- **O3** — a real end-to-end round trip on iOS. Long-pressing a thread row
+  showed the native menu as Un-settle / **Regenerate title** / Delete, and
+  tapping it regenerated the title through the provider: _"Fork T3 Code With
+  Pylon Branding"_ → _"Build and Update Pylon Desktop Fork"_, with
+  `title_regeneration_started_at` returning to `null` and the new title
+  rendering in the list.
+
+Still unproven, each with the reason:
+
+- **O6 cannot be verified on this host at all.** It is gated to
+  `Platform.OS === "android"`, so on iOS `includeOrderedLists` is `false` and
+  the changed path is inert — an iOS pass gives it zero coverage. There is no
+  Android SDK or `adb` on this machine. It rests on its unit tests until
+  someone runs an Android emulator.
+- **O11 and O8 are structurally unreachable locally.** `window.Clerk` is
+  `undefined` because Pylon has no Clerk application (see `E21`), and the
+  hosted-static onboarding route does not exist in local mode. Both need a
+  hosted deployment, not a better test.
+- **O10 was not reached.** Only one thread in the real database carries
+  file-edit activities (80 of them), its earlier turns sit behind `E10`'s
+  pagination, and the thread is heavy enough that driving it wedged the
+  automation bridge twice. It rests on its class-level unit test.
+- **O1's update pill was not exercised.** `SidebarUpdatePill` returns `null`
+  outside Electron, so the round icon button, its checking spinner, and the
+  release-notes tooltip need a desktop pass.
+
+Incidental confirmation: `E10`'s "Load earlier turns" header renders on the
+large thread, and `F10`'s themes plus this batch's palette work coexist without
+a contrast regression.
+
+Tooling note: `vp lint` exits **0 even when it reports warnings**, so its exit
+code proves nothing. This session confirmed the command reports real findings by
+feeding it a deliberate unused variable before trusting a clean result on the
+changed files — worth repeating rather than reading silence as success. Separately,
+`vitest` parses a leading-dash test filter (`-chatIndexTitlebar`) as a CLI flag
+and dies; drop the dash.
+
+Mobile-environment notes for the next iOS pass, both of which cost time here:
+
+- **The mobile dev bundle id is Pylon-owned: `com.rynfar.pylon.dev`**, not the
+  `com.t3tools.t3code.dev` that `test-pylon-mobile` documents. The URL scheme
+  `t3code-dev://` _is_ still compatibility-named and works. Probing for the
+  T3 bundle id reports "no dev client installed" on a simulator that has one.
+- **`ios/Pods` goes stale whenever `vp i` changes a pnpm patch hash.** The Pods
+  project hardcodes absolute store paths, so the build fails with "Build input
+  files cannot be found" pointing at a `patch_hash=` directory that no longer
+  exists (here `@react-native-menu/menu` moved `5ea3ae4bf…` → `c7f66d121…`).
+  `pod install` fixes it and touches no tracked files. On this host CocoaPods
+  1.17.0 additionally crashes under Ruby 4.0.6 with `Unicode Normalization not
+appropriate for ASCII-8BIT` unless `LANG`/`LC_ALL` are set to a UTF-8 locale.
+
+| Change set | Upstream              | Decision | Pylon reference          | Rationale or revisit condition                                                                                                                                                                                                                                                                                                  |
+| ---------- | --------------------- | -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| O1         | `52e5a75a8` / `#6210` | adopted  | `b0b11d966`              | Sidebar footer compaction; update pill becomes a round icon button that also checks for updates. **Manual port** — kept Pylon's history-preferring Back and `SidebarAccountDrainPill`, dropped upstream's now-pointless dismiss. Revisit if the icon-only footer proves less discoverable than the labeled rows.                |
+| O2         | `560d4a456` / `#6246` | adopted  | `fecd9adb9`              | The sidebar brand stopped rendering at the sidebar's own minimum width. Pylon's mark plus "Pylon" is narrower than T3's wordmark, so removing the container gate is strictly better here.                                                                                                                                       |
+| O3         | `d37a9b09b` / `#6253` | adopted  | `bda835962`              | Mobile gains thread title regeneration, closing a real multi-surface gap — web and the server capability (`threadTitleRegeneration`) already shipped it. Touches `docs/user/thread-sidebar.md`, which is the right home.                                                                                                        |
+| O4         | `63e6faef6` / `#6259` | skipped  | `—`                      | Vouches a T3 contributor in `.github/VOUCHED.td`. T3 contributor governance, no Pylon meaning. Same class as `F24` and `G4`.                                                                                                                                                                                                    |
+| O5         | `5a8461480` / `#6252` | adopted  | `60fdedec0`              | Composer model picker aligns with prompt text. Landed inside `ChatComposer.tsx`, a deliberate Pylon divergence since `C14`, but merged clean.                                                                                                                                                                                   |
+| O6         | `e1378a1f4` / `#6154` | adopted  | `6304fa2b9`              | Android ordered lists stop escaping user bubbles. Gated to Android, where the shrink-to-fit layout bug lives.                                                                                                                                                                                                                   |
+| O7         | `b54bfc931` / `#6258` | adopted  | `bbcb22eb4`, `560436ebd` | Right-panel empty state becomes a keyboard-first card launcher. Adopted, then its shortcut guard fixed on this branch — see the note above. Revisit if bare-letter shortcuts collide with anything else that lands in the panel.                                                                                                |
+| O8         | `6fd088af9` / `#6293` | adopted  | `773487b9a`              | The hosted onboarding header uses the shared `workspace-topbar` geometry instead of its own padding.                                                                                                                                                                                                                            |
+| O9         | `849bac894` / `#6285` | adopted  | `59fe87506`              | CLI OAuth parameters survive Clerk's sign-in redirect; the loopback flow routes through the hosted `/connect` page and rejects a corrupted port rather than silently downgrading. **Inert until Pylon owns a Clerk application** — taken for drift reduction. Revisit as part of any Pylon-owned Connect work, alongside `E21`. |
+| O10        | `e321667b1` / `#6314` | adopted  | `31258d334`              | The changed-files header stops overlapping its own controls; `sm:` breakpoints become `@[24rem]/changed-files` container queries, which is correct for a panel that is not viewport-width.                                                                                                                                      |
+| O11        | `f131228a5` / `#6300` | adopted  | `69acfbafc`, `7725de30a` | Clerk sign-in and profile surfaces inherit the live theme palette through CSS variables, so theme changes reach portaled Clerk UI without a remount. Its contrast test passes against Pylon's F10-tuned palettes. The doc comment's "T3 Code palette" was rebranded.                                                            |
+| O12        | `b73232bdd` / `#6320` | adopted  | `78e415f87`              | Double-clicking the sidebar rail resets its width — the reverse of drag-to-resize. Keeps upstream's `console.error` in the reset's catch; it is an error report rather than debug output, but flagged since the repo bans stray console calls.                                                                                  |
+
 ## Deferred register
 
-_The register is currently empty: DEF-1 and DEF-2 were adopted on 2026-08-11
-(see the sixth batch above). Entries are removed once adopted or skipped, so an
-empty register means nothing is waiting._
+_The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
+(see the sixth batch above), and the 2026-08-12 eighth batch deferred nothing
+new. Entries are removed once adopted or skipped, so an empty register means
+nothing is waiting._
 
 Upstream work that has been reviewed and consciously _not_ adopted yet, with
 the condition that should trigger a fresh look. Entries stay here until they
