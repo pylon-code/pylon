@@ -8,7 +8,7 @@ import {
   isUsageReadingStale,
   type ProviderUsageCell,
 } from "./ProviderUsageMatrix.logic";
-import { formatTimeUntilReset } from "./usageTime";
+import { formatTimeSinceChecked, formatTimeUntilReset } from "./usageTime";
 import { isUsageElevated, usageBarClassName, usageValueClassName } from "./usageEmphasis";
 
 function formatResetTimestamp(resetsAt: string, timestampFormat: TimestampFormat): string {
@@ -113,6 +113,11 @@ function UsageCell({
  * tables: the ruled header and row separators give each window a band to sit
  * in, and letting the label column size to its own content stops a long window
  * name from crushing the account names down to one character.
+ *
+ * The thread's own account is a tinted column rather than a louder label, the
+ * same way the model picker marks its selected row. Which column matters is
+ * then answered by shape, before any text is read, and it survives greyscale
+ * and colour blindness in a way the accent dot alone cannot.
  */
 export function ProviderUsageMatrix({
   accounts,
@@ -126,27 +131,42 @@ export function ProviderUsageMatrix({
   const matrix = buildProviderUsageMatrix(accounts);
   if (matrix.rows.length === 0) return null;
 
+  const lastRowIndex = matrix.rows.length - 1;
+
   return (
     <table className="w-full">
       <thead>
         <tr className="border-b border-border">
           <th className="w-px" />
           {matrix.accounts.map((account) => {
-            const stale = isUsageReadingStale({ checkedAt: account.usageLimits.checkedAt, nowMs });
+            const age = formatTimeSinceChecked(account.usageLimits.checkedAt, nowMs);
+            const stale =
+              isUsageReadingStale({ checkedAt: account.usageLimits.checkedAt, nowMs }) &&
+              age !== undefined;
             return (
               // Top-aligned, so every account name shares a baseline whether or
               // not the account below it carries a status line.
-              <th key={account.instanceId} className="pb-2 pl-4 text-left align-top font-normal">
+              <th
+                key={account.instanceId}
+                className={cn(
+                  "px-3 pb-2 text-left align-top font-normal",
+                  account.isActive && "rounded-t-md bg-foreground/[0.045]",
+                )}
+              >
                 <span className="flex min-w-0 items-center gap-1.5">
                   <span
                     aria-hidden
                     className="size-1.5 shrink-0 rounded-full"
                     style={{ background: account.accentColor ?? "var(--muted-foreground)" }}
                   />
+                  {/* Only the thread's account holds full contrast. Weight alone
+                      cannot carry this when both names are foreground. */}
                   <span
                     className={cn(
-                      "min-w-0 max-w-28 truncate text-xs text-foreground",
-                      account.isActive ? "font-semibold" : "font-medium",
+                      "min-w-0 max-w-28 truncate text-xs",
+                      account.isActive
+                        ? "font-semibold text-foreground"
+                        : "font-medium text-muted-foreground",
                     )}
                     title={account.displayName}
                   >
@@ -154,17 +174,29 @@ export function ProviderUsageMatrix({
                   </span>
                 </span>
                 {/* Indented past the marker so the status hangs under the name
-                    rather than under the dot. */}
+                    rather than under the dot. Kept even though the tint says the
+                    same thing, so the column is still identifiable in greyscale.
+                */}
                 {account.isActive ? (
-                  <span className="block ps-3 text-[10px] font-normal text-muted-foreground/60">
+                  <span className="block ps-3 text-[10px] font-normal text-muted-foreground">
                     this thread
                   </span>
-                ) : stale ? (
-                  // Said out loud, because the server keeps serving the last
-                  // good reading rather than blanking the gauge when a probe
-                  // fails.
-                  <span className="block ps-3 text-[10px] font-normal text-muted-foreground/50">
-                    not current
+                ) : null}
+                {/*
+                  Staleness belongs to the probe, not to the account, so it is
+                  its own line and can appear on the active column too. The
+                  server keeps serving the last good reading rather than blanking
+                  the gauge, which is only honest if the age is said out loud.
+                */}
+                {stale ? (
+                  // Terse because the column is only as wide as an account
+                  // name: "checked 7m ago" wraps here and pushes the whole card
+                  // taller. The full phrasing lives in the tooltip.
+                  <span
+                    className="block ps-3 text-[10px] font-normal whitespace-nowrap text-muted-foreground/50"
+                    title={`Last successful reading ${age} ago`}
+                  >
+                    {age} old
                   </span>
                 ) : null}
               </th>
@@ -173,25 +205,35 @@ export function ProviderUsageMatrix({
         </tr>
       </thead>
       <tbody>
-        {matrix.rows.map((row) => (
+        {matrix.rows.map((row, rowIndex) => (
           <tr key={row.label} className="border-b border-border/50 last:border-0">
             <td
-              className="py-2.5 pr-1 align-top text-xs whitespace-nowrap text-muted-foreground"
+              className="py-2.5 pr-2 align-top text-xs whitespace-nowrap text-muted-foreground"
               title={row.label}
             >
               {row.label}
             </td>
-            {row.cells.map((cell, index) => (
-              <td key={`${row.label}:${cell.accountId}`} className="py-2.5 pl-4 align-top">
-                <UsageCell
-                  cell={cell}
-                  label={row.label}
-                  accentColor={matrix.accounts[index]?.accentColor}
-                  nowMs={nowMs}
-                  timestampFormat={timestampFormat}
-                />
-              </td>
-            ))}
+            {row.cells.map((cell, index) => {
+              const account = matrix.accounts[index];
+              return (
+                <td
+                  key={`${row.label}:${cell.accountId}`}
+                  className={cn(
+                    "px-3 py-2.5 align-top",
+                    account?.isActive && "bg-foreground/[0.045]",
+                    account?.isActive && rowIndex === lastRowIndex && "rounded-b-md",
+                  )}
+                >
+                  <UsageCell
+                    cell={cell}
+                    label={row.label}
+                    accentColor={account?.accentColor}
+                    nowMs={nowMs}
+                    timestampFormat={timestampFormat}
+                  />
+                </td>
+              );
+            })}
           </tr>
         ))}
       </tbody>
