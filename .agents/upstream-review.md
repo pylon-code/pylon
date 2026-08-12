@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "2db08457f2f4eaaa713a067b2ea480ca2b583025"
-reviewed-through-date: "2026-08-11"
+reviewed-through: "c196f422ed387a1cc2cdb671b0472782e5610339"
+reviewed-through-date: "2026-08-12"
 ---
 
 # T3 upstream review log
@@ -665,6 +665,39 @@ manifest edit is a `./state/pull-requests` subpath export in
 **Not verified:** nothing here was exercised in a real client. This adds a whole
 product surface across web, desktop, and mobile, and its remote and
 multi-environment behavior is untested in Pylon.
+
+## 2026-08-12 (seventh batch) — `2db08457f2f4eaaa713a067b2ea480ca2b583025..c196f422ed387a1cc2cdb671b0472782e5610339`
+
+Two upstream commits, both adopted, each as its own pull request. **This entry
+was written after the fact:** the two PRs were built and merged without ledger
+entries, so the cursor sat behind adopted work until this batch recorded it.
+Fold the ledger update into the integration PR next time rather than trailing it.
+
+The deferred register is empty, so there was nothing to re-evaluate.
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------- | --------------------- | -------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| N1         | `f0b57ca23` / `#5654` | adopted  | `f681f9dbb`     | Open VSX theme search: in-app search and import of marketplace themes, ~2,700 insertions. Clean pick, since it is built on the OKLCH work already merged. **Flagged as a product decision, not a sync:** it is the first thing in Pylon that reaches a third-party marketplace at runtime, querying `open-vsx.org` and unpacking downloaded `.vsix` archives. Adds `jszip` and `jsonc-parser`. The developer accepted that tradeoff explicitly. No live marketplace call was exercised, so that path is covered only by the bundled tests.                                                                                                                                                                                                                                   |
+| N2         | `c196f422e` / `#6209` | adopted  | `7b2adaf85`     | Composer context strip recomputes widths each pass instead of latching stale values, animated through the Web Animations API at 180ms and early-returning on `prefers-reduced-motion`. Fits Pylon's motion rules: bounded transition, not a continuous repaint. **`BranchToolbar.tsx` conflicted structurally and was resolved Pylon-first** — upstream pushes the branch selector right (`justify-end md:ml-auto`), Pylon keeps it in the left run (`justify-start`, E16) beside the workspace controls with Usage opposite. Only the animation machinery was taken: the `data-composer-context-control` markers, the strip's `overflow-x-clip overflow-y-visible`, and the motion constants. A comment now marks the divergence so a later merge does not quietly undo it. |
+
+Verification: `BranchToolbar` (56 tests), `openVsxThemes`, `themePalette`,
+`vscodeThemeImport`, `themeBoot` (85 tests). Web typecheck, lint, and format
+clean on both branches. `jszip@3.10.1` and `jsonc-parser@3.3.1` confirmed to
+resolve after install.
+
+Landed alongside a Pylon-local fix (PR #7): the out-of-capacity handoff tab was
+inset `right-3` (12px) against a `rounded-[22px]` composer frame, so it sat on
+the corner arc where its square bottom edge could not meet a straight run and
+read as detached. Moved to `right-6` (24px). Confirmed in a browser against the
+live composer: computed radius 22px, tab right edge 12px in before versus 24px
+after. `ComposerStashBadge` shares the same edge at `right-4` and is also inside
+the radius, but is `rounded-full` so it does not misread; left alone
+deliberately.
+
+Tooling note for future sessions: `grep` in this environment can be a shell
+function that silently returns nothing for some file queries. It fails as a
+false negative, not an error, which makes "I searched and found nothing" claims
+unsafe. Use `/usr/bin/grep` when a negative result is load-bearing.
 
 ## Deferred register
 
