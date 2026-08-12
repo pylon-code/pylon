@@ -315,7 +315,7 @@ const PRIME_AGENT_MODEL_DISCOVERY_FALLBACK_MESSAGES = new Set([
   "Prime Agent CLI is ready, but model discovery failed; using the fallback model catalog.",
   "Prime Agent CLI is ready, but model discovery timed out; using the fallback model catalog.",
 ]);
-const PRIME_AGENT_AUTH_REQUIRED_MESSAGE =
+const PRIME_AGENT_LEGACY_AUTH_REQUIRED_MESSAGE =
   "No configured Prime Agent model provider was found. Run `prime-agent`, use `/login`, then refresh provider status.";
 
 function hasConfiguredPrimeAgentModel(models: ReadonlyArray<ServerProviderModel>): boolean {
@@ -331,26 +331,23 @@ export function reconcilePrimeAgentDaemonCatalogSnapshot(snapshot: ServerProvide
   const messageWithoutOwnedDiagnostics = (() => {
     if (snapshot.message === undefined) return undefined;
     if (
-      snapshot.message === PRIME_AGENT_AUTH_REQUIRED_MESSAGE ||
+      snapshot.message === PRIME_AGENT_LEGACY_AUTH_REQUIRED_MESSAGE ||
       PRIME_AGENT_MODEL_DISCOVERY_FALLBACK_MESSAGES.has(snapshot.message)
     ) {
       return undefined;
     }
-    const authSuffix = ` ${PRIME_AGENT_AUTH_REQUIRED_MESSAGE}`;
+    const authSuffix = ` ${PRIME_AGENT_LEGACY_AUTH_REQUIRED_MESSAGE}`;
     return snapshot.message.endsWith(authSuffix)
       ? snapshot.message.slice(0, -authSuffix.length)
       : snapshot.message;
   })();
-  const message = authenticated
-    ? messageWithoutOwnedDiagnostics
-    : [messageWithoutOwnedDiagnostics, PRIME_AGENT_AUTH_REQUIRED_MESSAGE]
-        .filter((part) => part !== undefined)
-        .join(" ");
   const { message: _previousMessage, ...snapshotWithoutMessage } = snapshot;
   return {
     ...snapshotWithoutMessage,
-    auth: { status: authenticated ? "authenticated" : "unauthenticated" },
-    ...(message === undefined ? {} : { message }),
+    auth: { status: authenticated ? "authenticated" : "unknown" },
+    ...(messageWithoutOwnedDiagnostics === undefined
+      ? {}
+      : { message: messageWithoutOwnedDiagnostics }),
   };
 }
 
@@ -481,10 +478,6 @@ ${versionOutput.stderr}`);
     }
   }
 
-  if (discoveredModels !== undefined && discoveredModels.length === 0) {
-    discoveryMessage = PRIME_AGENT_AUTH_REQUIRED_MESSAGE;
-  }
-
   return buildServerProvider({
     presentation: PRIME_AGENT_PRESENTATION,
     enabled: true,
@@ -499,11 +492,9 @@ ${versionOutput.stderr}`);
       status: "ready",
       auth: {
         status:
-          discoveredModels === undefined
-            ? "unknown"
-            : discoveredModels.length > 0
-              ? "authenticated"
-              : "unauthenticated",
+          discoveredModels !== undefined && discoveredModels.length > 0
+            ? "authenticated"
+            : "unknown",
       },
       ...(discoveryMessage ? { message: discoveryMessage } : {}),
     },

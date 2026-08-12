@@ -42,7 +42,9 @@ attaches, the adapter calls Prime's public `getModelCatalog` (or `getAvailableMo
 fallback), filters to configured providers, discards sensitive native fields, and publishes a bounded
 last-good model overlay through the existing provider snapshot stream. Once that overlay exists,
 provider health checks retain it without repeating the RPC discovery probe or reporting a stale
-fallback warning. No session is created only for model discovery. The synthetic `default` model means
+fallback warning. Cached models never override a disabled, missing, or unhealthy probe's authentication
+state. A healthy non-empty native catalog can report configured-provider readiness; an empty catalog
+leaves authentication unknown because it is not a credential-status API. No session is created only for model discovery. The synthetic `default` model means
 “do not force a model,” while discovered model metadata drives generic thinking and service-tier
 composer options. The daemon adapter can switch
 models before a turn, steer an active turn, admit

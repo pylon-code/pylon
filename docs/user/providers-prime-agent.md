@@ -17,9 +17,11 @@ The Early Access integration is tested with Prime Agent 0.7.2. Start it once in 
 prime-agent
 ```
 
-Pylon uses the existing Prime Agent login. Provider status reports whether Prime Agent currently has
-at least one configured model provider, but it does not verify live network access and does not offer
-Prime Agent sign-in or sign-out inside the app.
+Pylon uses the existing Prime Agent login. Provider status reports **Authenticated** only when a
+healthy, current catalog contains at least one configured model provider. An empty catalog leaves
+authentication **Unknown** because catalog emptiness is not proof that credentials are absent. This
+status does not verify live network access, and Pylon does not offer Prime Agent sign-in or sign-out
+inside the app.
 
 ## Configure Pylon
 

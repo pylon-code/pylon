@@ -465,7 +465,7 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
     }).pipe(Effect.provide(mockPrimeAgentSpawner({ rpcOutput, calls, stdin })));
   });
 
-  it.effect("reports an actionable unauthenticated state for a valid empty catalog", () => {
+  it.effect("keeps authentication unknown for a valid empty catalog", () => {
     const calls: Array<{
       readonly command: string;
       readonly args: ReadonlyArray<string>;
@@ -485,8 +485,8 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
         decodeSettings({ binaryPath: "/mock/prime-agent", customModels: ["custom-model"] }),
       );
       expect(snapshot.status).toBe("ready");
-      expect(snapshot.auth.status).toBe("unauthenticated");
-      expect(snapshot.message).toContain("use `/login`");
+      expect(snapshot.auth.status).toBe("unknown");
+      expect(snapshot.message).toBeUndefined();
       expect(snapshot.models.map((model) => model.slug)).toEqual(["default", "custom-model"]);
     }).pipe(Effect.provide(mockPrimeAgentSpawner({ rpcOutput, calls, stdin })));
   });
@@ -572,8 +572,8 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
       };
       expect(fallback.message).toContain("model discovery failed");
       const emptyCatalog = reconcilePrimeAgentDaemonCatalogSnapshot(fallback);
-      expect(emptyCatalog.auth.status).toBe("unauthenticated");
-      expect(emptyCatalog.message).toContain("use `/login`");
+      expect(emptyCatalog.auth.status).toBe("unknown");
+      expect(emptyCatalog.message).toBeUndefined();
 
       const published = reconcilePrimeAgentDaemonCatalogSnapshot({
         ...fallback,
@@ -593,17 +593,34 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
 
       const unrelated = { ...fallback, message: "Provider update available." };
       expect(reconcilePrimeAgentDaemonCatalogSnapshot(unrelated)).toMatchObject({
-        auth: { status: "unauthenticated" },
-        message: expect.stringMatching(/Provider update available\..*use `\/login`/u),
+        auth: { status: "unknown" },
+        message: "Provider update available.",
       });
 
-      const unhealthy = {
-        ...published,
-        status: "error" as const,
-        auth: { status: "unknown" as const },
-        message: "Prime Agent CLI is installed but failed to run.",
-      };
-      expect(reconcilePrimeAgentDaemonCatalogSnapshot(unhealthy)).toEqual(unhealthy);
+      const nonReadySnapshots = [
+        {
+          ...published,
+          enabled: false,
+          auth: { status: "unknown" as const },
+          message: "Prime Agent is disabled.",
+        },
+        {
+          ...published,
+          installed: false,
+          status: "error" as const,
+          auth: { status: "unknown" as const },
+          message: "Prime Agent CLI was not found.",
+        },
+        {
+          ...published,
+          status: "error" as const,
+          auth: { status: "unknown" as const },
+          message: "Prime Agent CLI is installed but failed to run.",
+        },
+      ];
+      for (const nonReady of nonReadySnapshots) {
+        expect(reconcilePrimeAgentDaemonCatalogSnapshot(nonReady)).toEqual(nonReady);
+      }
     }).pipe(
       Effect.provide(
         mockPrimeAgentSpawner({

@@ -61,7 +61,7 @@ The main Pylon code must not learn Prime RPC command names or Prime-shaped paylo
 
 ### Authentication and execution policy
 
-- report configured-provider readiness from sanitized model catalogs without treating it as live network verification;
+- report configured-provider readiness only from a healthy non-empty sanitized native model catalog, while empty catalogs and non-ready probes leave authentication unknown; do not treat catalog readiness as live network verification;
 - keep sign-in/sign-out in the Prime Agent CLI until exported `AuthStorage` callbacks have explicit provider-instance environment, locking, reload, and multi-session ownership;
 - never scrape the TUI or expose secrets to clients;
 - Prime remains full-access until a Pylon permission-gate extension proves pre-execution enforcement;
