@@ -706,12 +706,21 @@ jobs:
           mkdir -p "$target_dir"
           cp "$source_path" "$target_dir/$binary_name"
 
+      # These are intra-run handoff to `publish_release`, which downloads
+      # `desktop-*` and attaches them to the GitHub Release — that Release is the
+      # durable copy, not the artifact. At the repository default of 90 days a
+      # daily nightly retains ~880 MB per run across the four platforms, which
+      # reached ~14 GB and exhausted the account's artifact storage quota; once
+      # that happens *every* upload in the org fails, reddening unrelated PRs.
+      # A week is long enough to re-run a failed publish job against the same
+      # build and short enough to cap steady state near 6 GB.
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
           path: release-publish/*
           if-no-files-found: error
+          retention-days: 7
 
       - name: Upload resource monitor
         uses: actions/upload-artifact@v7
@@ -719,6 +728,7 @@ jobs:
           name: resource-monitor-${{ matrix.resource_key }}
           path: resource-monitor-publish/${{ matrix.resource_key }}/*
           if-no-files-found: error
+          retention-days: 7
 
   publish_cli:
     name: Publish CLI to npm
