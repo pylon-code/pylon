@@ -57,3 +57,14 @@ them safely.
 
 When Prime adds a public, reconnect-safe outcome, Pylon should add a capability probe and a typed
 provider-neutral vertical rather than sending raw daemon commands across the client boundary.
+
+## Opt-in real-daemon verification
+
+The normal suite uses strict fake bridges. To verify manager launch, protocol negotiation, client-owned session creation and attachment, privacy-safe state decoding, disposal, and graceful daemon shutdown against an installed release, run:
+
+```bash
+PYLON_REAL_PRIME_AGENT=/absolute/path/to/prime-agent \
+  vp test run apps/server/src/provider/prime/PrimeAgentRealDaemon.integration.test.ts
+```
+
+The test uses scoped temporary state, agent-home, session, and socket directories. It does not read or write the user's normal Prime Agent home and does not submit a model prompt.
