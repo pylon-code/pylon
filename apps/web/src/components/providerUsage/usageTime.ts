@@ -37,3 +37,31 @@ export function formatTimeUntilReset(resetsAt: string, nowMs: number): string | 
   }
   return `${Math.max(1, Math.floor(remaining / MINUTE_MS))}m`;
 }
+
+/**
+ * How long ago a reading was taken, for surfaces that admit when a number has
+ * stopped being current.
+ *
+ * Says the age rather than labelling the account, because staleness belongs to
+ * the probe and not to the account it probed: the account the thread is running
+ * on can go stale too. Same coarseness as the countdown above, for the same
+ * reason. Returns `undefined` for an unreadable or future timestamp, so callers
+ * render nothing rather than "0m ago".
+ */
+export function formatTimeSinceChecked(checkedAt: string, nowMs: number): string | undefined {
+  const checkedAtMs = Date.parse(checkedAt);
+  if (!Number.isFinite(checkedAtMs)) return undefined;
+  const elapsed = nowMs - checkedAtMs;
+  if (elapsed < MINUTE_MS) return undefined;
+
+  if (elapsed >= DAY_MS) {
+    const days = Math.floor(elapsed / DAY_MS);
+    return `${days}d`;
+  }
+  if (elapsed >= HOUR_MS) {
+    const hours = Math.floor(elapsed / HOUR_MS);
+    const minutes = Math.floor((elapsed % HOUR_MS) / MINUTE_MS);
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  return `${Math.floor(elapsed / MINUTE_MS)}m`;
+}
