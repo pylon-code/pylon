@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "b73232bdd31e83914a8a943960c7dc4b6390b39b"
-reviewed-through-date: "2026-08-12"
+reviewed-through: "bad1143b02f7b585d1fe1335b3d9a97983ce8d8b"
+reviewed-through-date: "2026-08-13"
 ---
 
 # T3 upstream review log
@@ -858,12 +858,99 @@ appropriate for ASCII-8BIT` unless `LANG`/`LC_ALL` are set to a UTF-8 locale.
 | O11        | `f131228a5` / `#6300` | adopted  | `69acfbafc`, `7725de30a` | Clerk sign-in and profile surfaces inherit the live theme palette through CSS variables, so theme changes reach portaled Clerk UI without a remount. Its contrast test passes against Pylon's F10-tuned palettes. The doc comment's "T3 Code palette" was rebranded.                                                            |
 | O12        | `b73232bdd` / `#6320` | adopted  | `78e415f87`              | Double-clicking the sidebar rail resets its width — the reverse of drag-to-resize. Keeps upstream's `console.error` in the reset's catch; it is an error report rather than debug output, but flagged since the repo bans stray console calls.                                                                                  |
 
+## 2026-08-13 — `b73232bdd31e83914a8a943960c7dc4b6390b39b..bad1143b02f7b585d1fe1335b3d9a97983ce8d8b`
+
+Twenty-six commits, twenty-four change sets, **twenty-two adopted and two
+skipped**. Nothing deferred, so the register stays empty. `git cherry` reported
+all twenty-six as `+`; none were patch-equivalent.
+
+Conflict risk was **measured, not estimated**: every candidate was dry
+cherry-picked against `origin/pylon` in a throwaway worktree before the brief
+was written. Twenty-one of twenty-six applied clean, which is why a batch this
+size was tractable.
+
+The work landed as two stacked branches so the 12k-line `P1` could be reviewed
+on its own: `upstream/2026-08-13-batch` (PR #12) carries everything else, and
+`upstream/2026-08-13-pr-surfaces` (PR #13) sits on top of it. `P1` and `P2` name
+their pull request rather than a commit, because a stacked branch is rebased
+when the branch below it merges and any SHA recorded here would go stale.
+
+| Change set | Upstream                                      | Decision | Pylon reference          | Rationale or revisit condition                                                                                                                                                                                                                                                             |
+| ---------- | --------------------------------------------- | -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| P1         | `b28f9bf0a` / `#6039`                         | adopted  | PR #13                   | Pull request surfaces: filters and qualifiers, all-server listing, update branch, reactions, in-place title/description/comment editing, checks popover, smarter diff file ordering. 86 files, +11,929, across contracts, all four PR providers, and web. One conflict only — see below.   |
+| P2         | `92d4a2e99` / `#6490`                         | adopted  | PR #13                   | Scopes pull request errors to their environment, which only has meaning once the list spans several. Depended on `P1`: it conflicts in exactly the four files `P1` rewrites, and applied clean once `P1` was in.                                                                           |
+| P3         | `8d24b5131` + `2eb099fdc` / `#6278` → `#6378` | adopted  | `5afaef758`, `9d3283ee9` | Cmd/Ctrl+click on a pull request link, and on a sidebar PR number, opens the host in the browser instead of the in-app panel. **Hard dependency**: `#6378` calls `shouldOpenPullRequestExternally`, which `#6278` introduces. Verified zero occurrences in Pylon first.                    |
+| W1         | `770946d02` / `#6241`                         | adopted  | `af7299794`              | Tooltip positioner `z-70` → `z-[140]`. **A live Pylon defect, not just upstream's**: Pylon's popover, menu, select, combobox and autocomplete positioners all sit at `z-[130]`, so every tooltip rendered behind every dropdown. Upstream picked 140 for the same reason.                  |
+| W2         | `9666b8751` / `#6343`                         | adopted  | `23ea93a87`              | Changing theme preserves appearance mode instead of re-inferring a fresh System preference, which could flip a dark UI to light. Matters more in Pylon, whose palettes are F10-tuned.                                                                                                      |
+| W3         | `da6253b3d` / `#6230`                         | adopted  | `7bdbfce71`              | Source control discovery falls back to any connected environment, so the settings scan works on relay environments with no primary. A remote-mode defect, and Pylon is remote-ready.                                                                                                       |
+| W4         | `1e59b4c40` / `#6393`                         | adopted  | `d454db255`              | The typed prompt survives a draft changing repo instead of being discarded.                                                                                                                                                                                                                |
+| W5         | `860179723` / `#6322`                         | adopted  | `0507e4d95`              | Update toast "Read more" link and its arrow sit on one baseline.                                                                                                                                                                                                                           |
+| W6         | `6bc6cb6be` / `#6423`                         | adopted  | `38aa57833`              | Diff file lists stay scrollable past an expanded file. Touches `StyledDiffCodeView.tsx`, which `P1` also edits; both applied clean in upstream order.                                                                                                                                      |
+| W7         | `5015d7cf9` / `#6414`                         | adopted  | `0301c2627`              | Turn minimap stops shifting as the composer grows; the bottom-inset prop goes away in favour of `inset-y-0`.                                                                                                                                                                               |
+| W8         | `97db94c9b` / `#6451`                         | adopted  | `9ef0cedca`              | Inline pull request panel gains `max-w-full` so it stays inside its workspace.                                                                                                                                                                                                             |
+| W9         | `33f970592` / `#6385`                         | adopted  | `1c4b2917a`              | Reset-zoom control gets a visible hover state.                                                                                                                                                                                                                                             |
+| W10        | `2fab18e28` / `#6509`                         | adopted  | `dc3fa038d`              | Aspect-ratio toggle shows an unlinked icon when unlocked. Upstream left a no-op `cn()` on the new branch — dropped on the adaptation commit.                                                                                                                                               |
+| W11        | `ac1264e2c` / `#6330`                         | adopted  | `b095aa567`              | Command palette subtitles gain project favicons and workspace icons. Shipped a `THREAD_COMMAND_SUBTITLE_VARIANT` "flip this while reviewing" knob with three variants, but nothing outside the file ever passed one — **collapsed to the shipped variant** on the adaptation commit.       |
+| W12        | `2ab188f1c` / `#6476`                         | adopted  | `313235bd3`              | The slow-RPC latency tracker ignores `pullRequests.*` methods, which legitimately take seconds because they reach a remote host. Without it the tracker reports a lying "slow request" every time the PR list loads. Pylon has 13 such methods, so the test's `it.each` is non-empty here. |
+| C1         | `d0b8d6306` + `1b16ed663` / `#4844` → `#6442` | adopted  | `9c9191d68`, `e164cf972` | Deregister account environments from any client, on a new shared `ClerkUserProfilePage` shell. **Inert until Pylon owns a Clerk application**, same standing as `O9` and `E21`; taken for drift reduction. `#6442` patches a file `#4844` creates, so it is a chain.                       |
+| S1         | `df19f6cfe` / `#6432`                         | adopted  | `5436e201a`              | Codex collaboration prompt tuning: plans get shorter and less file-by-file, and `request_user_input` availability is described by tool listing rather than by mode. Provider-prompt maintenance — drifting from upstream's Codex tuning has no upside.                                     |
+| M1         | `83ad26c3a` / `#6495`                         | adopted  | `fd0caec18`              | **Crash fix.** Out-of-range numeric HTML entities made `String.fromCodePoint` throw a `RangeError` and took down the whole mobile markdown block. Now the malformed entity is left as literal text.                                                                                        |
+| M2         | `fd51561b4` / `#6482`                         | adopted  | `72cfb55bd`              | Blockquote markers extend across wrapped lines; blockquotes become rich blocks and table cells render as documents. Pylon's `nativeMarkdownDocumentRuns` already took the `skills` parameter this relies on.                                                                               |
+| M3         | `18918d1c4` / `#6370`                         | adopted  | `1caf2eb2a`              | Mobile command popover uses the shared `GlassSurface` instead of its own `LiquidGlassView`/`View` fork. Net −19 lines.                                                                                                                                                                     |
+| M4         | `bad1143b0` / `#6520`                         | adopted  | `7c2569d5b`              | Android sidebar header shows a real settings cog by deleting the native header-button override and falling back to the shared path. Pure deletion, −223 lines. Verified every `T3HeaderButton` reference in Pylon sits inside the deleted set. **Not exercised on an Android emulator.**   |
+| T1         | `e3a9c2518` / `#5155`                         | adopted  | `f4b9a6c91`              | Mobile showcase seeds snoozed threads. Dev tooling only; Pylon's migration 034 supplies `snoozed_until`/`snoozed_at`, and the script PRAGMA-guards for them anyway.                                                                                                                        |
+| X1         | `9e201941a` / `#6479`                         | skipped  | `—`                      | Removes "Rebase onto latest main before opening" from upstream's `AGENTS.md`. Pylon deliberately rewrote that line to point at `pylon`, and `CLAUDE.md` mandates the rebase. Adopting it would contradict Pylon's own landing workflow.                                                    |
+| X2         | `9513e62e2` / `#6462`                         | skipped  | `—`                      | Vouches a T3 contributor in `.github/VOUCHED.td`. T3 contributor governance, no Pylon meaning. Same class as `O4`, `F24`, and `G4`.                                                                                                                                                        |
+
+Conflict resolutions, both Pylon-first:
+
+- **`MobileClientsUserProfilePage.tsx`** (`C1`) — Pylon had already rebranded
+  copy that upstream restructured into the new `ClerkUserProfilePage` shell.
+  Took upstream's structure and typography, kept Pylon's "Pylon" and "Pylon
+  Connect" wording.
+- **`SidebarChrome.tsx`** (`P1`) — Pylon gated the pull requests link on the
+  **primary** environment's capability; upstream widens it to **any** connected
+  one. Resolved toward upstream, because all-server listing is the feature.
+  Upstream's version also adds a `useLocation` subscription to name the current
+  footer page, but Pylon already derives that from its own `pathname` and only
+  needs the boolean, so the duplicate subscription was dropped rather than
+  added.
+
+Rebranding, per the usual split between product copy and compatibility names:
+`T3 Code` → `Pylon` and `T3 Connect` → `Pylon Connect` in all visible copy,
+including the new account-menu page label and `docs/user/remote-access.md`. The
+`T3Connect*` filenames and the `t3-connect` route slug stay, matching the
+existing `T3ConnectSidebarSignIn.tsx`. `app.t3.codes` was left alone — it is the
+inherited hosted origin, not branding.
+
+Verification: 301 tests over 11 files on PR #12, 887 tests over 30 files on
+PR #13, both green; typechecks clean on `@t3tools/web`, `t3`, `@t3tools/mobile`,
+`@t3tools/client-runtime`, `@t3tools/contracts`, with only pre-existing
+`suggestion`-level Effect hints; lint clean apart from two deliberate
+`no-array-index-key` warnings in `P1` that upstream documents (the host decides
+how many check runs share a name, so position disambiguates a name-and-url key).
+**Neither branch has had a real-client pass**; `P1` is the one that most wants
+one.
+
+Two tooling notes worth carrying forward:
+
+- **A green `vp test run` exit code can hide failures.** The first run on PR #12
+  exited 0 with five tests failing. This is a second instance of the family the
+  eighth batch recorded for `vp lint`, and it argues for reading the
+  `Test Files`/`Tests` summary line every time rather than trusting `$?`.
+- **`vp i` copies workspace `file:` dependencies into the pnpm store rather than
+  symlinking them.** `apps/mobile/modules/t3-markdown-text` resolves through
+  `node_modules/.pnpm/@t3tools+mobile-markdown-text@file+.../src/`, a snapshot
+  taken at install time. Installing _before_ cherry-picking meant the mobile
+  markdown tests ran against pre-cherry-pick source and failed against the
+  updated expectations. **Re-run `vp i` after changing one of these modules.**
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
-(see the sixth batch above), and the 2026-08-12 eighth batch deferred nothing
-new. Entries are removed once adopted or skipped, so an empty register means
-nothing is waiting._
+(see the sixth batch above); the 2026-08-12 eighth batch and the 2026-08-13
+ninth batch each deferred nothing new. Entries are removed once adopted or
+skipped, so an empty register means nothing is waiting._
 
 Upstream work that has been reviewed and consciously _not_ adopted yet, with
 the condition that should trigger a fresh look. Entries stay here until they
