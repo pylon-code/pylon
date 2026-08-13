@@ -310,11 +310,7 @@ export function BrowserDeviceToolbar({
         onPointerDown={(event) => event.preventDefault()}
         onClick={toggleAspectRatio}
       >
-        {aspectRatio === null ? (
-          <Unlink2 className={cn(aspectRatio !== null && "text-foreground")} />
-        ) : (
-          <Link2 className={cn(aspectRatio !== null && "text-foreground")} />
-        )}
+        {aspectRatio === null ? <Unlink2 /> : <Link2 className="text-foreground" />}
       </Button>
       <Button
         variant="ghost"

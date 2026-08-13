@@ -1,22 +1,8 @@
 import type { EnvironmentId, ProviderDriverKind } from "@t3tools/contracts";
-import { FolderGit2Icon, FolderIcon, GitBranchIcon } from "lucide-react";
+import { FolderGit2Icon, FolderIcon } from "lucide-react";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 import { cn } from "~/lib/utils";
-
-/**
- * Flip this while reviewing command-palette thread subtitles.
- * - favicon-workspace-harness: favicon + Folder/FolderGit2 + branch + harness (default)
- * - favicon-workspace: same without harness
- * - favicon-branch-harness: GitBranch for local, FolderGit2 for worktrees, + harness
- */
-export type ThreadCommandSubtitleVariant =
-  | "favicon-workspace-harness"
-  | "favicon-workspace"
-  | "favicon-branch-harness";
-
-export const THREAD_COMMAND_SUBTITLE_VARIANT: ThreadCommandSubtitleVariant =
-  "favicon-workspace-harness";
 
 const META_ICON_CLASS = "size-3 shrink-0 text-muted-foreground/70";
 
@@ -24,14 +10,10 @@ function Dot() {
   return <span className="shrink-0 text-muted-foreground/50">·</span>;
 }
 
-function WorkspaceIcon(props: { variant: ThreadCommandSubtitleVariant; isWorktree: boolean }) {
-  if (props.isWorktree) {
-    return <FolderGit2Icon className={META_ICON_CLASS} aria-hidden />;
-  }
-  if (props.variant === "favicon-branch-harness") {
-    return <GitBranchIcon className={META_ICON_CLASS} aria-hidden />;
-  }
-  return <FolderIcon className={META_ICON_CLASS} aria-hidden />;
+/** A worktree reads as a checkout of its own; anything else is the project directory. */
+function WorkspaceIcon(props: { isWorktree: boolean }) {
+  const Icon = props.isWorktree ? FolderGit2Icon : FolderIcon;
+  return <Icon className={META_ICON_CLASS} aria-hidden />;
 }
 
 export function ThreadCommandSubtitle(props: {
@@ -44,13 +26,10 @@ export function ThreadCommandSubtitle(props: {
   isCurrent: boolean;
   driverKind?: ProviderDriverKind | null;
   providerDisplayName?: string | null;
-  variant?: ThreadCommandSubtitleVariant;
   className?: string;
 }) {
-  const variant = props.variant ?? THREAD_COMMAND_SUBTITLE_VARIANT;
   const isWorktree = props.worktreePath != null && props.worktreePath.trim().length > 0;
-  const showHarness =
-    variant !== "favicon-workspace" && props.driverKind != null && props.providerDisplayName;
+  const showHarness = props.driverKind != null && props.providerDisplayName;
 
   const projectLabel = props.projectTitle?.trim() || null;
   const branchLabel = props.branch?.trim() || null;
@@ -84,7 +63,7 @@ export function ThreadCommandSubtitle(props: {
         <>
           {projectLabel ? <Dot /> : null}
           <span className="inline-flex min-w-0 items-center gap-1">
-            <WorkspaceIcon variant={variant} isWorktree={isWorktree} />
+            <WorkspaceIcon isWorktree={isWorktree} />
             <span className="min-w-0 truncate">{branchLabel}</span>
           </span>
         </>

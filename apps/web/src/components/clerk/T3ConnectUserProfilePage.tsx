@@ -249,7 +249,8 @@ export function T3ConnectUserProfilePage() {
                 No Pylon Connect environments
               </EmptyTitle>
               <EmptyDescription className="text-[0.8125rem] leading-[1.125rem]">
-                Link an environment from its local Settings to make it available through Pylon Connect.
+                Link an environment from its local Settings to make it available through Pylon
+                Connect.
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
