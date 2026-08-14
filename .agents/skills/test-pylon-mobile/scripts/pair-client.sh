@@ -13,7 +13,7 @@ platform="$1"
 device_id="$2"
 server_port="$3"
 base_dir="$4"
-url_scheme="${5:-t3code-dev}"
+url_scheme="${5:-pylon-code-dev}"
 
 case "$platform" in
   ios)
