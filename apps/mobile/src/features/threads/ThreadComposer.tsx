@@ -2021,6 +2021,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           environmentId={props.environmentId}
           threadId={props.selectedThread.id}
           agentId={selectedLiveActivityAgent.id}
+          agent={selectedLiveActivityAgent}
           onClose={() => setLiveActivitySelection(null)}
         />
       ) : null}

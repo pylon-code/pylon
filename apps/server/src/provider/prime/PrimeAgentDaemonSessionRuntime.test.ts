@@ -2276,6 +2276,25 @@ describe("Prime Agent live activity privacy boundary", () => {
     expect(JSON.stringify(entries)).not.toContain("native-tool");
   });
 
+  it("returns an empty snapshot for realistic thinking and tool-only activity", () => {
+    expect(
+      sanitizePrimeAgentLiveActivityMessages([
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "private reasoning" },
+            { type: "toolCall", id: "native-tool", name: "ipython", arguments: { path: "/tmp" } },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolName: "ipython",
+          content: [{ type: "text", text: "private result" }],
+        },
+      ]),
+    ).toEqual([]);
+  });
+
   it.effect("coalesces watcher events and closes the second connection when the stream ends", () =>
     Effect.gen(function* () {
       let messages: ReadonlyArray<unknown> = [
@@ -2408,6 +2427,72 @@ describe("Prime Agent live activity privacy boundary", () => {
           ],
         ]);
         expect(captures.watcherMessageReads).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("does not count invisible initialization events against the bounded buffer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let markReadStarted!: () => void;
+        let resolveInitialRead!: (messages: ReadonlyArray<unknown>) => void;
+        const readStarted = new Promise<void>((resolve) => {
+          markReadStarted = resolve;
+        });
+        const initialRead = new Promise<ReadonlyArray<unknown>>((resolve) => {
+          resolveInitialRead = resolve;
+        });
+        const { emitWatch, make } = fixture({
+          getWatchMessages: () => {
+            markReadStarted();
+            return initialRead;
+          },
+        });
+        const runtime = yield* make();
+        const fiber = yield* runtime
+          .watchAgentActivity("native-child-active")
+          .pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+        yield* Effect.promise(() => readStarted);
+        for (let index = 0; index < 128; index += 1) {
+          yield* Effect.promise(() =>
+            emitWatch({
+              type: "session_event",
+              event: {
+                type: "message_update",
+                message: {
+                  role: "assistant",
+                  content: [
+                    { type: "thinking", thinking: `private-${index}` },
+                    {
+                      type: "toolCall",
+                      id: `native-${index}`,
+                      name: "ipython",
+                      arguments: { path: "/private/path" },
+                    },
+                  ],
+                },
+              },
+            }),
+          );
+        }
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "visible answer" }],
+              },
+            },
+          }),
+        );
+        resolveInitialRead([]);
+
+        expect(Array.from(yield* Fiber.join(fiber))).toEqual([
+          [],
+          [{ speaker: "assistant", text: "visible answer" }],
+        ]);
       }),
     ),
   );

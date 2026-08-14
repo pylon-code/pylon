@@ -137,13 +137,26 @@ describe("AgentsPanel agent cancellation", () => {
     expect(gated).not.toContain("Live activity unavailable");
   });
 
-  it("renders empty and bounded assistant-only replacement snapshots", () => {
+  it("renders safe aggregate status with empty and bounded assistant-only snapshots", () => {
+    const liveAgent = {
+      ...active,
+      lastToolName: "ipython",
+      usage: { totalTokens: 65_800, toolUses: 14 },
+      progress: "private progress",
+    };
     const empty = renderToStaticMarkup(
       <AgentLiveActivitySnapshot
         snapshot={{ agentId: "canonical" as never, revision: 1, entries: [] }}
+        agent={liveAgent}
       />,
     );
-    expect(empty).toContain("No assistant activity yet.");
+    expect(empty).toContain("Working");
+    expect(empty).toContain('aria-live="polite"');
+    expect(empty).toContain("Last tool: ipython");
+    expect(empty).toContain("65.8k tokens · 14 tools");
+    expect(empty).toContain("No assistant text yet.");
+    expect(empty).toContain("Tool arguments, results, and reasoning are not shown.");
+    expect(empty).not.toContain("private progress");
 
     const snapshot = {
       agentId: "canonical",
@@ -156,7 +169,9 @@ describe("AgentsPanel agent cancellation", () => {
       usage: "private usage",
       metadata: "private metadata",
     } as unknown as ProviderSessionAgentActivitySnapshot;
-    const markup = renderToStaticMarkup(<AgentLiveActivitySnapshot snapshot={snapshot} />);
+    const markup = renderToStaticMarkup(
+      <AgentLiveActivitySnapshot snapshot={snapshot} agent={liveAgent} />,
+    );
     expect(markup).toContain("Safe assistant update");
     expect(markup).toContain("Latest bounded snapshot · Live only");
     expect(markup).not.toContain("private-native-id");

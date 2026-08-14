@@ -1,5 +1,7 @@
 import type { ProviderSessionAgentActivitySnapshot, ServerProvider } from "@t3tools/contracts";
 
+import { formatSubagentTokenCount, type RuntimeSubagent } from "./subagentRuntime.ts";
+
 /** Zero retention ensures closing the detail immediately releases its RPC owner. */
 export const SESSION_AGENT_LIVE_ACTIVITY_IDLE_TTL_MS = 0;
 
@@ -52,6 +54,37 @@ export function sessionAgentLiveActivitySelectionIsOpen(input: {
 export interface SessionAgentLiveActivityPresentation {
   readonly revision: number;
   readonly entries: ReadonlyArray<string>;
+}
+
+export interface SessionAgentLiveActivityAgentSummary {
+  readonly statusLabel: "Working";
+  readonly activityLabel: string | null;
+  readonly usageLabel: string | null;
+}
+
+/**
+ * Reuses only the safe aggregate fields already visible in the agent roster.
+ * Prompts, tool arguments and results, reasoning, and native identifiers never
+ * enter this presentation.
+ */
+export function presentSessionAgentLiveActivityAgentSummary(
+  agent: Pick<RuntimeSubagent, "lastToolName" | "usage">,
+): SessionAgentLiveActivityAgentSummary {
+  const usage = agent.usage;
+  const usageLabel =
+    usage === null
+      ? null
+      : [
+          `${formatSubagentTokenCount(usage.totalTokens)} tokens`,
+          ...(usage.toolUses === undefined
+            ? []
+            : [`${usage.toolUses} ${usage.toolUses === 1 ? "tool" : "tools"}`]),
+        ].join(" · ");
+  return {
+    statusLabel: "Working",
+    activityLabel: agent.lastToolName === null ? null : `Last tool: ${agent.lastToolName}`,
+    usageLabel,
+  };
 }
 
 /**
