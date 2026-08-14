@@ -148,6 +148,9 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
                       method as "setSteeringMode" | "setFollowUpMode"
                     ] === "function",
                 ),
+                inputQueueMutation:
+                  typeof backend.manager.bridge.DaemonAgentConnection.prototype
+                    .mutateQueuedMessage === "function",
                 agentCancel:
                   typeof backend.manager.bridge.DaemonAgentConnection.prototype.cancelRlmChild ===
                   "function",

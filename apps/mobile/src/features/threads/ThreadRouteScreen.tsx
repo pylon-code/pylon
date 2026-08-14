@@ -914,6 +914,7 @@ function ThreadRouteContent(
           onSendMessage={composer.onSendMessage}
           onQueueFollowUp={composer.onQueueFollowUp}
           onClearSessionInputQueue={composer.onClearSessionInputQueue}
+          onRemoveOnlySessionInputQueueItem={composer.onRemoveOnlySessionInputQueueItem}
           onSetSessionInputQueueMode={composer.onSetSessionInputQueueMode}
           onRunSessionCompactionAction={composer.onRunSessionCompactionAction}
           onCancelSessionAgent={composer.onCancelSessionAgent}

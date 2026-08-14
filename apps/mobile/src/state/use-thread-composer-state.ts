@@ -30,6 +30,7 @@ import { deriveLatestSessionAgentDepth } from "@t3tools/client-runtime/state/ses
 import {
   deriveLatestSessionInputQueue,
   hasSessionInputQueueModes,
+  supportsSessionInputQueueRemove,
   supportsSessionInputQueueSetModes,
 } from "@t3tools/client-runtime/state/session-input-queue";
 import { deriveLatestSessionResources } from "@t3tools/client-runtime/state/session-resources";
@@ -135,6 +136,10 @@ export function useThreadComposerState() {
   const clearSessionInputQueue = useAtomCommand(threadEnvironment.clearSessionInputQueue, {
     reportFailure: false,
   });
+  const removeOnlySessionInputQueueItem = useAtomCommand(
+    threadEnvironment.removeOnlySessionInputQueueItem,
+    { reportFailure: false },
+  );
   const setSessionInputQueueMode = useAtomCommand(threadEnvironment.setSessionInputQueueMode, {
     reportFailure: false,
   });
@@ -689,6 +694,50 @@ export function useThreadComposerState() {
     selectedThreadShell,
   ]);
 
+  const onRemoveOnlySessionInputQueueItem = useCallback(
+    async (queue: "steering" | "follow-up") => {
+      const session = selectedThreadDetail?.session;
+      const provider =
+        session?.providerInstanceId === undefined
+          ? null
+          : (selectedThreadServerConfig?.providers.find(
+              (candidate) => candidate.instanceId === session.providerInstanceId,
+            ) ?? null);
+      const count =
+        queue === "steering"
+          ? (selectedThreadInputQueue?.steeringCount ?? 0)
+          : (selectedThreadInputQueue?.followUpCount ?? 0);
+      if (
+        !selectedThreadShell ||
+        session?.status !== "running" ||
+        session.activeTurnId == null ||
+        count !== 1 ||
+        !supportsSessionInputQueueRemove(provider)
+      ) {
+        return false;
+      }
+      const result = await removeOnlySessionInputQueueItem({
+        environmentId: selectedThreadShell.environmentId,
+        input: { threadId: selectedThreadShell.id, queue },
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          setPendingConnectionError("Failed to remove the pending session input.");
+        }
+        return false;
+      }
+      return true;
+    },
+    [
+      removeOnlySessionInputQueueItem,
+      selectedThreadDetail?.session,
+      selectedThreadInputQueue?.followUpCount,
+      selectedThreadInputQueue?.steeringCount,
+      selectedThreadServerConfig?.providers,
+      selectedThreadShell,
+    ],
+  );
+
   const onSetSessionInputQueueMode = useCallback(
     async (queue: "steering" | "follow-up", mode: "all-at-once" | "one-at-a-time") => {
       const session = selectedThreadDetail?.session;
@@ -906,6 +955,7 @@ export function useThreadComposerState() {
     onSendMessage,
     onQueueFollowUp,
     onClearSessionInputQueue,
+    onRemoveOnlySessionInputQueueItem,
     onSetSessionInputQueueMode,
     onRunSessionCompactionAction: runSessionCompactionMutation,
     onCancelSessionAgent,

@@ -30,6 +30,7 @@ import type {
   ProviderGetSessionCompactionInput,
   ProviderGetSessionInputQueueInput,
   ProviderInterruptTurnInput,
+  ProviderRemoveOnlySessionInputQueueItemInput,
   ProviderInstanceId,
   ProviderReloadSessionResourcesInput,
   ProviderRefineSessionHarnessInput,
@@ -152,6 +153,10 @@ export interface ProviderServiceShape {
 
   readonly clearSessionInputQueue: (
     input: ProviderClearSessionInputQueueInput,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
+
+  readonly removeOnlySessionInputQueueItem: (
+    input: ProviderRemoveOnlySessionInputQueueItemInput,
   ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
 
   readonly setSessionInputQueueMode: (

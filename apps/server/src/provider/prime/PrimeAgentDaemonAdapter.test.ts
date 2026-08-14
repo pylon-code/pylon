@@ -180,6 +180,11 @@ interface FakeCaptures {
     followUpMode: "all-at-once" | "one-at-a-time";
   };
   inputQueueModesAvailable: boolean;
+  inputQueueMutationAvailable: boolean;
+  inputQueueMutationCalls: Array<"steering" | "follow-up">;
+  inputQueueMutationStatus: "applied" | "rejected" | "invalid" | "unsupported";
+  inputQueueMutationFailure: boolean;
+  inputQueueMutationDrainOtherLane: boolean;
   inputQueueModeCalls: Array<{
     readonly queue: "steering" | "follow-up";
     readonly mode: "all-at-once" | "one-at-a-time";
@@ -309,6 +314,11 @@ function makeCaptures(): FakeCaptures {
       followUpMode: "one-at-a-time",
     },
     inputQueueModesAvailable: true,
+    inputQueueMutationAvailable: true,
+    inputQueueMutationCalls: [],
+    inputQueueMutationStatus: "applied",
+    inputQueueMutationFailure: false,
+    inputQueueMutationDrainOtherLane: false,
     inputQueueModeCalls: [],
     inputQueueModeFailure: false,
     inputQueueModeFailureAfterMutation: false,
@@ -463,6 +473,7 @@ function fakeRuntimeFactory(
         }),
         initialInputQueue: captures.inputQueue,
         inputQueueModesAvailable: captures.inputQueueModesAvailable,
+        inputQueueMutationAvailable: captures.inputQueueMutationAvailable,
         compactionAvailable: captures.compactionAvailable,
         refinementAvailable: captures.refinementAvailable && input.resumeCursor === undefined,
         refineLocalHarness: Effect.gen(function* () {
@@ -742,6 +753,28 @@ function fakeRuntimeFactory(
           };
           return { queue: captures.inputQueue, activeAction: false, isStreaming: false };
         }),
+        removeOnlyInputQueueItem: (queueKind) =>
+          Effect.suspend(() => {
+            captures.inputQueueMutationCalls.push(queueKind);
+            if (captures.inputQueueMutationFailure) {
+              return Effect.fail(
+                new PrimeAgentDaemonSessionRuntimeError({
+                  operation: "remove-only-input-queue-item",
+                  reason: "request-failed",
+                  detail: "queue mutation failed",
+                }),
+              );
+            }
+            if (captures.inputQueueMutationStatus === "applied") {
+              captures.inputQueue = captures.inputQueueMutationDrainOtherLane
+                ? { ...captures.inputQueue, steeringCount: 0, followUpCount: 0 }
+                : {
+                    ...captures.inputQueue,
+                    ...(queueKind === "steering" ? { steeringCount: 0 } : { followUpCount: 0 }),
+                  };
+            }
+            return Effect.succeed(captures.inputQueueMutationStatus);
+          }),
         setInputQueueMode: (mode) =>
           Effect.suspend(() => {
             captures.inputQueueModeCalls.push(mode);
@@ -1427,6 +1460,162 @@ describe("PrimeAgentDaemonAdapter", () => {
           yield* Fiber.interrupt(subscription.fiber);
         }),
       ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("removes and reconciles only a sole privacy-safe queue lane item", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.inputQueue = {
+          ...captures.inputQueue,
+          followUpCount: 1,
+        };
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+
+        const removed = yield* adapter.removeOnlySessionInputQueueItem!({
+          threadId,
+          queue: "follow-up",
+        });
+        expect(removed).toMatchObject({ steeringCount: 0, followUpCount: 0 });
+        expect(captures.inputQueueMutationCalls).toEqual(["follow-up"]);
+        expect(
+          (yield* awaitObservedType(subscription.observed, "session.input-queue.updated")).payload,
+        ).toEqual(removed);
+
+        captures.inputQueue = { ...captures.inputQueue, steeringCount: 2 };
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 2,
+          steeringCount: 2,
+          followUpCount: 0,
+        });
+        yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+        expect(
+          yield* adapter.removeOnlySessionInputQueueItem!({ threadId, queue: "steering" }).pipe(
+            Effect.flip,
+          ),
+        ).toMatchObject({ _tag: "ProviderAdapterValidationError", reason: "invalid-input" });
+        expect(captures.inputQueueMutationCalls).toEqual(["follow-up"]);
+
+        captures.inputQueue = { ...captures.inputQueue, steeringCount: 1 };
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 1,
+          steeringCount: 1,
+          followUpCount: 0,
+        });
+        yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+        captures.inputQueueMutationStatus = "rejected";
+        expect(
+          yield* adapter.removeOnlySessionInputQueueItem!({ threadId, queue: "steering" }).pipe(
+            Effect.flip,
+          ),
+        ).toMatchObject({ _tag: "ProviderAdapterValidationError", reason: "invalid-input" });
+        expect(captures.inputQueueMutationCalls).toEqual(["follow-up", "steering"]);
+        expect(captures.disposeCount).toBe(0);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("settles an awaiting turn from reconciled zero counts when another lane drains", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.inputQueueMutationDrainOtherLane = true;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "base run" })
+          .pipe(Effect.forkChild);
+        yield* Queue.take(captures.promptObserved!);
+
+        captures.inputQueue = {
+          ...captures.inputQueue,
+          steeringCount: 1,
+          followUpCount: 1,
+        };
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 2,
+          steeringCount: 1,
+          followUpCount: 1,
+        });
+        yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+        yield* offer(captures, { _tag: "RunCompleted", messages: [] });
+
+        expect(
+          yield* adapter.removeOnlySessionInputQueueItem!({ threadId, queue: "steering" }),
+        ).toMatchObject({ steeringCount: 0, followUpCount: 0 });
+        yield* Fiber.join(running);
+        expect(captures.inputQueueMutationCalls).toEqual(["steering"]);
+        expect(captures.disposeCount).toBe(0);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("reconciles an ambiguous sole-item removal failure without retrying", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.inputQueue = { ...captures.inputQueue, steeringCount: 1 };
+        captures.inputQueueMutationFailure = true;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+
+        expect(
+          yield* adapter.removeOnlySessionInputQueueItem!({ threadId, queue: "steering" }).pipe(
+            Effect.flip,
+          ),
+        ).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+        expect(captures.inputQueueMutationCalls).toEqual(["steering"]);
+        expect(captures.disposeCount).toBe(0);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("closes the session when sole-item removal cannot reconcile", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.inputQueue = { ...captures.inputQueue, followUpCount: 1 };
+        captures.inputQueueStatusFailure = true;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "session.input-queue.updated");
+
+        expect(
+          yield* adapter.removeOnlySessionInputQueueItem!({ threadId, queue: "follow-up" }).pipe(
+            Effect.flip,
+          ),
+        ).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+        expect(captures.inputQueueMutationCalls).toEqual(["follow-up"]);
+        expect(captures.disposeCount).toBe(1);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
   );
 
   it.effect("sets and reconciles authoritative session input delivery modes", () =>

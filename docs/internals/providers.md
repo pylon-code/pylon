@@ -49,12 +49,15 @@ leaves authentication unknown because it is not a credential-status API. No sess
 composer options. The daemon adapter can switch
 models before a turn, steer an active turn, admit
 explicit follow-ups, choose all-at-once or one-at-a-time delivery independently for steering and
-follow-up inputs, and clear pending inputs without aborting current work. Native queue previews
-terminate at the adapter boundary: only bounded steering/follow-up counts and normalized delivery
-modes use the stable `session.input-queue.updated` activity projection. Mode writes share the
-thread-mutation lock with queue, lifecycle, reload, depth, and agent-control mutations. The adapter
-reconciles the authoritative native queue after a rejected write and closes the session when a timeout
-leaves ownership ambiguous. Follow-up text follows the normal durable user-message
+follow-up inputs, clear pending inputs, and remove the sole item in either lane without aborting
+current work. Native queue previews terminate at the adapter boundary: only bounded steering/follow-up
+counts and normalized delivery modes use the stable `session.input-queue.updated` activity projection.
+Sole-item removal privately reads Prime's preview, performs one compare-and-delete through an isolated
+non-recovering daemon client, and then reconciles the authoritative queue. The mutation connection is
+closed after that request, so transport recovery cannot replay an ambiguous outcome. General removal and reordering
+remain unavailable because count-only clients cannot safely identify one item among several. These writes
+share the thread-mutation lock with lifecycle, reload, depth, and agent-control mutations. The adapter
+closes the session only when authoritative queue reconciliation also fails. Follow-up text follows the normal durable user-message
 command path, so an admission failure leaves the message in history with an explicit not-queued
 activity rather than deleting user intent. Clearing pending native inputs likewise does not erase durable
 history. Queued native runs stay inside one Pylon turn until the queue settles. Mobile's

@@ -23,6 +23,7 @@ const snapshot = {
 
 const callbacks = {
   onSetMode: () => undefined,
+  onRemove: () => undefined,
   onClear: () => undefined,
 };
 
@@ -36,6 +37,8 @@ describe("SessionInputQueueControl", () => {
         isSettingMode={false}
         canClear
         isClearing={false}
+        canRemove
+        isRemoving={false}
         {...callbacks}
       />,
     );
@@ -44,6 +47,8 @@ describe("SessionInputQueueControl", () => {
     expect(markup).toContain('aria-label="Follow-up input delivery"');
     expect(markup).toContain("All at once");
     expect(markup).toContain("One at a time");
+    expect(markup).toContain("Remove pending steering input");
+    expect(markup).not.toContain("Remove pending follow-up input");
     expect(markup).toContain("Clear 3 pending inputs");
     expect(markup).not.toContain("queued prompt");
     expect(markup).not.toContain("activeSessionId");
@@ -58,6 +63,8 @@ describe("SessionInputQueueControl", () => {
         isSettingMode
         canClear={false}
         isClearing={false}
+        canRemove
+        isRemoving={false}
         {...callbacks}
       />,
     );
@@ -75,6 +82,8 @@ describe("SessionInputQueueControl", () => {
         isSettingMode={false}
         canClear
         isClearing={false}
+        canRemove
+        isRemoving={false}
         {...callbacks}
       />,
     );

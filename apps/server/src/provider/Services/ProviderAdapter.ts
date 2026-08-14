@@ -16,6 +16,7 @@ import type {
   ProviderCancelSessionAgentResult,
   ProviderFollowUpInput,
   ProviderMessageSessionAgentResult,
+  ProviderRemoveOnlySessionInputQueueItemInput,
   ProviderRefineSessionHarnessResult,
   ProviderSessionAgentActivitySnapshot,
   ProviderDriverKind,
@@ -183,6 +184,11 @@ export interface ProviderAdapterShape<TError> {
   /** Clear queued inputs without interrupting the active provider run. */
   readonly clearSessionInputQueue?: (
     threadId: ThreadId,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, TError>;
+
+  /** Remove the current item only when the selected lane contains exactly one queued input. */
+  readonly removeOnlySessionInputQueueItem?: (
+    input: ProviderRemoveOnlySessionInputQueueItemInput,
   ) => Effect.Effect<SessionInputQueueUpdatedPayload, TError>;
 
   /** Configure how one category of queued inputs is delivered to the active session. */

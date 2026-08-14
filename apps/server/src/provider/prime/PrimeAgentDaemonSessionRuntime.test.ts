@@ -18,6 +18,7 @@ import {
   type PrimeAgentDaemonExtensionUiResponse,
   type PrimeAgentDaemonImage,
   type PrimeAgentDaemonPromptOptions,
+  type PrimeAgentDaemonQueuedMessageMutation,
   type PrimeAgentDaemonSessionWatcher,
   type PrimeAgentDaemonServiceTier,
   type PrimeAgentDaemonThinkingLevel,
@@ -141,6 +142,14 @@ function fixture(options?: {
   readonly sessionStats?: unknown;
   readonly getQueueImpl?: () => Promise<unknown>;
   readonly clearQueueImpl?: () => Promise<unknown>;
+  readonly mutateQueuedMessageImpl?: (
+    lane: "steering" | "followUp",
+    index: number,
+    expectedText: string,
+    mutation: PrimeAgentDaemonQueuedMessageMutation,
+  ) => Promise<unknown>;
+  readonly omitQueueMutation?: boolean;
+  readonly queueMutationCapability?: boolean;
   readonly getStateImpl?: () => Promise<unknown>;
   readonly setSteeringModeImpl?: (mode: "all" | "one-at-a-time") => Promise<unknown>;
   readonly setFollowUpModeImpl?: (mode: "all" | "one-at-a-time") => Promise<unknown>;
@@ -189,6 +198,25 @@ function fixture(options?: {
           success: true,
         });
       }
+      if (command.type === "mutate_queued_message") {
+        const lane = command.lane as "steering" | "followUp";
+        const index = command.index as number;
+        const expectedText = command.expectedText as string;
+        const mutation = command.mutation as PrimeAgentDaemonQueuedMessageMutation;
+        captures.connectionCalls.push({
+          method: "mutateQueuedMessage",
+          args: [lane, index, expectedText, mutation],
+        });
+        return (
+          options?.mutateQueuedMessageImpl?.(lane, index, expectedText, mutation) ??
+          Promise.resolve("applied")
+        ).then((status) => ({
+          type: "response",
+          command: "mutate_queued_message",
+          success: true,
+          data: { status },
+        }));
+      }
       return Promise.resolve(
         options?.createResponse ?? {
           type: "response",
@@ -204,6 +232,10 @@ function fixture(options?: {
     }
     enableRequestRecovery(): void {
       captures.order.push("request-recovery");
+    }
+    supportsServerCapability(capability: "queue_message_mutation"): boolean {
+      expect(capability).toBe("queue_message_mutation");
+      return options?.queueMutationCapability ?? true;
     }
     enableAutoReconnect(reconnectOptions: { readonly recoverDaemon: () => Promise<void> }): void {
       captures.reconnectOptions.push(reconnectOptions);
@@ -234,6 +266,9 @@ function fixture(options?: {
       if (options?.omitSideQuestions === true) {
         Object.defineProperty(this, "startSideQuestion", { value: undefined });
         Object.defineProperty(this, "abortSideQuestion", { value: undefined });
+      }
+      if (options?.omitQueueMutation === true) {
+        Object.defineProperty(this, "mutateQueuedMessage", { value: undefined });
       }
     }
     static attach(
@@ -316,6 +351,21 @@ function fixture(options?: {
     clearQueue(): Promise<unknown> {
       captures.connectionCalls.push({ method: "clearQueue", args: [] });
       return options?.clearQueueImpl?.() ?? Promise.resolve({ steering: [], followUp: [] });
+    }
+    mutateQueuedMessage(
+      lane: "steering" | "followUp",
+      index: number,
+      expectedText: string,
+      mutation: PrimeAgentDaemonQueuedMessageMutation,
+    ): Promise<unknown> {
+      captures.connectionCalls.push({
+        method: "mutateQueuedMessage",
+        args: [lane, index, expectedText, mutation],
+      });
+      return (
+        options?.mutateQueuedMessageImpl?.(lane, index, expectedText, mutation) ??
+        Promise.resolve("applied")
+      );
     }
     setSteeringMode(mode: "all" | "one-at-a-time"): Promise<unknown> {
       captures.connectionCalls.push({ method: "setSteeringMode", args: [mode] });
@@ -522,7 +572,6 @@ function fixture(options?: {
     DaemonAgentConnection: FakeConnection,
     defaultDaemonSocketPath: () => "/tmp/prime-agent.sock",
   };
-  const client = new FakeClient();
   const manager: PrimeAgentDaemonManager = {
     bridge,
     socket: "/tmp/pylon-prime.sock",
@@ -531,7 +580,7 @@ function fixture(options?: {
     openClient: () =>
       Effect.sync(() => {
         captures.openCount += 1;
-        return client;
+        return new FakeClient();
       }),
     recover: async () => {
       captures.recoverCount += 1;
@@ -1938,6 +1987,95 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           expect(test.captures.connectionCalls.map((call) => call.method)).not.toContain("abort");
         }),
       ),
+  );
+
+  it.effect("removes only a sole lane item with one native compare-and-delete", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let queue = { steering: [] as string[], followUp: ["private follow-up"] };
+        const test = fixture({
+          getQueueImpl: () => Promise.resolve(queue),
+          mutateQueuedMessageImpl: () => {
+            queue = { steering: [], followUp: [] };
+            return Promise.resolve("applied");
+          },
+        });
+        const runtime = yield* test.make();
+        expect(runtime.inputQueueMutationAvailable).toBe(true);
+        expect(yield* runtime.removeOnlyInputQueueItem("follow-up")).toBe("applied");
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "mutateQueuedMessage"),
+        ).toEqual([
+          {
+            method: "mutateQueuedMessage",
+            args: ["followUp", 0, "private follow-up", { type: "delete" }],
+          },
+        ]);
+        expect(test.captures.openCount).toBe(2);
+        expect(test.captures.order.filter((entry) => entry === "request-recovery")).toHaveLength(1);
+        expect(test.captures.closeCount).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("rejects a non-sole lane before mutation and gates an omitted native API", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const multiple = fixture({
+          getQueueImpl: () =>
+            Promise.resolve({ steering: ["private one", "private two"], followUp: [] }),
+        });
+        const multipleRuntime = yield* multiple.make();
+        expect(yield* multipleRuntime.removeOnlyInputQueueItem("steering")).toBe("rejected");
+        expect(
+          multiple.captures.connectionCalls.some((call) => call.method === "mutateQueuedMessage"),
+        ).toBe(false);
+
+        const omitted = fixture({ omitQueueMutation: true });
+        const omittedRuntime = yield* omitted.make();
+        expect(omittedRuntime.inputQueueMutationAvailable).toBe(false);
+        expect(
+          yield* omittedRuntime.removeOnlyInputQueueItem("steering").pipe(Effect.flip),
+        ).toMatchObject({ operation: "remove-only-input-queue-item", reason: "incompatible-api" });
+
+        const incompatibleDaemon = fixture({ queueMutationCapability: false });
+        const incompatibleRuntime = yield* incompatibleDaemon.make();
+        expect(incompatibleRuntime.inputQueueMutationAvailable).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("decodes queued mutation statuses and never retries a timed-out mutation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const malformed = fixture({
+          getQueueImpl: () => Promise.resolve({ steering: ["private"], followUp: [] }),
+          mutateQueuedMessageImpl: () => Promise.resolve({ native: "secret" }),
+        });
+        const malformedRuntime = yield* malformed.make();
+        expect(
+          yield* malformedRuntime.removeOnlyInputQueueItem("steering").pipe(Effect.flip),
+        ).toMatchObject({ operation: "remove-only-input-queue-item", reason: "invalid-response" });
+
+        const timedOut = fixture({
+          getQueueImpl: () => Promise.resolve({ steering: ["private"], followUp: [] }),
+          mutateQueuedMessageImpl: () => new Promise<unknown>(() => undefined),
+        });
+        const timedOutRuntime = yield* timedOut.make();
+        const fiber = yield* timedOutRuntime
+          .removeOnlyInputQueueItem("steering")
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("30 seconds");
+        expect(yield* Fiber.join(fiber).pipe(Effect.flip)).toMatchObject({
+          operation: "remove-only-input-queue-item",
+          reason: "request-timed-out",
+        });
+        expect(
+          timedOut.captures.connectionCalls.filter((call) => call.method === "mutateQueuedMessage"),
+        ).toHaveLength(1);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
   );
 
   it.effect("maps and bounds authoritative session input delivery modes", () =>

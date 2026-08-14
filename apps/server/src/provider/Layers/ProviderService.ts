@@ -28,6 +28,7 @@ import {
   ProviderGetSessionCompactionInput,
   ProviderGetSessionInputQueueInput,
   ProviderInterruptTurnInput,
+  ProviderRemoveOnlySessionInputQueueItemInput,
   ProviderReloadSessionResourcesInput,
   ProviderRefineSessionHarnessInput,
   ProviderSetSessionAgentDepthInput,
@@ -1328,6 +1329,38 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* clearInputQueue(routed.threadId);
   });
 
+  const removeOnlySessionInputQueueItem: ProviderServiceMethod<"removeOnlySessionInputQueueItem"> =
+    Effect.fn("removeOnlySessionInputQueueItem")(function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.removeOnlySessionInputQueueItem",
+        schema: ProviderRemoveOnlySessionInputQueueItemInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.removeOnlySessionInputQueueItem",
+        allowRecovery: false,
+      });
+      if (!routed.isActive) {
+        return yield* toValidationError(
+          "ProviderService.removeOnlySessionInputQueueItem",
+          `Thread '${input.threadId}' does not have an active provider session.`,
+        );
+      }
+      const removeOnlyInput = routed.adapter.removeOnlySessionInputQueueItem;
+      if (removeOnlyInput === undefined) {
+        return yield* new ProviderUnsupportedError({ provider: routed.adapter.provider });
+      }
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "remove-only-session-input-queue-item",
+        "provider.kind": routed.adapter.provider,
+        "provider.instance_id": routed.instanceId,
+        "provider.thread_id": input.threadId,
+        "provider.input_queue_kind": input.queue,
+      });
+      return yield* removeOnlyInput({ ...input, threadId: routed.threadId });
+    });
+
   const setSessionInputQueueMode: ProviderServiceMethod<"setSessionInputQueueMode"> = Effect.fn(
     "setSessionInputQueueMode",
   )(function* (rawInput) {
@@ -1783,6 +1816,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     followUp,
     getSessionInputQueue,
     clearSessionInputQueue,
+    removeOnlySessionInputQueueItem,
     setSessionInputQueueMode,
     getSessionCompaction,
     compactSession,

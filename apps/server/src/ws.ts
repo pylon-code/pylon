@@ -1652,6 +1652,14 @@ const makeWsRpcLayer = (
               .pipe(Effect.mapError(toProviderSessionInputQueueError)),
             { "rpc.aggregate": "provider" },
           ),
+        [WS_METHODS.providerRemoveOnlySessionInputQueueItem]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerRemoveOnlySessionInputQueueItem,
+            providerService
+              .removeOnlySessionInputQueueItem(input)
+              .pipe(Effect.mapError(toProviderSessionInputQueueError)),
+            { "rpc.aggregate": "provider" },
+          ),
         [WS_METHODS.providerSetSessionInputQueueMode]: (input) =>
           observeRpcEffect(
             WS_METHODS.providerSetSessionInputQueueMode,

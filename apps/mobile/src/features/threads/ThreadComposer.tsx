@@ -28,6 +28,7 @@ import {
   supportsSessionInputQueue,
   supportsSessionInputQueueClear,
   supportsSessionInputQueueFollowUp,
+  supportsSessionInputQueueRemove,
   supportsSessionInputQueueSetModes,
   type SessionInputQueueSnapshot,
 } from "@t3tools/client-runtime/state/session-input-queue";
@@ -135,6 +136,7 @@ import {
 import {
   buildSessionInputQueueMenuActions,
   parseSessionInputQueueModeAction,
+  parseSessionInputQueueRemoveAction,
 } from "./sessionInputQueueMenu";
 import {
   buildSessionCompactionMenuActions,
@@ -221,6 +223,7 @@ export interface ThreadComposerProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onQueueFollowUp: () => Promise<MessageId | null>;
   readonly onClearSessionInputQueue: () => Promise<boolean>;
+  readonly onRemoveOnlySessionInputQueueItem: (queue: "steering" | "follow-up") => Promise<boolean>;
   readonly onSetSessionInputQueueMode: (
     queue: "steering" | "follow-up",
     mode: "all-at-once" | "one-at-a-time",
@@ -705,6 +708,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session.activeTurnId != null &&
     sessionQueueCount > 0 &&
     supportsSessionInputQueueClear(activeSessionProviderStatus);
+  const canRemoveOnlySessionInputQueueItem =
+    props.connectionState === "connected" &&
+    props.selectedThread.session?.status === "running" &&
+    props.selectedThread.session.activeTurnId != null &&
+    supportsSessionInputQueueRemove(activeSessionProviderStatus);
   const showSessionInputQueueModes =
     hasSessionInputQueueModes(props.sessionInputQueue) &&
     supportsSessionInputQueueSetModes(activeSessionProviderStatus);
@@ -1455,11 +1463,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             count: sessionQueueCount,
             canSetModes: canSetSessionInputQueueModes,
             canClear: canClearSessionInputQueue,
+            canRemove: canRemoveOnlySessionInputQueueItem,
             mutating: isMutatingSessionInputQueue,
           })
         : [],
     [
       canClearSessionInputQueue,
+      canRemoveOnlySessionInputQueueItem,
       canSetSessionInputQueueModes,
       isMutatingSessionInputQueue,
       props.sessionInputQueue,
@@ -1471,6 +1481,38 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     (eventId: string) => {
       if (eventId === "session-input-clear") {
         confirmClearSessionInputQueue();
+        return;
+      }
+      const removalQueue = parseSessionInputQueueRemoveAction(eventId);
+      if (removalQueue !== null) {
+        const count =
+          removalQueue === "steering"
+            ? (props.sessionInputQueue?.steeringCount ?? 0)
+            : (props.sessionInputQueue?.followUpCount ?? 0);
+        if (!canRemoveOnlySessionInputQueueItem || isMutatingSessionInputQueue || count !== 1) {
+          return;
+        }
+        const label = removalQueue === "steering" ? "steering" : "follow-up";
+        Alert.alert(
+          `Remove pending ${label} input?`,
+          "This removes that input without stopping current work.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Remove",
+              style: "destructive",
+              onPress: () => {
+                const mutation = { scopeKey: sessionInputQueueScopeKey };
+                setSessionInputQueueMutation(mutation);
+                void props.onRemoveOnlySessionInputQueueItem(removalQueue).finally(() => {
+                  setSessionInputQueueMutation((current) =>
+                    current === mutation ? null : current,
+                  );
+                });
+              },
+            },
+          ],
+        );
         return;
       }
       const action = parseSessionInputQueueModeAction(eventId);
@@ -1488,11 +1530,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       });
     },
     [
+      canRemoveOnlySessionInputQueueItem,
       canSetSessionInputQueueModes,
       confirmClearSessionInputQueue,
       isMutatingSessionInputQueue,
+      props.onRemoveOnlySessionInputQueueItem,
       props.onSetSessionInputQueueMode,
+      props.sessionInputQueue?.followUpCount,
       props.sessionInputQueue?.followUpMode,
+      props.sessionInputQueue?.steeringCount,
       props.sessionInputQueue?.steeringMode,
       sessionInputQueueScopeKey,
     ],

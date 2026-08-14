@@ -270,6 +270,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         runtime: "daemon",
         inputQueue: true,
         inputQueueModes: true,
+        inputQueueMutation: true,
         agentCancel: true,
         agentMessage: true,
         agentLiveActivity: true,
@@ -294,6 +295,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         runtime: "daemon",
         inputQueue: true,
         inputQueueModes: true,
+        inputQueueMutation: true,
         agentCancel: true,
         agentMessage: true,
         agentLiveActivity: true,
@@ -317,6 +319,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         "widget",
       ]);
       expect(snapshot.featureCapabilities?.inputQueue?.operations).toContain("set-modes");
+      expect(snapshot.featureCapabilities?.inputQueue?.operations).toContain("remove");
       expect(snapshot.featureCapabilities?.context?.operations).toContain("refine");
       expect(snapshot.requiresNewThreadForModelChange).toBe(false);
       expect(snapshot.supportedRuntimeModes).toEqual(["approval-required", "full-access"]);

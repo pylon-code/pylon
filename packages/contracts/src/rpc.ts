@@ -88,6 +88,7 @@ import {
   ProviderGetSessionAgentDepthInput,
   ProviderGetSessionCompactionInput,
   ProviderGetSessionInputQueueInput,
+  ProviderRemoveOnlySessionInputQueueItemInput,
   ProviderReloadSessionResourcesInput,
   ProviderRespondToInteractionError,
   ProviderRespondToInteractionInput,
@@ -309,6 +310,7 @@ export const WS_METHODS = {
   providerSetSessionAgentDepth: "provider.setSessionAgentDepth",
   providerGetSessionInputQueue: "provider.getSessionInputQueue",
   providerClearSessionInputQueue: "provider.clearSessionInputQueue",
+  providerRemoveOnlySessionInputQueueItem: "provider.removeOnlySessionInputQueueItem",
   providerSetSessionInputQueueMode: "provider.setSessionInputQueueMode",
   providerGetSessionCompaction: "provider.getSessionCompaction",
   providerCompactSession: "provider.compactSession",
@@ -496,6 +498,15 @@ export const WsProviderClearSessionInputQueueRpc = Rpc.make(
   WS_METHODS.providerClearSessionInputQueue,
   {
     payload: ProviderClearSessionInputQueueInput,
+    success: SessionInputQueueUpdatedPayload,
+    error: Schema.Union([ProviderSessionInputQueueError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsProviderRemoveOnlySessionInputQueueItemRpc = Rpc.make(
+  WS_METHODS.providerRemoveOnlySessionInputQueueItem,
+  {
+    payload: ProviderRemoveOnlySessionInputQueueItemInput,
     success: SessionInputQueueUpdatedPayload,
     error: Schema.Union([ProviderSessionInputQueueError, EnvironmentAuthorizationError]),
   },
@@ -1213,6 +1224,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderSetSessionAgentDepthRpc,
   WsProviderGetSessionInputQueueRpc,
   WsProviderClearSessionInputQueueRpc,
+  WsProviderRemoveOnlySessionInputQueueItemRpc,
   WsProviderSetSessionInputQueueModeRpc,
   WsProviderGetSessionCompactionRpc,
   WsProviderCompactSessionRpc,

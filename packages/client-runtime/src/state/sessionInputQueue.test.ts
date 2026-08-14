@@ -8,6 +8,7 @@ import {
   hasSessionInputQueueModes,
   supportsSessionInputQueueClear,
   supportsSessionInputQueueFollowUp,
+  supportsSessionInputQueueRemove,
   supportsSessionInputQueueSetModes,
 } from "./sessionInputQueue.ts";
 
@@ -75,6 +76,7 @@ describe("session input queue state", () => {
             "observe" as const,
             "follow-up" as const,
             "clear" as const,
+            "remove" as const,
             "set-modes" as const,
           ],
         },
@@ -82,6 +84,7 @@ describe("session input queue state", () => {
     };
     expect(supportsSessionInputQueueFollowUp(provider)).toBe(true);
     expect(supportsSessionInputQueueClear(provider)).toBe(true);
+    expect(supportsSessionInputQueueRemove(provider)).toBe(true);
     expect(supportsSessionInputQueueSetModes(provider)).toBe(true);
     expect(supportsSessionInputQueueClear(null)).toBe(false);
   });

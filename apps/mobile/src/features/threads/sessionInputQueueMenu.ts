@@ -18,6 +18,13 @@ export function parseSessionInputQueueModeAction(
   };
 }
 
+export function parseSessionInputQueueRemoveAction(
+  eventId: string,
+): "steering" | "follow-up" | null {
+  const match = /^session-input-remove:(steering|follow-up)$/.exec(eventId);
+  return (match?.[1] as "steering" | "follow-up" | undefined) ?? null;
+}
+
 export function buildSessionInputQueueMenuActions(input: {
   readonly snapshot: SessionInputQueueSnapshot & {
     readonly steeringMode: "all-at-once" | "one-at-a-time";
@@ -26,6 +33,7 @@ export function buildSessionInputQueueMenuActions(input: {
   readonly count: number;
   readonly canSetModes: boolean;
   readonly canClear: boolean;
+  readonly canRemove: boolean;
   readonly mutating: boolean;
 }) {
   const deliveryActions = (
@@ -56,6 +64,30 @@ export function buildSessionInputQueueMenuActions(input: {
       subtitle: input.snapshot.followUpMode === "all-at-once" ? "All at once" : "One at a time",
       subactions: deliveryActions("follow-up", input.snapshot.followUpMode),
     },
+    ...(input.snapshot.steeringCount === 1
+      ? [
+          {
+            id: "session-input-remove:steering",
+            title: "Remove pending steering input",
+            attributes:
+              input.canRemove && !input.mutating
+                ? ({ destructive: true } as const)
+                : ({ disabled: true, destructive: true } as const),
+          },
+        ]
+      : []),
+    ...(input.snapshot.followUpCount === 1
+      ? [
+          {
+            id: "session-input-remove:follow-up",
+            title: "Remove pending follow-up input",
+            attributes:
+              input.canRemove && !input.mutating
+                ? ({ destructive: true } as const)
+                : ({ disabled: true, destructive: true } as const),
+          },
+        ]
+      : []),
     ...(input.count > 0
       ? [
           {

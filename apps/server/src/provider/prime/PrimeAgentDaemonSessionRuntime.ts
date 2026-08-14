@@ -33,6 +33,7 @@ import {
   type PrimeAgentDaemonExtensionUiResponse,
   type PrimeAgentDaemonImage,
   type PrimeAgentDaemonQueueMode,
+  type PrimeAgentDaemonQueuedMessageLane,
   type PrimeAgentDaemonServiceTier,
   type PrimeAgentDaemonThinkingLevel,
 } from "./PrimeAgentDaemonBridge.ts";
@@ -323,20 +324,36 @@ function safeAgentDepth(
   };
 }
 
-function decodeInputQueueCounts(value: unknown): Option.Option<SessionInputQueueUpdatedPayload> {
+interface PrimeAgentDaemonPrivateInputQueue {
+  readonly steering: ReadonlyArray<string>;
+  readonly followUp: ReadonlyArray<string>;
+  readonly snapshot: SessionInputQueueUpdatedPayload;
+}
+
+function decodePrivateInputQueue(value: unknown): Option.Option<PrimeAgentDaemonPrivateInputQueue> {
   if (typeof value !== "object" || value === null) return Option.none();
   const queue = value as { readonly steering?: unknown; readonly followUp?: unknown };
   const steering = queue.steering;
   const followUp = queue.followUp;
   if (
     !Array.isArray(steering) ||
+    !steering.every((entry) => typeof entry === "string") ||
     !Array.isArray(followUp) ||
+    !followUp.every((entry) => typeof entry === "string") ||
     steering.length > PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT ||
     followUp.length > PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT
   ) {
     return Option.none();
   }
-  return Option.some({ steeringCount: steering.length, followUpCount: followUp.length });
+  return Option.some({
+    steering,
+    followUp,
+    snapshot: { steeringCount: steering.length, followUpCount: followUp.length },
+  });
+}
+
+function decodeInputQueueCounts(value: unknown): Option.Option<SessionInputQueueUpdatedPayload> {
+  return Option.map(decodePrivateInputQueue(value), (queue) => queue.snapshot);
 }
 
 function resourceText(value: string | undefined, maxChars: number): string | undefined {
@@ -423,6 +440,7 @@ const runtimeErrorOperation = Schema.Literals([
   "follow-up",
   "get-input-queue",
   "clear-input-queue",
+  "remove-only-input-queue-item",
   "set-input-queue-mode",
   "get-compaction-state",
   "compact",
@@ -574,6 +592,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly initialAgentDepth: PrimeAgentDaemonAgentDepth;
   readonly initialInputQueue: PrimeAgentDaemonInputQueue;
   readonly inputQueueModesAvailable: boolean;
+  readonly inputQueueMutationAvailable: boolean;
   readonly compactionAvailable: boolean;
   readonly refinementAvailable: boolean;
   readonly autoCompactionWritable: boolean;
@@ -648,6 +667,13 @@ export interface PrimeAgentDaemonSessionRuntime {
   >;
   readonly clearInputQueue: Effect.Effect<
     PrimeAgentDaemonInputQueueStatus,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
+  /** Deletes only the current sole item in a lane; the native preview never leaves this method. */
+  readonly removeOnlyInputQueueItem: (
+    queue: "steering" | "follow-up",
+  ) => Effect.Effect<
+    "applied" | "rejected" | "invalid" | "unsupported",
     PrimeAgentDaemonSessionRuntimeError
   >;
   readonly setInputQueueMode: (input: {
@@ -2274,27 +2300,42 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* callVoid("follow-up", () => method.call(connection, promptInput.text, images));
     });
 
+    const readPrivateInputQueue = (operation: "get-input-queue" | "remove-only-input-queue-item") =>
+      Effect.gen(function* () {
+        const method = yield* requireMethod(operation, connection!.getQueue);
+        const output = yield* Effect.tryPromise({
+          try: () => method.call(connection),
+          catch: () =>
+            runtimeError(
+              operation,
+              "request-failed",
+              "Could not read the Prime Agent session input queue.",
+            ),
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: COMMAND_TIMEOUT_MS,
+            orElse: () =>
+              runtimeError(
+                operation,
+                "request-timed-out",
+                "Timed out while reading the Prime Agent session input queue.",
+              ),
+          }),
+        );
+        const queue = decodePrivateInputQueue(output);
+        if (Option.isNone(queue)) {
+          return yield* runtimeError(
+            operation,
+            "invalid-response",
+            "Prime Agent returned an invalid session input queue.",
+          );
+        }
+        return queue.value;
+      });
+
     const getInputQueue = Effect.gen(function* () {
       yield* ensureOpen("get-input-queue");
-      const method = yield* requireMethod("get-input-queue", connection!.getQueue);
-      const output = yield* Effect.tryPromise({
-        try: () => method.call(connection),
-        catch: () =>
-          runtimeError(
-            "get-input-queue",
-            "request-failed",
-            "Could not read the Prime Agent session input queue.",
-          ),
-      });
-      const queue = decodeInputQueueCounts(output);
-      if (Option.isNone(queue)) {
-        return yield* runtimeError(
-          "get-input-queue",
-          "invalid-response",
-          "Prime Agent returned an invalid session input queue.",
-        );
-      }
-      return queue.value;
+      return (yield* readPrivateInputQueue("get-input-queue")).snapshot;
     });
 
     const getInputQueueStatus = Effect.gen(function* () {
@@ -2327,6 +2368,101 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "clear-input-queue",
           "invalid-response",
           "Prime Agent did not confirm an empty session input queue.",
+        );
+      }
+      return status;
+    });
+
+    const removeOnlyInputQueueItem = Effect.fn(
+      "PrimeAgentDaemonSessionRuntime.removeOnlyInputQueueItem",
+    )(function* (queue: "steering" | "follow-up") {
+      yield* ensureOpen("remove-only-input-queue-item");
+      yield* requireMethod("remove-only-input-queue-item", connection!.mutateQueuedMessage);
+      const current = yield* readPrivateInputQueue("remove-only-input-queue-item");
+      const nativeLane: PrimeAgentDaemonQueuedMessageLane =
+        queue === "steering" ? "steering" : "followUp";
+      const entries = nativeLane === "steering" ? current.steering : current.followUp;
+      if (entries.length !== 1) return "rejected" as const;
+      const expectedText = entries[0]!;
+      const response = yield* Effect.acquireUseRelease(
+        input.manager
+          .openClient()
+          .pipe(
+            Effect.mapError(() =>
+              runtimeError(
+                "remove-only-input-queue-item",
+                "request-failed",
+                "Could not open an isolated Prime Agent mutation connection.",
+              ),
+            ),
+          ),
+        (mutationClient) =>
+          Effect.gen(function* () {
+            if (mutationClient.supportsServerCapability?.("queue_message_mutation") === false) {
+              return { success: true, data: { status: "unsupported" } };
+            }
+            return yield* Effect.tryPromise({
+              try: () =>
+                mutationClient.request(
+                  {
+                    type: "mutate_queued_message",
+                    activeSessionId,
+                    lane: nativeLane,
+                    index: 0,
+                    expectedText,
+                    mutation: { type: "delete" },
+                  },
+                  COMMAND_TIMEOUT_MS,
+                ),
+              catch: () =>
+                runtimeError(
+                  "remove-only-input-queue-item",
+                  "request-failed",
+                  "Could not remove the sole Prime Agent session input.",
+                ),
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: COMMAND_TIMEOUT_MS,
+                orElse: () =>
+                  runtimeError(
+                    "remove-only-input-queue-item",
+                    "request-timed-out",
+                    "Timed out while removing the sole Prime Agent session input.",
+                  ),
+              }),
+            );
+          }),
+        (mutationClient) => Effect.sync(() => mutationClient.close()),
+      );
+      if (typeof response !== "object" || response === null) {
+        return yield* runtimeError(
+          "remove-only-input-queue-item",
+          "invalid-response",
+          "Prime Agent returned an invalid queued input mutation response.",
+        );
+      }
+      const envelope = response as {
+        readonly success?: unknown;
+        readonly data?: { readonly status?: unknown };
+      };
+      if (envelope.success !== true) {
+        return yield* runtimeError(
+          "remove-only-input-queue-item",
+          "request-failed",
+          "Prime Agent rejected the queued input mutation request.",
+        );
+      }
+      const status = envelope.data?.status;
+      if (
+        status !== "applied" &&
+        status !== "rejected" &&
+        status !== "invalid" &&
+        status !== "unsupported"
+      ) {
+        return yield* runtimeError(
+          "remove-only-input-queue-item",
+          "invalid-response",
+          "Prime Agent returned an invalid queued input mutation status.",
         );
       }
       return status;
@@ -2848,6 +2984,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       inputQueueModesAvailable:
         typeof connection.setSteeringMode === "function" &&
         typeof connection.setFollowUpMode === "function",
+      inputQueueMutationAvailable:
+        typeof connection.mutateQueuedMessage === "function" &&
+        (client.supportsServerCapability?.("queue_message_mutation") ?? true),
       compactionAvailable,
       refinementAvailable,
       autoCompactionWritable,
@@ -2873,6 +3012,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       getInputQueue,
       getInputQueueStatus,
       clearInputQueue,
+      removeOnlyInputQueueItem,
       setInputQueueMode,
       abort,
       abortAndClearQueue,

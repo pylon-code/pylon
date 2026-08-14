@@ -7,6 +7,7 @@ import {
   ProviderEvent,
   ProviderRefineSessionHarnessInput,
   ProviderRefineSessionHarnessResult,
+  ProviderRemoveOnlySessionInputQueueItemInput,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -23,6 +24,9 @@ const decodeProviderRefineSessionHarnessResult = Schema.decodeUnknownSync(
 );
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
+const decodeProviderRemoveOnlySessionInputQueueItemInput = Schema.decodeUnknownSync(
+  ProviderRemoveOnlySessionInputQueueItemInput,
+);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
 const decodeProviderEvent = Schema.decodeUnknownSync(ProviderEvent);
 
@@ -287,6 +291,23 @@ describe("ProviderRefineSessionHarness", () => {
         appliedCount: -1,
         failedCount: 0,
         outcome: "completed",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("ProviderRemoveOnlySessionInputQueueItemInput", () => {
+  it("accepts only provider-neutral queue lanes", () => {
+    expect(
+      decodeProviderRemoveOnlySessionInputQueueItemInput({
+        threadId: "thread-1",
+        queue: "follow-up",
+      }).queue,
+    ).toBe("follow-up");
+    expect(() =>
+      decodeProviderRemoveOnlySessionInputQueueItemInput({
+        threadId: "thread-1",
+        queue: "followUp",
       }),
     ).toThrow();
   });
