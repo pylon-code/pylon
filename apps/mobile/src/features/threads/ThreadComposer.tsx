@@ -720,9 +720,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     (props.selectedThread.session?.status === "ready" ||
       props.selectedThread.session?.status === "running") &&
     !isMutatingSessionInputQueue;
+  // A busy thread is no longer a reason to hold a message back: the outbox now
+  // delivers while a turn runs so the message steers it. Only a lost connection
+  // or an already-queued message still means "saved rather than sent".
   const sendLabel = canQueueFollowUp
     ? "Queue follow-up"
-    : props.connectionState !== "connected" || props.activeThreadBusy || props.localOutboxCount > 0
+    : props.connectionState !== "connected" || props.localOutboxCount > 0
       ? "Save pending send"
       : "Send";
 
@@ -1383,6 +1386,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       // after the send so its preference read and native Activity start don't
       // contend with the queued-message feedback on the tap frame.
       armAgentAwarenessLiveActivityForLocalWork({
+        environmentId: props.environmentId,
         threadTitle: props.selectedThread.title,
         projectTitle: props.environmentLabel ?? "Pylon",
       });
