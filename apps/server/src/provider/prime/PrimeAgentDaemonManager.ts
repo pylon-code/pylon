@@ -273,23 +273,21 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
   const hostPlatform = yield* HostProcessPlatform;
   const hostEnvironment = yield* HostProcessEnvironment;
   const platform = input.platform ?? hostPlatform;
-  const bridge = input.bridge ?? (yield* loadPrimeAgentDaemonBridge(input.executablePath));
   const paths = derivePrimeAgentDaemonPaths({ ...input, platform });
-  const defaultSocket = bridge.defaultDaemonSocketPath();
-  const socket =
-    paths.socket === defaultSocket
-      ? platform === "win32"
-        ? `${paths.socket}-pylon-private`
-        : paths.socket.replace(/\.sock$/, "-pylon-private.sock")
-      : paths.socket;
-  const sessionDir = paths.sessionDir;
   if (platform === "win32") {
     return yield* managerError(
-      socket,
+      paths.socket,
       "transport-security-unavailable",
       "Prime Agent daemon mode is disabled on Windows until its named pipe has a verified per-user ACL or authenticated handshake.",
     );
   }
+  const bridge = input.bridge ?? (yield* loadPrimeAgentDaemonBridge(input.executablePath));
+  const defaultSocket = bridge.defaultDaemonSocketPath();
+  const socket =
+    paths.socket === defaultSocket
+      ? paths.socket.replace(/\.sock$/, "-pylon-private.sock")
+      : paths.socket;
+  const sessionDir = paths.sessionDir;
   const timeoutMs = input.connectTimeoutMs ?? 10_000;
   const readinessSchedule = Schedule.max([
     Schedule.spaced(input.readinessRetryDelay ?? Duration.millis(50)),

@@ -201,6 +201,7 @@ function managerFixture(options?: {
   readonly restoreConnectionOnSpawn?: boolean;
   readonly tempDir?: string;
   readonly platform?: NodeJS.Platform;
+  readonly injectBridge?: boolean;
 }) {
   const commands: CapturedCommand[] = [];
   const processes: FakeProcess[] = [];
@@ -259,7 +260,7 @@ function managerFixture(options?: {
     readinessRetryDelay: Duration.zero,
     readinessRetries: 4,
     shutdownTimeout: Duration.zero,
-    bridge,
+    ...(options?.injectBridge === false ? {} : { bridge }),
   }).pipe(Effect.provide(Layer.merge(NodeServices.layer, spawner)));
   return {
     make,
@@ -309,11 +310,12 @@ describe("PrimeAgentDaemonManager paths and environment", () => {
 });
 
 describe("PrimeAgentDaemonManager lifecycle", () => {
-  it.effect("fails closed on Windows before spawning an unauthenticated named-pipe daemon", () => {
-    const fixture = managerFixture({ platform: "win32" });
+  it.effect("fails closed on Windows before loading Prime or spawning a named-pipe daemon", () => {
+    const fixture = managerFixture({ platform: "win32", injectBridge: false });
     return Effect.gen(function* () {
       const error = yield* Effect.flip(fixture.make);
       expect(error).toMatchObject({
+        socket: fixture.paths.socket,
         reason: "transport-security-unavailable",
         detail: expect.stringContaining("verified per-user ACL or authenticated handshake"),
       });
