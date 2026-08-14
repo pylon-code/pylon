@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   presentSessionAgentLiveActivity,
+  presentSessionAgentLiveActivityAgentSummary,
   sessionAgentLiveActivityTextRows,
   sessionAgentLiveActivityUnavailableLabel,
 } from "@t3tools/client-runtime/state/session-agent-live-activity";
@@ -10,6 +11,7 @@ import {
   type ProviderSessionAgentActivitySnapshot,
   type ThreadId,
 } from "@t3tools/contracts";
+import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import * as Cause from "effect/Cause";
 import { ActivityIndicator, Modal, Pressable, ScrollView, View } from "react-native";
 
@@ -20,11 +22,13 @@ export function SessionAgentLiveActivityModal({
   environmentId,
   threadId,
   agentId,
+  agent,
   onClose,
 }: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly agentId: string;
+  readonly agent: Pick<RuntimeSubagent, "lastToolName" | "usage">;
   readonly onClose: () => void;
 }) {
   const result = useAtomValue(
@@ -71,7 +75,7 @@ export function SessionAgentLiveActivityModal({
               <Text className="text-sm text-foreground-muted">Loading live activity…</Text>
             </View>
           ) : (
-            <SessionAgentLiveActivitySnapshot snapshot={result.value} />
+            <SessionAgentLiveActivitySnapshot snapshot={result.value} agent={agent} />
           )}
         </View>
       </View>
@@ -81,29 +85,52 @@ export function SessionAgentLiveActivityModal({
 
 export function SessionAgentLiveActivitySnapshot({
   snapshot,
+  agent,
 }: {
   readonly snapshot: ProviderSessionAgentActivitySnapshot;
+  readonly agent: Pick<RuntimeSubagent, "lastToolName" | "usage">;
 }) {
   const presentation = presentSessionAgentLiveActivity(snapshot);
-  if (presentation.entries.length === 0) {
-    return (
-      <Text accessibilityRole="text" className="py-6 text-sm text-foreground-muted">
-        No assistant activity yet.
-      </Text>
-    );
-  }
+  const summary = presentSessionAgentLiveActivityAgentSummary(agent);
   return (
-    <ScrollView accessibilityLiveRegion="polite" className="shrink">
-      <View className="gap-3 py-2">
-        {sessionAgentLiveActivityTextRows(presentation.entries).map((entry) => (
-          <Text key={entry.key} className="text-sm leading-6 text-foreground">
-            {entry.text}
+    <View className="shrink">
+      <View
+        accessibilityLiveRegion="polite"
+        className="mb-3 rounded-xl border border-border bg-secondary px-3 py-2"
+      >
+        <Text className="text-sm font-t3-bold text-foreground">{summary.statusLabel}</Text>
+        {summary.activityLabel === null ? null : (
+          <Text className="mt-0.5 text-xs text-foreground-muted">{summary.activityLabel}</Text>
+        )}
+        {summary.usageLabel === null ? null : (
+          <Text className="mt-0.5 font-mono text-xs text-foreground-muted">
+            {summary.usageLabel}
           </Text>
-        ))}
+        )}
       </View>
-      <Text className="mt-2 border-t border-border pt-2 text-xs text-foreground-muted">
-        Latest bounded snapshot · Live only
-      </Text>
-    </ScrollView>
+      {presentation.entries.length === 0 ? (
+        <View className="py-4">
+          <Text accessibilityRole="text" className="text-sm text-foreground-muted">
+            No assistant text yet.
+          </Text>
+          <Text className="mt-1 text-xs text-foreground-muted">
+            Tool arguments, results, and reasoning are not shown.
+          </Text>
+        </View>
+      ) : (
+        <ScrollView accessibilityLiveRegion="polite" className="shrink">
+          <View className="gap-3 py-2">
+            {sessionAgentLiveActivityTextRows(presentation.entries).map((entry) => (
+              <Text key={entry.key} className="text-sm leading-6 text-foreground">
+                {entry.text}
+              </Text>
+            ))}
+          </View>
+          <Text className="mt-2 border-t border-border pt-2 text-xs text-foreground-muted">
+            Latest bounded snapshot · Live only
+          </Text>
+        </ScrollView>
+      )}
+    </View>
   );
 }

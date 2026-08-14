@@ -4,6 +4,7 @@ import {
   canWatchSessionAgentLiveActivity,
   SESSION_AGENT_LIVE_ACTIVITY_IDLE_TTL_MS,
   presentSessionAgentLiveActivity,
+  presentSessionAgentLiveActivityAgentSummary,
   replaceSessionAgentLiveActivity,
   sessionAgentLiveActivitySelectionIsOpen,
   sessionAgentLiveActivityTextRows,
@@ -47,6 +48,22 @@ describe("session agent live activity", () => {
       false,
     );
     expect(supportsSessionAgentLiveActivity(null)).toBe(false);
+  });
+
+  it("presents only the safe aggregate activity already visible in the roster", () => {
+    expect(
+      presentSessionAgentLiveActivityAgentSummary({
+        lastToolName: "ipython",
+        usage: { totalTokens: 65_800, toolUses: 14 },
+      }),
+    ).toEqual({
+      statusLabel: "Working",
+      activityLabel: "Last tool: ipython",
+      usageLabel: "65.8k tokens · 14 tools",
+    });
+    expect(
+      presentSessionAgentLiveActivityAgentSummary({ lastToolName: null, usage: null }),
+    ).toEqual({ statusLabel: "Working", activityLabel: null, usageLabel: null });
   });
 
   it("closes stale selections on provider/runtime switches and agent settlement", () => {

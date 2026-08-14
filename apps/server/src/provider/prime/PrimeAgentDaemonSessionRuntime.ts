@@ -2121,13 +2121,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 return undefined;
               }
               const visible = sanitizePrimeAgentLiveActivityMessages([nativeEvent.message]);
+              const message = visible[0];
+              // Tool/reasoning-only events cannot affect the public snapshot,
+              // so they must not consume the bounded initialization budget.
+              if (message === undefined) return undefined;
               return {
                 type: "session_event",
                 event: {
                   type: nativeEvent.type,
-                  ...(visible[0] === undefined
-                    ? {}
-                    : { message: safeAssistantMessage(visible[0].text) }),
+                  message: safeAssistantMessage(message.text),
                 },
               };
             };

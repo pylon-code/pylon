@@ -936,6 +936,7 @@ export function AgentsPanel({
               environmentId={environmentId}
               threadId={threadId}
               agentId={selectedLiveActivityAgent.id}
+              agent={selectedLiveActivityAgent}
             />
           ) : null}
           <DialogFooter>
