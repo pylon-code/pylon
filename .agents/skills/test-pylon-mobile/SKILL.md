@@ -34,10 +34,11 @@ The development identity on both platforms is:
 
 These are Pylon-owned, not compatibility-named. `app.config.ts` is the source of
 truth, and a built `PylonDev.app` registers exactly `pylon-code-dev` and
-`com.pylon.code.dev`. `App.tsx` still lists `t3code-dev://` among React
-Navigation's linking prefixes, but iOS never delivers that scheme because it is
-not registered natively, so a `simctl openurl t3code-dev://…` silently does
-nothing.
+`com.pylon.code.dev`. `App.tsx`'s linking prefixes and the `dev:client` scripts
+match those schemes. iOS never delivers an unregistered scheme, so a
+`simctl openurl` naming one fails silently rather than erroring — check the
+registered list with `plutil -extract CFBundleURLTypes json -o - <app>/Info.plist`
+before assuming a deep link is broken.
 
 Bundle or package presence proves the correct variant, not native compatibility. Reuse it only when the current changes did not alter its Expo SDK, native dependencies, config plugins, entitlements, generated project, or native source.
 

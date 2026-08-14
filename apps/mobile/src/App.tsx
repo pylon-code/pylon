@@ -34,7 +34,11 @@ void SplashScreen.preventAutoHideAsync().catch(() => {
 });
 
 const appLinking = {
-  prefixes: [Linking.createURL("/"), "t3code://", "t3code-dev://", "t3code-preview://"],
+  // `createURL` covers the running variant's own scheme; the rest are listed so a
+  // link minted for one variant still resolves in another. They must match the
+  // schemes `app.config.ts` registers, because iOS never delivers an
+  // unregistered scheme to the app.
+  prefixes: [Linking.createURL("/"), "pylon-code://", "pylon-code-dev://", "pylon-code-preview://"],
   // The Expo dev client launches the app via
   // <scheme>://expo-development-client/?url=<packager> — that URL addresses
   // the launcher, not app navigation. Without this filter it falls through
