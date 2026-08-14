@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "1a6599437b6ad77330923819613cc28be3b33945"
+reviewed-through: "1add47b322ab1dfb5010bb363613650176b88088"
 reviewed-through-date: "2026-08-14"
 ---
 
@@ -1084,10 +1084,36 @@ clean on all four branches after fixing three `no-useless-fallback-in-spread`
 warnings that `#5877`'s new test introduced. **No browser pass on `E3`, no native
 pass on `E8`, no Android anywhere.**
 
+## 2026-08-14 (twelfth) — `1a6599437b6ad77330923819613cc28be3b33945..1add47b322ab1dfb5010bb363613650176b88088`
+
+Two commits, two change sets, **both adopted**. Nothing deferred. Neither was
+patch-equivalent, and both dry cherry-picked clean against `pylon` — no Pylon
+adaptation was needed for either.
+
+Both are terminal work but different concerns, so they landed as two branches:
+`fix/terminal-pid-flood` (PR #25) and `feat/terminal-copy-shortcut` (PR #26).
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------- | --------------------- | -------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| T1         | `80991402d` / `#6377` | adopted  | `2a8dd3cc4`     | Terminal subprocess polling spawned a process **per terminal per poll** at a 1s cadence (`pgrep` + `ps`, or `powershell.exe`). Now one `ps` snapshot of the whole table per cycle, with each terminal's subtree derived in memory: per-poll spawns drop from O(terminals × commands) to O(1). Also drops `pgrep` and resolves `ps` to an absolute path once, since spawning by bare name burns a failed `posix_spawn` per `PATH` entry. A defect whose blast radius reaches outside Pylon. |
+| T2         | `1add47b32` / `#5638` | adopted  | `cd3b7cb8b`     | Plain `Ctrl+C` copies a terminal selection on non-mac, where only `Ctrl+Shift+C` did before. **Verified it does not break SIGINT**: the copy path is gated on there being a selection, so an empty selection falls through to the shell, and a plain non-mac copy clears the selection so the next press interrupts. `Cmd+C` and `Ctrl+Shift+C` stay copy-only. Tradeoff: with text selected the first press copies rather than interrupts.                                                |
+
+`T2` leans deliberately on engine differences — plain `Ctrl+C` is left
+un-prevented so the native copy event fires, with a token-guarded deferred
+`clipboard.writeText` racing it for WebKit (which omits the keyboard copy event
+without a DOM selection), while `Ctrl+Shift+C` synthesises one via
+`execCommand("copy")` because Chrome binds that chord to inspect. **Unit tests
+cannot settle that race; no browser pass was run.**
+
+Verification: 54 tests on PR #25 (the commit ships 120 lines of new ones), 47 on
+PR #26; typechecks clean on `t3`, `@t3tools/web`, `@t3tools/contracts`; `vp lint`
+clean on both branches. **Neither got an integration pass** — no live multi-terminal
+session for `T1`, no Chrome/Safari clipboard check for `T2`.
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
-(see the sixth batch above); the eighth through eleventh batches each deferred
+(see the sixth batch above); the eighth through twelfth batches each deferred
 nothing new. Entries are removed once adopted or skipped, so an
 empty register means nothing is waiting._
 
