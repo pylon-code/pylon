@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildSessionInputQueueMenuActions,
   parseSessionInputQueueModeAction,
+  parseSessionInputQueueRemoveAction,
 } from "./sessionInputQueueMenu";
 
 const snapshot = {
@@ -23,6 +24,7 @@ describe("session input queue menu", () => {
       count: 3,
       canSetModes: true,
       canClear: true,
+      canRemove: true,
       mutating: false,
     });
     expect(actions[0]).toMatchObject({ title: "Steering inputs", subtitle: "All at once" });
@@ -31,19 +33,27 @@ describe("session input queue menu", () => {
       expect.objectContaining({ id: "session-input-mode:steering:all-at-once", state: "on" }),
     );
     expect(actions[2]).toMatchObject({
+      id: "session-input-remove:steering",
+      title: "Remove pending steering input",
+      attributes: { destructive: true },
+    });
+    expect(actions[3]).toMatchObject({
       id: "session-input-clear",
       title: "Clear 3 pending inputs",
       attributes: { destructive: true },
     });
+    expect(parseSessionInputQueueRemoveAction("session-input-remove:steering")).toBe("steering");
+    expect(parseSessionInputQueueRemoveAction("session-input-remove:native-secret")).toBeNull();
     expect(JSON.stringify(actions)).not.toContain("queued text");
   });
 
   it("disables mutations and strictly parses only known mode actions", () => {
     const actions = buildSessionInputQueueMenuActions({
-      snapshot,
+      snapshot: { ...snapshot, steeringCount: 0, followUpCount: 0 },
       count: 0,
       canSetModes: false,
       canClear: false,
+      canRemove: false,
       mutating: true,
     });
     expect(actions).toHaveLength(2);

@@ -29,7 +29,7 @@ export function deriveLatestSessionInputQueue(
 
 function supportsOperation(
   provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
-  operation: "observe" | "follow-up" | "clear" | "set-modes",
+  operation: "observe" | "follow-up" | "remove" | "clear" | "set-modes",
   write: boolean,
 ): boolean {
   const queue = provider?.featureCapabilities?.inputQueue;
@@ -51,6 +51,10 @@ export const supportsSessionInputQueueFollowUp = (
 export const supportsSessionInputQueueClear = (
   provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
 ): boolean => supportsOperation(provider, "clear", true);
+
+export const supportsSessionInputQueueRemove = (
+  provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
+): boolean => supportsOperation(provider, "remove", true);
 
 export const supportsSessionInputQueueSetModes = (
   provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,

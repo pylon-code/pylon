@@ -60,9 +60,10 @@ While a daemon-backed turn is working, sending another message steers the same t
 privacy-safe steering and follow-up counts; it never sends queued prompt previews to clients. The
 **Session inputs** control also lets you choose whether steering inputs and follow-ups are delivered
 **All at once** or **One at a time**. Those choices are shared with every client connected to the
-session and survive reconnects for as long as the native session does. The same control clears pending
-inputs without interrupting current work, while stopping the turn aborts current work and clears the
-native queue atomically. A queued follow-up remains in the
+session and survive reconnects for as long as the native session does. When either lane contains
+exactly one item, the same control can remove that sole steering or follow-up input without revealing
+its queued text. It also clears all pending inputs without interrupting current work, while stopping the
+turn aborts current work and clears the native queue atomically. A queued follow-up remains in the
 conversation as your durable intent; if admission fails, Pylon marks it as not queued. Clearing session
 inputs does not erase conversation history. On mobile, these shared session inputs
 remain separate from pending sends saved on that device. Native select, confirm, and input dialogs appear in
@@ -164,10 +165,10 @@ instead of silently opening a blank or merely recent Prime session.
 - Prime Agent 0.7.2 has no daemon-native or operating-system sandbox policy. Supervised mode gates
   tool admission but does not restrict an approved tool.
 - Authentication is managed in Prime Agent, not Pylon.
-- Plan mode, provider-conversation rollback, per-item queue editing or reordering, and Pylon's
-  per-thread MCP bridge are not supported yet. Prime Agent 0.7.2 exposes per-item queue mutation,
-  but Pylon does not yet integrate it because queued text must remain server-private and ambiguous
-  mutations must never be retried.
+- Plan mode, provider-conversation rollback, general per-item queue editing or reordering, and
+  Pylon's per-thread MCP bridge are not supported yet. Pylon integrates Prime Agent 0.7.2's mutation
+  API only for removing a lane's sole item. With multiple count-only items, clients cannot identify a
+  specific target safely without exposing queued text, and ambiguous mutations are never retried.
 - Pylon does not present live Prime reasoning streams, durable or historical child-session transcripts,
   cost breakdowns, goal mutations, heartbeats, saved-session history, or native package or MCP catalogs as first-class features. Active children have only the bounded **Live activity** view described above.
 - Heartbeat creation remains unavailable even though Prime Agent 0.7.2 exposes heartbeat methods. Prime does not identify a scheduled run in a way Pylon can safely match to a durable conversation turn and filesystem checkpoint. Clearing a heartbeat also does not return its underlying session to the normal lifecycle, so stopping or deleting the Pylon thread could otherwise leave invisible work behind. Pylon will not offer creation until recovery, clearing, stopping, and deletion can be made authoritative.

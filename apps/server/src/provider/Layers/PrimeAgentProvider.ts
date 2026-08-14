@@ -55,6 +55,7 @@ export function stampPrimeAgentBackendSnapshot(
         readonly runtime: "daemon";
         readonly inputQueue: boolean;
         readonly inputQueueModes: boolean;
+        readonly inputQueueMutation: boolean;
         readonly agentCancel: boolean;
         readonly agentMessage: boolean;
         readonly agentLiveActivity?: boolean;
@@ -75,6 +76,7 @@ export function stampPrimeAgentBackendSnapshot(
       sessionUi: backend.runtime === "daemon",
       inputQueue: backend.runtime === "daemon" && backend.inputQueue,
       inputQueueModes: backend.runtime === "daemon" && backend.inputQueueModes,
+      inputQueueMutation: backend.runtime === "daemon" && backend.inputQueueMutation,
       agentCancel: backend.runtime === "daemon" && backend.agentCancel,
       agentMessage: backend.runtime === "daemon" && backend.agentMessage,
       agentLiveActivity: backend.runtime === "daemon" && (backend.agentLiveActivity ?? false),

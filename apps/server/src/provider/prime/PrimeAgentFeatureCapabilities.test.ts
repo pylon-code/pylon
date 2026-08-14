@@ -10,6 +10,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       sessionUi: true,
       inputQueue: true,
       inputQueueModes: true,
+      inputQueueMutation: true,
       agentCancel: true,
       agentMessage: true,
       agentLiveActivity: true,
@@ -51,6 +52,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       "follow-up",
       "steer",
       "clear",
+      "remove",
       "set-modes",
     ]);
     expect(capabilities.context).toMatchObject({
@@ -79,6 +81,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
       sessionUi: true,
       inputQueue: false,
       inputQueueModes: false,
+      inputQueueMutation: false,
       agentCancel: false,
       agentMessage: false,
       agentLiveActivity: false,
@@ -96,12 +99,32 @@ describe("PrimeAgentFeatureCapabilities", () => {
     expect(capabilities.agents?.operations).not.toContain("live-activity");
   });
 
+  it("does not advertise per-lane removal without the delivery panel used to select a lane", () => {
+    const capabilities = makePrimeAgentFeatureCapabilities({
+      runtime: "daemon",
+      sessionUi: true,
+      inputQueue: true,
+      inputQueueModes: false,
+      inputQueueMutation: true,
+      agentCancel: false,
+      agentMessage: false,
+      agentLiveActivity: false,
+      compaction: false,
+      autoCompaction: false,
+      goals: false,
+      sideQuestions: false,
+    });
+
+    expect(capabilities.inputQueue?.operations).toEqual(["observe", "follow-up", "steer", "clear"]);
+  });
+
   it("keeps ACP fallback capabilities narrow and explicit", () => {
     const capabilities = makePrimeAgentFeatureCapabilities({
       runtime: "acp",
       sessionUi: false,
       inputQueue: false,
       inputQueueModes: false,
+      inputQueueMutation: false,
       agentCancel: false,
       agentMessage: false,
       agentLiveActivity: false,

@@ -55,7 +55,10 @@ export function SessionInputQueueDeliveryPanel(props: {
   readonly isSettingMode: boolean;
   readonly canClear: boolean;
   readonly isClearing: boolean;
+  readonly canRemove: boolean;
+  readonly isRemoving: boolean;
   readonly onSetMode: (queue: "steering" | "follow-up", value: string | null) => void;
+  readonly onRemove: (queue: "steering" | "follow-up") => void;
   readonly onClear: () => void;
 }) {
   return (
@@ -89,6 +92,28 @@ export function SessionInputQueueDeliveryPanel(props: {
           Updating delivery…
         </div>
       ) : null}
+      {props.snapshot.steeringCount === 1 ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!props.canRemove || props.isRemoving}
+          onClick={() => props.onRemove("steering")}
+        >
+          {props.isRemoving ? "Removing pending input…" : "Remove pending steering input"}
+        </Button>
+      ) : null}
+      {props.snapshot.followUpCount === 1 ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!props.canRemove || props.isRemoving}
+          onClick={() => props.onRemove("follow-up")}
+        >
+          {props.isRemoving ? "Removing pending input…" : "Remove pending follow-up input"}
+        </Button>
+      ) : null}
       {props.count > 0 ? (
         <Button
           type="button"
@@ -113,7 +138,10 @@ export function SessionInputQueueControl(props: {
   readonly isSettingMode: boolean;
   readonly canClear: boolean;
   readonly isClearing: boolean;
+  readonly canRemove: boolean;
+  readonly isRemoving: boolean;
   readonly onSetMode: (queue: "steering" | "follow-up", value: string | null) => void;
+  readonly onRemove: (queue: "steering" | "follow-up") => void;
   readonly onClear: () => void;
 }) {
   return (

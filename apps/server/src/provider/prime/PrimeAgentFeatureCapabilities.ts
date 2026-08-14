@@ -34,6 +34,7 @@ export function makePrimeAgentFeatureCapabilities(input: {
   readonly sessionUi: boolean;
   readonly inputQueue: boolean;
   readonly inputQueueModes: boolean;
+  readonly inputQueueMutation: boolean;
   readonly agentCancel: boolean;
   readonly agentMessage: boolean;
   readonly agentLiveActivity?: boolean;
@@ -115,12 +116,20 @@ export function makePrimeAgentFeatureCapabilities(input: {
     inputQueue: input.inputQueue
       ? {
           support: "read-write",
-          reason: input.inputQueueModes
-            ? "Pylon can observe privacy-safe queue counts, configure delivery, steer the active run, admit explicit follow-ups, and clear pending inputs without interrupting current work."
-            : "Pylon can observe privacy-safe queue counts, steer the active run, admit explicit follow-ups, and clear pending inputs without interrupting current work; delivery-mode controls are unavailable with the loaded daemon.",
-          operations: input.inputQueueModes
-            ? ["observe", "follow-up", "steer", "clear", "set-modes"]
-            : ["observe", "follow-up", "steer", "clear"],
+          reason:
+            input.inputQueueModes && input.inputQueueMutation
+              ? "Pylon can observe privacy-safe queue counts, configure delivery, steer the active run, admit explicit follow-ups, clear pending inputs, and remove a sole lane item without interrupting current work."
+              : input.inputQueueModes
+                ? "Pylon can observe privacy-safe queue counts, configure delivery, steer the active run, admit explicit follow-ups, and clear pending inputs; per-lane removal is unavailable with the loaded daemon."
+                : "Pylon can observe privacy-safe queue counts, steer the active run, admit explicit follow-ups, and clear pending inputs; delivery-mode and per-lane removal controls are unavailable with the loaded daemon.",
+          operations: [
+            "observe",
+            "follow-up",
+            "steer",
+            "clear",
+            ...(input.inputQueueMutation && input.inputQueueModes ? (["remove"] as const) : []),
+            ...(input.inputQueueModes ? (["set-modes"] as const) : []),
+          ],
         }
       : unavailable("The loaded Prime Agent daemon does not expose compatible input queue APIs."),
     context:

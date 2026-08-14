@@ -46,6 +46,7 @@ export interface PrimeAgentDaemonClient {
     timeoutMs?: number,
   ) => Promise<unknown>;
   readonly enableRequestRecovery?: () => void;
+  readonly supportsServerCapability?: (capability: "queue_message_mutation") => boolean;
   readonly enableAutoReconnect?: (options: {
     readonly recoverDaemon: () => Promise<void>;
     readonly timeoutMs?: number;
@@ -82,6 +83,16 @@ export type PrimeAgentDaemonThinkingLevel =
 export type PrimeAgentDaemonServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | null;
 
 export type PrimeAgentDaemonQueueMode = "all" | "one-at-a-time";
+export type PrimeAgentDaemonQueuedMessageLane = "steering" | "followUp";
+export type PrimeAgentDaemonQueuedMessageMutation =
+  | { readonly type: "delete" }
+  | { readonly type: "move"; readonly direction: -1 | 1 }
+  | {
+      readonly type: "replace";
+      readonly text: string;
+      readonly images?: ReadonlyArray<PrimeAgentDaemonImage>;
+      readonly lane: PrimeAgentDaemonQueuedMessageLane;
+    };
 
 export interface PrimeAgentDaemonClientConstructor {
   new (socketPath: string): PrimeAgentDaemonClient;
@@ -121,6 +132,12 @@ export interface PrimeAgentDaemonAgentConnection {
   ) => Promise<PrimeAgentDaemonSessionWatcher | undefined>;
   readonly getQueue?: () => Promise<unknown>;
   readonly clearQueue?: () => Promise<unknown>;
+  readonly mutateQueuedMessage?: (
+    lane: PrimeAgentDaemonQueuedMessageLane,
+    index: number,
+    expectedText: string,
+    mutation: PrimeAgentDaemonQueuedMessageMutation,
+  ) => Promise<unknown>;
   readonly setSteeringMode?: (mode: PrimeAgentDaemonQueueMode) => Promise<unknown>;
   readonly setFollowUpMode?: (mode: PrimeAgentDaemonQueueMode) => Promise<unknown>;
   readonly compact?: () => Promise<unknown>;

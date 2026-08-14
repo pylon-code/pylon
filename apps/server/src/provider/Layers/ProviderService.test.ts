@@ -282,6 +282,16 @@ function makeFakeCodexAdapter(
       return inputQueue;
     }),
   );
+  const removeOnlySessionInputQueueItem = vi.fn(
+    (input: { readonly threadId: ThreadId; readonly queue: "steering" | "follow-up" }) =>
+      Effect.sync(() => {
+        inputQueue = {
+          ...inputQueue,
+          ...(input.queue === "steering" ? { steeringCount: 0 } : { followUpCount: 0 }),
+        };
+        return inputQueue;
+      }),
+  );
   const setSessionInputQueueMode = vi.fn(
     (input: {
       readonly threadId: ThreadId;
@@ -368,6 +378,7 @@ function makeFakeCodexAdapter(
     setSessionAgentDepth,
     getSessionInputQueue,
     clearSessionInputQueue,
+    removeOnlySessionInputQueueItem,
     setSessionInputQueueMode,
     getSessionCompaction,
     compactSession,
@@ -417,6 +428,7 @@ function makeFakeCodexAdapter(
     setSessionAgentDepth,
     getSessionInputQueue,
     clearSessionInputQueue,
+    removeOnlySessionInputQueueItem,
     setSessionInputQueueMode,
     getSessionCompaction,
     compactSession,

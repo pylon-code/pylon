@@ -269,6 +269,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    removeOnlySessionInputQueueItem: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:remove-only-session-input-queue-item",
+      tag: WS_METHODS.providerRemoveOnlySessionInputQueueItem,
+      scheduler,
+      concurrency,
+    }),
     setSessionInputQueueMode: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:commands:thread:set-session-input-queue-mode",
       tag: WS_METHODS.providerSetSessionInputQueueMode,

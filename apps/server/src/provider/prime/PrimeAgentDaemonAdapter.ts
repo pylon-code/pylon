@@ -3714,6 +3714,114 @@ export function makePrimeAgentDaemonAdapter(
         ),
       );
 
+    const removeOnlySessionInputQueueItem: NonNullable<
+      PrimeAgentAdapterShape["removeOnlySessionInputQueueItem"]
+    > = (input) =>
+      Effect.uninterruptible(
+        withThreadMutationLock(
+          input.threadId,
+          Effect.gen(function* () {
+            const context = yield* requireSession(input.threadId);
+            if (!context.runtime.inputQueueMutationAvailable) {
+              return yield* new ProviderAdapterUnsupportedOperationError({
+                provider: PROVIDER,
+                operation: "removeOnlySessionInputQueueItem",
+              });
+            }
+            if (context.session.status !== "ready" && context.session.status !== "running") {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "removeOnlySessionInputQueueItem",
+                issue: "A queued input cannot be removed while the session is reconnecting.",
+                reason: "busy",
+              });
+            }
+            const selectedCount =
+              input.queue === "steering"
+                ? context.inputQueue.steeringCount
+                : context.inputQueue.followUpCount;
+            if (selectedCount !== 1) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "removeOnlySessionInputQueueItem",
+                issue: "The selected input queue must contain exactly one item.",
+                reason: "invalid-input",
+              });
+            }
+
+            context.inputQueueClearPending = true;
+            const mutation = yield* context.runtime.removeOnlyInputQueueItem(input.queue).pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(
+                  input.threadId,
+                  "session/remove-only-input-queue-item",
+                  error,
+                ),
+              ),
+              Effect.exit,
+            );
+            const reconciled = yield* context.runtime.getInputQueueStatus.pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(input.threadId, "session/get-input-queue", error),
+              ),
+              Effect.exit,
+            );
+            if (Exit.isSuccess(reconciled)) {
+              const status = reconciled.value;
+              context.nativeQueueActionActive = status.activeAction;
+              context.nativeRunActive = status.isStreaming;
+              yield* updateInputQueueProjection(context, status.queue);
+              const turn = context.activeTurn;
+              if (turn !== undefined) {
+                turn.queuedInputCount = status.queue.steeringCount + status.queue.followUpCount;
+                if (
+                  turn.awaitingQueuedRun &&
+                  turn.queuedInputCount === 0 &&
+                  !status.activeAction &&
+                  !status.isStreaming
+                ) {
+                  context.inputQueueClearPending = false;
+                  const settled = yield* settleActiveTurnLocked(context, turn, {
+                    state: "completed",
+                    event: { _tag: "RunCompleted", messages: turn.completedRunMessages },
+                  });
+                  if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+                }
+              }
+              context.inputQueueClearPending = false;
+            } else {
+              context.inputQueueClearPending = false;
+              yield* stopSessionInternal(
+                context,
+                "Prime Agent session closed after a queued input mutation could not be reconciled safely.",
+              ).pipe(Effect.ignore);
+              if (Exit.isSuccess(mutation) && mutation.value === "applied") {
+                return yield* Effect.failCause(reconciled.cause);
+              }
+            }
+
+            if (Exit.isFailure(mutation)) return yield* Effect.failCause(mutation.cause);
+            switch (mutation.value) {
+              case "applied":
+                return context.inputQueue;
+              case "unsupported":
+                return yield* new ProviderAdapterUnsupportedOperationError({
+                  provider: PROVIDER,
+                  operation: "removeOnlySessionInputQueueItem",
+                });
+              case "rejected":
+              case "invalid":
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "removeOnlySessionInputQueueItem",
+                  issue: "The queued input changed before it could be removed.",
+                  reason: "invalid-input",
+                });
+            }
+          }),
+        ),
+      );
+
     const setSessionInputQueueMode: NonNullable<
       PrimeAgentAdapterShape["setSessionInputQueueMode"]
     > = (input) =>
@@ -4428,6 +4536,7 @@ export function makePrimeAgentDaemonAdapter(
       followUp,
       getSessionInputQueue,
       clearSessionInputQueue,
+      removeOnlySessionInputQueueItem,
       setSessionInputQueueMode,
       getSessionCompaction,
       compactSession,

@@ -162,6 +162,7 @@ export interface ThreadDetailScreenProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onQueueFollowUp: () => Promise<MessageId | null>;
   readonly onClearSessionInputQueue: () => Promise<boolean>;
+  readonly onRemoveOnlySessionInputQueueItem: (queue: "steering" | "follow-up") => Promise<boolean>;
   readonly onSetSessionInputQueueMode: (
     queue: "steering" | "follow-up",
     mode: "all-at-once" | "one-at-a-time",
@@ -860,6 +861,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onSendMessage={handleSendMessage}
                 onQueueFollowUp={props.onQueueFollowUp}
                 onClearSessionInputQueue={props.onClearSessionInputQueue}
+                onRemoveOnlySessionInputQueueItem={props.onRemoveOnlySessionInputQueueItem}
                 onSetSessionInputQueueMode={props.onSetSessionInputQueueMode}
                 onRunSessionCompactionAction={props.onRunSessionCompactionAction}
                 onCancelSessionAgent={props.onCancelSessionAgent}

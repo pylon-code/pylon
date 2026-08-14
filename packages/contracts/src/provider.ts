@@ -379,6 +379,14 @@ export type ProviderGetSessionInputQueueInput = typeof ProviderGetSessionInputQu
 export const ProviderClearSessionInputQueueInput = Schema.Struct({ threadId: ThreadId });
 export type ProviderClearSessionInputQueueInput = typeof ProviderClearSessionInputQueueInput.Type;
 
+/** Remove the current item only when the selected privacy-safe queue lane contains exactly one. */
+export const ProviderRemoveOnlySessionInputQueueItemInput = Schema.Struct({
+  threadId: ThreadId,
+  queue: Schema.Literals(["steering", "follow-up"]),
+});
+export type ProviderRemoveOnlySessionInputQueueItemInput =
+  typeof ProviderRemoveOnlySessionInputQueueItemInput.Type;
+
 export const ProviderSetSessionInputQueueModeInput = Schema.Struct({
   threadId: ThreadId,
   queue: Schema.Literals(["steering", "follow-up"]),

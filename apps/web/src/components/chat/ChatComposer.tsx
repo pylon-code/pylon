@@ -46,6 +46,7 @@ import {
   supportsSessionInputQueue,
   supportsSessionInputQueueClear,
   supportsSessionInputQueueFollowUp,
+  supportsSessionInputQueueRemove,
   supportsSessionInputQueueSetModes,
 } from "@t3tools/client-runtime/state/session-input-queue";
 import {
@@ -687,6 +688,7 @@ export interface ChatComposerProps {
   onSend: (e?: { preventDefault: () => void }) => void;
   onQueueFollowUp: () => void;
   onClearSessionInputQueue: () => Promise<void>;
+  onRemoveOnlySessionInputQueueItem: (queue: "steering" | "follow-up") => Promise<void>;
   onSetSessionInputQueueMode: (
     queue: "steering" | "follow-up",
     mode: "all-at-once" | "one-at-a-time",
@@ -796,6 +798,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onSend,
     onQueueFollowUp,
     onClearSessionInputQueue,
+    onRemoveOnlySessionInputQueueItem,
     onSetSessionInputQueueMode,
     onInterrupt,
     onReloadSessionResources,
@@ -1108,6 +1111,46 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onClearSessionInputQueue,
     sessionInputQueueScopeKey,
   ]);
+  const canRemoveOnlySessionInputQueueItem =
+    supportsSessionInputQueueRemove(activeSessionProviderStatus) &&
+    activeThread?.session?.status === "running" &&
+    activeThread.session.activeTurnId != null &&
+    !isConnecting &&
+    environmentUnavailable === null;
+  const [removingSessionInputQueueItem, setRemovingSessionInputQueueItem] = useState<{
+    readonly scopeKey: string;
+    readonly queue: "steering" | "follow-up";
+  } | null>(null);
+  const isRemovingSessionInputQueueItem =
+    removingSessionInputQueueItem?.scopeKey === sessionInputQueueScopeKey;
+  const removeOnlySessionInputQueueItem = useCallback(
+    async (queue: "steering" | "follow-up") => {
+      const count =
+        queue === "steering"
+          ? (sessionInputQueue?.steeringCount ?? 0)
+          : (sessionInputQueue?.followUpCount ?? 0);
+      if (!canRemoveOnlySessionInputQueueItem || isRemovingSessionInputQueueItem || count !== 1) {
+        return;
+      }
+      const label = queue === "steering" ? "steering" : "follow-up";
+      if (!globalThis.confirm(`Remove the pending ${label} input?`)) return;
+      const mutation = { scopeKey: sessionInputQueueScopeKey, queue } as const;
+      setRemovingSessionInputQueueItem(mutation);
+      try {
+        await onRemoveOnlySessionInputQueueItem(queue);
+      } finally {
+        setRemovingSessionInputQueueItem((current) => (current === mutation ? null : current));
+      }
+    },
+    [
+      canRemoveOnlySessionInputQueueItem,
+      isRemovingSessionInputQueueItem,
+      onRemoveOnlySessionInputQueueItem,
+      sessionInputQueue?.followUpCount,
+      sessionInputQueue?.steeringCount,
+      sessionInputQueueScopeKey,
+    ],
+  );
   const [settingSessionInputQueueMode, setSettingSessionInputQueueMode] = useState<{
     readonly scopeKey: string;
     readonly queue: "steering" | "follow-up";
@@ -3979,7 +4022,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       isSettingMode={isSettingSessionInputQueueMode}
                       canClear={canClearSessionInputQueue}
                       isClearing={isClearingSessionInputQueue}
+                      canRemove={canRemoveOnlySessionInputQueueItem}
+                      isRemoving={isRemovingSessionInputQueueItem}
                       onSetMode={(queue, value) => void setSessionInputQueueMode(queue, value)}
+                      onRemove={(queue) => void removeOnlySessionInputQueueItem(queue)}
                       onClear={() => void clearSessionInputQueue()}
                     />
                   ) : showSessionInputQueue ? (
