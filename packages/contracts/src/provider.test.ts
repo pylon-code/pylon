@@ -2,12 +2,25 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
+  PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
+  ProviderCancelSessionAgentInput,
   ProviderEvent,
+  ProviderRefineSessionHarnessInput,
+  ProviderRefineSessionHarnessResult,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
 } from "./provider.ts";
 
+const decodeProviderCancelSessionAgentInput = Schema.decodeUnknownSync(
+  ProviderCancelSessionAgentInput,
+);
+const decodeProviderRefineSessionHarnessInput = Schema.decodeUnknownSync(
+  ProviderRefineSessionHarnessInput,
+);
+const decodeProviderRefineSessionHarnessResult = Schema.decodeUnknownSync(
+  ProviderRefineSessionHarnessResult,
+);
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
@@ -222,6 +235,58 @@ describe("providerInstanceId routing key (slice-2 invariant)", () => {
         provider: "codex",
         providerInstanceId: "1bad",
         runtimeMode: "full-access",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("ProviderCancelSessionAgentInput", () => {
+  it("accepts a bounded opaque agent id and trims it", () => {
+    const parsed = decodeProviderCancelSessionAgentInput({
+      threadId: "thread-1",
+      agentId: "  agent-1  ",
+    });
+    expect(parsed).toEqual({ threadId: "thread-1", agentId: "agent-1" });
+  });
+
+  it("rejects empty and oversized agent ids", () => {
+    expect(() =>
+      decodeProviderCancelSessionAgentInput({ threadId: "thread-1", agentId: " " }),
+    ).toThrow();
+    expect(() =>
+      decodeProviderCancelSessionAgentInput({
+        threadId: "thread-1",
+        agentId: "x".repeat(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS + 1),
+      }),
+    ).toThrow();
+  });
+});
+
+describe("ProviderRefineSessionHarness", () => {
+  it("accepts only thread identity and a sanitized terminal result", () => {
+    expect(decodeProviderRefineSessionHarnessInput({ threadId: "thread-1" })).toEqual({
+      threadId: "thread-1",
+    });
+    expect(
+      decodeProviderRefineSessionHarnessResult({
+        appliedCount: 2,
+        failedCount: 1,
+        outcome: "partial",
+      }),
+    ).toEqual({ appliedCount: 2, failedCount: 1, outcome: "partial" });
+    expect(
+      decodeProviderRefineSessionHarnessInput({
+        threadId: "thread-1",
+        global: true,
+        instructions: "private",
+        rollbackId: "native-secret",
+      }),
+    ).toEqual({ threadId: "thread-1" });
+    expect(() =>
+      decodeProviderRefineSessionHarnessResult({
+        appliedCount: -1,
+        failedCount: 0,
+        outcome: "completed",
       }),
     ).toThrow();
   });

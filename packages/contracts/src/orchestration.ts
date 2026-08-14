@@ -21,7 +21,21 @@ import {
   TrimmedString,
   TurnId,
 } from "./baseSchemas.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import {
+  SessionAgentDepthUpdatedPayload,
+  SessionCompactionUpdatedPayload,
+  SessionGoalUpdatedPayload,
+  SessionHarnessRefinementStatus,
+  SessionInputQueueUpdatedPayload,
+  SessionResourcesUpdatedPayload,
+} from "./providerRuntime.ts";
+import {
+  SessionInteractionRequest,
+  SessionInteractionRequestId,
+  SessionInteractionResponse,
+  SessionPresentation,
+} from "./sessionInteraction.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -288,6 +302,11 @@ export const OrchestrationSession = Schema.Struct({
   providerName: Schema.NullOr(TrimmedNonEmptyString),
   providerInstanceId: Schema.optional(ProviderInstanceId),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
+  /** True when this session was attached from a durable provider continuation. */
+  restored: Schema.optional(Schema.Boolean),
+  /** Start time of the current provider-session incarnation. */
+  startedAt: Schema.optional(IsoDateTime),
+  harnessRefinementStatus: Schema.optional(SessionHarnessRefinementStatus),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
@@ -335,6 +354,123 @@ export const OrchestrationThreadActivity = Schema.Struct({
   createdAt: IsoDateTime,
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
+
+export const SessionInteractionRequestedActivityPayload = Schema.Struct({
+  requestId: SessionInteractionRequestId,
+  request: SessionInteractionRequest,
+});
+export type SessionInteractionRequestedActivityPayload =
+  typeof SessionInteractionRequestedActivityPayload.Type;
+
+export const SessionInteractionResolvedActivityPayload = Schema.Struct({
+  requestId: SessionInteractionRequestId,
+  response: SessionInteractionResponse,
+});
+export type SessionInteractionResolvedActivityPayload =
+  typeof SessionInteractionResolvedActivityPayload.Type;
+
+export const SessionPresentationUpdatedActivityPayload = Schema.Struct({
+  presentation: SessionPresentation,
+});
+export type SessionPresentationUpdatedActivityPayload =
+  typeof SessionPresentationUpdatedActivityPayload.Type;
+
+/** Safe session resource inventory carried in the generic activity timeline. */
+export const SessionResourcesUpdatedActivityPayload = Schema.Struct({
+  ...SessionResourcesUpdatedPayload.fields,
+  provider: ProviderDriverKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+});
+export type SessionResourcesUpdatedActivityPayload =
+  typeof SessionResourcesUpdatedActivityPayload.Type;
+
+export const SessionAgentDepthUpdatedActivityPayload = Schema.Struct({
+  ...SessionAgentDepthUpdatedPayload.fields,
+  provider: ProviderDriverKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+});
+export type SessionAgentDepthUpdatedActivityPayload =
+  typeof SessionAgentDepthUpdatedActivityPayload.Type;
+
+export const SessionInputQueueUpdatedActivityPayload = Schema.Struct({
+  ...SessionInputQueueUpdatedPayload.fields,
+  provider: ProviderDriverKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+});
+export type SessionInputQueueUpdatedActivityPayload =
+  typeof SessionInputQueueUpdatedActivityPayload.Type;
+
+export const SessionCompactionUpdatedActivityPayload = Schema.Struct({
+  ...SessionCompactionUpdatedPayload.fields,
+  provider: ProviderDriverKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+});
+export type SessionCompactionUpdatedActivityPayload =
+  typeof SessionCompactionUpdatedActivityPayload.Type;
+
+export const SessionGoalUpdatedActivityPayload = Schema.Struct({
+  ...SessionGoalUpdatedPayload.fields,
+  provider: ProviderDriverKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+});
+export type SessionGoalUpdatedActivityPayload = typeof SessionGoalUpdatedActivityPayload.Type;
+
+const SessionActivityBaseFields = {
+  id: EventId,
+  tone: OrchestrationThreadActivityTone,
+  summary: TrimmedNonEmptyString,
+  turnId: Schema.NullOr(TurnId),
+  sequence: Schema.optional(NonNegativeInt),
+  createdAt: IsoDateTime,
+} as const;
+
+/** Strict decoder for the provider-neutral interaction activities carried in the generic timeline. */
+export const OrchestrationSessionActivity = Schema.Union([
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("interaction.requested"),
+    payload: SessionInteractionRequestedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("interaction.resolved"),
+    payload: SessionInteractionResolvedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("session-presentation.updated"),
+    payload: SessionPresentationUpdatedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("session.resources.updated"),
+    payload: SessionResourcesUpdatedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("session.agent-depth.updated"),
+    payload: SessionAgentDepthUpdatedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("session.input-queue.updated"),
+    payload: SessionInputQueueUpdatedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("session.compaction.updated"),
+    payload: SessionCompactionUpdatedActivityPayload,
+  }),
+  Schema.Struct({
+    ...SessionActivityBaseFields,
+    kind: Schema.Literal("session.goal.updated"),
+    payload: SessionGoalUpdatedActivityPayload,
+  }),
+]);
+export type OrchestrationSessionActivity = typeof OrchestrationSessionActivity.Type;
+export const decodeOrchestrationSessionActivity = Schema.decodeUnknownOption(
+  OrchestrationSessionActivity,
+);
 
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
@@ -868,6 +1004,32 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadInputQueueFollowUpCommand = Schema.Struct({
+  type: Schema.Literal("thread.input-queue.follow-up"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    role: Schema.Literal("user"),
+    text: Schema.String,
+    attachments: Schema.Array(ChatAttachment),
+  }),
+  createdAt: IsoDateTime,
+});
+
+const ClientThreadInputQueueFollowUpCommand = Schema.Struct({
+  type: Schema.Literal("thread.input-queue.follow-up"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    role: Schema.Literal("user"),
+    text: Schema.String,
+    attachments: Schema.Array(UploadChatAttachment),
+  }),
+  createdAt: IsoDateTime,
+});
+
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -934,6 +1096,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
+  ThreadInputQueueFollowUpCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -962,6 +1125,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
+  ClientThreadInputQueueFollowUpCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1081,9 +1245,11 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.interaction-mode-set",
   "thread.message-sent",
   "thread.turn-start-requested",
+  "thread.input-queue-follow-up-requested",
   "thread.turn-interrupt-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
+  "thread.interaction-response-requested",
   "thread.checkpoint-revert-requested",
   "thread.reverted",
   "thread.session-stop-requested",
@@ -1264,6 +1430,12 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadInputQueueFollowUpRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
@@ -1283,6 +1455,15 @@ const ThreadUserInputResponseRequestedPayload = Schema.Struct({
   answers: ProviderUserInputAnswers,
   createdAt: IsoDateTime,
 });
+
+export const ThreadInteractionResponseRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SessionInteractionRequestId,
+  response: SessionInteractionResponse,
+  createdAt: IsoDateTime,
+});
+export type ThreadInteractionResponseRequestedPayload =
+  typeof ThreadInteractionResponseRequestedPayload.Type;
 
 export const ThreadCheckpointRevertRequestedPayload = Schema.Struct({
   threadId: ThreadId,
@@ -1445,6 +1626,11 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
+    type: Schema.Literal("thread.input-queue-follow-up-requested"),
+    payload: ThreadInputQueueFollowUpRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
   }),
@@ -1457,6 +1643,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.user-input-response-requested"),
     payload: ThreadUserInputResponseRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.interaction-response-requested"),
+    payload: ThreadInteractionResponseRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

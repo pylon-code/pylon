@@ -49,7 +49,9 @@ function isStaleRequestFailureDetail(payload: Record<string, unknown> | null): b
     detail.includes("stale pending user-input request") ||
     detail.includes("unknown pending user-input request") ||
     detail.includes("unknown pending user input request") ||
-    detail.includes("unknown pending codex user input request")
+    detail.includes("unknown pending codex user input request") ||
+    detail.includes("stale pending interaction request") ||
+    detail.includes("unknown pending interaction request")
   );
 }
 
@@ -71,13 +73,22 @@ function hasOpenBlockingRequest(thread: {
         : null;
     const requestId = typeof payload?.requestId === "string" ? payload.requestId : null;
     if (requestId === null) continue;
-    if (activity.kind === "approval.requested" || activity.kind === "user-input.requested") {
+    if (
+      activity.kind === "approval.requested" ||
+      activity.kind === "user-input.requested" ||
+      activity.kind === "interaction.requested"
+    ) {
       openRequestIds.add(requestId);
-    } else if (activity.kind === "approval.resolved" || activity.kind === "user-input.resolved") {
+    } else if (
+      activity.kind === "approval.resolved" ||
+      activity.kind === "user-input.resolved" ||
+      activity.kind === "interaction.resolved"
+    ) {
       openRequestIds.delete(requestId);
     } else if (
       (activity.kind === "provider.approval.respond.failed" ||
-        activity.kind === "provider.user-input.respond.failed") &&
+        activity.kind === "provider.user-input.respond.failed" ||
+        activity.kind === "provider.interaction.respond.failed") &&
       isStaleRequestFailureDetail(payload)
     ) {
       openRequestIds.delete(requestId);
@@ -477,7 +488,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* Effect.fail(
           new OrchestrationCommandInvariantError({
             commandType: command.type,
-            detail: `thread ${command.threadId} has a pending approval or user-input request and cannot be settled`,
+            detail: `thread ${command.threadId} has a pending approval, user-input, or interaction request and cannot be settled`,
           }),
         );
       }
@@ -1027,6 +1038,96 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return [...lifecycleResetEvents, userMessageEvent, turnStartRequestedEvent];
     }
 
+    case "thread.input-queue.follow-up": {
+      const targetThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const activeTurn = targetThread.latestTurn;
+      if (activeTurn?.state !== "running" || targetThread.session?.status !== "running") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' does not have an active provider turn for a follow-up.`,
+        });
+      }
+      if (targetThread.messages.some((message) => message.id === command.message.messageId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Message '${command.message.messageId}' already exists on thread '${command.threadId}'.`,
+        });
+      }
+      const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.message-sent",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.message.messageId,
+          role: "user",
+          text: command.message.text,
+          attachments: command.message.attachments,
+          turnId: activeTurn.turnId,
+          streaming: false,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+      const requestedEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        causationEventId: userMessageEvent.eventId,
+        type: "thread.input-queue-follow-up-requested",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.message.messageId,
+          createdAt: command.createdAt,
+        },
+      };
+      const lifecycleResetEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      if (targetThread.settledOverride !== null) {
+        lifecycleResetEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.unsettled",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      if (targetThread.snoozedUntil != null) {
+        lifecycleResetEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.unsnoozed",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      return [...lifecycleResetEvents, userMessageEvent, requestedEvent];
+    }
+
     case "thread.turn.interrupt": {
       yield* requireThread({
         readModel,
@@ -1371,7 +1472,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // never stay hidden inside a settled slim row.
       const wakesSettledThread =
         command.activity.kind === "approval.requested" ||
-        command.activity.kind === "user-input.requested";
+        command.activity.kind === "user-input.requested" ||
+        command.activity.kind === "interaction.requested";
       // Real activity resets ANY override (settled wakes, active unpins).
       if (thread.settledOverride === null || !wakesSettledThread) {
         return activityAppendedEvent;

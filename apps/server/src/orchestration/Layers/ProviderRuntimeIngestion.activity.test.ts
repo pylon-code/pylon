@@ -1,8 +1,10 @@
 import {
   EventId,
   ProviderDriverKind,
+  RuntimeItemId,
   RuntimeTaskId,
   ThreadId,
+  TurnId,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -80,5 +82,212 @@ describe("runtimeEventToActivities task progress", () => {
     expect(usagePayload.typedUsage).toEqual({ totalTokens: 4_200, toolUses: 7 });
     expect(usagePayload.usageSnapshot).toBe(true);
     expect(usagePayload).not.toHaveProperty("status");
+  });
+});
+
+describe("runtimeEventToActivities context compaction", () => {
+  it("replaces start with terminal state and drops every provider detail", () => {
+    const itemId = RuntimeItemId.make("compaction:turn-1");
+    const turnId = TurnId.make("turn-1");
+    const started = {
+      ...base,
+      type: "item.started",
+      eventId: EventId.make("evt-compaction-started"),
+      itemId,
+      turnId,
+      payload: {
+        itemType: "context_compaction",
+        status: "inProgress",
+        title: "PRIVATE TITLE",
+        detail: "PRIVATE INSTRUCTIONS",
+        data: { summary: "PRIVATE SUMMARY" },
+      },
+    } satisfies ProviderRuntimeEvent;
+    const completed = {
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("evt-compaction-completed"),
+      itemId,
+      turnId,
+      payload: {
+        itemType: "context_compaction",
+        status: "completed",
+        title: "PRIVATE TITLE",
+        detail: "PRIVATE SUMMARY",
+        data: { error: "PRIVATE ERROR" },
+      },
+    } satisfies ProviderRuntimeEvent;
+
+    const [startedActivity] = runtimeEventToActivities(started);
+    const [completedActivity] = runtimeEventToActivities(completed);
+    expect(startedActivity).toMatchObject({
+      id: "context-compaction:codex:thread-1:compaction:turn-1",
+      kind: "context-compaction",
+      summary: "Compacting context",
+      payload: { status: "inProgress" },
+    });
+    expect(completedActivity).toMatchObject({
+      id: startedActivity?.id,
+      kind: "context-compaction",
+      summary: "Context compacted",
+      payload: { status: "completed" },
+    });
+    expect(JSON.stringify([startedActivity, completedActivity])).not.toContain("PRIVATE");
+  });
+
+  it("uses constant failed presentation for aborted or failed completion", () => {
+    const [activity] = runtimeEventToActivities({
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("evt-compaction-failed"),
+      itemId: RuntimeItemId.make("compaction:turn-1"),
+      turnId: TurnId.make("turn-1"),
+      payload: {
+        itemType: "context_compaction",
+        status: "failed",
+        detail: "PRIVATE ERROR",
+      },
+    });
+
+    expect(activity).toMatchObject({
+      tone: "error",
+      summary: "Context compaction failed",
+      payload: { status: "failed" },
+    });
+    expect(JSON.stringify(activity)).not.toContain("PRIVATE");
+
+    const [skipped] = runtimeEventToActivities({
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("evt-compaction-skipped"),
+      itemId: RuntimeItemId.make("compaction:turn-2"),
+      turnId: TurnId.make("turn-2"),
+      payload: {
+        itemType: "context_compaction",
+        status: "declined",
+        detail: "PRIVATE SKIP EXPLANATION",
+      },
+    });
+    expect(skipped).toMatchObject({
+      tone: "info",
+      summary: "Context compaction skipped",
+      payload: { status: "declined" },
+    });
+    expect(JSON.stringify(skipped)).not.toContain("PRIVATE");
+  });
+});
+
+describe("runtimeEventToActivities reported turn cost", () => {
+  it("persists finite non-negative values with stable per-turn identity", () => {
+    for (const totalCostUsd of [0, 0.0123]) {
+      const activities = runtimeEventToActivities({
+        ...base,
+        type: "turn.completed",
+        eventId: EventId.make(`evt-cost-${totalCostUsd}`),
+        turnId: TurnId.make("turn-cost"),
+        payload: { state: "completed", totalCostUsd },
+      });
+      expect(activities).toEqual([
+        {
+          id: "turn-cost:thread-1:turn-cost",
+          createdAt: base.createdAt,
+          tone: "info",
+          kind: "turn.cost",
+          summary: "Reported turn cost",
+          payload: { totalCostUsd },
+          turnId: "turn-cost",
+        },
+      ]);
+    }
+  });
+
+  it("drops absent, invalid, negative, and turnless values", () => {
+    for (const totalCostUsd of [undefined, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        runtimeEventToActivities({
+          ...base,
+          type: "turn.completed",
+          eventId: EventId.make("evt-invalid-cost"),
+          turnId: TurnId.make("turn-cost"),
+          payload: { state: "completed", totalCostUsd },
+        }),
+      ).toEqual([]);
+    }
+    expect(
+      runtimeEventToActivities({
+        ...base,
+        type: "turn.completed",
+        eventId: EventId.make("evt-turnless-cost"),
+        payload: { state: "completed", totalCostUsd: 1 },
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("runtimeEventToActivities retry and refinement lifecycle", () => {
+  it("replaces retry lifecycle with constant terminal state", () => {
+    const itemId = RuntimeItemId.make("retry:turn-1");
+    const start = runtimeEventToActivities({
+      ...base,
+      type: "item.started",
+      eventId: EventId.make("retry-start"),
+      turnId: TurnId.make("turn-1"),
+      itemId,
+      payload: { itemType: "retry", status: "inProgress", detail: "PRIVATE ERROR" },
+    })[0];
+    const end = runtimeEventToActivities({
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("retry-end"),
+      turnId: TurnId.make("turn-1"),
+      itemId,
+      payload: { itemType: "retry", status: "completed", detail: "PRIVATE ERROR" },
+    })[0];
+    expect(start).toMatchObject({
+      id: "provider-retry:codex:thread-1:retry:turn-1",
+      summary: "Retrying provider request",
+    });
+    expect(end).toMatchObject({
+      id: start?.id,
+      summary: "Provider retry succeeded",
+      payload: { status: "completed" },
+    });
+    expect(JSON.stringify([start, end])).not.toContain("PRIVATE");
+  });
+
+  it("preserves partial refinement counts without native content", () => {
+    const [activity] = runtimeEventToActivities({
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("refine-end"),
+      turnId: TurnId.make("turn-1"),
+      itemId: RuntimeItemId.make("refinement:turn-1"),
+      payload: {
+        itemType: "refinement",
+        status: "completed",
+        detail: "PRIVATE SUMMARY",
+        data: { appliedCount: 2, failedCount: 1, native: "PRIVATE" },
+      },
+    });
+    expect(activity).toMatchObject({
+      id: "harness-refinement:codex:thread-1:refine-end",
+      summary: "Harness refinement partially applied",
+      payload: { status: "partial", appliedCount: 2, failedCount: 1 },
+    });
+    expect(JSON.stringify(activity)).not.toContain("PRIVATE");
+
+    const [second] = runtimeEventToActivities({
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("refine-end-2"),
+      turnId: TurnId.make("turn-1"),
+      payload: {
+        itemType: "refinement",
+        status: "completed",
+        data: { appliedCount: 1, failedCount: 0 },
+      },
+    });
+    expect(second?.id).toBe("harness-refinement:codex:thread-1:refine-end-2");
+    expect(second?.id).not.toBe(activity?.id);
   });
 });

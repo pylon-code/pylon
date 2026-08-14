@@ -65,6 +65,7 @@ import {
 import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
+import { SessionNotificationRow } from "./ComposerSessionInteractionPanel";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
 import { MessageCopyButton } from "./MessageCopyButton";
@@ -136,6 +137,7 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
+  revertDisabledReason?: string;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
@@ -211,10 +213,12 @@ interface MessagesTimelineProps {
   latestTurn: TimelineLatestTurn | null;
   runningTurnId: TurnId | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
+  reportedTurnCosts?: ReadonlyMap<TurnId, number>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
+  revertDisabledReason?: string;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   activeThreadEnvironmentId: EnvironmentId;
@@ -257,10 +261,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   latestTurn,
   runningTurnId,
   turnDiffSummaryByAssistantMessageId,
+  reportedTurnCosts,
   routeThreadKey,
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
+  revertDisabledReason,
   isRevertingCheckpoint,
   onImageExpand,
   activeThreadEnvironmentId,
@@ -402,6 +408,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         isWorking,
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
+        ...(reportedTurnCosts === undefined ? {} : { reportedTurnCosts }),
         revertTurnCountByUserMessageId,
       }),
     [
@@ -413,6 +420,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isWorking,
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
+      reportedTurnCosts,
       revertTurnCountByUserMessageId,
     ],
   );
@@ -509,6 +517,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      ...(revertDisabledReason ? { revertDisabledReason } : {}),
       onImageExpand,
       onOpenTurnDiff,
       onToggleTurnFold,
@@ -525,6 +534,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      revertDisabledReason,
       onImageExpand,
       onOpenTurnDiff,
       onToggleTurnFold,
@@ -1066,15 +1076,19 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
             type="button"
             size="xs"
             variant="ghost"
-            disabled={activity.isRevertingCheckpoint || activity.isWorking}
+            disabled={
+              activity.isRevertingCheckpoint ||
+              activity.isWorking ||
+              Boolean(ctx.revertDisabledReason)
+            }
             onClick={() => ctx.onRevertUserMessage(messageId)}
-            aria-label="Revert to this message"
+            aria-label={ctx.revertDisabledReason ?? "Revert to this message"}
           />
         }
       >
         <Undo2Icon className="size-3" />
       </TooltipTrigger>
-      <TooltipPopup side="top">Revert to this message</TooltipPopup>
+      <TooltipPopup side="top">{ctx.revertDisabledReason ?? "Revert to this message"}</TooltipPopup>
     </Tooltip>
   );
 }
@@ -1120,7 +1134,12 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           onOpenTurnDiff={ctx.onOpenTurnDiff}
         />
         {row.showAssistantMeta ? (
-          <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100">
+          <div
+            className={cn(
+              "mt-1.5 flex items-center gap-2 text-xs tabular-nums transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100",
+              row.reportedCostLabel ? "opacity-100" : "opacity-0",
+            )}
+          >
             <AssistantCopyButton row={row} />
             {!row.message.streaming && (
               <Tooltip>
@@ -1134,6 +1153,9 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
                 </TooltipPopup>
               </Tooltip>
             )}
+            {row.reportedCostLabel ? (
+              <p className="text-muted-foreground text-xs tabular-nums">{row.reportedCostLabel}</p>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -2217,6 +2239,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   // Before any hooks: spawn CTA rows render their own component.
   if (workEntry.agentSpawn) {
     return <AgentSpawnCtaRow workEntry={workEntry} />;
+  }
+  if (workEntry.sessionNotification) {
+    return <SessionNotificationRow notification={workEntry.sessionNotification} />;
   }
   return <PlainWorkEntryRow workEntry={workEntry} workspaceRoot={workspaceRoot} />;
 });

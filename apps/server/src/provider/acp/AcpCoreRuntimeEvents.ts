@@ -1,3 +1,7 @@
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as EffectAcpSchema from "effect-acp/schema";
+
 import {
   type RuntimeEventRawSource,
   RuntimeItemId,
@@ -22,6 +26,16 @@ type AcpAdapterRawSource = Extract<
 interface AcpEventStamp {
   readonly eventId: EventId;
   readonly createdAt: string;
+}
+
+const decodeSessionNotification = Schema.decodeUnknownOption(EffectAcpSchema.SessionNotification);
+
+function contentStreamKindFromAcpPayload(rawPayload: unknown): "assistant_text" | "reasoning_text" {
+  const notification = decodeSessionNotification(rawPayload);
+  return Option.isSome(notification) &&
+    notification.value.update.sessionUpdate === "agent_thought_chunk"
+    ? "reasoning_text"
+    : "assistant_text";
 }
 
 type AcpCanonicalRequestType = Extract<
@@ -230,7 +244,7 @@ export function makeAcpContentDeltaEvent(input: {
     turnId: input.turnId,
     ...(input.itemId ? { itemId: RuntimeItemId.make(input.itemId) } : {}),
     payload: {
-      streamKind: "assistant_text",
+      streamKind: contentStreamKindFromAcpPayload(input.rawPayload),
       delta: input.text,
     },
     raw: {

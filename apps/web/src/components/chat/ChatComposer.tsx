@@ -2,6 +2,9 @@ import type {
   ApprovalRequestId,
   EnvironmentId,
   ModelSelection,
+  ProviderAskSessionSideQuestionResult,
+  ProviderCancelSessionSideQuestionResult,
+  ProviderSessionSideQuestionRequestId,
   PreviewAnnotationPayload,
   ProviderApprovalDecision,
   ProviderInteractionMode,
@@ -9,15 +12,48 @@ import type {
   RuntimeMode,
   ScopedThreadRef,
   ServerProvider,
+  SessionCompactionUpdatedPayload,
   ThreadId,
 } from "@t3tools/contracts";
 import {
+  getServerProviderSupportedRuntimeModes,
+  resolveServerProviderRuntimeMode,
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
+import {
+  canAbortSessionCompaction,
+  canConfigureSessionAutoCompaction,
+  canStartSessionCompaction,
+  deriveLatestSessionCompaction,
+  isCurrentSessionCompactionRequest,
+  sessionCompactionScopeKey as makeSessionCompactionScopeKey,
+  supportsSessionCompaction,
+} from "@t3tools/client-runtime/state/context-compaction";
+import { deriveActiveSessionGoal } from "@t3tools/client-runtime/state/session-goal";
+import {
+  canSetSessionAgentDepth,
+  deriveLatestSessionAgentDepth,
+  supportsSessionAgentDepth,
+} from "@t3tools/client-runtime/state/session-agent-depth";
+import {
+  deriveLatestSessionInputQueue,
+  hasSessionInputQueueModes,
+  sessionInputQueueCount,
+  supportsSessionInputQueue,
+  supportsSessionInputQueueClear,
+  supportsSessionInputQueueFollowUp,
+  supportsSessionInputQueueSetModes,
+} from "@t3tools/client-runtime/state/session-input-queue";
+import {
+  deriveLatestSessionResources,
+  formatProviderSlashCommandDescription,
+  resolveSessionSlashCommands,
+  supportsSessionResourceReload,
+} from "@t3tools/client-runtime/state/session-resources";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import {
@@ -102,6 +138,8 @@ import {
   renderProviderTraitsPicker,
 } from "./composerProviderState";
 import { ContextWindowMeter } from "./ContextWindowMeter";
+import { SessionGoalControl } from "./SessionGoalControl";
+import { SessionInputQueueControl } from "./SessionInputQueueControl";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../pierre-icons";
 import { cn, randomUUID } from "~/lib/utils";
@@ -233,14 +271,24 @@ import {
   BotIcon,
   CircleAlertIcon,
   PencilRulerIcon,
+  MessageCircleQuestionIcon,
   type LucideIcon,
   LockIcon,
   LockOpenIcon,
   PenLineIcon,
+  RefreshCwIcon,
   SparklesIcon,
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
+import {
+  canRefineSessionHarness,
+  harnessRefinementToast,
+  isCurrentSessionHarnessRefinementRequest,
+  sessionHarnessRefinementControlState,
+  sessionHarnessRefinementScopeKey as buildSessionHarnessRefinementScopeKey,
+  SESSION_HARNESS_REFINEMENT_CONFIRMATION,
+} from "../../sessionHarnessRefinement";
 import { getProviderDisplayName, getProviderInteractionModeToggle } from "../../providerModels";
 import {
   applyProviderInstanceSettings,
@@ -268,6 +316,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 import type { ThreadHandoffOffer } from "./ThreadHandoff.logic";
 import { ThreadHandoffTab } from "./ThreadHandoffTab";
+import { QuickQuestionDialog } from "./QuickQuestionDialog";
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -340,6 +389,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   showInteractionModeToggle: boolean;
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
+  supportedRuntimeModes: ReadonlyArray<RuntimeMode>;
   onToggleInteractionMode: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
@@ -399,25 +449,27 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
             <SelectValue>{runtimeModeOption.label}</SelectValue>
           </TooltipTrigger>
           <SelectPopup alignItemWithTrigger={false}>
-            {runtimeModeOptions.map((mode) => {
-              const option = runtimeModeConfig[mode];
-              const OptionIcon = option.icon;
-              return (
-                <SelectItem key={mode} value={mode} hideIndicator className="min-w-64 py-2">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <div className="grid min-w-0 flex-1 gap-0.5">
-                      <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-                        <OptionIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                        {option.label}
-                      </span>
-                      <span className="text-muted-foreground text-xs leading-4">
-                        {option.description}
-                      </span>
+            {runtimeModeOptions
+              .filter((mode) => props.supportedRuntimeModes.includes(mode))
+              .map((mode) => {
+                const option = runtimeModeConfig[mode];
+                const OptionIcon = option.icon;
+                return (
+                  <SelectItem key={mode} value={mode} hideIndicator className="min-w-64 py-2">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="grid min-w-0 flex-1 gap-0.5">
+                        <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+                          <OptionIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                          {option.label}
+                        </span>
+                        <span className="text-muted-foreground text-xs leading-4">
+                          {option.description}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                </SelectItem>
-              );
-            })}
+                  </SelectItem>
+                );
+              })}
           </SelectPopup>
         </Select>
         <TooltipPopup side="top">{runtimeModeOption.description}</TooltipPopup>
@@ -434,6 +486,9 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   activeThreadProviderDisplayName: string | null;
   activeProviderUsageAccounts: readonly ProviderUsageAccount[];
   timestampFormat: UnifiedSettings["timestampFormat"];
+  contextCompaction: import("./ContextWindowMeter").ContextCompactionControlProps | null;
+  harnessRefinement: import("./ContextWindowMeter").HarnessRefinementControlProps | null;
+  sessionGoal: import("@t3tools/client-runtime/state/session-goal").SessionGoalSnapshot | null;
   isPreparingWorktree: boolean;
   pendingAction: {
     questionIndex: number;
@@ -443,6 +498,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
     isComplete: boolean;
   } | null;
   isRunning: boolean;
+  canQueueFollowUp: boolean;
+  onQueueFollowUp: () => void;
   showPlanFollowUpPrompt: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
@@ -457,11 +514,14 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
 }) {
   return (
     <>
-      {props.activeContextWindow ? (
+      {props.sessionGoal ? <SessionGoalControl snapshot={props.sessionGoal} /> : null}
+      {props.activeContextWindow || props.contextCompaction || props.harnessRefinement ? (
         <ContextWindowMeter
           usage={props.activeContextWindow}
           providerDisplayName={props.activeThreadProviderDisplayName}
           timestampFormat={props.timestampFormat}
+          compaction={props.contextCompaction}
+          harnessRefinement={props.harnessRefinement}
         />
       ) : null}
       {props.isPreparingWorktree ? (
@@ -471,6 +531,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         compact={props.compact}
         pendingAction={props.pendingAction}
         isRunning={props.isRunning}
+        canQueueFollowUp={props.canQueueFollowUp}
+        onQueueFollowUp={props.onQueueFollowUp}
         showPlanFollowUpPrompt={props.showPlanFollowUpPrompt}
         promptHasText={props.promptHasText}
         isSendBusy={props.isSendBusy}
@@ -499,6 +561,8 @@ export interface ChatComposerHandle {
   openModelPicker: () => void;
   toggleModelPicker: () => void;
   isModelPickerOpen: () => boolean;
+  canOpenQuickQuestion: () => boolean;
+  openQuickQuestion: () => boolean;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -596,6 +660,10 @@ export interface ChatComposerProps {
   // Context window
   activeThreadActivities: Thread["activities"] | undefined;
 
+  // Ephemeral session side question
+  quickQuestionAvailable: boolean;
+  quickQuestionIdentity: string | null;
+
   // Misc
   resolvedTheme: "light" | "dark";
   settings: UnifiedSettings;
@@ -617,7 +685,29 @@ export interface ChatComposerProps {
 
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
+  onQueueFollowUp: () => void;
+  onClearSessionInputQueue: () => Promise<void>;
+  onSetSessionInputQueueMode: (
+    queue: "steering" | "follow-up",
+    mode: "all-at-once" | "one-at-a-time",
+  ) => Promise<void>;
   onInterrupt: () => void;
+  onReloadSessionResources: () => Promise<void>;
+  onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
+  onGetSessionCompaction: () => Promise<SessionCompactionUpdatedPayload | null>;
+  onCompactSession: () => Promise<SessionCompactionUpdatedPayload | null>;
+  onAbortSessionCompaction: () => Promise<SessionCompactionUpdatedPayload | null>;
+  onSetSessionAutoCompaction: (enabled: boolean) => Promise<SessionCompactionUpdatedPayload | null>;
+  onRefineSessionHarness: () => Promise<
+    import("../../sessionHarnessRefinement").SessionHarnessRefinementOutcome | null
+  >;
+  onAskQuickQuestion: (
+    requestId: ProviderSessionSideQuestionRequestId,
+    question: string,
+  ) => Promise<ProviderAskSessionSideQuestionResult>;
+  onCancelQuickQuestion: (
+    requestId: ProviderSessionSideQuestionRequestId,
+  ) => Promise<ProviderCancelSessionSideQuestionResult>;
   onImplementPlanInNewThread: () => void;
   onContinueThreadOnAccount: () => void;
   onRespondToApproval: (
@@ -689,6 +779,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeProjectDefaultModelSelection,
     activeThreadModelSelection,
     activeThreadActivities,
+    quickQuestionAvailable,
+    quickQuestionIdentity,
     resolvedTheme,
     settings,
     keybindings,
@@ -702,7 +794,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     threadHandoffOffer,
     isContinuingThreadOnAccount,
     onSend,
+    onQueueFollowUp,
+    onClearSessionInputQueue,
+    onSetSessionInputQueueMode,
     onInterrupt,
+    onReloadSessionResources,
+    onSetSessionAgentDepth,
+    onGetSessionCompaction,
+    onCompactSession,
+    onAbortSessionCompaction,
+    onSetSessionAutoCompaction,
+    onRefineSessionHarness,
+    onAskQuickQuestion,
+    onCancelQuickQuestion,
     onImplementPlanInNewThread,
     onContinueThreadOnAccount,
     onRespondToApproval,
@@ -721,6 +825,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onExpandImage,
   } = props;
   const isSendDisabled = sendDisabledReason !== null;
+  const [isQuickQuestionOpen, setIsQuickQuestionOpen] = useState(false);
 
   // ------------------------------------------------------------------
   // Store subscriptions (prompt / images / terminal contexts)
@@ -918,6 +1023,474 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => selectedProviderEntry?.snapshot ?? null,
     [selectedProviderEntry],
   );
+  const activeSessionProviderStatus = useMemo(() => {
+    const instanceId = activeThread?.session?.providerInstanceId;
+    if (instanceId === undefined) return null;
+    return (
+      providerInstanceEntries.find((entry) => entry.instanceId === instanceId)?.snapshot ?? null
+    );
+  }, [activeThread?.session?.providerInstanceId, providerInstanceEntries]);
+  const sessionGoal = useMemo(
+    () =>
+      deriveActiveSessionGoal({
+        activities: activeThreadActivities ?? [],
+        provider: activeSessionProviderStatus,
+        providerInstanceId: activeThread?.session?.providerInstanceId,
+        runtimeMode: activeThread?.session?.runtimeMode,
+        sessionStatus: activeThread?.session?.status,
+      }),
+    [activeSessionProviderStatus, activeThread?.session, activeThreadActivities],
+  );
+  const showSessionResourceReload =
+    activeThreadId !== null &&
+    activeThread?.session?.runtimeMode === "full-access" &&
+    supportsSessionResourceReload(activeSessionProviderStatus);
+  const sessionResourceReloadDisabled =
+    activeThread?.session?.status !== "ready" ||
+    phase === "running" ||
+    isConnecting ||
+    environmentUnavailable !== null;
+  const [isReloadingSessionResources, setIsReloadingSessionResources] = useState(false);
+  const reloadSessionResources = useCallback(async () => {
+    if (sessionResourceReloadDisabled || isReloadingSessionResources) return;
+    setIsReloadingSessionResources(true);
+    try {
+      await onReloadSessionResources();
+    } finally {
+      setIsReloadingSessionResources(false);
+    }
+  }, [isReloadingSessionResources, onReloadSessionResources, sessionResourceReloadDisabled]);
+  const activeSessionInstanceId = activeThread?.session?.providerInstanceId;
+  const sessionInputQueue = useMemo(
+    () =>
+      activeSessionInstanceId === undefined
+        ? null
+        : deriveLatestSessionInputQueue(activeThreadActivities ?? [], activeSessionInstanceId),
+    [activeSessionInstanceId, activeThreadActivities],
+  );
+  const sessionInputCount = sessionInputQueueCount(sessionInputQueue);
+  const sessionInputQueueScopeKey = `${environmentId}:${activeThreadId ?? "draft"}:${activeSessionInstanceId ?? "none"}`;
+  const showSessionInputQueue =
+    sessionInputQueue !== null &&
+    sessionInputCount > 0 &&
+    supportsSessionInputQueue(activeSessionProviderStatus);
+  const showSessionInputQueueModes =
+    hasSessionInputQueueModes(sessionInputQueue) &&
+    supportsSessionInputQueueSetModes(activeSessionProviderStatus);
+  const canQueueSessionFollowUp =
+    activeThread?.session?.status === "running" &&
+    phase === "running" &&
+    supportsSessionInputQueueFollowUp(activeSessionProviderStatus);
+  const canClearSessionInputQueue =
+    sessionInputCount > 0 &&
+    supportsSessionInputQueueClear(activeSessionProviderStatus) &&
+    activeThread?.session?.status === "running" &&
+    activeThread.session.activeTurnId != null &&
+    !isConnecting &&
+    environmentUnavailable === null;
+  const [clearingSessionInputQueueScope, setClearingSessionInputQueueScope] = useState<
+    string | null
+  >(null);
+  const isClearingSessionInputQueue = clearingSessionInputQueueScope === sessionInputQueueScopeKey;
+  const clearSessionInputQueue = useCallback(async () => {
+    if (!canClearSessionInputQueue || isClearingSessionInputQueue) return;
+    if (!globalThis.confirm("Clear all pending inputs for this provider session?")) return;
+    const scopeKey = sessionInputQueueScopeKey;
+    setClearingSessionInputQueueScope(scopeKey);
+    try {
+      await onClearSessionInputQueue();
+    } finally {
+      setClearingSessionInputQueueScope((current) => (current === scopeKey ? null : current));
+    }
+  }, [
+    canClearSessionInputQueue,
+    isClearingSessionInputQueue,
+    onClearSessionInputQueue,
+    sessionInputQueueScopeKey,
+  ]);
+  const [settingSessionInputQueueMode, setSettingSessionInputQueueMode] = useState<{
+    readonly scopeKey: string;
+    readonly queue: "steering" | "follow-up";
+  } | null>(null);
+  const isSettingSessionInputQueueMode =
+    settingSessionInputQueueMode?.scopeKey === sessionInputQueueScopeKey;
+  const canSetSessionInputQueueModes =
+    showSessionInputQueueModes &&
+    (activeThread?.session?.status === "ready" || activeThread?.session?.status === "running") &&
+    !isConnecting &&
+    environmentUnavailable === null &&
+    !isSettingSessionInputQueueMode;
+  const setSessionInputQueueMode = useCallback(
+    async (queue: "steering" | "follow-up", value: string | null) => {
+      if (!canSetSessionInputQueueModes || (value !== "all-at-once" && value !== "one-at-a-time")) {
+        return;
+      }
+      const currentMode =
+        queue === "steering" ? sessionInputQueue?.steeringMode : sessionInputQueue?.followUpMode;
+      if (value === currentMode) return;
+      const mutation = { scopeKey: sessionInputQueueScopeKey, queue } as const;
+      setSettingSessionInputQueueMode(mutation);
+      try {
+        await onSetSessionInputQueueMode(queue, value);
+      } finally {
+        setSettingSessionInputQueueMode((current) => (current === mutation ? null : current));
+      }
+    },
+    [
+      canSetSessionInputQueueModes,
+      onSetSessionInputQueueMode,
+      sessionInputQueue?.followUpMode,
+      sessionInputQueue?.steeringMode,
+      sessionInputQueueScopeKey,
+    ],
+  );
+  const sessionAgentDepth = useMemo(
+    () =>
+      activeSessionInstanceId === undefined
+        ? null
+        : deriveLatestSessionAgentDepth(activeThreadActivities ?? [], activeSessionInstanceId),
+    [activeSessionInstanceId, activeThreadActivities],
+  );
+  const showSessionAgentDepth =
+    activeThreadId !== null &&
+    sessionAgentDepth !== null &&
+    supportsSessionAgentDepth(activeSessionProviderStatus);
+  const [isSettingSessionAgentDepth, setIsSettingSessionAgentDepth] = useState(false);
+  const sessionAgentDepthAccessibleLabel =
+    sessionAgentDepth === null || (sessionAgentDepth.writable && sessionAgentDepth.settable)
+      ? "Agent spawn depth"
+      : !sessionAgentDepth.writable
+        ? `Agent spawn depth ${sessionAgentDepth.maxDepth}, fixed by session policy`
+        : `Agent spawn depth ${sessionAgentDepth.maxDepth}, unavailable until the session is idle`;
+  const sessionAgentDepthDisabled =
+    !canSetSessionAgentDepth(activeSessionProviderStatus, sessionAgentDepth) ||
+    activeThread?.session?.status !== "ready" ||
+    phase === "running" ||
+    isSendBusy ||
+    isConnecting ||
+    environmentUnavailable !== null ||
+    isReloadingSessionResources ||
+    isSettingSessionAgentDepth;
+  const setSessionAgentDepth = useCallback(
+    async (value: string | null) => {
+      if (value === null || sessionAgentDepthDisabled) return;
+      const maxDepth = Number(value);
+      if (!Number.isInteger(maxDepth)) return;
+      setIsSettingSessionAgentDepth(true);
+      try {
+        await onSetSessionAgentDepth(maxDepth);
+      } finally {
+        setIsSettingSessionAgentDepth(false);
+      }
+    },
+    [onSetSessionAgentDepth, sessionAgentDepthDisabled],
+  );
+
+  const sessionCompactionScopeKey =
+    activeThreadId && activeSessionInstanceId
+      ? makeSessionCompactionScopeKey({
+          environmentId,
+          threadId: activeThreadId,
+          providerInstanceId: activeSessionInstanceId,
+        })
+      : null;
+  const activitySessionCompaction = useMemo(
+    () =>
+      activeSessionInstanceId === undefined
+        ? null
+        : deriveLatestSessionCompaction(activeThreadActivities ?? [], activeSessionInstanceId),
+    [activeSessionInstanceId, activeThreadActivities],
+  );
+  const [authoritativeSessionCompaction, setAuthoritativeSessionCompaction] = useState<{
+    readonly scopeKey: string;
+    readonly snapshot: SessionCompactionUpdatedPayload;
+  } | null>(null);
+  const [sessionCompactionMutation, setSessionCompactionMutation] = useState<{
+    readonly scopeKey: string;
+    readonly id: number;
+    readonly action: "compact" | "abort" | "auto";
+  } | null>(null);
+  const sessionCompactionScopeRef = useRef(sessionCompactionScopeKey);
+  sessionCompactionScopeRef.current = sessionCompactionScopeKey;
+  const sessionCompactionMutationRef = useRef(sessionCompactionMutation);
+  sessionCompactionMutationRef.current = sessionCompactionMutation;
+  const sessionCompactionRequestIdRef = useRef(0);
+  const lastCompactionActivityRef = useRef<{ scopeKey: string; updatedAt: string } | null>(null);
+  const sessionCompaction =
+    sessionCompactionScopeKey &&
+    authoritativeSessionCompaction?.scopeKey === sessionCompactionScopeKey
+      ? authoritativeSessionCompaction.snapshot
+      : activitySessionCompaction;
+  const showSessionCompaction =
+    sessionCompactionScopeKey !== null && supportsSessionCompaction(activeSessionProviderStatus);
+
+  useEffect(() => {
+    const scopeKey = sessionCompactionScopeKey;
+    const requestId = ++sessionCompactionRequestIdRef.current;
+    sessionCompactionMutationRef.current = null;
+    setSessionCompactionMutation(null);
+    if (
+      !scopeKey ||
+      !supportsSessionCompaction(activeSessionProviderStatus) ||
+      (activeThread?.session?.status !== "ready" && activeThread?.session?.status !== "running")
+    ) {
+      setAuthoritativeSessionCompaction(null);
+      return;
+    }
+    if (activitySessionCompaction) {
+      lastCompactionActivityRef.current = {
+        scopeKey,
+        updatedAt: activitySessionCompaction.updatedAt,
+      };
+      setAuthoritativeSessionCompaction({ scopeKey, snapshot: activitySessionCompaction });
+    } else {
+      lastCompactionActivityRef.current = null;
+      setAuthoritativeSessionCompaction(null);
+    }
+    if (activitySessionCompaction?.available === false) return;
+    void onGetSessionCompaction().then((snapshot) => {
+      if (
+        snapshot &&
+        isCurrentSessionCompactionRequest(
+          sessionCompactionScopeRef.current,
+          sessionCompactionRequestIdRef.current,
+          { scopeKey, id: requestId },
+        )
+      ) {
+        setAuthoritativeSessionCompaction({ scopeKey, snapshot });
+      }
+    });
+  }, [
+    activeSessionProviderStatus,
+    activeThread?.session?.status,
+    onGetSessionCompaction,
+    sessionCompactionScopeKey,
+  ]);
+
+  useEffect(() => {
+    const scopeKey = sessionCompactionScopeKey;
+    const snapshot = activitySessionCompaction;
+    if (!scopeKey || !snapshot) return;
+    const last = lastCompactionActivityRef.current;
+    if (last?.scopeKey === scopeKey && last.updatedAt === snapshot.updatedAt) return;
+    lastCompactionActivityRef.current = { scopeKey, updatedAt: snapshot.updatedAt };
+    sessionCompactionRequestIdRef.current += 1;
+    sessionCompactionMutationRef.current = null;
+    setSessionCompactionMutation(null);
+    setAuthoritativeSessionCompaction({ scopeKey, snapshot });
+  }, [activitySessionCompaction, sessionCompactionScopeKey]);
+
+  const runSessionCompactionMutation = useCallback(
+    async (
+      action: "compact" | "abort" | "auto",
+      mutate: () => Promise<SessionCompactionUpdatedPayload | null>,
+    ) => {
+      const scopeKey = sessionCompactionScopeRef.current;
+      if (!scopeKey || sessionCompactionMutationRef.current?.scopeKey === scopeKey) return;
+      const id = ++sessionCompactionRequestIdRef.current;
+      const mutation = { scopeKey, id, action } as const;
+      sessionCompactionMutationRef.current = mutation;
+      setSessionCompactionMutation(mutation);
+      const snapshot = await mutate();
+      if (
+        !isCurrentSessionCompactionRequest(
+          sessionCompactionScopeRef.current,
+          sessionCompactionRequestIdRef.current,
+          mutation,
+        )
+      ) {
+        return;
+      }
+      sessionCompactionMutationRef.current = null;
+      setSessionCompactionMutation((current) => (current?.id === id ? null : current));
+      if (snapshot) {
+        setAuthoritativeSessionCompaction({ scopeKey, snapshot });
+      }
+    },
+    [],
+  );
+  const contextCompactionConnected =
+    (activeThread?.session?.status === "ready" || activeThread?.session?.status === "running") &&
+    !isConnecting &&
+    environmentUnavailable === null;
+  const contextCompactionControl =
+    showSessionCompaction && sessionCompaction?.available
+      ? {
+          snapshot: sessionCompaction,
+          pendingAction:
+            sessionCompactionMutation?.scopeKey === sessionCompactionScopeKey
+              ? sessionCompactionMutation.action
+              : null,
+          canCompact:
+            contextCompactionConnected &&
+            sessionCompactionMutation === null &&
+            canStartSessionCompaction(activeSessionProviderStatus, sessionCompaction),
+          canAbort:
+            contextCompactionConnected &&
+            sessionCompactionMutation === null &&
+            canAbortSessionCompaction(activeSessionProviderStatus, sessionCompaction),
+          canSetAuto:
+            contextCompactionConnected &&
+            sessionCompactionMutation === null &&
+            canConfigureSessionAutoCompaction(activeSessionProviderStatus, sessionCompaction),
+          onCompact: () => {
+            if (
+              !contextCompactionConnected ||
+              !canStartSessionCompaction(activeSessionProviderStatus, sessionCompaction) ||
+              !globalThis.confirm("Compact the current provider session's context now?")
+            ) {
+              return;
+            }
+            void runSessionCompactionMutation("compact", onCompactSession);
+          },
+          onAbort: () => {
+            if (
+              !contextCompactionConnected ||
+              !canAbortSessionCompaction(activeSessionProviderStatus, sessionCompaction)
+            ) {
+              return;
+            }
+            void runSessionCompactionMutation("abort", onAbortSessionCompaction);
+          },
+          onSetAuto: (enabled: boolean) => {
+            if (
+              !contextCompactionConnected ||
+              !canConfigureSessionAutoCompaction(activeSessionProviderStatus, sessionCompaction)
+            ) {
+              return;
+            }
+            void runSessionCompactionMutation("auto", () => onSetSessionAutoCompaction(enabled));
+          },
+        }
+      : null;
+
+  const sessionHarnessRefinementScopeKey = buildSessionHarnessRefinementScopeKey({
+    sessionScopeKey: sessionCompactionScopeKey,
+    sessionStartedAt: activeThread?.session?.startedAt,
+  });
+  const sessionHarnessRefinementScopeRef = useRef(sessionHarnessRefinementScopeKey);
+  sessionHarnessRefinementScopeRef.current = sessionHarnessRefinementScopeKey;
+  const sessionHarnessRefinementLifecycle =
+    activeThread?.session?.harnessRefinementStatus ?? "available";
+  const sessionHarnessRefinementLifecycleRef = useRef(sessionHarnessRefinementLifecycle);
+  sessionHarnessRefinementLifecycleRef.current = sessionHarnessRefinementLifecycle;
+  const sessionHarnessRefinementRequestIdRef = useRef(0);
+  const pendingSessionHarnessRefinementRef = useRef<{
+    readonly scopeKey: string;
+    readonly id: number;
+  } | null>(null);
+  const [pendingSessionHarnessRefinement, setPendingSessionHarnessRefinement] = useState<{
+    readonly scopeKey: string;
+    readonly id: number;
+  } | null>(null);
+  const sessionHarnessRefinementUnknownScopeRef = useRef<string | null>(null);
+  const [sessionHarnessRefinementUnknownScope, setSessionHarnessRefinementUnknownScope] = useState<
+    string | null
+  >(null);
+  const sessionHarnessRefinementAvailable = canRefineSessionHarness({
+    provider: activeSessionProviderStatus,
+    hasActiveThread: activeThreadId !== null,
+    runtimeMode: activeThread?.session?.runtimeMode ?? runtimeMode,
+    sessionStatus: activeThread?.session?.status,
+    isConnecting,
+    environmentAvailable: environmentUnavailable === null,
+    restored: activeThread?.session?.restored === true,
+    sessionStartedAt: activeThread?.session?.startedAt,
+  });
+  const harnessRefinementControlState = sessionHarnessRefinementControlState({
+    lifecycle: sessionHarnessRefinementLifecycle,
+    locallyPending: pendingSessionHarnessRefinement?.scopeKey === sessionHarnessRefinementScopeKey,
+    locallyOutcomeUnknown:
+      sessionHarnessRefinementUnknownScope === sessionHarnessRefinementScopeKey,
+  });
+
+  useEffect(() => {
+    sessionHarnessRefinementRequestIdRef.current += 1;
+    pendingSessionHarnessRefinementRef.current = null;
+    sessionHarnessRefinementUnknownScopeRef.current = null;
+    setPendingSessionHarnessRefinement(null);
+    setSessionHarnessRefinementUnknownScope(null);
+  }, [sessionHarnessRefinementScopeKey]);
+
+  useEffect(() => {
+    if (sessionHarnessRefinementLifecycle === "available") {
+      sessionHarnessRefinementUnknownScopeRef.current = null;
+      setSessionHarnessRefinementUnknownScope(null);
+    }
+  }, [sessionHarnessRefinementLifecycle]);
+
+  const refineSessionHarness = useCallback(async () => {
+    const scopeKey = sessionHarnessRefinementScopeRef.current;
+    if (
+      !scopeKey ||
+      !sessionHarnessRefinementAvailable ||
+      pendingSessionHarnessRefinementRef.current?.scopeKey === scopeKey ||
+      sessionHarnessRefinementUnknownScopeRef.current === scopeKey ||
+      sessionHarnessRefinementLifecycleRef.current !== "available" ||
+      !globalThis.confirm(SESSION_HARNESS_REFINEMENT_CONFIRMATION)
+    ) {
+      return;
+    }
+    const request = {
+      scopeKey,
+      id: ++sessionHarnessRefinementRequestIdRef.current,
+    } as const;
+    pendingSessionHarnessRefinementRef.current = request;
+    setPendingSessionHarnessRefinement(request);
+    try {
+      const outcome = await onRefineSessionHarness();
+      if (
+        outcome &&
+        isCurrentSessionHarnessRefinementRequest(
+          sessionHarnessRefinementScopeRef.current,
+          sessionHarnessRefinementRequestIdRef.current,
+          request,
+        ) &&
+        pendingSessionHarnessRefinementRef.current?.id === request.id
+      ) {
+        if (outcome === "unknown") {
+          sessionHarnessRefinementUnknownScopeRef.current = scopeKey;
+          setSessionHarnessRefinementUnknownScope(scopeKey);
+        }
+        toastManager.add(harnessRefinementToast(outcome));
+      }
+    } finally {
+      if (pendingSessionHarnessRefinementRef.current?.id === request.id) {
+        pendingSessionHarnessRefinementRef.current = null;
+      }
+      setPendingSessionHarnessRefinement((current) =>
+        current?.id === request.id ? null : current,
+      );
+    }
+  }, [onRefineSessionHarness, sessionHarnessRefinementAvailable]);
+
+  const sessionHarnessRefinementControl = sessionHarnessRefinementAvailable
+    ? {
+        pending: harnessRefinementControlState.pending,
+        outcomeUnknown: harnessRefinementControlState.outcomeUnknown,
+        canRefine: harnessRefinementControlState.canRefine,
+        onRefine: () => void refineSessionHarness(),
+      }
+    : null;
+
+  const sessionResources = useMemo(
+    () => deriveLatestSessionResources(activeThreadActivities ?? [], selectedInstanceId),
+    [activeThreadActivities, selectedInstanceId],
+  );
+  const providerSlashCommands = useMemo(
+    () =>
+      resolveSessionSlashCommands(
+        selectedProviderStatus?.featureCapabilities?.resources?.operations.includes("commands")
+          ? sessionResources
+          : null,
+        selectedProviderStatus?.slashCommands ?? [],
+      ),
+    [
+      selectedProviderStatus?.featureCapabilities?.resources?.operations,
+      selectedProviderStatus?.slashCommands,
+      sessionResources,
+    ],
+  );
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
     () => selectedProviderEntry?.models ?? [],
     [selectedProviderEntry],
@@ -950,13 +1523,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
   const composerProviderControls = useMemo(
     () => ({
-      showInteractionModeToggle: getProviderInteractionModeToggle(
-        providerStatuses,
-        selectedProvider,
+      showInteractionModeToggle:
+        selectedProviderEntry?.snapshot.showInteractionModeToggle ??
+        getProviderInteractionModeToggle(providerStatuses, selectedProvider),
+      supportedRuntimeModes: getServerProviderSupportedRuntimeModes(
+        selectedProviderEntry?.snapshot,
       ),
     }),
-    [providerStatuses, selectedProvider],
+    [providerStatuses, selectedProvider, selectedProviderEntry],
   );
+  const resolvedRuntimeMode = resolveServerProviderRuntimeMode(
+    selectedProviderEntry?.snapshot,
+    runtimeMode,
+  );
+  useEffect(() => {
+    if (resolvedRuntimeMode !== runtimeMode) {
+      handleRuntimeModeChange(resolvedRuntimeMode);
+    }
+  }, [handleRuntimeModeChange, resolvedRuntimeMode, runtimeMode]);
   const selectedModelSelection = useMemo<ModelSelection>(
     () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
     [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
@@ -1142,31 +1726,33 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           label: "/model",
           description: "Switch response model for this thread",
         },
-        {
-          id: "slash:plan",
-          type: "slash-command",
-          command: "plan",
-          label: "/plan",
-          description: "Switch this thread into plan mode",
-        },
-        {
-          id: "slash:default",
-          type: "slash-command",
-          command: "default",
-          label: "/default",
-          description: "Switch this thread back to normal build mode",
-        },
+        ...(composerProviderControls.showInteractionModeToggle
+          ? [
+              {
+                id: "slash:plan" as const,
+                type: "slash-command" as const,
+                command: "plan" as const,
+                label: "/plan",
+                description: "Switch this thread into plan mode",
+              },
+              {
+                id: "slash:default" as const,
+                type: "slash-command" as const,
+                command: "default" as const,
+                label: "/default",
+                description: "Switch this thread back to normal build mode",
+              },
+            ]
+          : []),
       ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
-      const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
-        (command) => ({
-          id: `provider-slash-command:${selectedProvider}:${command.name}`,
-          type: "provider-slash-command" as const,
-          provider: selectedProvider,
-          command,
-          label: `/${command.name}`,
-          description: command.description ?? command.input?.hint ?? "Run provider command",
-        }),
-      );
+      const providerSlashCommandItems = providerSlashCommands.map((command) => ({
+        id: `provider-slash-command:${selectedProvider}:${command.name}`,
+        type: "provider-slash-command" as const,
+        provider: selectedProvider,
+        command,
+        label: `/${command.name}`,
+        description: formatProviderSlashCommandDescription(command),
+      }));
       const query = composerTrigger.query.trim().toLowerCase();
       const slashCommandItems = [...builtInSlashCommandItems, ...providerSlashCommandItems];
       if (!query) {
@@ -1190,7 +1776,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
     }
     return [];
-  }, [composerTrigger, selectedProvider, selectedProviderStatus, workspaceEntries.entries]);
+  }, [
+    composerProviderControls.showInteractionModeToggle,
+    composerTrigger,
+    providerSlashCommands,
+    selectedProvider,
+    selectedProviderStatus,
+    workspaceEntries.entries,
+  ]);
 
   const composerMenuOpen = Boolean(composerTrigger);
   const composerMenuSearchKey = composerTrigger
@@ -2631,6 +3224,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         setIsComposerModelPickerOpen((open) => !open);
       },
       isModelPickerOpen: () => isComposerModelPickerOpen,
+      canOpenQuickQuestion: () => quickQuestionAvailable,
+      openQuickQuestion: () => {
+        if (!quickQuestionAvailable) return false;
+        setIsQuickQuestionOpen(true);
+        return true;
+      },
       readSnapshot: () => {
         return readComposerSnapshot();
       },
@@ -2721,6 +3320,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       projectSelectionRequired,
       applyPromptReplacement,
       isComposerModelPickerOpen,
+      quickQuestionAvailable,
       readComposerSnapshot,
       selectedModel,
       selectedModelOptionsForDispatch,
@@ -2735,74 +3335,115 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Render
   // ------------------------------------------------------------------
   return (
-    <form
-      ref={composerFormRef}
-      onSubmit={submitComposer}
-      className="relative mx-auto w-full min-w-0 max-w-3xl"
-      data-chat-composer-form="true"
-    >
-      {/*
+    <>
+      <form
+        ref={composerFormRef}
+        onSubmit={submitComposer}
+        className="relative mx-auto w-full min-w-0 max-w-3xl"
+        data-chat-composer-form="true"
+      >
+        {/*
         Sits on the composer's top edge rather than inside it: the offer is
         about the thread, not about the message being written, and it must not
         move the input when it appears.
       */}
-      <ThreadHandoffTab
-        offer={threadHandoffOffer}
-        onContinue={onContinueThreadOnAccount}
-        isBusy={isContinuingThreadOnAccount}
-      />
-      <div
-        className={cn(
-          "group rounded-[22px] p-px transition-colors duration-200",
-          composerProviderState.composerFrameClassName,
-        )}
-        onDragEnter={onComposerDragEnter}
-        onDragOver={onComposerDragOver}
-        onDragLeave={onComposerDragLeave}
-        onDrop={onComposerDrop}
-        onDragEnterCapture={composerMentionDragHandlers.onDragEnter}
-        onDragOverCapture={composerMentionDragHandlers.onDragOver}
-        onDragLeaveCapture={onComposerMentionDragLeaveCapture}
-        onDropCapture={composerMentionDragHandlers.onDrop}
-      >
+        <ThreadHandoffTab
+          offer={threadHandoffOffer}
+          onContinue={onContinueThreadOnAccount}
+          isBusy={isContinuingThreadOnAccount}
+        />
         <div
-          ref={composerSurfaceRef}
-          data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
           className={cn(
-            "rounded-[20px] transition-[background-color] duration-200",
-            isDragOverComposer ? "bg-accent/45 ring-1 ring-primary/70" : null,
-            projectSelectionRequired ? "opacity-75" : null,
-            composerProviderState.composerSurfaceClassName,
+            "group rounded-[22px] p-px transition-colors duration-200",
+            composerProviderState.composerFrameClassName,
           )}
-          onFocusCapture={(event) => {
-            const activeElement = event.target;
-            if (
-              isComposerCollapsedMobile &&
-              activeElement instanceof HTMLElement &&
-              activeElement.closest('[data-chat-composer-collapsed-controls="true"]')
-            ) {
-              return;
-            }
-            if (composerBlurFrameRef.current !== null) {
-              window.cancelAnimationFrame(composerBlurFrameRef.current);
-              composerBlurFrameRef.current = null;
-            }
-            setIsComposerFocused(true);
-          }}
-          onBlurCapture={() => {
-            scheduleComposerCollapseCheck();
-          }}
+          onDragEnter={onComposerDragEnter}
+          onDragOver={onComposerDragOver}
+          onDragLeave={onComposerDragLeave}
+          onDrop={onComposerDrop}
+          onDragEnterCapture={composerMentionDragHandlers.onDragEnter}
+          onDragOverCapture={composerMentionDragHandlers.onDragOver}
+          onDragLeaveCapture={onComposerMentionDragLeaveCapture}
+          onDropCapture={composerMentionDragHandlers.onDrop}
         >
-          {!isComposerCollapsedMobile &&
-            (activePendingApproval ? (
-              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+          <div
+            ref={composerSurfaceRef}
+            data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
+            className={cn(
+              "rounded-[20px] transition-[background-color] duration-200",
+              isDragOverComposer ? "bg-accent/45 ring-1 ring-primary/70" : null,
+              projectSelectionRequired ? "opacity-75" : null,
+              composerProviderState.composerSurfaceClassName,
+            )}
+            onFocusCapture={(event) => {
+              const activeElement = event.target;
+              if (
+                isComposerCollapsedMobile &&
+                activeElement instanceof HTMLElement &&
+                activeElement.closest('[data-chat-composer-collapsed-controls="true"]')
+              ) {
+                return;
+              }
+              if (composerBlurFrameRef.current !== null) {
+                window.cancelAnimationFrame(composerBlurFrameRef.current);
+                composerBlurFrameRef.current = null;
+              }
+              setIsComposerFocused(true);
+            }}
+            onBlurCapture={() => {
+              scheduleComposerCollapseCheck();
+            }}
+          >
+            {!isComposerCollapsedMobile &&
+              (activePendingApproval ? (
+                <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                  <ComposerPendingApprovalPanel
+                    approval={activePendingApproval}
+                    pendingCount={pendingApprovals.length}
+                  />
+                </div>
+              ) : pendingUserInputs.length > 0 ? (
+                <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                  <ComposerPendingUserInputPanel
+                    pendingUserInputs={pendingUserInputs}
+                    respondingRequestIds={respondingRequestIds}
+                    answers={activePendingDraftAnswers}
+                    questionIndex={activePendingQuestionIndex}
+                    onToggleOption={onSelectActivePendingUserInputOption}
+                    onAdvance={onAdvanceActivePendingUserInput}
+                  />
+                </div>
+              ) : showPlanFollowUpPrompt && activeProposedPlan ? (
+                <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                  <ComposerPlanFollowUpBanner
+                    key={activeProposedPlan.id}
+                    planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
+                  />
+                </div>
+              ) : null)}
+
+            {isComposerCollapsedMobile && activePendingApproval ? (
+              <div
+                className="rounded-t-[19px] border-b border-border/65 bg-muted/20"
+                data-chat-composer-collapsed-controls="true"
+              >
                 <ComposerPendingApprovalPanel
                   approval={activePendingApproval}
                   pendingCount={pendingApprovals.length}
                 />
+                <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-3 sm:px-4">
+                  <ComposerPendingApprovalActions
+                    requestId={activePendingApproval.requestId}
+                    isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
+                    onRespondToApproval={onRespondToApproval}
+                  />
+                </div>
               </div>
-            ) : pendingUserInputs.length > 0 ? (
-              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+            ) : isComposerCollapsedMobile && pendingUserInputs.length > 0 ? (
+              <div
+                className="rounded-t-[19px] border-b border-border/65 bg-muted/20"
+                data-chat-composer-collapsed-controls="true"
+              >
                 <ComposerPendingUserInputPanel
                   pendingUserInputs={pendingUserInputs}
                   respondingRequestIds={respondingRequestIds}
@@ -2811,72 +3452,322 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   onToggleOption={onSelectActivePendingUserInputOption}
                   onAdvance={onAdvanceActivePendingUserInput}
                 />
-              </div>
-            ) : showPlanFollowUpPrompt && activeProposedPlan ? (
-              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
-                <ComposerPlanFollowUpBanner
-                  key={activeProposedPlan.id}
-                  planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
-                />
-              </div>
-            ) : null)}
-
-          {isComposerCollapsedMobile && activePendingApproval ? (
-            <div
-              className="rounded-t-[19px] border-b border-border/65 bg-muted/20"
-              data-chat-composer-collapsed-controls="true"
-            >
-              <ComposerPendingApprovalPanel
-                approval={activePendingApproval}
-                pendingCount={pendingApprovals.length}
-              />
-              <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-3 sm:px-4">
-                <ComposerPendingApprovalActions
-                  requestId={activePendingApproval.requestId}
-                  isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
-                  onRespondToApproval={onRespondToApproval}
-                />
-              </div>
-            </div>
-          ) : isComposerCollapsedMobile && pendingUserInputs.length > 0 ? (
-            <div
-              className="rounded-t-[19px] border-b border-border/65 bg-muted/20"
-              data-chat-composer-collapsed-controls="true"
-            >
-              <ComposerPendingUserInputPanel
-                pendingUserInputs={pendingUserInputs}
-                respondingRequestIds={respondingRequestIds}
-                answers={activePendingDraftAnswers}
-                questionIndex={activePendingQuestionIndex}
-                onToggleOption={onSelectActivePendingUserInputOption}
-                onAdvance={onAdvanceActivePendingUserInput}
-              />
-              <div className="px-3 pb-3 sm:px-4">
-                <div
-                  data-chat-composer-mobile-pending-compact="true"
-                  className={cn(
-                    "flex min-w-0 items-center gap-2 rounded-lg border border-border/55 bg-background/55 p-1.5 pl-3 transition-colors hover:bg-background/80",
-                    !activePendingProgress?.activeQuestion?.multiSelect && "p-0",
-                  )}
-                >
-                  <button
-                    type="button"
+                <div className="px-3 pb-3 sm:px-4">
+                  <div
+                    data-chat-composer-mobile-pending-compact="true"
                     className={cn(
-                      "min-w-0 flex-1 truncate bg-transparent py-1.5 text-left text-sm",
-                      activePendingProgress?.customAnswer ? "text-foreground" : "text-placeholder",
-                      !activePendingProgress?.activeQuestion?.multiSelect && "px-3 py-2",
+                      "flex min-w-0 items-center gap-2 rounded-lg border border-border/55 bg-background/55 p-1.5 pl-3 transition-colors hover:bg-background/80",
+                      !activePendingProgress?.activeQuestion?.multiSelect && "p-0",
                     )}
-                    onPointerDown={(event) => event.preventDefault()}
-                    onClick={expandMobileComposer}
-                    aria-label="Write custom answer"
                   >
-                    {activePendingProgress?.customAnswer || "Write custom answer"}
-                  </button>
-                  {activePendingProgress?.activeQuestion?.multiSelect ? (
+                    <button
+                      type="button"
+                      className={cn(
+                        "min-w-0 flex-1 truncate bg-transparent py-1.5 text-left text-sm",
+                        activePendingProgress?.customAnswer
+                          ? "text-foreground"
+                          : "text-placeholder",
+                        !activePendingProgress?.activeQuestion?.multiSelect && "px-3 py-2",
+                      )}
+                      onPointerDown={(event) => event.preventDefault()}
+                      onClick={expandMobileComposer}
+                      aria-label="Write custom answer"
+                    >
+                      {activePendingProgress?.customAnswer || "Write custom answer"}
+                    </button>
+                    {activePendingProgress?.activeQuestion?.multiSelect ? (
+                      <ComposerPrimaryActions
+                        compact
+                        pendingAction={pendingPrimaryAction}
+                        isRunning={false}
+                        canQueueFollowUp={false}
+                        onQueueFollowUp={() => undefined}
+                        showPlanFollowUpPrompt={false}
+                        promptHasText={false}
+                        isSendBusy={isSendBusy}
+                        sendDisabledReason={sendDisabledReason}
+                        isConnecting={isConnecting}
+                        isEnvironmentUnavailable={
+                          environmentUnavailable !== null ||
+                          noProviderAvailable ||
+                          projectSelectionRequired
+                        }
+                        isPreparingWorktree={false}
+                        hasSendableContent={false}
+                        preserveComposerFocusOnPointerDown
+                        onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
+                        onInterrupt={handleInterruptPrimaryAction}
+                        onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
+                      />
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {showCollapsedMobilePromptRow ? (
+              <div className="flex items-center justify-between gap-2 px-3 py-2">
+                <button
+                  type="button"
+                  className={cn(
+                    "min-w-0 flex-1 truncate bg-transparent p-0 text-left text-[14px] focus:outline-none",
+                    (activePendingProgress ? activePendingProgress.customAnswer : prompt.trim())
+                      ? "text-foreground"
+                      : "text-placeholder",
+                  )}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={expandMobileComposer}
+                  aria-label="Expand composer"
+                >
+                  {activePendingProgress
+                    ? activePendingProgress.customAnswer ||
+                      "Type your own answer, or leave this blank to use the selected option"
+                    : prompt.trim() ||
+                      (noProviderAvailable ? "Enable a provider in Settings" : "Ask anything...")}
+                </button>
+                <button
+                  type="button"
+                  className="flex size-8 shrink-0 items-center justify-center rounded-full bg-message-action text-message-action-foreground hover:bg-message-action-hover disabled:opacity-30"
+                  disabled={collapsedComposerPrimaryActionDisabled}
+                  aria-label={collapsedComposerPrimaryActionLabel}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    submitComposer();
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path
+                      d="M8 3L8 13M8 3L4 7M8 3L12 7"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+              </div>
+            ) : null}
+
+            <div
+              ref={setComposerMenuAnchor}
+              className={cn(
+                "relative px-3 pb-2 sm:px-4",
+                hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
+                isComposerCollapsedMobile && "hidden",
+              )}
+            >
+              <ComposerStashBadge
+                count={stashQueue.length}
+                pulseKey={stashPulse.key}
+                pulsing={stashPulse.active}
+                menuOpen={isStashMenuOpen}
+                onToggleMenu={toggleStashMenu}
+              />
+
+              {isStashMenuOpen && !composerMenuOpen && !isComposerApprovalState && (
+                <ComposerCommandMenuLayer anchor={composerMenuAnchor}>
+                  <ComposerStashMenu
+                    entries={stashQueue}
+                    onRestore={restoreStashEntry}
+                    onDelete={deleteStashEntry}
+                    onClose={() => setIsStashMenuOpen(false)}
+                  />
+                </ComposerCommandMenuLayer>
+              )}
+
+              {composerMenuOpen && !isComposerApprovalState && (
+                <ComposerCommandMenuLayer anchor={composerMenuAnchor}>
+                  <ComposerCommandMenu
+                    items={composerMenuItems}
+                    resolvedTheme={resolvedTheme}
+                    isLoading={isComposerMenuLoading}
+                    triggerKind={composerTriggerKind}
+                    groupSlashCommandSections={
+                      composerTrigger?.kind === "slash-command" &&
+                      composerTrigger.query.trim().length === 0
+                    }
+                    emptyStateText={composerMenuEmptyState}
+                    activeItemId={activeComposerMenuItem?.id ?? null}
+                    onHighlightedItemChange={onComposerMenuItemHighlighted}
+                    onSelect={onSelectComposerItem}
+                  />
+                </ComposerCommandMenuLayer>
+              )}
+
+              {!isComposerCollapsedMobile &&
+                !isComposerApprovalState &&
+                pendingUserInputs.length === 0 &&
+                composerPreviewAnnotations.length > 0 && (
+                  <ComposerPreviewAnnotationCards
+                    annotations={composerPreviewAnnotations}
+                    images={composerImages}
+                    onRemove={(annotationId) =>
+                      removeComposerDraftPreviewAnnotation(composerDraftTarget, annotationId)
+                    }
+                    onExpandImage={(imageId) => {
+                      const preview = buildExpandedImagePreview(composerImages, imageId);
+                      if (preview) onExpandImage(preview);
+                    }}
+                    className="mb-3"
+                  />
+                )}
+
+              {!isComposerCollapsedMobile &&
+                !isComposerApprovalState &&
+                pendingUserInputs.length === 0 &&
+                composerReviewComments.length > 0 && (
+                  <ComposerPendingReviewComments
+                    comments={composerReviewComments}
+                    onRemove={(commentId) =>
+                      removeComposerDraftReviewComment(composerDraftTarget, commentId)
+                    }
+                    className="mb-3"
+                  />
+                )}
+
+              {!isComposerCollapsedMobile &&
+                !isComposerApprovalState &&
+                pendingUserInputs.length === 0 &&
+                composerElementContexts.length > 0 && (
+                  <ComposerPendingElementContexts
+                    contexts={composerElementContexts}
+                    onRemove={(contextId) =>
+                      removeComposerDraftElementContext(composerDraftTarget, contextId)
+                    }
+                    className="mb-3"
+                  />
+                )}
+
+              {!isComposerCollapsedMobile &&
+                !isComposerApprovalState &&
+                pendingUserInputs.length === 0 &&
+                composerImages.some(
+                  (image) =>
+                    !composerPreviewAnnotations.some((annotation) => annotation.id === image.id),
+                ) && (
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    {composerImages
+                      .filter(
+                        (image) =>
+                          !composerPreviewAnnotations.some(
+                            (annotation) => annotation.id === image.id,
+                          ),
+                      )
+                      .map((image) => (
+                        <div
+                          key={image.id}
+                          className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
+                        >
+                          {image.previewUrl ? (
+                            <button
+                              type="button"
+                              className="h-full w-full cursor-zoom-in"
+                              aria-label={`Preview ${image.name}`}
+                              onClick={() => {
+                                const preview = buildExpandedImagePreview(composerImages, image.id);
+                                if (!preview) return;
+                                onExpandImage(preview);
+                              }}
+                            >
+                              <img
+                                src={image.previewUrl}
+                                alt={image.name}
+                                className="h-full w-full object-cover"
+                              />
+                            </button>
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-secondary-label">
+                              {image.name}
+                            </div>
+                          )}
+                          {nonPersistedComposerImageIdSet.has(image.id) && (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <span
+                                    role="img"
+                                    aria-label="Draft attachment may not persist"
+                                    className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
+                                  >
+                                    <CircleAlertIcon className="size-3" />
+                                  </span>
+                                }
+                              />
+                              <TooltipPopup
+                                side="top"
+                                className="max-w-64 whitespace-normal leading-tight"
+                              >
+                                Draft attachment could not be saved locally and may be lost on
+                                navigation.
+                              </TooltipPopup>
+                            </Tooltip>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
+                            onClick={() => removeComposerImage(image.id)}
+                            aria-label={`Remove ${image.name}`}
+                          >
+                            <XIcon />
+                          </Button>
+                        </div>
+                      ))}
+                  </div>
+                )}
+
+              <div className="relative">
+                <ComposerPromptEditor
+                  editorRef={composerEditorRef}
+                  value={
+                    isComposerApprovalState
+                      ? ""
+                      : activePendingProgress
+                        ? activePendingProgress.customAnswer
+                        : prompt
+                  }
+                  cursor={composerCursor}
+                  terminalContexts={
+                    !isComposerApprovalState && pendingUserInputs.length === 0
+                      ? composerTerminalContexts
+                      : []
+                  }
+                  skills={selectedProviderStatus?.skills ?? []}
+                  {...(showMobilePendingAnswerActions ? { className: "max-sm:pb-11" } : {})}
+                  onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
+                  onChange={onPromptChange}
+                  onCommandKeyDown={onComposerCommandKey}
+                  onPaste={onComposerPaste}
+                  placeholder={
+                    isComposerApprovalState
+                      ? (activePendingApproval?.detail ??
+                        "Resolve this approval request to continue")
+                      : activePendingProgress
+                        ? "Type your own answer, or leave this blank to use the selected option"
+                        : showPlanFollowUpPrompt && activeProposedPlan
+                          ? "Add feedback to refine the plan, or leave this blank to implement it"
+                          : projectSelectionRequired
+                            ? "Choose a project above to start a thread"
+                            : noProviderAvailable
+                              ? "Enable a provider in Settings to send a message"
+                              : phase === "disconnected"
+                                ? "Ask for follow-up changes or attach images"
+                                : "Ask anything, @tag files/folders, $use skills, or / for commands"
+                  }
+                  disabled={isConnecting || isComposerApprovalState || projectSelectionRequired}
+                />
+                {showMobilePendingAnswerActions ? (
+                  <div
+                    data-chat-composer-mobile-pending-actions="true"
+                    className="absolute bottom-0 right-0 flex justify-end"
+                  >
                     <ComposerPrimaryActions
                       compact
                       pendingAction={pendingPrimaryAction}
                       isRunning={false}
+                      canQueueFollowUp={false}
+                      onQueueFollowUp={() => undefined}
                       showPlanFollowUpPrompt={false}
                       promptHasText={false}
                       isSendBusy={isSendBusy}
@@ -2894,274 +3785,275 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       onInterrupt={handleInterruptPrimaryAction}
                       onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                     />
-                  ) : null}
-                </div>
+                  </div>
+                ) : null}
               </div>
             </div>
-          ) : null}
 
-          {showCollapsedMobilePromptRow ? (
-            <div className="flex items-center justify-between gap-2 px-3 py-2">
-              <button
-                type="button"
+            {/* Bottom toolbar */}
+            {isComposerCollapsedMobile ? null : activePendingApproval ? (
+              <div className="flex items-center justify-end gap-2 px-3 pb-3 sm:px-4 sm:pb-4">
+                <ComposerPendingApprovalActions
+                  requestId={activePendingApproval.requestId}
+                  isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
+                  onRespondToApproval={onRespondToApproval}
+                />
+              </div>
+            ) : (
+              <div
+                data-chat-composer-footer="true"
+                data-chat-composer-footer-compact={isComposerFooterCompact ? "true" : "false"}
                 className={cn(
-                  "min-w-0 flex-1 truncate bg-transparent p-0 text-left text-[14px] focus:outline-none",
-                  (activePendingProgress ? activePendingProgress.customAnswer : prompt.trim())
-                    ? "text-foreground"
-                    : "text-placeholder",
+                  "flex min-w-0 flex-nowrap items-center justify-between gap-2 overflow-visible px-3 pb-3 sm:px-4 sm:pb-4",
+                  pendingUserInputs.length > 0 && "pt-2",
+                  isComposerFooterCompact ? "gap-1.5" : "gap-2 sm:gap-0",
+                  showMobilePendingAnswerActions && "hidden sm:flex",
                 )}
-                onPointerDown={(event) => event.preventDefault()}
-                onClick={expandMobileComposer}
-                aria-label="Expand composer"
               >
-                {activePendingProgress
-                  ? activePendingProgress.customAnswer ||
-                    "Type your own answer, or leave this blank to use the selected option"
-                  : prompt.trim() ||
-                    (noProviderAvailable ? "Enable a provider in Settings" : "Ask anything...")}
-              </button>
-              <button
-                type="button"
-                className="flex size-8 shrink-0 items-center justify-center rounded-full bg-message-action text-message-action-foreground hover:bg-message-action-hover disabled:opacity-30"
-                disabled={collapsedComposerPrimaryActionDisabled}
-                aria-label={collapsedComposerPrimaryActionLabel}
-                onPointerDown={(event) => event.preventDefault()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  submitComposer();
-                }}
-              >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <path
-                    d="M8 3L8 13M8 3L4 7M8 3L12 7"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
-            </div>
-          ) : null}
+                <div className="-m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  {noProviderAvailable ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled
+                      data-chat-provider-unavailable="true"
+                      className="shrink-0 gap-2 px-2 text-secondary-label sm:px-3"
+                    >
+                      <CircleAlertIcon className="size-4" />
+                      No provider available
+                    </Button>
+                  ) : (
+                    <ProviderModelPicker
+                      compact={isComposerFooterCompact}
+                      activeInstanceId={selectedInstanceId}
+                      model={selectedModelForPickerWithCustomFallback}
+                      lockedProvider={lockedProvider}
+                      lockedContinuationGroupKey={lockedContinuationGroupKey}
+                      instanceEntries={providerInstanceEntries}
+                      keybindings={keybindings}
+                      modelOptionsByInstance={modelOptionsByInstance}
+                      triggerClassName="-ms-2.5"
+                      terminalOpen={terminalOpen}
+                      open={isComposerModelPickerOpen}
+                      {...(composerProviderState.modelPickerIconClassName
+                        ? {
+                            activeProviderIconClassName:
+                              composerProviderState.modelPickerIconClassName,
+                          }
+                        : {})}
+                      onOpenChange={(open) => {
+                        setIsComposerModelPickerOpen(open);
+                      }}
+                      getModelDisabledReason={getModelDisabledReason}
+                      onInstanceModelChange={onProviderModelSelect}
+                    />
+                  )}
 
-          <div
-            ref={setComposerMenuAnchor}
-            className={cn(
-              "relative px-3 pb-2 sm:px-4",
-              hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
-              isComposerCollapsedMobile && "hidden",
-            )}
-          >
-            <ComposerStashBadge
-              count={stashQueue.length}
-              pulseKey={stashPulse.key}
-              pulsing={stashPulse.active}
-              menuOpen={isStashMenuOpen}
-              onToggleMenu={toggleStashMenu}
-            />
-
-            {isStashMenuOpen && !composerMenuOpen && !isComposerApprovalState && (
-              <ComposerCommandMenuLayer anchor={composerMenuAnchor}>
-                <ComposerStashMenu
-                  entries={stashQueue}
-                  onRestore={restoreStashEntry}
-                  onDelete={deleteStashEntry}
-                  onClose={() => setIsStashMenuOpen(false)}
-                />
-              </ComposerCommandMenuLayer>
-            )}
-
-            {composerMenuOpen && !isComposerApprovalState && (
-              <ComposerCommandMenuLayer anchor={composerMenuAnchor}>
-                <ComposerCommandMenu
-                  items={composerMenuItems}
-                  resolvedTheme={resolvedTheme}
-                  isLoading={isComposerMenuLoading}
-                  triggerKind={composerTriggerKind}
-                  groupSlashCommandSections={
-                    composerTrigger?.kind === "slash-command" &&
-                    composerTrigger.query.trim().length === 0
-                  }
-                  emptyStateText={composerMenuEmptyState}
-                  activeItemId={activeComposerMenuItem?.id ?? null}
-                  onHighlightedItemChange={onComposerMenuItemHighlighted}
-                  onSelect={onSelectComposerItem}
-                />
-              </ComposerCommandMenuLayer>
-            )}
-
-            {!isComposerCollapsedMobile &&
-              !isComposerApprovalState &&
-              pendingUserInputs.length === 0 &&
-              composerPreviewAnnotations.length > 0 && (
-                <ComposerPreviewAnnotationCards
-                  annotations={composerPreviewAnnotations}
-                  images={composerImages}
-                  onRemove={(annotationId) =>
-                    removeComposerDraftPreviewAnnotation(composerDraftTarget, annotationId)
-                  }
-                  onExpandImage={(imageId) => {
-                    const preview = buildExpandedImagePreview(composerImages, imageId);
-                    if (preview) onExpandImage(preview);
-                  }}
-                  className="mb-3"
-                />
-              )}
-
-            {!isComposerCollapsedMobile &&
-              !isComposerApprovalState &&
-              pendingUserInputs.length === 0 &&
-              composerReviewComments.length > 0 && (
-                <ComposerPendingReviewComments
-                  comments={composerReviewComments}
-                  onRemove={(commentId) =>
-                    removeComposerDraftReviewComment(composerDraftTarget, commentId)
-                  }
-                  className="mb-3"
-                />
-              )}
-
-            {!isComposerCollapsedMobile &&
-              !isComposerApprovalState &&
-              pendingUserInputs.length === 0 &&
-              composerElementContexts.length > 0 && (
-                <ComposerPendingElementContexts
-                  contexts={composerElementContexts}
-                  onRemove={(contextId) =>
-                    removeComposerDraftElementContext(composerDraftTarget, contextId)
-                  }
-                  className="mb-3"
-                />
-              )}
-
-            {!isComposerCollapsedMobile &&
-              !isComposerApprovalState &&
-              pendingUserInputs.length === 0 &&
-              composerImages.some(
-                (image) =>
-                  !composerPreviewAnnotations.some((annotation) => annotation.id === image.id),
-              ) && (
-                <div className="mb-3 flex flex-wrap gap-2">
-                  {composerImages
-                    .filter(
-                      (image) =>
-                        !composerPreviewAnnotations.some(
-                          (annotation) => annotation.id === image.id,
-                        ),
-                    )
-                    .map((image) => (
-                      <div
-                        key={image.id}
-                        className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
-                      >
-                        {image.previewUrl ? (
-                          <button
+                  {isComposerFooterCompact ? (
+                    <CompactComposerControlsMenu
+                      interactionMode={interactionMode}
+                      runtimeMode={resolvedRuntimeMode}
+                      supportedRuntimeModes={composerProviderControls.supportedRuntimeModes}
+                      showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
+                      traitsMenuContent={providerTraitsMenuContent}
+                      onToggleInteractionMode={toggleInteractionMode}
+                      onRuntimeModeChange={handleRuntimeModeChange}
+                    />
+                  ) : (
+                    <>
+                      {providerTraitsPicker ? (
+                        <>
+                          <Separator
+                            orientation="vertical"
+                            className="mx-0.5 hidden h-4 sm:block"
+                          />
+                          {providerTraitsPicker}
+                        </>
+                      ) : null}
+                      <ComposerFooterModeControls
+                        showInteractionModeToggle={
+                          composerProviderControls.showInteractionModeToggle
+                        }
+                        interactionMode={interactionMode}
+                        runtimeMode={resolvedRuntimeMode}
+                        supportedRuntimeModes={composerProviderControls.supportedRuntimeModes}
+                        onToggleInteractionMode={toggleInteractionMode}
+                        onRuntimeModeChange={handleRuntimeModeChange}
+                      />
+                    </>
+                  )}
+                  {quickQuestionAvailable ? (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <ComposerControl
                             type="button"
-                            className="h-full w-full cursor-zoom-in"
-                            aria-label={`Preview ${image.name}`}
-                            onClick={() => {
-                              const preview = buildExpandedImagePreview(composerImages, image.id);
-                              if (!preview) return;
-                              onExpandImage(preview);
-                            }}
-                          >
-                            <img
-                              src={image.previewUrl}
-                              alt={image.name}
-                              className="h-full w-full object-cover"
+                            data-testid="quick-question-trigger"
+                            aria-label="Quick question"
+                            className="shrink-0"
+                            onClick={() => setIsQuickQuestionOpen(true)}
+                          />
+                        }
+                      >
+                        <ComposerControlIcon icon={MessageCircleQuestionIcon} />
+                        {!isComposerFooterCompact ? <span>Quick question</span> : null}
+                      </TooltipTrigger>
+                      <TooltipPopup side="top">Quick question</TooltipPopup>
+                    </Tooltip>
+                  ) : null}
+                  {showSessionAgentDepth && sessionAgentDepth !== null ? (
+                    <Tooltip>
+                      <Select
+                        value={String(sessionAgentDepth.maxDepth)}
+                        disabled={sessionAgentDepthDisabled}
+                        onValueChange={(value) => void setSessionAgentDepth(value)}
+                      >
+                        <TooltipTrigger
+                          render={
+                            <ComposerSelectControl
+                              className="font-medium"
+                              aria-label={sessionAgentDepthAccessibleLabel}
                             />
-                          </button>
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-secondary-label">
-                            {image.name}
-                          </div>
-                        )}
-                        {nonPersistedComposerImageIdSet.has(image.id) && (
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <span
-                                  role="img"
-                                  aria-label="Draft attachment may not persist"
-                                  className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
-                                >
-                                  <CircleAlertIcon className="size-3" />
-                                </span>
-                              }
-                            />
-                            <TooltipPopup
-                              side="top"
-                              className="max-w-64 whitespace-normal leading-tight"
-                            >
-                              Draft attachment could not be saved locally and may be lost on
-                              navigation.
-                            </TooltipPopup>
-                          </Tooltip>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
-                          onClick={() => removeComposerImage(image.id)}
-                          aria-label={`Remove ${image.name}`}
+                          }
                         >
-                          <XIcon />
-                        </Button>
-                      </div>
-                    ))}
+                          <ComposerControlIcon icon={BotIcon} opticalSize="large" />
+                          <SelectValue>Depth {sessionAgentDepth.maxDepth}</SelectValue>
+                        </TooltipTrigger>
+                        <SelectPopup alignItemWithTrigger={false}>
+                          {sessionAgentDepth.maxDepth > sessionAgentDepth.maxSettableDepth ? (
+                            <SelectItem
+                              value={String(sessionAgentDepth.maxDepth)}
+                              disabled
+                              className="min-w-56 py-2"
+                            >
+                              <div className="grid gap-0.5">
+                                <span className="font-medium text-foreground">
+                                  Depth {sessionAgentDepth.maxDepth}
+                                </span>
+                                <span className="text-muted-foreground text-xs leading-4">
+                                  Current provider setting · choose a bounded value below
+                                </span>
+                              </div>
+                            </SelectItem>
+                          ) : null}
+                          {Array.from(
+                            { length: sessionAgentDepth.maxSettableDepth + 1 },
+                            (_, maxDepth) => (
+                              <SelectItem
+                                key={maxDepth}
+                                value={String(maxDepth)}
+                                className="min-w-56 py-2"
+                              >
+                                <div className="grid gap-0.5">
+                                  <span className="font-medium text-foreground">
+                                    Depth {maxDepth}
+                                  </span>
+                                  <span className="text-muted-foreground text-xs leading-4">
+                                    {maxDepth === 0
+                                      ? "Do not spawn recursive agents"
+                                      : maxDepth === 1
+                                        ? "Allow direct child agents"
+                                        : `Allow up to ${maxDepth} recursive levels`}
+                                  </span>
+                                </div>
+                              </SelectItem>
+                            ),
+                          )}
+                        </SelectPopup>
+                      </Select>
+                      <TooltipPopup side="top">
+                        {!sessionAgentDepth.writable
+                          ? `Agent spawn depth ${sessionAgentDepth.maxDepth}, fixed by session policy`
+                          : sessionAgentDepth.settable
+                            ? "Agent spawn depth for future subagents"
+                            : `Agent spawn depth ${sessionAgentDepth.maxDepth}, unavailable until the session is idle`}
+                      </TooltipPopup>
+                    </Tooltip>
+                  ) : null}
+                  {showSessionInputQueueModes && sessionInputQueue ? (
+                    <SessionInputQueueControl
+                      snapshot={sessionInputQueue}
+                      count={sessionInputCount}
+                      canSetModes={canSetSessionInputQueueModes}
+                      isSettingMode={isSettingSessionInputQueueMode}
+                      canClear={canClearSessionInputQueue}
+                      isClearing={isClearingSessionInputQueue}
+                      onSetMode={(queue, value) => void setSessionInputQueueMode(queue, value)}
+                      onClear={() => void clearSessionInputQueue()}
+                    />
+                  ) : showSessionInputQueue ? (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <ComposerControl
+                            type="button"
+                            aria-label={`Session inputs ${sessionInputCount}: ${sessionInputQueue?.steeringCount ?? 0} steering, ${sessionInputQueue?.followUpCount ?? 0} follow-ups. Clear all pending inputs`}
+                            disabled={!canClearSessionInputQueue || isClearingSessionInputQueue}
+                            onClick={() => void clearSessionInputQueue()}
+                          />
+                        }
+                      >
+                        <span className="text-xs font-medium">
+                          Session inputs · {sessionInputCount}
+                        </span>
+                        <ComposerControlIcon icon={XIcon} />
+                      </TooltipTrigger>
+                      <TooltipPopup side="top">
+                        {isClearingSessionInputQueue
+                          ? "Clearing pending session inputs…"
+                          : "Clear all pending session inputs"}
+                      </TooltipPopup>
+                    </Tooltip>
+                  ) : null}
+                  {showSessionResourceReload ? (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <ComposerControl
+                            type="button"
+                            aria-label="Reload session resources"
+                            disabled={sessionResourceReloadDisabled || isReloadingSessionResources}
+                            onClick={() => void reloadSessionResources()}
+                          />
+                        }
+                      >
+                        <ComposerControlIcon icon={RefreshCwIcon} />
+                      </TooltipTrigger>
+                      <TooltipPopup side="top">
+                        {isReloadingSessionResources
+                          ? "Reloading session resources…"
+                          : "Reload session commands and resources"}
+                      </TooltipPopup>
+                    </Tooltip>
+                  ) : null}
                 </div>
-              )}
 
-            <div className="relative">
-              <ComposerPromptEditor
-                editorRef={composerEditorRef}
-                value={
-                  isComposerApprovalState
-                    ? ""
-                    : activePendingProgress
-                      ? activePendingProgress.customAnswer
-                      : prompt
-                }
-                cursor={composerCursor}
-                terminalContexts={
-                  !isComposerApprovalState && pendingUserInputs.length === 0
-                    ? composerTerminalContexts
-                    : []
-                }
-                skills={selectedProviderStatus?.skills ?? []}
-                {...(showMobilePendingAnswerActions ? { className: "max-sm:pb-11" } : {})}
-                onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
-                onChange={onPromptChange}
-                onCommandKeyDown={onComposerCommandKey}
-                onPaste={onComposerPaste}
-                placeholder={
-                  isComposerApprovalState
-                    ? (activePendingApproval?.detail ?? "Resolve this approval request to continue")
-                    : activePendingProgress
-                      ? "Type your own answer, or leave this blank to use the selected option"
-                      : showPlanFollowUpPrompt && activeProposedPlan
-                        ? "Add feedback to refine the plan, or leave this blank to implement it"
-                        : projectSelectionRequired
-                          ? "Choose a project above to start a thread"
-                          : noProviderAvailable
-                            ? "Enable a provider in Settings to send a message"
-                            : phase === "disconnected"
-                              ? "Ask for follow-up changes or attach images"
-                              : "Ask anything, @tag files/folders, $use skills, or / for commands"
-                }
-                disabled={isConnecting || isComposerApprovalState || projectSelectionRequired}
-              />
-              {showMobilePendingAnswerActions ? (
+                {/* Right side: send / stop button */}
                 <div
-                  data-chat-composer-mobile-pending-actions="true"
-                  className="absolute bottom-0 right-0 flex justify-end"
+                  data-chat-composer-actions="right"
+                  data-chat-composer-primary-actions-compact={
+                    isComposerPrimaryActionsCompact ? "true" : "false"
+                  }
+                  className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                 >
-                  <ComposerPrimaryActions
-                    compact
+                  <ComposerFooterPrimaryActions
+                    compact={isComposerPrimaryActionsCompact}
+                    activeContextWindow={activeContextWindow}
+                    activeThreadProviderDisplayName={activeThreadProviderDisplayName}
+                    activeProviderUsageAccounts={activeProviderUsageAccounts}
+                    timestampFormat={settings.timestampFormat}
+                    contextCompaction={contextCompactionControl}
+                    harnessRefinement={sessionHarnessRefinementControl}
+                    sessionGoal={sessionGoal}
                     pendingAction={pendingPrimaryAction}
-                    isRunning={false}
-                    showPlanFollowUpPrompt={false}
-                    promptHasText={false}
+                    isRunning={phase === "running"}
+                    canQueueFollowUp={canQueueSessionFollowUp}
+                    onQueueFollowUp={onQueueFollowUp}
+                    showPlanFollowUpPrompt={
+                      pendingUserInputs.length === 0 && showPlanFollowUpPrompt
+                    }
+                    promptHasText={prompt.trim().length > 0}
                     isSendBusy={isSendBusy}
                     sendDisabledReason={sendDisabledReason}
                     isConnecting={isConnecting}
@@ -3170,144 +4062,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       noProviderAvailable ||
                       projectSelectionRequired
                     }
-                    isPreparingWorktree={false}
-                    hasSendableContent={false}
-                    preserveComposerFocusOnPointerDown
+                    isPreparingWorktree={isPreparingWorktree}
+                    hasSendableContent={composerSendState.hasSendableContent}
+                    preserveComposerFocusOnPointerDown={isMobileViewport}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}
                     onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                   />
                 </div>
-              ) : null}
-            </div>
+              </div>
+            )}
           </div>
-
-          {/* Bottom toolbar */}
-          {isComposerCollapsedMobile ? null : activePendingApproval ? (
-            <div className="flex items-center justify-end gap-2 px-3 pb-3 sm:px-4 sm:pb-4">
-              <ComposerPendingApprovalActions
-                requestId={activePendingApproval.requestId}
-                isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
-                onRespondToApproval={onRespondToApproval}
-              />
-            </div>
-          ) : (
-            <div
-              data-chat-composer-footer="true"
-              data-chat-composer-footer-compact={isComposerFooterCompact ? "true" : "false"}
-              className={cn(
-                "flex min-w-0 flex-nowrap items-center justify-between gap-2 overflow-visible px-3 pb-3 sm:px-4 sm:pb-4",
-                pendingUserInputs.length > 0 && "pt-2",
-                isComposerFooterCompact ? "gap-1.5" : "gap-2 sm:gap-0",
-                showMobilePendingAnswerActions && "hidden sm:flex",
-              )}
-            >
-              <div className="-m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                {noProviderAvailable ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    disabled
-                    data-chat-provider-unavailable="true"
-                    className="shrink-0 gap-2 px-2 text-secondary-label sm:px-3"
-                  >
-                    <CircleAlertIcon className="size-4" />
-                    No provider available
-                  </Button>
-                ) : (
-                  <ProviderModelPicker
-                    compact={isComposerFooterCompact}
-                    activeInstanceId={selectedInstanceId}
-                    model={selectedModelForPickerWithCustomFallback}
-                    lockedProvider={lockedProvider}
-                    lockedContinuationGroupKey={lockedContinuationGroupKey}
-                    instanceEntries={providerInstanceEntries}
-                    keybindings={keybindings}
-                    modelOptionsByInstance={modelOptionsByInstance}
-                    triggerClassName="-ms-2.5"
-                    terminalOpen={terminalOpen}
-                    open={isComposerModelPickerOpen}
-                    {...(composerProviderState.modelPickerIconClassName
-                      ? {
-                          activeProviderIconClassName:
-                            composerProviderState.modelPickerIconClassName,
-                        }
-                      : {})}
-                    onOpenChange={(open) => {
-                      setIsComposerModelPickerOpen(open);
-                    }}
-                    getModelDisabledReason={getModelDisabledReason}
-                    onInstanceModelChange={onProviderModelSelect}
-                  />
-                )}
-
-                {isComposerFooterCompact ? (
-                  <CompactComposerControlsMenu
-                    interactionMode={interactionMode}
-                    runtimeMode={runtimeMode}
-                    showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
-                    traitsMenuContent={providerTraitsMenuContent}
-                    onToggleInteractionMode={toggleInteractionMode}
-                    onRuntimeModeChange={handleRuntimeModeChange}
-                  />
-                ) : (
-                  <>
-                    {providerTraitsPicker ? (
-                      <>
-                        <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
-                        {providerTraitsPicker}
-                      </>
-                    ) : null}
-                    <ComposerFooterModeControls
-                      showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
-                      interactionMode={interactionMode}
-                      runtimeMode={runtimeMode}
-                      onToggleInteractionMode={toggleInteractionMode}
-                      onRuntimeModeChange={handleRuntimeModeChange}
-                    />
-                  </>
-                )}
-              </div>
-
-              {/* Right side: send / stop button */}
-              <div
-                data-chat-composer-actions="right"
-                data-chat-composer-primary-actions-compact={
-                  isComposerPrimaryActionsCompact ? "true" : "false"
-                }
-                className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
-              >
-                <ComposerFooterPrimaryActions
-                  compact={isComposerPrimaryActionsCompact}
-                  activeContextWindow={activeContextWindow}
-                  activeThreadProviderDisplayName={activeThreadProviderDisplayName}
-                  activeProviderUsageAccounts={activeProviderUsageAccounts}
-                  timestampFormat={settings.timestampFormat}
-                  pendingAction={pendingPrimaryAction}
-                  isRunning={phase === "running"}
-                  showPlanFollowUpPrompt={pendingUserInputs.length === 0 && showPlanFollowUpPrompt}
-                  promptHasText={prompt.trim().length > 0}
-                  isSendBusy={isSendBusy}
-                  sendDisabledReason={sendDisabledReason}
-                  isConnecting={isConnecting}
-                  isEnvironmentUnavailable={
-                    environmentUnavailable !== null ||
-                    noProviderAvailable ||
-                    projectSelectionRequired
-                  }
-                  isPreparingWorktree={isPreparingWorktree}
-                  hasSendableContent={composerSendState.hasSendableContent}
-                  preserveComposerFocusOnPointerDown={isMobileViewport}
-                  onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
-                  onInterrupt={handleInterruptPrimaryAction}
-                  onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
-                />
-              </div>
-            </div>
-          )}
         </div>
-      </div>
-    </form>
+      </form>
+      <QuickQuestionDialog
+        available={quickQuestionAvailable}
+        identity={quickQuestionIdentity}
+        open={isQuickQuestionOpen}
+        onOpenChange={setIsQuickQuestionOpen}
+        onAsk={onAskQuickQuestion}
+        onCancel={onCancelQuickQuestion}
+      />
+    </>
   );
 });

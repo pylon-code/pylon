@@ -18,6 +18,8 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
+  type SessionInteractionRequest,
+  type SessionInteractionResponse,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -45,6 +47,27 @@ import {
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+
+/**
+ * Thread activities are durable and replicated to every authenticated client
+ * connected to the environment. Keep the prompt shape needed to close pending
+ * UI, but never retain provider editor prefills or submitted input/editor text.
+ */
+export function redactSessionInteractionRequestForActivity(
+  request: SessionInteractionRequest,
+): SessionInteractionRequest {
+  if (request.kind !== "editor" || request.prefill === undefined) {
+    return request;
+  }
+  const { prefill: _prefill, ...safeRequest } = request;
+  return safeRequest;
+}
+
+export function redactSessionInteractionResponseForActivity(
+  response: SessionInteractionResponse,
+): SessionInteractionResponse {
+  return response.kind === "submitted" ? { kind: "submitted", value: "" } : response;
+}
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -207,6 +230,8 @@ function maxCheckpointTurnCount(
   return maxTurnCount;
 }
 
+const REASONING_DETAIL_MAX_CHARS = 4_000;
+
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }
@@ -250,7 +275,7 @@ function assistantSegmentMessageId(baseKey: string, segmentIndex: number): Messa
 function buildContextWindowActivityPayload(
   event: ProviderRuntimeEvent,
 ): ThreadTokenUsageSnapshot | undefined {
-  if (event.type !== "thread.token-usage.updated" || event.payload.usage.usedTokens <= 0) {
+  if (event.type !== "thread.token-usage.updated" || event.payload.usage.usedTokens < 0) {
     return undefined;
   }
   return event.payload.usage;
@@ -347,6 +372,7 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     "runHandles",
     "outputFile",
     "agentPath",
+    "messageable",
     "timelineBypass",
     "typedUsage",
     "status",
@@ -357,6 +383,38 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     }
   }
   return fields;
+}
+
+function lifecycleActivityId(
+  kind: "context-compaction" | "provider-retry" | "harness-refinement",
+  event: Extract<ProviderRuntimeEvent, { readonly type: "item.started" | "item.completed" }>,
+): EventId {
+  const scope = event.itemId ?? event.turnId ?? "session";
+  return EventId.make(
+    `${kind}:${event.providerInstanceId ?? event.provider}:${event.threadId}:${scope}`,
+  );
+}
+
+function contextWindowActivityId(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { readonly type: "thread.token-usage.updated" | "thread.token-usage.cleared" }
+  >,
+): EventId {
+  return EventId.make(
+    `context-window:${event.providerInstanceId ?? event.provider}:${event.threadId}:${event.turnId ?? "session"}`,
+  );
+}
+
+function reasoningActivityId(
+  event: Extract<ProviderRuntimeEvent, { readonly type: "item.completed" }>,
+): EventId {
+  const scope = event.itemId ?? event.turnId;
+  return scope === undefined
+    ? event.eventId
+    : EventId.make(
+        `reasoning:${event.providerInstanceId ?? event.provider}:${event.threadId}:${scope}`,
+      );
 }
 
 export function runtimeEventToActivities(
@@ -420,6 +478,179 @@ export function runtimeEventToActivities(
             ...(event.payload.decision ? { decision: event.payload.decision } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "session.agent-depth.updated": {
+      return [
+        {
+          id: EventId.make(
+            `session-agent-depth:${event.providerInstanceId ?? event.provider}:${event.threadId}`,
+          ),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "session.agent-depth.updated",
+          summary: "Agent spawn depth updated",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId === undefined
+              ? {}
+              : { providerInstanceId: event.providerInstanceId }),
+            maxDepth: event.payload.maxDepth,
+            source: event.payload.source,
+            writable: event.payload.writable,
+            settable: event.payload.settable,
+            maxSettableDepth: event.payload.maxSettableDepth,
+          },
+          turnId: null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "session.input-queue.updated": {
+      return [
+        {
+          id: EventId.make(
+            `session-input-queue:${event.providerInstanceId ?? event.provider}:${event.threadId}`,
+          ),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "session.input-queue.updated",
+          summary: "Session input queue updated",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId === undefined
+              ? {}
+              : { providerInstanceId: event.providerInstanceId }),
+            steeringCount: event.payload.steeringCount,
+            followUpCount: event.payload.followUpCount,
+            ...(event.payload.steeringMode === undefined
+              ? {}
+              : { steeringMode: event.payload.steeringMode }),
+            ...(event.payload.followUpMode === undefined
+              ? {}
+              : { followUpMode: event.payload.followUpMode }),
+          },
+          turnId: null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "session.goal.updated": {
+      return [
+        {
+          // One provider-scoped goal snapshot per thread. Native goal identities,
+          // timestamps, reasons, and errors never enter the activity projection.
+          id: EventId.make(
+            `session-goal:${event.providerInstanceId ?? event.provider}:${event.threadId}`,
+          ),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "session.goal.updated",
+          summary: "Session goal updated",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId === undefined
+              ? {}
+              : { providerInstanceId: event.providerInstanceId }),
+            available: event.payload.available,
+            active: event.payload.active,
+            status: event.payload.status,
+            ...(event.payload.objective === undefined
+              ? {}
+              : { objective: event.payload.objective }),
+            ...(event.payload.tokenBudget === undefined
+              ? {}
+              : { tokenBudget: event.payload.tokenBudget }),
+            tokensUsed: event.payload.tokensUsed,
+            timeUsedSeconds: event.payload.timeUsedSeconds,
+            continuationsUsed: event.payload.continuationsUsed,
+          },
+          turnId: null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "session.compaction.updated": {
+      return [
+        {
+          id: EventId.make(
+            `session-compaction:${event.providerInstanceId ?? event.provider}:${event.threadId}`,
+          ),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "session.compaction.updated",
+          summary: "Session compaction updated",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId === undefined
+              ? {}
+              : { providerInstanceId: event.providerInstanceId }),
+            available: event.payload.available,
+            status: event.payload.status,
+            abortable: event.payload.abortable,
+            autoCompactionWritable: event.payload.autoCompactionWritable,
+            manualCompactionSettable: event.payload.manualCompactionSettable,
+            ...(event.payload.autoCompactionEnabled === undefined
+              ? {}
+              : { autoCompactionEnabled: event.payload.autoCompactionEnabled }),
+            ...(event.payload.autoCompactionScope === undefined
+              ? {}
+              : { autoCompactionScope: event.payload.autoCompactionScope }),
+          },
+          turnId: null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "session.harness-refinement.updated": {
+      // This safe lifecycle is projected on the session itself, not as an activity row.
+      return [];
+    }
+
+    case "session.resources.updated": {
+      return [
+        {
+          // One provider-scoped snapshot per thread. A later session start or
+          // reload replaces this inventory instead of growing activity history.
+          id: EventId.make(
+            `session-resources:${event.providerInstanceId ?? event.provider}:${event.threadId}`,
+          ),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "session.resources.updated",
+          summary: "Session resources updated",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId === undefined
+              ? {}
+              : { providerInstanceId: event.providerInstanceId }),
+            available: event.payload.available,
+            skills: event.payload.skills.map((skill) => ({
+              name: skill.name,
+              ...(skill.description === undefined ? {} : { description: skill.description }),
+              ...(skill.scope === undefined ? {} : { scope: skill.scope }),
+            })),
+            prompts: event.payload.prompts.map((prompt) => ({
+              name: prompt.name,
+              ...(prompt.description === undefined ? {} : { description: prompt.description }),
+              ...(prompt.argumentHint === undefined ? {} : { argumentHint: prompt.argumentHint }),
+              ...(prompt.scope === undefined ? {} : { scope: prompt.scope }),
+            })),
+            commands: event.payload.commands.map((command) => ({
+              name: command.name,
+              source: command.source,
+              ...(command.description === undefined ? {} : { description: command.description }),
+              ...(command.argumentHint === undefined ? {} : { argumentHint: command.argumentHint }),
+            })),
+          },
+          turnId: null,
           ...maybeSequence,
         },
       ];
@@ -531,6 +762,69 @@ export function runtimeEventToActivities(
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             answers: event.payload.answers,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "interaction.requested": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "interaction.requested",
+          summary: event.payload.request.title,
+          payload: {
+            requestId: event.requestId,
+            request: redactSessionInteractionRequestForActivity(event.payload.request),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "interaction.resolved": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "interaction.resolved",
+          summary: "Interaction resolved",
+          payload: {
+            requestId: event.requestId,
+            response: redactSessionInteractionResponseForActivity(event.payload.response),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "session-presentation.updated": {
+      const summary =
+        event.payload.presentation.kind === "notification"
+          ? event.payload.presentation.message
+          : event.payload.presentation.kind === "status"
+            ? event.payload.presentation.text?.trim() || "Status cleared"
+            : "Session widget updated";
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone:
+            event.payload.presentation.kind === "notification" &&
+            event.payload.presentation.level === "error"
+              ? "error"
+              : "info",
+          kind: "session-presentation.updated",
+          summary,
+          payload: {
+            presentation: event.payload.presentation,
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -741,6 +1035,30 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "turn.completed": {
+      const totalCostUsd = event.payload.totalCostUsd;
+      if (
+        event.turnId === undefined ||
+        totalCostUsd === undefined ||
+        !Number.isFinite(totalCostUsd) ||
+        totalCostUsd < 0
+      ) {
+        return [];
+      }
+      return [
+        {
+          id: EventId.make(`turn-cost:${event.threadId}:${event.turnId}`),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "turn.cost",
+          summary: "Reported turn cost",
+          payload: { totalCostUsd },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "thread.state.changed": {
       if (event.payload.state !== "compacted") {
         return [];
@@ -753,16 +1071,26 @@ export function runtimeEventToActivities(
           tone: "info",
           kind: "context-compaction",
           summary: "Context compacted",
-          payload: {
-            state: event.payload.state,
-            ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
-          },
+          payload: { state: event.payload.state },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
         },
       ];
     }
 
+    case "thread.token-usage.cleared":
+      return [
+        {
+          id: contextWindowActivityId(event),
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "context-window.cleared",
+          summary: "Context window unavailable",
+          payload: { reason: event.payload.reason },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
     case "thread.token-usage.updated": {
       const payload = buildContextWindowActivityPayload(event);
       if (!payload) {
@@ -771,7 +1099,7 @@ export function runtimeEventToActivities(
 
       return [
         {
-          id: event.eventId,
+          id: contextWindowActivityId(event),
           createdAt: event.createdAt,
           tone: "info",
           kind: "context-window.updated",
@@ -811,6 +1139,113 @@ export function runtimeEventToActivities(
     }
 
     case "item.completed": {
+      if (event.payload.itemType === "retry") {
+        const completed = event.payload.status === "completed";
+        return [
+          {
+            id: lifecycleActivityId("provider-retry", event),
+            createdAt: event.createdAt,
+            tone: completed ? "info" : "error",
+            kind: "provider-retry",
+            summary: completed ? "Provider retry succeeded" : "Provider retry failed",
+            payload: { status: completed ? "completed" : "failed" },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
+      if (event.payload.itemType === "refinement") {
+        const data = event.payload.data;
+        const record =
+          data !== null && typeof data === "object" && !Array.isArray(data)
+            ? (data as Record<string, unknown>)
+            : undefined;
+        const appliedCount =
+          typeof record?.appliedCount === "number" &&
+          Number.isSafeInteger(record.appliedCount) &&
+          record.appliedCount >= 0
+            ? record.appliedCount
+            : 0;
+        const failedCount =
+          typeof record?.failedCount === "number" &&
+          Number.isSafeInteger(record.failedCount) &&
+          record.failedCount >= 0
+            ? record.failedCount
+            : event.payload.status === "failed"
+              ? 1
+              : 0;
+        const partial = appliedCount > 0 && failedCount > 0;
+        const failed = appliedCount === 0 && failedCount > 0;
+        return [
+          {
+            id: EventId.make(
+              `harness-refinement:${event.providerInstanceId ?? event.provider}:${event.threadId}:${event.eventId}`,
+            ),
+            createdAt: event.createdAt,
+            tone: failed ? "error" : "info",
+            kind: "harness-refinement",
+            summary: partial
+              ? "Harness refinement partially applied"
+              : failed
+                ? "Harness refinement failed"
+                : appliedCount > 0
+                  ? "Harness refinement applied"
+                  : "Harness refinement completed",
+            payload: {
+              status: partial ? "partial" : failed ? "failed" : "completed",
+              appliedCount,
+              failedCount,
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
+      if (event.payload.itemType === "context_compaction") {
+        const status =
+          event.payload.status === "completed"
+            ? "completed"
+            : event.payload.status === "declined"
+              ? "declined"
+              : "failed";
+        return [
+          {
+            id: lifecycleActivityId("context-compaction", event),
+            createdAt: event.createdAt,
+            tone: status === "failed" ? "error" : "info",
+            kind: "context-compaction",
+            summary:
+              status === "completed"
+                ? "Context compacted"
+                : status === "declined"
+                  ? "Context compaction skipped"
+                  : "Context compaction failed",
+            payload: { status },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
+      if (event.payload.itemType === "reasoning") {
+        if (event.payload.detail === undefined || event.payload.detail.trim().length === 0) {
+          return [];
+        }
+        return [
+          {
+            id: reasoningActivityId(event),
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "reasoning.completed",
+            summary: event.payload.title ?? "Reasoning",
+            payload: {
+              itemType: event.payload.itemType,
+              detail: truncateDetail(event.payload.detail, REASONING_DETAIL_MAX_CHARS),
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -837,6 +1272,34 @@ export function runtimeEventToActivities(
     }
 
     case "item.started": {
+      if (event.payload.itemType === "retry") {
+        return [
+          {
+            id: lifecycleActivityId("provider-retry", event),
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "provider-retry",
+            summary: "Retrying provider request",
+            payload: { status: "inProgress" },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
+      if (event.payload.itemType === "context_compaction") {
+        return [
+          {
+            id: lifecycleActivityId("context-compaction", event),
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "context-compaction",
+            summary: "Compacting context",
+            payload: { status: "inProgress" },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -1580,6 +2043,25 @@ const make = Effect.gen(function* () {
           : null;
 
       if (
+        event.type === "session.harness-refinement.updated" &&
+        shouldApplyThreadLifecycle &&
+        thread.session !== null &&
+        event.payload.sessionStartedAt === thread.session.startedAt
+      ) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId: yield* providerCommandId(event, "thread-session-refinement-set"),
+          threadId: thread.id,
+          session: {
+            ...thread.session,
+            harnessRefinementStatus: event.payload.status,
+            updatedAt: now,
+          },
+          createdAt: now,
+        });
+      }
+
+      if (
         event.type === "session.started" ||
         event.type === "session.state.changed" ||
         event.type === "session.exited" ||
@@ -1662,6 +2144,13 @@ const make = Effect.gen(function* () {
                 ? { providerInstanceId: event.providerInstanceId }
                 : {}),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
+              ...(thread.session?.restored === true ? { restored: true } : {}),
+              ...(thread.session?.startedAt !== undefined
+                ? { startedAt: thread.session.startedAt }
+                : {}),
+              ...(thread.session?.harnessRefinementStatus !== undefined
+                ? { harnessRefinementStatus: thread.session.harnessRefinementStatus }
+                : {}),
               activeTurnId: nextActiveTurnId,
               lastError,
               updatedAt: now,
@@ -1720,7 +2209,9 @@ const make = Effect.gen(function* () {
       }
 
       const pauseForUserTurnId =
-        event.type === "request.opened" || event.type === "user-input.requested"
+        event.type === "request.opened" ||
+        event.type === "user-input.requested" ||
+        event.type === "interaction.requested"
           ? toTurnId(event.turnId)
           : undefined;
       if (pauseForUserTurnId) {
@@ -1739,7 +2230,9 @@ const make = Effect.gen(function* () {
                 commandTag:
                   event.type === "request.opened"
                     ? "assistant-delta-flush-on-request-opened"
-                    : "assistant-delta-flush-on-user-input-requested",
+                    : event.type === "user-input.requested"
+                      ? "assistant-delta-flush-on-user-input-requested"
+                      : "assistant-delta-flush-on-interaction-requested",
               })
             : new Set<MessageId>();
         yield* finalizeActiveAssistantSegmentForTurn({
@@ -1750,11 +2243,15 @@ const make = Effect.gen(function* () {
           commandTag:
             event.type === "request.opened"
               ? "assistant-complete-on-request-opened"
-              : "assistant-complete-on-user-input-requested",
+              : event.type === "user-input.requested"
+                ? "assistant-complete-on-user-input-requested"
+                : "assistant-complete-on-interaction-requested",
           finalDeltaCommandTag:
             event.type === "request.opened"
               ? "assistant-delta-finalize-on-request-opened"
-              : "assistant-delta-finalize-on-user-input-requested",
+              : event.type === "user-input.requested"
+                ? "assistant-delta-finalize-on-user-input-requested"
+                : "assistant-delta-finalize-on-interaction-requested",
           hasProjectedMessage:
             detailedThread !== null &&
             hasAssistantMessageForTurn(detailedThread.messages, pauseForUserTurnId, {
@@ -1912,6 +2409,13 @@ const make = Effect.gen(function* () {
                 ? { providerInstanceId: event.providerInstanceId }
                 : {}),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
+              ...(thread.session?.restored === true ? { restored: true } : {}),
+              ...(thread.session?.startedAt !== undefined
+                ? { startedAt: thread.session.startedAt }
+                : {}),
+              ...(thread.session?.harnessRefinementStatus !== undefined
+                ? { harnessRefinementStatus: thread.session.harnessRefinementStatus }
+                : {}),
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
               updatedAt: now,

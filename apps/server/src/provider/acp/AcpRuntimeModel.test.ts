@@ -336,6 +336,26 @@ describe("AcpRuntimeModel", () => {
     ]);
   });
 
+  it("parses ACP thought chunks without changing assistant message chunks", () => {
+    const assistant = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "answer" },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+    const thought = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_thought_chunk",
+        content: { type: "text", text: "reasoning" },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(assistant.events).toMatchObject([{ _tag: "ContentDelta", text: "answer" }]);
+    expect(thought.events).toMatchObject([{ _tag: "ContentDelta", text: "reasoning" }]);
+  });
+
   it("keeps permission request parsing compatible with loose extension payloads", () => {
     const request = parsePermissionRequest({
       sessionId: "session-1",

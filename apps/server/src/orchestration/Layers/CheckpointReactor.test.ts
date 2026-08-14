@@ -81,6 +81,7 @@ function createProviderServiceHarness(
   hasSession = true,
   sessionCwd = cwd,
   providerName: ProviderSession["provider"] = ProviderDriverKind.make("codex"),
+  conversationRollback: "supported" | "unsupported" = "supported",
 ) {
   const now = "2026-01-01T00:00:00.000Z";
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
@@ -110,9 +111,28 @@ function createProviderServiceHarness(
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
+    respondToInteraction: () => unsupported(),
+    reloadSessionResources: () => unsupported(),
+    askSessionSideQuestion: () => unsupported(),
+    cancelSessionSideQuestion: () => unsupported(),
+    cancelSessionAgent: () => unsupported(),
+    messageSessionAgent: () => unsupported(),
+    watchSessionAgentActivity: () => Stream.empty,
+    getSessionAgentDepth: () => unsupported(),
+    setSessionAgentDepth: () => unsupported(),
+    followUp: () => unsupported(),
+    getSessionInputQueue: () => unsupported(),
+    clearSessionInputQueue: () => unsupported(),
+    setSessionInputQueueMode: () => unsupported(),
+    getSessionCompaction: () => unsupported(),
+    compactSession: () => unsupported(),
+    abortSessionCompaction: () => unsupported(),
+    setSessionAutoCompaction: () => unsupported(),
+    refineSessionHarness: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions,
-    getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+    getCapabilities: () =>
+      Effect.succeed({ sessionModelSwitch: "in-session", conversationRollback }),
     getInstanceInfo: (instanceId) =>
       Effect.succeed({
         instanceId,
@@ -284,6 +304,7 @@ describe("CheckpointReactor", () => {
     readonly localStatusRefName?: string | null;
     readonly providerSessionCwd?: string;
     readonly providerName?: ProviderDriverKind;
+    readonly conversationRollback?: "supported" | "unsupported";
     readonly gitStatusRefreshCalls?: Array<string>;
   }) {
     const cwd = createGitRepository();
@@ -293,6 +314,7 @@ describe("CheckpointReactor", () => {
       options?.hasSession ?? true,
       options?.providerSessionCwd ?? cwd,
       options?.providerName ?? ProviderDriverKind.make("codex"),
+      options?.conversationRollback ?? "supported",
     );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -1232,6 +1254,62 @@ describe("CheckpointReactor", () => {
       threadId: ThreadId.make("thread-1"),
       numTurns: 1,
     });
+  });
+
+  it("rejects unsupported conversation rollback before restoring the filesystem", async () => {
+    const harness = await createHarness({ conversationRollback: "unsupported" });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-unsupported-diff-1"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-1"),
+        completedAt: createdAt,
+        checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-unsupported-diff-2"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-2"),
+        completedAt: createdAt,
+        checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 2,
+        createdAt,
+      }),
+    );
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-revert-unsupported"),
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+    );
+
+    expect(thread.activities.some((activity) => activity.kind === "checkpoint.revert.failed")).toBe(
+      true,
+    );
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v3\n");
+    expect(
+      gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),
+    ).toBe(true);
   });
 
   it("appends an error activity when revert is requested without an active session", async () => {

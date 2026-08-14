@@ -212,6 +212,7 @@ export function ComposerToolbarButton(props: {
   readonly variant?: "default" | "primary" | "danger";
   readonly className?: string;
   readonly style?: StyleProp<ViewStyle>;
+  readonly testID?: string;
 }) {
   const isDarkMode = useColorScheme() === "dark";
   const iconColor = useThemeColor("--color-icon");
@@ -243,6 +244,7 @@ export function ComposerToolbarButton(props: {
       accessibilityRole="button"
       disabled={props.disabled}
       onPress={props.onPress}
+      testID={props.testID}
       className={cn(
         // Default width cap lives in the class chain (not the inline style)
         // so callers can lift it with max-w-full — flex-filling pills in the

@@ -12,6 +12,7 @@ function provider(input: {
   provider?: ProviderDriverKind;
   instanceId: string;
   models?: ReadonlyArray<string>;
+  supportsBackgroundTextGeneration?: boolean;
 }): ServerProvider {
   const driver =
     input.provider ??
@@ -35,6 +36,9 @@ function provider(input: {
     })),
     slashCommands: [],
     skills: [],
+    ...(input.supportsBackgroundTextGeneration !== undefined
+      ? { supportsBackgroundTextGeneration: input.supportsBackgroundTextGeneration }
+      : {}),
   };
 }
 
@@ -294,6 +298,30 @@ describe("instance-scoped model selection", () => {
         "openai/gpt-5.5",
       ),
     ).toBe("claude-sonnet-4-6");
+  });
+
+  it("excludes providers that cannot perform background text generation", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("primeAgent"),
+        instanceId: "primeAgent",
+        models: ["default"],
+        supportsBackgroundTextGeneration: false,
+      }),
+      provider({ instanceId: "codex", models: ["gpt-5.4-mini"] }),
+    ];
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("primeAgent"),
+        model: "default",
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers)).toMatchObject({
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.4-mini",
+    });
   });
 
   it("preserves custom provider instances in settings model selection", () => {

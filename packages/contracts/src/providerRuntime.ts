@@ -14,6 +14,12 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import {
+  SessionInteractionRequest,
+  SessionInteractionRequestId,
+  SessionInteractionResponse,
+  SessionPresentation,
+} from "./sessionInteraction.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -27,6 +33,7 @@ const RuntimeEventRawSource = Schema.Union([
   Schema.Literal("codex.sdk.thread-event"),
   Schema.Literal("opencode.sdk.event"),
   Schema.Literal("acp.jsonrpc"),
+  Schema.Literal("prime-agent.daemon"),
   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
 ]);
 export type RuntimeEventRawSource = typeof RuntimeEventRawSource.Type;
@@ -127,6 +134,8 @@ export const CanonicalItemType = Schema.Literals([
   "review_entered",
   "review_exited",
   "context_compaction",
+  "retry",
+  "refinement",
   "error",
   "unknown",
 ]);
@@ -154,6 +163,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "thread.state.changed",
   "thread.metadata.updated",
   "thread.token-usage.updated",
+  "thread.token-usage.cleared",
   "thread.realtime.started",
   "thread.realtime.item-added",
   "thread.realtime.audio.delta",
@@ -174,6 +184,9 @@ const ProviderRuntimeEventType = Schema.Literals([
   "request.resolved",
   "user-input.requested",
   "user-input.resolved",
+  "interaction.requested",
+  "interaction.resolved",
+  "session-presentation.updated",
   "task.started",
   "task.progress",
   "task.updated",
@@ -192,6 +205,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "config.warning",
   "deprecation.notice",
   "files.persisted",
+  "session.resources.updated",
   "runtime.warning",
   "runtime.error",
 ]);
@@ -205,6 +219,7 @@ const ThreadStartedType = Schema.Literal("thread.started");
 const ThreadStateChangedType = Schema.Literal("thread.state.changed");
 const ThreadMetadataUpdatedType = Schema.Literal("thread.metadata.updated");
 const ThreadTokenUsageUpdatedType = Schema.Literal("thread.token-usage.updated");
+const ThreadTokenUsageClearedType = Schema.Literal("thread.token-usage.cleared");
 const ThreadRealtimeStartedType = Schema.Literal("thread.realtime.started");
 const ThreadRealtimeItemAddedType = Schema.Literal("thread.realtime.item-added");
 const ThreadRealtimeAudioDeltaType = Schema.Literal("thread.realtime.audio.delta");
@@ -225,6 +240,9 @@ const RequestOpenedType = Schema.Literal("request.opened");
 const RequestResolvedType = Schema.Literal("request.resolved");
 const UserInputRequestedType = Schema.Literal("user-input.requested");
 const UserInputResolvedType = Schema.Literal("user-input.resolved");
+const InteractionRequestedType = Schema.Literal("interaction.requested");
+const InteractionResolvedType = Schema.Literal("interaction.resolved");
+const SessionPresentationUpdatedType = Schema.Literal("session-presentation.updated");
 const TaskStartedType = Schema.Literal("task.started");
 const TaskProgressType = Schema.Literal("task.progress");
 const TaskUpdatedType = Schema.Literal("task.updated");
@@ -244,6 +262,12 @@ const ConfigWarningType = Schema.Literal("config.warning");
 const DeprecationNoticeType = Schema.Literal("deprecation.notice");
 const FilesPersistedType = Schema.Literal("files.persisted");
 const ToolDeniedType = Schema.Literal("tool.denied");
+const SessionResourcesUpdatedType = Schema.Literal("session.resources.updated");
+const SessionAgentDepthUpdatedType = Schema.Literal("session.agent-depth.updated");
+const SessionInputQueueUpdatedType = Schema.Literal("session.input-queue.updated");
+const SessionCompactionUpdatedType = Schema.Literal("session.compaction.updated");
+const SessionHarnessRefinementUpdatedType = Schema.Literal("session.harness-refinement.updated");
+const SessionGoalUpdatedType = Schema.Literal("session.goal.updated");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 
@@ -260,6 +284,10 @@ const ProviderRuntimeEventBase = Schema.Struct({
   itemId: Schema.optional(RuntimeItemId),
   requestId: Schema.optional(RuntimeRequestId),
   providerRefs: Schema.optional(ProviderRefs),
+  /**
+   * Provider-local diagnostic envelope. Adapters must omit `raw` from events
+   * carrying remote-sensitive interaction or presentation content.
+   */
   raw: Schema.optional(RuntimeEventRaw),
 });
 export type ProviderRuntimeEventBase = typeof ProviderRuntimeEventBase.Type;
@@ -329,6 +357,11 @@ const ThreadTokenUsageUpdatedPayload = Schema.Struct({
   usage: ThreadTokenUsageSnapshot,
 });
 export type ThreadTokenUsageUpdatedPayload = typeof ThreadTokenUsageUpdatedPayload.Type;
+
+const ThreadTokenUsageClearedPayload = Schema.Struct({
+  reason: Schema.Literals(["unknown", "unavailable"]),
+});
+export type ThreadTokenUsageClearedPayload = typeof ThreadTokenUsageClearedPayload.Type;
 
 const ThreadRealtimeStartedPayload = Schema.Struct({
   realtimeSessionId: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -468,6 +501,21 @@ const UserInputResolvedPayload = Schema.Struct({
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
+const InteractionRequestedPayload = Schema.Struct({
+  request: SessionInteractionRequest,
+});
+export type InteractionRequestedPayload = typeof InteractionRequestedPayload.Type;
+
+const InteractionResolvedPayload = Schema.Struct({
+  response: SessionInteractionResponse,
+});
+export type InteractionResolvedPayload = typeof InteractionResolvedPayload.Type;
+
+const SessionPresentationUpdatedPayload = Schema.Struct({
+  presentation: SessionPresentation,
+});
+export type SessionPresentationUpdatedPayload = typeof SessionPresentationUpdatedPayload.Type;
+
 /**
  * Typed per-task usage rollup. Field names match the orchestration-v2 subagent
  * usage vocabulary (#4779) so the eventual migration is a rename, not a remap.
@@ -574,6 +622,8 @@ const taskAgentLinkageFields = {
   attempt: Schema.optional(NonNegativeInt),
   runHandles: Schema.optional(TaskRunHandles),
   outputFile: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Whether this live agent currently has a provider-owned direct-message endpoint. */
+  messageable: Schema.optional(Schema.Boolean),
   /** Codex agent hierarchy path, e.g. "/root/marlow". */
   agentPath: Schema.optional(TrimmedNonEmptyStringSchema),
   /**
@@ -763,6 +813,170 @@ const ToolDeniedPayload = Schema.Struct({
 });
 export type ToolDeniedPayload = typeof ToolDeniedPayload.Type;
 
+export const RUNTIME_RESOURCE_NAME_MAX_CHARS = 200;
+export const RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS = 1_000;
+export const RUNTIME_RESOURCE_CATALOG_MAX_ITEMS = 512;
+
+const RuntimeResourceName = TrimmedNonEmptyStringSchema.check(
+  Schema.isMaxLength(RUNTIME_RESOURCE_NAME_MAX_CHARS),
+);
+const RuntimeResourceDescription = TrimmedNonEmptyStringSchema.check(
+  Schema.isMaxLength(RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS),
+);
+const RuntimeResourceScope = Schema.Literals(["user", "project", "temporary"]);
+
+export const RuntimeSessionSkill = Schema.Struct({
+  name: RuntimeResourceName,
+  description: Schema.optional(RuntimeResourceDescription),
+  scope: Schema.optional(RuntimeResourceScope),
+});
+export type RuntimeSessionSkill = typeof RuntimeSessionSkill.Type;
+
+export const RuntimeSessionPrompt = Schema.Struct({
+  name: RuntimeResourceName,
+  description: Schema.optional(RuntimeResourceDescription),
+  argumentHint: Schema.optional(RuntimeResourceName),
+  scope: Schema.optional(RuntimeResourceScope),
+});
+export type RuntimeSessionPrompt = typeof RuntimeSessionPrompt.Type;
+
+export const RuntimeSessionCommand = Schema.Struct({
+  name: RuntimeResourceName,
+  description: Schema.optional(RuntimeResourceDescription),
+  argumentHint: Schema.optional(RuntimeResourceName),
+  source: Schema.Literals(["extension", "prompt", "skill"]),
+});
+export type RuntimeSessionCommand = typeof RuntimeSessionCommand.Type;
+
+/**
+ * Provider-neutral, session-scoped resource inventory. Adapters must project
+ * provider-native catalogs into these safe fields before publishing: paths,
+ * native identifiers, diagnostics, and arbitrary provider objects do not cross
+ * this boundary.
+ */
+export const SessionResourcesUpdatedPayload = Schema.Struct({
+  available: Schema.Boolean,
+  skills: Schema.Array(RuntimeSessionSkill).check(
+    Schema.isMaxLength(RUNTIME_RESOURCE_CATALOG_MAX_ITEMS),
+  ),
+  prompts: Schema.Array(RuntimeSessionPrompt).check(
+    Schema.isMaxLength(RUNTIME_RESOURCE_CATALOG_MAX_ITEMS),
+  ),
+  commands: Schema.Array(RuntimeSessionCommand).check(
+    Schema.isMaxLength(RUNTIME_RESOURCE_CATALOG_MAX_ITEMS),
+  ),
+});
+export type SessionResourcesUpdatedPayload = typeof SessionResourcesUpdatedPayload.Type;
+
+export const PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE = 4;
+export const ProviderSessionAgentDepthSource = Schema.Literals([
+  "default",
+  "environment",
+  "global",
+  "inherited",
+  "session",
+  "policy",
+]);
+export type ProviderSessionAgentDepthSource = typeof ProviderSessionAgentDepthSource.Type;
+
+/** Safe, provider-neutral recursive-agent depth state for one active session. */
+export const SessionAgentDepthUpdatedPayload = Schema.Struct({
+  maxDepth: NonNegativeInt,
+  source: ProviderSessionAgentDepthSource,
+  writable: Schema.Boolean,
+  settable: Schema.Boolean,
+  maxSettableDepth: NonNegativeInt.check(
+    Schema.isLessThanOrEqualTo(PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE),
+  ),
+});
+export type SessionAgentDepthUpdatedPayload = typeof SessionAgentDepthUpdatedPayload.Type;
+
+export const PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT = 1_000;
+const SessionInputQueueCount = NonNegativeInt.check(
+  Schema.isLessThanOrEqualTo(PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT),
+);
+
+export const SessionInputQueueDeliveryMode = Schema.Literals(["all-at-once", "one-at-a-time"]);
+export type SessionInputQueueDeliveryMode = typeof SessionInputQueueDeliveryMode.Type;
+
+/** Counts and delivery policy only: queued prompt contents stay private to the provider runtime. */
+export const SessionInputQueueUpdatedPayload = Schema.Struct({
+  steeringCount: SessionInputQueueCount,
+  followUpCount: SessionInputQueueCount,
+  // Optional so activities persisted before delivery-mode support remain decodable.
+  steeringMode: Schema.optional(SessionInputQueueDeliveryMode),
+  followUpMode: Schema.optional(SessionInputQueueDeliveryMode),
+});
+export type SessionInputQueueUpdatedPayload = typeof SessionInputQueueUpdatedPayload.Type;
+
+export const SessionCompactionStatus = Schema.Literals([
+  "idle",
+  "starting",
+  "compacting",
+  "abort-requested",
+]);
+export type SessionCompactionStatus = typeof SessionCompactionStatus.Type;
+
+/** Session-scoped controls only; native summaries, instructions, and errors stay private. */
+export const SessionCompactionUpdatedPayload = Schema.Struct({
+  available: Schema.Boolean,
+  status: SessionCompactionStatus,
+  abortable: Schema.Boolean,
+  autoCompactionEnabled: Schema.optional(Schema.Boolean),
+  autoCompactionWritable: Schema.Boolean,
+  manualCompactionSettable: Schema.Boolean,
+  autoCompactionScope: Schema.optional(Schema.Literal("session-and-provider-default")),
+});
+export type SessionCompactionUpdatedPayload = typeof SessionCompactionUpdatedPayload.Type;
+
+export const SessionHarnessRefinementStatus = Schema.Literals([
+  "available",
+  "running",
+  "outcome-unknown",
+]);
+export type SessionHarnessRefinementStatus = typeof SessionHarnessRefinementStatus.Type;
+
+/** Session-incarnation lifecycle only; native proposals, edits, and results stay private. */
+export const SessionHarnessRefinementUpdatedPayload = Schema.Struct({
+  sessionStartedAt: IsoDateTime,
+  status: SessionHarnessRefinementStatus,
+});
+export type SessionHarnessRefinementUpdatedPayload =
+  typeof SessionHarnessRefinementUpdatedPayload.Type;
+
+export const PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
+
+export const SessionGoalStatus = Schema.Literals([
+  "idle",
+  "active",
+  "paused",
+  "budget-limited",
+  "complete",
+  "error",
+]);
+export type SessionGoalStatus = typeof SessionGoalStatus.Type;
+
+const SessionGoalObjective = TrimmedNonEmptyStringSchema.check(
+  Schema.makeFilter(
+    (value) =>
+      [...value].length <= PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS ||
+      `Goal objective must be at most ${PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS} characters`,
+  ),
+);
+
+/** Read-only goal state; native ids, timestamps, reasons, and errors stay private. */
+export const SessionGoalUpdatedPayload = Schema.Struct({
+  available: Schema.Boolean,
+  active: Schema.Boolean,
+  status: SessionGoalStatus,
+  objective: Schema.optional(SessionGoalObjective),
+  tokenBudget: Schema.optional(PositiveInt),
+  tokensUsed: NonNegativeInt,
+  timeUsedSeconds: NonNegativeInt,
+  continuationsUsed: NonNegativeInt,
+});
+export type SessionGoalUpdatedPayload = typeof SessionGoalUpdatedPayload.Type;
+
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(Schema.Unknown),
@@ -836,6 +1050,14 @@ const ProviderRuntimeThreadTokenUsageUpdatedEvent = Schema.Struct({
 });
 export type ProviderRuntimeThreadTokenUsageUpdatedEvent =
   typeof ProviderRuntimeThreadTokenUsageUpdatedEvent.Type;
+
+const ProviderRuntimeThreadTokenUsageClearedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: ThreadTokenUsageClearedType,
+  payload: ThreadTokenUsageClearedPayload,
+});
+export type ProviderRuntimeThreadTokenUsageClearedEvent =
+  typeof ProviderRuntimeThreadTokenUsageClearedEvent.Type;
 
 const ProviderRuntimeThreadRealtimeStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
@@ -986,6 +1208,32 @@ const ProviderRuntimeUserInputResolvedEvent = Schema.Struct({
 export type ProviderRuntimeUserInputResolvedEvent =
   typeof ProviderRuntimeUserInputResolvedEvent.Type;
 
+const ProviderRuntimeInteractionRequestedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  requestId: SessionInteractionRequestId,
+  type: InteractionRequestedType,
+  payload: InteractionRequestedPayload,
+});
+export type ProviderRuntimeInteractionRequestedEvent =
+  typeof ProviderRuntimeInteractionRequestedEvent.Type;
+
+const ProviderRuntimeInteractionResolvedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  requestId: SessionInteractionRequestId,
+  type: InteractionResolvedType,
+  payload: InteractionResolvedPayload,
+});
+export type ProviderRuntimeInteractionResolvedEvent =
+  typeof ProviderRuntimeInteractionResolvedEvent.Type;
+
+const ProviderRuntimeSessionPresentationUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionPresentationUpdatedType,
+  payload: SessionPresentationUpdatedPayload,
+});
+export type ProviderRuntimeSessionPresentationUpdatedEvent =
+  typeof ProviderRuntimeSessionPresentationUpdatedEvent.Type;
+
 const ProviderRuntimeTaskStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TaskStartedType,
@@ -1122,6 +1370,67 @@ const ProviderRuntimeToolDeniedEvent = Schema.Struct({
 });
 export type ProviderRuntimeToolDeniedEvent = typeof ProviderRuntimeToolDeniedEvent.Type;
 
+const ProviderRuntimeSessionResourcesUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  // Resource inventories are safe projections, never diagnostic/native envelopes.
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionResourcesUpdatedType,
+  payload: SessionResourcesUpdatedPayload,
+});
+export type ProviderRuntimeSessionResourcesUpdatedEvent =
+  typeof ProviderRuntimeSessionResourcesUpdatedEvent.Type;
+
+const ProviderRuntimeSessionAgentDepthUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionAgentDepthUpdatedType,
+  payload: SessionAgentDepthUpdatedPayload,
+});
+export type ProviderRuntimeSessionAgentDepthUpdatedEvent =
+  typeof ProviderRuntimeSessionAgentDepthUpdatedEvent.Type;
+
+const ProviderRuntimeSessionInputQueueUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionInputQueueUpdatedType,
+  payload: SessionInputQueueUpdatedPayload,
+});
+export type ProviderRuntimeSessionInputQueueUpdatedEvent =
+  typeof ProviderRuntimeSessionInputQueueUpdatedEvent.Type;
+
+const ProviderRuntimeSessionCompactionUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionCompactionUpdatedType,
+  payload: SessionCompactionUpdatedPayload,
+});
+export type ProviderRuntimeSessionCompactionUpdatedEvent =
+  typeof ProviderRuntimeSessionCompactionUpdatedEvent.Type;
+
+const ProviderRuntimeSessionHarnessRefinementUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionHarnessRefinementUpdatedType,
+  payload: SessionHarnessRefinementUpdatedPayload,
+});
+export type ProviderRuntimeSessionHarnessRefinementUpdatedEvent =
+  typeof ProviderRuntimeSessionHarnessRefinementUpdatedEvent.Type;
+
+const ProviderRuntimeSessionGoalUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  providerRefs: Schema.optional(Schema.Never),
+  raw: Schema.optional(Schema.Never),
+  type: SessionGoalUpdatedType,
+  payload: SessionGoalUpdatedPayload,
+});
+export type ProviderRuntimeSessionGoalUpdatedEvent =
+  typeof ProviderRuntimeSessionGoalUpdatedEvent.Type;
+
 const ProviderRuntimeWarningEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: RuntimeWarningType,
@@ -1145,6 +1454,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeThreadStateChangedEvent,
   ProviderRuntimeThreadMetadataUpdatedEvent,
   ProviderRuntimeThreadTokenUsageUpdatedEvent,
+  ProviderRuntimeThreadTokenUsageClearedEvent,
   ProviderRuntimeThreadRealtimeStartedEvent,
   ProviderRuntimeThreadRealtimeItemAddedEvent,
   ProviderRuntimeThreadRealtimeAudioDeltaEvent,
@@ -1165,6 +1475,9 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeRequestResolvedEvent,
   ProviderRuntimeUserInputRequestedEvent,
   ProviderRuntimeUserInputResolvedEvent,
+  ProviderRuntimeInteractionRequestedEvent,
+  ProviderRuntimeInteractionResolvedEvent,
+  ProviderRuntimeSessionPresentationUpdatedEvent,
   ProviderRuntimeTaskStartedEvent,
   ProviderRuntimeTaskProgressEvent,
   ProviderRuntimeTaskUpdatedEvent,
@@ -1184,6 +1497,12 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeDeprecationNoticeEvent,
   ProviderRuntimeFilesPersistedEvent,
   ProviderRuntimeToolDeniedEvent,
+  ProviderRuntimeSessionResourcesUpdatedEvent,
+  ProviderRuntimeSessionAgentDepthUpdatedEvent,
+  ProviderRuntimeSessionInputQueueUpdatedEvent,
+  ProviderRuntimeSessionCompactionUpdatedEvent,
+  ProviderRuntimeSessionHarnessRefinementUpdatedEvent,
+  ProviderRuntimeSessionGoalUpdatedEvent,
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,
 ]);

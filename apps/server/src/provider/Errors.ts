@@ -11,11 +11,28 @@ export class ProviderAdapterValidationError extends Schema.TaggedErrorClass<Prov
     provider: Schema.String,
     operation: Schema.String,
     issue: Schema.String,
+    reason: Schema.optional(Schema.Literals(["invalid-input", "busy"])),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
     return `Provider adapter validation failed (${this.provider}) in ${this.operation}: ${this.issue}`;
+  }
+}
+
+/**
+ * ProviderAdapterUnsupportedOperationError - Adapter exists but cannot perform this operation.
+ */
+export class ProviderAdapterUnsupportedOperationError extends Schema.TaggedErrorClass<ProviderAdapterUnsupportedOperationError>()(
+  "ProviderAdapterUnsupportedOperationError",
+  {
+    provider: Schema.String,
+    operation: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Provider adapter '${this.provider}' does not support ${this.operation}`;
   }
 }
 
@@ -60,6 +77,7 @@ export class ProviderAdapterRequestError extends Schema.TaggedErrorClass<Provide
     provider: Schema.String,
     method: Schema.String,
     detail: Schema.String,
+    reason: Schema.optional(Schema.Literals(["unsupported", "stale"])),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -93,6 +111,7 @@ export class ProviderValidationError extends Schema.TaggedErrorClass<ProviderVal
   {
     operation: Schema.String,
     issue: Schema.String,
+    reason: Schema.optional(Schema.Literal("invalid-input")),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -189,6 +208,7 @@ export class ProviderSessionDirectoryPersistenceError extends Schema.TaggedError
 
 export type ProviderAdapterError =
   | ProviderAdapterValidationError
+  | ProviderAdapterUnsupportedOperationError
   | ProviderAdapterSessionNotFoundError
   | ProviderAdapterSessionClosedError
   | ProviderAdapterRequestError

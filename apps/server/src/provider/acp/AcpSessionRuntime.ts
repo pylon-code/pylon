@@ -68,7 +68,7 @@ export interface AcpSessionRuntimeOptions {
     readonly name: string;
     readonly version: string;
   };
-  readonly authMethodId: string;
+  readonly authMethodId?: string;
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
@@ -76,6 +76,10 @@ export interface AcpSessionRuntimeOptions {
     readonly logOutgoing?: boolean;
     readonly logger?: (event: EffectAcpProtocol.AcpProtocolLogEvent) => Effect.Effect<void, never>;
   };
+  /** Drops provider-private session updates before they enter the normalized event queue. */
+  readonly shouldDiscardSessionUpdate?: (
+    notification: EffectAcpSchema.SessionNotification,
+  ) => boolean;
 }
 
 export interface AcpSessionRequestLogEvent {
@@ -175,7 +179,7 @@ export class AcpSessionRuntime extends Context.Service<
      */
     readonly handleExtNotification: EffectAcpClient.AcpClient["Service"]["handleExtNotification"];
     /**
-     * Initializes the ACP connection, authenticates, and loads, resumes, or creates the session.
+     * Initializes the ACP connection, optionally authenticates, and loads, resumes, or creates the session.
      * Concurrent calls share the same in-flight startup and a failed startup may be retried.
      */
     readonly start: () => Effect.Effect<AcpSessionRuntimeStartResult, EffectAcpErrors.AcpError>;
@@ -369,6 +373,9 @@ export const make = (
 
     yield* acp.handleSessionUpdate((notification) =>
       Effect.gen(function* () {
+        if (options.shouldDiscardSessionUpdate?.(notification) === true) {
+          return;
+        }
         const gate = yield* Ref.get(sessionLoadGateRef);
         if (Option.isSome(gate) && gate.value.active) {
           const lastActivityAtMillis = yield* Clock.currentTimeMillis;
@@ -541,15 +548,17 @@ export const make = (
         acp.agent.initialize(initializePayload),
       );
 
-      const authenticatePayload = {
-        methodId: options.authMethodId,
-      } satisfies EffectAcpSchema.AuthenticateRequest;
+      if (options.authMethodId !== undefined) {
+        const authenticatePayload = {
+          methodId: options.authMethodId,
+        } satisfies EffectAcpSchema.AuthenticateRequest;
 
-      yield* runLoggedRequest(
-        "authenticate",
-        authenticatePayload,
-        acp.agent.authenticate(authenticatePayload),
-      );
+        yield* runLoggedRequest(
+          "authenticate",
+          authenticatePayload,
+          acp.agent.authenticate(authenticatePayload),
+        );
+      }
 
       let sessionId: string;
       let sessionSetupResult:

@@ -453,4 +453,226 @@ describe("makeManagedServerProvider", () => {
       }),
     ).pipe(Effect.provide(AlwaysRunTestLayer)),
   );
+
+  it.effect("publishes external models only when the model inventory changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const releaseInitialCheck = yield* Deferred.make<void>();
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Deferred.await(releaseInitialCheck).pipe(Effect.as(refreshedSnapshot)),
+          refreshInterval: "1 hour",
+        });
+
+        const initialUpdateFiber = yield* Stream.take(provider.streamChanges, 1).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(releaseInitialCheck, undefined);
+        yield* Fiber.join(initialUpdateFiber);
+
+        const modelUpdatesFiber = yield* Stream.take(provider.streamChanges, 2).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+
+        yield* provider.publishModels(enrichedSnapshot.models);
+        yield* provider.publishModels(enrichedSnapshot.models);
+        yield* provider.publishModels(enrichedSnapshotSecond.models);
+
+        const updates = Array.from(yield* Fiber.join(modelUpdatesFiber));
+        const latest = yield* provider.getSnapshot;
+
+        assert.deepStrictEqual(updates, [
+          { ...refreshedSnapshot, models: enrichedSnapshot.models },
+          { ...refreshedSnapshot, models: enrichedSnapshotSecond.models },
+        ]);
+        assert.deepStrictEqual(latest, {
+          ...refreshedSnapshot,
+          models: enrichedSnapshotSecond.models,
+        });
+      }),
+    ).pipe(Effect.provide(AlwaysRunTestLayer)),
+  );
+
+  it.effect("serializes model publication with refreshes and retains the model overlay", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const checkCalls = yield* Ref.make(0);
+        const releaseInitialCheck = yield* Deferred.make<void>();
+        const refreshStarted = yield* Deferred.make<void>();
+        const releaseRefresh = yield* Deferred.make<void>();
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Ref.updateAndGet(checkCalls, (count) => count + 1).pipe(
+            Effect.flatMap((count) =>
+              count === 1
+                ? Deferred.await(releaseInitialCheck).pipe(Effect.as(refreshedSnapshot))
+                : Deferred.succeed(refreshStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseRefresh)),
+                    Effect.as(refreshedSnapshotSecond),
+                  ),
+            ),
+          ),
+          refreshInterval: "1 hour",
+        });
+
+        const initialUpdateFiber = yield* Stream.take(provider.streamChanges, 1).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(releaseInitialCheck, undefined);
+        yield* Fiber.join(initialUpdateFiber);
+
+        yield* provider.publishModels(enrichedSnapshot.models);
+
+        const refreshUpdatesFiber = yield* Stream.take(provider.streamChanges, 2).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        const refreshFiber = yield* provider.refresh.pipe(Effect.forkChild);
+        yield* Deferred.await(refreshStarted);
+
+        const publicationStarted = yield* Deferred.make<void>();
+        const publicationDone = yield* Deferred.make<void>();
+        const publicationFiber = yield* Effect.gen(function* () {
+          yield* Deferred.succeed(publicationStarted, undefined);
+          yield* provider.publishModels(enrichedSnapshotSecond.models);
+          yield* Deferred.succeed(publicationDone, undefined);
+        }).pipe(Effect.forkChild);
+        yield* Deferred.await(publicationStarted);
+        yield* Effect.yieldNow;
+        assert.strictEqual(yield* Deferred.isDone(publicationDone), false);
+
+        yield* Deferred.succeed(releaseRefresh, undefined);
+        const refreshed = yield* Fiber.join(refreshFiber);
+        yield* Fiber.join(publicationFiber);
+
+        const updates = Array.from(yield* Fiber.join(refreshUpdatesFiber));
+        const latest = yield* provider.getSnapshot;
+        const refreshedWithPublishedModels = {
+          ...refreshedSnapshotSecond,
+          models: enrichedSnapshot.models,
+        };
+        const latestWithPublishedModels = {
+          ...refreshedSnapshotSecond,
+          models: enrichedSnapshotSecond.models,
+        };
+
+        assert.deepStrictEqual(refreshed, refreshedWithPublishedModels);
+        assert.deepStrictEqual(updates, [refreshedWithPublishedModels, latestWithPublishedModels]);
+        assert.deepStrictEqual(latest, latestWithPublishedModels);
+      }),
+    ).pipe(Effect.provide(AlwaysRunTestLayer)),
+  );
+
+  it.effect("uses the published-model health path and reconciles the current snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const baseChecks = yield* Ref.make(0);
+        const publishedChecks = yield* Ref.make(0);
+        const releaseInitialCheck = yield* Deferred.make<void>();
+        const fallbackSnapshot = {
+          ...refreshedSnapshot,
+          message: "Model discovery failed; using fallback models.",
+        };
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Ref.update(baseChecks, (count) => count + 1).pipe(
+            Effect.andThen(Deferred.await(releaseInitialCheck)),
+            Effect.as(fallbackSnapshot),
+          ),
+          checkProviderWithPublishedModels: Ref.update(publishedChecks, (count) => count + 1).pipe(
+            Effect.as(refreshedSnapshotSecond),
+          ),
+          reconcilePublishedModels: (snapshot) => {
+            const { message: _message, ...reconciled } = snapshot;
+            return reconciled;
+          },
+          refreshInterval: "1 hour",
+        });
+
+        const initialUpdateFiber = yield* Stream.take(provider.streamChanges, 1).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(releaseInitialCheck, undefined);
+        yield* Fiber.join(initialUpdateFiber);
+
+        yield* provider.publishModels(enrichedSnapshot.models);
+        const published = yield* provider.getSnapshot;
+        assert.strictEqual(published.message, undefined);
+
+        const refreshed = yield* provider.refresh;
+        assert.strictEqual(yield* Ref.get(baseChecks), 1);
+        assert.strictEqual(yield* Ref.get(publishedChecks), 1);
+        const { message: _message, ...refreshedWithoutMessage } = refreshedSnapshotSecond;
+        assert.deepStrictEqual(refreshed, {
+          ...refreshedWithoutMessage,
+          models: enrichedSnapshot.models,
+        });
+      }),
+    ).pipe(Effect.provide(AlwaysRunTestLayer)),
+  );
+
+  it.effect(
+    "keeps published models and reconciliation when current enrichment finishes later",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const releaseInitialCheck = yield* Deferred.make<void>();
+          const enrichmentReady = yield* Deferred.make<void>();
+          const fallbackMessage = "Model discovery failed; using fallback models.";
+          let publishEnrichment: ((snapshot: ServerProvider) => Effect.Effect<void>) | undefined;
+          const provider = yield* makeManagedServerProvider<TestSettings>({
+            maintenanceCapabilities,
+            getSettings: Effect.succeed({ enabled: true }),
+            streamSettings: Stream.empty,
+            haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+            initialSnapshot: () => Effect.succeed(initialSnapshot),
+            checkProvider: Deferred.await(releaseInitialCheck).pipe(
+              Effect.as({ ...refreshedSnapshot, message: fallbackMessage }),
+            ),
+            reconcilePublishedModels: (snapshot) => {
+              if (snapshot.message !== fallbackMessage) return snapshot;
+              const { message: _message, ...reconciled } = snapshot;
+              return reconciled;
+            },
+            enrichSnapshot: ({ publishSnapshot }) =>
+              Effect.sync(() => {
+                publishEnrichment = publishSnapshot;
+              }).pipe(Effect.andThen(Deferred.succeed(enrichmentReady, undefined)), Effect.asVoid),
+            refreshInterval: "1 hour",
+          });
+
+          yield* Deferred.succeed(releaseInitialCheck, undefined);
+          yield* Deferred.await(enrichmentReady);
+          yield* provider.publishModels(enrichedSnapshot.models);
+          yield* publishEnrichment!({ ...enrichedSnapshotSecond, message: fallbackMessage });
+
+          const { message: _message, ...enrichmentWithoutMessage } = enrichedSnapshotSecond;
+          assert.deepStrictEqual(yield* provider.getSnapshot, {
+            ...enrichmentWithoutMessage,
+            models: enrichedSnapshot.models,
+          });
+        }),
+      ).pipe(Effect.provide(AlwaysRunTestLayer)),
+  );
 });

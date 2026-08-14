@@ -891,6 +891,7 @@ describe("deriveMessagesTimelineRows", () => {
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
+      reportedTurnCosts: new Map([["turn-1" as never, 0.123456]]),
       revertTurnCountByUserMessageId: new Map(),
     });
 
@@ -900,6 +901,10 @@ describe("deriveMessagesTimelineRows", () => {
     );
 
     expect(assistantRows.map((row) => row.showAssistantMeta)).toEqual([false, true]);
+    expect(assistantRows.map((row) => row.reportedCostLabel)).toEqual([
+      undefined,
+      "Reported cost $0.1235",
+    ]);
   });
 
   it("withholds assistant metadata while the active turn is still in progress", () => {
@@ -929,6 +934,7 @@ describe("deriveMessagesTimelineRows", () => {
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
       turnDiffSummaryByAssistantMessageId: new Map(),
+      reportedTurnCosts: new Map([["turn-1" as never, 1]]),
       revertTurnCountByUserMessageId: new Map(),
     });
 
@@ -939,6 +945,7 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(assistantRow?.showAssistantMeta).toBe(false);
     expect(assistantRow?.showAssistantCopyButton).toBe(false);
+    expect(assistantRow?.reportedCostLabel).toBeUndefined();
   });
 
   it("models work log overflow expansion as inserted list rows", () => {

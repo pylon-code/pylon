@@ -19,6 +19,7 @@ import {
   findLatestProposedPlan,
   hasActionableProposedPlan,
   isLatestTurnSettled,
+  workLogEntryIsToolLike,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
@@ -740,6 +741,27 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities);
     expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
+  });
+
+  it("keeps bounded final reasoning expandable and non-tool-like", () => {
+    const detail = "r".repeat(4_000);
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "reasoning-completed",
+        kind: "reasoning.completed",
+        summary: "Reasoning",
+        tone: "info",
+        payload: { itemType: "reasoning", detail },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      id: "reasoning-completed",
+      label: "Reasoning",
+      detail,
+      sourceActivityKind: "reasoning.completed",
+    });
+    expect(entry && workLogEntryIsToolLike(entry)).toBe(false);
   });
 
   it("omits task.started but shows task.progress and task.completed", () => {
@@ -1571,13 +1593,34 @@ describe("deriveTimelineEntries", () => {
 });
 
 describe("deriveWorkLogEntries context window handling", () => {
-  it("excludes context window updates from the work log", () => {
+  it("excludes context and cost metadata from the work log", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
         id: "context-1",
         turnId: "turn-1",
         kind: "context-window.updated",
         summary: "Context window updated",
+        tone: "info",
+      }),
+      makeActivity({
+        id: "context-clear-1",
+        turnId: "turn-1",
+        kind: "context-window.cleared",
+        summary: "Context window unavailable",
+        tone: "info",
+      }),
+      makeActivity({
+        id: "resources-1",
+        turnId: "turn-1",
+        kind: "session.resources.updated",
+        summary: "Session resources updated",
+        tone: "info",
+      }),
+      makeActivity({
+        id: "turn-cost-1",
+        turnId: "turn-1",
+        kind: "turn.cost",
+        summary: "Reported turn cost",
         tone: "info",
       }),
       makeActivity({

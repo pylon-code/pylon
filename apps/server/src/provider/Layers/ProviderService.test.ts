@@ -9,6 +9,8 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderTurnStartResult,
+  SessionCompactionUpdatedPayload,
+  SessionInputQueueUpdatedPayload,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -16,6 +18,9 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionStartInput,
+  ProviderSessionSideQuestionRequestId,
+  SessionInteractionRequestId,
+  RuntimeTaskId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -33,6 +38,7 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
@@ -88,7 +94,10 @@ type LegacyProviderRuntimeEvent = {
   readonly [key: string]: unknown;
 };
 
-function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
+function makeFakeCodexAdapter(
+  provider: ProviderDriverKind = CODEX_DRIVER,
+  options?: { readonly supportsSideQuestions?: boolean },
+) {
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
@@ -156,6 +165,140 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     ): Effect.Effect<void, ProviderAdapterError> => Effect.void,
   );
 
+  const respondToInteraction = vi.fn<
+    NonNullable<ProviderAdapterShape<ProviderAdapterError>["respondToInteraction"]>
+  >(() => Effect.void);
+
+  const reloadSessionResources = vi.fn(
+    (
+      _threadId: ThreadId,
+    ): Effect.Effect<
+      { available: true; skills: readonly []; prompts: readonly []; commands: readonly [] },
+      ProviderAdapterError
+    > => Effect.succeed({ available: true, skills: [], prompts: [], commands: [] }),
+  );
+
+  const askSessionSideQuestion = vi.fn(
+    (threadId: ThreadId, requestId: ProviderSessionSideQuestionRequestId, _question: string) =>
+      Effect.succeed({ requestId, disposition: "answered" as const, answer: "safe answer" }),
+  );
+
+  const cancelSessionSideQuestion = vi.fn(
+    (threadId: ThreadId, requestId: ProviderSessionSideQuestionRequestId) =>
+      Effect.succeed({ threadId }).pipe(
+        Effect.as({ requestId, disposition: "cancel-requested" as const }),
+      ),
+  );
+
+  const cancelSessionAgent = vi.fn((threadId: ThreadId, agentId: RuntimeTaskId) =>
+    Effect.succeed({ threadId, agentId }).pipe(
+      Effect.as({ agentId, disposition: "cancel-requested" as const }),
+    ),
+  );
+
+  const messageSessionAgent = vi.fn(
+    (_threadId: ThreadId, agentId: RuntimeTaskId, _message: string) =>
+      Effect.succeed({ agentId, disposition: "delivered" as const }),
+  );
+
+  const watchSessionAgentActivity = vi.fn((_threadId: ThreadId, agentId: RuntimeTaskId) =>
+    Stream.make({
+      agentId,
+      revision: 1,
+      entries: [{ speaker: "assistant" as const, text: "safe live activity" }],
+    }),
+  );
+
+  let agentDepth = {
+    maxDepth: 2,
+    source: "session" as const,
+    writable: true,
+    settable: true,
+    maxSettableDepth: 4,
+  };
+  const getSessionAgentDepth = vi.fn(
+    (_threadId: ThreadId): Effect.Effect<typeof agentDepth, ProviderAdapterError> =>
+      Effect.sync(() => agentDepth),
+  );
+  const setSessionAgentDepth = vi.fn(
+    (
+      _threadId: ThreadId,
+      maxDepth: number,
+    ): Effect.Effect<typeof agentDepth, ProviderAdapterError> =>
+      Effect.sync(() => {
+        agentDepth = { ...agentDepth, maxDepth };
+        return agentDepth;
+      }),
+  );
+
+  let compaction: SessionCompactionUpdatedPayload = {
+    available: true,
+    status: "idle" as const,
+    abortable: false,
+    autoCompactionEnabled: true,
+    autoCompactionWritable: true,
+    manualCompactionSettable: true,
+    autoCompactionScope: "session-and-provider-default" as const,
+  };
+  const getSessionCompaction = vi.fn((_threadId: ThreadId) => Effect.sync(() => compaction));
+  const compactSession = vi.fn((_threadId: ThreadId) =>
+    Effect.sync(() => {
+      compaction = {
+        ...compaction,
+        status: "starting" as const,
+        abortable: true,
+        manualCompactionSettable: false,
+      };
+      return compaction;
+    }),
+  );
+  const abortSessionCompaction = vi.fn((_threadId: ThreadId) =>
+    Effect.sync(() => {
+      compaction = { ...compaction, status: "abort-requested" as const };
+      return compaction;
+    }),
+  );
+  const setSessionAutoCompaction = vi.fn(
+    (input: { readonly threadId: ThreadId; readonly enabled: boolean }) =>
+      Effect.sync(() => {
+        compaction = { ...compaction, autoCompactionEnabled: input.enabled };
+        return compaction;
+      }),
+  );
+  const refineSessionHarness = vi.fn((_threadId: ThreadId) =>
+    Effect.succeed({ appliedCount: 2, failedCount: 1, outcome: "partial" as const }),
+  );
+
+  let inputQueue: SessionInputQueueUpdatedPayload = {
+    steeringCount: 0,
+    followUpCount: 0,
+    steeringMode: "one-at-a-time" as const,
+    followUpMode: "one-at-a-time" as const,
+  };
+  const getSessionInputQueue = vi.fn((_threadId: ThreadId) => Effect.sync(() => inputQueue));
+  const clearSessionInputQueue = vi.fn((_threadId: ThreadId) =>
+    Effect.sync(() => {
+      inputQueue = { ...inputQueue, steeringCount: 0, followUpCount: 0 };
+      return inputQueue;
+    }),
+  );
+  const setSessionInputQueueMode = vi.fn(
+    (input: {
+      readonly threadId: ThreadId;
+      readonly queue: "steering" | "follow-up";
+      readonly mode: "all-at-once" | "one-at-a-time";
+    }) =>
+      Effect.sync(() => {
+        inputQueue = {
+          ...inputQueue,
+          ...(input.queue === "steering"
+            ? { steeringMode: input.mode }
+            : { followUpMode: input.mode }),
+        };
+        return inputQueue;
+      }),
+  );
+
   const stopSession = vi.fn(
     (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
       Effect.sync(() => {
@@ -213,6 +356,24 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     interruptTurn,
     respondToRequest,
     respondToUserInput,
+    respondToInteraction,
+    reloadSessionResources,
+    ...(options?.supportsSideQuestions === false
+      ? {}
+      : { askSessionSideQuestion, cancelSessionSideQuestion }),
+    cancelSessionAgent,
+    messageSessionAgent,
+    watchSessionAgentActivity,
+    getSessionAgentDepth,
+    setSessionAgentDepth,
+    getSessionInputQueue,
+    clearSessionInputQueue,
+    setSessionInputQueueMode,
+    getSessionCompaction,
+    compactSession,
+    abortSessionCompaction,
+    setSessionAutoCompaction,
+    refineSessionHarness,
     stopSession,
     listSessions,
     hasSession,
@@ -245,6 +406,23 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     updateSession,
     startSession,
     sendTurn,
+    respondToInteraction,
+    reloadSessionResources,
+    askSessionSideQuestion,
+    cancelSessionSideQuestion,
+    cancelSessionAgent,
+    messageSessionAgent,
+    watchSessionAgentActivity,
+    getSessionAgentDepth,
+    setSessionAgentDepth,
+    getSessionInputQueue,
+    clearSessionInputQueue,
+    setSessionInputQueueMode,
+    getSessionCompaction,
+    compactSession,
+    abortSessionCompaction,
+    setSessionAutoCompaction,
+    refineSessionHarness,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -274,7 +452,7 @@ const hasMetricSnapshot = (
 function makeProviderServiceLayer() {
   const codex = makeFakeCodexAdapter();
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
-  const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
+  const cursor = makeFakeCodexAdapter(CURSOR_DRIVER, { supportsSideQuestions: false });
   const registry = makeAdapterRegistryMock({
     [ProviderDriverKind.make("codex")]: codex.adapter,
     [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
@@ -854,6 +1032,95 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("routes side questions once without recovering inactive sessions", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-side-question");
+      const requestId = ProviderSessionSideQuestionRequestId.make("side-question-1");
+
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "approval-required",
+      });
+      routing.codex.askSessionSideQuestion.mockClear();
+      routing.codex.cancelSessionSideQuestion.mockClear();
+
+      const spans: Array<Tracer.NativeSpan> = [];
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          spans.push(span);
+          return span;
+        },
+      });
+      const question = "private question";
+      const answer = yield* provider
+        .askSessionSideQuestion({ threadId, requestId, question })
+        .pipe(Effect.withTracer(tracer));
+      assert.deepEqual(answer, {
+        requestId,
+        disposition: "answered",
+        answer: "safe answer",
+      });
+      assert.deepEqual(routing.codex.askSessionSideQuestion.mock.calls, [
+        [threadId, requestId, question],
+      ]);
+      const serializedSpanAttributes = spans
+        .flatMap((span) =>
+          Array.from(span.attributes.entries()).flatMap(([key, value]) => [key, String(value)]),
+        )
+        .join("\n");
+      assert.notInclude(serializedSpanAttributes, question);
+      assert.notInclude(serializedSpanAttributes, "safe answer");
+      assert.notInclude(serializedSpanAttributes, requestId);
+
+      const cancellation = yield* provider.cancelSessionSideQuestion({ threadId, requestId });
+      assert.deepEqual(cancellation, { requestId, disposition: "cancel-requested" });
+      assert.deepEqual(routing.codex.cancelSessionSideQuestion.mock.calls, [[threadId, requestId]]);
+
+      yield* provider.stopSession({ threadId });
+      routing.codex.startSession.mockClear();
+      routing.codex.askSessionSideQuestion.mockClear();
+      const inactiveError = yield* provider
+        .askSessionSideQuestion({ threadId, requestId, question: "private question" })
+        .pipe(Effect.flip);
+      assert.instanceOf(inactiveError, ProviderValidationError);
+      routing.codex.cancelSessionSideQuestion.mockClear();
+      const inactiveCancelError = yield* provider
+        .cancelSessionSideQuestion({ threadId, requestId })
+        .pipe(Effect.flip);
+      assert.instanceOf(inactiveCancelError, ProviderValidationError);
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      assert.equal(routing.codex.askSessionSideQuestion.mock.calls.length, 0);
+      assert.equal(routing.codex.cancelSessionSideQuestion.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("fails side questions on unsupported adapters", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-side-question-unsupported");
+      const requestId = ProviderSessionSideQuestionRequestId.make("side-question-unsupported");
+      yield* provider.startSession(threadId, {
+        provider: CURSOR_DRIVER,
+        providerInstanceId: ProviderInstanceId.make("cursor"),
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "approval-required",
+      });
+
+      const error = yield* provider
+        .askSessionSideQuestion({ threadId, requestId, question: "private question" })
+        .pipe(Effect.flip);
+      assert.instanceOf(error, ProviderUnsupportedError);
+      assert.equal(routing.cursor.askSessionSideQuestion.mock.calls.length, 0);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
@@ -906,6 +1173,128 @@ routing.layer("ProviderServiceLive routing", (it) => {
         ],
       ]);
 
+      yield* provider.respondToInteraction({
+        threadId: session.threadId,
+        requestId: SessionInteractionRequestId.make("interaction-1"),
+        response: { kind: "confirmed", confirmed: true },
+      });
+      assert.deepEqual(routing.codex.respondToInteraction.mock.calls, [
+        [
+          session.threadId,
+          SessionInteractionRequestId.make("interaction-1"),
+          { kind: "confirmed", confirmed: true },
+        ],
+      ]);
+
+      const resources = yield* provider.reloadSessionResources({ threadId: session.threadId });
+      assert.deepEqual(resources, { available: true, skills: [], prompts: [], commands: [] });
+      assert.deepEqual(routing.codex.reloadSessionResources.mock.calls, [[session.threadId]]);
+
+      const cancelled = yield* provider.cancelSessionAgent({
+        threadId: session.threadId,
+        agentId: RuntimeTaskId.make("agent-1"),
+      });
+      assert.deepEqual(cancelled, {
+        agentId: RuntimeTaskId.make("agent-1"),
+        disposition: "cancel-requested",
+      });
+      assert.deepEqual(routing.codex.cancelSessionAgent.mock.calls, [
+        [session.threadId, RuntimeTaskId.make("agent-1")],
+      ]);
+
+      const messaged = yield* provider.messageSessionAgent({
+        threadId: session.threadId,
+        agentId: RuntimeTaskId.make("agent-1"),
+        message: "Check the failing test.",
+      });
+      assert.deepEqual(messaged, {
+        agentId: RuntimeTaskId.make("agent-1"),
+        disposition: "delivered",
+      });
+      assert.deepEqual(routing.codex.messageSessionAgent.mock.calls, [
+        [session.threadId, RuntimeTaskId.make("agent-1"), "Check the failing test."],
+      ]);
+
+      const activity = Array.from(
+        yield* Stream.runCollect(
+          provider.watchSessionAgentActivity({
+            threadId: session.threadId,
+            agentId: RuntimeTaskId.make("agent-1"),
+          }),
+        ),
+      );
+      assert.deepEqual(activity, [
+        {
+          agentId: RuntimeTaskId.make("agent-1"),
+          revision: 1,
+          entries: [{ speaker: "assistant", text: "safe live activity" }],
+        },
+      ]);
+      assert.deepEqual(routing.codex.watchSessionAgentActivity.mock.calls, [
+        [session.threadId, RuntimeTaskId.make("agent-1")],
+      ]);
+
+      const invalidDepth = yield* provider
+        .setSessionAgentDepth({ threadId: session.threadId, maxDepth: 5 })
+        .pipe(Effect.flip);
+      assert.equal(invalidDepth._tag, "ProviderValidationError");
+      assert.deepEqual(routing.codex.setSessionAgentDepth.mock.calls, []);
+
+      const depth = yield* provider.getSessionAgentDepth({ threadId: session.threadId });
+      const updatedDepth = yield* provider.setSessionAgentDepth({
+        threadId: session.threadId,
+        maxDepth: 3,
+      });
+      assert.equal(depth.maxDepth, 2);
+      assert.equal(updatedDepth.maxDepth, 3);
+      assert.deepEqual(routing.codex.getSessionAgentDepth.mock.calls, [[session.threadId]]);
+      assert.deepEqual(routing.codex.setSessionAgentDepth.mock.calls, [[session.threadId, 3]]);
+
+      const queue = yield* provider.getSessionInputQueue({ threadId: session.threadId });
+      const updatedQueue = yield* provider.setSessionInputQueueMode({
+        threadId: session.threadId,
+        queue: "steering",
+        mode: "all-at-once",
+      });
+      assert.equal(queue.steeringMode, "one-at-a-time");
+      assert.equal(updatedQueue.steeringMode, "all-at-once");
+      assert.deepEqual(routing.codex.getSessionInputQueue.mock.calls, [[session.threadId]]);
+      assert.deepEqual(routing.codex.setSessionInputQueueMode.mock.calls, [
+        [
+          {
+            threadId: session.threadId,
+            queue: "steering",
+            mode: "all-at-once",
+          },
+        ],
+      ]);
+
+      const compactionState = yield* provider.getSessionCompaction({
+        threadId: session.threadId,
+      });
+      const compacting = yield* provider.compactSession({ threadId: session.threadId });
+      const aborting = yield* provider.abortSessionCompaction({ threadId: session.threadId });
+      const autoDisabled = yield* provider.setSessionAutoCompaction({
+        threadId: session.threadId,
+        enabled: false,
+      });
+      assert.equal(compactionState.status, "idle");
+      assert.equal(compacting.status, "starting");
+      assert.equal(aborting.status, "abort-requested");
+      assert.equal(autoDisabled.autoCompactionEnabled, false);
+      assert.deepEqual(routing.codex.getSessionCompaction.mock.calls, [[session.threadId]]);
+      assert.deepEqual(routing.codex.compactSession.mock.calls, [[session.threadId]]);
+      assert.deepEqual(routing.codex.abortSessionCompaction.mock.calls, [[session.threadId]]);
+      assert.deepEqual(routing.codex.setSessionAutoCompaction.mock.calls, [
+        [{ threadId: session.threadId, enabled: false }],
+      ]);
+      assert.deepEqual(yield* provider.refineSessionHarness({ threadId: session.threadId }), {
+        appliedCount: 2,
+        failedCount: 1,
+        outcome: "partial",
+      });
+      assert.deepEqual(routing.codex.refineSessionHarness.mock.calls, [[session.threadId]]);
+
       yield* provider.rollbackConversation({
         threadId: session.threadId,
         numTurns: 0,
@@ -914,6 +1303,19 @@ routing.layer("ProviderServiceLive routing", (it) => {
       yield* provider.stopSession({ threadId: session.threadId });
       routing.codex.startSession.mockClear();
       routing.codex.sendTurn.mockClear();
+
+      const reloadError = yield* provider
+        .reloadSessionResources({ threadId: session.threadId })
+        .pipe(Effect.flip);
+      assert.equal(reloadError._tag, "ProviderValidationError");
+      const inactiveDepthError = yield* provider
+        .setSessionAgentDepth({ threadId: session.threadId, maxDepth: 1 })
+        .pipe(Effect.flip);
+      assert.equal(inactiveDepthError._tag, "ProviderValidationError");
+      if (inactiveDepthError._tag === "ProviderValidationError") {
+        assert.equal(inactiveDepthError.reason, undefined);
+      }
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
 
       yield* provider.sendTurn({
         threadId: session.threadId,
@@ -1914,6 +2316,22 @@ validation.layer("ProviderServiceLive validation", (it) => {
       }
       assert.equal(failure.failure.operation, "ProviderService.startSession");
       assert.equal(failure.failure.issue.includes("invalid-provider"), true);
+
+      const invalidMessage = yield* Effect.result(
+        provider.messageSessionAgent({
+          threadId: asThreadId("thread-validation"),
+          agentId: RuntimeTaskId.make("agent-1"),
+          message: "   ",
+        } as never),
+      );
+      assert.equal(invalidMessage._tag, "Failure");
+      if (invalidMessage._tag === "Failure") {
+        assert.equal(invalidMessage.failure._tag, "ProviderValidationError");
+        if (invalidMessage.failure._tag === "ProviderValidationError") {
+          assert.equal(invalidMessage.failure.operation, "ProviderService.messageSessionAgent");
+          assert.equal(invalidMessage.failure.reason, "invalid-input");
+        }
+      }
     }),
   );
 

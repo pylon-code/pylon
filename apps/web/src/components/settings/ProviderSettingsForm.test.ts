@@ -22,6 +22,23 @@ describe("ProviderSettingsForm helpers", () => {
     ]);
   });
 
+  it("exposes Prime Agent with its annotated CLI settings", () => {
+    const primeAgent = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("primeAgent")];
+
+    expect(primeAgent).toMatchObject({ label: "Prime Agent", badgeLabel: "Early Access" });
+    expect(deriveProviderSettingsFields(primeAgent!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "agentHomePath",
+      "launchArgs",
+    ]);
+    expect(
+      deriveProviderSettingsFields(primeAgent!).find((field) => field.key === "agentHomePath"),
+    ).toMatchObject({
+      label: "Agent home path",
+      placeholder: "~/.prime/agent",
+    });
+  });
+
   it("sources labels and descriptions from schema annotations", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();

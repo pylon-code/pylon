@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import { classifyTaskAgentKind, ProviderRuntimeEvent } from "./providerRuntime.ts";
 
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
+const encodeRuntimeEvent = Schema.encodeSync(ProviderRuntimeEvent);
 
 describe("ProviderRuntimeEvent", () => {
   it("accepts fork-provided driver kinds as branded slugs", () => {
@@ -130,6 +131,100 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.answers.sandbox_mode).toBe("workspace-write");
   });
 
+  it("round-trips canonical interaction and presentation events", () => {
+    const events = [
+      {
+        type: "interaction.requested",
+        eventId: "event-interaction-requested",
+        provider: "primeAgent",
+        createdAt: "2026-02-28T00:00:03.000Z",
+        threadId: "thread-3",
+        requestId: "interaction-1",
+        payload: {
+          request: {
+            kind: "select",
+            title: "Choose a client",
+            options: ["web", "desktop"],
+            timeout: 10_000,
+          },
+        },
+      },
+      {
+        type: "interaction.resolved",
+        eventId: "event-interaction-resolved",
+        provider: "primeAgent",
+        createdAt: "2026-02-28T00:00:04.000Z",
+        threadId: "thread-3",
+        requestId: "interaction-1",
+        payload: {
+          response: { kind: "selected", value: "desktop" },
+        },
+      },
+      {
+        type: "session-presentation.updated",
+        eventId: "event-presentation-updated",
+        provider: "primeAgent",
+        createdAt: "2026-02-28T00:00:05.000Z",
+        threadId: "thread-3",
+        payload: {
+          presentation: {
+            kind: "widget",
+            key: "plan",
+            lines: ["1. Add contracts", "2. Add adapters"],
+          },
+        },
+      },
+    ];
+
+    for (const event of events) {
+      expect(encodeRuntimeEvent(decodeRuntimeEvent(event))).toEqual(event);
+    }
+  });
+
+  it("requires a bounded request id on interaction lifecycle events", () => {
+    expect(() =>
+      decodeRuntimeEvent({
+        type: "interaction.requested",
+        eventId: "event-interaction-no-id",
+        provider: "primeAgent",
+        createdAt: "2026-02-28T00:00:03.000Z",
+        threadId: "thread-3",
+        payload: {
+          request: { kind: "input", title: "Input" },
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeRuntimeEvent({
+        type: "interaction.resolved",
+        eventId: "event-interaction-long-id",
+        provider: "primeAgent",
+        createdAt: "2026-02-28T00:00:04.000Z",
+        threadId: "thread-3",
+        requestId: "r".repeat(129),
+        payload: { response: { kind: "cancelled" } },
+      }),
+    ).toThrow();
+  });
+
+  it("accepts prime-agent.daemon raw sources for local server diagnostics", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "runtime.warning",
+      eventId: "event-daemon-warning",
+      provider: "primeAgent",
+      createdAt: "2026-02-28T00:00:06.000Z",
+      threadId: "thread-3",
+      payload: { message: "Daemon reconnected" },
+      raw: {
+        source: "prime-agent.daemon",
+        method: "connection_status",
+        payload: { connected: true },
+      },
+    });
+
+    expect(parsed.raw?.source).toBe("prime-agent.daemon");
+  });
+
   it("rejects legacy message.delta type", () => {
     expect(() =>
       decodeRuntimeEvent({
@@ -180,6 +275,32 @@ describe("ProviderRuntimeEvent", () => {
     }
     expect(parsed.payload.usage.maxTokens).toBe(200000);
     expect(parsed.payload.usage.usedTokens).toBe(31251);
+  });
+
+  it("decodes typed context usage clear barriers", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "thread.token-usage.cleared",
+      eventId: "event-token-usage-clear-1",
+      provider: "primeAgent",
+      createdAt: "2026-02-28T00:00:05.000Z",
+      threadId: "thread-1",
+      payload: { reason: "unknown" },
+    });
+
+    expect(parsed).toMatchObject({
+      type: "thread.token-usage.cleared",
+      payload: { reason: "unknown" },
+    });
+    expect(() =>
+      decodeRuntimeEvent({
+        type: "thread.token-usage.cleared",
+        eventId: "event-token-usage-clear-2",
+        provider: "primeAgent",
+        createdAt: "2026-02-28T00:00:05.000Z",
+        threadId: "thread-1",
+        payload: { reason: "native-private-reason" },
+      }),
+    ).toThrow();
   });
 });
 

@@ -130,6 +130,40 @@ describe("ClientSettings provider usage", () => {
   });
 });
 
+describe("ServerSettings Prime Agent provider", () => {
+  it("hydrates the legacy Prime Agent slot with safe CLI defaults", () => {
+    expect(decodeServerSettings({}).providers.primeAgent).toEqual({
+      enabled: true,
+      binaryPath: "prime-agent",
+      agentHomePath: "",
+      launchArgs: "",
+      customModels: [],
+    });
+  });
+
+  it("decodes and normalizes Prime Agent provider patches", () => {
+    expect(
+      decodeServerSettingsPatch({
+        providers: {
+          primeAgent: {
+            enabled: false,
+            binaryPath: "  /opt/bin/prime-agent  ",
+            agentHomePath: "  ~/.prime/work  ",
+            launchArgs: "  --offline  ",
+            customModels: ["anthropic/claude-sonnet-5"],
+          },
+        },
+      }).providers?.primeAgent,
+    ).toEqual({
+      enabled: false,
+      binaryPath: "/opt/bin/prime-agent",
+      agentHomePath: "~/.prime/work",
+      launchArgs: "--offline",
+      customModels: ["anthropic/claude-sonnet-5"],
+    });
+  });
+});
+
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults text generation to Luna at low reasoning effort", () => {
     expect(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection).toEqual({

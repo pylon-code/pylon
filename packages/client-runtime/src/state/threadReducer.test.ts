@@ -729,6 +729,47 @@ describe("applyThreadDetailEvent", () => {
       }
     });
 
+    it("treats a context clear as a resolvable same-turn barrier", () => {
+      const existing = {
+        id: EventId.make("activity-cw-resolvable"),
+        tone: "info" as const,
+        kind: "context-window.updated",
+        summary: "Context window updated",
+        payload: { usedTokens: 1_000 },
+        turnId: TurnId.make("turn-1"),
+        sequence: 1,
+        createdAt: "2026-04-01T11:00:00.000Z",
+      };
+      const result = applyThreadDetailEvent(
+        { ...baseThread, activities: [existing] },
+        {
+          ...baseEventFields,
+          sequence: 21,
+          occurredAt: "2026-04-01T11:03:00.000Z",
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          type: "thread.activity-appended",
+          payload: {
+            threadId: ThreadId.make("thread-1"),
+            activity: {
+              ...existing,
+              id: EventId.make("activity-cw-cleared"),
+              kind: "context-window.cleared",
+              payload: { reason: "unknown" },
+              sequence: 2,
+            },
+          },
+        },
+      );
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.activities.map((activity) => activity.id)).toEqual([
+          "activity-cw-cleared",
+        ]);
+      }
+    });
+
     it("does not collapse context-window history for a malformed update", () => {
       const resolvable = {
         id: EventId.make("activity-cw-resolvable"),

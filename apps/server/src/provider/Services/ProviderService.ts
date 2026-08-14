@@ -12,10 +12,38 @@
  * @module ProviderService
  */
 import type {
+  ProviderAbortSessionCompactionInput,
+  ProviderAskSessionSideQuestionInput,
+  ProviderAskSessionSideQuestionResult,
+  ProviderCancelSessionAgentInput,
+  ProviderCancelSessionSideQuestionInput,
+  ProviderCancelSessionSideQuestionResult,
+  ProviderCancelSessionAgentResult,
+  ProviderClearSessionInputQueueInput,
+  ProviderCompactSessionInput,
+  ProviderFollowUpInput,
+  ProviderMessageSessionAgentInput,
+  ProviderMessageSessionAgentResult,
+  ProviderWatchSessionAgentActivityInput,
+  ProviderSessionAgentActivitySnapshot,
+  ProviderGetSessionAgentDepthInput,
+  ProviderGetSessionCompactionInput,
+  ProviderGetSessionInputQueueInput,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
+  ProviderReloadSessionResourcesInput,
+  ProviderRefineSessionHarnessInput,
+  ProviderRefineSessionHarnessResult,
+  ProviderSetSessionAgentDepthInput,
+  ProviderSetSessionAutoCompactionInput,
+  ProviderSetSessionInputQueueModeInput,
+  SessionAgentDepthUpdatedPayload,
+  SessionCompactionUpdatedPayload,
+  SessionInputQueueUpdatedPayload,
+  SessionResourcesUpdatedPayload,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
+  ProviderRespondToInteractionInput,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
@@ -71,6 +99,84 @@ export interface ProviderServiceShape {
   readonly respondToUserInput: (
     input: ProviderRespondToUserInputInput,
   ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Respond to a provider-neutral session interaction.
+   */
+  readonly respondToInteraction: (
+    input: ProviderRespondToInteractionInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Explicitly reload an active provider session's resource catalog.
+   */
+  readonly reloadSessionResources: (
+    input: ProviderReloadSessionResourcesInput,
+  ) => Effect.Effect<SessionResourcesUpdatedPayload, ProviderServiceError>;
+
+  readonly askSessionSideQuestion: (
+    input: ProviderAskSessionSideQuestionInput,
+  ) => Effect.Effect<ProviderAskSessionSideQuestionResult, ProviderServiceError>;
+
+  readonly cancelSessionSideQuestion: (
+    input: ProviderCancelSessionSideQuestionInput,
+  ) => Effect.Effect<ProviderCancelSessionSideQuestionResult, ProviderServiceError>;
+
+  readonly cancelSessionAgent: (
+    input: ProviderCancelSessionAgentInput,
+  ) => Effect.Effect<ProviderCancelSessionAgentResult, ProviderServiceError>;
+
+  readonly messageSessionAgent: (
+    input: ProviderMessageSessionAgentInput,
+  ) => Effect.Effect<ProviderMessageSessionAgentResult, ProviderServiceError>;
+
+  readonly watchSessionAgentActivity: (
+    input: ProviderWatchSessionAgentActivityInput,
+  ) => Stream.Stream<ProviderSessionAgentActivitySnapshot, ProviderServiceError>;
+
+  readonly getSessionAgentDepth: (
+    input: ProviderGetSessionAgentDepthInput,
+  ) => Effect.Effect<SessionAgentDepthUpdatedPayload, ProviderServiceError>;
+
+  readonly setSessionAgentDepth: (
+    input: ProviderSetSessionAgentDepthInput,
+  ) => Effect.Effect<SessionAgentDepthUpdatedPayload, ProviderServiceError>;
+
+  readonly followUp: (
+    input: ProviderFollowUpInput,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
+
+  readonly getSessionInputQueue: (
+    input: ProviderGetSessionInputQueueInput,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
+
+  readonly clearSessionInputQueue: (
+    input: ProviderClearSessionInputQueueInput,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
+
+  readonly setSessionInputQueueMode: (
+    input: ProviderSetSessionInputQueueModeInput,
+  ) => Effect.Effect<SessionInputQueueUpdatedPayload, ProviderServiceError>;
+
+  readonly getSessionCompaction: (
+    input: ProviderGetSessionCompactionInput,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, ProviderServiceError>;
+
+  readonly compactSession: (
+    input: ProviderCompactSessionInput,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, ProviderServiceError>;
+
+  readonly abortSessionCompaction: (
+    input: ProviderAbortSessionCompactionInput,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, ProviderServiceError>;
+
+  readonly setSessionAutoCompaction: (
+    input: ProviderSetSessionAutoCompactionInput,
+  ) => Effect.Effect<SessionCompactionUpdatedPayload, ProviderServiceError>;
+
+  readonly refineSessionHarness: (
+    input: ProviderRefineSessionHarnessInput,
+  ) => Effect.Effect<ProviderRefineSessionHarnessResult, ProviderServiceError>;
 
   /**
    * Stop a provider session.

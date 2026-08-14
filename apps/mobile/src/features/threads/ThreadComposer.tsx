@@ -1,9 +1,57 @@
+import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
+import {
+  formatSessionGoalStatus,
+  type SessionGoalSnapshot,
+} from "@t3tools/client-runtime/state/session-goal";
+import {
+  canAbortSessionCompaction,
+  canConfigureSessionAutoCompaction,
+  canStartSessionCompaction,
+  isSessionCompactionInProgress,
+  type SessionCompactionControlSnapshot,
+} from "@t3tools/client-runtime/state/context-compaction";
+import {
+  canMessageSessionAgent,
+  isActiveSubagentStatus,
+  supportsSessionAgentCancel,
+  supportsSessionAgentMessage,
+  type RuntimeSubagent,
+} from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  canWatchSessionAgentLiveActivity,
+  sessionAgentLiveActivitySelectionIsOpen,
+  type SessionAgentLiveActivitySelection,
+} from "@t3tools/client-runtime/state/session-agent-live-activity";
+import {
+  hasSessionInputQueueModes,
+  sessionInputQueueCount,
+  supportsSessionInputQueue,
+  supportsSessionInputQueueClear,
+  supportsSessionInputQueueFollowUp,
+  supportsSessionInputQueueSetModes,
+  type SessionInputQueueSnapshot,
+} from "@t3tools/client-runtime/state/session-input-queue";
+import {
+  canSetSessionAgentDepth,
+  supportsSessionAgentDepth,
+  type SessionAgentDepthSnapshot,
+} from "@t3tools/client-runtime/state/session-agent-depth";
+import {
+  formatProviderSlashCommandDescription,
+  resolveSessionSlashCommands,
+  supportsSessionResourceReload,
+  type SessionResourcesSnapshot,
+} from "@t3tools/client-runtime/state/session-resources";
+import { PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS } from "@t3tools/contracts";
 import type {
   EnvironmentId,
   MessageId,
   ModelSelection,
   OrchestrationThreadShell,
+  ProviderAskSessionSideQuestionResult,
   ProviderInteractionMode,
+  ProviderRefineSessionHarnessResult,
+  ProviderSessionSideQuestionRequestId,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
@@ -18,7 +66,10 @@ import type { ReactNode } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
+  KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -35,10 +86,11 @@ import Animated, {
   LinearTransition,
 } from "react-native-reanimated";
 import { useThemeColor } from "../../lib/useThemeColor";
+import { presentMobileContextWindow } from "../../lib/contextWindow";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
 import { GlassSurface } from "../../components/GlassSurface";
 import {
@@ -52,10 +104,16 @@ import {
   ComposerToolbarRow,
   ComposerToolbarScroller,
 } from "../../components/ComposerToolbar";
-import { ControlPill } from "../../components/ControlPill";
+import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
-import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import {
+  buildModelOptions,
+  type ModelOption,
+  groupByProvider,
+  resolveModelSelectionRuntimeMode,
+  showModelSelectionInteractionModeToggle,
+} from "../../lib/modelOptions";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import {
@@ -74,6 +132,32 @@ import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
 } from "./use-thread-settings-sheet-presentation";
+import {
+  buildSessionInputQueueMenuActions,
+  parseSessionInputQueueModeAction,
+} from "./sessionInputQueueMenu";
+import {
+  buildSessionCompactionMenuActions,
+  parseSessionCompactionMenuAction,
+  type SessionCompactionMenuAction,
+} from "./sessionCompactionMenu";
+import { buildSessionAgentMenuActions, parseSessionAgentMenuAction } from "./sessionAgentMenu";
+import { buildSessionGoalMenuActions } from "./sessionGoalMenu";
+import {
+  buildSessionHarnessRefinementMenuActions,
+  canRefineSessionHarness,
+  parseSessionHarnessRefinementAction,
+  sessionHarnessRefinementScopeKey as buildSessionHarnessRefinementScopeKey,
+} from "./sessionHarnessRefinementMenu";
+import { SessionAgentLiveActivityModal } from "./SessionAgentLiveActivityModal";
+import { QuickQuestionModal, QuickQuestionTrigger } from "./QuickQuestionModal";
+import {
+  canOpenQuickQuestion,
+  quickQuestionOpenScopeAfterAvailability,
+  quickQuestionSessionScopeKey,
+} from "./quickQuestionToolbar";
+
+const AGENT_MESSAGE_UNAVAILABLE_ERROR = "This agent is no longer available for direct messages.";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -104,8 +188,18 @@ export interface ThreadComposerProps {
   readonly threadSyncPhase?: "loading" | "syncing" | null;
   readonly selectedThread: OrchestrationThreadShell;
   readonly serverConfig: T3ServerConfig | null;
-  readonly queueCount: number;
+  readonly localOutboxCount: number;
+  readonly contextWindow: ContextWindowSnapshot | null;
+  readonly sessionResources: SessionResourcesSnapshot | null;
+  readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
+  readonly sessionAgents: ReadonlyArray<RuntimeSubagent>;
+  readonly sessionInputQueue: SessionInputQueueSnapshot | null;
+  readonly sessionGoal: SessionGoalSnapshot | null;
+  readonly sessionCompaction: SessionCompactionControlSnapshot | null;
+  readonly sessionCompactionScopeKey: string | null;
+  readonly sessionCompactionPendingAction: SessionCompactionMenuAction | null;
   readonly activeThreadBusy: boolean;
+  readonly sessionInputBlocked: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
   readonly editorRef?: RefObject<ComposerEditorHandle | null>;
@@ -114,7 +208,29 @@ export interface ThreadComposerProps {
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  readonly onReloadSessionResources: () => Promise<void>;
+  readonly onRefineSessionHarness: () => Promise<ProviderRefineSessionHarnessResult | null>;
+  readonly onAskSessionSideQuestion: (
+    requestId: ProviderSessionSideQuestionRequestId,
+    question: string,
+  ) => Promise<ProviderAskSessionSideQuestionResult | null>;
+  readonly onCancelSessionSideQuestion: (
+    requestId: ProviderSessionSideQuestionRequestId,
+  ) => Promise<void>;
+  readonly onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
   readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onQueueFollowUp: () => Promise<MessageId | null>;
+  readonly onClearSessionInputQueue: () => Promise<boolean>;
+  readonly onSetSessionInputQueueMode: (
+    queue: "steering" | "follow-up",
+    mode: "all-at-once" | "one-at-a-time",
+  ) => Promise<boolean>;
+  readonly onRunSessionCompactionAction: (action: SessionCompactionMenuAction) => Promise<boolean>;
+  readonly onCancelSessionAgent: (agentId: string) => Promise<boolean>;
+  readonly onMessageSessionAgent: (
+    agentId: string,
+    message: string,
+  ) => Promise<"delivered" | "queued" | "delivery-unknown" | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
@@ -265,6 +381,44 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
   );
 });
 
+const ContextWindowIndicator = memo(function ContextWindowIndicator(props: {
+  readonly snapshot: ContextWindowSnapshot;
+  readonly expanded: boolean;
+}) {
+  const presentation = presentMobileContextWindow(props.snapshot);
+  if (presentation === null) return null;
+  const knownMaximum = props.snapshot.maxTokens !== null;
+  return (
+    <View
+      accessible
+      accessibilityLabel="Context window usage"
+      accessibilityRole={knownMaximum ? "progressbar" : "text"}
+      accessibilityValue={
+        knownMaximum
+          ? {
+              min: 0,
+              max: props.snapshot.maxTokens ?? undefined,
+              now: Math.min(props.snapshot.usedTokens, props.snapshot.maxTokens ?? 0),
+              text: presentation.accessibilityText,
+            }
+          : undefined
+      }
+      className="mx-1 rounded-full bg-subtle px-2.5 py-1"
+    >
+      <Text
+        className={
+          presentation.warning
+            ? "text-xs font-t3-bold tabular-nums text-danger-foreground"
+            : "text-xs font-t3-medium tabular-nums text-foreground-muted"
+        }
+        numberOfLines={1}
+      >
+        {props.expanded ? presentation.expandedLabel : presentation.compactLabel}
+      </Text>
+    </View>
+  );
+});
+
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
   const navigation = useNavigation();
   const isDarkMode = useColorScheme() === "dark";
@@ -326,12 +480,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session?.status === "running" ||
     props.selectedThread.session?.status === "starting";
 
-  const sendLabel =
-    props.connectionState !== "connected" || props.activeThreadBusy || props.queueCount > 0
-      ? "Queue"
-      : "Send";
   const currentModelSelection = props.selectedThread.modelSelection;
-  const currentRuntimeMode = props.selectedThread.runtimeMode;
+  const currentRuntimeMode = resolveModelSelectionRuntimeMode(
+    props.serverConfig,
+    currentModelSelection,
+    props.selectedThread.runtimeMode,
+  );
+  const showInteractionModeToggle = showModelSelectionInteractionModeToggle(
+    props.serverConfig,
+    currentModelSelection,
+  );
   const connectionStatus = composerConnectionStatus({
     connectionError: props.connectionError,
     connectionState: props.connectionState,
@@ -348,6 +506,680 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ) ?? null
     );
   }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  const activeSessionProviderStatus = useMemo(() => {
+    const instanceId = props.selectedThread.session?.providerInstanceId;
+    if (!props.serverConfig || instanceId === undefined) return null;
+    return (
+      props.serverConfig.providers.find((provider) => provider.instanceId === instanceId) ?? null
+    );
+  }, [props.selectedThread.session?.providerInstanceId, props.serverConfig]);
+  const modelChangesLocked =
+    props.selectedThread.session != null &&
+    (selectedProviderStatus?.requiresNewThreadForModelChange === true ||
+      activeSessionProviderStatus?.requiresNewThreadForModelChange === true);
+  const getModelChangeDisabledReason = useCallback(
+    (option: ModelOption) => {
+      const isCurrent =
+        option.selection.instanceId === currentModelSelection.instanceId &&
+        option.selection.model === currentModelSelection.model;
+      return !isCurrent &&
+        props.selectedThread.session != null &&
+        (modelChangesLocked || option.requiresNewThreadForModelChange)
+        ? "Start a new thread to use this model"
+        : undefined;
+    },
+    [currentModelSelection, modelChangesLocked, props.selectedThread.session],
+  );
+  const quickQuestionAvailable = canOpenQuickQuestion({
+    connectionState: props.connectionState,
+    session: props.selectedThread.session,
+    provider: activeSessionProviderStatus,
+  });
+  const quickQuestionScopeKey = quickQuestionSessionScopeKey({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+    providerInstanceId: props.selectedThread.session?.providerInstanceId,
+    sessionStartedAt: props.selectedThread.session?.startedAt,
+  });
+  const [quickQuestionOpenScopeKey, setQuickQuestionOpenScopeKey] = useState<string | null>(null);
+  useEffect(() => {
+    setQuickQuestionOpenScopeKey((current) =>
+      quickQuestionOpenScopeAfterAvailability(current, quickQuestionAvailable),
+    );
+  }, [quickQuestionAvailable]);
+  const sessionHarnessRefinementScopeKey = buildSessionHarnessRefinementScopeKey({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+    providerInstanceId: props.selectedThread.session?.providerInstanceId,
+    sessionStartedAt: props.selectedThread.session?.startedAt,
+  });
+  const sessionHarnessRefinementAvailable = canRefineSessionHarness({
+    connectionState: props.connectionState,
+    session: props.selectedThread.session,
+    provider: activeSessionProviderStatus,
+  });
+  const [sessionHarnessRefinementPendingScopeKey, setSessionHarnessRefinementPendingScopeKey] =
+    useState<string | null>(null);
+  const sessionHarnessRefinementPendingRef = useRef<string | null>(null);
+  const sessionHarnessRefinementOutcomeUnknownRef = useRef<string | null>(null);
+  const [
+    sessionHarnessRefinementOutcomeUnknownScopeKey,
+    setSessionHarnessRefinementOutcomeUnknownScopeKey,
+  ] = useState<string | null>(null);
+  const sessionHarnessRefinementControlRef = useRef({
+    scopeKey: sessionHarnessRefinementScopeKey,
+    available:
+      sessionHarnessRefinementAvailable &&
+      (props.selectedThread.session?.harnessRefinementStatus === undefined ||
+        props.selectedThread.session.harnessRefinementStatus === "available"),
+    onRefine: props.onRefineSessionHarness,
+  });
+  sessionHarnessRefinementControlRef.current = {
+    scopeKey: sessionHarnessRefinementScopeKey,
+    available:
+      sessionHarnessRefinementAvailable &&
+      (props.selectedThread.session?.harnessRefinementStatus === undefined ||
+        props.selectedThread.session.harnessRefinementStatus === "available"),
+    onRefine: props.onRefineSessionHarness,
+  };
+  useEffect(() => {
+    sessionHarnessRefinementPendingRef.current = null;
+    sessionHarnessRefinementOutcomeUnknownRef.current = null;
+    setSessionHarnessRefinementPendingScopeKey(null);
+    setSessionHarnessRefinementOutcomeUnknownScopeKey(null);
+  }, [sessionHarnessRefinementScopeKey]);
+  useEffect(() => {
+    if (
+      props.selectedThread.session?.harnessRefinementStatus === undefined ||
+      props.selectedThread.session.harnessRefinementStatus === "available"
+    ) {
+      sessionHarnessRefinementOutcomeUnknownRef.current = null;
+      setSessionHarnessRefinementOutcomeUnknownScopeKey(null);
+    }
+  }, [props.selectedThread.session?.harnessRefinementStatus]);
+
+  const sessionHarnessRefinementActions = useMemo(
+    () =>
+      buildSessionHarnessRefinementMenuActions({
+        scopeKey: sessionHarnessRefinementScopeKey,
+        connectionState: props.connectionState,
+        session: props.selectedThread.session ?? null,
+        provider: activeSessionProviderStatus,
+        pendingScopeKey: sessionHarnessRefinementPendingScopeKey,
+        outcomeUnknownScopeKey: sessionHarnessRefinementOutcomeUnknownScopeKey,
+      }),
+    [
+      activeSessionProviderStatus,
+      props.connectionState,
+      props.selectedThread.session,
+      sessionHarnessRefinementOutcomeUnknownScopeKey,
+      sessionHarnessRefinementPendingScopeKey,
+      sessionHarnessRefinementScopeKey,
+    ],
+  );
+  const runSessionHarnessRefinement = useCallback(async (expectedScopeKey: string) => {
+    const control = sessionHarnessRefinementControlRef.current;
+    if (
+      control.scopeKey !== expectedScopeKey ||
+      !control.available ||
+      sessionHarnessRefinementPendingRef.current !== null ||
+      sessionHarnessRefinementOutcomeUnknownRef.current === expectedScopeKey
+    ) {
+      return;
+    }
+    sessionHarnessRefinementPendingRef.current = expectedScopeKey;
+    setSessionHarnessRefinementPendingScopeKey(expectedScopeKey);
+    let result: ProviderRefineSessionHarnessResult | null = null;
+    try {
+      result = await control.onRefine();
+    } catch {
+      result = null;
+    }
+    if (sessionHarnessRefinementControlRef.current.scopeKey !== expectedScopeKey) return;
+    sessionHarnessRefinementPendingRef.current = null;
+    setSessionHarnessRefinementPendingScopeKey(null);
+    if (result?.outcome === "completed") {
+      Alert.alert("Local harness refined", "This thread's private session harness was improved.");
+      return;
+    }
+    if (result?.outcome === "partial") {
+      Alert.alert(
+        "Local harness partly refined",
+        "Some private session harness improvements could not be completed.",
+      );
+      return;
+    }
+    if (result?.outcome === "failed") {
+      Alert.alert(
+        "Local harness refinement failed",
+        "The private refinement for this thread could not be completed.",
+      );
+      return;
+    }
+    sessionHarnessRefinementOutcomeUnknownRef.current = expectedScopeKey;
+    setSessionHarnessRefinementOutcomeUnknownScopeKey(expectedScopeKey);
+    Alert.alert(
+      "Refinement outcome unavailable",
+      "Pylon could not confirm whether the private refinement completed and will not retry it automatically.",
+    );
+  }, []);
+  const confirmSessionHarnessRefinement = useCallback(
+    (expectedScopeKey: string) => {
+      const control = sessionHarnessRefinementControlRef.current;
+      if (
+        control.scopeKey !== expectedScopeKey ||
+        !control.available ||
+        sessionHarnessRefinementPendingRef.current !== null ||
+        sessionHarnessRefinementOutcomeUnknownRef.current === expectedScopeKey
+      ) {
+        return;
+      }
+      Alert.alert(
+        "Refine local harness?",
+        "This privately improves only this thread's session harness. It may take time, and it cannot be cancelled or rolled back here.",
+        [
+          { text: "Not now", style: "cancel" },
+          {
+            text: "Refine",
+            onPress: () => void runSessionHarnessRefinement(expectedScopeKey),
+          },
+        ],
+      );
+    },
+    [runSessionHarnessRefinement],
+  );
+  const sessionQueueCount = sessionInputQueueCount(props.sessionInputQueue);
+  const showSessionInputQueue =
+    props.sessionInputQueue !== null &&
+    sessionQueueCount > 0 &&
+    supportsSessionInputQueue(activeSessionProviderStatus);
+  const canQueueFollowUp =
+    props.connectionState === "connected" &&
+    props.selectedThread.session?.status === "running" &&
+    !props.sessionInputBlocked &&
+    props.localOutboxCount === 0 &&
+    supportsSessionInputQueueFollowUp(activeSessionProviderStatus);
+  const canClearSessionInputQueue =
+    props.connectionState === "connected" &&
+    props.selectedThread.session?.status === "running" &&
+    props.selectedThread.session.activeTurnId != null &&
+    sessionQueueCount > 0 &&
+    supportsSessionInputQueueClear(activeSessionProviderStatus);
+  const showSessionInputQueueModes =
+    hasSessionInputQueueModes(props.sessionInputQueue) &&
+    supportsSessionInputQueueSetModes(activeSessionProviderStatus);
+  const sessionInputQueueScopeKey = `${scopedThreadKey(props.environmentId, props.selectedThread.id)}:${props.selectedThread.session?.providerInstanceId ?? "none"}`;
+  const [sessionInputQueueMutation, setSessionInputQueueMutation] = useState<{
+    readonly scopeKey: string;
+  } | null>(null);
+  const isMutatingSessionInputQueue =
+    sessionInputQueueMutation?.scopeKey === sessionInputQueueScopeKey;
+  const canSetSessionInputQueueModes =
+    showSessionInputQueueModes &&
+    props.connectionState === "connected" &&
+    (props.selectedThread.session?.status === "ready" ||
+      props.selectedThread.session?.status === "running") &&
+    !isMutatingSessionInputQueue;
+  const sendLabel = canQueueFollowUp
+    ? "Queue follow-up"
+    : props.connectionState !== "connected" || props.activeThreadBusy || props.localOutboxCount > 0
+      ? "Save pending send"
+      : "Send";
+
+  const showSessionResourceReload =
+    props.selectedThread.session?.runtimeMode === "full-access" &&
+    supportsSessionResourceReload(activeSessionProviderStatus);
+  const sessionResourceReloadDisabled =
+    props.connectionState !== "connected" ||
+    props.activeThreadBusy ||
+    props.selectedThread.session?.status !== "ready";
+  const [isReloadingSessionResources, setIsReloadingSessionResources] = useState(false);
+  const reloadSessionResources = useCallback(async () => {
+    if (sessionResourceReloadDisabled || isReloadingSessionResources) return;
+    setIsReloadingSessionResources(true);
+    try {
+      await props.onReloadSessionResources();
+    } finally {
+      setIsReloadingSessionResources(false);
+    }
+  }, [isReloadingSessionResources, props.onReloadSessionResources, sessionResourceReloadDisabled]);
+
+  const activeSessionAgents = useMemo(
+    () => props.sessionAgents.filter((agent) => isActiveSubagentStatus(agent.status)),
+    [props.sessionAgents],
+  );
+  const sessionAgentReady =
+    props.connectionState === "connected" &&
+    (props.selectedThread.session?.status === "ready" ||
+      props.selectedThread.session?.status === "running");
+  const canCancelSessionAgents =
+    sessionAgentReady &&
+    props.selectedThread.session?.runtimeMode === "full-access" &&
+    supportsSessionAgentCancel(activeSessionProviderStatus);
+  const canMessageSessionAgents =
+    sessionAgentReady &&
+    props.selectedThread.session?.runtimeMode === "full-access" &&
+    supportsSessionAgentMessage(activeSessionProviderStatus);
+  const canWatchSessionAgentActivity =
+    props.connectionState === "connected" &&
+    canWatchSessionAgentLiveActivity(activeSessionProviderStatus, props.selectedThread.session);
+  const sessionAgentScopeKey = JSON.stringify([
+    props.environmentId,
+    props.selectedThread.id,
+    props.selectedThread.session?.providerInstanceId,
+    props.selectedThread.session?.runtimeMode,
+  ]);
+  const [cancellingAgentIds, setCancellingAgentIds] = useState<ReadonlySet<string>>(new Set());
+  const [liveActivitySelection, setLiveActivitySelection] =
+    useState<SessionAgentLiveActivitySelection | null>(null);
+  const [messageAgentId, setMessageAgentId] = useState<string | null>(null);
+  const [messageStateScopeKey, setMessageStateScopeKey] = useState(sessionAgentScopeKey);
+  const [agentMessageDraft, setAgentMessageDraft] = useState("");
+  const [agentMessagePending, setAgentMessagePending] = useState(false);
+  const [agentMessageError, setAgentMessageError] = useState<string | null>(null);
+  useEffect(() => {
+    const activeIds = new Set(activeSessionAgents.map((agent) => agent.id));
+    setCancellingAgentIds((current) => {
+      const next = new Set([...current].filter((agentId) => activeIds.has(agentId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [activeSessionAgents]);
+  useEffect(() => {
+    setCancellingAgentIds(new Set());
+    setLiveActivitySelection(null);
+    setMessageStateScopeKey(sessionAgentScopeKey);
+    setMessageAgentId(null);
+    setAgentMessageDraft("");
+    setAgentMessageError(null);
+    setAgentMessagePending(false);
+  }, [sessionAgentScopeKey]);
+  const messageDialogAgentIdRef = useRef(messageAgentId);
+  messageDialogAgentIdRef.current = messageAgentId;
+  const sessionAgentControlRef = useRef({
+    scopeKey: sessionAgentScopeKey,
+    agents: props.sessionAgents,
+    provider: activeSessionProviderStatus,
+    canCancel: canCancelSessionAgents,
+    canMessage: canMessageSessionAgents,
+    cancellingAgentIds,
+    onCancel: props.onCancelSessionAgent,
+    onMessage: props.onMessageSessionAgent,
+  });
+  sessionAgentControlRef.current = {
+    scopeKey: sessionAgentScopeKey,
+    agents: props.sessionAgents,
+    provider: activeSessionProviderStatus,
+    canCancel: canCancelSessionAgents,
+    canMessage: canMessageSessionAgents,
+    cancellingAgentIds,
+    onCancel: props.onCancelSessionAgent,
+    onMessage: props.onMessageSessionAgent,
+  };
+  const sessionAgentActions = useMemo(
+    () =>
+      buildSessionAgentMenuActions({
+        scopeKey: sessionAgentScopeKey,
+        agents: activeSessionAgents,
+        canMessage: canMessageSessionAgents,
+        canCancel: canCancelSessionAgents,
+        canWatchLiveActivity: canWatchSessionAgentActivity,
+        cancellingAgentIds,
+      }),
+    [
+      activeSessionAgents,
+      canCancelSessionAgents,
+      canMessageSessionAgents,
+      canWatchSessionAgentActivity,
+      cancellingAgentIds,
+      sessionAgentScopeKey,
+    ],
+  );
+  const cancelSessionAgent = useCallback(async (agentId: string, expectedScopeKey: string) => {
+    const control = sessionAgentControlRef.current;
+    const current = control.agents.find((candidate) => candidate.id === agentId);
+    if (
+      control.scopeKey !== expectedScopeKey ||
+      !control.canCancel ||
+      current === undefined ||
+      !isActiveSubagentStatus(current.status) ||
+      control.cancellingAgentIds.has(agentId)
+    ) {
+      return;
+    }
+    const pendingIds = new Set(control.cancellingAgentIds).add(agentId);
+    sessionAgentControlRef.current = { ...control, cancellingAgentIds: pendingIds };
+    setCancellingAgentIds(pendingIds);
+    const accepted = await control.onCancel(agentId);
+    if (!accepted && sessionAgentControlRef.current.scopeKey === expectedScopeKey) {
+      setCancellingAgentIds((ids) => {
+        const next = new Set(ids);
+        next.delete(agentId);
+        return next;
+      });
+      Alert.alert(
+        "Could not stop agent",
+        "The agent status was refreshed. Try again if it is still active.",
+      );
+    }
+  }, []);
+  const closeAgentMessage = useCallback(() => {
+    if (agentMessagePending) return;
+    setMessageAgentId(null);
+    setAgentMessageDraft("");
+    setAgentMessageError(null);
+  }, [agentMessagePending]);
+  const sendAgentMessage = useCallback(async () => {
+    const control = sessionAgentControlRef.current;
+    const agentId = messageDialogAgentIdRef.current;
+    const message = agentMessageDraft.trim();
+    const agent = control.agents.find((candidate) => candidate.id === agentId);
+    if (agentId === null || agentMessagePending) return;
+    if (
+      agent === undefined ||
+      !control.canMessage ||
+      !canMessageSessionAgent(control.provider, agent)
+    ) {
+      setAgentMessageError(AGENT_MESSAGE_UNAVAILABLE_ERROR);
+      return;
+    }
+    if (message.length === 0) {
+      setAgentMessageError("Enter a message for the agent.");
+      return;
+    }
+    const expectedScopeKey = control.scopeKey;
+    setAgentMessagePending(true);
+    setAgentMessageError(null);
+    let disposition: "delivered" | "queued" | "delivery-unknown" | null = null;
+    try {
+      disposition = await control.onMessage(agentId, message);
+    } catch {
+      disposition = null;
+    }
+    const latest = sessionAgentControlRef.current;
+    if (
+      latest.scopeKey !== expectedScopeKey ||
+      messageDialogAgentIdRef.current !== agentId ||
+      !latest.agents.some((candidate) => candidate.id === agentId)
+    ) {
+      return;
+    }
+    setAgentMessagePending(false);
+    if (disposition === "delivery-unknown") {
+      setAgentMessageError("Delivery could not be confirmed. Sending again may duplicate it.");
+      return;
+    }
+    if (disposition === null) {
+      setAgentMessageError(
+        "Could not send the message. Check the agent's live status and try again.",
+      );
+      return;
+    }
+    setMessageAgentId(null);
+    setAgentMessageDraft("");
+    setAgentMessageError(null);
+    Alert.alert(
+      disposition === "delivered" ? "Message delivered" : "Message queued",
+      disposition === "delivered"
+        ? `Your message was delivered to ${agent.title}.`
+        : `Your message will be delivered to ${agent.title} when it can receive it.`,
+    );
+  }, [agentMessageDraft, agentMessagePending]);
+  const handleSessionAgentAction = useCallback(
+    (eventId: string) => {
+      const action = parseSessionAgentMenuAction(eventId);
+      if (action === null) return;
+      const control = sessionAgentControlRef.current;
+      if (action.scopeKey !== control.scopeKey) return;
+      const agent = control.agents.find((candidate) => candidate.id === action.agentId);
+      if (!agent || !isActiveSubagentStatus(agent.status)) return;
+      if (action.kind === "live-activity") {
+        if (!canWatchSessionAgentActivity || agent.kind === "workflow") return;
+        setLiveActivitySelection({ agentId: agent.id, scopeKey: control.scopeKey });
+        return;
+      }
+      if (action.kind === "message") {
+        if (!control.canMessage || !canMessageSessionAgent(control.provider, agent)) return;
+        setMessageStateScopeKey(control.scopeKey);
+        setAgentMessageDraft("");
+        setAgentMessageError(null);
+        setMessageAgentId(agent.id);
+        return;
+      }
+      if (!control.canCancel || control.cancellingAgentIds.has(agent.id)) return;
+      const expectedScopeKey = control.scopeKey;
+      Alert.alert(
+        `Stop ${agent.title}?`,
+        "Its current work will end. Completed output and activity stay in the thread.",
+        [
+          { text: "Keep running", style: "cancel" },
+          {
+            text: "Stop agent",
+            style: "destructive",
+            onPress: () => void cancelSessionAgent(agent.id, expectedScopeKey),
+          },
+        ],
+      );
+    },
+    [canWatchSessionAgentActivity, cancelSessionAgent],
+  );
+  const selectedLiveActivityAgent =
+    liveActivitySelection === null
+      ? null
+      : (props.sessionAgents.find((candidate) => candidate.id === liveActivitySelection.agentId) ??
+        null);
+  const liveActivityOpen = sessionAgentLiveActivitySelectionIsOpen({
+    selection: liveActivitySelection,
+    currentScopeKey: sessionAgentScopeKey,
+    capabilityEnabled: canWatchSessionAgentActivity,
+    agent: selectedLiveActivityAgent,
+  });
+  useEffect(() => {
+    if (liveActivitySelection !== null && !liveActivityOpen) {
+      setLiveActivitySelection(null);
+    }
+  }, [liveActivityOpen, liveActivitySelection]);
+  const messageAgent =
+    messageAgentId === null || messageStateScopeKey !== sessionAgentScopeKey
+      ? null
+      : (props.sessionAgents.find((agent) => agent.id === messageAgentId) ?? null);
+  const messageAgentCanSend =
+    messageAgent !== null &&
+    canMessageSessionAgents &&
+    canMessageSessionAgent(activeSessionProviderStatus, messageAgent);
+  useEffect(() => {
+    if (messageAgentId === null) return;
+    if (messageAgent === null) {
+      setMessageAgentId(null);
+      setAgentMessageDraft("");
+      setAgentMessageError(null);
+      setAgentMessagePending(false);
+      return;
+    }
+    if (agentMessagePending) return;
+    setAgentMessageError((current) =>
+      messageAgentCanSend
+        ? current === AGENT_MESSAGE_UNAVAILABLE_ERROR
+          ? null
+          : current
+        : AGENT_MESSAGE_UNAVAILABLE_ERROR,
+    );
+  }, [agentMessagePending, messageAgent, messageAgentCanSend, messageAgentId]);
+
+  const showSessionAgentDepth =
+    props.sessionAgentDepth !== null && supportsSessionAgentDepth(activeSessionProviderStatus);
+  const [isSettingSessionAgentDepth, setIsSettingSessionAgentDepth] = useState(false);
+  const sessionAgentDepthDisabled =
+    !canSetSessionAgentDepth(activeSessionProviderStatus, props.sessionAgentDepth) ||
+    props.connectionState !== "connected" ||
+    props.activeThreadBusy ||
+    props.localOutboxCount > 0 ||
+    props.selectedThread.session?.status !== "ready" ||
+    isReloadingSessionResources ||
+    isSettingSessionAgentDepth;
+  const sessionAgentDepthActions = useMemo(
+    () =>
+      Array.from(
+        { length: (props.sessionAgentDepth?.maxSettableDepth ?? -1) + 1 },
+        (_, maxDepth) => ({
+          id: `agent-depth:${maxDepth}`,
+          title: `Depth ${maxDepth}`,
+          subtitle:
+            maxDepth === 0
+              ? "Do not spawn recursive agents"
+              : maxDepth === 1
+                ? "Allow direct child agents"
+                : `Allow up to ${maxDepth} recursive levels`,
+          state: props.sessionAgentDepth?.maxDepth === maxDepth ? ("on" as const) : undefined,
+          attributes: sessionAgentDepthDisabled ? ({ disabled: true } as const) : undefined,
+        }),
+      ),
+    [props.sessionAgentDepth, sessionAgentDepthDisabled],
+  );
+  const setSessionAgentDepth = useCallback(
+    async (eventId: string) => {
+      if (sessionAgentDepthDisabled || !eventId.startsWith("agent-depth:")) return;
+      const maxDepth = Number(eventId.slice("agent-depth:".length));
+      if (!Number.isInteger(maxDepth)) return;
+      setIsSettingSessionAgentDepth(true);
+      try {
+        await props.onSetSessionAgentDepth(maxDepth);
+      } finally {
+        setIsSettingSessionAgentDepth(false);
+      }
+    },
+    [props.onSetSessionAgentDepth, sessionAgentDepthDisabled],
+  );
+
+  const sessionCompactionScopeKey = props.sessionCompactionScopeKey;
+  const sessionCompactionConnected =
+    props.connectionState === "connected" &&
+    (props.selectedThread.session?.status === "ready" ||
+      props.selectedThread.session?.status === "running");
+  const canCompactSessionContext =
+    sessionCompactionConnected &&
+    props.sessionCompactionPendingAction === null &&
+    canStartSessionCompaction(activeSessionProviderStatus, props.sessionCompaction);
+  const canAbortSessionContext =
+    sessionCompactionConnected &&
+    props.sessionCompactionPendingAction === null &&
+    canAbortSessionCompaction(activeSessionProviderStatus, props.sessionCompaction);
+  const canSetSessionAutoCompaction =
+    sessionCompactionConnected &&
+    props.sessionCompactionPendingAction === null &&
+    canConfigureSessionAutoCompaction(activeSessionProviderStatus, props.sessionCompaction);
+  const sessionCompactionControlRef = useRef({
+    scopeKey: sessionCompactionScopeKey,
+    pendingAction: props.sessionCompactionPendingAction,
+    snapshot: props.sessionCompaction,
+    canCompact: canCompactSessionContext,
+    canAbort: canAbortSessionContext,
+    canSetAuto: canSetSessionAutoCompaction,
+  });
+  sessionCompactionControlRef.current = {
+    scopeKey: sessionCompactionScopeKey,
+    pendingAction: props.sessionCompactionPendingAction,
+    snapshot: props.sessionCompaction,
+    canCompact: canCompactSessionContext,
+    canAbort: canAbortSessionContext,
+    canSetAuto: canSetSessionAutoCompaction,
+  };
+  const contextWindowPresentation = presentMobileContextWindow(props.contextWindow);
+  const sessionGoalActions = useMemo(
+    () => (props.sessionGoal ? buildSessionGoalMenuActions(props.sessionGoal) : []),
+    [props.sessionGoal],
+  );
+  const sessionCompactionActions = useMemo(
+    () =>
+      props.sessionCompaction?.available && sessionCompactionScopeKey
+        ? buildSessionCompactionMenuActions({
+            scopeKey: sessionCompactionScopeKey,
+            snapshot: props.sessionCompaction,
+            canCompact: canCompactSessionContext,
+            canAbort: canAbortSessionContext,
+            canSetAuto: canSetSessionAutoCompaction,
+            pendingAction: props.sessionCompactionPendingAction,
+          })
+        : [],
+    [
+      canAbortSessionContext,
+      canCompactSessionContext,
+      canSetSessionAutoCompaction,
+      props.sessionCompaction,
+      props.sessionCompactionPendingAction,
+      sessionCompactionScopeKey,
+    ],
+  );
+  const runSessionCompactionAction = useCallback(
+    (action: SessionCompactionMenuAction, expectedScopeKey: string) => {
+      const current = sessionCompactionControlRef.current;
+      if (
+        current.scopeKey !== expectedScopeKey ||
+        current.snapshot === null ||
+        current.pendingAction !== null ||
+        (action === "compact" && !current.canCompact) ||
+        (action === "abort" && !current.canAbort) ||
+        ((action === "auto-enable" || action === "auto-disable") && !current.canSetAuto)
+      ) {
+        return;
+      }
+      void props.onRunSessionCompactionAction(action).then((accepted) => {
+        if (!accepted && sessionCompactionControlRef.current.scopeKey === expectedScopeKey) {
+          Alert.alert(
+            "Could not update compaction",
+            "The provider status was refreshed. Try again.",
+          );
+        }
+      });
+    },
+    [props.onRunSessionCompactionAction],
+  );
+  const handleSessionCompactionAction = useCallback(
+    (eventId: string) => {
+      const current = sessionCompactionControlRef.current;
+      if (!current.scopeKey || !current.snapshot || current.pendingAction !== null) return;
+      const action = parseSessionCompactionMenuAction(eventId, current.scopeKey);
+      if (
+        !action ||
+        (action === "compact" && !current.canCompact) ||
+        (action === "abort" && !current.canAbort) ||
+        ((action === "auto-enable" || action === "auto-disable") && !current.canSetAuto)
+      ) {
+        return;
+      }
+      const expectedScopeKey = current.scopeKey;
+      if (action === "compact") {
+        Alert.alert(
+          "Compact context now?",
+          "This reduces the current provider session's context. The agent may briefly pause.",
+          [
+            { text: "Not now", style: "cancel" },
+            {
+              text: "Compact",
+              onPress: () => runSessionCompactionAction(action, expectedScopeKey),
+            },
+          ],
+        );
+        return;
+      }
+      runSessionCompactionAction(action, expectedScopeKey);
+    },
+    [runSessionCompactionAction],
+  );
+
+  const providerSlashCommands = useMemo(
+    () =>
+      resolveSessionSlashCommands(
+        selectedProviderStatus?.featureCapabilities?.resources?.operations.includes("commands")
+          ? props.sessionResources
+          : null,
+        selectedProviderStatus?.slashCommands ?? [],
+      ),
+    [
+      selectedProviderStatus?.featureCapabilities?.resources?.operations,
+      selectedProviderStatus?.slashCommands,
+      props.sessionResources,
+    ],
+  );
 
   // ── Trigger detection ────────────────────────────────────
   const [composerSelection, setComposerSelection] = useState(() => ({
@@ -395,32 +1227,36 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           label: "/model",
           description: "Switch model",
         },
-        {
-          id: "cmd:plan",
-          type: "slash-command" as const,
-          command: "plan",
-          label: "/plan",
-          description: "Switch to plan mode",
-        },
-        {
-          id: "cmd:default",
-          type: "slash-command" as const,
-          command: "default",
-          label: "/default",
-          description: "Switch to default mode",
-        },
+        ...(showInteractionModeToggle
+          ? [
+              {
+                id: "cmd:plan",
+                type: "slash-command" as const,
+                command: "plan" as const,
+                label: "/plan",
+                description: "Switch to plan mode",
+              },
+              {
+                id: "cmd:default",
+                type: "slash-command" as const,
+                command: "default" as const,
+                label: "/default",
+                description: "Switch to default mode",
+              },
+            ]
+          : []),
       ];
       const builtIn = allBuiltIn.filter((item) => item.command.includes(q));
 
       const providerCommands: ComposerCommandItem[] = [];
-      for (const cmd of selectedProviderStatus?.slashCommands ?? []) {
+      for (const cmd of providerSlashCommands) {
         if (!cmd.name.toLowerCase().includes(q)) continue;
         providerCommands.push({
           id: `pcmd:${cmd.name}`,
           type: "provider-slash-command" as const,
           command: cmd,
           label: `/${cmd.name}`,
-          description: cmd.description ?? "",
+          description: formatProviderSlashCommandDescription(cmd),
         });
       }
 
@@ -525,7 +1361,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }
 
     return [];
-  }, [composerTrigger, pathSearch.entries, selectedProviderStatus]);
+  }, [
+    composerTrigger,
+    pathSearch.entries,
+    providerSlashCommands,
+    selectedProviderStatus,
+    showInteractionModeToggle,
+  ]);
 
   // ── Handle command selection ──────────────────────────────
   const { onChangeDraftMessage, onUpdateInteractionMode, draftMessage, onSendMessage } = props;
@@ -554,6 +1396,104 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.id,
     props.selectedThread.title,
   ]);
+  const handleQueueFollowUp = useCallback(async () => {
+    const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+    if (inFlightThreadIdsRef.current.has(threadKey) || isMutatingSessionInputQueue) return;
+    inFlightThreadIdsRef.current.add(threadKey);
+    const mutation = { scopeKey: sessionInputQueueScopeKey };
+    setSessionInputQueueMutation(mutation);
+    try {
+      await props.onQueueFollowUp();
+    } finally {
+      setSessionInputQueueMutation((current) => (current === mutation ? null : current));
+      inFlightThreadIdsRef.current.delete(threadKey);
+    }
+  }, [
+    isMutatingSessionInputQueue,
+    props.environmentId,
+    props.onQueueFollowUp,
+    props.selectedThread.id,
+    sessionInputQueueScopeKey,
+  ]);
+
+  const confirmClearSessionInputQueue = useCallback(() => {
+    if (!canClearSessionInputQueue || isMutatingSessionInputQueue) return;
+    Alert.alert(
+      "Clear pending session inputs?",
+      "This removes queued follow-ups and steering inputs without stopping current work.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear all",
+          style: "destructive",
+          onPress: () => {
+            const mutation = { scopeKey: sessionInputQueueScopeKey };
+            setSessionInputQueueMutation(mutation);
+            void props.onClearSessionInputQueue().finally(() => {
+              setSessionInputQueueMutation((current) => (current === mutation ? null : current));
+            });
+          },
+        },
+      ],
+    );
+  }, [
+    canClearSessionInputQueue,
+    isMutatingSessionInputQueue,
+    props.onClearSessionInputQueue,
+    sessionInputQueueScopeKey,
+  ]);
+
+  const sessionInputQueueActions = useMemo(
+    () =>
+      hasSessionInputQueueModes(props.sessionInputQueue)
+        ? buildSessionInputQueueMenuActions({
+            snapshot: props.sessionInputQueue,
+            count: sessionQueueCount,
+            canSetModes: canSetSessionInputQueueModes,
+            canClear: canClearSessionInputQueue,
+            mutating: isMutatingSessionInputQueue,
+          })
+        : [],
+    [
+      canClearSessionInputQueue,
+      canSetSessionInputQueueModes,
+      isMutatingSessionInputQueue,
+      props.sessionInputQueue,
+      sessionQueueCount,
+    ],
+  );
+
+  const handleSessionInputQueueAction = useCallback(
+    (eventId: string) => {
+      if (eventId === "session-input-clear") {
+        confirmClearSessionInputQueue();
+        return;
+      }
+      const action = parseSessionInputQueueModeAction(eventId);
+      if (!action || !canSetSessionInputQueueModes || isMutatingSessionInputQueue) return;
+      const { queue, mode } = action;
+      const currentMode =
+        queue === "steering"
+          ? props.sessionInputQueue?.steeringMode
+          : props.sessionInputQueue?.followUpMode;
+      if (currentMode === mode) return;
+      const mutation = { scopeKey: sessionInputQueueScopeKey };
+      setSessionInputQueueMutation(mutation);
+      void props.onSetSessionInputQueueMode(queue, mode).finally(() => {
+        setSessionInputQueueMutation((current) => (current === mutation ? null : current));
+      });
+    },
+    [
+      canSetSessionInputQueueModes,
+      confirmClearSessionInputQueue,
+      isMutatingSessionInputQueue,
+      props.onSetSessionInputQueueMode,
+      props.sessionInputQueue?.followUpMode,
+      props.sessionInputQueue?.steeringMode,
+      sessionInputQueueScopeKey,
+    ],
+  );
+
   const handleCommandSelect = useCallback(
     (item: ComposerCommandItem) => {
       if (!composerTrigger) return;
@@ -635,10 +1575,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         props.onUpdateModelSelection({ ...currentModelSelection, options }),
       runtimeMode: currentRuntimeMode,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+      getModelDisabledReason: getModelChangeDisabledReason,
     }),
     [
+      confirmSessionHarnessRefinement,
       currentModelSelection,
       currentRuntimeMode,
+      getModelChangeDisabledReason,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
       providerOptionDescriptors,
@@ -830,12 +1773,32 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               ) : null}
             </View>
           ) : null}
+          {!isExpanded && props.contextWindow ? (
+            <ContextWindowIndicator snapshot={props.contextWindow} expanded={false} />
+          ) : null}
           {!isExpanded ? (
             <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
               {showStopAction ? (
-                <ControlPill icon="stop.fill" variant="danger" onPress={props.onStopThread} />
+                <View className="flex-row items-center gap-2">
+                  <ControlPill
+                    accessibilityLabel="Stop"
+                    icon="stop.fill"
+                    variant="danger"
+                    onPress={props.onStopThread}
+                  />
+                  {canQueueFollowUp ? (
+                    <ControlPill
+                      accessibilityLabel="Queue follow-up"
+                      icon="arrow.up"
+                      variant="primary"
+                      disabled={!canSend || isMutatingSessionInputQueue}
+                      onPress={handleQueueFollowUp}
+                    />
+                  ) : null}
+                </View>
               ) : (
                 <ControlPill
+                  accessibilityLabel={sendLabel}
                   icon="arrow.up"
                   variant="primary"
                   disabled={!canSend}
@@ -857,6 +1820,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   onPress={() => void props.onPickDraftImages()}
                   showChevron={false}
                 />
+                {quickQuestionAvailable ? (
+                  <QuickQuestionTrigger
+                    onPress={() => setQuickQuestionOpenScopeKey(quickQuestionScopeKey)}
+                  />
+                ) : null}
                 <ComposerInlineControl
                   accessibilityLabel="Model and reasoning settings"
                   emphasized
@@ -867,6 +1835,127 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   maxWidth={152}
                   onPress={openSettings}
                 />
+                {sessionHarnessRefinementActions.length > 0 ? (
+                  <ControlPillMenu
+                    title="Local harness"
+                    actions={sessionHarnessRefinementActions}
+                    onPressAction={({ nativeEvent }) => {
+                      if (
+                        parseSessionHarnessRefinementAction(
+                          nativeEvent.event,
+                          sessionHarnessRefinementScopeKey,
+                        ) === "refine"
+                      ) {
+                        confirmSessionHarnessRefinement(sessionHarnessRefinementScopeKey);
+                      }
+                    }}
+                  >
+                    <ComposerToolbarButton
+                      accessibilityLabel="Local harness refinement"
+                      icon="wand.and.stars"
+                      label="Refine"
+                    />
+                  </ControlPillMenu>
+                ) : null}
+                {props.sessionGoal ? (
+                  <ControlPillMenu title="Session goal · Read-only" actions={sessionGoalActions}>
+                    <ComposerToolbarButton
+                      accessibilityLabel={`Goal ${formatSessionGoalStatus(props.sessionGoal.status).toLowerCase()}. Read-only.`}
+                      icon="target"
+                      label={`Goal ${formatSessionGoalStatus(props.sessionGoal.status)}`}
+                    />
+                  </ControlPillMenu>
+                ) : null}
+                {props.contextWindow ||
+                (props.sessionCompaction?.available && sessionCompactionScopeKey) ? (
+                  props.sessionCompaction?.available && sessionCompactionScopeKey ? (
+                    <ControlPillMenu
+                      title="Context window"
+                      actions={sessionCompactionActions}
+                      onPressAction={({ nativeEvent }) =>
+                        handleSessionCompactionAction(nativeEvent.event)
+                      }
+                    >
+                      <ComposerToolbarButton
+                        accessibilityLabel={`${
+                          contextWindowPresentation?.accessibilityText ??
+                          "Context usage unavailable."
+                        } ${
+                          isSessionCompactionInProgress(props.sessionCompaction)
+                            ? "Compaction in progress."
+                            : "Compaction controls."
+                        }`}
+                        icon="gauge.with.dots.needle.50percent"
+                        label={contextWindowPresentation?.compactLabel ?? "Context"}
+                      />
+                    </ControlPillMenu>
+                  ) : props.contextWindow ? (
+                    <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                  ) : null
+                ) : null}
+                {sessionAgentActions.length > 0 ? (
+                  <ControlPillMenu
+                    title="Active agents"
+                    actions={[...sessionAgentActions]}
+                    onPressAction={({ nativeEvent }) => handleSessionAgentAction(nativeEvent.event)}
+                  >
+                    <ComposerToolbarButton
+                      accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. View live activity, message, or stop an agent.`}
+                      icon="person.2"
+                      label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
+                    />
+                  </ControlPillMenu>
+                ) : null}
+                {showSessionInputQueueModes && props.sessionInputQueue ? (
+                  <ControlPillMenu
+                    title="Session input delivery"
+                    actions={sessionInputQueueActions}
+                    onPressAction={({ nativeEvent }) =>
+                      handleSessionInputQueueAction(nativeEvent.event)
+                    }
+                  >
+                    <ComposerToolbarButton
+                      accessibilityLabel={`Session input delivery. ${sessionQueueCount} pending. Steering ${props.sessionInputQueue.steeringMode === "all-at-once" ? "all at once" : "one at a time"}. Follow-ups ${props.sessionInputQueue.followUpMode === "all-at-once" ? "all at once" : "one at a time"}.`}
+                      icon="text.badge.plus"
+                      label={sessionQueueCount > 0 ? `Inputs ${sessionQueueCount}` : "Inputs"}
+                    />
+                  </ControlPillMenu>
+                ) : null}
+                {showSessionAgentDepth && props.sessionAgentDepth !== null ? (
+                  <ControlPillMenu
+                    title="Agent spawn depth"
+                    actions={sessionAgentDepthActions}
+                    onPressAction={({ nativeEvent }) =>
+                      void setSessionAgentDepth(nativeEvent.event)
+                    }
+                  >
+                    <ComposerToolbarButton
+                      accessibilityLabel={
+                        !props.sessionAgentDepth.writable
+                          ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, fixed by session policy`
+                          : props.sessionAgentDepth.settable
+                            ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}`
+                            : `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, unavailable until the session is idle`
+                      }
+                      icon="person.crop.circle"
+                      label={`Depth ${props.sessionAgentDepth.maxDepth}`}
+                      disabled={sessionAgentDepthDisabled}
+                    />
+                  </ControlPillMenu>
+                ) : null}
+                {showSessionResourceReload ? (
+                  <ComposerToolbarButton
+                    accessibilityLabel={
+                      isReloadingSessionResources
+                        ? "Reloading session resources"
+                        : "Reload session resources"
+                    }
+                    icon="arrow.clockwise"
+                    disabled={sessionResourceReloadDisabled || isReloadingSessionResources}
+                    onPress={() => void reloadSessionResources()}
+                    showChevron={false}
+                  />
+                ) : null}
                 {showStopAction ? (
                   <ComposerToolbarButton
                     accessibilityLabel="Stop"
@@ -881,25 +1970,146 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 accessibilityLabel={sendLabel}
                 icon="arrow.up"
                 variant="primary"
-                disabled={!canSend}
-                onPress={handleSend}
+                disabled={!canSend || (canQueueFollowUp && isMutatingSessionInputQueue)}
+                onPress={canQueueFollowUp ? handleQueueFollowUp : handleSend}
                 showChevron={false}
               />
             </ComposerToolbarRow>
           ) : null}
         </ComposerSurface>
 
+        {showSessionInputQueue ? (
+          <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Session inputs ${sessionQueueCount}. Clear all pending session inputs`}
+              disabled={!canClearSessionInputQueue || isMutatingSessionInputQueue}
+              onPress={confirmClearSessionInputQueue}
+            >
+              <Text className="pt-2 text-xs text-foreground-muted">
+                Session inputs · {sessionQueueCount} · Clear all
+              </Text>
+            </Pressable>
+          </Animated.View>
+        ) : null}
+
         {/* Queue count */}
-        {props.queueCount > 0 ? (
+        {props.localOutboxCount > 0 ? (
           <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>
             <Text className="pt-2 text-xs text-foreground-muted">
-              {props.queueCount} queued message{props.queueCount === 1 ? "" : "s"} will send
-              automatically.
+              {props.localOutboxCount} pending send{props.localOutboxCount === 1 ? "" : "s"} on this
+              device.
             </Text>
           </Animated.View>
         ) : null}
       </Animated.View>
-
+      <QuickQuestionModal
+        key={quickQuestionScopeKey}
+        scopeKey={quickQuestionScopeKey}
+        visible={quickQuestionOpenScopeKey === quickQuestionScopeKey && quickQuestionAvailable}
+        onAsk={props.onAskSessionSideQuestion}
+        onCancel={props.onCancelSessionSideQuestion}
+        onDismiss={() => setQuickQuestionOpenScopeKey(null)}
+      />
+      {liveActivityOpen && selectedLiveActivityAgent !== null ? (
+        <SessionAgentLiveActivityModal
+          key={sessionAgentScopeKey}
+          environmentId={props.environmentId}
+          threadId={props.selectedThread.id}
+          agentId={selectedLiveActivityAgent.id}
+          onClose={() => setLiveActivitySelection(null)}
+        />
+      ) : null}
+      <Modal
+        visible={messageAgent !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeAgentMessage}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          className="flex-1 justify-end"
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close agent message"
+            className="absolute inset-0 bg-black/50"
+            disabled={agentMessagePending}
+            onPress={closeAgentMessage}
+          />
+          <View className="rounded-t-[28px] border-t border-border bg-sheet px-5 pb-8 pt-5">
+            <View className="mb-4 flex-row items-start justify-between gap-4">
+              <View className="min-w-0 flex-1">
+                <Text className="text-lg font-t3-bold text-foreground">
+                  Message {messageAgent?.title ?? "agent"}
+                </Text>
+                <Text className="mt-1 text-sm text-foreground-muted">
+                  Send a direct instruction to this active agent.
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Cancel agent message"
+                disabled={agentMessagePending}
+                onPress={closeAgentMessage}
+                className="h-11 items-center justify-center px-2"
+              >
+                <Text className="font-t3-bold text-foreground-muted">Cancel</Text>
+              </Pressable>
+            </View>
+            <TextInput
+              autoFocus
+              multiline
+              textAlignVertical="top"
+              maxLength={PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS}
+              value={agentMessageDraft}
+              editable={!agentMessagePending}
+              onChangeText={(value) => {
+                setAgentMessageDraft(value);
+                if (agentMessageError && agentMessageError !== AGENT_MESSAGE_UNAVAILABLE_ERROR) {
+                  setAgentMessageError(null);
+                }
+              }}
+              placeholder="What should this agent know or do?"
+              className="h-36 rounded-[20px] px-4 py-3.5"
+            />
+            <View className="mt-2 flex-row items-start justify-between gap-3">
+              <Text
+                accessibilityRole={agentMessageError ? "alert" : undefined}
+                className="min-w-0 flex-1 text-xs text-danger"
+              >
+                {agentMessageError}
+              </Text>
+              <Text className="text-xs tabular-nums text-foreground-muted">
+                {agentMessageDraft.length.toLocaleString()} /{" "}
+                {PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS.toLocaleString()}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={agentMessagePending ? "Sending message" : "Send message"}
+              accessibilityState={{
+                disabled:
+                  agentMessagePending ||
+                  !messageAgentCanSend ||
+                  agentMessageDraft.trim().length === 0,
+                busy: agentMessagePending,
+              }}
+              disabled={
+                agentMessagePending || !messageAgentCanSend || agentMessageDraft.trim().length === 0
+              }
+              onPress={() => void sendAgentMessage()}
+              className="mt-4 h-12 flex-row items-center justify-center rounded-full bg-primary disabled:bg-subtle-strong"
+            >
+              {agentMessagePending ? (
+                <ActivityIndicator />
+              ) : (
+                <Text className="font-t3-bold text-primary-foreground">Send message</Text>
+              )}
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>{" "}
       <ImageViewing
         images={previewImageUri ? [{ uri: previewImageUri }] : []}
         imageIndex={0}

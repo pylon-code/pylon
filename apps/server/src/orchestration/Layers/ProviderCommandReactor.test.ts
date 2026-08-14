@@ -53,6 +53,7 @@ import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import {
   providerErrorLabel,
   providerErrorLabelFromInstanceHint,
+  providerFollowUpInputFromMessage,
   ProviderCommandReactorLive,
 } from "./ProviderCommandReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -140,6 +141,19 @@ describe("ProviderCommandReactor", () => {
 
     it("uses the unknown driver kind when the resolved driver is not registered locally", () => {
       expect(providerErrorLabel("third_party_driver")).toBe("third_party_driver");
+    });
+  });
+
+  it("omits blank text while preserving image-only follow-up attachments", () => {
+    const attachment = {
+      type: "image" as const,
+      id: "follow-up-image-00000000-0000-4000-8000-000000000001",
+      name: "follow-up.png",
+      mimeType: "image/png",
+      sizeBytes: 5,
+    };
+    expect(providerFollowUpInputFromMessage({ text: "", attachments: [attachment] })).toEqual({
+      attachments: [attachment],
     });
   });
 
@@ -238,6 +252,9 @@ describe("ProviderCommandReactor", () => {
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
+    const respondToInteraction = vi.fn<ProviderServiceShape["respondToInteraction"]>(
+      () => Effect.void,
+    );
     const stopSession = vi.fn((input: unknown) =>
       Effect.sync(() => {
         const threadId =
@@ -314,6 +331,24 @@ describe("ProviderCommandReactor", () => {
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
+      respondToInteraction,
+      reloadSessionResources: () => unsupported(),
+      askSessionSideQuestion: () => unsupported(),
+      cancelSessionSideQuestion: () => unsupported(),
+      cancelSessionAgent: () => unsupported(),
+      messageSessionAgent: () => unsupported(),
+      watchSessionAgentActivity: () => Stream.empty,
+      getSessionAgentDepth: () => unsupported(),
+      setSessionAgentDepth: () => unsupported(),
+      followUp: () => unsupported(),
+      getSessionInputQueue: () => unsupported(),
+      clearSessionInputQueue: () => unsupported(),
+      setSessionInputQueueMode: () => unsupported(),
+      getSessionCompaction: () => unsupported(),
+      compactSession: () => unsupported(),
+      abortSessionCompaction: () => unsupported(),
+      setSessionAutoCompaction: () => unsupported(),
+      refineSessionHarness: () => unsupported(),
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       listSessions: () => Effect.succeed(runtimeSessions),
       getCapabilities: (_provider) =>
@@ -497,6 +532,7 @@ describe("ProviderCommandReactor", () => {
       interruptTurn,
       respondToRequest,
       respondToUserInput,
+      respondToInteraction,
       stopSession,
       renameBranch,
       refreshStatus,

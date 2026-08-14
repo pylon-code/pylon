@@ -135,60 +135,74 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
     }),
   );
 
-  it.effect("rejects settling a thread with an open approval or user-input request", () =>
-    Effect.gen(function* () {
-      const requestActivity = (kind: string, requestId: string, at: string) =>
-        ({
-          id: EventId.make(`activity-${requestId}-${kind}`),
-          tone: "approval" as const,
-          kind,
-          summary: kind,
-          payload: { requestId },
-          turnId: null,
-          createdAt: at,
-        }) as OrchestrationThread["activities"][number];
+  it.effect(
+    "rejects settling a thread with an open approval, user-input, or interaction request",
+    () =>
+      Effect.gen(function* () {
+        const requestActivity = (kind: string, requestId: string, at: string) =>
+          ({
+            id: EventId.make(`activity-${requestId}-${kind}`),
+            tone: "approval" as const,
+            kind,
+            summary: kind,
+            payload: { requestId },
+            turnId: null,
+            createdAt: at,
+          }) as OrchestrationThread["activities"][number];
 
-      // Open approval request: settle rejected.
-      const openError = yield* decideOrchestrationCommand({
-        command: {
-          type: "thread.settle",
-          commandId: CommandId.make("cmd-settle-pending"),
-          threadId: ThreadId.make("thread-1"),
-        },
-        readModel: makeReadModel(null, null, null, [
-          requestActivity("approval.requested", "req-1", NOW),
-        ]),
-      }).pipe(Effect.flip);
-      expect(openError._tag).toBe("OrchestrationCommandInvariantError");
+        // Open approval request: settle rejected.
+        const openError = yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.settle",
+            commandId: CommandId.make("cmd-settle-pending"),
+            threadId: ThreadId.make("thread-1"),
+          },
+          readModel: makeReadModel(null, null, null, [
+            requestActivity("approval.requested", "req-1", NOW),
+          ]),
+        }).pipe(Effect.flip);
+        expect(openError._tag).toBe("OrchestrationCommandInvariantError");
 
-      // Same request later resolved: settleable again.
-      const settled = yield* decideOrchestrationCommand({
-        command: {
-          type: "thread.settle",
-          commandId: CommandId.make("cmd-settle-resolved"),
-          threadId: ThreadId.make("thread-1"),
-        },
-        readModel: makeReadModel(null, null, null, [
-          requestActivity("approval.requested", "req-1", NOW),
-          requestActivity("approval.resolved", "req-1", NOW),
-        ]),
-      });
-      const settledEvents = Array.isArray(settled) ? settled : [settled];
-      expect(settledEvents[0]?.type).toBe("thread.settled");
+        // Same request later resolved: settleable again.
+        const settled = yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.settle",
+            commandId: CommandId.make("cmd-settle-resolved"),
+            threadId: ThreadId.make("thread-1"),
+          },
+          readModel: makeReadModel(null, null, null, [
+            requestActivity("approval.requested", "req-1", NOW),
+            requestActivity("approval.resolved", "req-1", NOW),
+          ]),
+        });
+        const settledEvents = Array.isArray(settled) ? settled : [settled];
+        expect(settledEvents[0]?.type).toBe("thread.settled");
 
-      // Open user-input request: also rejected.
-      const inputError = yield* decideOrchestrationCommand({
-        command: {
-          type: "thread.settle",
-          commandId: CommandId.make("cmd-settle-pending-input"),
-          threadId: ThreadId.make("thread-1"),
-        },
-        readModel: makeReadModel(null, null, null, [
-          requestActivity("user-input.requested", "req-2", NOW),
-        ]),
-      }).pipe(Effect.flip);
-      expect(inputError._tag).toBe("OrchestrationCommandInvariantError");
-    }),
+        // Open user-input request: also rejected.
+        const inputError = yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.settle",
+            commandId: CommandId.make("cmd-settle-pending-input"),
+            threadId: ThreadId.make("thread-1"),
+          },
+          readModel: makeReadModel(null, null, null, [
+            requestActivity("user-input.requested", "req-2", NOW),
+          ]),
+        }).pipe(Effect.flip);
+        expect(inputError._tag).toBe("OrchestrationCommandInvariantError");
+
+        const interactionError = yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.settle",
+            commandId: CommandId.make("cmd-settle-pending-interaction"),
+            threadId: ThreadId.make("thread-1"),
+          },
+          readModel: makeReadModel(null, null, null, [
+            requestActivity("interaction.requested", "interaction-1", NOW),
+          ]),
+        }).pipe(Effect.flip);
+        expect(interactionError._tag).toBe("OrchestrationCommandInvariantError");
+      }),
   );
 
   it.effect("clears an open request when its respond failure marks it stale", () =>
@@ -224,6 +238,10 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
           activity("user-input.requested", "req-2", {}),
           activity("provider.user-input.respond.failed", "req-2", {
             detail: "stale pending user-input request req-2",
+          }),
+          activity("interaction.requested", "interaction-1", {}),
+          activity("provider.interaction.respond.failed", "interaction-1", {
+            detail: "stale pending interaction request interaction-1",
           }),
         ]),
       });

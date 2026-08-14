@@ -17,11 +17,26 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import type { ServerProviderShape } from "./Services/ServerProvider.ts";
+import type { ManagedServerProviderShape, ServerProviderShape } from "./Services/ServerProvider.ts";
 
 interface ProviderSnapshotState {
   readonly snapshot: ServerProvider;
   readonly enrichmentGeneration: number;
+  readonly publishedModels: ServerProvider["models"] | null;
+}
+
+function applyPublishedModels(
+  snapshot: ServerProvider,
+  publishedModels: ServerProvider["models"] | null,
+  reconcile?: (snapshot: ServerProvider) => ServerProvider,
+): ServerProvider {
+  if (publishedModels === null) {
+    return snapshot;
+  }
+  const overlaid = Equal.equals(snapshot.models, publishedModels)
+    ? snapshot
+    : { ...snapshot, models: publishedModels };
+  return reconcile ? reconcile(overlaid) : overlaid;
 }
 
 export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(function* <
@@ -33,6 +48,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   readonly haveSettingsChanged: (previous: Settings, next: Settings) => boolean;
   readonly initialSnapshot: (settings: Settings) => Effect.Effect<ServerProvider>;
   readonly checkProvider: Effect.Effect<ServerProvider, ServerSettingsError>;
+  readonly checkProviderWithPublishedModels?: Effect.Effect<ServerProvider, ServerSettingsError>;
+  readonly reconcilePublishedModels?: (snapshot: ServerProvider) => ServerProvider;
   readonly enrichSnapshot?: (input: {
     readonly settings: Settings;
     readonly snapshot: ServerProvider;
@@ -41,7 +58,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   }) => Effect.Effect<void>;
   readonly refreshInterval?: Duration.Input;
 }): Effect.fn.Return<
-  ServerProviderShape,
+  ManagedServerProviderShape,
   ServerSettingsError,
   Scope.Scope | BackgroundPolicy.BackgroundPolicy | ServerSettingsService
 > {
@@ -57,24 +74,33 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const snapshotStateRef = yield* Ref.make<ProviderSnapshotState>({
     snapshot: initialSnapshot,
     enrichmentGeneration: 0,
+    publishedModels: null,
   });
   const settingsRef = yield* Ref.make(initialSettings);
   const enrichmentFiberRef = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null);
   const scope = yield* Effect.scope;
 
-  const publishEnrichedSnapshot = Effect.fn("publishEnrichedSnapshot")(function* (
+  const publishEnrichedSnapshotBase = Effect.fn("publishEnrichedSnapshot")(function* (
     generation: number,
     nextSnapshot: ServerProvider,
   ) {
     const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
-      if (state.enrichmentGeneration !== generation || Equal.equals(state.snapshot, nextSnapshot)) {
+      if (state.enrichmentGeneration !== generation) {
+        return [null, state] as const;
+      }
+      const overlaidSnapshot = applyPublishedModels(
+        nextSnapshot,
+        state.publishedModels,
+        input.reconcilePublishedModels,
+      );
+      if (Equal.equals(state.snapshot, overlaidSnapshot)) {
         return [null, state] as const;
       }
       return [
-        nextSnapshot,
+        overlaidSnapshot,
         {
           ...state,
-          snapshot: nextSnapshot,
+          snapshot: overlaidSnapshot,
         },
       ] as const;
     });
@@ -83,6 +109,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     }
     yield* PubSub.publish(changesPubSub, snapshotToPublish);
   });
+  const publishEnrichedSnapshot = (generation: number, nextSnapshot: ServerProvider) =>
+    refreshSemaphore.withPermits(1)(publishEnrichedSnapshotBase(generation, nextSnapshot));
 
   const restartSnapshotEnrichment = Effect.fn("restartSnapshotEnrichment")(function* (
     settings: Settings,
@@ -121,15 +149,25 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       return yield* Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot));
     }
 
-    const nextSnapshot = yield* input.checkProvider;
-    const nextGeneration = yield* Ref.modify(snapshotStateRef, (state) => {
+    const stateBeforeCheck = yield* Ref.get(snapshotStateRef);
+    const checkedSnapshot = yield* stateBeforeCheck.publishedModels !== null &&
+    input.checkProviderWithPublishedModels !== undefined
+      ? input.checkProviderWithPublishedModels
+      : input.checkProvider;
+    const [nextSnapshot, nextGeneration] = yield* Ref.modify(snapshotStateRef, (state) => {
       const generation = input.enrichSnapshot
         ? state.enrichmentGeneration + 1
         : state.enrichmentGeneration;
+      const snapshot = applyPublishedModels(
+        checkedSnapshot,
+        state.publishedModels,
+        input.reconcilePublishedModels,
+      );
       return [
-        generation,
+        [snapshot, generation] as const,
         {
-          snapshot: nextSnapshot,
+          ...state,
+          snapshot,
           enrichmentGeneration: generation,
         },
       ] as const;
@@ -141,6 +179,36 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   });
   const applySnapshot = (nextSettings: Settings, options?: { readonly forceRefresh?: boolean }) =>
     refreshSemaphore.withPermits(1)(applySnapshotBase(nextSettings, options));
+
+  const publishModelsBase = Effect.fn("publishModels")(function* (
+    models: ServerProvider["models"],
+  ) {
+    const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
+      const snapshotWithModels = Equal.equals(state.snapshot.models, models)
+        ? state.snapshot
+        : { ...state.snapshot, models };
+      const snapshot = input.reconcilePublishedModels
+        ? input.reconcilePublishedModels(snapshotWithModels)
+        : snapshotWithModels;
+      if (Equal.equals(state.snapshot, snapshot)) {
+        return [null, { ...state, publishedModels: models }] as const;
+      }
+      return [
+        snapshot,
+        {
+          ...state,
+          snapshot,
+          publishedModels: models,
+        },
+      ] as const;
+    });
+    if (snapshotToPublish === null) {
+      return;
+    }
+    yield* PubSub.publish(changesPubSub, snapshotToPublish);
+  });
+  const publishModels = (models: ServerProvider["models"]) =>
+    refreshSemaphore.withPermits(1)(publishModelsBase(models));
 
   const refreshSnapshot = Effect.fn("refreshSnapshot")(function* () {
     const nextSettings = yield* input.getSettings;
@@ -222,8 +290,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     maintenanceCapabilities: input.maintenanceCapabilities,
     getSnapshot: Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot)),
     refresh: refreshSnapshot().pipe(Effect.tapError(Effect.logError), Effect.orDie),
+    publishModels,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
     },
-  } satisfies ServerProviderShape;
+  } satisfies ManagedServerProviderShape;
 });

@@ -51,6 +51,38 @@
       "types": "./src/state/connections.ts",
       "default": "./src/state/connections.ts"
     },
+    "./state/context-window": {
+      "types": "./src/state/contextWindow.ts",
+      "default": "./src/state/contextWindow.ts"
+    },
+    "./state/context-compaction": {
+      "types": "./src/state/contextCompaction.ts",
+      "default": "./src/state/contextCompaction.ts"
+    },
+    "./state/session-resources": {
+      "types": "./src/state/sessionResources.ts",
+      "default": "./src/state/sessionResources.ts"
+    },
+    "./state/session-side-question": {
+      "types": "./src/state/sessionSideQuestion.ts",
+      "default": "./src/state/sessionSideQuestion.ts"
+    },
+    "./state/session-agent-depth": {
+      "types": "./src/state/sessionAgentDepth.ts",
+      "default": "./src/state/sessionAgentDepth.ts"
+    },
+    "./state/session-agent-live-activity": {
+      "types": "./src/state/sessionAgentLiveActivity.ts",
+      "default": "./src/state/sessionAgentLiveActivity.ts"
+    },
+    "./state/session-input-queue": {
+      "types": "./src/state/sessionInputQueue.ts",
+      "default": "./src/state/sessionInputQueue.ts"
+    },
+    "./state/session-goal": {
+      "types": "./src/state/sessionGoal.ts",
+      "default": "./src/state/sessionGoal.ts"
+    },
     "./state/entities": {
       "types": "./src/state/entities.ts",
       "default": "./src/state/entities.ts"
@@ -134,6 +166,10 @@
     "./state/thread-sort": {
       "types": "./src/state/threadSort.ts",
       "default": "./src/state/threadSort.ts"
+    },
+    "./state/turn-costs": {
+      "types": "./src/state/turnCosts.ts",
+      "default": "./src/state/turnCosts.ts"
     },
     "./state/thread-settled": {
       "types": "./src/state/threadSettled.ts",

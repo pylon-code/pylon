@@ -17,7 +17,7 @@
  * folding (completion can create an agent; a late start only fills
  * metadata).
  */
-import type { OrchestrationThreadActivity } from "@t3tools/contracts";
+import type { OrchestrationThreadActivity, ServerProvider } from "@t3tools/contracts";
 
 export type RuntimeSubagentStatus =
   | "pending"
@@ -63,6 +63,8 @@ export interface RuntimeSubagent {
   readonly role: string | null;
   readonly model: string | null;
   readonly effort: string | null;
+  /** Provider-confirmed support for direct user messages to this activation. */
+  readonly messageable: boolean;
   readonly status: RuntimeSubagentStatus;
   readonly activationCount: number;
   readonly usage: SubagentUsage | null;
@@ -102,6 +104,47 @@ export function isTerminalSubagentStatus(status: RuntimeSubagentStatus): boolean
  * but resumable; waiting counts as active because it needs the user. */
 export function isActiveSubagentStatus(status: RuntimeSubagentStatus): boolean {
   return status === "pending" || status === "running" || status === "waiting";
+}
+
+export function supportsSessionAgentCancel(
+  provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
+): boolean {
+  const agents = provider?.featureCapabilities?.agents;
+  return agents?.support === "read-write" && agents.operations.includes("cancel");
+}
+
+export function supportsSessionAgentMessage(
+  provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
+): boolean {
+  const agents = provider?.featureCapabilities?.agents;
+  return agents?.support === "read-write" && agents.operations.includes("message");
+}
+
+/**
+ * Direct messages are provider-neutral control operations. Workflow
+ * coordinators are never addressable, while direct and nested child agents
+ * are eligible when the provider explicitly marked their live activation as
+ * messageable.
+ */
+export function canMessageSessionAgent(
+  provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
+  agent: Pick<RuntimeSubagent, "kind" | "messageable" | "status">,
+): boolean {
+  return (
+    supportsSessionAgentMessage(provider) &&
+    agent.kind !== "workflow" &&
+    agent.messageable &&
+    isActiveSubagentStatus(agent.status)
+  );
+}
+
+export function isSessionAgentMessageDeliveryUnknown(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "reason" in error &&
+    error.reason === "delivery-unknown"
+  );
 }
 
 const RECENT_ACTIVITY_LIMIT = 6;
@@ -232,6 +275,7 @@ interface MutableAgent {
   role: string | null;
   model: string | null;
   effort: string | null;
+  messageable: boolean;
   status: RuntimeSubagentStatus;
   activationCount: number;
   usage: SubagentUsage | null;
@@ -286,6 +330,7 @@ function getOrCreate(
     role: asString(payload.role) ?? null,
     model: asString(payload.model) ?? null,
     effort: asString(payload.effort) ?? null,
+    messageable: payload.messageable === true,
     status: "pending",
     activationCount: 0,
     usage: null,
@@ -312,8 +357,13 @@ function getOrCreate(
   return created;
 }
 
-/** Metadata fill from any payload: never downgrades known values to null. */
-function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): void {
+/**
+ * Metadata fill from any payload. Returns true only when the payload proves a
+ * new workflow attempt; attempt numbers are monotonic so a late snapshot
+ * cannot make an old attempt look new on a later row.
+ */
+function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): boolean {
+  let attemptBumped = false;
   const title = asString(payload.title);
   if (title) agent.title = title;
   const role = asString(payload.role);
@@ -322,6 +372,7 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   if (model) agent.model = model;
   const effort = asString(payload.effort);
   if (effort) agent.effort = effort;
+  if (typeof payload.messageable === "boolean") agent.messageable = payload.messageable;
   const parentAgentId = asString(payload.parentAgentId);
   if (parentAgentId) {
     agent.parentAgentId = parentAgentId;
@@ -337,17 +388,8 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   const phaseTitle = asString(payload.phaseTitle);
   if (phaseTitle) agent.phaseTitle = phaseTitle;
   const attempt = asCount(payload.attempt);
-  if (attempt !== undefined) {
-    // A new attempt on a workflow slot is a reactivation of the same
-    // identity: clear the previous attempt's terminal detail so the status
-    // transition (terminal → running, in applyStatus) reads as a fresh run.
-    // The activation bump lives ONLY in applyStatus — bumping here too
-    // counted every retry twice (review finding: two attempts read "run 3").
-    if (agent.attempt !== null && attempt > agent.attempt) {
-      agent.result = null;
-      agent.error = null;
-      agent.completedAt = null;
-    }
+  if (attempt !== undefined && (agent.attempt === null || attempt > agent.attempt)) {
+    attemptBumped = agent.attempt !== null;
     agent.attempt = attempt;
   }
   const outputFile = asString(payload.outputFile);
@@ -389,17 +431,25 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
       agent.runHandles = { ...agent.runHandles, ...runHandles };
     }
   }
+  return attemptBumped;
 }
 
-function applyStatus(agent: MutableAgent, status: RuntimeSubagentStatus, at: string): void {
+function applyStatus(
+  agent: MutableAgent,
+  status: RuntimeSubagentStatus,
+  at: string,
+  allowTerminalReactivation = false,
+): void {
   const wasTerminal = isTerminalSubagentStatus(agent.status);
   const isTerminal = isTerminalSubagentStatus(status);
-  if (wasTerminal && isTerminal) {
-    // Duplicate terminal events are idempotent: first write wins, timestamps
-    // don't slide.
+  if (wasTerminal && (isTerminal || !allowTerminalReactivation)) {
+    // Terminal snapshots are sticky. Stable task.updated/task.progress rows
+    // can sort after the terminal row (even at the same timestamp), so only a
+    // new task.started tool use or workflow attempt may reopen this identity.
+    // Duplicate terminal events remain first-write-wins too.
     return;
   }
-  if ((wasTerminal || agent.status === "idle") && (status === "running" || status === "pending")) {
+  if ((wasTerminal || agent.status === "idle") && isActiveSubagentStatus(status)) {
     // Reactivation: same identity, new run. Clear the previous run's terminal
     // detail so a live card never shows the prior run's output.
     agent.activationCount += 1;
@@ -417,6 +467,27 @@ function applyStatus(agent: MutableAgent, status: RuntimeSubagentStatus, at: str
     agent.completedAt = at;
   }
   agent.status = status;
+}
+
+function applySnapshotStatus(
+  agent: MutableAgent,
+  taskId: string,
+  payload: Record<string, unknown>,
+  status: RuntimeSubagentStatus,
+  at: string,
+  attemptBumped: boolean,
+  activationToolUseIds: Map<string, string>,
+): void {
+  const toolUseId = asString(payload.toolUseId);
+  const toolUseChanged = toolUseId !== undefined && toolUseId !== activationToolUseIds.get(taskId);
+  const allowTerminalReactivation =
+    isActiveSubagentStatus(status) && (attemptBumped || toolUseChanged);
+  applyStatus(agent, status, at, allowTerminalReactivation);
+  if (toolUseId !== undefined) {
+    // Remember the provider-owned activation identity on active and terminal
+    // snapshots alike. A duplicate from that activation can never reopen it.
+    activationToolUseIds.set(taskId, toolUseId);
+  }
 }
 
 // Map, not object literal: payloads aren't schema-validated on the read
@@ -462,9 +533,10 @@ export function foldSubagentActivities(
 ): ReadonlyArray<RuntimeSubagent> {
   const agents = new Map<string, MutableAgent>();
 
-  // The tool_use_id that opened each agent's current run. A resume is a new
-  // Agent tool call so it carries a new one; a late/out-of-order duplicate
-  // start repeats the id of the run it belongs to. Fold-local because
+  // The provider-owned activation id for each agent's current run. Claude
+  // carries it on task.started; Codex carries the native child turn id on
+  // task.updated. A late/out-of-order duplicate repeats the current id.
+  // Fold-local because
   // MutableAgent and the public RuntimeSubagent are 1:1 (the fold returns
   // `{ ...agent }`), and no consumer reads this.
   const activationToolUseIds = new Map<string, string>();
@@ -486,13 +558,11 @@ export function foldSubagentActivities(
         if (isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
-        // Order-robustness: a start row arriving after a terminal state is a
-        // late/out-of-order delivery and only fills metadata — it must not
-        // reopen the run. Reactivation comes exclusively from explicit
-        // status transitions (task.updated / progress status). Guard on the
-        // status itself, not activationCount: a task first seen via a
-        // terminal task.updated has zero activations but is still settled
-        // (review finding: a late start reopened a failed child).
+        // Order-robustness: a start row arriving after a terminal state only
+        // reopens the identity when its toolUseId proves a new invocation.
+        // Guard on the status itself, not activationCount: a task first seen
+        // via a terminal task.updated has zero activations but is still
+        // settled (review finding: a late start reopened a failed child).
         const toolUseId = asString(payload.toolUseId);
         if (agent.activationCount === 0 && !isTerminalSubagentStatus(agent.status)) {
           agent.activationCount = 1;
@@ -511,7 +581,7 @@ export function foldSubagentActivities(
           // start repeats the current run's id and so fails this check, which
           // keeps the ordering guard above intact (a late start must not
           // reopen a failed child). Reported upstream as t3code#5529; unfixed there.
-          applyStatus(agent, "running", at);
+          applyStatus(agent, "running", at, true);
           activationToolUseIds.set(taskId, toolUseId);
         }
         const detail = asString(payload.detail);
@@ -528,11 +598,19 @@ export function foldSubagentActivities(
         const existed = agents.has(taskId);
         if (!existed && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
-        fillMetadata(agent, payload);
+        const attemptBumped = fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;
         const explicitStatus = asRuntimeStatus(payload.status);
         if (explicitStatus) {
-          applyStatus(agent, explicitStatus, at);
+          applySnapshotStatus(
+            agent,
+            taskId,
+            payload,
+            explicitStatus,
+            at,
+            attemptBumped,
+            activationToolUseIds,
+          );
         } else if (
           (payload.usageSnapshot !== true || !existed) &&
           !isTerminalSubagentStatus(agent.status) &&
@@ -566,14 +644,24 @@ export function foldSubagentActivities(
         // first row's classification instead of being re-judged.
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
-        fillMetadata(agent, payload);
+        const attemptBumped = fillMetadata(agent, payload);
         // A task first seen via task.updated (start row aged out) has run at
         // least once — zero activations would misreport "run 0" and let a
         // later start row treat it as never-started (review finding).
         if (agent.activationCount === 0) agent.activationCount = 1;
         const wasTerminal = isTerminalSubagentStatus(agent.status);
         const status = asRuntimeStatus(payload.status);
-        if (status) applyStatus(agent, status, at);
+        if (status) {
+          applySnapshotStatus(
+            agent,
+            taskId,
+            payload,
+            status,
+            at,
+            attemptBumped,
+            activationToolUseIds,
+          );
+        }
         const error = asString(payload.error);
         if (error) agent.error = bounded(error);
         // Provider end time beats ingestion time for the transition that
@@ -595,6 +683,8 @@ export function foldSubagentActivities(
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
+        const toolUseId = asString(payload.toolUseId);
+        if (toolUseId) activationToolUseIds.set(taskId, toolUseId);
         if (agent.activationCount === 0) agent.activationCount = 1;
         // Already-terminal: status and timestamps are frozen (first write
         // wins, duplicates must not slide them) but the completion still

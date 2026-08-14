@@ -6,9 +6,18 @@ export default defineConfig({
   resolve: {
     alias: {
       "~": NodeURL.fileURLToPath(new URL("./apps/web/src", import.meta.url)),
+      // Vite+ currently resolves its public test facade through a second Vitest
+      // module instance, which loses the runner's active suite context.
+      "vite-plus/test": "vitest",
     },
   },
   test: {
+    server: {
+      deps: {
+        // Apply the facade alias inside Effect's test helpers as well.
+        inline: ["@effect/vitest"],
+      },
+    },
     environment: "node",
     exclude: [
       "**/.repos/**",

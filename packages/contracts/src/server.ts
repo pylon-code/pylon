@@ -19,6 +19,8 @@ import {
 } from "./keybindings.ts";
 import { EditorId } from "./editor.ts";
 import { ModelCapabilities } from "./model.ts";
+import { RuntimeMode } from "./orchestration.ts";
+import { ProviderFeatureCapabilities } from "./providerCapabilities.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerSettings } from "./settings.ts";
 
@@ -227,8 +229,14 @@ export const ServerProvider = Schema.Struct({
   accentColor: Schema.optional(TrimmedNonEmptyString),
   badgeLabel: Schema.optional(TrimmedNonEmptyString),
   continuation: Schema.optional(ServerProviderContinuation),
+  // Versioned provider-neutral feature inventory. Optional so snapshots from
+  // legacy producers retain their exact behavior through compatibility helpers.
+  featureCapabilities: Schema.optionalKey(ProviderFeatureCapabilities),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),
   requiresNewThreadForModelChange: Schema.optional(Schema.Boolean),
+  supportedRuntimeModes: Schema.optional(Schema.Array(RuntimeMode)),
+  supportsBackgroundTextGeneration: Schema.optional(Schema.Boolean),
+  supportsConversationRollback: Schema.optional(Schema.Boolean),
   enabled: Schema.Boolean,
   installed: Schema.Boolean,
   version: Schema.NullOr(TrimmedNonEmptyString),
@@ -272,6 +280,66 @@ export type ServerProviders = typeof ServerProviders.Type;
  */
 export const isProviderAvailable = (snapshot: ServerProvider): boolean =>
   snapshot.availability !== "unavailable";
+
+export const DEFAULT_SERVER_PROVIDER_RUNTIME_MODES: ReadonlyArray<RuntimeMode> = [
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+];
+
+type ServerProviderExecutionPolicySnapshot = Pick<
+  ServerProvider,
+  "featureCapabilities" | "supportedRuntimeModes"
+>;
+
+type ServerProviderBackgroundTextGenerationSnapshot = Pick<
+  ServerProvider,
+  "featureCapabilities" | "supportsBackgroundTextGeneration"
+>;
+
+type ServerProviderConversationRollbackSnapshot = Pick<
+  ServerProvider,
+  "featureCapabilities" | "supportsConversationRollback"
+>;
+
+export const getServerProviderSupportedRuntimeModes = (
+  snapshot: ServerProviderExecutionPolicySnapshot | null | undefined,
+): ReadonlyArray<RuntimeMode> =>
+  snapshot?.featureCapabilities?.executionPolicy?.runtimeModes ??
+  snapshot?.supportedRuntimeModes ??
+  DEFAULT_SERVER_PROVIDER_RUNTIME_MODES;
+
+export const resolveServerProviderRuntimeMode = (
+  snapshot: ServerProviderExecutionPolicySnapshot | null | undefined,
+  runtimeMode: RuntimeMode,
+): RuntimeMode => {
+  const supported = getServerProviderSupportedRuntimeModes(snapshot);
+  return supported.includes(runtimeMode) ? runtimeMode : (supported[0] ?? runtimeMode);
+};
+
+export const supportsServerProviderBackgroundTextGeneration = (
+  snapshot: ServerProviderBackgroundTextGenerationSnapshot | null | undefined,
+): boolean => {
+  const automation = snapshot?.featureCapabilities?.automation;
+  if (automation !== undefined) {
+    return (
+      automation.support === "read-write" &&
+      automation.operations.includes("background-text-generation")
+    );
+  }
+  return snapshot?.supportsBackgroundTextGeneration !== false;
+};
+
+export const supportsServerProviderConversationRollback = (
+  snapshot: ServerProviderConversationRollbackSnapshot | null | undefined,
+): boolean => {
+  const history = snapshot?.featureCapabilities?.history;
+  if (history !== undefined) {
+    return history.support === "read-write" && history.operations.includes("rollback");
+  }
+  return snapshot?.supportsConversationRollback !== false;
+};
 
 export const ServerObservability = Schema.Struct({
   logsDirectoryPath: TrimmedNonEmptyString,

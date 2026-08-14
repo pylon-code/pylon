@@ -203,6 +203,116 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it("keeps final reasoning as an expandable provider-neutral work row", () => {
+    const turnId = TurnId.make("turn-reasoning");
+    const thread = makeThread({
+      id: ThreadId.make("thread-reasoning"),
+      projectId: ProjectId.make("project-1"),
+      title: "Reasoning",
+      activities: [
+        makeActivity({
+          id: EventId.make("reasoning-completed"),
+          kind: "reasoning.completed",
+          summary: "Reasoning",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId,
+          payload: {
+            itemType: "reasoning",
+            detail: "Provider-exposed final reasoning",
+          },
+        }),
+      ],
+    });
+
+    const group = buildThreadFeed(thread)[0];
+    expect(group).toMatchObject({ type: "activity-group", turnId });
+    if (!group || group.type !== "activity-group") return;
+    expect(group.activities).toHaveLength(1);
+    expect(group.activities[0]).toMatchObject({
+      id: "reasoning-completed",
+      summary: "Reasoning",
+      detail: "Provider-exposed final reasoning",
+      canExpand: true,
+      toolLike: false,
+    });
+  });
+
+  it("shows safe context compaction lifecycle without provider detail", () => {
+    const turnId = TurnId.make("turn-compaction");
+    const thread = makeThread({
+      id: ThreadId.make("thread-compaction"),
+      projectId: ProjectId.make("project-1"),
+      title: "Compaction",
+      activities: [
+        makeActivity({
+          id: EventId.make("context-compaction"),
+          kind: "context-compaction",
+          summary: "Context compacted",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId,
+          payload: { status: "completed" },
+        }),
+      ],
+    });
+
+    const group = buildThreadFeed(thread)[0];
+    expect(group).toMatchObject({ type: "activity-group", turnId });
+    if (!group || group.type !== "activity-group") return;
+    expect(group.activities).toHaveLength(1);
+    expect(group.activities[0]).toMatchObject({
+      id: "context-compaction",
+      summary: "Context compacted",
+    });
+    expect(group.activities[0]?.detail).toBeNull();
+    expect(group.activities[0]?.getFullDetail()).toBeNull();
+  });
+
+  it("attaches reported cost only to turn messages and not the work log", () => {
+    const turnId = TurnId.make("turn-cost");
+    const thread = makeThread({
+      id: ThreadId.make("thread-cost"),
+      projectId: ProjectId.make("project-1"),
+      title: "Cost",
+      messages: [
+        {
+          id: MessageId.make("assistant-cost"),
+          role: "assistant",
+          text: "Done.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:02.000Z",
+          updatedAt: "2026-04-01T00:00:03.000Z",
+        },
+      ],
+      activities: [
+        makeActivity({
+          id: EventId.make("session-resources"),
+          kind: "session.resources.updated",
+          summary: "Session resources updated",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          turnId: null,
+          payload: { available: true, skills: [], prompts: [], commands: [] },
+        }),
+        makeActivity({
+          id: EventId.make("turn-cost"),
+          kind: "turn.cost",
+          summary: "Reported turn cost",
+          createdAt: "2026-04-01T00:00:03.000Z",
+          turnId,
+          payload: { totalCostUsd: 0.123456 },
+        }),
+      ],
+    });
+
+    expect(buildThreadFeed(thread)).toEqual([
+      expect.objectContaining({
+        type: "message",
+        id: "assistant-cost",
+        reportedCostLabel: "Reported cost $0.1235",
+      }),
+    ]);
+  });
+
   it("collapses matching tool lifecycle rows like desktop", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-2"),

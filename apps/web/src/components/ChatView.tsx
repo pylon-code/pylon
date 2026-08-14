@@ -2,17 +2,24 @@ import {
   type ApprovalRequestId,
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
+  supportsServerProviderConversationRollback,
   type EnvironmentId,
   type MessageId,
   type ModelSelection,
   type ProjectScript,
   type ProjectId,
   type ProviderApprovalDecision,
+  type ProviderAskSessionSideQuestionResult,
+  type ProviderCancelSessionSideQuestionResult,
+  type ProviderSessionSideQuestionRequestId,
   type PreviewAnnotationPayload,
   ProviderInstanceId,
+  RuntimeTaskId,
   type ServerProvider,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
+  type SessionCompactionUpdatedPayload,
+  type SessionInteractionResponse,
   type ThreadId,
   type TurnId,
   type KeybindingCommand,
@@ -26,6 +33,8 @@ import {
   connectionStatusTitle,
   type EnvironmentConnectionPresentation,
 } from "@t3tools/client-runtime/connection";
+import { deriveReportedTurnCosts } from "@t3tools/client-runtime/state/turn-costs";
+import { canAskSessionSideQuestion } from "@t3tools/client-runtime/state/session-side-question";
 import {
   changeRequestAutoSettles,
   effectiveSettled,
@@ -79,6 +88,7 @@ import {
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
+import type { SessionHarnessRefinementOutcome } from "../sessionHarnessRefinement";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -152,9 +162,15 @@ import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavaila
 import { RightPanelTabs, type PullRequestTabStatus } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
 import {
+  canMessageSessionAgent,
   deriveAgentPanelModel,
   foldSubagentActivities,
+  isActiveSubagentStatus,
+  isSessionAgentMessageDeliveryUnknown,
+  supportsSessionAgentCancel,
+  supportsSessionAgentMessage,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import { canWatchSessionAgentLiveActivity } from "@t3tools/client-runtime/state/session-agent-live-activity";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -265,6 +281,11 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import {
+  ComposerSessionInteractionPanel,
+  SessionPresentationArea,
+  type SessionInteractionSubmissionState,
+} from "./chat/ComposerSessionInteractionPanel";
 import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
@@ -361,6 +382,11 @@ import {
   serverUpdateGuidance,
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
+import {
+  buildSessionInteractionCommandInput,
+  foldSessionInteractionActivities,
+  reconcileSessionInteractionSubmission,
+} from "../sessionInteraction";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -1240,13 +1266,68 @@ function ChatViewContent(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const followUpThreadInputQueue = useAtomCommand(threadEnvironment.followUpInputQueue, {
+    reportFailure: false,
+  });
+  const clearThreadSessionInputQueue = useAtomCommand(
+    threadEnvironment.clearSessionInputQueue,
+    "session input queue clear",
+  );
+  const setThreadSessionInputQueueMode = useAtomCommand(
+    threadEnvironment.setSessionInputQueueMode,
+    "session input queue mode update",
+  );
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
+  const cancelThreadSessionAgent = useAtomCommand(
+    threadEnvironment.cancelSessionAgent,
+    "session agent cancellation",
+  );
+  const messageThreadSessionAgent = useAtomCommand(threadEnvironment.messageSessionAgent, {
+    reportFailure: false,
+  });
+  const reloadThreadSessionResources = useAtomCommand(
+    threadEnvironment.reloadSessionResources,
+    "session resource reload",
+  );
+  const setThreadSessionAgentDepth = useAtomCommand(
+    threadEnvironment.setSessionAgentDepth,
+    "session agent depth update",
+  );
+  const getThreadSessionCompaction = useAtomCommand(threadEnvironment.getSessionCompaction, {
+    reportFailure: false,
+  });
+  const compactThreadSession = useAtomCommand(threadEnvironment.compactSession, {
+    reportFailure: false,
+  });
+  const abortThreadSessionCompaction = useAtomCommand(threadEnvironment.abortSessionCompaction, {
+    reportFailure: false,
+  });
+  const setThreadSessionAutoCompaction = useAtomCommand(
+    threadEnvironment.setSessionAutoCompaction,
+    {
+      reportFailure: false,
+    },
+  );
+  const refineThreadSessionHarness = useAtomCommand(threadEnvironment.refineSessionHarness, {
+    reportFailure: false,
+  });
+  const askThreadSessionSideQuestion = useAtomCommand(threadEnvironment.askSessionSideQuestion, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const cancelThreadSessionSideQuestion = useAtomCommand(
+    threadEnvironment.cancelSessionSideQuestion,
+    { reportFailure: false, reportDefect: false },
+  );
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
   const respondToThreadUserInput = useAtomCommand(threadEnvironment.respondToUserInput, {
+    reportFailure: false,
+  });
+  const respondToThreadInteraction = useAtomCommand(threadEnvironment.respondToInteraction, {
     reportFailure: false,
   });
   const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
@@ -1371,6 +1452,10 @@ function ChatViewContent(props: ChatViewProps) {
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
+  const [sessionInteractionSubmission, setSessionInteractionSubmission] =
+    useState<SessionInteractionSubmissionState | null>(null);
+  const sessionInteractionSubmissionLockRef = useRef<string | null>(null);
+  const sessionInteractionSubmissionAttemptRef = useRef(0);
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -2194,20 +2279,145 @@ function ChatViewContent(props: ChatViewProps) {
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
-  const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
+  const sessionInteractionState = useMemo(
+    () =>
+      foldSessionInteractionActivities(threadActivities, {
+        terminalSession: activeThread?.session?.status === "stopped",
+      }),
+    [activeThread?.session?.status, threadActivities],
+  );
+  const activeSessionInteraction = sessionInteractionState.pending[0] ?? null;
+  const activeSessionInteractionFailure = activeSessionInteraction
+    ? (sessionInteractionState.responseFailures.find(
+        (failure) => failure.requestId === activeSessionInteraction.requestId,
+      ) ?? null)
+    : null;
+  useEffect(() => {
+    if (sessionInteractionSubmission === null) return;
+    const reconciliation = reconcileSessionInteractionSubmission({
+      submission: sessionInteractionSubmission,
+      state: sessionInteractionState,
+    });
+    if (reconciliation.kind === "clear") {
+      sessionInteractionSubmissionAttemptRef.current += 1;
+      sessionInteractionSubmissionLockRef.current = null;
+      setSessionInteractionSubmission(null);
+      return;
+    }
+    if (reconciliation.kind === "failed") {
+      sessionInteractionSubmissionAttemptRef.current += 1;
+      sessionInteractionSubmissionLockRef.current = null;
+      setSessionInteractionSubmission({
+        ...sessionInteractionSubmission,
+        ignoredFailureActivityId: reconciliation.failure.activityId,
+        status: "error",
+        error: reconciliation.failure.error,
+      });
+    }
+  }, [
+    sessionInteractionState.pending,
+    sessionInteractionState.responseFailures,
+    sessionInteractionSubmission,
+  ]);
+  const workLogEntries = useMemo(
+    () => [
+      ...deriveWorkLogEntries(threadActivities),
+      ...sessionInteractionState.notifications.map((notification) => ({
+        id: notification.activityId,
+        createdAt: notification.createdAt,
+        turnId: notification.turnId,
+        label: notification.message,
+        tone: notification.level === "error" ? ("error" as const) : ("info" as const),
+        sourceActivityKind: "session-presentation.updated",
+        sessionNotification: notification,
+      })),
+    ],
+    [sessionInteractionState.notifications, threadActivities],
+  );
   const turnPlans = useMemo(() => deriveTurnPlans(threadActivities), [threadActivities]);
   // Native subagent fold: memoized by activity-list identity, shared by the
   // Agents surface, live strip, and workflow cards. v2Projection is null
   // until orchestration-v2 lands (source precedence lives in the derive).
   // sessionLive derives interruption for agents orphaned by session death.
   const agentSessionLive = phase !== "disconnected";
-  const agentPanelModel = useMemo(
-    () =>
-      deriveAgentPanelModel({
-        agents: foldSubagentActivities(threadActivities, { sessionLive: agentSessionLive }),
-      }),
+  const runtimeSubagents = useMemo(
+    () => foldSubagentActivities(threadActivities, { sessionLive: agentSessionLive }),
     [agentSessionLive, threadActivities],
   );
+  const agentPanelModel = useMemo(
+    () => deriveAgentPanelModel({ agents: runtimeSubagents }),
+    [runtimeSubagents],
+  );
+  const activeSessionProviderStatus = useMemo(() => {
+    const instanceId = activeThread?.session?.providerInstanceId;
+    if (instanceId === undefined) return null;
+    return serverConfig?.providers.find((provider) => provider.instanceId === instanceId) ?? null;
+  }, [activeThread?.session?.providerInstanceId, serverConfig?.providers]);
+  const quickQuestionAvailable = canAskSessionSideQuestion(
+    activeSessionProviderStatus,
+    activeEnvironmentConnectionPhase === "connected" ? "connected" : "available",
+    activeThread?.session,
+  );
+  const quickQuestionIdentity = quickQuestionAvailable
+    ? JSON.stringify([
+        environmentId,
+        activeThreadId,
+        activeThread?.session?.startedAt,
+        activeThread?.session?.providerInstanceId,
+      ])
+    : null;
+  const canCancelSessionAgents =
+    agentSessionLive &&
+    activeThread?.session?.runtimeMode === "full-access" &&
+    (activeThread.session.status === "ready" || activeThread.session.status === "running") &&
+    supportsSessionAgentCancel(activeSessionProviderStatus);
+  const canMessageSessionAgents =
+    agentSessionLive &&
+    activeThread?.session?.runtimeMode === "full-access" &&
+    (activeThread.session.status === "ready" || activeThread.session.status === "running") &&
+    supportsSessionAgentMessage(activeSessionProviderStatus);
+  const canWatchSessionAgentActivity =
+    agentSessionLive &&
+    canWatchSessionAgentLiveActivity(activeSessionProviderStatus, activeThread?.session);
+  const sessionAgentLiveActivityScopeKey = JSON.stringify([
+    activeThreadKey,
+    activeThread?.session?.providerInstanceId,
+    activeThread?.session?.runtimeMode,
+  ]);
+  const sessionAgentMessageScopeKey = JSON.stringify([
+    activeThreadKey,
+    activeThread?.session?.providerInstanceId,
+    activeThread?.session?.runtimeMode,
+  ]);
+  const sessionAgentMessageScopeRef = useRef({
+    scopeKey: sessionAgentMessageScopeKey,
+    threadKey: activeThreadKey,
+    agents: runtimeSubagents,
+    provider: activeSessionProviderStatus,
+    enabled: canMessageSessionAgents,
+  });
+  sessionAgentMessageScopeRef.current = {
+    scopeKey: sessionAgentMessageScopeKey,
+    threadKey: activeThreadKey,
+    agents: runtimeSubagents,
+    provider: activeSessionProviderStatus,
+    enabled: canMessageSessionAgents,
+  };
+  const [cancellingAgentIds, setCancellingAgentIds] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    setCancellingAgentIds(new Set());
+  }, [activeThreadId]);
+  useEffect(() => {
+    const activeIds = new Set(
+      runtimeSubagents
+        .filter((agent) => isActiveSubagentStatus(agent.status))
+        .map((agent) => agent.id),
+    );
+    setCancellingAgentIds((current) => {
+      const next = new Set([...current].filter((agentId) => activeIds.has(agentId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [runtimeSubagents]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -2543,6 +2753,10 @@ function ChatViewContent(props: ChatViewProps) {
     }
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
   }, [attachmentPreviewHandoffByMessageId, displayServerMessages, optimisticUserMessages]);
+  const reportedTurnCosts = useMemo(
+    () => deriveReportedTurnCosts(activeThread?.activities ?? []),
+    [activeThread?.activities],
+  );
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(
@@ -4976,6 +5190,7 @@ function ChatViewContent(props: ChatViewProps) {
       annotation: PreviewAnnotationPayload;
       image: ComposerImageAttachment | null;
     },
+    delivery: "immediate" | "follow-up" = "immediate",
   ) => {
     e?.preventDefault();
     const notifyDirectAnnotationAttached = () => {
@@ -5222,7 +5437,7 @@ function ChatViewContent(props: ChatViewProps) {
         role: "user",
         text: outgoingMessageText,
         ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
-        turnId: null,
+        turnId: delivery === "follow-up" ? (activeThread.latestTurn?.turnId ?? null) : null,
         createdAt: messageCreatedAt,
         updatedAt: messageCreatedAt,
         streaming: false,
@@ -5274,7 +5489,7 @@ function ChatViewContent(props: ChatViewProps) {
 
     let failure: AtomCommandResult<unknown, unknown> | null = null;
     // Auto-title from first message
-    if (isFirstMessage && isServerThread) {
+    if (delivery === "immediate" && isFirstMessage && isServerThread) {
       const titleResult = await updateThreadMetadata({
         environmentId,
         input: {
@@ -5287,7 +5502,7 @@ function ChatViewContent(props: ChatViewProps) {
       }
     }
 
-    if (failure === null && isServerThread) {
+    if (failure === null && delivery === "immediate" && isServerThread) {
       const settingsResult = await persistThreadSettingsForNextTurn({
         threadId: threadIdForSend,
         createdAt: messageCreatedAt,
@@ -5341,24 +5556,39 @@ function ChatViewContent(props: ChatViewProps) {
             }
           : undefined;
       beginLocalDispatch({ preparingWorktree: false });
-      const startResult = await startThreadTurn({
-        environmentId,
-        input: {
-          threadId: threadIdForSend,
-          message: {
-            messageId: messageIdForSend,
-            role: "user",
-            text: outgoingMessageText,
-            attachments: turnAttachmentsResult.value,
-          },
-          modelSelection: ctxSelectedModelSelection,
-          titleSeed: title,
-          runtimeMode,
-          interactionMode,
-          ...(bootstrap ? { bootstrap } : {}),
-          createdAt: messageCreatedAt,
-        },
-      });
+      const startResult =
+        delivery === "follow-up"
+          ? await followUpThreadInputQueue({
+              environmentId,
+              input: {
+                threadId: threadIdForSend,
+                message: {
+                  messageId: messageIdForSend,
+                  role: "user",
+                  text: outgoingMessageText,
+                  attachments: turnAttachmentsResult.value,
+                },
+                createdAt: messageCreatedAt,
+              },
+            })
+          : await startThreadTurn({
+              environmentId,
+              input: {
+                threadId: threadIdForSend,
+                message: {
+                  messageId: messageIdForSend,
+                  role: "user",
+                  text: outgoingMessageText,
+                  attachments: turnAttachmentsResult.value,
+                },
+                modelSelection: ctxSelectedModelSelection,
+                titleSeed: title,
+                runtimeMode,
+                interactionMode,
+                ...(bootstrap ? { bootstrap } : {}),
+                createdAt: messageCreatedAt,
+              },
+            });
       if (startResult._tag === "Failure") {
         failure = startResult;
       } else {
@@ -5368,7 +5598,66 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     if (failure !== null) {
-      if (
+      const removeOptimisticMessage = () =>
+        setOptimisticUserMessages((existing) => {
+          const removed = existing.filter((message) => message.id === messageIdForSend);
+          for (const message of removed) {
+            revokeUserMessagePreviewUrls(message);
+          }
+          const next = existing.filter((message) => message.id !== messageIdForSend);
+          return next.length === existing.length ? existing : next;
+        });
+      if (delivery === "follow-up") {
+        removeOptimisticMessage();
+        const currentPrompt = promptRef.current;
+        const mergedPrompt =
+          promptForSend.length === 0
+            ? currentPrompt
+            : currentPrompt.length === 0
+              ? promptForSend
+              : `${promptForSend}\n\n${currentPrompt}`;
+        const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
+        const mergeById = <T extends { readonly id: string }>(
+          sent: ReadonlyArray<T>,
+          current: ReadonlyArray<T>,
+        ): T[] => {
+          const currentIds = new Set(current.map((item) => item.id));
+          return [...sent.filter((item) => !currentIds.has(item.id)), ...current];
+        };
+        const currentDraft =
+          useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) ?? null;
+        const mergedTerminalContexts = mergeById(
+          composerTerminalContextsSnapshot,
+          composerTerminalContextsRef.current,
+        );
+        const mergedElementContexts = mergeById(
+          composerElementContextsSnapshot,
+          composerElementContextsRef.current,
+        );
+        const mergedPreviewAnnotations = mergeById(
+          composerPreviewAnnotationsSnapshot,
+          currentDraft?.previewAnnotations ?? [],
+        );
+        const mergedReviewComments = mergeById(
+          composerReviewCommentsSnapshot,
+          currentDraft?.reviewComments ?? [],
+        );
+        promptRef.current = mergedPrompt;
+        composerImagesRef.current = [...composerImagesRef.current, ...retryComposerImages];
+        composerTerminalContextsRef.current = mergedTerminalContexts;
+        composerElementContextsRef.current = mergedElementContexts;
+        setComposerDraftPrompt(composerDraftTarget, mergedPrompt);
+        addComposerDraftImages(composerDraftTarget, retryComposerImages);
+        setComposerDraftTerminalContexts(composerDraftTarget, mergedTerminalContexts);
+        setComposerDraftElementContexts(composerDraftTarget, mergedElementContexts);
+        setComposerDraftPreviewAnnotations(composerDraftTarget, mergedPreviewAnnotations);
+        setComposerDraftReviewComments(composerDraftTarget, mergedReviewComments);
+        composerRef.current?.resetCursorState({
+          cursor: collapseExpandedComposerCursor(mergedPrompt, mergedPrompt.length),
+          prompt: mergedPrompt,
+          detectTrigger: true,
+        });
+      } else if (
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0 &&
@@ -5378,14 +5667,7 @@ function ChatViewContent(props: ChatViewProps) {
         (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
           .length ?? 0) === 0
       ) {
-        setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
-          for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
-          }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
-          return next.length === existing.length ? existing : next;
-        });
+        removeOptimisticMessage();
         promptRef.current = promptForSend;
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
@@ -5407,7 +5689,11 @@ function ChatViewContent(props: ChatViewProps) {
         const error = squashAtomCommandFailure(failure);
         setThreadError(
           threadIdForSend,
-          error instanceof Error ? error.message : "Failed to send message.",
+          error instanceof Error
+            ? error.message
+            : delivery === "follow-up"
+              ? "Failed to queue follow-up."
+              : "Failed to send message.",
         );
       }
     }
@@ -5434,6 +5720,303 @@ function ChatViewContent(props: ChatViewProps) {
       );
     }
   };
+
+  const onReloadSessionResources = useCallback(async () => {
+    if (!activeThreadId) return;
+    const result = await reloadThreadSessionResources({
+      environmentId,
+      input: { threadId: activeThreadId },
+    });
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        setThreadError(activeThreadId, "Could not reload session resources.");
+      }
+      return;
+    }
+    setThreadError(activeThreadId, null);
+    toastManager.add({
+      type: "success",
+      title: "Session resources reloaded",
+      description: result.value.available
+        ? `${result.value.commands.length} command${result.value.commands.length === 1 ? "" : "s"} available.`
+        : "The provider did not return a resource catalog.",
+    });
+  }, [activeThreadId, environmentId, reloadThreadSessionResources, setThreadError]);
+
+  const onSetSessionAgentDepth = useCallback(
+    async (maxDepth: number) => {
+      if (!activeThreadId) return;
+      const result = await setThreadSessionAgentDepth({
+        environmentId,
+        input: { threadId: activeThreadId, maxDepth },
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          setThreadError(activeThreadId, "Could not update the session agent spawn depth.");
+        }
+        return;
+      }
+      setThreadError(activeThreadId, null);
+      toastManager.add({
+        type: "success",
+        title: `Agent spawn depth set to ${result.value.maxDepth}`,
+        description:
+          result.value.maxDepth === 0
+            ? "Future recursive agent spawning is disabled."
+            : "The setting applies to future subagent spawns in this session.",
+      });
+    },
+    [activeThreadId, environmentId, setThreadError, setThreadSessionAgentDepth],
+  );
+
+  const runSessionCompactionCommand = useCallback(
+    async (
+      command: () => Promise<AtomCommandResult<SessionCompactionUpdatedPayload, unknown>>,
+      reportError = true,
+    ): Promise<SessionCompactionUpdatedPayload | null> => {
+      if (!activeThreadId) return null;
+      const result = await command();
+      if (result._tag === "Failure") {
+        if (reportError && !isAtomCommandInterrupted(result)) {
+          setThreadError(activeThreadId, "Could not update context compaction.");
+        }
+        return null;
+      }
+      if (reportError) setThreadError(activeThreadId, null);
+      return result.value;
+    },
+    [activeThreadId, environmentId, setThreadError],
+  );
+  const onGetSessionCompaction = useCallback(
+    () =>
+      activeThreadId
+        ? runSessionCompactionCommand(
+            () =>
+              getThreadSessionCompaction({
+                environmentId,
+                input: { threadId: activeThreadId },
+              }),
+            false,
+          )
+        : Promise.resolve(null),
+    [activeThreadId, environmentId, getThreadSessionCompaction, runSessionCompactionCommand],
+  );
+  const onCompactSession = useCallback(
+    () =>
+      activeThreadId
+        ? runSessionCompactionCommand(() =>
+            compactThreadSession({ environmentId, input: { threadId: activeThreadId } }),
+          )
+        : Promise.resolve(null),
+    [activeThreadId, compactThreadSession, environmentId, runSessionCompactionCommand],
+  );
+  const onAbortSessionCompaction = useCallback(
+    () =>
+      activeThreadId
+        ? runSessionCompactionCommand(() =>
+            abortThreadSessionCompaction({
+              environmentId,
+              input: { threadId: activeThreadId },
+            }),
+          )
+        : Promise.resolve(null),
+    [activeThreadId, abortThreadSessionCompaction, environmentId, runSessionCompactionCommand],
+  );
+  const onSetSessionAutoCompaction = useCallback(
+    (enabled: boolean) =>
+      activeThreadId
+        ? runSessionCompactionCommand(() =>
+            setThreadSessionAutoCompaction({
+              environmentId,
+              input: { threadId: activeThreadId, enabled },
+            }),
+          )
+        : Promise.resolve(null),
+    [activeThreadId, environmentId, runSessionCompactionCommand, setThreadSessionAutoCompaction],
+  );
+
+  const onRefineSessionHarness =
+    useCallback(async (): Promise<SessionHarnessRefinementOutcome | null> => {
+      if (!activeThreadId) return null;
+      const result = await refineThreadSessionHarness({
+        environmentId,
+        input: { threadId: activeThreadId },
+      });
+      if (result._tag === "Failure") {
+        return "unknown";
+      }
+      return result.value.outcome;
+    }, [activeThreadId, environmentId, refineThreadSessionHarness]);
+
+  const onAskQuickQuestion = useCallback(
+    async (
+      requestId: ProviderSessionSideQuestionRequestId,
+      question: string,
+    ): Promise<ProviderAskSessionSideQuestionResult> => {
+      if (!activeThreadId || !quickQuestionAvailable) {
+        throw new Error("Quick question unavailable.");
+      }
+      const result = await askThreadSessionSideQuestion({
+        environmentId,
+        input: { threadId: activeThreadId, requestId, question },
+      });
+      if (result._tag === "Failure") {
+        throw new Error("Quick question transport failure.");
+      }
+      return result.value;
+    },
+    [activeThreadId, askThreadSessionSideQuestion, environmentId, quickQuestionAvailable],
+  );
+
+  const onCancelQuickQuestion = useCallback(
+    async (
+      requestId: ProviderSessionSideQuestionRequestId,
+    ): Promise<ProviderCancelSessionSideQuestionResult> => {
+      if (!activeThreadId) {
+        throw new Error("Quick question unavailable.");
+      }
+      const result = await cancelThreadSessionSideQuestion({
+        environmentId,
+        input: { threadId: activeThreadId, requestId },
+      });
+      if (result._tag === "Failure") {
+        throw new Error("Quick question cancellation transport failure.");
+      }
+      return result.value;
+    },
+    [activeThreadId, cancelThreadSessionSideQuestion, environmentId],
+  );
+
+  const onCancelSessionAgent = useCallback(
+    async (agentId: string) => {
+      const agent = runtimeSubagents.find((candidate) => candidate.id === agentId);
+      if (
+        !activeThreadId ||
+        !canCancelSessionAgents ||
+        agent === undefined ||
+        !isActiveSubagentStatus(agent.status)
+      ) {
+        throw new Error("The agent is no longer cancellable.");
+      }
+      setCancellingAgentIds((current) => new Set(current).add(agentId));
+      const result = await cancelThreadSessionAgent({
+        environmentId,
+        input: { threadId: activeThreadId, agentId: RuntimeTaskId.make(agentId) },
+      });
+      if (result._tag === "Failure") {
+        setCancellingAgentIds((current) => {
+          const next = new Set(current);
+          next.delete(agentId);
+          return next;
+        });
+        if (!isAtomCommandInterrupted(result)) {
+          setThreadError(activeThreadId, "Could not stop the active agent.");
+        }
+        throw new Error("Agent cancellation failed.");
+      }
+      setThreadError(activeThreadId, null);
+      toastManager.add({
+        type: "success",
+        title:
+          result.value.disposition === "cancel-requested"
+            ? `Stopping ${agent.title}`
+            : `${agent.title} already stopped`,
+        description:
+          result.value.disposition === "cancel-requested"
+            ? "The provider accepted the request. Status will update when cancellation is confirmed."
+            : "The provider confirmed that this agent is no longer active.",
+      });
+    },
+    [
+      activeThreadId,
+      canCancelSessionAgents,
+      cancelThreadSessionAgent,
+      environmentId,
+      runtimeSubagents,
+      setThreadError,
+    ],
+  );
+
+  const onMessageSessionAgent = useCallback(
+    async (agentId: string, rawMessage: string): Promise<"delivered" | "queued" | null> => {
+      const scope = sessionAgentMessageScopeRef.current;
+      const agent = scope.agents.find((candidate) => candidate.id === agentId);
+      const message = rawMessage.trim();
+      if (
+        scope.threadKey === null ||
+        !scope.enabled ||
+        agent === undefined ||
+        !canMessageSessionAgent(scope.provider, agent) ||
+        message.length === 0
+      ) {
+        throw new Error("The agent is no longer messageable.");
+      }
+      const expectedScopeKey = scope.scopeKey;
+      const threadRef = parseScopedThreadKey(scope.threadKey);
+      if (threadRef === null) throw new Error("The thread is no longer available.");
+      const result = await messageThreadSessionAgent({
+        environmentId: threadRef.environmentId,
+        input: {
+          threadId: threadRef.threadId,
+          agentId: RuntimeTaskId.make(agentId),
+          message,
+        },
+      });
+      const latest = sessionAgentMessageScopeRef.current;
+      if (latest.scopeKey !== expectedScopeKey) return null;
+      if (result._tag === "Failure") {
+        if (isAtomCommandInterrupted(result)) return null;
+        const error = squashAtomCommandFailure(result);
+        if (isSessionAgentMessageDeliveryUnknown(error)) {
+          throw new Error("Delivery could not be confirmed. Sending again may duplicate it.");
+        }
+        throw new Error("Could not send the message. Check the agent's live status and try again.");
+      }
+      return result.value.disposition;
+    },
+    [messageThreadSessionAgent],
+  );
+
+  const onClearSessionInputQueue = useCallback(async () => {
+    if (!activeThreadId) return;
+    const result = await clearThreadSessionInputQueue({
+      environmentId,
+      input: { threadId: activeThreadId },
+    });
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        setThreadError(activeThreadId, "Could not clear the session input queue.");
+      }
+      return;
+    }
+    setThreadError(activeThreadId, null);
+    toastManager.add({
+      type: "success",
+      title: "Pending session inputs cleared",
+    });
+  }, [activeThreadId, clearThreadSessionInputQueue, environmentId, setThreadError]);
+
+  const onSetSessionInputQueueMode = useCallback(
+    async (queue: "steering" | "follow-up", mode: "all-at-once" | "one-at-a-time") => {
+      if (!activeThreadId) return;
+      const result = await setThreadSessionInputQueueMode({
+        environmentId,
+        input: { threadId: activeThreadId, queue, mode },
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          setThreadError(activeThreadId, "Could not update session input delivery.");
+        }
+        return;
+      }
+      setThreadError(activeThreadId, null);
+      toastManager.add({
+        type: "success",
+        title: `${queue === "steering" ? "Steering" : "Follow-up"} delivery updated`,
+      });
+    },
+    [activeThreadId, environmentId, setThreadError, setThreadSessionInputQueueMode],
+  );
 
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
@@ -5489,6 +6072,65 @@ function ChatViewContent(props: ChatViewProps) {
       return result;
     },
     [activeThreadId, environmentId, respondToThreadUserInput, setThreadError],
+  );
+
+  const onRespondToSessionInteraction = useCallback(
+    async (response: SessionInteractionResponse) => {
+      if (!activeThreadId || !activeSessionInteraction) return;
+      if (sessionInteractionSubmissionLockRef.current !== null) return;
+
+      const requestId = activeSessionInteraction.requestId;
+      const ignoredFailureActivityId = sessionInteractionState.responseFailures.find(
+        (failure) => failure.requestId === requestId,
+      )?.activityId;
+      const attempt = sessionInteractionSubmissionAttemptRef.current + 1;
+      sessionInteractionSubmissionAttemptRef.current = attempt;
+      sessionInteractionSubmissionLockRef.current = requestId;
+      setSessionInteractionSubmission({
+        requestId,
+        response,
+        status: "submitting",
+        ...(ignoredFailureActivityId === undefined ? {} : { ignoredFailureActivityId }),
+      });
+      const result = await respondToThreadInteraction({
+        environmentId,
+        input: buildSessionInteractionCommandInput({
+          threadId: activeThreadId,
+          requestId,
+          response,
+        }),
+      });
+      if (sessionInteractionSubmissionAttemptRef.current !== attempt) return result;
+      if (result._tag === "Failure") {
+        sessionInteractionSubmissionLockRef.current = null;
+        if (isAtomCommandInterrupted(result)) {
+          setSessionInteractionSubmission(null);
+          return result;
+        }
+        setSessionInteractionSubmission({
+          requestId,
+          response,
+          status: "error",
+          ...(ignoredFailureActivityId === undefined ? {} : { ignoredFailureActivityId }),
+          error: "Could not send the session response. Check the connection and try again.",
+        });
+        return result;
+      }
+      setSessionInteractionSubmission({
+        requestId,
+        response,
+        status: "submitted",
+        ...(ignoredFailureActivityId === undefined ? {} : { ignoredFailureActivityId }),
+      });
+      return result;
+    },
+    [
+      activeSessionInteraction,
+      activeThreadId,
+      environmentId,
+      respondToThreadInteraction,
+      sessionInteractionState.responseFailures,
+    ],
   );
 
   const setActivePendingUserInputQuestionIndex = useCallback(
@@ -6399,9 +7041,18 @@ function ChatViewContent(props: ChatViewProps) {
       />
     ) : activeRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
+        key={`${activeThreadRef?.environmentId ?? "none"}:${activeThreadRef?.threadId ?? "none"}`}
         model={agentPanelModel}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
+        canCancelAgents={canCancelSessionAgents}
+        canMessageAgents={canMessageSessionAgents}
+        canWatchAgentActivity={canWatchSessionAgentActivity}
+        agentMessageScopeKey={sessionAgentMessageScopeKey}
+        agentLiveActivityScopeKey={sessionAgentLiveActivityScopeKey}
+        cancellingAgentIds={cancellingAgentIds}
+        onCancelAgent={onCancelSessionAgent}
+        onMessageAgent={onMessageSessionAgent}
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
@@ -6525,11 +7176,18 @@ function ChatViewContent(props: ChatViewProps) {
                     : null
                 }
                 turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+                reportedTurnCosts={reportedTurnCosts}
                 activeThreadEnvironmentId={activeThread.environmentId}
                 routeThreadKey={routeThreadKey}
                 onOpenTurnDiff={onOpenTurnDiff}
                 revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
                 onRevertUserMessage={onRevertUserMessage}
+                {...(supportsServerProviderConversationRollback(activeProviderStatus)
+                  ? {}
+                  : {
+                      revertDisabledReason:
+                        "This provider cannot restore its conversation. Start a new thread to continue from an earlier checkpoint.",
+                    })}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
                 markdownCwd={gitCwd ?? undefined}
@@ -6624,6 +7282,28 @@ function ChatViewContent(props: ChatViewProps) {
                     >
                       <div className="chat-composer-glass-host relative z-10 w-full rounded-[22px]">
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
+                          <SessionPresentationArea
+                            statuses={sessionInteractionState.statuses}
+                            widgets={sessionInteractionState.widgets}
+                            placement="aboveEditor"
+                          />
+                          <ComposerSessionInteractionPanel
+                            interaction={activeSessionInteraction}
+                            pendingCount={sessionInteractionState.pending.length}
+                            submission={sessionInteractionSubmission}
+                            activityError={
+                              sessionInteractionSubmission === null
+                                ? (activeSessionInteractionFailure?.error ?? null)
+                                : null
+                            }
+                            otherSubmissionInFlight={
+                              sessionInteractionSubmission !== null &&
+                              sessionInteractionSubmission.status !== "error" &&
+                              sessionInteractionSubmission.requestId !==
+                                activeSessionInteraction?.requestId
+                            }
+                            onRespond={onRespondToSessionInteraction}
+                          />
                           <ChatComposer
                             composerRef={composerRef}
                             composerDraftTarget={composerDraftTarget}
@@ -6641,7 +7321,13 @@ function ChatViewContent(props: ChatViewProps) {
                             phase={phase}
                             isConnecting={isConnecting}
                             isSendBusy={isSendBusy}
-                            sendDisabledReason={threadDetailLoading ? "Messages loading" : null}
+                            sendDisabledReason={
+                              threadDetailLoading
+                                ? "Messages loading"
+                                : activeSessionInteraction
+                                  ? "Resolve the session request to continue"
+                                  : null
+                            }
                             isPreparingWorktree={isPreparingWorktree}
                             environmentUnavailable={activeEnvironmentUnavailableState}
                             activePendingApproval={activePendingApproval}
@@ -6664,6 +7350,8 @@ function ChatViewContent(props: ChatViewProps) {
                             }
                             activeThreadModelSelection={activeThread?.modelSelection}
                             activeThreadActivities={activeThread?.activities}
+                            quickQuestionAvailable={quickQuestionAvailable}
+                            quickQuestionIdentity={quickQuestionIdentity}
                             resolvedTheme={resolvedTheme}
                             settings={settings}
                             keybindings={keybindings}
@@ -6674,7 +7362,19 @@ function ChatViewContent(props: ChatViewProps) {
                             composerTerminalContextsRef={composerTerminalContextsRef}
                             composerElementContextsRef={composerElementContextsRef}
                             onSend={onSend}
+                            onQueueFollowUp={() => onSend(undefined, undefined, "follow-up")}
+                            onClearSessionInputQueue={onClearSessionInputQueue}
+                            onSetSessionInputQueueMode={onSetSessionInputQueueMode}
                             onInterrupt={onInterrupt}
+                            onReloadSessionResources={onReloadSessionResources}
+                            onSetSessionAgentDepth={onSetSessionAgentDepth}
+                            onGetSessionCompaction={onGetSessionCompaction}
+                            onCompactSession={onCompactSession}
+                            onAbortSessionCompaction={onAbortSessionCompaction}
+                            onSetSessionAutoCompaction={onSetSessionAutoCompaction}
+                            onRefineSessionHarness={onRefineSessionHarness}
+                            onAskQuickQuestion={onAskQuickQuestion}
+                            onCancelQuickQuestion={onCancelQuickQuestion}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             threadHandoffOffer={threadHandoffOffer}
                             isContinuingThreadOnAccount={isContinuingThreadOnAccount}
@@ -6699,6 +7399,11 @@ function ChatViewContent(props: ChatViewProps) {
                             scheduleComposerFocus={scheduleComposerFocus}
                             setThreadError={setThreadError}
                             onExpandImage={onExpandTimelineImage}
+                          />
+                          <SessionPresentationArea
+                            statuses={sessionInteractionState.statuses}
+                            widgets={sessionInteractionState.widgets}
+                            placement="belowEditor"
                           />
                         </div>
                       </div>

@@ -20,6 +20,8 @@ import {
   type OrchestrationCommand,
   ProjectId,
   ProviderItemId,
+  RuntimeTaskId,
+  SessionInteractionRequestId,
   type ServerSettings,
   ThreadId,
   TurnId,
@@ -49,7 +51,10 @@ import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
-import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import {
+  ProviderRuntimeIngestionLive,
+  runtimeEventToActivities,
+} from "./ProviderRuntimeIngestion.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -109,6 +114,24 @@ function createProviderServiceHarness() {
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
+    respondToInteraction: () => unsupported(),
+    reloadSessionResources: () => unsupported(),
+    askSessionSideQuestion: () => unsupported(),
+    cancelSessionSideQuestion: () => unsupported(),
+    cancelSessionAgent: () => unsupported(),
+    messageSessionAgent: () => unsupported(),
+    watchSessionAgentActivity: () => Stream.empty,
+    getSessionAgentDepth: () => unsupported(),
+    setSessionAgentDepth: () => unsupported(),
+    followUp: () => unsupported(),
+    getSessionInputQueue: () => unsupported(),
+    clearSessionInputQueue: () => unsupported(),
+    setSessionInputQueueMode: () => unsupported(),
+    getSessionCompaction: () => unsupported(),
+    compactSession: () => unsupported(),
+    abortSessionCompaction: () => unsupported(),
+    setSessionAutoCompaction: () => unsupported(),
+    refineSessionHarness: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
@@ -217,6 +240,125 @@ async function waitForThread(
   return poll();
 }
 
+it("maps session input queue counts to one stable privacy-safe activity", () => {
+  const activities = runtimeEventToActivities({
+    type: "session.input-queue.updated",
+    eventId: EventId.make("evt-input-queue"),
+    provider: ProviderDriverKind.make("primeAgent"),
+    providerInstanceId: ProviderInstanceId.make("prime-work"),
+    threadId: ThreadId.make("thread-1"),
+    createdAt: "2026-08-09T00:00:00.000Z",
+    payload: {
+      steeringCount: 2,
+      followUpCount: 3,
+      steeringMode: "all-at-once",
+      followUpMode: "one-at-a-time",
+    },
+  });
+  expect(activities).toEqual([
+    expect.objectContaining({
+      id: "session-input-queue:prime-work:thread-1",
+      kind: "session.input-queue.updated",
+      payload: {
+        provider: "primeAgent",
+        providerInstanceId: "prime-work",
+        steeringCount: 2,
+        followUpCount: 3,
+        steeringMode: "all-at-once",
+        followUpMode: "one-at-a-time",
+      },
+    }),
+  ]);
+  expect(JSON.stringify(activities)).not.toContain("followUps");
+  expect(JSON.stringify(activities)).not.toContain("queued prompt");
+});
+
+it("maps session compaction to one stable privacy-safe control snapshot", () => {
+  const activities = runtimeEventToActivities({
+    type: "session.compaction.updated",
+    eventId: EventId.make("evt-compaction"),
+    provider: ProviderDriverKind.make("primeAgent"),
+    providerInstanceId: ProviderInstanceId.make("prime-work"),
+    threadId: ThreadId.make("thread-1"),
+    createdAt: "2026-08-09T00:00:00.000Z",
+    payload: {
+      available: true,
+      status: "abort-requested",
+      abortable: true,
+      autoCompactionEnabled: false,
+      autoCompactionWritable: true,
+      manualCompactionSettable: false,
+      autoCompactionScope: "session-and-provider-default",
+    },
+  });
+  expect(activities).toEqual([
+    expect.objectContaining({
+      id: "session-compaction:prime-work:thread-1",
+      kind: "session.compaction.updated",
+      payload: {
+        provider: "primeAgent",
+        providerInstanceId: "prime-work",
+        available: true,
+        status: "abort-requested",
+        abortable: true,
+        autoCompactionEnabled: false,
+        autoCompactionWritable: true,
+        manualCompactionSettable: false,
+        autoCompactionScope: "session-and-provider-default",
+      },
+    }),
+  ]);
+  expect(JSON.stringify(activities)).not.toContain("private compaction contents");
+  expect(JSON.stringify(activities)).not.toContain("sessionFile");
+  expect(JSON.stringify(activities)).not.toContain("/Users/");
+});
+
+it("keeps harness refinement lifecycle out of activity history", () => {
+  expect(
+    runtimeEventToActivities({
+      type: "session.harness-refinement.updated",
+      eventId: EventId.make("evt-refinement-lifecycle"),
+      provider: ProviderDriverKind.make("primeAgent"),
+      providerInstanceId: ProviderInstanceId.make("prime-work"),
+      threadId: ThreadId.make("thread-1"),
+      createdAt: "2026-08-09T00:00:00.000Z",
+      payload: {
+        sessionStartedAt: "2026-01-01T00:00:00.000Z",
+        status: "outcome-unknown",
+      },
+    }),
+  ).toEqual([]);
+});
+
+it("persists only provider-neutral per-agent message availability", () => {
+  const activities = runtimeEventToActivities({
+    type: "task.started",
+    eventId: EventId.make("evt-messageable-agent"),
+    provider: ProviderDriverKind.make("primeAgent"),
+    providerInstanceId: ProviderInstanceId.make("prime-work"),
+    threadId: ThreadId.make("thread-1"),
+    createdAt: "2026-08-09T00:00:00.000Z",
+    payload: {
+      taskId: RuntimeTaskId.make("agent-1"),
+      taskType: "subagent",
+      agentKind: "agent",
+      title: "Reviewer",
+      messageable: true,
+    },
+  });
+  expect(activities).toEqual([
+    expect.objectContaining({
+      kind: "task.started",
+      payload: expect.objectContaining({
+        taskId: "agent-1",
+        messageable: true,
+      }),
+    }),
+  ]);
+  expect(JSON.stringify(activities)).not.toContain("activeSessionId");
+  expect(JSON.stringify(activities)).not.toContain("sessionPath");
+});
+
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
     OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
@@ -284,6 +426,7 @@ describe("ProviderRuntimeIngestion", () => {
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
     const dispatch = (command: OrchestrationCommand) => Effect.runPromise(engine.dispatch(command));
+    const runEffect = <A, E>(effect: Effect.Effect<A, E>) => runtime!.runPromise(effect);
 
     const createdAt = "2026-01-01T00:00:00.000Z";
     await dispatch({
@@ -345,6 +488,7 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       setProviderSession: provider.setSession,
       rateLimitCalls: providerRegistry.rateLimitCalls,
+      runEffect,
       drain,
     };
   }
@@ -595,6 +739,83 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("ready");
     expect(thread.session?.lastError).toBeNull();
+  });
+
+  it("projects harness refinement lifecycle on the session incarnation", async () => {
+    const harness = await createHarness();
+    const initialThread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    if (initialThread?.session === null || initialThread?.session === undefined) {
+      throw new Error("Expected seeded provider session");
+    }
+    const sessionStartedAt = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-refinement-incarnation"),
+        threadId: ThreadId.make("thread-1"),
+        session: { ...initialThread.session, startedAt: sessionStartedAt },
+        createdAt: sessionStartedAt,
+      }),
+    );
+    harness.emit({
+      type: "session.harness-refinement.updated",
+      eventId: asEventId("evt-session-refinement-unknown"),
+      provider: ProviderDriverKind.make("primeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: {
+        sessionStartedAt,
+        status: "outcome-unknown",
+      },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.session?.harnessRefinementStatus).toBe("outcome-unknown");
+    expect(
+      thread?.activities.some((activity) => activity.kind.includes("harness-refinement")),
+    ).toBe(false);
+
+    const replacementStartedAt = "2026-01-01T00:00:01.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-refinement-replacement"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "primeAgent",
+          runtimeMode: "full-access",
+          startedAt: replacementStartedAt,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: replacementStartedAt,
+        },
+        createdAt: replacementStartedAt,
+      }),
+    );
+    harness.emit({
+      type: "session.harness-refinement.updated",
+      eventId: asEventId("evt-session-refinement-delayed-old"),
+      provider: ProviderDriverKind.make("primeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: replacementStartedAt,
+      payload: {
+        sessionStartedAt: "2026-01-01T00:00:00.000Z",
+        status: "outcome-unknown",
+      },
+    });
+    await harness.drain();
+    const replacement = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(replacement?.session?.startedAt).toBe(replacementStartedAt);
+    expect(replacement?.session?.harnessRefinementStatus).toBeUndefined();
   });
 
   it("clears active turn when provider session becomes ready", async () => {
@@ -1200,6 +1421,77 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(message?.text).toBe("assistant-only final text");
     expect(message?.streaming).toBe(false);
+  });
+
+  it("persists and replaces bounded final reasoning as one provider-neutral work-log activity", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const activityId = "reasoning:primeAgent:thread-1:reasoning:turn-reasoning";
+    const finalReasoning = "r".repeat(4_000);
+    const event = {
+      type: "item.completed" as const,
+      provider: ProviderDriverKind.make("primeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("reasoning:turn-reasoning"),
+      payload: {
+        itemType: "reasoning" as const,
+        status: "completed" as const,
+        title: "Reasoning",
+        detail: finalReasoning,
+      },
+    };
+
+    const emptyActivityId = "reasoning:codex:thread-1:reasoning:empty";
+    harness.emit({
+      ...event,
+      eventId: asEventId("evt-reasoning-empty"),
+      provider: ProviderDriverKind.make("codex"),
+      itemId: asItemId("reasoning:empty"),
+      payload: {
+        itemType: "reasoning",
+        status: "completed",
+        title: "Reasoning",
+      },
+    });
+    harness.emit({ ...event, eventId: asEventId("evt-reasoning-completed") });
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => activity.id === activityId),
+    );
+    expect(
+      thread.activities.some((entry: ProviderRuntimeTestActivity) => entry.id === emptyActivityId),
+    ).toBe(false);
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === activityId,
+    );
+    expect(activity).toMatchObject({
+      tone: "info",
+      kind: "reasoning.completed",
+      summary: "Reasoning",
+      payload: {
+        itemType: "reasoning",
+        detail: finalReasoning,
+      },
+    });
+
+    harness.emit({
+      ...event,
+      eventId: asEventId("evt-reasoning-replaced"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { ...event.payload, title: "Reasoning replacement", detail: "Replacement" },
+    });
+    const replaced = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (candidate: ProviderRuntimeTestActivity) =>
+          candidate.id === activityId && candidate.summary === "Reasoning replacement",
+      ),
+    );
+    expect(
+      replaced.activities.filter(
+        (candidate: ProviderRuntimeTestActivity) => candidate.id === activityId,
+      ),
+    ).toHaveLength(1);
   });
 
   it("preserves completed tool metadata on projected tool activities", async () => {
@@ -2745,7 +3037,7 @@ describe("ProviderRuntimeIngestion", () => {
         ),
     );
 
-    const events = await Effect.runPromise(
+    const events = await harness.runEffect(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),
       ),
@@ -3168,6 +3460,43 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("replaces a context snapshot with an authoritative clear barrier", async () => {
+    const harness = await createHarness();
+    const provider = ProviderDriverKind.make("primeAgent");
+    const threadId = asThreadId("thread-1");
+
+    harness.emit({
+      type: "thread.token-usage.updated",
+      eventId: asEventId("evt-context-known"),
+      provider,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId,
+      payload: { usage: { usedTokens: 200, maxTokens: 1_000 } },
+    });
+    harness.emit({
+      type: "thread.token-usage.cleared",
+      eventId: asEventId("evt-context-cleared"),
+      provider,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId,
+      payload: { reason: "unknown" },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.cleared",
+      ),
+    );
+    const contextActivities = thread.activities.filter((activity: ProviderRuntimeTestActivity) =>
+      activity.kind.startsWith("context-window."),
+    );
+    expect(contextActivities).toHaveLength(1);
+    expect(contextActivities[0]).toMatchObject({
+      kind: "context-window.cleared",
+      payload: { reason: "unknown" },
+    });
+  });
+
   it("projects Codex camelCase token usage payloads into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -3263,6 +3592,96 @@ describe("ProviderRuntimeIngestion", () => {
       toolUses: 25,
       durationMs: 43_567,
     });
+  });
+
+  it("persists provider-reported turn cost as stable turn metadata", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-cost"),
+      provider: ProviderDriverKind.make("primeAgent"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-cost"),
+      payload: { state: "completed", totalCostUsd: 0.123456 },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "turn.cost",
+      ),
+    );
+    expect(
+      thread.activities.filter(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "turn.cost",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        id: "turn-cost:thread-1:turn-cost",
+        summary: "Reported turn cost",
+        payload: { totalCostUsd: 0.123456 },
+        turnId: "turn-cost",
+      }),
+    ]);
+  });
+
+  it("persists one safe Prime context-compaction lifecycle row", async () => {
+    const harness = await createHarness();
+    const provider = ProviderDriverKind.make("primeAgent");
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-1");
+    const itemId = ProviderItemId.make("compaction:turn-1");
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-prime-compaction-started"),
+      provider,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        itemType: "context_compaction",
+        status: "inProgress",
+        title: "PRIVATE TITLE",
+        detail: "PRIVATE INSTRUCTIONS",
+        data: { summary: "PRIVATE SUMMARY" },
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-prime-compaction-completed"),
+      provider,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        itemType: "context_compaction",
+        status: "completed",
+        title: "PRIVATE TITLE",
+        detail: "PRIVATE SUMMARY",
+        data: { error: "PRIVATE ERROR" },
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "context-compaction" && activity.summary === "Context compacted",
+      ),
+    );
+    const activities = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "context-compaction",
+    );
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      id: "context-compaction:primeAgent:thread-1:compaction:turn-1",
+      tone: "info",
+      summary: "Context compacted",
+      payload: { status: "completed" },
+    });
+    expect(JSON.stringify(activities)).not.toContain("PRIVATE");
   });
 
   it("projects compacted thread state into context compaction activities", async () => {
@@ -3662,6 +4081,101 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resolvedPayload?.answers).toEqual({
       sandbox_mode: "workspace-write",
     });
+  });
+
+  it("wakes settled threads for blocking interactions but not presentation updates", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("cmd-settle-before-session-presentation"),
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+
+    harness.emit({
+      type: "session-presentation.updated",
+      eventId: asEventId("evt-session-presentation-nonblocking"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        presentation: { kind: "widget", key: "build", lines: ["Running"] },
+      },
+    });
+    await harness.drain();
+    let thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.settledOverride).toBe("settled");
+    expect(
+      thread?.activities.some((activity) => activity.kind === "session-presentation.updated"),
+    ).toBe(true);
+
+    harness.emit({
+      type: "interaction.requested",
+      eventId: asEventId("evt-interaction-wakes-settled"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      requestId: SessionInteractionRequestId.make("interaction-wake-1"),
+      payload: {
+        request: { kind: "confirm", title: "Continue?" },
+      },
+    });
+    await harness.drain();
+    thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.settledOverride).toBeNull();
+    expect(thread?.activities.some((activity) => activity.kind === "interaction.requested")).toBe(
+      true,
+    );
+  });
+
+  it("flushes and finalizes buffered assistant text before a blocking interaction", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-interaction-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interaction-flush"),
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-interaction-assistant-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interaction-flush"),
+      itemId: asItemId("item-interaction-flush"),
+      payload: { streamKind: "assistant_text", delta: "visible before interaction" },
+    });
+    harness.emit({
+      type: "interaction.requested",
+      eventId: asEventId("evt-interaction-requested-flush"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interaction-flush"),
+      requestId: SessionInteractionRequestId.make("interaction-flush-1"),
+      payload: { request: { kind: "input", title: "Add detail" } },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    const message = thread?.messages.find(
+      (entry) => entry.id === "assistant:item-interaction-flush",
+    );
+    expect(message).toMatchObject({ text: "visible before interaction", streaming: false });
   });
 
   it("continues processing runtime events after a single event handler failure", async () => {

@@ -1111,11 +1111,13 @@ export const makeCodexSessionRuntime = (
         if (!child) {
           return false;
         }
+        const liveChildTurnId = (yield* Ref.get(collabChildLiveTurnsRef)).get(child.agentThreadId);
         const childIdentity = {
           agentThreadId: child.agentThreadId,
           ...(child.nickname ? { nickname: child.nickname } : {}),
           ...(child.role ? { role: child.role } : {}),
           ...(child.agentPath ? { agentPath: child.agentPath } : {}),
+          ...(liveChildTurnId ? { toolUseId: liveChildTurnId } : {}),
         };
         switch (notification.method) {
           case "turn/started": {
@@ -1135,7 +1137,10 @@ export const makeCodexSessionRuntime = (
               threadId: options.threadId,
               ...(child.spawnTurnId ? { turnId: child.spawnTurnId } : {}),
               method: "collabAgent/turnStarted",
-              payload: childIdentity,
+              payload: {
+                ...childIdentity,
+                ...(childTurnId ? { toolUseId: childTurnId } : {}),
+              },
             });
             return true;
           }

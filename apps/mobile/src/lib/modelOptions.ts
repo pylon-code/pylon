@@ -1,7 +1,12 @@
 import type {
   ModelCapabilities,
   ModelSelection,
+  RuntimeMode,
   ServerConfig as T3ServerConfig,
+} from "@t3tools/contracts";
+import {
+  getServerProviderSupportedRuntimeModes,
+  resolveServerProviderRuntimeMode,
 } from "@t3tools/contracts";
 import {
   buildProviderOptionSelectionsFromDescriptors,
@@ -15,6 +20,8 @@ export type ModelOption = {
   readonly providerKey: string;
   readonly providerLabel: string;
   readonly providerDriver: string;
+  readonly supportedRuntimeModes?: ReadonlyArray<RuntimeMode>;
+  readonly requiresNewThreadForModelChange?: boolean;
   readonly isDefault: boolean;
   readonly isLegacy: boolean;
   readonly capabilities: ModelCapabilities | null;
@@ -35,6 +42,7 @@ function providerDisplayLabel(provider: {
   if (provider.displayName) return provider.displayName;
   if (provider.driver === "codex") return "Codex";
   if (provider.driver === "claudeAgent") return "Claude";
+  if (provider.driver === "primeAgent") return "Prime Agent";
   return provider.instanceId;
 }
 
@@ -104,6 +112,40 @@ export function resolveDefaultableModelSelection(
   return model?.isLegacy === true ? null : usable;
 }
 
+export function getModelSelectionProvider(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection | null | undefined,
+) {
+  return (
+    config?.providers.find((provider) => provider.instanceId === selection?.instanceId) ?? null
+  );
+}
+
+export function getModelSelectionSupportedRuntimeModes(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection | null | undefined,
+): ReadonlyArray<RuntimeMode> {
+  return getServerProviderSupportedRuntimeModes(getModelSelectionProvider(config, selection));
+}
+
+export function resolveModelSelectionRuntimeMode(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection | null | undefined,
+  runtimeMode: RuntimeMode,
+): RuntimeMode {
+  return resolveServerProviderRuntimeMode(
+    getModelSelectionProvider(config, selection),
+    runtimeMode,
+  );
+}
+
+export function showModelSelectionInteractionModeToggle(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection | null | undefined,
+): boolean {
+  return getModelSelectionProvider(config, selection)?.showInteractionModeToggle ?? true;
+}
+
 export function buildModelOptions(
   config: T3ServerConfig | null | undefined,
   fallbackModelSelection: ModelSelection | null,
@@ -125,6 +167,8 @@ export function buildModelOptions(
         providerKey: provider.instanceId,
         providerLabel,
         providerDriver: provider.driver,
+        supportedRuntimeModes: getServerProviderSupportedRuntimeModes(provider),
+        requiresNewThreadForModelChange: provider.requiresNewThreadForModelChange === true,
         isDefault: model.isDefault === true,
         isLegacy: model.isLegacy === true,
         capabilities: model.capabilities,
@@ -148,14 +192,21 @@ export function buildModelOptions(
         selection: normalizeSelectionOptions(fallbackModelSelection, existing.capabilities),
       });
     } else {
-      const providerLabel = fallbackModelSelection.instanceId;
+      const provider = config?.providers.find(
+        (candidate) => candidate.instanceId === fallbackModelSelection.instanceId,
+      );
+      const providerLabel = provider
+        ? providerDisplayLabel(provider)
+        : fallbackModelSelection.instanceId;
       options.set(key, {
         key,
         label: fallbackModelSelection.model,
         subtitle: providerLabel,
         providerKey: fallbackModelSelection.instanceId,
         providerLabel,
-        providerDriver: fallbackModelSelection.instanceId,
+        providerDriver: provider?.driver ?? fallbackModelSelection.instanceId,
+        supportedRuntimeModes: getServerProviderSupportedRuntimeModes(provider),
+        requiresNewThreadForModelChange: provider?.requiresNewThreadForModelChange === true,
         isDefault: false,
         isLegacy: false,
         capabilities: null,

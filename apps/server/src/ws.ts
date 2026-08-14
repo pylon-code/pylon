@@ -50,6 +50,10 @@ import {
   AssetWorkspaceContextResolutionError,
   RpcClientId,
   EnvironmentAuthorizationError,
+  ProviderCancelSessionAgentError,
+  ProviderWatchSessionAgentActivityError,
+  ProviderSessionAgentDepthError,
+  ProviderSessionResourcesReloadError,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -79,7 +83,18 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
+import { toProviderMessageSessionAgentError } from "./provider/providerMessageSessionAgentRpcError.ts";
+import { toProviderSessionCompactionError } from "./provider/providerSessionCompactionRpcError.ts";
+import { toProviderRefineSessionHarnessError } from "./provider/providerRefineSessionHarnessRpcError.ts";
+import { toProviderSessionInputQueueError } from "./provider/providerSessionInputQueueRpcError.ts";
+import { toProviderRespondToInteractionError } from "./provider/providerInteractionResponseRpcError.ts";
+import {
+  toProviderAskSessionSideQuestionError,
+  toProviderCancelSessionSideQuestionError,
+} from "./provider/providerSessionSideQuestionRpcError.ts";
+import { makeSessionSideQuestionOwnership } from "./provider/sessionSideQuestionOwnership.ts";
 import {
   ProviderLoginCoordinator,
   ProviderLoginCoordinatorLive,
@@ -374,6 +389,8 @@ const makeWsRpcLayer = (
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const providerService = yield* ProviderService.ProviderService;
+      const sideQuestionOwnership = makeSessionSideQuestionOwnership();
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const providerLogin = yield* ProviderLoginCoordinator;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
@@ -1453,6 +1470,239 @@ const makeWsRpcLayer = (
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.providerAskSessionSideQuestion]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerAskSessionSideQuestion,
+            Effect.sync(() => sideQuestionOwnership.register(input.threadId, input.requestId)).pipe(
+              Effect.andThen(providerService.askSessionSideQuestion(input)),
+              Effect.ensuring(
+                Effect.sync(() =>
+                  sideQuestionOwnership.unregister(input.threadId, input.requestId),
+                ),
+              ),
+              Effect.mapError(toProviderAskSessionSideQuestionError),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerCancelSessionSideQuestion]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerCancelSessionSideQuestion,
+            Effect.suspend(() =>
+              sideQuestionOwnership.match(input.threadId, input.requestId, {
+                owned: () =>
+                  providerService
+                    .cancelSessionSideQuestion(input)
+                    .pipe(Effect.mapError(toProviderCancelSessionSideQuestionError)),
+                unowned: () =>
+                  Effect.succeed({
+                    requestId: input.requestId,
+                    disposition: "already-settled" as const,
+                  }),
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerRespondToInteraction]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerRespondToInteraction,
+            providerService
+              .respondToInteraction(input)
+              .pipe(Effect.mapError(toProviderRespondToInteractionError)),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerReloadSessionResources]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerReloadSessionResources,
+            providerService.reloadSessionResources(input).pipe(
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderUnsupportedError" ||
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "unsupported"
+                    : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                        error._tag === "ProviderAdapterSessionClosedError" ||
+                        error._tag === "ProviderSessionNotFoundError" ||
+                        error._tag === "ProviderValidationError"
+                      ? "session-not-ready"
+                      : error._tag === "ProviderAdapterValidationError"
+                        ? "busy"
+                        : "reload-failed";
+                return new ProviderSessionResourcesReloadError({ reason });
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerCancelSessionAgent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerCancelSessionAgent,
+            providerService.cancelSessionAgent(input).pipe(
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderUnsupportedError" ||
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "unsupported"
+                    : error._tag === "ProviderAdapterValidationError"
+                      ? "agent-not-active"
+                      : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                          error._tag === "ProviderAdapterSessionClosedError" ||
+                          error._tag === "ProviderSessionNotFoundError" ||
+                          error._tag === "ProviderValidationError"
+                        ? "session-not-ready"
+                        : "request-failed";
+                return new ProviderCancelSessionAgentError({ reason });
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerMessageSessionAgent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerMessageSessionAgent,
+            providerService
+              .messageSessionAgent(input)
+              .pipe(Effect.mapError(toProviderMessageSessionAgentError)),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerWatchSessionAgentActivity]: (input) =>
+          observeRpcStream(
+            WS_METHODS.providerWatchSessionAgentActivity,
+            providerService.watchSessionAgentActivity(input).pipe(
+              Stream.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderUnsupportedError" ||
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "unsupported"
+                    : error._tag === "ProviderAdapterValidationError"
+                      ? error.reason === "busy"
+                        ? "limit-reached"
+                        : "agent-not-active"
+                      : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                          error._tag === "ProviderAdapterSessionClosedError" ||
+                          error._tag === "ProviderSessionNotFoundError" ||
+                          error._tag === "ProviderValidationError"
+                        ? "session-not-ready"
+                        : "request-failed";
+                return new ProviderWatchSessionAgentActivityError({ reason });
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerGetSessionAgentDepth]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerGetSessionAgentDepth,
+            providerService.getSessionAgentDepth(input).pipe(
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderUnsupportedError" ||
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "unsupported"
+                    : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                        error._tag === "ProviderAdapterSessionClosedError" ||
+                        error._tag === "ProviderSessionNotFoundError" ||
+                        error._tag === "ProviderValidationError"
+                      ? "session-not-ready"
+                      : error._tag === "ProviderAdapterValidationError"
+                        ? "busy"
+                        : "request-failed";
+                return new ProviderSessionAgentDepthError({ reason });
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerSetSessionAgentDepth]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerSetSessionAgentDepth,
+            providerService.setSessionAgentDepth(input).pipe(
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "policy-forbidden"
+                    : error._tag === "ProviderUnsupportedError"
+                      ? "unsupported"
+                      : error._tag === "ProviderValidationError"
+                        ? error.reason === "invalid-input"
+                          ? "invalid-depth"
+                          : "session-not-ready"
+                        : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                            error._tag === "ProviderAdapterSessionClosedError" ||
+                            error._tag === "ProviderSessionNotFoundError"
+                          ? "session-not-ready"
+                          : error._tag === "ProviderAdapterValidationError"
+                            ? error.reason === "invalid-input"
+                              ? "invalid-depth"
+                              : "busy"
+                            : "request-failed";
+                return new ProviderSessionAgentDepthError({ reason });
+              }),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerGetSessionInputQueue]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerGetSessionInputQueue,
+            providerService
+              .getSessionInputQueue(input)
+              .pipe(Effect.mapError(toProviderSessionInputQueueError)),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerClearSessionInputQueue]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerClearSessionInputQueue,
+            providerService
+              .clearSessionInputQueue(input)
+              .pipe(Effect.mapError(toProviderSessionInputQueueError)),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerSetSessionInputQueueMode]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerSetSessionInputQueueMode,
+            providerService
+              .setSessionInputQueueMode(input)
+              .pipe(Effect.mapError(toProviderSessionInputQueueError)),
+            { "rpc.aggregate": "provider" },
+          ),
+
+        [WS_METHODS.providerGetSessionCompaction]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerGetSessionCompaction,
+            providerService
+              .getSessionCompaction(input)
+              .pipe(Effect.mapError(toProviderSessionCompactionError)),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerCompactSession]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerCompactSession,
+            providerService
+              .compactSession(input)
+              .pipe(Effect.mapError(toProviderSessionCompactionError)),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerAbortSessionCompaction]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerAbortSessionCompaction,
+            providerService
+              .abortSessionCompaction(input)
+              .pipe(Effect.mapError(toProviderSessionCompactionError)),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerSetSessionAutoCompaction]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerSetSessionAutoCompaction,
+            providerService
+              .setSessionAutoCompaction(input)
+              .pipe(Effect.mapError(toProviderSessionCompactionError)),
+            { "rpc.aggregate": "provider" },
+          ),
+
+        [WS_METHODS.providerRefineSessionHarness]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerRefineSessionHarness,
+            providerService
+              .refineSessionHarness(input)
+              .pipe(Effect.mapError(toProviderRefineSessionHarnessError)),
+            { "rpc.aggregate": "provider" },
+          ),
+
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,

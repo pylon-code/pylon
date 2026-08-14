@@ -113,6 +113,11 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import {
+  ProviderAdapterUnsupportedOperationError,
+  ProviderValidationError,
+} from "./provider/Errors.ts";
+import * as ProviderService from "./provider/Services/ProviderService.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -385,6 +390,7 @@ const buildAppUnderTest = (options?: {
   layers?: {
     keybindings?: Partial<Keybindings.Keybindings["Service"]>;
     providerRegistry?: Partial<ProviderRegistry.ProviderRegistry["Service"]>;
+    providerService?: Partial<ProviderService.ProviderService["Service"]>;
     serverSettings?: Partial<ServerSettings.ServerSettingsService["Service"]>;
     externalLauncher?: Partial<ExternalLauncher.ExternalLauncher["Service"]>;
     vcsDriver?: Partial<VcsDriver.VcsDriver["Service"]>;
@@ -626,18 +632,25 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getProviders: Effect.succeed([]),
-          refresh: () => Effect.succeed([]),
-          refreshInstance: () => Effect.succeed([]),
-          getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
-            Effect.succeed(
-              makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
-            ),
-          setProviderMaintenanceActionState: () => Effect.succeed([]),
-          streamChanges: Stream.empty,
-          ...options?.layers?.providerRegistry,
-        }),
+        Layer.mergeAll(
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([]),
+            refresh: () => Effect.succeed([]),
+            refreshInstance: () => Effect.succeed([]),
+            getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+              Effect.succeed(
+                makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
+              ),
+            setProviderMaintenanceActionState: () => Effect.succeed([]),
+            streamChanges: Stream.empty,
+            ...options?.layers?.providerRegistry,
+          }),
+          Layer.mock(ProviderService.ProviderService)({
+            reloadSessionResources: () =>
+              Effect.succeed({ available: true, skills: [], prompts: [], commands: [] }),
+            ...options?.layers?.providerService,
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mock(ServerSettings.ServerSettingsService)({
@@ -3527,7 +3540,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  for (const desktopOrigin of ["t3code://app", "t3code-dev://app"]) {
+  for (const desktopOrigin of [
+    "pylon-code://app",
+    "pylon-code-dev://app",
+    "t3code://app",
+    "t3code-dev://app",
+  ]) {
     it.effect(`allows credentialed preflights from ${desktopOrigin} in development`, () =>
       Effect.gen(function* () {
         yield* buildAppUnderTest({
@@ -4010,6 +4028,219 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.auth.policy, "desktop-managed-local");
       assert.equal(response.shellResumeCompletionMarker, true);
       assert.equal(response.threadResumeCompletionMarker, true);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes authenticated session resource reloads through the provider service", () =>
+    Effect.gen(function* () {
+      let observed: { readonly threadId: ThreadId } | undefined;
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            reloadSessionResources: ({ threadId }) =>
+              Effect.sync(() => {
+                observed = { threadId };
+                return {
+                  available: true as const,
+                  skills: [{ name: "effect-server", description: "Effect guidance" }],
+                  prompts: [],
+                  commands: [],
+                };
+              }),
+          },
+        },
+      });
+      const { cookie } = yield* bootstrapBrowserSession();
+      assert.isDefined(cookie);
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.providerReloadSessionResources]({ threadId: defaultThreadId }),
+        ),
+      );
+
+      assert.deepEqual(observed, { threadId: defaultThreadId });
+      assert.deepEqual(result, {
+        available: true,
+        skills: [{ name: "effect-server", description: "Effect guidance" }],
+        prompts: [],
+        commands: [],
+      });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes authenticated session agent depth reads and writes", () =>
+    Effect.gen(function* () {
+      let observedDepth: number | undefined;
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            getSessionAgentDepth: ({ threadId }) =>
+              Effect.succeed({
+                maxDepth: threadId === defaultThreadId ? 2 : 0,
+                source: "session" as const,
+                writable: true,
+                settable: true,
+                maxSettableDepth: 4,
+              }),
+            setSessionAgentDepth: ({ maxDepth }) =>
+              Effect.sync(() => {
+                observedDepth = maxDepth;
+                return {
+                  maxDepth,
+                  source: "session" as const,
+                  writable: true,
+                  settable: true,
+                  maxSettableDepth: 4,
+                };
+              }),
+          },
+        },
+      });
+      const { cookie } = yield* bootstrapBrowserSession();
+      assert.isDefined(cookie);
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+
+      const [current, updated] = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.all([
+            client[WS_METHODS.providerGetSessionAgentDepth]({ threadId: defaultThreadId }),
+            client[WS_METHODS.providerSetSessionAgentDepth]({
+              threadId: defaultThreadId,
+              maxDepth: 3,
+            }),
+          ]),
+        ),
+      );
+
+      assert.equal(current.maxDepth, 2);
+      assert.equal(updated.maxDepth, 3);
+      assert.equal(observedDepth, 3);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("maps invalid agent depth writes to the typed RPC reason", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            setSessionAgentDepth: () =>
+              Effect.fail(
+                new ProviderValidationError({
+                  operation: "ProviderService.setSessionAgentDepth",
+                  reason: "invalid-input",
+                  issue: "Agent depth is outside the supported range.",
+                }),
+              ),
+          },
+        },
+      });
+      const { cookie } = yield* bootstrapBrowserSession();
+      assert.isDefined(cookie);
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.providerSetSessionAgentDepth]({
+              threadId: defaultThreadId,
+              maxDepth: 5,
+            }),
+          ),
+        ),
+      );
+
+      assert.equal(error._tag, "ProviderSessionAgentDepthError");
+      if (error._tag === "ProviderSessionAgentDepthError") {
+        assert.equal(error.reason, "invalid-depth");
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("maps policy-fixed agent depth writes to the typed RPC reason", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            setSessionAgentDepth: () =>
+              Effect.fail(
+                new ProviderAdapterUnsupportedOperationError({
+                  provider: "primeAgent",
+                  operation: "setSessionAgentDepth",
+                }),
+              ),
+          },
+        },
+      });
+      const { cookie } = yield* bootstrapBrowserSession();
+      assert.isDefined(cookie);
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.providerSetSessionAgentDepth]({
+              threadId: defaultThreadId,
+              maxDepth: 1,
+            }),
+          ),
+        ),
+      );
+
+      assert.equal(error._tag, "ProviderSessionAgentDepthError");
+      if (error._tag === "ProviderSessionAgentDepthError") {
+        assert.equal(error.reason, "policy-forbidden");
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("maps unsupported session resource reloads to the typed RPC reason", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            reloadSessionResources: () =>
+              Effect.fail(
+                new ProviderAdapterUnsupportedOperationError({
+                  provider: "primeAgent",
+                  operation: "reloadSessionResources",
+                }),
+              ),
+          },
+        },
+      });
+      const { cookie } = yield* bootstrapBrowserSession();
+      assert.isDefined(cookie);
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.providerReloadSessionResources]({ threadId: defaultThreadId }),
+          ),
+        ),
+      );
+
+      assert.equal(error._tag, "ProviderSessionResourcesReloadError");
+      if (error._tag === "ProviderSessionResourcesReloadError") {
+        assert.equal(error.reason, "unsupported");
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

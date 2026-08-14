@@ -7,13 +7,20 @@ import {
 } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
-import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  type ProjectScript,
+  type ProviderAskSessionSideQuestionResult,
+  type ProviderSessionSideQuestionRequestId,
+} from "@t3tools/contracts";
+import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { Platform, ScrollView, View } from "react-native";
+import { Alert, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { useEnvironmentQuery } from "../../state/query";
@@ -214,6 +221,32 @@ function ThreadRouteContent(
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
+  const reloadThreadSessionResources = useAtomCommand(
+    threadEnvironment.reloadSessionResources,
+    "session resource reload",
+  );
+  const refineThreadSessionHarness = useAtomCommand(threadEnvironment.refineSessionHarness, {
+    label: "session harness refinement",
+    reportDefect: false,
+    reportFailure: false,
+  });
+  const askThreadSessionSideQuestion = useAtomCommand(threadEnvironment.askSessionSideQuestion, {
+    label: "session side question",
+    reportDefect: false,
+    reportFailure: false,
+  });
+  const cancelThreadSessionSideQuestion = useAtomCommand(
+    threadEnvironment.cancelSessionSideQuestion,
+    {
+      label: "session side question cancellation",
+      reportDefect: false,
+      reportFailure: false,
+    },
+  );
+  const setThreadSessionAgentDepth = useAtomCommand(
+    threadEnvironment.setSessionAgentDepth,
+    "session agent depth update",
+  );
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -497,6 +530,66 @@ function ThreadRouteContent(
     });
   }, [interruptThreadTurn, selectedThread]);
 
+  const handleReloadSessionResources = useCallback(async () => {
+    if (!selectedThread) return;
+    await reloadThreadSessionResources({
+      environmentId: selectedThread.environmentId,
+      input: { threadId: selectedThread.id },
+    });
+  }, [reloadThreadSessionResources, selectedThread]);
+
+  const handleRefineSessionHarness = useCallback(async () => {
+    if (!selectedThread) return null;
+    const result = await refineThreadSessionHarness({
+      environmentId: selectedThread.environmentId,
+      input: { threadId: selectedThread.id },
+    });
+    return result._tag === "Success" ? result.value : null;
+  }, [refineThreadSessionHarness, selectedThread]);
+
+  const handleAskSessionSideQuestion = useCallback(
+    async (
+      requestId: ProviderSessionSideQuestionRequestId,
+      question: string,
+    ): Promise<ProviderAskSessionSideQuestionResult | null> => {
+      if (!selectedThread) return null;
+      const result = await askThreadSessionSideQuestion({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, requestId, question },
+      });
+      return result._tag === "Success" ? result.value : null;
+    },
+    [askThreadSessionSideQuestion, selectedThread],
+  );
+
+  const handleCancelSessionSideQuestion = useCallback(
+    async (requestId: ProviderSessionSideQuestionRequestId): Promise<void> => {
+      if (!selectedThread) return;
+      await cancelThreadSessionSideQuestion({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, requestId },
+      });
+    },
+    [cancelThreadSessionSideQuestion, selectedThread],
+  );
+
+  const handleSetSessionAgentDepth = useCallback(
+    async (maxDepth: number) => {
+      if (!selectedThread) return;
+      const result = await setThreadSessionAgentDepth({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, maxDepth },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        Alert.alert(
+          "Agent depth not changed",
+          "Pylon could not update this session. Confirm the session is idle and try again.",
+        );
+      }
+    },
+    [selectedThread, setThreadSessionAgentDepth],
+  );
+
   const handleOpenTerminal = useCallback(
     (nextTerminalId?: string | null) => {
       terminalDebugLog("terminal-menu:open-existing", {
@@ -773,6 +866,15 @@ function ThreadRouteContent(
           connectionError={routeConnectionError}
           environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
           selectedThreadFeed={composer.selectedThreadFeed}
+          sessionAgents={composer.selectedThreadAgents}
+          contextWindow={composer.selectedThreadContextWindow}
+          sessionResources={composer.selectedThreadResources}
+          sessionAgentDepth={composer.selectedThreadAgentDepth}
+          sessionInputQueue={composer.selectedThreadInputQueue}
+          sessionGoal={composer.selectedThreadGoal}
+          sessionCompaction={composer.selectedThreadCompaction}
+          sessionCompactionScopeKey={composer.sessionCompactionScopeKey}
+          sessionCompactionPendingAction={composer.sessionCompactionPendingAction}
           activeWorkStartedAt={composer.activeWorkStartedAt}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
@@ -780,6 +882,11 @@ function ThreadRouteContent(
           activePendingUserInputDrafts={requests.activePendingUserInputDrafts}
           activePendingUserInputAnswers={requests.activePendingUserInputAnswers}
           respondingUserInputId={requests.respondingUserInputId}
+          activePendingInteraction={requests.activePendingInteraction}
+          sessionInteractionPresentation={requests.sessionInteractionPresentation}
+          interactionSubmitting={requests.interactionSubmitting}
+          interactionError={requests.interactionError}
+          interactionCanRetry={requests.interactionCanRetry}
           draftMessage={composer.draftMessage}
           draftAttachments={composer.draftAttachments}
           connectionStateLabel={routeConnectionState}
@@ -789,7 +896,7 @@ function ThreadRouteContent(
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
           threadCwd={selectedThreadCwd}
-          selectedThreadQueueCount={composer.selectedThreadQueueCount}
+          localOutboxCount={composer.selectedThreadQueueCount}
           layoutVariant={layout.variant}
           usesAutomaticContentInsets={usesNativeHeaderGlass}
           onOpenConnectionEditor={handleOpenConnectionEditor}
@@ -799,7 +906,18 @@ function ThreadRouteContent(
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
+          onReloadSessionResources={handleReloadSessionResources}
+          onRefineSessionHarness={handleRefineSessionHarness}
+          onAskSessionSideQuestion={handleAskSessionSideQuestion}
+          onCancelSessionSideQuestion={handleCancelSessionSideQuestion}
+          onSetSessionAgentDepth={handleSetSessionAgentDepth}
           onSendMessage={composer.onSendMessage}
+          onQueueFollowUp={composer.onQueueFollowUp}
+          onClearSessionInputQueue={composer.onClearSessionInputQueue}
+          onSetSessionInputQueueMode={composer.onSetSessionInputQueueMode}
+          onRunSessionCompactionAction={composer.onRunSessionCompactionAction}
+          onCancelSessionAgent={composer.onCancelSessionAgent}
+          onMessageSessionAgent={composer.onMessageSessionAgent}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
           onUpdateThreadRuntimeMode={composer.onUpdateRuntimeMode}
@@ -808,6 +926,8 @@ function ThreadRouteContent(
           onSelectUserInputOption={requests.onSelectUserInputOption}
           onChangeUserInputCustomAnswer={requests.onChangeUserInputCustomAnswer}
           onSubmitUserInput={requests.onSubmitUserInput}
+          onRespondToInteraction={requests.onRespondToInteraction}
+          onRetryInteraction={requests.onRetryInteraction}
         />
       </View>
     </>

@@ -31,9 +31,12 @@ import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import {
   buildModelOptions,
+  getModelSelectionSupportedRuntimeModes,
   groupByProvider,
   resolveDefaultableModelSelection,
+  resolveModelSelectionRuntimeMode,
   resolveSelectableModelSelection,
+  showModelSelectionInteractionModeToggle,
 } from "../../lib/modelOptions";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -140,6 +143,7 @@ type NewTaskFlowContextValue = {
   readonly hasMoreBranches: boolean;
   readonly availableBranches: ReadonlyArray<VcsRef>;
   readonly runtimeMode: RuntimeMode;
+  readonly supportedRuntimeModes: ReadonlyArray<RuntimeMode>;
   readonly interactionMode: ProviderInteractionMode;
   readonly planModeEnabled: boolean;
   readonly expandedProvider: string | null;
@@ -398,10 +402,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     draftStartFromOrigin ??
     selectedEnvironmentServerConfig?.settings.newWorktreesStartFromOrigin ??
     true;
-  const runtimeMode = selectedProjectDraft.runtimeMode ?? DEFAULT_RUNTIME_MODE;
-  const interactionMode = planModeEnabled
-    ? (selectedProjectDraft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE)
-    : DEFAULT_PROVIDER_INTERACTION_MODE;
+  const draftRuntimeMode = selectedProjectDraft.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+  const draftInteractionMode =
+    selectedProjectDraft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
 
   // Stored selections only count while their provider is usable on the
   // server; otherwise the server's default model wins instead of silently
@@ -434,6 +437,19 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const selectedModelKey = selectedModel
     ? `${selectedModel.instanceId}:${selectedModel.model}`
     : null;
+  const runtimeMode = resolveModelSelectionRuntimeMode(
+    selectedEnvironmentServerConfig,
+    selectedModel,
+    draftRuntimeMode,
+  );
+  const supportedRuntimeModes = getModelSelectionSupportedRuntimeModes(
+    selectedEnvironmentServerConfig,
+    selectedModel,
+  );
+  const showInteractionModeToggle =
+    planModeEnabled &&
+    showModelSelectionInteractionModeToggle(selectedEnvironmentServerConfig, selectedModel);
+  const interactionMode = showInteractionModeToggle ? draftInteractionMode : "default";
 
   const selectedModelOption =
     modelOptions.find(
@@ -460,11 +476,23 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       if (!option) {
         return;
       }
+      const modelSelection = options ? { ...option.selection, options } : option.selection;
       updateComposerDraftSettings(selectedProjectDraftKey, {
-        modelSelection: options ? { ...option.selection, options } : option.selection,
+        modelSelection,
+        runtimeMode: resolveModelSelectionRuntimeMode(
+          selectedEnvironmentServerConfig,
+          modelSelection,
+          draftRuntimeMode,
+        ),
+        ...(!showModelSelectionInteractionModeToggle(
+          selectedEnvironmentServerConfig,
+          modelSelection,
+        )
+          ? { interactionMode: "default" as const }
+          : {}),
       });
     },
-    [modelOptions, selectedProjectDraftKey],
+    [draftRuntimeMode, modelOptions, selectedEnvironmentServerConfig, selectedProjectDraftKey],
   );
   const setSelectedModelOptions = useCallback(
     (options: ReadonlyArray<ProviderOptionSelection> | undefined) => {
@@ -847,13 +875,24 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         text,
         attachments: draft.attachments,
         modelSelection: draftModelSelection,
-        runtimeMode: draft.runtimeMode ?? DEFAULT_RUNTIME_MODE,
-        interactionMode: resolvePendingTaskInteractionMode({
-          preferenceLoaded: planModePreferenceLoaded,
-          planModeEnabled,
-          draftInteractionMode: draft.interactionMode,
-          queuedInteractionMode: editingPendingTask?.interactionMode,
-        }),
+        runtimeMode: resolveModelSelectionRuntimeMode(
+          selectedEnvironmentServerConfig,
+          draftModelSelection,
+          draft.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+        ),
+        interactionMode:
+          planModeEnabled &&
+          showModelSelectionInteractionModeToggle(
+            selectedEnvironmentServerConfig,
+            draftModelSelection,
+          )
+            ? resolvePendingTaskInteractionMode({
+                preferenceLoaded: planModePreferenceLoaded,
+                planModeEnabled,
+                draftInteractionMode: draft.interactionMode,
+                queuedInteractionMode: editingPendingTask?.interactionMode,
+              })
+            : DEFAULT_PROVIDER_INTERACTION_MODE,
         creation: {
           projectId: selectedProject.id,
           ...(projectTitle !== undefined ? { projectTitle } : {}),
@@ -997,6 +1036,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       hasMoreBranches,
       availableBranches,
       runtimeMode,
+      supportedRuntimeModes,
       interactionMode,
       planModeEnabled,
       expandedProvider,
@@ -1059,6 +1099,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       replaceAttachments,
       reset,
       runtimeMode,
+      supportedRuntimeModes,
       selectedBranchName,
       hasMoreBranches,
       selectedEnvironmentId,

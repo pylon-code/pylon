@@ -61,6 +61,35 @@ describe("contextWindow", () => {
     });
   });
 
+  it("treats a newer clear activity as an authoritative barrier", () => {
+    const snapshot = deriveLatestContextWindowSnapshot([
+      makeActivity("activity-1", "context-window.updated", {
+        usedTokens: 14_000,
+        maxTokens: 258_000,
+      }),
+      makeActivity("activity-2", "context-window.cleared", { reason: "unknown" }),
+    ]);
+
+    expect(snapshot).toBeNull();
+  });
+
+  it("normalizes invalid optional counts and model windows", () => {
+    const snapshot = deriveLatestContextWindowSnapshot([
+      makeActivity("activity-1", "context-window.updated", {
+        usedTokens: 14_000,
+        maxTokens: -1,
+        totalProcessedTokens: -3,
+      }),
+    ]);
+
+    expect(snapshot).toMatchObject({
+      usedTokens: 14_000,
+      maxTokens: null,
+      totalProcessedTokens: null,
+      usedPercentage: null,
+    });
+  });
+
   it("formats compact token counts", () => {
     expect(formatContextWindowTokens(999)).toBe("999");
     expect(formatContextWindowTokens(1400)).toBe("1.4k");

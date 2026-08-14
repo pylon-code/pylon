@@ -19,6 +19,7 @@ import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -55,6 +56,7 @@ type ProviderIntentEvent = Extract<
       | "thread.meta-updated"
       | "thread.runtime-mode-set"
       | "thread.turn-start-requested"
+      | "thread.input-queue-follow-up-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
@@ -65,6 +67,16 @@ type ProviderIntentEvent = Extract<
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+export function providerFollowUpInputFromMessage(message: {
+  readonly text: string;
+  readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
+}): { readonly input?: string; readonly attachments?: ReadonlyArray<ChatAttachment> } {
+  return {
+    ...(message.text.trim().length === 0 ? {} : { input: message.text }),
+    ...(message.attachments === undefined ? {} : { attachments: message.attachments }),
+  };
 }
 
 function mapProviderSessionStatusToOrchestrationStatus(
@@ -342,6 +354,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly kind:
       | "provider.turn.start.failed"
+      | "provider.input-queue.follow-up.failed"
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
@@ -651,6 +664,8 @@ const make = Effect.gen(function* () {
             providerName: session.provider,
             providerInstanceId: session.providerInstanceId,
             runtimeMode: desiredRuntimeMode,
+            ...(session.restored === true ? { restored: true } : {}),
+            startedAt: session.createdAt,
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
             lastError: session.lastError ?? null,
@@ -1184,6 +1199,40 @@ const make = Effect.gen(function* () {
       .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
   });
 
+  const processInputQueueFollowUpRequested = Effect.fn("processInputQueueFollowUpRequested")(
+    function* (
+      event: Extract<ProviderIntentEvent, { type: "thread.input-queue-follow-up-requested" }>,
+    ) {
+      const thread = yield* resolveThread(event.payload.threadId);
+      const message = thread?.messages.find((entry) => entry.id === event.payload.messageId);
+      if (!thread || !message || message.role !== "user") {
+        return yield* appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.input-queue.follow-up.failed",
+          summary: "Follow-up was not queued",
+          detail: "The follow-up message could not be resolved.",
+          turnId: thread?.latestTurn?.turnId ?? null,
+          createdAt: event.payload.createdAt,
+        });
+      }
+      const result = yield* providerService
+        .followUp({
+          threadId: event.payload.threadId,
+          ...providerFollowUpInputFromMessage(message),
+        })
+        .pipe(Effect.exit);
+      if (Exit.isSuccess(result)) return;
+      yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.input-queue.follow-up.failed",
+        summary: "Follow-up was not queued",
+        detail: formatFailureDetail(result.cause),
+        turnId: thread.latestTurn?.turnId ?? null,
+        createdAt: event.payload.createdAt,
+      });
+    },
+  );
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
@@ -1318,6 +1367,11 @@ const make = Effect.gen(function* () {
           ? { providerInstanceId: thread.session.providerInstanceId }
           : {}),
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+        ...(thread.session?.restored === true ? { restored: true } : {}),
+        ...(thread.session?.startedAt !== undefined ? { startedAt: thread.session.startedAt } : {}),
+        ...(thread.session?.harnessRefinementStatus !== undefined
+          ? { harnessRefinementStatus: thread.session.harnessRefinementStatus }
+          : {}),
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
         updatedAt: now,
@@ -1356,6 +1410,9 @@ const make = Effect.gen(function* () {
       }
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
+        return;
+      case "thread.input-queue-follow-up-requested":
+        yield* processInputQueueFollowUpRequested(event);
         return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
@@ -1404,6 +1461,7 @@ const make = Effect.gen(function* () {
         (event.type === "thread.meta-updated" && event.payload.regenerateTitle === true) ||
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
+        event.type === "thread.input-queue-follow-up-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||

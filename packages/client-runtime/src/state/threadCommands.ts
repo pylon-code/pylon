@@ -1,11 +1,17 @@
+import { WS_METHODS } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
 
-import { createAtomCommandScheduler, createEnvironmentCommand } from "./runtime.ts";
+import {
+  createAtomCommandScheduler,
+  createEnvironmentCommand,
+  createEnvironmentRpcCommand,
+} from "./runtime.ts";
 import {
   type ArchiveThreadInput,
   type CreateThreadInput,
   type DeleteThreadInput,
+  type FollowUpThreadInputQueueInput,
   type InterruptThreadTurnInput,
   type RespondToThreadApprovalInput,
   type RespondToThreadUserInputInput,
@@ -26,6 +32,7 @@ import {
   archiveThread,
   createThread,
   deleteThread,
+  followUpThreadInputQueue,
   interruptThreadTurn,
   respondToThreadApproval,
   respondToThreadUserInput,
@@ -50,6 +57,7 @@ export type {
   ArchiveThreadInput,
   CreateThreadInput,
   DeleteThreadInput,
+  FollowUpThreadInputQueueInput,
   InterruptThreadTurnInput,
   RespondToThreadApprovalInput,
   RespondToThreadUserInputInput,
@@ -169,6 +177,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    followUpInputQueue: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:follow-up-input-queue",
+      execute: (input: FollowUpThreadInputQueueInput) => followUpThreadInputQueue(input),
+      scheduler,
+      concurrency,
+    }),
     interruptTurn: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:interrupt-turn",
       execute: (input: InterruptThreadTurnInput) => interruptThreadTurn(input),
@@ -187,9 +201,107 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    respondToInteraction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:respond-to-interaction",
+      tag: WS_METHODS.providerRespondToInteraction,
+      scheduler,
+      concurrency,
+    }),
     revertCheckpoint: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:revert-checkpoint",
       execute: (input: RevertThreadCheckpointInput) => revertThreadCheckpoint(input),
+      scheduler,
+      concurrency,
+    }),
+    askSessionSideQuestion: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:ask-session-side-question",
+      tag: WS_METHODS.providerAskSessionSideQuestion,
+      scheduler,
+      // The unary ask can remain open until the provider settles it. It must
+      // not occupy the thread's serial lane or its cancel command could not run.
+      concurrency: { mode: "parallel" },
+    }),
+    cancelSessionSideQuestion: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:cancel-session-side-question",
+      tag: WS_METHODS.providerCancelSessionSideQuestion,
+      scheduler,
+      concurrency: { mode: "parallel" },
+    }),
+    cancelSessionAgent: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:cancel-session-agent",
+      tag: WS_METHODS.providerCancelSessionAgent,
+      scheduler,
+      concurrency,
+    }),
+    messageSessionAgent: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:message-session-agent",
+      tag: WS_METHODS.providerMessageSessionAgent,
+      scheduler,
+      concurrency,
+    }),
+    reloadSessionResources: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:reload-session-resources",
+      tag: WS_METHODS.providerReloadSessionResources,
+      scheduler,
+      concurrency,
+    }),
+    getSessionAgentDepth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:get-session-agent-depth",
+      tag: WS_METHODS.providerGetSessionAgentDepth,
+      scheduler,
+      concurrency,
+    }),
+    setSessionAgentDepth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:set-session-agent-depth",
+      tag: WS_METHODS.providerSetSessionAgentDepth,
+      scheduler,
+      concurrency,
+    }),
+    getSessionInputQueue: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:get-session-input-queue",
+      tag: WS_METHODS.providerGetSessionInputQueue,
+      scheduler,
+      concurrency,
+    }),
+    clearSessionInputQueue: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:clear-session-input-queue",
+      tag: WS_METHODS.providerClearSessionInputQueue,
+      scheduler,
+      concurrency,
+    }),
+    setSessionInputQueueMode: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:set-session-input-queue-mode",
+      tag: WS_METHODS.providerSetSessionInputQueueMode,
+      scheduler,
+      concurrency,
+    }),
+    getSessionCompaction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:get-session-compaction",
+      tag: WS_METHODS.providerGetSessionCompaction,
+      scheduler,
+      concurrency,
+    }),
+    compactSession: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:compact-session",
+      tag: WS_METHODS.providerCompactSession,
+      scheduler,
+      concurrency,
+    }),
+    abortSessionCompaction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:abort-session-compaction",
+      tag: WS_METHODS.providerAbortSessionCompaction,
+      scheduler,
+      concurrency,
+    }),
+    setSessionAutoCompaction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:set-session-auto-compaction",
+      tag: WS_METHODS.providerSetSessionAutoCompaction,
+      scheduler,
+      concurrency,
+    }),
+    refineSessionHarness: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:refine-session-harness",
+      tag: WS_METHODS.providerRefineSessionHarness,
       scheduler,
       concurrency,
     }),
