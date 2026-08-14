@@ -1,7 +1,5 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 
-import { DotMatrix } from "~/components/ui/dot-matrix";
-import { BrowserMockup } from "./BrowserMockup";
 import { PreviewFaviconIcon } from "./PreviewFaviconIcon";
 import type { PreviewableServer } from "./useDiscoveredLocalServers";
 
@@ -26,28 +24,11 @@ export function PreviewLocalServerCard({ threadRef, server, onOpen }: Props) {
           {server.host}:{server.port}
         </span>
       </div>
-      {server.listening ? <PulsingDot /> : <DimDot />}
     </button>
   );
 }
 
 function describeServer(server: PreviewableServer): string {
   if (server.processName) return server.processName;
-  if (server.listening) return "Listening";
-  if (server.source === "configured") return "Configured";
-  return "Recently seen";
-}
-
-function PulsingDot() {
-  return <DotMatrix state="live" label="Listening" className="size-3 shrink-0" />;
-}
-
-function DimDot() {
-  return (
-    <DotMatrix
-      state="idle"
-      label="Not currently listening"
-      className="size-3 shrink-0 text-muted-foreground/40"
-    />
-  );
+  return "Listening";
 }
