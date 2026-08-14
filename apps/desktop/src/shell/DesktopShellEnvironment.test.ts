@@ -100,11 +100,21 @@ function runShellEnvironment(input: {
 }
 
 describe("DesktopShellEnvironment", () => {
+  it("uses the OS account shell when a packaged GUI launch omits SHELL", () => {
+    assert.deepEqual(
+      DesktopShellEnvironment.resolveDesktopLoginShellCandidates(
+        { env: { PATH: "/usr/bin" }, platform: "darwin" },
+        "/opt/homebrew/bin/fish",
+      ),
+      ["/opt/homebrew/bin/fish", "/bin/zsh"],
+    );
+  });
+
   it.effect("hydrates PATH and missing SSH_AUTH_SOCK from the login shell on macOS", () =>
     Effect.gen(function* () {
       const env: NodeJS.ProcessEnv = {
         SHELL: "/bin/zsh",
-        PATH: "/Users/test/.local/bin:/usr/bin",
+        PATH: "/usr/bin",
       };
       const commands: ChildProcess.Command[] = [];
 
@@ -114,7 +124,7 @@ describe("DesktopShellEnvironment", () => {
         handler: (command) => {
           commands.push(command);
           return envOutput({
-            PATH: "/opt/homebrew/bin:/usr/bin",
+            PATH: "/Users/test/.local/bin:/opt/homebrew/bin:/usr/bin",
             SSH_AUTH_SOCK: "/tmp/secretive.sock",
             HOMEBREW_PREFIX: "/opt/homebrew",
           });
@@ -123,7 +133,7 @@ describe("DesktopShellEnvironment", () => {
 
       assert.equal(commands.length, 1);
       assert.equal(commands[0]?._tag === "StandardCommand" ? commands[0].command : "", "/bin/zsh");
-      assert.equal(env.PATH, "/opt/homebrew/bin:/usr/bin:/Users/test/.local/bin");
+      assert.equal(env.PATH, "/Users/test/.local/bin:/opt/homebrew/bin:/usr/bin");
       assert.equal(env.SSH_AUTH_SOCK, "/tmp/secretive.sock");
       assert.equal(env.HOMEBREW_PREFIX, "/opt/homebrew");
     }),
@@ -181,6 +191,10 @@ describe("DesktopShellEnvironment", () => {
         PATH: "/usr/bin",
       };
       const commands: string[] = [];
+      const loginShells = DesktopShellEnvironment.resolveDesktopLoginShellCandidates({
+        env,
+        platform: "darwin",
+      });
 
       yield* runShellEnvironment({
         env,
@@ -192,7 +206,7 @@ describe("DesktopShellEnvironment", () => {
         },
       });
 
-      assert.deepEqual(commands, ["/opt/homebrew/bin/nu", "/bin/zsh", "/bin/launchctl"]);
+      assert.deepEqual(commands, [...loginShells, "/bin/launchctl"]);
       assert.equal(env.PATH, "/opt/homebrew/bin:/usr/bin");
     }),
   );
@@ -331,13 +345,13 @@ describe("DesktopShellEnvironment", () => {
           const errors = messages
             .flatMap((message) => (Array.isArray(message) ? message : [message]))
             .filter(isDesktopShellEnvironmentCommandError);
-          assert.lengthOf(errors, 1);
-          assert.equal(errors[0]?.probe, "login-shell");
-          assert.equal(errors[0]?.executable, "bash");
-          assert.equal(errors[0]?.argumentCount, 2);
-          assert.notProperty(errors[0] ?? {}, "args");
-          assert.equal(errors[0]?.cause, cause);
-          assert.notInclude(errors[0]?.message ?? "", cause.message);
+          const bashErrors = errors.filter((error) => error.executable === "bash");
+          assert.lengthOf(bashErrors, 1);
+          assert.equal(bashErrors[0]?.probe, "login-shell");
+          assert.equal(bashErrors[0]?.argumentCount, 2);
+          assert.notProperty(bashErrors[0] ?? {}, "args");
+          assert.equal(bashErrors[0]?.cause, cause);
+          assert.notInclude(bashErrors[0]?.message ?? "", cause.message);
         }),
       ),
       Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
