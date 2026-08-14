@@ -1,9 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 
 import {
@@ -28,6 +32,52 @@ const baseInput: PrimeAgentBackendNegotiationInput = {
 };
 
 it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
+  it.effect("selects daemon with a PATH-resolved Prime Agent executable", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const tempDir = yield* Effect.acquireRelease(
+          Effect.promise(() =>
+            NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "prime-agent-backend-path-")),
+          ),
+          (directory) =>
+            Effect.promise(() => NodeFSP.rm(directory, { recursive: true, force: true })),
+        );
+        const platform = yield* HostProcessPlatform;
+        const executableName = platform === "win32" ? "prime-agent.CMD" : "prime-agent";
+        const executablePath = NodePath.join(tempDir, executableName);
+        yield* Effect.promise(() => NodeFSP.writeFile(executablePath, "", "utf8"));
+        if (platform !== "win32") {
+          yield* Effect.promise(() => NodeFSP.chmod(executablePath, 0o755));
+        }
+
+        const managerCalls: PrimeAgentDaemonManagerInput[] = [];
+        const manager = testManager("path-resolved");
+        const selected = yield* negotiatePrimeAgentBackend(
+          {
+            ...baseInput,
+            environment: {
+              PATH: tempDir,
+              ...(platform === "win32" ? { PATHEXT: ".CMD" } : {}),
+            },
+          },
+          {
+            resolveExecutable: (command, environment) =>
+              resolveCommandPath(command, { env: environment }),
+            makeManager: (input) =>
+              Effect.sync(() => {
+                managerCalls.push(input);
+                return manager;
+              }),
+          },
+        );
+
+        expect(selected).toEqual({ runtime: "daemon", manager });
+        expect(managerCalls).toHaveLength(1);
+        expect(managerCalls[0]?.executablePath).toBe(executablePath);
+      }),
+    ),
+  );
+
   it.effect(
     "resolves empty-launch-args binaries to absolute paths before one manager attempt",
     () =>

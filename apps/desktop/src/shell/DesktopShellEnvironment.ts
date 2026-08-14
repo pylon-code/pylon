@@ -1,3 +1,4 @@
+import { listLoginShellCandidates } from "@t3tools/shared/shell";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -15,7 +16,6 @@ type EnvironmentPatch = Record<string, string>;
 interface ShellEnvironmentConfig {
   readonly env: NodeJS.ProcessEnv;
   readonly platform: NodeJS.Platform;
-  readonly userShell: Option.Option<string>;
 }
 
 interface WindowsProbeOptions {
@@ -172,24 +172,10 @@ const mergePaths = (
   return entries.length > 0 ? Option.some(entries.join(delimiter)) : Option.none();
 };
 
-const listLoginShellCandidates = (config: ShellEnvironmentConfig): ReadonlyArray<string> => {
-  const fallback =
-    config.platform === "darwin" ? "/bin/zsh" : config.platform === "linux" ? "/bin/bash" : "";
-  const seen = new Set<string>();
-  const candidates: string[] = [];
-
-  for (const candidate of [
-    trimNonEmpty(config.env.SHELL),
-    config.userShell,
-    trimNonEmpty(fallback),
-  ]) {
-    if (Option.isNone(candidate) || seen.has(candidate.value)) continue;
-    seen.add(candidate.value);
-    candidates.push(candidate.value);
-  }
-
-  return candidates;
-};
+export const resolveDesktopLoginShellCandidates = (
+  config: ShellEnvironmentConfig,
+  userShell?: string,
+): ReadonlyArray<string> => listLoginShellCandidates(config.platform, config.env.SHELL, userShell);
 
 const knownWindowsCliDirs = (env: NodeJS.ProcessEnv): ReadonlyArray<string> => [
   ...trimNonEmpty(env.APPDATA).pipe(
@@ -421,7 +407,7 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
     const fileSystem = yield* FileSystem.FileSystem;
     const shellEnvironment: EnvironmentPatch = {};
 
-    for (const shell of listLoginShellCandidates(config)) {
+    for (const shell of resolveDesktopLoginShellCandidates(config)) {
       Object.assign(
         shellEnvironment,
         yield* readLoginShellEnvironment(shell, LOGIN_SHELL_ENV_NAMES),
@@ -510,7 +496,6 @@ export const make = Effect.gen(function* () {
     installShellEnvironment({
       env: process.env,
       platform: environment.platform,
-      userShell: Option.none(),
     }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
