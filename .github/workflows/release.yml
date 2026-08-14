@@ -341,12 +341,15 @@ jobs:
           cp "$pty_dir/build/Release/pty.node" wsl-prebuild/pty.node
           file wsl-prebuild/pty.node
 
+      # Consumed by the Windows build in this same run, so it only needs to
+      # outlive the run. Left unset it inherited the 90-day repository default.
       - name: Upload node-pty linux-x64 prebuild
         uses: actions/upload-artifact@v7
         with:
           name: wsl-node-pty-x64
           path: wsl-prebuild/pty.node
           if-no-files-found: error
+          retention-days: 1
 
   build:
     name: Build ${{ matrix.label }}
@@ -708,19 +711,24 @@ jobs:
 
       # These are intra-run handoff to `publish_release`, which downloads
       # `desktop-*` and attaches them to the GitHub Release — that Release is the
-      # durable copy, not the artifact. At the repository default of 90 days a
-      # daily nightly retains ~880 MB per run across the four platforms, which
-      # reached ~14 GB and exhausted the account's artifact storage quota; once
-      # that happens *every* upload in the org fails, reddening unrelated PRs.
-      # A week is long enough to re-run a failed publish job against the same
-      # build and short enough to cap steady state near 6 GB.
+      # durable copy, not the artifact. Retention here has to be sized against
+      # the org's included Actions storage, because overrunning it fails *every*
+      # upload in the org, reddening unrelated PRs: the Team plan includes
+      # 2 GB-month, and GitHub meters in GB-hours, so the budget is 2 * 730 =
+      # 1460 GB-hours. At ~915 MB per run across the four platforms, a daily
+      # nightly costs 0.915 * retention_days * 730 GB-hours. The repository
+      # default of 90 days reached ~14 GB/day and exhausted the quota; 7 days
+      # still bills ~4665 GB-hours, over triple the budget. One day costs ~666
+      # and leaves room for PR CI and tagged stable releases. Re-running a
+      # failed publish job against an older build is not worth the outage —
+      # re-dispatch the workflow instead.
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
           path: release-publish/*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
       - name: Upload resource monitor
         uses: actions/upload-artifact@v7
