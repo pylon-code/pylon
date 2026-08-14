@@ -28,9 +28,16 @@ Do not treat unavailable iOS tooling as a blocker when Android is a valid repres
 
 The development identity on both platforms is:
 
-- App: `T3 Code Dev`
-- Bundle/package identifier: `com.t3tools.t3code.dev`
-- URL scheme: `t3code-dev`
+- App: `Pylon Dev`
+- Bundle/package identifier: `com.pylon.code.dev`
+- URL scheme: `pylon-code-dev`
+
+These are Pylon-owned, not compatibility-named. `app.config.ts` is the source of
+truth, and a built `PylonDev.app` registers exactly `pylon-code-dev` and
+`com.pylon.code.dev`. `App.tsx` still lists `t3code-dev://` among React
+Navigation's linking prefixes, but iOS never delivers that scheme because it is
+not registered natively, so a `simctl openurl t3code-dev://…` silently does
+nothing.
 
 Bundle or package presence proves the correct variant, not native compatibility. Reuse it only when the current changes did not alter its Expo SDK, native dependencies, config plugins, entitlements, generated project, or native source.
 
@@ -72,14 +79,14 @@ Enter the complete `http://` origin to make the test transport explicit. Bare IP
 
 Run Metro from `apps/mobile`.
 
-1. Inspect any process on the intended Metro port and its `/status` response. Reuse it only when it is healthy, belongs to this worktree, and matches `APP_VARIANT=development`, `--dev-client`, and scheme `t3code-dev`.
+1. Inspect any process on the intended Metro port and its `/status` response. Reuse it only when it is healthy, belongs to this worktree, and matches `APP_VARIANT=development`, `--dev-client`, and scheme `pylon-code-dev`.
 2. Never kill another worktree's Metro. Use a free explicit port when necessary.
 3. Run `vp run dev:client` on the standard port. For another port, retain the complete development identity:
 
    ```bash
    APP_VARIANT=development vp exec expo start \
      --dev-client \
-     --scheme t3code-dev \
+     --scheme pylon-code-dev \
      --clear \
      --lan \
      --port <metro-port>
@@ -93,16 +100,16 @@ Run Metro from `apps/mobile`.
 
 Use `ios-debugger-agent` to select one UDID and set these XcodeBuildMCP session defaults:
 
-- Workspace: `<repo>/apps/mobile/ios/T3CodeDev.xcworkspace`
-- Scheme: `T3CodeDev`
+- Workspace: `<repo>/apps/mobile/ios/PylonDev.xcworkspace`
+- Scheme: `PylonDev`
 - Configuration: `Debug`
 - Simulator ID: the selected UDID
-- Bundle ID: `com.t3tools.t3code.dev`
+- Bundle ID: `com.pylon.code.dev`
 
 Check the installed client with:
 
 ```bash
-xcrun simctl get_app_container <simulator-udid> com.t3tools.t3code.dev app
+xcrun simctl get_app_container <simulator-udid> com.pylon.code.dev app
 xcrun simctl openurl <simulator-udid> <printed-dev-client-url>
 ```
 
@@ -113,43 +120,43 @@ Accept the iOS confirmation prompt and dismiss the developer menu when it obscur
 Select one running emulator serial from `adb devices` and check the installed client:
 
 ```bash
-adb -s <emulator-serial> shell pm path com.t3tools.t3code.dev
+adb -s <emulator-serial> shell pm path com.pylon.code.dev
 adb -s <emulator-serial> reverse tcp:<metro-port> tcp:<metro-port>
 adb -s <emulator-serial> shell am start -W \
   -a android.intent.action.VIEW \
   -d '<printed-dev-client-url>' \
-  com.t3tools.t3code.dev
+  com.pylon.code.dev
 ```
 
 Do not start, stop, erase, or reconfigure an emulator owned by another task. Track and later stop only processes owned by this test.
 
 ## Pair each client once
 
-Issue a fresh credential against the running backend's exact base directory:
+Use the bundled helper from the repository root. It issues a fresh credential against the running backend's exact base directory, opens the existing Add Environment route with the credential in an encoded query parameter, and asks that route to connect once:
 
 ```bash
-T3CODE_PORT=<server-port> node apps/server/src/bin.ts auth pairing create \
-  --base-dir <base-dir> \
-  --base-url <mobile-origin> \
-  --ttl 15m \
-  --label agent-mobile-<short-device-id>
+.agents/skills/test-pylon-mobile/scripts/pair-client.sh \
+  ios <simulator-udid> <server-port> <base-dir>
+
+.agents/skills/test-pylon-mobile/scripts/pair-client.sh \
+  android <emulator-serial> <server-port> <base-dir>
 ```
 
-In PowerShell, set `$env:T3CODE_PORT = "<server-port>"` first and run the `node ... auth pairing create` command without the leading assignment.
+Run only the command for the selected platform. The helper uses `http://127.0.0.1:<server-port>` for iOS and `http://10.0.2.2:<server-port>` for Android. Pass a fifth argument only when testing a non-development URL scheme.
 
-If the visible Add Environment action is not exposed as a semantic target, open the app's registered route instead of guessing coordinates:
+The helper opens this registered route:
 
-```bash
-xcrun simctl openurl <simulator-udid> 't3code-dev://connections/new'
-adb -s <emulator-serial> shell am start -W \
-  -a android.intent.action.VIEW \
-  -d 't3code-dev://connections/new' \
-  com.t3tools.t3code.dev
+```text
+pylon-code-dev://connections/new?pairingUrl=<encoded-pairing-url>&autoConnect=1
 ```
 
-Run only the command for the selected platform.
+The Add Environment route owns the behavior: `pairingUrl` prefills its normal host and token inputs, while `autoConnect=1` submits once in development builds and returns to Home after success. Without `autoConnect`, the same route only prefills the form for manual inspection.
 
-In the development client, currently compatibility-named `T3 Code Dev`, open Add Environment and enter the complete `<mobile-origin>` and newly printed `Token`. Verify the expected seeded projects appear before exercising the affected flow.
+Do not enter pairing hosts or tokens through simulator keyboard automation. Xcode's semantic typer sends HID-style key events through the simulator's active keyboard state, which can corrupt uppercase tokens and punctuation even when the host Mac uses a U.S. input source. The one-shot route is the deterministic pairing path. Use the visible form only as a fallback, and paste credentials rather than typing them character by character.
+
+The fallback form lives in the development client, currently compatibility-named `T3 Code Dev`: open Add Environment and paste the complete `<mobile-origin>` and newly printed `Token`.
+
+Verify the expected seeded projects appear before exercising the affected flow.
 
 Pairing credentials are secret, short-lived, and single-use. Create a different credential for every simulator, emulator, physical device, or browser. If an attempt fails, issue a new credential rather than retrying the old one. Do not expose tokens in screenshots, commits, or final responses.
 
@@ -183,6 +190,8 @@ Keep local verification focused. Do not turn this workflow into a full repositor
 - **Old UI or an old error appears:** verify Metro's worktree, variant, URL, and port before diagnosing the app.
 - **The environment remains empty:** verify the platform-specific HTTP origin, use a fresh token, and confirm project seeding used the identical base directory.
 - **A second client cannot pair:** pairing tokens are single-use; issue another token.
+- **The pairing form opens but does not connect:** confirm the deep link uses the existing `connections/new` route, includes `autoConnect=1`, and carries a freshly minted encoded `pairingUrl`.
+- **Pairing text changes case or punctuation:** do not retry semantic typing. Use `scripts/pair-client.sh`; the simulator keyboard layout and HID input path are not reliable for credentials.
 - **iOS semantic actions fail:** set explicit XcodeBuildMCP defaults and refresh with `snapshot_ui`.
 - **Android cannot reach Metro:** verify `adb reverse` for the exact Metro port and relaunch the development-client URL.
 - **Android cannot reach the backend:** use `10.0.2.2`, not `127.0.0.1`, for the Android Emulator.
