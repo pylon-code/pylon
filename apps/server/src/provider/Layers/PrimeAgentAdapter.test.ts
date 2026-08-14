@@ -284,6 +284,22 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       completedTurnEvents.map((event) => event.type),
       "item.completed",
     );
+    const toolEvents = completedTurnEvents.filter(
+      (event) =>
+        (event.type === "item.updated" || event.type === "item.completed") &&
+        event.payload.itemType === "command_execution",
+    );
+    assert.isAbove(toolEvents.length, 0);
+    for (const event of toolEvents) {
+      if (event.itemId === undefined || event.raw === undefined) {
+        assert.fail("Prime ACP tool events must have sanitized canonical identities");
+      }
+      assert.match(event.itemId, /^prime-tool:[0-9a-f]{32}$/);
+      assert.notProperty(event.payload, "title");
+      assert.notProperty(event.payload, "detail");
+      assert.notProperty(event.payload, "data");
+      assert.isUndefined(event.raw.payload);
+    }
     assert.equal(completedTurnEvents.at(-1)?.type, "turn.completed");
     assert.lengthOf(
       completedTurnEvents.filter((event) => event.type === "turn.completed"),

@@ -221,66 +221,100 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     expect(long[0]?.payload).toMatchObject({ detail: "x".repeat(4_000) });
   });
 
-  it("maps tool execution lifecycle, classifies clear names, and keeps only safe input", () => {
-    expect(
-      mapPrimeAgentDaemonRuntimeEventDrafts({
-        ...context,
-        event: {
-          _tag: "ToolStarted",
-          toolCallId: "tool-1",
-          toolName: "functions.ipython",
-          input: { code: "print(1)", count: 2, ok: true, empty: null },
-        },
-      }),
-    ).toEqual([
-      {
-        provider,
-        providerInstanceId,
-        threadId,
-        turnId,
-        type: "item.started",
-        itemId: RuntimeItemId.make("tool-1"),
-        payload: {
-          itemType: "command_execution",
-          status: "inProgress",
-          title: "functions.ipython",
-          data: { code: "print(1)", count: 2, ok: true, empty: null },
-        },
+  it("maps a tool call to one opaque lifecycle without native content", () => {
+    const nativeItemId = "native-tool-call-secret-/private/worktree";
+    const secrets = {
+      code: "print(process.env.PRIVATE_TOKEN)",
+      path: "/private/worktree/credentials.json",
+      token: "sk-secret-tool-argument",
+    };
+    const started = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      event: {
+        _tag: "ToolStarted",
+        toolCallId: nativeItemId,
+        toolName: "functions.ipython",
+        input: secrets,
       },
-    ]);
+    })[0];
+    const updated = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      event: {
+        _tag: "ToolProgress",
+        toolCallId: nativeItemId,
+        toolName: "functions.ipython",
+        text: `executing ${secrets.code} from ${secrets.path}`,
+      },
+    })[0];
+    const completed = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      event: {
+        _tag: "ToolCompleted",
+        toolCallId: nativeItemId,
+        toolName: "functions.ipython",
+        text: `raw output: ${secrets.token}`,
+        isError: true,
+      },
+    })[0];
 
-    expect(
-      mapPrimeAgentDaemonRuntimeEventDrafts({
-        ...context,
-        event: {
-          _tag: "ToolProgress",
-          toolCallId: "tool-2",
-          toolName: "apply_patch",
-          text: "changed a.ts",
-        },
-      })[0],
-    ).toMatchObject({
+    expect(started).toMatchObject({
+      type: "item.started",
+      payload: { itemType: "command_execution", status: "inProgress", title: "Code" },
+    });
+    expect(updated).toMatchObject({
       type: "item.updated",
-      itemId: RuntimeItemId.make("tool-2"),
-      payload: { itemType: "file_change", status: "inProgress", detail: "changed a.ts" },
+      itemId: started?.itemId,
+      payload: { itemType: "command_execution", status: "inProgress", title: "Code" },
+    });
+    expect(completed).toMatchObject({
+      type: "item.completed",
+      itemId: started?.itemId,
+      payload: { itemType: "command_execution", status: "failed", title: "Code" },
+    });
+    expect(started?.itemId).toMatch(/^prime-tool:[0-9a-f]{32}$/);
+    expect(JSON.stringify([started, updated, completed])).not.toContain(nativeItemId);
+    for (const secret of Object.values(secrets)) {
+      expect(JSON.stringify([started, updated, completed])).not.toContain(secret);
+    }
+    for (const draft of [started, updated, completed]) {
+      expect(draft?.payload).not.toHaveProperty("detail");
+      expect(draft?.payload).not.toHaveProperty("data");
+    }
+  });
+
+  it("uses allowlisted friendly tool titles while retaining safe classification", () => {
+    const [ipython] = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      event: {
+        _tag: "ToolStarted",
+        toolCallId: "tool-code",
+        toolName: "ipython",
+        input: { code: "PRIVATE" },
+      },
+    });
+    expect(ipython?.payload).toMatchObject({
+      itemType: "command_execution",
+      status: "inProgress",
+      title: "Code",
     });
 
-    expect(
-      mapPrimeAgentDaemonRuntimeEventDrafts({
-        ...context,
-        event: {
-          _tag: "ToolCompleted",
-          toolCallId: "tool-3",
-          toolName: "editorial_review",
-          text: "no",
-          isError: true,
-        },
-      })[0],
-    ).toMatchObject({
-      type: "item.completed",
-      itemId: RuntimeItemId.make("tool-3"),
-      payload: { itemType: "dynamic_tool_call", status: "failed", detail: "no" },
+    const privateToolName = `edit_${"x".repeat(5_000)}`;
+    const [fileChange] = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      event: {
+        _tag: "ToolProgress",
+        toolCallId: "tool-edit",
+        toolName: privateToolName,
+        text: "PRIVATE PATCH",
+      },
     });
+    expect(fileChange?.payload).toMatchObject({
+      itemType: "file_change",
+      status: "inProgress",
+      title: "Tool",
+    });
+    expect(JSON.stringify(fileChange)).not.toContain(privateToolName);
+    expect(JSON.stringify(fileChange)).not.toContain("PRIVATE PATCH");
   });
 
   it("keeps provider turns open until the daemon run completes", () => {

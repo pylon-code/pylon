@@ -51,9 +51,19 @@ export function sessionAgentLiveActivitySelectionIsOpen(input: {
   );
 }
 
+export type SessionAgentLiveActivityPresentationEntry =
+  | { readonly kind: "assistant"; readonly text: string }
+  | {
+      readonly kind: "tool";
+      readonly activityId: number;
+      readonly label: string;
+      readonly status: "started" | "completed" | "failed";
+      readonly statusLabel: "Started" | "Completed" | "Failed";
+    };
+
 export interface SessionAgentLiveActivityPresentation {
   readonly revision: number;
-  readonly entries: ReadonlyArray<string>;
+  readonly entries: ReadonlyArray<SessionAgentLiveActivityPresentationEntry>;
 }
 
 export interface SessionAgentLiveActivityAgentSummary {
@@ -96,7 +106,22 @@ export function presentSessionAgentLiveActivity(
 ): SessionAgentLiveActivityPresentation {
   return {
     revision: snapshot.revision,
-    entries: snapshot.entries.map((entry) => entry.text),
+    entries: (snapshot.activity ?? snapshot.entries).map((entry) =>
+      "speaker" in entry
+        ? { kind: "assistant" as const, text: entry.text }
+        : {
+            kind: "tool" as const,
+            activityId: entry.activityId,
+            label: entry.label,
+            status: entry.status,
+            statusLabel:
+              entry.status === "started"
+                ? ("Started" as const)
+                : entry.status === "completed"
+                  ? ("Completed" as const)
+                  : ("Failed" as const),
+          },
+    ),
   };
 }
 
@@ -113,21 +138,39 @@ export function replaceSessionAgentLiveActivity(
   if (
     current?.revision === next.revision &&
     current.entries.length === next.entries.length &&
-    current.entries.every((entry, index) => entry === next.entries[index])
+    current.entries.every((entry, index) => {
+      const replacement = next.entries[index];
+      if (replacement === undefined || entry.kind !== replacement.kind) return false;
+      return entry.kind === "assistant" && replacement.kind === "assistant"
+        ? entry.text === replacement.text
+        : entry.kind === "tool" &&
+            replacement.kind === "tool" &&
+            entry.activityId === replacement.activityId &&
+            entry.label === replacement.label &&
+            entry.status === replacement.status;
+    })
   ) {
     return current;
   }
   return next;
 }
 
-export function sessionAgentLiveActivityTextRows(
-  entries: ReadonlyArray<string>,
-): ReadonlyArray<{ readonly key: string; readonly text: string }> {
+export type SessionAgentLiveActivityRow = SessionAgentLiveActivityPresentationEntry & {
+  readonly key: string;
+};
+
+export function sessionAgentLiveActivityRows(
+  entries: ReadonlyArray<SessionAgentLiveActivityPresentationEntry>,
+): ReadonlyArray<SessionAgentLiveActivityRow> {
   const occurrences = new Map<string, number>();
-  return entries.map((text) => {
-    const occurrence = (occurrences.get(text) ?? 0) + 1;
-    occurrences.set(text, occurrence);
-    return { key: `${text}:${occurrence}`, text };
+  return entries.map((entry) => {
+    if (entry.kind === "tool") {
+      return { ...entry, key: `tool:${entry.activityId}` };
+    }
+    const value = `assistant:${entry.text}`;
+    const occurrence = (occurrences.get(value) ?? 0) + 1;
+    occurrences.set(value, occurrence);
+    return { ...entry, key: `${value}:${occurrence}` };
   });
 }
 

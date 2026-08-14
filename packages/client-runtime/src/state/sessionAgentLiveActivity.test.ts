@@ -7,7 +7,7 @@ import {
   presentSessionAgentLiveActivityAgentSummary,
   replaceSessionAgentLiveActivity,
   sessionAgentLiveActivitySelectionIsOpen,
-  sessionAgentLiveActivityTextRows,
+  sessionAgentLiveActivityRows,
   sessionAgentLiveActivityUnavailableLabel,
   supportsSessionAgentLiveActivity,
 } from "./sessionAgentLiveActivity.ts";
@@ -26,12 +26,14 @@ function provider(
 
 function snapshot(
   revision: number,
-  entries: ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>,
+  entries: ProviderSessionAgentActivitySnapshot["entries"],
+  activity?: ProviderSessionAgentActivitySnapshot["activity"],
 ): ProviderSessionAgentActivitySnapshot {
   return {
     agentId: "agent-canonical" as ProviderSessionAgentActivitySnapshot["agentId"],
     revision,
     entries,
+    ...(activity === undefined ? {} : { activity }),
   };
 }
 
@@ -123,23 +125,66 @@ describe("session agent live activity", () => {
     );
 
     expect(repeated).toBe(first);
-    expect(replacement.entries).toEqual(["second"]);
-    expect(replacement.entries).not.toContain("first");
-    expect(reconnectReset.entries).toEqual(["fresh after reconnect"]);
-    expect(changedSameRevision.entries).toEqual(["changed snapshot"]);
+    expect(replacement.entries).toEqual([{ kind: "assistant", text: "second" }]);
+    expect(reconnectReset.entries).toEqual([{ kind: "assistant", text: "fresh after reconnect" }]);
+    expect(changedSameRevision.entries).toEqual([{ kind: "assistant", text: "changed snapshot" }]);
   });
 
-  it("derives safe ephemeral keys while keeping duplicate assistant entries", () => {
-    expect(sessionAgentLiveActivityTextRows(["same", "same", "other"])).toEqual([
-      { key: "same:1", text: "same" },
-      { key: "same:2", text: "same" },
-      { key: "other:1", text: "other" },
+  it("presents additive tool rows with stable safe keys across status changes", () => {
+    const started = presentSessionAgentLiveActivity(
+      snapshot(
+        2,
+        [{ speaker: "assistant", text: "same" }],
+        [
+          { speaker: "assistant", text: "same" },
+          { kind: "tool", activityId: 1, label: "Code", status: "started" },
+          { kind: "tool", activityId: 2, label: "Code", status: "completed" },
+        ],
+      ),
+    );
+    expect(sessionAgentLiveActivityRows(started.entries)).toEqual([
+      { key: "assistant:same:1", kind: "assistant", text: "same" },
+      {
+        key: "tool:1",
+        kind: "tool",
+        activityId: 1,
+        label: "Code",
+        status: "started",
+        statusLabel: "Started",
+      },
+      {
+        key: "tool:2",
+        kind: "tool",
+        activityId: 2,
+        label: "Code",
+        status: "completed",
+        statusLabel: "Completed",
+      },
     ]);
+    const completed = presentSessionAgentLiveActivity(
+      snapshot(
+        3,
+        [{ speaker: "assistant", text: "same" }],
+        [
+          { speaker: "assistant", text: "same" },
+          { kind: "tool", activityId: 1, label: "Code", status: "completed" },
+          { kind: "tool", activityId: 2, label: "Code", status: "completed" },
+        ],
+      ),
+    );
+    expect(sessionAgentLiveActivityRows(completed.entries)[1]?.key).toBe("tool:1");
   });
 
-  it("projects only assistant text and drops every envelope field from presentation", () => {
+  it("projects only display-safe assistant and tool fields", () => {
     const wire = {
-      ...snapshot(3, [{ speaker: "assistant", text: "Safe update" }]),
+      ...snapshot(
+        3,
+        [{ speaker: "assistant", text: "Safe update" }],
+        [
+          { speaker: "assistant", text: "Safe update" },
+          { kind: "tool", activityId: 1, label: "Code", status: "failed" },
+        ],
+      ),
       nativeId: "native-secret",
       path: "/private/worktree",
       tool: { input: "secret" },
@@ -151,7 +196,16 @@ describe("session agent live activity", () => {
 
     expect(presentSessionAgentLiveActivity(wire)).toEqual({
       revision: 3,
-      entries: ["Safe update"],
+      entries: [
+        { kind: "assistant", text: "Safe update" },
+        {
+          kind: "tool",
+          activityId: 1,
+          label: "Code",
+          status: "failed",
+          statusLabel: "Failed",
+        },
+      ],
     });
   });
 
