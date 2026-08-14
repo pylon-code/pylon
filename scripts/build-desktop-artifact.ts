@@ -1473,7 +1473,7 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
     }
 
     const probeRoot = yield* fs.makeTempDirectoryScoped({
-      prefix: "t3code-bundle-selfcheck-",
+      prefix: "pylon-bundle-selfcheck-",
     });
     const probeApp = path.join(probeRoot, "app");
     yield* copyDirectoryPreservingSymlinks(unpackedRoot, probeApp);
