@@ -76,6 +76,10 @@ export interface AcpSessionRuntimeOptions {
     readonly logOutgoing?: boolean;
     readonly logger?: (event: EffectAcpProtocol.AcpProtocolLogEvent) => Effect.Effect<void, never>;
   };
+  /** Drops provider-private session updates before they enter the normalized event queue. */
+  readonly shouldDiscardSessionUpdate?: (
+    notification: EffectAcpSchema.SessionNotification,
+  ) => boolean;
 }
 
 export interface AcpSessionRequestLogEvent {
@@ -369,6 +373,9 @@ export const make = (
 
     yield* acp.handleSessionUpdate((notification) =>
       Effect.gen(function* () {
+        if (options.shouldDiscardSessionUpdate?.(notification) === true) {
+          return;
+        }
         const gate = yield* Ref.get(sessionLoadGateRef);
         if (Option.isSome(gate) && gate.value.active) {
           const lastActivityAtMillis = yield* Clock.currentTimeMillis;

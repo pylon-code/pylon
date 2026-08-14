@@ -123,7 +123,9 @@ describe("PrimeAgentFeatureCapabilities", () => {
     expect(capabilities.model?.operations).toEqual(["select"]);
     expect(capabilities.agents?.support).toBe("unavailable");
     expect(capabilities.goals?.support).toBe("unavailable");
-    expect(capabilities.reasoning?.support).toBe("unavailable");
+    expect(capabilities.reasoning).toMatchObject({ support: "unavailable", operations: [] });
+    expect(capabilities.reasoning?.reason).toContain("not surfaced or retained");
+    expect(capabilities.reasoning?.reason).toContain("discarded at the adapter boundary");
     expect(capabilities.usage?.support).toBe("unavailable");
     expect(capabilities.sessionUi?.support).toBe("unavailable");
   });

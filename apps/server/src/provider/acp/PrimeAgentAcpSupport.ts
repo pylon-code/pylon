@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import type * as EffectAcpErrors from "effect-acp/errors";
+import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveProviderHomePath } from "../../pathExpansion.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
@@ -43,7 +44,7 @@ export type PrimeAgentAcpSettings = Pick<
 
 export interface PrimeAgentAcpRuntimeInput extends Omit<
   AcpSessionRuntime.AcpSessionRuntimeOptions,
-  "authMethodId" | "clientCapabilities" | "resumeSessionId" | "spawn"
+  "authMethodId" | "clientCapabilities" | "resumeSessionId" | "shouldDiscardSessionUpdate" | "spawn"
 > {
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly primeAgentSettings: PrimeAgentAcpSettings | null | undefined;
@@ -51,6 +52,12 @@ export interface PrimeAgentAcpRuntimeInput extends Omit<
   readonly sessionDir: string;
   readonly continueSession: boolean;
   readonly model?: string | undefined;
+}
+
+export function isPrimeAgentAcpPrivateThoughtUpdate(
+  notification: EffectAcpSchema.SessionNotification,
+): boolean {
+  return notification.update.sessionUpdate === "agent_thought_chunk";
 }
 
 export function makePrimeAgentEnvironment(
@@ -117,6 +124,18 @@ export const makePrimeAgentAcpRuntime = (
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
         },
+        // Phase 1 does not surface Prime ACP reasoning. Drop thought updates
+        // before normalization, and disable incoming protocol logs so their raw
+        // text cannot enter Pylon's native log before this provider boundary.
+        shouldDiscardSessionUpdate: isPrimeAgentAcpPrivateThoughtUpdate,
+        ...(input.protocolLogging
+          ? {
+              protocolLogging: {
+                ...input.protocolLogging,
+                logIncoming: false,
+              },
+            }
+          : {}),
       }).pipe(
         Layer.provide(
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, input.childProcessSpawner),

@@ -58,7 +58,9 @@ export function makePrimeAgentFeatureCapabilities(input: {
         support: "read-write",
         operations: ["select"],
       },
-      reasoning: unavailable("Prime Agent ACP reasoning is not projected into Pylon yet."),
+      reasoning: unavailable(
+        "Prime Agent ACP reasoning is not surfaced or retained by Pylon; private thought chunks are discarded at the adapter boundary.",
+      ),
       usage: unavailable("Prime Agent ACP does not report normalized usage and cost."),
       sessionUi: unavailable("Prime Agent ACP does not expose extension UI requests."),
     };

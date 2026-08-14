@@ -48,6 +48,10 @@ function activity(
   } as unknown as OrchestrationThreadActivity;
 }
 
+function withActivityId(row: OrchestrationThreadActivity, id: string): OrchestrationThreadActivity {
+  return { ...row, id } as unknown as OrchestrationThreadActivity;
+}
+
 /** A pre-stamp row (legacy thread / old server): no agentKind at all. */
 function legacyActivity(
   kind: string,
@@ -150,17 +154,75 @@ describe("foldSubagentActivities", () => {
     expect(agents[0]!.completedAt).toBe("2026-08-01T11:00:00.000Z");
   });
 
-  it("reactivation increments the run count and clears result/error", () => {
+  it("terminal state is sticky across a later active task.updated snapshot", () => {
     const agents = fold([
       activity("task.started", { taskId: "task-4", taskType: "local_agent" }),
       activity("task.completed", { taskId: "task-4", status: "completed", summary: "run 1 done" }),
       activity("task.updated", { taskId: "task-4", status: "running" }),
     ]);
     const agent = agents[0]!;
-    expect(agent.activationCount).toBe(2);
-    expect(agent.result).toBeNull();
-    expect(agent.completedAt).toBeNull();
-    expect(agent.status).toBe("running");
+    expect(agent.activationCount).toBe(1);
+    expect(agent.result).toBe("run 1 done");
+    expect(agent.completedAt).not.toBeNull();
+    expect(agent.status).toBe("completed");
+  });
+
+  it("reopens a terminal child for a provider-owned task.updated activation id", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "codex-resume", taskType: "local_agent" }),
+      activity("task.updated", {
+        taskId: "codex-resume",
+        status: "running",
+        toolUseId: "child-turn-1",
+      }),
+      activity("task.updated", { taskId: "codex-resume", status: "failed" }),
+      activity("task.updated", {
+        taskId: "codex-resume",
+        status: "running",
+        toolUseId: "child-turn-2",
+      }),
+    ]);
+    expect(agents[0]).toMatchObject({
+      status: "running",
+      activationCount: 2,
+      completedAt: null,
+      error: null,
+    });
+  });
+
+  it("keeps terminal-first persisted snapshots sticky for the same activation id", () => {
+    const agents = fold([
+      activity("task.updated", {
+        taskId: "codex-terminal-first",
+        taskType: "local_agent",
+        status: "failed",
+        toolUseId: "child-turn-1",
+      }),
+      activity("task.updated", {
+        taskId: "codex-terminal-first",
+        status: "running",
+        toolUseId: "child-turn-1",
+      }),
+    ]);
+    expect(agents[0]).toMatchObject({ status: "failed", activationCount: 1 });
+  });
+
+  it("keeps a duplicate task.updated activation id terminal", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "codex-duplicate", taskType: "local_agent" }),
+      activity("task.updated", {
+        taskId: "codex-duplicate",
+        status: "running",
+        toolUseId: "child-turn-1",
+      }),
+      activity("task.updated", { taskId: "codex-duplicate", status: "failed" }),
+      activity("task.updated", {
+        taskId: "codex-duplicate",
+        status: "running",
+        toolUseId: "child-turn-1",
+      }),
+    ]);
+    expect(agents[0]).toMatchObject({ status: "failed", activationCount: 1 });
   });
 
   it("idle is nonterminal: an idle agent resumes without losing identity", () => {
@@ -655,6 +717,76 @@ describe("terminal robustness", () => {
     expect(agents).toHaveLength(1);
     expect(agents[0]!.activationCount).toBe(1);
     expect(agents[0]!.status).toBe("running");
+  });
+
+  it("keeps persisted completions terminal when equal-time stable snapshots sort after them", () => {
+    const settledAt = "2026-08-01T11:00:00.000Z";
+    const persisted = [
+      activity(
+        "task.started",
+        { taskId: "equal-progress", taskType: "local_agent", toolUseId: "tool-progress" },
+        "2026-08-01T10:59:00.000Z",
+      ),
+      activity(
+        "task.started",
+        { taskId: "equal-updated", taskType: "local_agent", toolUseId: "tool-updated" },
+        "2026-08-01T10:59:01.000Z",
+      ),
+      withActivityId(
+        activity(
+          "task.completed",
+          { taskId: "equal-progress", status: "completed", summary: "progress child done" },
+          settledAt,
+        ),
+        "equal-progress:1:terminal",
+      ),
+      withActivityId(
+        activity("task.progress", { taskId: "equal-progress", status: "running" }, settledAt),
+        "equal-progress:2:stable-active",
+      ),
+      withActivityId(
+        activity(
+          "task.completed",
+          { taskId: "equal-updated", status: "completed", summary: "updated child done" },
+          settledAt,
+        ),
+        "equal-updated:1:terminal",
+      ),
+      withActivityId(
+        activity("task.updated", { taskId: "equal-updated", status: "running" }, settledAt),
+        "equal-updated:2:stable-active",
+      ),
+    ].sort(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+    );
+
+    // This is the persisted full-list shape from the regression: both
+    // completions exist, but deterministic ids place stable active snapshots
+    // after their terminal row at the exact same timestamp.
+    expect(persisted.filter((row) => row.kind === "task.completed")).toHaveLength(2);
+    const agents = fold(persisted);
+    expect(
+      agents.map(({ id, status, activationCount, result }) => ({
+        id,
+        status,
+        activationCount,
+        result,
+      })),
+    ).toEqual([
+      {
+        id: "equal-progress",
+        status: "completed",
+        activationCount: 1,
+        result: "progress child done",
+      },
+      {
+        id: "equal-updated",
+        status: "completed",
+        activationCount: 1,
+        result: "updated child done",
+      },
+    ]);
   });
 
   it("a late start after a terminal task.updated does not reopen the run", () => {

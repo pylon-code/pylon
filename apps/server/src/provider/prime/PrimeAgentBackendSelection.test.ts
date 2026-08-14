@@ -12,6 +12,11 @@ import {
 } from "./PrimeAgentBackendSelection.ts";
 import type { PrimeAgentDaemonManagerInput } from "./PrimeAgentDaemonManager.ts";
 
+const testManager = (id: string) => ({
+  id,
+  prepare: () => Effect.void,
+});
+
 const baseInput: PrimeAgentBackendNegotiationInput = {
   enabled: true,
   binaryPath: "prime-agent",
@@ -29,6 +34,14 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
       Effect.gen(function* () {
         const resolutionCalls: Array<{ command: string; environment: NodeJS.ProcessEnv }> = [];
         const managerCalls: PrimeAgentDaemonManagerInput[] = [];
+        let prepareAttempts = 0;
+        const manager = {
+          id: "manager",
+          prepare: () =>
+            Effect.sync(() => {
+              prepareAttempts += 1;
+            }),
+        } as const;
         const selected = yield* negotiatePrimeAgentBackend(baseInput, {
           resolveExecutable: (command, environment) =>
             Effect.sync(() => {
@@ -38,11 +51,12 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
           makeManager: (input) =>
             Effect.sync(() => {
               managerCalls.push(input);
-              return { id: "manager" } as const;
+              return manager;
             }),
         });
 
-        expect(selected).toEqual({ runtime: "daemon", manager: { id: "manager" } });
+        expect(selected).toEqual({ runtime: "daemon", manager });
+        expect(prepareAttempts).toBe(1);
         expect(resolutionCalls).toEqual([
           { command: "prime-agent", environment: baseInput.environment },
         ]);
@@ -67,7 +81,7 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
           makeManager: () =>
             Effect.sync(() => {
               managerAttempts += 1;
-              return { id: "unused" } as const;
+              return testManager("unused");
             }),
         },
       );
@@ -89,7 +103,7 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
               _tag: "TestResolutionFailure" as const,
               detail: "private resolution cause",
             }),
-          makeManager: () => Effect.succeed({ id: "unused" } as const),
+          makeManager: () => Effect.succeed(testManager("unused")),
         },
       );
       expect(selected).toMatchObject({
@@ -101,6 +115,37 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
       );
       expect(selected.runtime === "acp" ? selected.fallbackMessage : undefined).not.toContain(
         "private resolution cause",
+      );
+    }),
+  );
+
+  it.effect("falls back to ACP after exactly one failed daemon prepare attempt", () =>
+    Effect.gen(function* () {
+      let managerAttempts = 0;
+      let prepareAttempts = 0;
+      const selected = yield* negotiatePrimeAgentBackend(baseInput, {
+        resolveExecutable: () => Effect.succeed("/resolved/prime-agent"),
+        makeManager: () =>
+          Effect.sync(() => {
+            managerAttempts += 1;
+            return {
+              prepare: () =>
+                Effect.gen(function* () {
+                  prepareAttempts += 1;
+                  return yield* Effect.fail({
+                    _tag: "TestPrepareFailure" as const,
+                    detail: "private prepare cause",
+                  });
+                }),
+            };
+          }),
+      });
+
+      expect(selected).toMatchObject({ runtime: "acp", fallbackCategory: "daemon-setup" });
+      expect(managerAttempts).toBe(1);
+      expect(prepareAttempts).toBe(1);
+      expect(selected.runtime === "acp" ? selected.fallbackMessage : undefined).not.toContain(
+        "private prepare cause",
       );
     }),
   );
@@ -137,7 +182,7 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
           makeManager: () =>
             Effect.sync(() => {
               managerAttempts += 1;
-              return { id: "unused" } as const;
+              return testManager("unused");
             }),
         },
       );

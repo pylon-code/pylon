@@ -32,6 +32,7 @@ import {
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 const decodeSettings = Schema.decodeSync(PrimeAgentSettings);
+const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const testLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "pylon-prime-agent-adapter-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
@@ -449,5 +450,85 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     assert.equal(failedTerminals[0]?.payload.state, "failed");
     yield* failingAdapter.stopSession(failingThreadId);
     yield* Fiber.interrupt(failureEventFiber);
+  }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect("discards Prime ACP thought chunks before native logs and runtime publication", () =>
+  Effect.gen(function* () {
+    const tempDir = yield* Effect.promise(() =>
+      NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "prime-agent-acp-thought-test-")),
+    );
+    const wrapperPath = NodePath.join(tempDir, "fake-prime-agent.sh");
+    const nativeWrites: Array<unknown> = [];
+    yield* Effect.promise(() =>
+      NodeFSP.writeFile(
+        wrapperPath,
+        `#!/bin/sh
+exec ${process.execPath} ${mockAgentPath} "$@"
+`,
+        "utf8",
+      ),
+    );
+    yield* Effect.promise(() => NodeFSP.chmod(wrapperPath, 0o755));
+
+    const adapter = yield* makePrimeAgentAdapter(decodeSettings({ binaryPath: wrapperPath }), {
+      instanceId: ProviderInstanceId.make("primeAgent-thought-boundary"),
+      nativeEventLogger: {
+        filePath: NodePath.join(tempDir, "unused-native.ndjson"),
+        write: (event) => Effect.sync(() => nativeWrites.push(event)),
+        close: () => Effect.void,
+      },
+      environment: {
+        ...process.env,
+        T3_ACP_EMIT_PRIVATE_THOUGHT_CHUNK: "1",
+        T3_ACP_PROMPT_RESPONSE_TEXT: "public answer",
+      },
+    });
+    const threadId = ThreadId.make("thought-boundary");
+    const completed = yield* Deferred.make<void>();
+    const events: Array<ProviderRuntimeEvent> = [];
+    const eventFiber = yield* adapter.streamEvents.pipe(
+      Stream.runForEach((event) =>
+        Effect.gen(function* () {
+          events.push(event);
+          if (event.type === "turn.completed" && event.threadId === threadId) {
+            yield* Deferred.succeed(completed, undefined).pipe(Effect.ignore);
+          }
+        }),
+      ),
+      Effect.forkChild,
+    );
+    yield* Effect.yieldNow;
+
+    yield* adapter.startSession({
+      threadId,
+      provider: ProviderDriverKind.make("primeAgent"),
+      cwd: process.cwd(),
+      runtimeMode: "full-access",
+    });
+    const turn = yield* adapter.sendTurn({ threadId, input: "answer publicly", attachments: [] });
+    yield* Deferred.await(completed);
+
+    const turnEvents = events.filter((event) => event.turnId === turn.turnId);
+    const serializedEvents = encodeUnknownJsonString(turnEvents);
+    assert.notInclude(serializedEvents, "private-thought-sentinel");
+    assert.notInclude(serializedEvents, "agent_thought_chunk");
+    assert.notInclude(serializedEvents, "reasoning_text");
+    assert.deepEqual(
+      turnEvents
+        .filter((event) => event.type === "content.delta")
+        .map((event) => event.payload.delta),
+      ["public answer"],
+    );
+
+    const serializedNativeWrites = encodeUnknownJsonString(nativeWrites);
+    assert.isAbove(nativeWrites.length, 0);
+    assert.include(serializedNativeWrites, '"direction":"outgoing"');
+    assert.notInclude(serializedNativeWrites, '"direction":"incoming"');
+    assert.notInclude(serializedNativeWrites, "private-thought-sentinel");
+    assert.notInclude(serializedNativeWrites, "agent_thought_chunk");
+
+    yield* adapter.stopSession(threadId);
+    yield* Fiber.interrupt(eventFiber);
   }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );

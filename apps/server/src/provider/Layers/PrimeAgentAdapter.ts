@@ -48,6 +48,10 @@ import {
 } from "../acp/PrimeAgentAcpSupport.ts";
 import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
 import {
+  makePrimeAgentEventPubSub,
+  shutdownPrimeAgentEventPubSub,
+} from "../prime/PrimeAgentEventBuffer.ts";
+import {
   isPrimeAgentCompatibleResumeCursor,
   PRIME_AGENT_ACP_RESUME_CURSOR,
 } from "../prime/PrimeAgentResumeCursor.ts";
@@ -138,7 +142,7 @@ export function makePrimeAgentAdapter(
 
     const sessions = new Map<ThreadId, PrimeAgentSessionContext>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
-    const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+    const runtimeEventPubSub = yield* makePrimeAgentEventPubSub<ProviderRuntimeEvent>();
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
@@ -155,7 +159,18 @@ export function makePrimeAgentAdapter(
     const makeEventStamp = () =>
       Effect.all({ eventId: Effect.map(randomUUIDv4, EventId.make), createdAt: nowIso });
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
-      PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
+      PubSub.publish(runtimeEventPubSub, event).pipe(
+        Effect.flatMap((accepted) =>
+          accepted
+            ? Effect.void
+            : Effect.logError("Prime Agent runtime event was not accepted.", {
+                component: "acp",
+                eventType: event.type,
+                threadId: event.threadId,
+                outcome: "forced-drop-after-shutdown",
+              }),
+        ),
+      );
 
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
@@ -919,13 +934,11 @@ export function makePrimeAgentAdapter(
       }).pipe(Effect.uninterruptible);
 
     yield* Effect.addFinalizer(() =>
-      stopAll().pipe(
-        Effect.catch((cause) =>
-          Effect.logError("Failed to emit Prime Agent session shutdown event.", { cause }),
-        ),
-        Effect.tap(() => PubSub.shutdown(runtimeEventPubSub)),
-        Effect.tap(() => managedNativeEventLogger?.close() ?? Effect.void),
-      ),
+      shutdownPrimeAgentEventPubSub({
+        component: "acp",
+        pubSub: runtimeEventPubSub,
+        drain: stopAll(),
+      }).pipe(Effect.ensuring(managedNativeEventLogger?.close() ?? Effect.void)),
     );
 
     return {

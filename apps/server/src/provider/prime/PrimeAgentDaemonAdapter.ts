@@ -70,6 +70,10 @@ import type {
 import type { PrimeDaemonEvent, PrimeDaemonMessage } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import {
+  makePrimeAgentEventPubSub,
+  shutdownPrimeAgentEventPubSub,
+} from "./PrimeAgentEventBuffer.ts";
+import {
   PRIME_AGENT_INHERIT_MODEL_OPTION,
   type PrimeAgentTurnControlsResult,
   resolvePrimeAgentTurnControls,
@@ -464,7 +468,7 @@ export function makePrimeAgentDaemonAdapter(
     let publishedModelDiscoveryGeneration = 0;
     const modelPublicationSemaphore = yield* Semaphore.make(1);
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
-    const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+    const runtimeEventPubSub = yield* makePrimeAgentEventPubSub<ProviderRuntimeEvent>();
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
@@ -481,7 +485,18 @@ export function makePrimeAgentDaemonAdapter(
     const makeEventStamp = () =>
       Effect.all({ eventId: Effect.map(randomUUIDv4, EventId.make), createdAt: nowIso });
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
-      PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
+      PubSub.publish(runtimeEventPubSub, event).pipe(
+        Effect.flatMap((accepted) =>
+          accepted
+            ? Effect.void
+            : Effect.logError("Prime Agent runtime event was not accepted.", {
+                component: "daemon",
+                eventType: event.type,
+                threadId: event.threadId,
+                outcome: "forced-drop-after-shutdown",
+              }),
+        ),
+      );
 
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
@@ -4386,13 +4401,11 @@ export function makePrimeAgentDaemonAdapter(
       }).pipe(Effect.uninterruptible);
 
     yield* Effect.addFinalizer(() =>
-      stopAll().pipe(
-        Effect.catch((cause) =>
-          Effect.logError("Failed to shut down Prime Agent daemon sessions.", { cause }),
-        ),
-        Effect.tap(() => PubSub.shutdown(runtimeEventPubSub)),
-        Effect.tap(() => managedNativeEventLogger?.close() ?? Effect.void),
-      ),
+      shutdownPrimeAgentEventPubSub({
+        component: "daemon",
+        pubSub: runtimeEventPubSub,
+        drain: stopAll(),
+      }).pipe(Effect.ensuring(managedNativeEventLogger?.close() ?? Effect.void)),
     );
 
     return {

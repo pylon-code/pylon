@@ -42,6 +42,7 @@ import {
   type PrimeDaemonEvent,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import { PRIME_AGENT_EVENT_BUFFER_CAPACITY } from "./PrimeAgentEventBuffer.ts";
 import { primeAgentSessionFileName } from "./PrimeAgentSessionIdentity.ts";
 import {
   isPrimeAgentCompatibleResumeCursor,
@@ -1104,10 +1105,12 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }).pipe(Effect.onError(() => closeAttachedSession));
     }
 
-    const eventQueue = yield* Queue.unbounded<PrimeDaemonEvent>();
+    const eventQueue = yield* Queue.bounded<PrimeDaemonEvent>(PRIME_AGENT_EVENT_BUFFER_CAPACITY);
     const runtimeContext = yield* Effect.context<never>();
     const runPromise = Effect.runPromiseWith(runtimeContext);
     let initializing = true;
+    let initializationOverflow = false;
+    let initializationAcceptedEventCount = 0;
     const bufferedEvents: unknown[] = [];
     let lastSnapshotSequence: number | undefined;
     const knownAgentRoster = new Map<string, PrimeAgentDaemonChild>();
@@ -1254,10 +1257,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         Effect.flatMap((handled) => (handled ? Effect.void : offerDecoded(raw))),
       );
 
-    // DaemonAgentConnection serializes its normalized listener callbacks. Returning
-    // the Promise preserves their order after initialization.
+    // The initial snapshot reserves one queue slot. Admission is cumulative for
+    // the whole initialization phase: draining a batch never reopens capacity.
+    // This keeps overlapping fire-and-forget daemon callbacks bounded too.
     unsubscribe = connection.subscribe((event) => {
       if (initializing) {
+        if (initializationAcceptedEventCount >= PRIME_AGENT_EVENT_BUFFER_CAPACITY - 1) {
+          initializationOverflow = true;
+          return;
+        }
+        initializationAcceptedEventCount += 1;
         bufferedEvents.push(event);
         return;
       }
@@ -1281,6 +1290,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }),
       ),
     );
+    if (initializationOverflow) {
+      unsubscribe();
+      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+      client.close();
+      return yield* runtimeError(
+        "initial-snapshot",
+        "request-failed",
+        "The daemon emitted too many events while initializing the session.",
+      );
+    }
     const initialEvent = safeEvent(
       decodePrimeAgentDaemonEvent({ type: "session_resynced", snapshot: rawSnapshot }),
     );
@@ -1314,15 +1333,6 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     }
     lastSnapshotSequence = initialEvent.lastEventSequence;
     trackAgentRoster(initialEvent);
-    yield* Queue.offer(eventQueue, initialEvent);
-    while (bufferedEvents.length > 0) {
-      const batch = bufferedEvents.splice(0);
-      for (const bufferedEvent of batch) {
-        yield* routeRawEvent(bufferedEvent);
-      }
-    }
-    // No callback can interleave between the final empty check and this assignment.
-    initializing = false;
 
     const initialResources =
       verifiedInventory !== undefined
@@ -2756,6 +2766,30 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             },
           } satisfies PrimeAgentDaemonSessionStats);
     });
+
+    // Keep initialization admission active through every control-plane read.
+    // The cumulative cap guarantees this entire flush fits without a consumer.
+    yield* Queue.offer(eventQueue, initialEvent);
+    while (bufferedEvents.length > 0) {
+      const batch = bufferedEvents.splice(0);
+      for (const bufferedEvent of batch) {
+        yield* routeRawEvent(bufferedEvent);
+      }
+    }
+    if (initializationOverflow) {
+      unsubscribe();
+      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+      client.close();
+      yield* Queue.shutdown(eventQueue);
+      return yield* runtimeError(
+        "initial-snapshot",
+        "request-failed",
+        "The daemon emitted too many events while initializing the session.",
+      );
+    }
+    // JavaScript cannot run a callback between this final empty check and the
+    // synchronous assignment. Later events enter the normal bounded queue path.
+    initializing = false;
 
     const dispose = Effect.suspend(() => {
       if (disposed || disposeStarted) return Effect.void;

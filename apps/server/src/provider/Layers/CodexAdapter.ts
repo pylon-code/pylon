@@ -528,6 +528,7 @@ function mapCollabAgentEvent(
   // finding: progress rows renamed math_one to its UUID).
   const knownName = nickname ?? pathLeaf;
   const title = knownName ?? agentThreadId;
+  const toolUseId = typeof payload.toolUseId === "string" ? payload.toolUseId : undefined;
   // Identity repeated on every status patch so rows are self-describing when
   // the start row ages out of activity retention (review finding: a
   // reconstructed agent had a UUID name and no role/path).
@@ -535,6 +536,7 @@ function mapCollabAgentEvent(
     role,
     ...(knownName ? { title: knownName } : {}),
     ...(agentPath ? { agentPath } : {}),
+    ...(toolUseId ? { toolUseId } : {}),
     timelineBypass: true,
   } as const;
 

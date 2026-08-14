@@ -90,6 +90,7 @@ function fakeBridge(input: {
   readonly events?: string[];
   readonly existingLive?: { value: boolean };
   readonly readinessFailures?: { value: number };
+  readonly calls?: { connect: number; readiness: number; hello: number; prompt: number };
 }): PrimeAgentDaemonBridge {
   const hello =
     input.hello ??
@@ -109,10 +110,12 @@ function fakeBridge(input: {
     }
 
     connect(): Promise<void> {
+      if (input.calls) input.calls.connect += 1;
       if (input.failConnect || input.connectionAvailable?.value === false) {
         return Promise.reject(new Error("not ready"));
       }
       const spawnedProcessRunning = input.processes.some((process) => process.running);
+      if (spawnedProcessRunning && input.calls) input.calls.readiness += 1;
       if (!spawnedProcessRunning && input.existingLive?.value !== true) {
         return Promise.reject(new Error("socket unavailable"));
       }
@@ -125,6 +128,7 @@ function fakeBridge(input: {
     }
 
     waitForHello(): Promise<unknown> {
+      if (input.calls) input.calls.hello += 1;
       return Promise.resolve(hello);
     }
 
@@ -166,6 +170,7 @@ function fakeBridge(input: {
       return Promise.resolve({});
     }
     promptAndWait(): Promise<void> {
+      if (input.calls) input.calls.prompt += 1;
       return Promise.resolve();
     }
     abort(): Promise<void> {
@@ -204,6 +209,7 @@ function managerFixture(options?: {
   const existingLive = { value: options?.existingLive ?? false };
   const readinessFailures = { value: options?.readinessFailures ?? 0 };
   const connectionAvailable = { value: true };
+  const calls = { connect: 0, readiness: 0, hello: 0, prompt: 0 };
   const paths = derivePrimeAgentDaemonPaths({
     stateDir: "/tmp/pylon-state",
     providerInstanceId: ProviderInstanceId.make("prime-work"),
@@ -218,6 +224,7 @@ function managerFixture(options?: {
     existingLive,
     readinessFailures,
     connectionAvailable,
+    calls,
     ...(options?.hello === undefined ? {} : { hello: options.hello }),
     ...(options?.failConnect === undefined ? {} : { failConnect: options.failConnect }),
   });
@@ -262,6 +269,7 @@ function managerFixture(options?: {
     events,
     paths,
     connectionAvailable,
+    calls,
   };
 }
 
@@ -324,6 +332,29 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
       ),
     );
   });
+
+  it.effect(
+    "prepares with one control-plane hello, never prompts, and avoids duplicate open handshakes",
+    () => {
+      const fixture = managerFixture();
+      return Effect.gen(function* () {
+        const manager = yield* fixture.make;
+
+        yield* manager.prepare();
+        expect(fixture.commands).toHaveLength(1);
+        expect(fixture.calls.readiness).toBe(1);
+        expect(fixture.calls.hello).toBe(1);
+        expect(fixture.calls.prompt).toBe(0);
+
+        const client = yield* manager.openClient();
+        client.close();
+        expect(fixture.commands).toHaveLength(1);
+        expect(fixture.calls.readiness).toBe(2);
+        expect(fixture.calls.hello).toBe(2);
+        expect(fixture.calls.prompt).toBe(0);
+      }).pipe(Effect.scoped);
+    },
+  );
 
   it.effect(
     "serializes concurrent opens, spawns once, and uses the isolated daemon command",
@@ -442,19 +473,24 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
     });
     return Effect.gen(function* () {
       const manager = yield* fixture.make;
-      const error = yield* Effect.flip(manager.openClient());
+      const error = yield* Effect.flip(manager.prepare());
       expect(error.reason).toBe("incompatible-hello");
       expect(error.detail).toContain("v7+");
+      expect(fixture.calls.readiness).toBe(1);
+      expect(fixture.calls.hello).toBe(1);
+      expect(fixture.calls.prompt).toBe(0);
     }).pipe(Effect.scoped);
   });
 
-  it.effect("retries validated bridge readiness without filesystem polling", () => {
+  it.effect("retries only transient control-plane readiness failures", () => {
     const fixture = managerFixture({ readinessFailures: 2 });
     return Effect.gen(function* () {
       const manager = yield* fixture.make;
-      const client = yield* manager.openClient();
-      client.close();
+      yield* manager.prepare();
       expect(fixture.commands).toHaveLength(1);
+      expect(fixture.calls.readiness).toBe(3);
+      expect(fixture.calls.hello).toBe(1);
+      expect(fixture.calls.prompt).toBe(0);
     }).pipe(Effect.scoped);
   });
 

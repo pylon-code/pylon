@@ -23,6 +23,7 @@ import {
   type PrimeAgentDaemonThinkingLevel,
 } from "./PrimeAgentDaemonBridge.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import { PRIME_AGENT_EVENT_BUFFER_CAPACITY } from "./PrimeAgentEventBuffer.ts";
 import {
   makePrimeAgentDaemonSessionRuntime,
   PRIME_AGENT_DAEMON_RESUME_CURSOR,
@@ -103,6 +104,7 @@ interface Captures {
     readonly argumentCount: number;
   }>;
   readonly sideQuestionAborts: string[];
+  rootMessageReads: number;
   watcherMessageReads: number;
 }
 
@@ -111,6 +113,7 @@ function fixture(options?: {
   readonly rawSnapshotImpl?: () => unknown;
   readonly createResponse?: unknown;
   readonly duringSnapshot?: ReadonlyArray<unknown>;
+  readonly duringResourceSnapshot?: ReadonlyArray<unknown>;
   readonly afterSnapshotEvent?: unknown;
   readonly attachFailure?: boolean;
   readonly resourceSnapshot?: unknown;
@@ -163,6 +166,7 @@ function fixture(options?: {
     watchedActiveSessionIds: [],
     sideQuestionStarts: [],
     sideQuestionAborts: [],
+    rootMessageReads: 0,
     watcherMessageReads: 0,
   };
   let listener: ((event: unknown) => void | Promise<void>) | undefined;
@@ -403,13 +407,14 @@ function fixture(options?: {
         ],
       );
     }
-    getResourceSnapshot(): Promise<unknown> {
+    async getResourceSnapshot(): Promise<unknown> {
       captures.connectionCalls.push({ method: "getResourceSnapshot", args: [] });
-      return Promise.resolve(
+      for (const event of options?.duringResourceSnapshot ?? []) await listener?.(event);
+      return (
         options?.resourceSnapshot ?? {
           extensions: [{ path: "/state/pylon/permission.mjs" }],
           diagnostics: { extensions: [] },
-        },
+        }
       );
     }
     reload(): Promise<unknown> {
@@ -459,6 +464,15 @@ function fixture(options?: {
           deliveredAt: "2026-08-09T00:00:00.000Z",
         })
       );
+    }
+    getMessages(): Promise<ReadonlyArray<unknown>> {
+      captures.rootMessageReads += 1;
+      return Promise.resolve([
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "root transcript must stay private" }],
+        },
+      ]);
     }
     watchSession(activeSessionId: string): Promise<PrimeAgentDaemonSessionWatcher | undefined> {
       captures.watchedActiveSessionIds.push(activeSessionId);
@@ -513,6 +527,7 @@ function fixture(options?: {
     bridge,
     socket: "/tmp/pylon-prime.sock",
     sessionDir: "/state/shared-daemon-sessions",
+    prepare: () => Effect.void,
     openClient: () =>
       Effect.sync(() => {
         captures.openCount += 1;
@@ -1440,6 +1455,144 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect("backpressures a noisy daemon and preserves terminal event order exactly once", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { emit, make } = fixture();
+        const runtime = yield* make();
+        expect((yield* collectEvents(runtime, 1))[0]?._tag).toBe("SessionResynced");
+
+        for (let index = 0; index < PRIME_AGENT_EVENT_BUFFER_CAPACITY; index += 1) {
+          yield* Effect.promise(() =>
+            emit({ type: "session_event", event: { type: "turn_start" } }),
+          );
+        }
+
+        const terminalEvents = [
+          {
+            type: "session_event",
+            event: {
+              type: "rlm_child_update",
+              child: {
+                id: "child-1",
+                label: "child",
+                status: "done",
+                sessionDir: "/daemon/private/child",
+              },
+            },
+          },
+          {
+            type: "extension_ui_request",
+            request: {
+              id: "approval-1",
+              method: "confirm",
+              payload: { title: "Approve command?" },
+            },
+          },
+          {
+            type: "session_event",
+            event: {
+              type: "turn_end",
+              message: {
+                role: "assistant",
+                content: [],
+                api: "openai-responses",
+                provider: "openai",
+                model: "gpt-test",
+                usage: {
+                  input: 0,
+                  output: 0,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  totalTokens: 0,
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+                },
+                stopReason: "stop",
+                timestamp: 1,
+              },
+              toolResults: [],
+            },
+          },
+          { type: "session_event", event: { type: "agent_end", messages: [] } },
+          { type: "closed" },
+        ] as const;
+        const terminalOfferFiber = yield* Effect.forEach(terminalEvents, (event) =>
+          Effect.promise(() => emit(event)),
+        ).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(terminalOfferFiber.pollUnsafe()).toBeUndefined();
+
+        const events = yield* collectEvents(
+          runtime,
+          PRIME_AGENT_EVENT_BUFFER_CAPACITY + terminalEvents.length,
+        );
+        yield* Fiber.join(terminalOfferFiber);
+
+        expect(
+          events.slice(0, PRIME_AGENT_EVENT_BUFFER_CAPACITY).map((event) => event._tag),
+        ).toEqual(Array(PRIME_AGENT_EVENT_BUFFER_CAPACITY).fill("TurnStarted"));
+        const terminalTags = events
+          .slice(PRIME_AGENT_EVENT_BUFFER_CAPACITY)
+          .map((event) => event._tag);
+        expect(terminalTags).toEqual([
+          "ChildUpdated",
+          "ExtensionRequest",
+          "TurnCompleted",
+          "RunCompleted",
+          "SessionClosed",
+        ]);
+        for (const tag of terminalTags) {
+          expect(events.filter((event) => event._tag === tag)).toHaveLength(1);
+        }
+      }),
+    ),
+  );
+
+  it.effect("cumulatively bounds and preserves events across initialization phases", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const event = { type: "session_event", event: { type: "turn_start" } };
+        const noisy = fixture({
+          duringSnapshot: Array.from({ length: 200 }, () => event),
+          duringResourceSnapshot: Array.from(
+            { length: PRIME_AGENT_EVENT_BUFFER_CAPACITY - 1 - 200 },
+            () => event,
+          ),
+        });
+
+        const runtime = yield* noisy.make();
+        const events = yield* collectEvents(runtime, PRIME_AGENT_EVENT_BUFFER_CAPACITY);
+        expect(events[0]?._tag).toBe("SessionResynced");
+        expect(events.slice(1).map((item) => item._tag)).toEqual(
+          Array(PRIME_AGENT_EVENT_BUFFER_CAPACITY - 1).fill("TurnStarted"),
+        );
+      }),
+    ),
+  );
+
+  it.effect("fails closed and cleans up when pre-snapshot event buffering overflows", () =>
+    Effect.gen(function* () {
+      const event = { type: "session_event", event: { type: "turn_start" } };
+      const noisy = fixture({
+        duringSnapshot: Array.from({ length: 200 }, () => event),
+        duringResourceSnapshot: Array.from(
+          { length: PRIME_AGENT_EVENT_BUFFER_CAPACITY - 200 },
+          () => event,
+        ),
+      });
+
+      const error = yield* Effect.scoped(noisy.make().pipe(Effect.flip));
+      expect(error).toMatchObject({
+        operation: "initial-snapshot",
+        reason: "request-failed",
+        detail: "The daemon emitted too many events while initializing the session.",
+      });
+      expect(noisy.captures.unsubscribeCount).toBe(1);
+      expect(noisy.captures.disposeCount).toBe(1);
+      expect(noisy.captures.closeCount).toBe(1);
+    }),
+  );
+
   it.effect("exposes typed operations and strips native model payloads", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -2172,6 +2325,7 @@ describe("Prime Agent live activity privacy boundary", () => {
         ],
       ]);
       expect(captures.watchedActiveSessionIds).toEqual(["native-child-active"]);
+      expect(captures.rootMessageReads).toBe(0);
       expect(captures.watcherMessageReads).toBe(1);
       expect(captures.watcherUnsubscribeCount).toBe(1);
       expect(captures.watcherCloseCount).toBe(1);

@@ -72,6 +72,8 @@ export interface PrimeAgentDaemonManager {
   readonly bridge: PrimeAgentDaemonBridge;
   readonly socket: string;
   readonly sessionDir: string;
+  /** Starts the daemon and validates its control-plane hello without opening an agent session. */
+  readonly prepare: () => Effect.Effect<void, PrimeAgentDaemonManagerOpenError>;
   readonly openClient: () => Effect.Effect<
     PrimeAgentDaemonClient,
     PrimeAgentDaemonManagerOpenError
@@ -458,6 +460,7 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
 
   const stopCapturedDaemon = Effect.fn("PrimeAgentDaemonManager.stopCapturedDaemon")(function* (
     state: RunningDaemon,
+    controlPlaneReady = true,
   ) {
     let controlClient: PrimeAgentDaemonClient | undefined;
     const isRunning = yield* state.handle.isRunning.pipe(
@@ -470,50 +473,56 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     );
 
     if (isRunning) {
-      controlClient = yield* connectClient({ bridge, socket, timeoutMs }).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning(error.message).pipe(
-            Effect.annotateLogs({ provider: "primeAgent" }),
-            Effect.as(undefined),
-          ),
-        ),
-      );
-      if (controlClient) {
-        yield* Effect.tryPromise({
-          try: async () => {
-            const response = await controlClient!.request({ type: "shutdown" }, timeoutMs);
-            if (!isDaemonSuccessResponse(response)) {
-              throw new Error("shutdown response was not a successful public daemon response");
-            }
-          },
-          catch: (cause) =>
-            managerError(
-              socket,
-              "shutdown-failed",
-              "The daemon rejected or did not answer its public shutdown command.",
-              cause,
-            ),
-        }).pipe(
+      if (controlPlaneReady) {
+        controlClient = yield* connectClient({ bridge, socket, timeoutMs }).pipe(
           Effect.catch((error) =>
-            Effect.logWarning(error.message).pipe(Effect.annotateLogs({ provider: "primeAgent" })),
-          ),
-          Effect.ensuring(
-            Effect.sync(() => {
-              controlClient?.close();
-            }),
+            Effect.logWarning(error.message).pipe(
+              Effect.annotateLogs({ provider: "primeAgent" }),
+              Effect.as(undefined),
+            ),
           ),
         );
+        if (controlClient) {
+          yield* Effect.tryPromise({
+            try: async () => {
+              const response = await controlClient!.request({ type: "shutdown" }, timeoutMs);
+              if (!isDaemonSuccessResponse(response)) {
+                throw new Error("shutdown response was not a successful public daemon response");
+              }
+            },
+            catch: (cause) =>
+              managerError(
+                socket,
+                "shutdown-failed",
+                "The daemon rejected or did not answer its public shutdown command.",
+                cause,
+              ),
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning(error.message).pipe(
+                Effect.annotateLogs({ provider: "primeAgent" }),
+              ),
+            ),
+            Effect.ensuring(
+              Effect.sync(() => {
+                controlClient?.close();
+              }),
+            ),
+          );
+        }
       }
 
-      const gracefulExit = yield* state.handle.exitCode.pipe(
-        Effect.timeoutOption(shutdownTimeout),
-        Effect.catch((cause) =>
-          Effect.logWarning("Could not await Prime Agent daemon exit.").pipe(
-            Effect.annotateLogs({ provider: "primeAgent", cause }),
-            Effect.as(Option.none()),
-          ),
-        ),
-      );
+      const gracefulExit = controlPlaneReady
+        ? yield* state.handle.exitCode.pipe(
+            Effect.timeoutOption(shutdownTimeout),
+            Effect.catch((cause) =>
+              Effect.logWarning("Could not await Prime Agent daemon exit.").pipe(
+                Effect.annotateLogs({ provider: "primeAgent", cause }),
+                Effect.as(Option.none()),
+              ),
+            ),
+          )
+        : Option.none();
       if (Option.isNone(gracefulExit)) {
         yield* state.handle
           .kill()
@@ -626,14 +635,18 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       );
       if (isRunning) {
         const healthClient = yield* connectClient({ bridge, socket, timeoutMs }).pipe(
-          Effect.option,
+          Effect.map(Option.some),
+          Effect.catch((error) =>
+            error.reason === "readiness-failed"
+              ? Effect.succeed(Option.none())
+              : Effect.fail(error),
+          ),
         );
         if (Option.isSome(healthClient)) {
-          healthClient.value.close();
-          return;
+          return healthClient.value;
         }
         running = undefined;
-        yield* stopCapturedDaemon(current);
+        yield* stopCapturedDaemon(current, false);
       } else {
         running = undefined;
         yield* removeSocket();
@@ -681,24 +694,27 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     yield* Effect.forkIn(drainProcessOutput(handle.stderr, "stderr"), processScope);
 
     const readinessClient = yield* connectClient({ bridge, socket, timeoutMs }).pipe(
-      Effect.retry(readinessSchedule),
-      Effect.onError(() => stopCapturedDaemon(state)),
+      Effect.retry({
+        while: (error) => error.reason === "readiness-failed",
+        schedule: readinessSchedule,
+      }),
+      Effect.onError(() => stopCapturedDaemon(state, false)),
     );
-    readinessClient.close();
     running = state;
+    return readinessClient;
   });
 
-  const ensure = () => semaphore.withPermit(startLocked());
+  const prepare = () =>
+    semaphore.withPermit(
+      startLocked().pipe(
+        Effect.tap((client) => Effect.sync(() => client.close())),
+        Effect.asVoid,
+      ),
+    );
   const runtimeContext = yield* Effect.context<never>();
   const runPromise = Effect.runPromiseWith(runtimeContext);
 
-  const openClient = () =>
-    semaphore.withPermit(
-      Effect.gen(function* () {
-        yield* startLocked();
-        return yield* connectClient({ bridge, socket, timeoutMs });
-      }),
-    );
+  const openClient = () => semaphore.withPermit(startLocked());
 
   const shutdown = semaphore.withPermit(
     Effect.gen(function* () {
@@ -714,7 +730,8 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     bridge,
     socket,
     sessionDir,
+    prepare,
     openClient,
-    recover: () => runPromise(ensure()),
+    recover: () => runPromise(prepare()),
   } satisfies PrimeAgentDaemonManager;
 });

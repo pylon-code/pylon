@@ -13,6 +13,10 @@ const FALLBACK_MESSAGES = {
   manager: "Prime Agent daemon integration is unavailable; using ACP compatibility mode.",
 } as const;
 
+export interface PrimeAgentBackendPreparable<PrepareError> {
+  readonly prepare: () => Effect.Effect<void, PrepareError>;
+}
+
 export type PrimeAgentBackendSelection<Manager> =
   | { readonly runtime: "daemon"; readonly manager: Manager }
   | {
@@ -32,7 +36,8 @@ export interface PrimeAgentBackendNegotiationInput {
 }
 
 export interface PrimeAgentBackendNegotiationDependencies<
-  Manager,
+  PrepareError,
+  Manager extends PrimeAgentBackendPreparable<PrepareError>,
   ResolveError,
   ResolveServices,
   ManagerError,
@@ -49,7 +54,8 @@ export interface PrimeAgentBackendNegotiationDependencies<
 
 /** Selects one backend before session adapter construction. It never exposes setup errors to users. */
 export function negotiatePrimeAgentBackend<
-  Manager,
+  PrepareError,
+  Manager extends PrimeAgentBackendPreparable<PrepareError>,
   ResolveError,
   ResolveServices,
   ManagerError,
@@ -57,6 +63,7 @@ export function negotiatePrimeAgentBackend<
 >(
   input: PrimeAgentBackendNegotiationInput,
   dependencies: PrimeAgentBackendNegotiationDependencies<
+    PrepareError,
     Manager,
     ResolveError,
     ResolveServices,
@@ -101,6 +108,15 @@ export function negotiatePrimeAgentBackend<
       }),
     );
     if (Result.isFailure(manager)) {
+      return {
+        runtime: "acp",
+        fallbackCategory: "daemon-setup",
+        fallbackMessage: FALLBACK_MESSAGES.manager,
+      } as const;
+    }
+
+    const prepared = yield* Effect.result(manager.success.prepare());
+    if (Result.isFailure(prepared)) {
       return {
         runtime: "acp",
         fallbackCategory: "daemon-setup",

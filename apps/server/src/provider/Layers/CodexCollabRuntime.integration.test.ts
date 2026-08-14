@@ -24,6 +24,11 @@ import { makeCodexSessionRuntime } from "./CodexSessionRuntime.ts";
 
 const ROOT = wireFixture.rootThreadId;
 const [CHILD_A, CHILD_B] = wireFixture.childThreadIds as [string, string];
+const CHILD_A_TURN_ID = (
+  wireFixture.notifications.find(
+    (entry) => entry.method === "turn/started" && entry.params.threadId === CHILD_A,
+  )?.params as { readonly turn?: { readonly id?: string } }
+)?.turn?.id;
 
 /**
  * The captured sequence, extended with the shapes the live capture didn't
@@ -109,12 +114,28 @@ describe("CodexSessionRuntime collab integration", () => {
       assert.include(methods, "collabAgent/turnCompleted");
       assert.include(methods, "collabAgent/closed");
 
+      const childTurnStarted = events.find(
+        (event) =>
+          event.method === "collabAgent/turnStarted" &&
+          (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_A,
+      );
+      assert.equal(
+        (childTurnStarted?.payload as { toolUseId?: string } | undefined)?.toolUseId,
+        CHILD_A_TURN_ID,
+        "a native child turn id is the explicit reactivation identity",
+      );
+
       const childTurnCompleted = events.find(
         (event) =>
           event.method === "collabAgent/turnCompleted" &&
           (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_A,
       );
       assert.isDefined(childTurnCompleted, "child A's turn completion becomes an agent event");
+      assert.equal(
+        (childTurnCompleted?.payload as { toolUseId?: string } | undefined)?.toolUseId,
+        CHILD_A_TURN_ID,
+        "terminal rows retain the activation id for deterministic persisted folding",
+      );
 
       const childClosed = events.find(
         (event) =>

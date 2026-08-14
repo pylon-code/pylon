@@ -6,6 +6,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildPrimeAgentAcpSpawnInput,
+  isPrimeAgentAcpPrivateThoughtUpdate,
   makePrimeAgentEnvironment,
   primeAgentLaunchArgsIssue,
   PRIME_AGENT_HOME_ENV,
@@ -75,6 +76,26 @@ describe("PrimeAgentAcpSupport", () => {
       expect(primeAgentLaunchArgsIssue(launchArgs)).toContain("Pylon-owned");
     }
     expect(primeAgentLaunchArgsIssue("--thinking high --theme 'Pylon Dark'")).toBeUndefined();
+  });
+
+  it("identifies only Prime ACP private thought updates for boundary discard", () => {
+    const thought = {
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_thought_chunk" as const,
+        content: { type: "text" as const, text: "private chain of thought" },
+      },
+    };
+    const answer = {
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_message_chunk" as const,
+        content: { type: "text" as const, text: "public answer" },
+      },
+    };
+
+    expect(isPrimeAgentAcpPrivateThoughtUpdate(thought)).toBe(true);
+    expect(isPrimeAgentAcpPrivateThoughtUpdate(answer)).toBe(false);
   });
 
   it("maps agentHomePath to Prime Agent's documented home environment", () => {
