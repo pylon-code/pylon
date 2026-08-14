@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "bad1143b02f7b585d1fe1335b3d9a97983ce8d8b"
-reviewed-through-date: "2026-08-13"
+reviewed-through: "5304f3e9d4c912bfa0eb2f5f41fa109b3646236b"
+reviewed-through-date: "2026-08-14"
 ---
 
 # T3 upstream review log
@@ -945,12 +945,77 @@ Two tooling notes worth carrying forward:
   markdown tests ran against pre-cherry-pick source and failed against the
   updated expectations. **Re-run `vp i` after changing one of these modules.**
 
+## 2026-08-14 — `bad1143b02f7b585d1fe1335b3d9a97983ce8d8b..5304f3e9d4c912bfa0eb2f5f41fa109b3646236b`
+
+Six commits, six change sets, **four adopted and two skipped**. Nothing
+deferred, so the register stays empty. `git cherry` reported all six as `+`.
+
+Conflict risk was measured by dry cherry-pick against the merged `pylon` before
+the brief was written: four clean, two conflicting — and both conflicts landed
+exactly on Pylon-owned boundaries, which is the system working.
+
+Adopted across two branches, split by surface rather than by size:
+`upstream/2026-08-14-web` (PR #15) and `upstream/2026-08-14-mobile` (PR #16).
+
+| Change set | Upstream              | Decision | Pylon reference          | Rationale or revisit condition                                                                                                                                                                                                                                                                                      |
+| ---------- | --------------------- | -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| N1         | `db1507e98` / `#5880` | adopted  | `07a3a846c`              | A setting to stop threads auto-settling when their pull request merges. Additive `sidebarAutoSettleOnMerge`, **default `true`**, so existing behaviour is unchanged; closed pull requests still always settle. Upstream covered contracts, client-runtime, web, and mobile.                                         |
+| N2         | `96bfa67b3` / `#6215` | adopted  | `fb284b0f9`              | Snoozed-thread wake icon sits on the row's optical centre. Generic geometry, applies to Pylon's sidebar unchanged.                                                                                                                                                                                                  |
+| N3         | `23d45d914` / `#6535` | adopted  | `570b54268`, `f7311ad81` | Stage artwork palette rework: explicit night pigments plus glow and sparkle, with the old `color-mix` derivation scoped to `t3-chat`, `ocean`, and `iris` — all of which Pylon still ships. Its "T3 Code artwork palettes" comment was rebranded, following `O11`.                                                  |
+| N5         | `85389b988` / `#6224` | adopted  | `bbd3db454`, `5990b2440` | Mobile task and thread settings nest in bottom sheets. 41 files, +3,652/−1,836, **including native patches** to `react-native-screens` and `@react-navigation/native-stack`. Verified by a real prebuild, `pod install`, native build, and simulator pass — see below.                                              |
+| N4         | `5ff3a03ad` / `#6086` | skipped  | `—`                      | Adds `-translate-y-px` to the sidebar brand label. A 1px optical correction measured against `<T3Wordmark />`; Pylon renders `<PylonMark />` plus the word "Pylon", a different glyph. **Cherry-picks clean and is still wrong for the fork.** Revisit only as Pylon-owned alignment work against Pylon's own mark. |
+| N6         | `5304f3e9d`           | skipped  | `—`                      | Bumps the mobile app version to `1.0.4`. Pylon's `app.config.ts` is independent (`slug: "pylon"`, `pylon-code*` schemes, version `1.0.1`), so the bump conflicts and carries no Pylon meaning. Same class as any T3 release chore.                                                                                  |
+
+**`N5` corrected a stale fact this ledger itself recorded.** The ninth batch's
+mobile notes said the `t3code-dev://` URL scheme "is still compatibility-named
+and works". It does not. A built `PylonDev.app` registers exactly
+`pylon-code-dev` and `com.pylon.code.dev`:
+
+```
+$ plutil -extract CFBundleURLTypes json -o - .../PylonDev.app/Info.plist
+[{"CFBundleURLSchemes":["pylon-code-dev","com.pylon.code.dev"]},{"CFBundleURLSchemes":["exp+pylon"]}]
+```
+
+`apps/mobile/src/App.tsx` still lists `t3code-dev://` among React Navigation's
+linking prefixes, which is likely how the belief survived, but iOS never
+delivers an unregistered scheme so the prefix is unreachable. Upstream's new
+`pair-client.sh` defaulted to that scheme and hardcoded `com.t3tools.t3code.dev`,
+so it would have failed silently on Pylon. The helper, the `test-pylon-mobile`
+skill's identity block, and its `T3CodeDev.xcworkspace` references were all
+corrected to what `app.config.ts` produces: `Pylon Dev`, `com.pylon.code.dev`,
+`pylon-code-dev`, `PylonDev.xcworkspace`, scheme `PylonDev`.
+
+Verification: 264 tests over four files and five clean package typechecks on the
+web branch; 40 tests over six files and a clean mobile typecheck on the mobile
+branch; `vp lint` clean on both. `N5` additionally got a full native rebuild and
+an iOS Simulator pass — build succeeded in 176s with the new patches, the app
+launched as `com.pylon.code.dev`, the corrected deep link routed, and both the
+Add Environment route and the new "Choose project" context picker rendered as
+nested bottom sheets. `N3` was captured before and after on one dev server by
+swapping `index.css` over HMR, so the comparison holds data and layout constant.
+
+**Android was not exercised for `N5`**, and the thread-settings sheet was not
+driven on a live thread because the simulator was reconnecting to a
+previously-paired real environment.
+
+Two environment notes worth carrying forward:
+
+- **CocoaPods 1.17.0 crashes under Ruby 4.0.6** with `Unicode Normalization not
+appropriate for ASCII-8BIT` when `LANG`/`LC_ALL` are unset, which is how
+  `expo prebuild` leaves the shell. The ninth batch predicted this; setting a
+  UTF-8 locale for `pod install` fixes it. `expo prebuild` **exits 0 even when
+  its CocoaPods step fails**, leaving `ios/` without an `.xcworkspace`.
+- **`apps/mobile/package.json`'s `dev:client` script still passes
+  `--scheme t3code-dev`**, which no longer matches the registered native scheme.
+  Left alone as out of scope for an adoption batch, but it is a real bug worth
+  its own fix.
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
-(see the sixth batch above); the 2026-08-12 eighth batch and the 2026-08-13
-ninth batch each deferred nothing new. Entries are removed once adopted or
-skipped, so an empty register means nothing is waiting._
+(see the sixth batch above); the eighth, ninth, and 2026-08-14 tenth batches
+each deferred nothing new. Entries are removed once adopted or skipped, so an
+empty register means nothing is waiting._
 
 Upstream work that has been reviewed and consciously _not_ adopted yet, with
 the condition that should trigger a fresh look. Entries stay here until they
