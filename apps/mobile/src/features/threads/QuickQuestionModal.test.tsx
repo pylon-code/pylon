@@ -15,7 +15,7 @@ vi.mock("../../components/AppText", () => ({
   AppText: "Text",
   AppTextInput: "TextInput",
 }));
-vi.mock("../../components/ComposerToolbarTrigger", () => ({
+vi.mock("../../components/ComposerToolbar", () => ({
   ComposerToolbarButton: "ComposerToolbarButton",
 }));
 
