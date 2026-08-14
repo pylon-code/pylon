@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "5304f3e9d4c912bfa0eb2f5f41fa109b3646236b"
+reviewed-through: "1a6599437b6ad77330923819613cc28be3b33945"
 reviewed-through-date: "2026-08-14"
 ---
 
@@ -1010,11 +1010,85 @@ appropriate for ASCII-8BIT` when `LANG`/`LC_ALL` are unset, which is how
   Left alone as out of scope for an adoption batch, but it is a real bug worth
   its own fix.
 
+## 2026-08-14 (eleventh) — `5304f3e9d4c912bfa0eb2f5f41fa109b3646236b..1a6599437b6ad77330923819613cc28be3b33945`
+
+Fourteen commits, twelve change sets, **all twelve adopted, none skipped**. Nothing
+deferred, so the register stays empty. `git cherry` reported all fourteen as `+`.
+
+Dry cherry-pick against `pylon` before the brief: ten clean, four conflicting —
+and every conflict was either Pylon's own rebrand or a missing chain anchor.
+
+Landed as four branches split by surface: `upstream/2026-08-14-web-fixes` (PR #21),
+`upstream/2026-08-14-mobile-batch` (PR #24),
+`upstream/2026-08-14-preview-browser` (PR #22), and
+`upstream/2026-08-14-windows-asar` (PR #23).
+
+| Change set | Upstream                                      | Decision | Pylon reference                       | Rationale or revisit condition                                                                                                                                                                                                         |
+| ---------- | --------------------------------------------- | -------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| E1         | `59be6f784` / `#6549`                         | adopted  | `f5008cefa`                           | Simplifies the desktop-managed update copy. Conflicted only because Pylon had rebranded the string; upstream's replacement names no product, so adopting it **removes** a divergence point.                                            |
+| E2         | `e15f655ba` / `#6506`                         | adopted  | `8926156d4`                           | Background-policy tooltips appear sooner. One line.                                                                                                                                                                                    |
+| E7         | `4a2f8b04b` / `#6281`                         | adopted  | `585b39d80`                           | Thread rename survives IME composition — a real defect for CJK input, where composition previously committed the rename mid-word.                                                                                                      |
+| E10        | `038560e58` / `#6592`                         | adopted  | `0672c58f9`                           | Every titlebar control cluster shares one inset.                                                                                                                                                                                       |
+| E12        | `1a6599437` / `#6504`                         | adopted  | `ff516dc91`                           | Desktop update state gets a dedicated status icon and clearer pill. Verified it does not reintroduce the dismiss that `O1` deliberately dropped.                                                                                       |
+| E5         | `baaeda305` / `#6325`                         | adopted  | `76b236552`                           | Descriptor stops advertising agent-activity publishing without the opt-in secret **and** relay credentials. **More relevant to Pylon than upstream**: the bug fires exactly when relay credentials are absent, which is Pylon's state. |
+| E6         | `8f9ab0845` → `6ae44b418` / `#6587` → `#6589` | adopted  | `49979651a`, `7df944357`              | Git-progress overlay spacing, then naming the iOS nav-bar fallback. **Chain** — #6589 conflicts alone because #6587 introduces the neighbouring constant.                                                                              |
+| E8         | `b3b4b5779` / `#6323`                         | adopted  | `9ac000edd`                           | Preserves keyboard suggestions while typing. Touches native Swift and Kotlin; **native rebuild blocked by a full disk**, see below.                                                                                                    |
+| E9         | `21a3669ce` / `#6324`                         | adopted  | `70c06e123`                           | OTA restart crash fix. **Dormant** while Pylon's OTA is off (`PYLON_EAS_PROJECT_ID` unset), but the same commit hardens atomic writes, composer drafts, and the thread outbox against any mid-write kill, which is not dormant.        |
+| E11        | `184d8ef33` / `#6543`                         | adopted  | `fc8f7cc22`                           | **Steer active turns by default** — a queued message now sends while a turn runs. A product decision the developer explicitly asked for. **Manual port**, see below.                                                                   |
+| E3         | `710fd0eeb` → `9fd788b5a` / `#5644` → `#6021` | adopted  | `5d0ce44f7`, `523f80332`              | Browser-panel favicons, then listing only browser-ready local servers. Chain, 5,254 insertions across 40 files.                                                                                                                        |
+| E4         | `7e01d33f0` / `#5877`                         | adopted  | `a71e11c27`, `50e20e926`, `c775d1530` | Windows asar stops unpacking `node_modules` wholesale. Pylon's desktop identity lines are untouched by the diff. **Windows packaging unverifiable from macOS** — `Release Smoke` is the gate.                                          |
+
+**E11 required a manual port.** Upstream deletes `activeThreadBusy` outright and
+renames `localOutboxCount` to `queueCount`. Pylon still needs `activeThreadBusy`
+to gate session-resource reload and agent depth, and its composer has diverged
+further via the Prime Agent work in `#17`. Taken: `thread-outbox-model.ts`, its
+tests, and the drain simplification. Rejected: every composer/screen edit that
+removes the prop. Adapted: Pylon's send label said "Save pending send" when busy,
+which steering makes a lie, so `activeThreadBusy` was dropped from that condition
+only — the other two uses stand.
+
+**E3's second conflict was substantive.** Pylon showed listening state via
+`DotMatrix` dots and a three-way label; `#6021` replaces the indicator with the
+favicon and collapses the label, because non-listening servers no longer appear.
+Took upstream's side: with stale servers filtered out, the dot distinguishes
+nothing. `PulsingDot`, `DimDot`, and the `DotMatrix` import went dead and were
+removed; `BrowserMockup`'s import was already dead beforehand.
+
+Three process notes worth more than the commits:
+
+- **`git checkout --theirs` takes the whole file, not the hunk.** Using it on
+  `versionSkew.ts` for `E1` silently reverted three unrelated Pylon rebrands
+  (`"the same Pylon version"` → `"the same T3 Code version"`) in user-visible
+  copy. Caught by diffing the branch against `pylon` and finding unintended
+  changes. **Resolve hunks, then diff the branch against `pylon` before
+  trusting the result.**
+- **A conflict probe is only as good as its resolution.** The pre-review probe
+  reported `#6021` clean on top of `#5644`; that was an artifact of resolving
+  `#5644` with `--theirs`. With the correct resolution it conflicts.
+- **`vp test run` before `vp i` finishes fails misleadingly.** Six mobile test
+  files "failed" purely because the install was still running; all 123 passed on
+  re-run. Second occurrence of this; the ninth batch recorded the same trap.
+
+**Host disk hit 99% (9.5 GB free) mid-batch**, and `pod install` died with
+`no space left on device`. That is why `E8`'s native half has only static
+verification. The largest reclaimable item is
+`~/Library/Developer/XcodeBuildMCP/workspaces/pylon-192ff3ff7a51` at 9.5 GB —
+regenerable DerivedData, but shared across sessions for this repo, so it was
+left alone rather than deleted unasked. Note that `du` overstates worktrees
+badly: pnpm hardlinks from a shared store, so removing a 6.7 GB worktree freed
+about 0.1 GB.
+
+Verification: 7 tests on PR #21, 123 on #24, 234 on #22, 57 on #23; typechecks
+clean across web, mobile, contracts, client-runtime, desktop, and `t3`; `vp lint`
+clean on all four branches after fixing three `no-useless-fallback-in-spread`
+warnings that `#5877`'s new test introduced. **No browser pass on `E3`, no native
+pass on `E8`, no Android anywhere.**
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
-(see the sixth batch above); the eighth, ninth, and 2026-08-14 tenth batches
-each deferred nothing new. Entries are removed once adopted or skipped, so an
+(see the sixth batch above); the eighth through eleventh batches each deferred
+nothing new. Entries are removed once adopted or skipped, so an
 empty register means nothing is waiting._
 
 Upstream work that has been reviewed and consciously _not_ adopted yet, with
