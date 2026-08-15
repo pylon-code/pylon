@@ -75,6 +75,10 @@ function renderRunningActions(showSendWhileRunning: boolean, hasSendableContent:
       compact: true,
       pendingAction: null,
       isRunning: true,
+      // The queue affordance is provider-gated; these cases cover the plain
+      // send fallback Pylon shows when the provider has no input queue.
+      canQueueFollowUp: false,
+      onQueueFollowUp: () => {},
       showPlanFollowUpPrompt: false,
       promptHasText: hasSendableContent,
       isSendBusy: false,
