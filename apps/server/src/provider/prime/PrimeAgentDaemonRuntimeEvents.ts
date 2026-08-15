@@ -541,7 +541,6 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
         },
       ];
     case "CompactionCompleted":
-      if (event.willRetry) return [];
       return [
         {
           ...base,

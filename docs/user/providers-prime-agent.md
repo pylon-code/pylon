@@ -126,7 +126,8 @@ When Prime compacts a daemon-backed thread, Pylon shows one provider-neutral lif
 stores only constant started, completed, skipped, or failed presentation state; Prime's compaction
 instructions, generated summary, and native errors are not copied into Pylon's event store or
 remote clients. Prime still keeps the native compaction record in its private transcript for exact
-resume.
+resume. Automatic compaction keeps the current Pylon turn active while Prime performs its native
+post-compaction continuation, including a reconnect gap before the next model run starts.
 
 Automatic provider retries and Prime harness refinements also appear as provider-neutral work rows.
 Retry error text and refinement proposals, summaries, native IDs, paths, and edit details are not

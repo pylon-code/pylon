@@ -3871,17 +3871,6 @@ describe("PrimeAgentDaemonAdapter", () => {
           issue: "Prime Agent cannot steer an active context compaction.",
         });
 
-        yield* offer(captures, {
-          _tag: "CompactionCompleted",
-          outcome: "aborted",
-          willRetry: true,
-        });
-        yield* offer(captures, { _tag: "CompactionStarted" });
-        const retryStarted = yield* awaitObservedType(subscription.observed, "item.started");
-        expect(retryStarted.itemId).toBe(started.itemId);
-        expect(subscription.events.some((event) => event.type === "item.completed")).toBe(false);
-        expect(subscription.events.some((event) => event.type === "turn.completed")).toBe(false);
-
         captures.sessionStats = {
           contextUsage: { usedTokens: null, maxTokens: 200_000 },
         };
@@ -4609,6 +4598,278 @@ describe("PrimeAgentDaemonAdapter", () => {
         const providerThread = yield* adapter.readThread(threadId);
         expect(providerThread.turns.every((turn) => turn.items.length === 0)).toBe(true);
         expect(encodeUnknownJson(providerThread)).not.toContain("PRIVATE reconnect teardown cause");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "keeps a long automatic compaction and its idle reconnect gap attached to the turn",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+
+          const running = yield* adapter
+            .sendTurn({ threadId, input: "continue through compaction" })
+            .pipe(Effect.forkChild);
+          const started = yield* awaitObservedType(subscription.observed, "turn.started");
+          yield* Queue.take(captures.promptObserved!);
+
+          const toolOnlyMessage = assistantMessage("preparing the next step", "toolUse");
+          yield* offer(captures, { _tag: "RunStarted" });
+          yield* offer(captures, { _tag: "RunCompleted", messages: [toolOnlyMessage] });
+          yield* offer(captures, { _tag: "CompactionStarted" });
+          const compactionStarted = yield* awaitObservedType(subscription.observed, "item.started");
+          expect(compactionStarted).toMatchObject({
+            turnId: started.turnId,
+            payload: { itemType: "context_compaction", status: "inProgress" },
+          });
+
+          yield* TestClock.adjust(PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS + 1);
+          expect(running.pollUnsafe()).toBeUndefined();
+          expect(subscription.events.some((event) => event.type === "turn.completed")).toBe(false);
+
+          yield* offer(captures, {
+            _tag: "CompactionCompleted",
+            outcome: "completed",
+            willRetry: false,
+          });
+          const compactionCompleted = yield* awaitObservedType(
+            subscription.observed,
+            "item.completed",
+          );
+          expect(compactionCompleted).toMatchObject({
+            turnId: started.turnId,
+            itemId: compactionStarted.itemId,
+            payload: { itemType: "context_compaction", status: "completed" },
+          });
+
+          // Prime schedules the continuation after compaction. A reconnect can
+          // observe the intentional idle gap before the next agent_start.
+          yield* offer(captures, initialSnapshot());
+          yield* offer(captures, { _tag: "SessionInfoChanged", name: "idle gap barrier" });
+          yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+          expect(running.pollUnsafe()).toBeUndefined();
+          expect(subscription.events.some((event) => event.type === "runtime.error")).toBe(false);
+
+          yield* offer(captures, { _tag: "RunStarted" });
+          const finalMessage = assistantMessage("the final response after compaction");
+          yield* offer(captures, { _tag: "MessageStarted", message: finalMessage });
+          yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+          yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
+
+          const result = yield* Fiber.join(running);
+          expect(result.turnId).toBe(started.turnId);
+          const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+          expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+          expect(
+            turnEvents.some(
+              (event) =>
+                event.type === "runtime.error" &&
+                typeof event.payload.detail === "object" &&
+                event.payload.detail !== null &&
+                "kind" in event.payload.detail &&
+                event.payload.detail.kind === "missing-final-response",
+            ),
+          ).toBe(false);
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("restarts bounded handoff grace from an idle resync that replaces compaction end", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "recover a missing compaction terminal" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        const toolOnlyMessage = assistantMessage("", "toolUse");
+        yield* offer(captures, { _tag: "RunCompleted", messages: [toolOnlyMessage] });
+        yield* offer(captures, { _tag: "CompactionStarted" });
+        yield* awaitObservedType(subscription.observed, "item.started");
+        yield* TestClock.adjust(PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS + 1);
+        expect(running.pollUnsafe()).toBeUndefined();
+
+        // The reconnect snapshot is authoritative even when compaction_end was
+        // not replayed. It must replace the grace consumed by the long compaction.
+        yield* offer(captures, initialSnapshot());
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "idle resync barrier" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(running.pollUnsafe()).toBeUndefined();
+
+        yield* TestClock.adjust(PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS);
+        const result = yield* Fiber.join(running);
+        expect(result.turnId).toBe(started.turnId);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(turnEvents.find((event) => event.type === "turn.completed")).toMatchObject({
+          payload: { state: "completed" },
+        });
+        expect(
+          turnEvents.some(
+            (event) =>
+              event.type === "runtime.error" &&
+              event.payload.message ===
+                "Prime Agent could not reconcile the active turn after reconnecting.",
+          ),
+        ).toBe(false);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("completes overflow compaction before keeping its prompt retry attached", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "recover an overflowing prompt" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        const overflowMessage = {
+          ...assistantMessage("", "error"),
+          errorMessage: "PRIVATE context overflow detail",
+        } satisfies PrimeDaemonMessage;
+        yield* offer(captures, { _tag: "RunCompleted", messages: [overflowMessage] });
+        yield* offer(captures, { _tag: "CompactionStarted" });
+        const compactionStarted = yield* awaitObservedType(subscription.observed, "item.started");
+        yield* TestClock.adjust(PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS / 2);
+        yield* offer(captures, {
+          _tag: "CompactionCompleted",
+          outcome: "completed",
+          willRetry: true,
+        });
+        const compactionCompleted = yield* awaitObservedType(
+          subscription.observed,
+          "item.completed",
+        );
+        expect(compactionCompleted).toMatchObject({
+          turnId: started.turnId,
+          itemId: compactionStarted.itemId,
+          payload: { itemType: "context_compaction", status: "completed" },
+        });
+        expect(yield* adapter.getSessionCompaction!(threadId)).toMatchObject({
+          status: "idle",
+          abortable: false,
+        });
+        yield* TestClock.adjust(PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS / 2 + 1);
+        expect(running.pollUnsafe()).toBeUndefined();
+        expect(subscription.events.some((event) => event.type === "turn.completed")).toBe(false);
+
+        yield* offer(captures, { _tag: "RunStarted" });
+        const finalMessage = assistantMessage("recovered after overflow");
+        yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
+        const result = yield* Fiber.join(running);
+        expect(result.turnId).toBe(started.turnId);
+        expect(
+          subscription.events.filter(
+            (event) => event.type === "turn.completed" && event.turnId === result.turnId,
+          ),
+        ).toHaveLength(1);
+        expect(encodeUnknownJson(subscription.events)).not.toContain(
+          "PRIVATE context overflow detail",
+        );
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("does not duplicate compaction completion when overflow recovery is exhausted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "exhaust overflow recovery" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        const firstOverflow = {
+          ...assistantMessage("", "error"),
+          errorMessage: "PRIVATE first overflow",
+        } satisfies PrimeDaemonMessage;
+        yield* offer(captures, { _tag: "RunCompleted", messages: [firstOverflow] });
+        yield* offer(captures, { _tag: "CompactionStarted" });
+        yield* awaitObservedType(subscription.observed, "item.started");
+        yield* offer(captures, {
+          _tag: "CompactionCompleted",
+          outcome: "completed",
+          willRetry: true,
+        });
+        yield* awaitObservedType(subscription.observed, "item.completed");
+
+        yield* offer(captures, { _tag: "RunStarted" });
+        const secondOverflow = {
+          ...assistantMessage("", "error"),
+          errorMessage: "PRIVATE second overflow",
+        } satisfies PrimeDaemonMessage;
+        yield* offer(captures, { _tag: "RunCompleted", messages: [secondOverflow] });
+        // Prime reports exhausted recovery with compaction_end but no matching
+        // compaction_start. It is a failure notice, not a second lifecycle item.
+        yield* offer(captures, {
+          _tag: "CompactionCompleted",
+          outcome: "failed",
+          willRetry: false,
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "overflow barrier" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(
+          subscription.events.filter(
+            (event) =>
+              event.type === "item.completed" && event.payload.itemType === "context_compaction",
+          ),
+        ).toHaveLength(1);
+        expect(running.pollUnsafe()).toBeUndefined();
+
+        yield* TestClock.adjust(PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS);
+        const result = yield* Fiber.join(running);
+        expect(result.turnId).toBe(started.turnId);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(turnEvents.find((event) => event.type === "turn.completed")).toMatchObject({
+          payload: {
+            state: "failed",
+            errorMessage: "Prime Agent stopped before sending a final response.",
+          },
+        });
+        expect(encodeUnknownJson(turnEvents)).not.toContain("PRIVATE first overflow");
+        expect(encodeUnknownJson(turnEvents)).not.toContain("PRIVATE second overflow");
         yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),
