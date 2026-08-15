@@ -1220,6 +1220,10 @@ export function makePrimeAgentDaemonAdapter(
               Effect.gen(function* () {
                 const pending = turn.pendingRunCompletionHandoff;
                 if (pending === undefined || pending.sequence !== sequence) return;
+                // Prime emits agent_end before it checks for automatic compaction. A
+                // long compaction must not exhaust the short reconnect handoff grace;
+                // its terminal event or snapshot starts fresh continuation grace.
+                if (context.activeCompactionScope !== undefined) return;
                 turn.pendingRunCompletionHandoff = undefined;
                 const completionEvent =
                   turn.completedRunMessages.length === 0
@@ -1239,6 +1243,20 @@ export function makePrimeAgentDaemonAdapter(
         ),
         context.scope,
       ).pipe(Effect.asVoid);
+
+    /** Must be called with the thread lock held. */
+    const restartPendingRunCompletionHandoffLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      turn: PrimeAgentDaemonActiveTurn,
+    ) =>
+      Effect.gen(function* () {
+        const pending = turn.pendingRunCompletionHandoff;
+        if (pending === undefined) return;
+        turn.runCompletionHandoffSequence += 1;
+        const sequence = turn.runCompletionHandoffSequence;
+        turn.pendingRunCompletionHandoff = { ...pending, sequence };
+        yield* schedulePendingRunCompletionHandoff(context, turn, sequence);
+      });
 
     /** Must be called with the thread lock held. */
     const clearPendingInteractionsLocked = (
@@ -1351,6 +1369,7 @@ export function makePrimeAgentDaemonAdapter(
                 context.autoCompactionEnabled = event.state.autoCompactionEnabled;
                 context.nativeRunActive = event.state.isStreaming;
                 context.nativeBashActive = event.state.isBashRunning;
+                const compactionWasActive = context.activeCompactionScope !== undefined;
                 context.activeCompactionScope = event.state.isCompacting
                   ? (context.activeCompactionScope ?? {})
                   : undefined;
@@ -1409,6 +1428,10 @@ export function makePrimeAgentDaemonAdapter(
                         ...turn.pendingRunCompletionHandoff.event.messages,
                       );
                       turn.pendingRunCompletionHandoff = undefined;
+                    } else if (compactionWasActive && !event.state.isCompacting) {
+                      // The compaction terminal event may have been lost while
+                      // disconnected. Replace its consumed grace from the snapshot.
+                      yield* restartPendingRunCompletionHandoffLocked(context, turn);
                     }
                     // An idle snapshot can be the gap before RunStarted. Keep
                     // the bounded handoff alive until the event or timeout.
@@ -1820,16 +1843,26 @@ export function makePrimeAgentDaemonAdapter(
             Effect.gen(function* () {
               if (sessions.get(context.threadId) !== context || context.stopped) return false;
               const turn = context.activeTurn;
-              context.activeCompactionScope ??= turn === undefined ? {} : { turnId: turn.id };
-              const compactionTurnId = context.activeCompactionScope.turnId;
-              yield* publishDrafts(context, event, turn);
-              if (event.willRetry) return false;
+              const compactionScope = context.activeCompactionScope;
+              const compactionTurnId =
+                compactionScope?.turnId ?? (turn?.command === "compact" ? turn.id : undefined);
+              const pendingHandoff = turn?.pendingRunCompletionHandoff;
+              // Prime reports exhausted overflow recovery with an unmatched
+              // compaction_end. Only a previously observed compaction owns an item.
+              if (compactionScope !== undefined) yield* publishDrafts(context, event, turn);
+              // willRetry means the model prompt will continue after this completed
+              // compaction; it does not mean another compaction attempt is active.
               context.activeCompactionScope = undefined;
               context.compactionAbortRequested = false;
               yield* updateCompactionProjectionLocked(context, {
                 status: "idle",
                 abortable: false,
               });
+              if (turn !== undefined && pendingHandoff !== undefined) {
+                // Invalidate the timer created by agent_end and grant the native
+                // post-compaction continuation its own complete handoff window.
+                yield* restartPendingRunCompletionHandoffLocked(context, turn);
+              }
               if (turn?.command !== "compact" || compactionTurnId !== turn.id) return true;
               yield* settleActiveTurnLocked(
                 context,

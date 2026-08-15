@@ -714,9 +714,23 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     expect(
       mapPrimeAgentDaemonRuntimeEventDrafts({
         ...context,
-        event: { _tag: "CompactionCompleted", outcome: "aborted", willRetry: true },
+        event: { _tag: "CompactionCompleted", outcome: "completed", willRetry: true },
       }),
-    ).toEqual([]);
+    ).toEqual([
+      {
+        provider,
+        providerInstanceId,
+        threadId,
+        turnId,
+        type: "item.completed",
+        itemId: RuntimeItemId.make(`compaction:${turnId}`),
+        payload: {
+          itemType: "context_compaction",
+          status: "completed",
+          title: "Context compaction",
+        },
+      },
+    ]);
   });
 
   it("uses fixed lifecycle copy instead of native connection or close errors", () => {
