@@ -1110,6 +1110,28 @@ PR #26; typechecks clean on `t3`, `@t3tools/web`, `@t3tools/contracts`; `vp lint
 clean on both branches. **Neither got an integration pass** — no live multi-terminal
 session for `T1`, no Chrome/Safari clipboard check for `T2`.
 
+## 2026-08-15 (targeted) — `1add47b322ab1dfb5010bb363613650176b88088..ad117235b544e23545fe39143812db2ddd41af1f`
+
+**Cursor deliberately not advanced.** This was a targeted review, not a full
+batch. The developer asked whether upstream held a fix or a cause for an iOS
+crash on opening a session, so only mobile-relevant work was assessed. The
+remaining candidates in this 99-commit range are undecided, and
+`reviewed-through` stays at `1add47b32` until they are.
+
+Answer to the question that prompted it: **no**. The range holds exactly one
+mobile crash fix, `#4899`, and it guards sign-out in `SettingsAuthRouteScreen`
+— a different code path from opening a session. `git cherry` reports all 99
+commits absent from Pylon, so upstream work in this range cannot have caused
+the regression either; the crash window is Pylon's own
+`4c1830c6..24aac6537`. Every `patches/` entry except `@ff-labs__fff-node` is
+identical to upstream, which rules out patch divergence as the cause.
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                        |
+| ---------- | --------------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1         | `277a7cb44` / `#4899` | adopted  | `3b2b8d512`     | Signing out of the mobile settings account screen crashed: `UserProfileView` unmounts the instant `isSignedIn` flips false. The fix latches `hasBeenSignedIn` and pops back to `SettingsContent` instead. Clean single-file cherry-pick. Newly reachable for Pylon — mobile Connect sign-in only began working today, so this screen had never been exercised before. |
+
+Deferred register: unchanged and still empty.
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
