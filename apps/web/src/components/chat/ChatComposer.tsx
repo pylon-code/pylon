@@ -144,6 +144,7 @@ import {
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { SessionGoalControl } from "./SessionGoalControl";
 import { SessionInputQueueControl } from "./SessionInputQueueControl";
+import { resolveContextWindowModelDisplayName } from "./ContextWindowMeter.logic";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../pierre-icons";
 import { cn, randomUUID } from "~/lib/utils";
@@ -300,7 +301,7 @@ import {
   sessionHarnessRefinementScopeKey as buildSessionHarnessRefinementScopeKey,
   SESSION_HARNESS_REFINEMENT_CONFIRMATION,
 } from "../../sessionHarnessRefinement";
-import { getProviderDisplayName, getProviderInteractionModeToggle } from "../../providerModels";
+import { getProviderInteractionModeToggle } from "../../providerModels";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -495,7 +496,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
 const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(props: {
   compact: boolean;
   activeContextWindow: ReturnType<typeof deriveLatestContextWindowSnapshot>;
-  activeThreadProviderDisplayName: string | null;
+  activeThreadModelDisplayName: string | null;
   activeProviderUsageAccounts: readonly ProviderUsageAccount[];
   timestampFormat: UnifiedSettings["timestampFormat"];
   contextCompaction: import("./ContextWindowMeter").ContextCompactionControlProps | null;
@@ -531,7 +532,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
       {props.activeContextWindow || props.contextCompaction || props.harnessRefinement ? (
         <ContextWindowMeter
           usage={props.activeContextWindow}
-          providerDisplayName={props.activeThreadProviderDisplayName}
+          modelDisplayName={props.activeThreadModelDisplayName}
           timestampFormat={props.timestampFormat}
           compaction={props.contextCompaction}
           harnessRefinement={props.harnessRefinement}
@@ -1656,18 +1657,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => deriveLatestContextWindowSnapshot(activeThreadActivities ?? []),
     [activeThreadActivities],
   );
-  // The running session's instance is the source of truth for both the popover's provider
-  // name and its usage limits, so the two can never describe different providers.
+  // The running session's instance is the source of truth for the popover's usage
+  // limits, so the accounts listed can never describe a different provider. The
+  // meter's own label names the selected model rather than the provider.
   const activeThreadProviderInstanceId =
     activeThread?.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId;
-  const activeThreadProviderDisplayName = useMemo(() => {
-    if (!activeThreadProviderInstanceId) return null;
-    const entry = providerStatuses.find((p) => p.instanceId === activeThreadProviderInstanceId);
-    if (entry) {
-      return getProviderDisplayName(providerStatuses, entry.driver);
-    }
-    return formatProviderDisplayName(activeThreadProviderInstanceId);
-  }, [providerStatuses, activeThreadProviderInstanceId]);
+  const activeThreadModelDisplayName = useMemo(
+    () => resolveContextWindowModelDisplayName(activeThreadModelSelection, modelOptionsByInstance),
+    [activeThreadModelSelection, modelOptionsByInstance],
+  );
   // Every configured account for the active thread's driver, not just the one
   // the thread is bound to: Pylon routes threads across several accounts of the
   // same provider, so remaining capacity is a question about all of them.
@@ -4180,7 +4178,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   <ComposerFooterPrimaryActions
                     compact={isComposerPrimaryActionsCompact}
                     activeContextWindow={activeContextWindow}
-                    activeThreadProviderDisplayName={activeThreadProviderDisplayName}
+                    activeThreadModelDisplayName={activeThreadModelDisplayName}
                     activeProviderUsageAccounts={activeProviderUsageAccounts}
                     timestampFormat={settings.timestampFormat}
                     contextCompaction={contextCompactionControl}

@@ -5,6 +5,7 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
+import { formatContextWindowCompactionMessage } from "./ContextWindowMeter.logic";
 
 function formatPercentage(value: number | null): string | null {
   if (value === null || !Number.isFinite(value)) {
@@ -136,12 +137,12 @@ export function ContextCompactionControls(props: {
 
 export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot | null;
-  providerDisplayName?: string | null;
+  modelDisplayName?: string | null;
   timestampFormat: TimestampFormat;
   compaction?: ContextCompactionControlProps | null;
   harnessRefinement?: HarnessRefinementControlProps | null;
 }) {
-  const { usage, providerDisplayName } = props;
+  const { usage, modelDisplayName } = props;
   const usedPercentage = formatPercentage(usage?.usedPercentage ?? null);
   const normalizedPercentage = Math.max(0, Math.min(100, usage?.usedPercentage ?? 0));
   const radius = 9.75;
@@ -260,7 +261,7 @@ export function ContextWindowMeter(props: {
           ) : null}
           {usage?.compactsAutomatically && !props.compaction ? (
             <div className="mt-1 text-pretty text-secondary-label text-[11px] font-medium">
-              {providerDisplayName ?? "It"} automatically compacts its context when needed.
+              {formatContextWindowCompactionMessage(modelDisplayName)}
             </div>
           ) : null}
           {props.compaction ? <ContextCompactionControls control={props.compaction} /> : null}
