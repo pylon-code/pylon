@@ -6,6 +6,7 @@ import {
   acquireInteractionSubmissionLock,
   beginInteractionSubmission,
   interactionCommandAccepted,
+  interactionSubmissionMatchesActive,
   reconcileInteractionSubmission,
   releaseInteractionSubmissionLock,
 } from "./interactionSubmission";
@@ -13,6 +14,17 @@ import {
 const requestId = SessionInteractionRequestId.make("opaque-1");
 
 describe("interaction submission lifecycle", () => {
+  it("does not match two absent interaction requests", () => {
+    expect(interactionSubmissionMatchesActive(null, null)).toBe(false);
+    const submitting = beginInteractionSubmission(
+      requestId,
+      { kind: "confirmed", confirmed: true },
+      null,
+    );
+    expect(interactionSubmissionMatchesActive(submitting, null)).toBe(false);
+    expect(interactionSubmissionMatchesActive(submitting, requestId)).toBe(true);
+  });
+
   it("synchronously rejects a same-tick duplicate response", () => {
     const lock: { current: typeof requestId | null } = { current: null };
     expect(acquireInteractionSubmissionLock(lock, requestId)).toBe(true);
