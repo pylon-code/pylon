@@ -18,6 +18,7 @@ import type {
 import {
   getServerProviderSupportedRuntimeModes,
   resolveServerProviderRuntimeMode,
+  isProviderSendTurnSupportedImageMimeType,
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -3053,6 +3054,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     for (const file of files) {
       if (!file.type.startsWith("image/")) {
         error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
+        continue;
+      }
+      if (!isProviderSendTurnSupportedImageMimeType(file.type)) {
+        error = `'${file.name}' is not a supported image type. Attach GIF, JPEG, PNG, or WebP images.`;
         continue;
       }
       if (reservedCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
