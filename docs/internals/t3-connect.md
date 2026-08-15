@@ -39,9 +39,17 @@ identifiers, not secrets.
 Web, desktop, mobile, and bundled server builds statically inject the values they consume during
 their build step. A built artifact does not need an environment file at runtime. CI release builds
 should set `T3CODE_CLERK_PUBLISHABLE_KEY`, `T3CODE_CLERK_JWT_TEMPLATE`,
-`T3CODE_CLERK_CLI_OAUTH_CLIENT_ID`, and `T3CODE_RELAY_URL` before building. EAS preview and
-production builds only need the Clerk publishable key, JWT template name, and relay URL in their EAS
-environment.
+`T3CODE_CLERK_CLI_OAUTH_CLIENT_ID`, and `T3CODE_RELAY_URL` before building.
+
+Mobile is the exception, because EAS build servers read their own environment store rather than the
+checkout: a repository-root `.env` is gitignored and never reaches them. The GitHub `production`
+environment stays the single source of truth, and `mobile-eas-production.yml` mirrors those values
+into the EAS `production`, `preview`, and `development` environments before it builds. Both mobile
+workflows then run `scripts/verify-mobile-connect-config.ts`, which resolves the public app manifest
+and fails the job when `clerk.publishableKey`, `clerk.jwtTemplate`, or `relay.url` is absent. That
+check exists because the failure is otherwise invisible: `hasCloudPublicConfig()` omits every Connect
+surface with no error and no empty state, so a misconfigured build looks like an app that simply
+never had the feature.
 
 When any client-facing public value is absent, cloud UI is omitted. The `t3 connect` command group is
 always registered: when the CLI public values are absent, `makeCli` in `apps/server/src/bin.ts`

@@ -88,6 +88,13 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: eas env:pull preview --non-interactive
 
+      # The preview environment is a mirror; the production workflow refreshes it
+      # from the GitHub `production` environment. Fail here rather than hand a
+      # reviewer a build whose Connect surfaces are silently missing.
+      - name: Verify Connect config reaches the app manifest
+        if: steps.expo-token.outputs.present == 'true'
+        run: node scripts/verify-mobile-connect-config.ts
+
       - name: Deploy with fingerprint check
         if: steps.expo-token.outputs.present == 'true'
         # Pinned to a release rather than @main: this is the only action reference
