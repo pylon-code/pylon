@@ -244,8 +244,22 @@ codesign --verify --deep --strict "/Applications/Pylon (Alpha).app"
 codesign -d --entitlements :- "/Applications/Pylon (Alpha).app"
 ```
 
-The current mobile UI uses Clerk's native authentication view. If a future mobile browser OAuth
-flow uses a custom redirect URI, add that exact URI to the same allowlist.
+The mobile UI uses Clerk's native authentication view (`AuthView` from `@clerk/expo/native`). That
+view derives its redirect from the **iOS bundle identifier**, not from the app's URL scheme, so each
+variant needs its own entry in the same allowlist:
+
+```text
+com.pylon.code://callback
+com.pylon.code.preview://callback
+com.pylon.code.dev://callback
+```
+
+A missing entry fails at the end of the sign-in flow, not at launch: Clerk renders "The current
+redirect url passed in the sign in or sign up request does not match an authorized redirect URI for
+this instance" and names the rejected URI. Read that URI off the error rather than deriving it —
+it is the exact string the allowlist needs. Note that these are bundle identifiers
+(`com.pylon.code.preview`), while the desktop entries above are URL schemes (`pylon-code`); the two
+namespaces are easy to confuse.
 
 ## Sign-in Surfaces
 
