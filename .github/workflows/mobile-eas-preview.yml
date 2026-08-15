@@ -66,7 +66,15 @@ jobs:
         if: steps.expo-token.outputs.present == 'true'
         uses: expo/expo-github-action@v8
         with:
-          eas-version: latest
+          # Pinned below eas-cli 22 for continuous-deploy-fingerprint, which still
+          # reads `build.project.ownerAccount` when it posts the PR comment. eas-cli
+          # 22 renamed those build JSON fields (project → app, channel →
+          # updateChannel, runtimeVersion → runtime), so `project` is undefined and
+          # the step fails after the builds have already succeeded.
+          # See https://github.com/expo/expo-github-action/issues/358 — raise this
+          # back to `latest` once that issue closes. The production workflow stays
+          # on `latest` because it calls eas directly and never runs this action.
+          eas-version: 21.8.0
           token: ${{ secrets.EXPO_TOKEN }}
           # npm, not pnpm: this only installs eas-cli into the action's own
           # tool dir, and pnpm 11 hard-fails that install on dtrace-provider's
@@ -82,7 +90,11 @@ jobs:
 
       - name: Deploy with fingerprint check
         if: steps.expo-token.outputs.present == 'true'
-        uses: expo/expo-github-action/continuous-deploy-fingerprint@main
+        # Pinned to a release rather than @main: this is the only action reference
+        # in the repository that tracked an unreleased branch, so it could change
+        # under CI without a commit here. The sub-action does not exist in v8, which
+        # is why the setup action above is a different major.
+        uses: expo/expo-github-action/continuous-deploy-fingerprint@v9
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         with:
