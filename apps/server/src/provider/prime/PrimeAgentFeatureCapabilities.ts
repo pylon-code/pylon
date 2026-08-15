@@ -110,8 +110,8 @@ export function makePrimeAgentFeatureCapabilities(input: {
     resources: {
       support: "read-write",
       reason:
-        "Pylon shows safe session-scoped commands and can explicitly reload full-access sessions while idle; supervised reload, packages, and MCP controls are unavailable.",
-      operations: ["commands", "reload"],
+        "Pylon shows bounded session-scoped skill and prompt metadata plus bounded commands, and can explicitly reload full-access sessions while idle; supervised reload, packages, and MCP controls are unavailable.",
+      operations: ["skills", "prompts", "commands", "reload"],
     },
     inputQueue: input.inputQueue
       ? {

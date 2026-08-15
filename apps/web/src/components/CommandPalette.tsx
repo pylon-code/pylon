@@ -34,6 +34,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   LinkIcon,
+  LibraryIcon,
   MessageCircleQuestionIcon,
   MessageSquareIcon,
   PaletteIcon,
@@ -1469,6 +1470,25 @@ function OpenCommandPaletteDialog(props: {
         await new Promise<void>((resolve) => {
           window.requestAnimationFrame(() => {
             composerHandleRef?.current?.openQuickQuestion();
+            resolve();
+          });
+        });
+      },
+    });
+  }
+
+  if (composerHandleRef?.current?.canOpenSessionResources()) {
+    actionItems.push({
+      kind: "action",
+      value: "action:session-resources",
+      searchTerms: ["session resources", "skills", "prompts", "provider"],
+      title: "Session resources",
+      description: "Browse skills and prompts saved for the current session",
+      icon: <LibraryIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => {
+            composerHandleRef?.current?.openSessionResources();
             resolve();
           });
         });

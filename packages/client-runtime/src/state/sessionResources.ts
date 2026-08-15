@@ -28,6 +28,56 @@ export function deriveLatestSessionResources(
   return null;
 }
 
+/** Ignore a retained inventory captured before the current provider-session incarnation. */
+export function deriveCurrentSessionResources(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  providerInstanceId: ProviderInstanceId,
+  sessionStartedAt: string | undefined,
+): SessionResourcesSnapshot | null {
+  const snapshot = deriveLatestSessionResources(activities, providerInstanceId);
+  if (snapshot === null || sessionStartedAt === undefined) return null;
+  return Date.parse(snapshot.updatedAt) >= Date.parse(sessionStartedAt) ? snapshot : null;
+}
+
+export function sessionResourceViewIdentity(input: {
+  readonly environmentId: string;
+  readonly threadId: string;
+  readonly providerInstanceId: string | undefined;
+  readonly sessionStartedAt: string | undefined;
+}): string {
+  return JSON.stringify([
+    input.environmentId,
+    input.threadId,
+    input.providerInstanceId ?? null,
+    input.sessionStartedAt ?? null,
+  ]);
+}
+
+export type SessionResourceInventory = {
+  readonly skills: SessionResourcesSnapshot["skills"];
+  readonly prompts: SessionResourcesSnapshot["prompts"];
+  readonly showSkills: boolean;
+  readonly showPrompts: boolean;
+};
+
+/** Project only resource categories the active provider truthfully advertises. */
+export function presentSessionResourceInventory(
+  snapshot: SessionResourcesSnapshot | null,
+  provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
+): SessionResourceInventory | null {
+  const resources = provider?.featureCapabilities?.resources;
+  if (snapshot?.available !== true || resources?.support === "unavailable") return null;
+  const showSkills = resources?.operations.includes("skills") === true;
+  const showPrompts = resources?.operations.includes("prompts") === true;
+  if (!showSkills && !showPrompts) return null;
+  return {
+    skills: showSkills ? snapshot.skills : [],
+    prompts: showPrompts ? snapshot.prompts : [],
+    showSkills,
+    showPrompts,
+  };
+}
+
 /** Prefer session-scoped native commands when the live catalog is available. */
 export function resolveSessionSlashCommands(
   snapshot: SessionResourcesSnapshot | null,

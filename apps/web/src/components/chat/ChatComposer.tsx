@@ -50,9 +50,11 @@ import {
   supportsSessionInputQueueSetModes,
 } from "@t3tools/client-runtime/state/session-input-queue";
 import {
-  deriveLatestSessionResources,
+  deriveCurrentSessionResources,
   formatProviderSlashCommandDescription,
+  presentSessionResourceInventory,
   resolveSessionSlashCommands,
+  sessionResourceViewIdentity,
   supportsSessionResourceReload,
 } from "@t3tools/client-runtime/state/session-resources";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
@@ -277,6 +279,7 @@ import {
   LockIcon,
   LockOpenIcon,
   PenLineIcon,
+  LibraryIcon,
   RefreshCwIcon,
   SparklesIcon,
   XIcon,
@@ -318,6 +321,7 @@ import type { ReviewCommentContext } from "../../reviewCommentContext";
 import type { ThreadHandoffOffer } from "./ThreadHandoff.logic";
 import { ThreadHandoffTab } from "./ThreadHandoffTab";
 import { QuickQuestionDialog } from "./QuickQuestionDialog";
+import { SessionResourcesDialog } from "./SessionResourcesDialog";
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -564,6 +568,8 @@ export interface ChatComposerHandle {
   isModelPickerOpen: () => boolean;
   canOpenQuickQuestion: () => boolean;
   openQuickQuestion: () => boolean;
+  canOpenSessionResources: () => boolean;
+  openSessionResources: () => boolean;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -1516,22 +1522,44 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }
     : null;
 
-  const sessionResources = useMemo(
-    () => deriveLatestSessionResources(activeThreadActivities ?? [], selectedInstanceId),
-    [activeThreadActivities, selectedInstanceId],
+  const activeSessionResources = useMemo(() => {
+    const instanceId = activeThread?.session?.providerInstanceId;
+    return instanceId === undefined
+      ? null
+      : deriveCurrentSessionResources(
+          activeThreadActivities ?? [],
+          instanceId,
+          activeThread?.session?.startedAt,
+        );
+  }, [activeThread?.session, activeThreadActivities]);
+  const sessionResourceInventory = useMemo(
+    () => presentSessionResourceInventory(activeSessionResources, activeSessionProviderStatus),
+    [activeSessionProviderStatus, activeSessionResources],
   );
+  const [isSessionResourcesOpen, setIsSessionResourcesOpen] = useState(false);
+  const sessionResourcesIdentity = sessionResourceViewIdentity({
+    environmentId,
+    threadId: activeThreadId ?? "none",
+    providerInstanceId: activeThread?.session?.providerInstanceId,
+    sessionStartedAt: activeThread?.session?.startedAt,
+  });
+  useEffect(() => {
+    setIsSessionResourcesOpen(false);
+  }, [sessionResourcesIdentity]);
   const providerSlashCommands = useMemo(
     () =>
       resolveSessionSlashCommands(
-        selectedProviderStatus?.featureCapabilities?.resources?.operations.includes("commands")
-          ? sessionResources
+        selectedProviderStatus?.featureCapabilities?.resources?.operations.includes("commands") &&
+          activeSessionResources?.providerInstanceId === selectedInstanceId
+          ? activeSessionResources
           : null,
         selectedProviderStatus?.slashCommands ?? [],
       ),
     [
       selectedProviderStatus?.featureCapabilities?.resources?.operations,
       selectedProviderStatus?.slashCommands,
-      sessionResources,
+      activeSessionResources,
+      selectedInstanceId,
     ],
   );
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
@@ -3273,6 +3301,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         setIsQuickQuestionOpen(true);
         return true;
       },
+      canOpenSessionResources: () => sessionResourceInventory !== null,
+      openSessionResources: () => {
+        if (sessionResourceInventory === null) return false;
+        setIsSessionResourcesOpen(true);
+        return true;
+      },
       readSnapshot: () => {
         return readComposerSnapshot();
       },
@@ -3364,6 +3398,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       applyPromptReplacement,
       isComposerModelPickerOpen,
       quickQuestionAvailable,
+      sessionResourceInventory,
       readComposerSnapshot,
       selectedModel,
       selectedModelOptionsForDispatch,
@@ -4052,7 +4087,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       </TooltipPopup>
                     </Tooltip>
                   ) : null}
-                  {showSessionResourceReload ? (
+                  {sessionResourceInventory !== null ? (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <ComposerControl
+                            type="button"
+                            aria-label={`Session resources: ${sessionResourceInventory.skills.length} skills, ${sessionResourceInventory.prompts.length} prompts`}
+                            onClick={() => setIsSessionResourcesOpen(true)}
+                          />
+                        }
+                      >
+                        <ComposerControlIcon icon={LibraryIcon} />
+                        <span className="text-xs font-medium">
+                          Resources ·{" "}
+                          {sessionResourceInventory.skills.length +
+                            sessionResourceInventory.prompts.length}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipPopup side="top">
+                        Browse saved session skills and prompts
+                      </TooltipPopup>
+                    </Tooltip>
+                  ) : showSessionResourceReload ? (
                     <Tooltip>
                       <TooltipTrigger
                         render={
@@ -4129,6 +4186,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onAsk={onAskQuickQuestion}
         onCancel={onCancelQuickQuestion}
       />
+      {sessionResourceInventory !== null && activeSessionResources !== null ? (
+        <SessionResourcesDialog
+          identity={sessionResourcesIdentity}
+          inventory={sessionResourceInventory}
+          snapshot={activeSessionResources}
+          open={isSessionResourcesOpen}
+          onOpenChange={setIsSessionResourcesOpen}
+          showReload={showSessionResourceReload}
+          reloadDisabled={sessionResourceReloadDisabled}
+          isReloading={isReloadingSessionResources}
+          onReload={reloadSessionResources}
+        />
+      ) : null}
     </>
   );
 });

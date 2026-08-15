@@ -33,7 +33,7 @@ import {
   supportsSessionInputQueueRemove,
   supportsSessionInputQueueSetModes,
 } from "@t3tools/client-runtime/state/session-input-queue";
-import { deriveLatestSessionResources } from "@t3tools/client-runtime/state/session-resources";
+import { deriveCurrentSessionResources } from "@t3tools/client-runtime/state/session-resources";
 import {
   canMessageSessionAgent,
   foldSubagentActivities,
@@ -195,13 +195,17 @@ export function useThreadComposerState() {
   const selectedThreadQueueCount = selectedThreadQueuedMessages.length;
   const selectedThread = selectedThreadDetail ?? selectedThreadShell;
   const modelSelection = selectedDraft?.modelSelection ?? selectedThread?.modelSelection ?? null;
-  const selectedThreadResources = useMemo(
-    () =>
-      selectedThreadDetail && modelSelection
-        ? deriveLatestSessionResources(selectedThreadDetail.activities, modelSelection.instanceId)
-        : null,
-    [modelSelection, selectedThreadDetail],
-  );
+  const selectedThreadResources = useMemo(() => {
+    const session = selectedThreadDetail?.session;
+    const instanceId = session?.providerInstanceId;
+    return selectedThreadDetail && instanceId
+      ? deriveCurrentSessionResources(
+          selectedThreadDetail.activities,
+          instanceId,
+          session.startedAt,
+        )
+      : null;
+  }, [selectedThreadDetail]);
   const selectedThreadAgentDepth = useMemo(() => {
     const instanceId = selectedThreadDetail?.session?.providerInstanceId;
     return selectedThreadDetail && instanceId
