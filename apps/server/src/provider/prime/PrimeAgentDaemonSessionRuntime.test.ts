@@ -2418,7 +2418,7 @@ describe("Prime Agent live activity privacy boundary", () => {
     expect(entries.every((entry) => Object.keys(entry).length <= 4)).toBe(true);
   });
 
-  it("hydrates only a coarse tool skeleton and maps Code without native details", () => {
+  it("hydrates only a coarse tool skeleton and maps IPython without native details", () => {
     const entries = sanitizePrimeAgentLiveActivityMessages([
       {
         role: "assistant",
@@ -2441,10 +2441,12 @@ describe("Prime Agent live activity privacy boundary", () => {
         timestamp: 123,
       },
     ]);
-    expect(entries).toEqual([{ kind: "tool", activityId: 1, label: "Code", status: "completed" }]);
+    expect(entries).toEqual([
+      { kind: "tool", activityId: 1, label: "IPython", status: "completed" },
+    ]);
     expect(Object.keys(entries[0] ?? {}).sort()).toEqual(["activityId", "kind", "label", "status"]);
-    expect(primeAgentLiveActivityToolLabel("ipython")).toBe("Code");
-    expect(primeAgentLiveActivityToolLabel("functions.ipython")).toBe("Code");
+    expect(primeAgentLiveActivityToolLabel("ipython")).toBe("IPython");
+    expect(primeAgentLiveActivityToolLabel("functions.ipython")).toBe("IPython");
     expect(primeAgentLiveActivityToolLabel("/private/custom-tool")).toBe("Tool");
   });
 
@@ -2531,8 +2533,8 @@ describe("Prime Agent live activity privacy boundary", () => {
         const collected = Array.from(yield* Fiber.join(fiber));
         expect(collected).toEqual([
           [],
-          [{ kind: "tool", activityId: 1, label: "Code", status: "started" }],
-          [{ kind: "tool", activityId: 1, label: "Code", status: "failed" }],
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "started" }],
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "failed" }],
         ]);
         expect(
           collected
@@ -2594,8 +2596,8 @@ describe("Prime Agent live activity privacy boundary", () => {
 
         expect(Array.from(yield* Fiber.join(fiber))).toEqual([
           [],
-          [{ kind: "tool", activityId: 1, label: "Code", status: "started" }],
-          [{ kind: "tool", activityId: 1, label: "Code", status: "completed" }],
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "started" }],
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "completed" }],
         ]);
       }),
     ),
@@ -2664,9 +2666,9 @@ describe("Prime Agent live activity privacy boundary", () => {
 
         const collected = Array.from(yield* Fiber.join(fiber));
         expect(collected).toEqual([
-          [{ kind: "tool", activityId: 1, label: "Code", status: "completed" }],
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "completed" }],
           [
-            { kind: "tool", activityId: 1, label: "Code", status: "completed" },
+            { kind: "tool", activityId: 1, label: "IPython", status: "completed" },
             { speaker: "assistant", text: "After the tool" },
           ],
         ]);
@@ -3078,11 +3080,11 @@ describe("Prime Agent live activity privacy boundary", () => {
         );
 
         expect(Array.from(yield* Fiber.join(fiber))).toEqual([
-          [{ kind: "tool", activityId: 1, label: "Code", status: "started" }],
-          [{ kind: "tool", activityId: 2, label: "Code", status: "started" }],
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "started" }],
+          [{ kind: "tool", activityId: 2, label: "IPython", status: "started" }],
           [
-            { kind: "tool", activityId: 2, label: "Code", status: "started" },
-            { kind: "tool", activityId: 3, label: "Code", status: "started" },
+            { kind: "tool", activityId: 2, label: "IPython", status: "started" },
+            { kind: "tool", activityId: 3, label: "IPython", status: "started" },
           ],
         ]);
       }),

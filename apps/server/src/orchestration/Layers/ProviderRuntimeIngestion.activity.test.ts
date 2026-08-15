@@ -464,19 +464,19 @@ describe("runtimeEventToActivities Prime tool lifecycle", () => {
 
     expect(started).toMatchObject({
       kind: "tool.started",
-      summary: "Code started",
+      summary: "IPython started",
       payload: { itemType: "command_execution", status: "inProgress" },
     });
     expect(updated).toMatchObject({
       id: started?.id,
       kind: "tool.updated",
-      summary: "Code",
+      summary: "IPython",
       payload: { itemType: "command_execution", status: "inProgress" },
     });
     expect(completed).toMatchObject({
       id: started?.id,
       kind: "tool.completed",
-      summary: "Code",
+      summary: "IPython",
       payload: { itemType: "command_execution", status: "failed" },
     });
     expect(started?.id).toMatch(/^prime-tool:[0-9a-f]{64}$/);

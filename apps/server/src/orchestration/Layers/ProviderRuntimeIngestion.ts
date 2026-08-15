@@ -472,7 +472,7 @@ function toolLifecycleActivityStatus(event: ToolLifecycleRuntimeEvent) {
 }
 
 const PRIME_TOOL_ACTIVITY_TITLES = new Set([
-  "Code",
+  "IPython",
   "Shell",
   "Edit",
   "Read",
@@ -493,7 +493,7 @@ function toolLifecycleActivityTitle(
   }
   switch (event.payload.itemType) {
     case "command_execution":
-      return "Code";
+      return "IPython";
     case "file_change":
       return "Edit";
     case "web_search":

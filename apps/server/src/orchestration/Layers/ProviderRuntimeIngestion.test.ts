@@ -3703,7 +3703,7 @@ describe("ProviderRuntimeIngestion", () => {
       payload: {
         itemType: "command_execution",
         status: "inProgress",
-        title: "Code",
+        title: "IPython",
         detail: "print(process.env.PRIVATE_TOKEN)",
         data: { path: "/private/worktree" },
       },
@@ -3719,7 +3719,7 @@ describe("ProviderRuntimeIngestion", () => {
       payload: {
         itemType: "command_execution",
         status: "inProgress",
-        title: "Code",
+        title: "IPython",
         detail: "progress sk-secret-progress",
         data: { output: "raw secret output" },
       },
@@ -3735,7 +3735,7 @@ describe("ProviderRuntimeIngestion", () => {
       payload: {
         itemType: "command_execution",
         status: "failed",
-        title: "Code",
+        title: "IPython",
         detail: "failed at /private/worktree/credentials.json",
         data: { result: "sk-secret-result" },
       },
@@ -3744,7 +3744,7 @@ describe("ProviderRuntimeIngestion", () => {
     const thread = await waitForThread(harness.readModel, (entry) =>
       entry.activities.some(
         (activity: ProviderRuntimeTestActivity) =>
-          activity.kind === "tool.completed" && activity.summary === "Code",
+          activity.kind === "tool.completed" && activity.summary === "IPython",
       ),
     );
     const activities = thread.activities.filter(
@@ -3757,7 +3757,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activities[0]).toMatchObject({
       id: expect.stringMatching(/^prime-tool:[0-9a-f]{64}$/),
       kind: "tool.completed",
-      summary: "Code",
+      summary: "IPython",
       payload: { itemType: "command_execution", status: "failed" },
     });
     const serialized = JSON.stringify(activities);

@@ -162,7 +162,7 @@ export function primeAgentLiveActivityToolLabel(toolName: unknown): string {
   switch (toolName.trim().toLowerCase()) {
     case "ipython":
     case "functions.ipython":
-      return "Code";
+      return "IPython";
     case "bash":
     case "functions.bash":
       return "Shell";

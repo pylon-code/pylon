@@ -259,17 +259,17 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
 
     expect(started).toMatchObject({
       type: "item.started",
-      payload: { itemType: "command_execution", status: "inProgress", title: "Code" },
+      payload: { itemType: "command_execution", status: "inProgress", title: "IPython" },
     });
     expect(updated).toMatchObject({
       type: "item.updated",
       itemId: started?.itemId,
-      payload: { itemType: "command_execution", status: "inProgress", title: "Code" },
+      payload: { itemType: "command_execution", status: "inProgress", title: "IPython" },
     });
     expect(completed).toMatchObject({
       type: "item.completed",
       itemId: started?.itemId,
-      payload: { itemType: "command_execution", status: "failed", title: "Code" },
+      payload: { itemType: "command_execution", status: "failed", title: "IPython" },
     });
     expect(started?.itemId).toMatch(/^prime-tool:[0-9a-f]{32}$/);
     expect(JSON.stringify([started, updated, completed])).not.toContain(nativeItemId);
@@ -295,7 +295,7 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     expect(ipython?.payload).toMatchObject({
       itemType: "command_execution",
       status: "inProgress",
-      title: "Code",
+      title: "IPython",
     });
 
     const privateToolName = `edit_${"x".repeat(5_000)}`;
