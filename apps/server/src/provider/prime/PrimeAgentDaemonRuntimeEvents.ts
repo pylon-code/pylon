@@ -15,6 +15,12 @@ import type {
   PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonSessionStats } from "./PrimeAgentDaemonSessionRuntime.ts";
+import {
+  PRIME_AGENT_FINISHED_WITHOUT_FINAL_RESPONSE,
+  PRIME_AGENT_STOPPED_WITHOUT_FINAL_RESPONSE,
+  PRIME_AGENT_TURN_FAILED,
+  primeAgentMissingFinalResponseDetail,
+} from "./PrimeAgentTerminalResponse.ts";
 
 type RuntimeEventDraft<Event> = Event extends ProviderRuntimeEvent
   ? Omit<Event, "eventId" | "createdAt">
@@ -28,6 +34,7 @@ interface RuntimeEventContext {
   readonly providerInstanceId?: ProviderInstanceId | undefined;
   readonly threadId: ThreadId;
   readonly turnId?: TurnId | undefined;
+  readonly assistantItemId?: RuntimeItemId | undefined;
 }
 
 const MAX_TEXT_LENGTH = 100_000;
@@ -105,8 +112,11 @@ export function mapPrimeAgentContextUsageDraft(input: {
   };
 }
 
-function assistantItemId(turnId: TurnId | undefined): RuntimeItemId | undefined {
-  return turnId === undefined ? undefined : RuntimeItemId.make(`assistant:${turnId}`);
+function assistantItemId(input: RuntimeEventContext): RuntimeItemId | undefined {
+  return (
+    input.assistantItemId ??
+    (input.turnId === undefined ? undefined : RuntimeItemId.make(`assistant:${input.turnId}`))
+  );
 }
 
 function reasoningItemId(turnId: TurnId | undefined): RuntimeItemId | undefined {
@@ -318,6 +328,7 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
   readonly providerInstanceId?: ProviderInstanceId | undefined;
   readonly threadId: ThreadId;
   readonly turnId?: TurnId | undefined;
+  readonly assistantItemId?: RuntimeItemId | undefined;
   readonly assistantTextStreamed?: boolean | undefined;
 }): ReadonlyArray<PrimeAgentRuntimeEventDraft> {
   const context: RuntimeEventContext = input;
@@ -337,45 +348,67 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
 
       const runMessages = assistantMessages(event.messages);
       const message = runMessages.at(-1);
-      if (message === undefined) {
-        return [
-          {
-            ...base,
-            type: "turn.completed",
-            payload: {
-              state: "failed",
-              errorMessage: "Prime Agent completed the run without an assistant message.",
-            },
-          },
-          ready,
-        ];
-      }
-
-      const errorMessage = boundedNonEmpty(message.errorMessage);
+      const nativeError = boundedNonEmpty(message?.errorMessage);
       const state =
-        message.stopReason === "aborted"
+        message?.stopReason === "aborted"
           ? "cancelled"
-          : message.stopReason === "error" || errorMessage !== undefined
+          : message?.stopReason === "error" || nativeError !== undefined
             ? "failed"
             : "completed";
+      const hasFinalResponse =
+        boundedNonEmpty(message?.text) !== undefined &&
+        message?.stopReason !== "toolUse" &&
+        message?.toolCalls.length === 0;
+      const missingFinalResponse = state !== "cancelled" && !hasFinalResponse;
       const usage = aggregateAssistantUsage(runMessages);
       const completed: PrimeAgentRuntimeEventDraft = {
         ...base,
         type: "turn.completed",
         payload: {
           state,
-          stopReason: message.stopReason,
+          ...(message === undefined ? {} : { stopReason: message.stopReason }),
           usage: turnUsage(usage),
           totalCostUsd: usage.totalCostUsd,
-          ...(errorMessage === undefined ? {} : { errorMessage }),
+          ...(state !== "failed"
+            ? {}
+            : {
+                errorMessage: missingFinalResponse
+                  ? PRIME_AGENT_STOPPED_WITHOUT_FINAL_RESPONSE
+                  : PRIME_AGENT_TURN_FAILED,
+              }),
         },
       };
-      return [completed, ready];
+      const terminalNotice: ReadonlyArray<PrimeAgentRuntimeEventDraft> = !missingFinalResponse
+        ? []
+        : state === "failed"
+          ? [
+              {
+                ...base,
+                type: "runtime.error",
+                payload: {
+                  message: PRIME_AGENT_STOPPED_WITHOUT_FINAL_RESPONSE,
+                  class: "provider_error",
+                  detail: primeAgentMissingFinalResponseDetail("failed"),
+                },
+              },
+            ]
+          : [
+              {
+                ...base,
+                type: "runtime.warning",
+                payload: {
+                  message: PRIME_AGENT_FINISHED_WITHOUT_FINAL_RESPONSE,
+                  detail: primeAgentMissingFinalResponseDetail("completed"),
+                },
+              },
+            ];
+      return [...terminalNotice, completed, ready];
     }
+
     case "TurnStarted":
       return [];
     case "MessageStarted": {
-      const itemId = event.message.role === "assistant" ? assistantItemId(input.turnId) : undefined;
+      const itemId = event.message.role === "assistant" ? assistantItemId(context) : undefined;
       return itemId === undefined
         ? []
         : [
@@ -388,10 +421,11 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
           ];
     }
     case "MessageCompleted": {
-      const itemId = event.message.role === "assistant" ? assistantItemId(input.turnId) : undefined;
+      const itemId = event.message.role === "assistant" ? assistantItemId(context) : undefined;
       if (itemId === undefined || event.message.role !== "assistant") return [];
-      const errorMessage = boundedNonEmpty(event.message.errorMessage);
-      const failed = event.message.stopReason === "error" || errorMessage !== undefined;
+      const failed =
+        event.message.stopReason === "error" ||
+        boundedNonEmpty(event.message.errorMessage) !== undefined;
       const completed: PrimeAgentRuntimeEventDraft = {
         ...base,
         type: "item.completed",
@@ -399,7 +433,6 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
         payload: {
           itemType: "assistant_message",
           status: failed ? "failed" : "completed",
-          ...(errorMessage === undefined ? {} : { detail: errorMessage }),
         },
       };
       const finalText =
@@ -419,7 +452,7 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
     case "AssistantStream": {
       if (event.kind === "toolCall" || event.phase === "done" || event.phase === "error") return [];
       if (event.kind === "text") {
-        const itemId = assistantItemId(input.turnId);
+        const itemId = assistantItemId(context);
         return event.phase !== "delta" || itemId === undefined || event.delta === undefined
           ? []
           : [
@@ -600,27 +633,27 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
         },
       ];
     case "ConnectionStatus": {
-      const reason = boundedNonEmpty(event.error, MAX_SCALAR_LENGTH);
+      const hasError = boundedNonEmpty(event.error, MAX_SCALAR_LENGTH) !== undefined;
       return [
         {
           ...base,
           type: "session.state.changed",
           payload: {
             state: event.status === "connected" ? "ready" : "starting",
-            ...(reason === undefined ? {} : { reason }),
+            ...(hasError ? { reason: "Prime Agent connection is unavailable." } : {}),
           },
         },
       ];
     }
     case "SessionClosed": {
-      const reason = boundedNonEmpty(event.error);
+      const hasError = boundedNonEmpty(event.error) !== undefined;
       return [
         {
           ...base,
           type: "session.exited",
           payload: {
-            exitKind: reason === undefined ? "graceful" : "error",
-            ...(reason === undefined ? {} : { reason }),
+            exitKind: hasError ? "error" : "graceful",
+            ...(hasError ? { reason: "Prime Agent session closed unexpectedly." } : {}),
           },
         },
       ];

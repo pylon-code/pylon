@@ -2,6 +2,7 @@ import * as Equal from "effect/Equal";
 import {
   formatDuration,
   workEntryIndicatesToolNeutralStatus,
+  workLogEntryIsMissingResponse,
   workLogEntryIsToolLike,
   type TimelineEntry,
   type TurnPlanEntry,
@@ -393,7 +394,10 @@ function deriveTurnFolds(input: {
       // Agent-spawn CTA rows never fold: workflows outlive their launching
       // turn (dynamic spawns, background execution), and folding the CTA
       // when the turn settles makes a still-running fleet invisible.
-      if (entry.kind === "work" && entry.entry.agentSpawn !== undefined) {
+      if (
+        entry.kind === "work" &&
+        (entry.entry.agentSpawn !== undefined || workLogEntryIsMissingResponse(entry.entry))
+      ) {
         continue;
       }
       hiddenEntryIds.add(entry.id);
@@ -508,8 +512,10 @@ export function deriveMessagesTimelineRows(input: {
       while (cursor < input.timelineEntries.length) {
         const nextEntry = input.timelineEntries[cursor];
         if (
+          workLogEntryIsMissingResponse(timelineEntry.entry) ||
           !nextEntry ||
           nextEntry.kind !== "work" ||
+          workLogEntryIsMissingResponse(nextEntry.entry) ||
           collapsedEntryIds.has(nextEntry.id) ||
           foldsByAnchorEntryId.has(nextEntry.id)
         ) {

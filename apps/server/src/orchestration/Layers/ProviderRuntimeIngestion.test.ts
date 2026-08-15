@@ -3179,6 +3179,65 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activityPayload?.message).toBe("runtime activity exploded");
   });
 
+  it("persists a textless completion notice without fabricating an assistant message", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const turnId = asTurnId("turn-textless-completion");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-textless-turn-started"),
+      provider: ProviderDriverKind.make("primeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    });
+    harness.emit({
+      type: "runtime.warning",
+      eventId: asEventId("evt-textless-completion-notice"),
+      provider: ProviderDriverKind.make("primeAgent"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        message: "Prime Agent finished without sending a final response.",
+        detail: { kind: "missing-final-response", outcome: "completed" },
+      },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-textless-turn-completed"),
+      provider: ProviderDriverKind.make("primeAgent"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === turnId &&
+        entry.latestTurn.state === "completed" &&
+        entry.activities.some((activity) => activity.id === "evt-textless-completion-notice"),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-textless-completion-notice",
+    );
+    expect(activity).toMatchObject({
+      kind: "turn.response.missing",
+      summary: "Prime Agent finished without sending a final response.",
+      payload: { outcome: "completed" },
+      turnId,
+    });
+    expect(Object.keys((activity?.payload ?? {}) as Record<string, unknown>)).toEqual(["outcome"]);
+    expect(
+      thread.messages.some((message) => message.role === "assistant" && message.turnId === turnId),
+    ).toBe(false);
+    expect(thread.latestTurn?.assistantMessageId).toBeNull();
+  });
+
   it("keeps the session running when a runtime.warning arrives during an active turn", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

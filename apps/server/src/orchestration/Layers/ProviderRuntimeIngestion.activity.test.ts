@@ -17,6 +17,125 @@ const base = {
   threadId: ThreadId.make("thread-1"),
 };
 
+describe("runtimeEventToActivities missing final response", () => {
+  it.each([
+    {
+      type: "runtime.warning" as const,
+      provider: ProviderDriverKind.make("primeAgent"),
+      outcome: "completed" as const,
+      message: "Prime Agent finished without sending a final response.",
+      tone: "info" as const,
+    },
+    {
+      type: "runtime.error" as const,
+      provider: ProviderDriverKind.make("primeAgent"),
+      outcome: "failed" as const,
+      message: "Prime Agent stopped before sending a final response.",
+      tone: "error" as const,
+    },
+  ])("projects the $outcome marker without provider detail", (fixture) => {
+    const [activity] = runtimeEventToActivities({
+      ...base,
+      provider: fixture.provider,
+      type: fixture.type,
+      eventId: EventId.make(`missing-response-${fixture.outcome}`),
+      turnId: TurnId.make(`turn-${fixture.outcome}`),
+      payload: {
+        message: fixture.message,
+        detail: { kind: "missing-final-response", outcome: fixture.outcome },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activity).toMatchObject({
+      kind: "turn.response.missing",
+      summary: fixture.message,
+      tone: fixture.tone,
+      payload: { outcome: fixture.outcome },
+      turnId: `turn-${fixture.outcome}`,
+    });
+    expect(activity?.payload).toEqual({ outcome: fixture.outcome });
+    expect(JSON.stringify(activity)).not.toContain("missing-final-response");
+  });
+
+  it.each([
+    {
+      name: "an extra field",
+      type: "runtime.warning" as const,
+      outcome: "completed" as const,
+      detail: { kind: "missing-final-response", outcome: "completed", private: "raw" },
+    },
+    {
+      name: "a mismatched outcome",
+      type: "runtime.warning" as const,
+      outcome: "failed" as const,
+      detail: { kind: "missing-final-response", outcome: "failed" },
+    },
+    {
+      name: "a non-object detail",
+      type: "runtime.error" as const,
+      outcome: "failed" as const,
+      detail: "missing-final-response",
+    },
+  ])("leaves $type unchanged when its marker has $name", (fixture) => {
+    const [activity] = runtimeEventToActivities({
+      ...base,
+      type: fixture.type,
+      eventId: EventId.make(`malformed-${fixture.outcome}`),
+      payload: {
+        message: "Ordinary provider event",
+        detail: fixture.detail,
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activity?.kind).toBe(fixture.type);
+  });
+
+  it("does not reclassify another provider using the same detail shape", () => {
+    const [activity] = runtimeEventToActivities({
+      ...base,
+      type: "runtime.error",
+      eventId: EventId.make("other-provider-missing-marker"),
+      payload: {
+        message: "Codex provider error",
+        detail: { kind: "missing-final-response", outcome: "failed" },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activity).toMatchObject({
+      kind: "runtime.error",
+      summary: "Runtime error",
+      payload: { message: "Codex provider error" },
+    });
+  });
+
+  it("preserves ordinary warning and error activity presentations", () => {
+    const [warning] = runtimeEventToActivities({
+      ...base,
+      type: "runtime.warning",
+      eventId: EventId.make("ordinary-warning"),
+      payload: { message: "Reconnecting", detail: { willRetry: true } },
+    } satisfies ProviderRuntimeEvent);
+    const [error] = runtimeEventToActivities({
+      ...base,
+      type: "runtime.error",
+      eventId: EventId.make("ordinary-error"),
+      payload: { message: "Provider failed", detail: { private: "unchanged-drop" } },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(warning).toMatchObject({
+      kind: "runtime.warning",
+      summary: "Reconnecting",
+      payload: { message: "Reconnecting", detail: { willRetry: true } },
+    });
+    expect(error).toMatchObject({
+      kind: "runtime.error",
+      summary: "Runtime error",
+      payload: { message: "Provider failed" },
+    });
+    expect(error?.payload).toEqual({ message: "Provider failed" });
+  });
+});
+
 describe("runtimeEventToActivities task progress", () => {
   it("persists usage independently from replaceable activity", () => {
     const taskId = RuntimeTaskId.make("agent-1");

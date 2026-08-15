@@ -55,6 +55,12 @@ import {
   isPrimeAgentCompatibleResumeCursor,
   PRIME_AGENT_ACP_RESUME_CURSOR,
 } from "../prime/PrimeAgentResumeCursor.ts";
+import {
+  PRIME_AGENT_FINISHED_WITHOUT_FINAL_RESPONSE,
+  PRIME_AGENT_STOPPED_WITHOUT_FINAL_RESPONSE,
+  PRIME_AGENT_TURN_FAILED,
+  primeAgentMissingFinalResponseDetail,
+} from "../prime/PrimeAgentTerminalResponse.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = ProviderDriverKind.make("primeAgent");
@@ -72,6 +78,7 @@ interface PrimeAgentActiveTurn {
   readonly id: TurnId;
   readonly cancellation: Deferred.Deferred<void>;
   cancellationRequested: boolean;
+  hasPublicAssistantTextAfterLatestToolBoundary: boolean;
 }
 
 interface PrimeAgentSessionContext {
@@ -233,12 +240,13 @@ export function makePrimeAgentAdapter(
       turnId: TurnId,
       outcome:
         | { readonly state: "completed"; readonly stopReason: EffectAcpSchema.StopReason | null }
-        | { readonly state: "failed"; readonly errorMessage: string }
+        | {
+            readonly state: "failed";
+            readonly errorMessage: string;
+            readonly terminalFailure?: boolean;
+          }
         | { readonly state: "cancelled" },
-      completedPrompt?: {
-        readonly prompt: ReadonlyArray<EffectAcpSchema.ContentBlock>;
-        readonly result: EffectAcpSchema.PromptResponse;
-      },
+      recordCompletedTurn = false,
     ) =>
       Effect.gen(function* () {
         if (
@@ -267,8 +275,30 @@ export function makePrimeAgentAdapter(
           ctx.stopRequested || ctx.activeTurn.cancellationRequested
             ? ({ state: "cancelled" } as const)
             : outcome;
-        if (completedPrompt && effectiveOutcome.state !== "cancelled") {
-          ctx.turns.push({ id: turnId, items: [completedPrompt] });
+        if (recordCompletedTurn && effectiveOutcome.state !== "cancelled") {
+          ctx.turns.push({ id: turnId, items: [] });
+        }
+
+        const missingFinalResponse = !ctx.activeTurn.hasPublicAssistantTextAfterLatestToolBoundary;
+        const shouldEmitMissingFinalResponseNotice =
+          missingFinalResponse &&
+          (effectiveOutcome.state === "completed" ||
+            (effectiveOutcome.state === "failed" && effectiveOutcome.terminalFailure === true));
+        if (shouldEmitMissingFinalResponseNotice) {
+          const failed = effectiveOutcome.state === "failed";
+          yield* offerRuntimeEvent({
+            type: failed ? "runtime.error" : "runtime.warning",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            turnId,
+            payload: {
+              message: failed
+                ? PRIME_AGENT_STOPPED_WITHOUT_FINAL_RESPONSE
+                : PRIME_AGENT_FINISHED_WITHOUT_FINAL_RESPONSE,
+              detail: primeAgentMissingFinalResponseDetail(failed ? "failed" : "completed"),
+            },
+          });
         }
 
         const { activeTurnId: _activeTurnId, ...readySession } = ctx.session;
@@ -287,7 +317,13 @@ export function makePrimeAgentAdapter(
           turnId,
           payload:
             effectiveOutcome.state === "failed"
-              ? { state: "failed", errorMessage: effectiveOutcome.errorMessage }
+              ? {
+                  state: "failed",
+                  errorMessage:
+                    missingFinalResponse && effectiveOutcome.terminalFailure === true
+                      ? PRIME_AGENT_STOPPED_WITHOUT_FINAL_RESPONSE
+                      : effectiveOutcome.errorMessage,
+                }
               : effectiveOutcome.state === "cancelled"
                 ? { state: "cancelled", stopReason: "cancelled" }
                 : {
@@ -303,15 +339,19 @@ export function makePrimeAgentAdapter(
       turnId: TurnId,
       outcome:
         | { readonly state: "completed"; readonly stopReason: EffectAcpSchema.StopReason | null }
-        | { readonly state: "failed"; readonly errorMessage: string }
+        | {
+            readonly state: "failed";
+            readonly errorMessage: string;
+            readonly terminalFailure?: boolean;
+          }
         | { readonly state: "cancelled" },
-      completedPrompt?: {
-        readonly prompt: ReadonlyArray<EffectAcpSchema.ContentBlock>;
-        readonly result: EffectAcpSchema.PromptResponse;
-      },
+      recordCompletedTurn = false,
     ) =>
       Effect.uninterruptible(
-        withThreadLock(ctx.threadId, settleActiveTurnLocked(ctx, turnId, outcome, completedPrompt)),
+        withThreadLock(
+          ctx.threadId,
+          settleActiveTurnLocked(ctx, turnId, outcome, recordCompletedTurn),
+        ),
       );
 
     /** Must be called while holding the thread lock. */
@@ -534,6 +574,9 @@ export function makePrimeAgentAdapter(
                     return;
                   }
                   case "ToolCallUpdated":
+                    if (ctx.activeTurn?.id === notificationTurnId) {
+                      ctx.activeTurn.hasPublicAssistantTextAfterLatestToolBoundary = false;
+                    }
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     yield* offerRuntimeEvent(
                       makeAcpToolCallEvent({
@@ -547,6 +590,9 @@ export function makePrimeAgentAdapter(
                     );
                     return;
                   case "ContentDelta":
+                    if (event.text.trim().length > 0 && ctx.activeTurn?.id === notificationTurnId) {
+                      ctx.activeTurn.hasPublicAssistantTextAfterLatestToolBoundary = true;
+                    }
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     yield* offerRuntimeEvent(
                       makeAcpContentDeltaEvent({
@@ -723,6 +769,7 @@ export function makePrimeAgentAdapter(
                 id: turnId,
                 cancellation: yield* Deferred.make<void>(),
                 cancellationRequested: false,
+                hasPublicAssistantTextAfterLatestToolBoundary: false,
               };
               ctx.activeTurn = activeTurn;
               ctx.lastPlanFingerprint = undefined;
@@ -762,7 +809,7 @@ export function makePrimeAgentAdapter(
               result.stopReason === "cancelled"
                 ? { state: "cancelled" }
                 : { state: "completed", stopReason: result.stopReason ?? null },
-              { prompt, result },
+              true,
             );
             if (!settled && !activeTurn.cancellationRequested && !ctx.stopRequested) {
               return yield* new ProviderAdapterRequestError({
@@ -775,13 +822,21 @@ export function makePrimeAgentAdapter(
           });
 
           return yield* restore(promptEffect).pipe(
-            Effect.catch((error) =>
+            Effect.catch(() =>
               Effect.gen(function* () {
                 yield* settleActiveTurn(ctx, turnId, {
                   state: "failed",
-                  errorMessage: error.message,
+                  errorMessage: PRIME_AGENT_TURN_FAILED,
+                  terminalFailure: true,
                 });
-                return yield* error;
+                // Admission succeeded and the runtime event stream already
+                // carries the authoritative failed terminal. Returning the
+                // admitted turn prevents a second turn-start failure activity.
+                return {
+                  threadId: input.threadId,
+                  turnId,
+                  resumeCursor: ctx.session.resumeCursor,
+                };
               }),
             ),
             Effect.ensuring(

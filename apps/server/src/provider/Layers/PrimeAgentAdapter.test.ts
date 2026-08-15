@@ -20,6 +20,7 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
@@ -437,7 +438,7 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     const failedPrompt = yield* failingAdapter
       .sendTurn({ threadId: failingThreadId, input: "fail", attachments: [] })
       .pipe(Effect.result);
-    assert.equal(failedPrompt._tag, "Failure");
+    assert.equal(failedPrompt._tag, "Success");
     const failedTurnId = failureEvents.find(
       (event) => event.threadId === failingThreadId && event.type === "turn.started",
     )?.turnId;
@@ -531,4 +532,229 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     yield* adapter.stopSession(threadId);
     yield* Fiber.interrupt(eventFiber);
   }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect(
+  "emits safe missing-final-response notices only for authoritative textless terminals",
+  () =>
+    Effect.gen(function* () {
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "prime-agent-acp-textless-test-")),
+      );
+      const wrapperPath = NodePath.join(tempDir, "private-native-path", "fake-prime-agent.sh");
+      yield* Effect.promise(() =>
+        NodeFSP.mkdir(NodePath.dirname(wrapperPath), { recursive: true }),
+      );
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          wrapperPath,
+          `#!/bin/sh
+exec ${process.execPath} ${mockAgentPath} "$@"
+`,
+          "utf8",
+        ),
+      );
+      yield* Effect.promise(() => NodeFSP.chmod(wrapperPath, 0o755));
+
+      let caseIndex = 0;
+      const runTerminalTurn = Effect.fn("PrimeAgentAdapter.test.runTerminalTurn")(function* (
+        label: string,
+        environment: NodeJS.ProcessEnv,
+      ) {
+        caseIndex += 1;
+        const adapter = yield* makePrimeAgentAdapter(decodeSettings({ binaryPath: wrapperPath }), {
+          instanceId: ProviderInstanceId.make(`primeAgent-textless-${caseIndex}`),
+          environment: { ...process.env, ...environment },
+        });
+        const threadId = ThreadId.make(`textless-${label}-${caseIndex}`);
+        const completed = yield* Deferred.make<void>();
+        const events: Array<ProviderRuntimeEvent> = [];
+        const eventFiber = yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) =>
+            Effect.gen(function* () {
+              events.push(event);
+              if (event.type === "turn.completed" && event.threadId === threadId) {
+                yield* Deferred.succeed(completed, undefined).pipe(Effect.ignore);
+              }
+            }),
+          ),
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("primeAgent"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const result = yield* adapter
+          .sendTurn({ threadId, input: label, attachments: [] })
+          .pipe(Effect.result);
+        yield* Deferred.await(completed);
+        const turnId = events.find(
+          (event) => event.type === "turn.started" && event.threadId === threadId,
+        )?.turnId;
+        assert.isDefined(turnId);
+        const turnEvents = events.filter((event) => event.turnId === turnId);
+        const providerThread = yield* adapter.readThread(threadId);
+
+        yield* adapter.stopSession(threadId);
+        yield* Fiber.interrupt(eventFiber);
+        return { result, turnEvents, providerThread };
+      });
+
+      const toolOnly = yield* runTerminalTurn("tool-only", {
+        T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS: "1",
+        T3_ACP_OMIT_INTERLEAVED_FINAL_TEXT: "1",
+      });
+      assert.equal(toolOnly.result._tag, "Success");
+      assert.deepEqual(
+        toolOnly.turnEvents
+          .filter((event) => event.type === "content.delta")
+          .map((event) => event.payload.delta),
+        ["before tool"],
+      );
+      const toolOnlyWarning = toolOnly.turnEvents.find((event) => event.type === "runtime.warning");
+      assert.equal(toolOnlyWarning?.type, "runtime.warning");
+      if (toolOnlyWarning?.type === "runtime.warning") {
+        assert.deepEqual(toolOnlyWarning.payload, {
+          message: "Prime Agent finished without sending a final response.",
+          detail: { kind: "missing-final-response", outcome: "completed" },
+        });
+        const serializedNotice = encodeUnknownJsonString(toolOnlyWarning);
+        assert.notInclude(serializedNotice, "echo");
+        assert.notInclude(serializedNotice, "tool-call-1");
+        assert.notInclude(serializedNotice, wrapperPath);
+      }
+      const toolOnlyTypes = toolOnly.turnEvents.map((event) => event.type);
+      assert.isBelow(
+        toolOnlyTypes.lastIndexOf("runtime.warning"),
+        toolOnlyTypes.lastIndexOf("turn.completed"),
+      );
+      assert.equal(toolOnly.turnEvents.at(-1)?.type, "turn.completed");
+      const toolOnlyTerminal = toolOnly.turnEvents.find(isTurnCompletedEvent);
+      assert.equal(toolOnlyTerminal?.payload.state, "completed");
+      assert.isTrue(toolOnly.providerThread.turns.every((turn) => turn.items.length === 0));
+
+      const normalText = yield* runTerminalTurn("normal-text", {
+        T3_ACP_PROMPT_RESPONSE_TEXT: "normal final response",
+      });
+      assert.equal(normalText.result._tag, "Success");
+      assert.deepEqual(
+        normalText.turnEvents
+          .filter((event) => event.type === "content.delta")
+          .map((event) => event.payload.delta),
+        ["normal final response"],
+      );
+      assert.isFalse(
+        normalText.turnEvents.some(
+          (event) => event.type === "runtime.warning" || event.type === "runtime.error",
+        ),
+      );
+
+      const failed = yield* runTerminalTurn("failed", { T3_ACP_FAIL_PROMPT: "1" });
+      assert.equal(failed.result._tag, "Success");
+      const serializedFailureResult = encodeUnknownJsonString(failed.result);
+      assert.notInclude(serializedFailureResult, "Mock prompt failure");
+      assert.notInclude(serializedFailureResult, wrapperPath);
+      const failureNotice = failed.turnEvents.find((event) => event.type === "runtime.error");
+      assert.equal(failureNotice?.type, "runtime.error");
+      if (failureNotice?.type === "runtime.error") {
+        assert.deepEqual(failureNotice.payload, {
+          message: "Prime Agent stopped before sending a final response.",
+          detail: { kind: "missing-final-response", outcome: "failed" },
+        });
+        const serializedNotice = encodeUnknownJsonString(failureNotice);
+        assert.notInclude(serializedNotice, "Mock prompt failure");
+        assert.notInclude(serializedNotice, wrapperPath);
+      }
+      const serializedFailureEvents = encodeUnknownJsonString(failed.turnEvents);
+      assert.notInclude(serializedFailureEvents, "Mock prompt failure");
+      assert.notInclude(serializedFailureEvents, wrapperPath);
+      const failureTypes = failed.turnEvents.map((event) => event.type);
+      assert.isBelow(
+        failureTypes.lastIndexOf("runtime.error"),
+        failureTypes.lastIndexOf("turn.completed"),
+      );
+      assert.equal(failed.turnEvents.at(-1)?.type, "turn.completed");
+      const failedTerminal = failed.turnEvents.find(isTurnCompletedEvent);
+      assert.equal(failedTerminal?.payload.state, "failed");
+
+      const privateThought = yield* runTerminalTurn("private-thought", {
+        T3_ACP_EMIT_PRIVATE_THOUGHT_CHUNK: "1",
+        T3_ACP_PROMPT_RESPONSE_TEXT: "   ",
+      });
+      assert.equal(privateThought.result._tag, "Success");
+      const privateThoughtSerialized = encodeUnknownJsonString(privateThought.turnEvents);
+      assert.notInclude(privateThoughtSerialized, "private-thought-sentinel");
+      assert.notInclude(privateThoughtSerialized, "agent_thought_chunk");
+      const privateThoughtWarning = privateThought.turnEvents.find(
+        (event) => event.type === "runtime.warning",
+      );
+      assert.equal(privateThoughtWarning?.type, "runtime.warning");
+      if (privateThoughtWarning?.type === "runtime.warning") {
+        assert.deepEqual(privateThoughtWarning.payload.detail, {
+          kind: "missing-final-response",
+          outcome: "completed",
+        });
+      }
+
+      const cancelledAdapter = yield* makePrimeAgentAdapter(
+        decodeSettings({ binaryPath: wrapperPath }),
+        {
+          instanceId: ProviderInstanceId.make("primeAgent-textless-cancelled"),
+          environment: { ...process.env, T3_ACP_HANG_PROMPT_FOREVER: "1" },
+        },
+      );
+      const cancelledThreadId = ThreadId.make("textless-cancelled");
+      const cancelledStarted = yield* Deferred.make<TurnId>();
+      const cancelledCompleted = yield* Deferred.make<void>();
+      const cancelledEvents: Array<ProviderRuntimeEvent> = [];
+      const cancelledEventFiber = yield* cancelledAdapter.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            cancelledEvents.push(event);
+            if (
+              event.type === "turn.started" &&
+              event.threadId === cancelledThreadId &&
+              event.turnId !== undefined
+            ) {
+              yield* Deferred.succeed(cancelledStarted, event.turnId).pipe(Effect.ignore);
+            }
+            if (event.type === "turn.completed" && event.threadId === cancelledThreadId) {
+              yield* Deferred.succeed(cancelledCompleted, undefined).pipe(Effect.ignore);
+            }
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      yield* cancelledAdapter.startSession({
+        threadId: cancelledThreadId,
+        provider: ProviderDriverKind.make("primeAgent"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const cancelledTurnFiber = yield* cancelledAdapter
+        .sendTurn({ threadId: cancelledThreadId, input: "cancel", attachments: [] })
+        .pipe(Effect.forkChild);
+      const cancelledTurnId = yield* Deferred.await(cancelledStarted);
+      yield* cancelledAdapter.interruptTurn(cancelledThreadId, cancelledTurnId);
+      yield* Deferred.await(cancelledCompleted);
+      yield* Fiber.join(cancelledTurnFiber);
+      const cancelledTurnEvents = cancelledEvents.filter(
+        (event) => event.turnId === cancelledTurnId,
+      );
+      assert.isFalse(
+        cancelledTurnEvents.some(
+          (event) => event.type === "runtime.warning" || event.type === "runtime.error",
+        ),
+      );
+      const cancelledTerminal = cancelledTurnEvents.find(isTurnCompletedEvent);
+      assert.equal(cancelledTerminal?.payload.state, "cancelled");
+
+      yield* cancelledAdapter.stopSession(cancelledThreadId);
+      yield* Fiber.interrupt(cancelledEventFiber);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );

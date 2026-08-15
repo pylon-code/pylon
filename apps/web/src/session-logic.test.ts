@@ -723,6 +723,57 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it.each([
+    {
+      outcome: "completed",
+      message: "Prime Agent finished without sending a final response.",
+      tone: "info" as const,
+    },
+    {
+      outcome: "failed",
+      message: "Prime Agent stopped before sending a final response.",
+      tone: "error" as const,
+    },
+  ])("presents a provider-neutral $outcome missing-response row", (fixture) => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: `missing-response-${fixture.outcome}`,
+        kind: "turn.response.missing",
+        summary: fixture.message,
+        tone: fixture.tone,
+        payload: { outcome: fixture.outcome },
+        turnId: "turn-1",
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      id: `missing-response-${fixture.outcome}`,
+      label: fixture.message,
+      tone: fixture.tone,
+      sourceActivityKind: "turn.response.missing",
+      turnId: "turn-1",
+    });
+    expect(entry?.detail).toBeUndefined();
+    expect(entry && workLogEntryIsToolLike(entry)).toBe(false);
+  });
+
+  it("does not treat ordinary provider activity as a missing-response row", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "ordinary-runtime-warning",
+        kind: "runtime.warning",
+        summary: "Reconnecting",
+        tone: "info",
+        payload: { message: "Reconnecting", detail: { willRetry: true } },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      label: "Reconnecting",
+      sourceActivityKind: "runtime.warning",
+    });
+  });
+
   it("omits tool started entries and keeps completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

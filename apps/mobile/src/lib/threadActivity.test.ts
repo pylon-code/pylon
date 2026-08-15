@@ -550,6 +550,109 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it.each([
+    {
+      outcome: "completed",
+      message: "Prime Agent finished without sending a final response.",
+      tone: "info" as const,
+      status: null,
+    },
+    {
+      outcome: "failed",
+      message: "Prime Agent stopped before sending a final response.",
+      tone: "error" as const,
+      status: null,
+    },
+  ])("keeps the $outcome missing-response row outside settled-turn folding", (fixture) => {
+    const turnId = TurnId.make(`turn-${fixture.outcome}`);
+    const thread = makeThread({
+      id: ThreadId.make(`thread-${fixture.outcome}`),
+      projectId: ProjectId.make("project-1"),
+      title: "Missing final response",
+      latestTurn: {
+        turnId,
+        state: fixture.outcome === "completed" ? "completed" : "error",
+        requestedAt: "2026-04-01T00:00:00.000Z",
+        startedAt: "2026-04-01T00:00:01.000Z",
+        completedAt: "2026-04-01T00:00:18.000Z",
+        assistantMessageId: null,
+      },
+      activities: [
+        makeActivity({
+          id: EventId.make(`tool-${fixture.outcome}`),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Read files",
+          createdAt: "2026-04-01T00:00:05.000Z",
+          turnId,
+          payload: { itemType: "file_read", status: "completed" },
+        }),
+        makeActivity({
+          id: EventId.make(`missing-response-${fixture.outcome}`),
+          kind: "turn.response.missing",
+          tone: fixture.tone,
+          summary: fixture.message,
+          createdAt: "2026-04-01T00:00:18.000Z",
+          turnId,
+          payload: { outcome: fixture.outcome },
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+    const presented = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
+    expect(presented.map((entry) => entry.id)).toEqual([
+      `turn-fold:${turnId}`,
+      `missing-response-${fixture.outcome}`,
+    ]);
+    expect(presented[1]).toMatchObject({
+      type: "activity-group",
+      activities: [
+        {
+          summary: fixture.message,
+          status: fixture.status,
+          toolLike: false,
+          terminalResponseNotice: true,
+        },
+      ],
+    });
+  });
+
+  it("folds ordinary runtime activity instead of treating it as a terminal response notice", () => {
+    const turnId = TurnId.make("turn-runtime-warning");
+    const thread = makeThread({
+      id: ThreadId.make("thread-runtime-warning"),
+      projectId: ProjectId.make("project-1"),
+      title: "Runtime warning",
+      latestTurn: {
+        turnId,
+        state: "completed",
+        requestedAt: "2026-04-01T00:00:00.000Z",
+        startedAt: "2026-04-01T00:00:01.000Z",
+        completedAt: "2026-04-01T00:00:18.000Z",
+        assistantMessageId: null,
+      },
+      activities: [
+        makeActivity({
+          id: EventId.make("ordinary-runtime-warning"),
+          kind: "runtime.warning",
+          summary: "Reconnecting",
+          createdAt: "2026-04-01T00:00:18.000Z",
+          turnId,
+          payload: { message: "Reconnecting" },
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+    expect(feed[0]).not.toMatchObject({
+      activities: [{ terminalResponseNotice: true }],
+    });
+    expect(deriveThreadFeedPresentation(feed, thread.latestTurn, new Set())).toEqual([
+      expect.objectContaining({ type: "turn-fold", turnId }),
+    ]);
+  });
+
   it("measures a steer-superseded turn from its user boundary through trailing work", () => {
     const firstTurnId = TurnId.make("turn-1");
     const secondTurnId = TurnId.make("turn-2");
