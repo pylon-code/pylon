@@ -560,8 +560,11 @@ describe("runtimeEventToActivities Prime tool lifecycle", () => {
     expect(updated?.payload).toMatchObject({
       status: "inProgress",
       detail: "existing progress",
-      data: { pid: 123 },
     });
+    // Streaming updates persist the wire projection rather than the raw
+    // accumulated payload, so provider-private keys like `pid` are dropped on
+    // the way in. `item.completed` below still persists `data` in full.
+    expect((updated?.payload as { readonly data?: Record<string, unknown> }).data).toEqual({});
     expect(completed?.payload).toMatchObject({
       detail: "existing result",
       data: { exitCode: 0 },
