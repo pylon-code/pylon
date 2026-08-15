@@ -47,6 +47,7 @@ import {
   primeAgentLaunchArgsIssue,
 } from "../acp/PrimeAgentAcpSupport.ts";
 import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
+import { canonicalPrimeToolItemId } from "../prime/PrimeAgentDaemonRuntimeEvents.ts";
 import {
   makePrimeAgentEventPubSub,
   shutdownPrimeAgentEventPubSub,
@@ -577,15 +578,23 @@ export function makePrimeAgentAdapter(
                     if (ctx.activeTurn?.id === notificationTurnId) {
                       ctx.activeTurn.hasPublicAssistantTextAfterLatestToolBoundary = false;
                     }
-                    yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     yield* offerRuntimeEvent(
                       makeAcpToolCallEvent({
                         stamp: yield* makeEventStamp(),
                         provider: PROVIDER,
                         threadId: ctx.threadId,
                         turnId: notificationTurnId,
-                        toolCall: event.toolCall,
-                        rawPayload: event.rawPayload,
+                        toolCall: {
+                          toolCallId: canonicalPrimeToolItemId(event.toolCall.toolCallId),
+                          ...(event.toolCall.kind === undefined
+                            ? {}
+                            : { kind: event.toolCall.kind }),
+                          ...(event.toolCall.status === undefined
+                            ? {}
+                            : { status: event.toolCall.status }),
+                          data: {},
+                        },
+                        rawPayload: undefined,
                       }),
                     );
                     return;

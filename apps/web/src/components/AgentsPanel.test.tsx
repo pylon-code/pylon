@@ -137,7 +137,7 @@ describe("AgentsPanel agent cancellation", () => {
     expect(gated).not.toContain("Live activity unavailable");
   });
 
-  it("renders safe aggregate status with empty and bounded assistant-only snapshots", () => {
+  it("renders assistant and static accessible tool lifecycle rows without private data", () => {
     const liveAgent = {
       ...active,
       lastToolName: "ipython",
@@ -154,7 +154,7 @@ describe("AgentsPanel agent cancellation", () => {
     expect(empty).toContain('aria-live="polite"');
     expect(empty).toContain("Last tool: ipython");
     expect(empty).toContain("65.8k tokens · 14 tools");
-    expect(empty).toContain("No assistant text yet.");
+    expect(empty).toContain("No activity yet.");
     expect(empty).toContain("Tool arguments, results, and reasoning are not shown.");
     expect(empty).not.toContain("private progress");
 
@@ -162,6 +162,12 @@ describe("AgentsPanel agent cancellation", () => {
       agentId: "canonical",
       revision: 2,
       entries: [{ speaker: "assistant", text: "Safe assistant update" }],
+      activity: [
+        { speaker: "assistant", text: "Safe assistant update" },
+        { kind: "tool", activityId: 1, label: "Code", status: "started" },
+        { kind: "tool", activityId: 2, label: "Shell", status: "completed" },
+        { kind: "tool", activityId: 3, label: "Edit", status: "failed" },
+      ],
       nativeId: "private-native-id",
       path: "/private/path",
       tool: "private tool data",
@@ -173,6 +179,10 @@ describe("AgentsPanel agent cancellation", () => {
       <AgentLiveActivitySnapshot snapshot={snapshot} agent={liveAgent} />,
     );
     expect(markup).toContain("Safe assistant update");
+    expect(markup).toContain('aria-label="Code: Started"');
+    expect(markup).toContain('aria-label="Shell: Completed"');
+    expect(markup).toContain('aria-label="Edit: Failed"');
+    expect(markup).not.toContain("animate-");
     expect(markup).toContain("Latest bounded snapshot · Live only");
     expect(markup).not.toContain("private-native-id");
     expect(markup).not.toContain("/private/path");

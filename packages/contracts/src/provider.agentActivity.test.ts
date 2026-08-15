@@ -11,24 +11,53 @@ import {
 
 const decodeSnapshot = Schema.decodeUnknownSync(ProviderSessionAgentActivitySnapshot);
 const decodeWatchError = Schema.decodeUnknownSync(ProviderWatchSessionAgentActivityError);
+const decodeLegacySnapshot = Schema.decodeUnknownSync(
+  Schema.Struct({
+    agentId: Schema.String,
+    revision: Schema.Number,
+    entries: Schema.Array(
+      Schema.Struct({ speaker: Schema.Literal("assistant"), text: Schema.String }),
+    ),
+  }),
+);
 
 describe("ProviderSessionAgentActivitySnapshot", () => {
-  it("accepts an empty replacement snapshot and trims non-empty assistant text", () => {
+  it("keeps assistant entries backward compatible while adding a safe timeline", () => {
     expect(decodeSnapshot({ agentId: "agent-1", revision: 1, entries: [] })).toEqual({
       agentId: "agent-1",
       revision: 1,
       entries: [],
     });
-    expect(
-      decodeSnapshot({
-        agentId: "agent-1",
-        revision: 2,
-        entries: [{ speaker: "assistant", text: "  visible  " }],
-      }).entries,
-    ).toEqual([{ speaker: "assistant", text: "visible" }]);
+    const wire = {
+      agentId: "agent-1",
+      revision: 2,
+      entries: [{ speaker: "assistant", text: "  visible  " }],
+      activity: [
+        { speaker: "assistant", text: "  visible  " },
+        { kind: "tool", activityId: 1, label: "Code", status: "started" },
+        { kind: "tool", activityId: 2, label: "Shell", status: "completed" },
+        { kind: "tool", activityId: 3, label: "Edit", status: "failed" },
+      ],
+    };
+    expect(decodeSnapshot(wire)).toEqual({
+      agentId: "agent-1",
+      revision: 2,
+      entries: [{ speaker: "assistant", text: "visible" }],
+      activity: [
+        { speaker: "assistant", text: "visible" },
+        { kind: "tool", activityId: 1, label: "Code", status: "started" },
+        { kind: "tool", activityId: 2, label: "Shell", status: "completed" },
+        { kind: "tool", activityId: 3, label: "Edit", status: "failed" },
+      ],
+    });
+    expect(decodeLegacySnapshot(wire)).toEqual({
+      agentId: "agent-1",
+      revision: 2,
+      entries: [{ speaker: "assistant", text: "  visible  " }],
+    });
   });
 
-  it("rejects empty text, non-assistant speakers, and excessive entries", () => {
+  it("rejects empty text, unsafe tool shapes, inconsistent mirrors, and excessive entries", () => {
     expect(() =>
       decodeSnapshot({
         agentId: "agent-1",
@@ -41,6 +70,26 @@ describe("ProviderSessionAgentActivitySnapshot", () => {
         agentId: "agent-1",
         revision: 1,
         entries: [{ speaker: "user", text: "private prompt" }],
+      }),
+    ).toThrow();
+    for (const activity of [
+      [{ kind: "tool", activityId: 1, label: "Code", status: "running" }],
+      [{ kind: "tool", activityId: 1, label: "   ", status: "started" }],
+      [
+        { kind: "tool", activityId: 1, label: "Code", status: "started" },
+        { kind: "tool", activityId: 1, label: "Shell", status: "completed" },
+      ],
+    ]) {
+      expect(() =>
+        decodeSnapshot({ agentId: "agent-1", revision: 1, entries: [], activity }),
+      ).toThrow();
+    }
+    expect(() =>
+      decodeSnapshot({
+        agentId: "agent-1",
+        revision: 1,
+        entries: [{ speaker: "assistant", text: "safe" }],
+        activity: [{ speaker: "assistant", text: "different" }],
       }),
     ).toThrow();
     expect(() =>
@@ -67,8 +116,11 @@ describe("ProviderSessionAgentActivitySnapshot", () => {
             text: emoji.repeat(PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS),
           },
         ],
-      }).entries[0]?.text,
-    ).toBe(emoji.repeat(PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS));
+      }).entries[0],
+    ).toEqual({
+      speaker: "assistant",
+      text: emoji.repeat(PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS),
+    });
     expect(() =>
       decodeSnapshot({
         agentId: "agent-1",
@@ -95,9 +147,24 @@ describe("ProviderSessionAgentActivitySnapshot", () => {
         })),
       }),
     ).toThrow();
+    const mirroredAssistant = Array.from({ length: 2 }, () => ({
+      speaker: "assistant" as const,
+      text: emoji.repeat(PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS),
+    }));
+    expect(() =>
+      decodeSnapshot({
+        agentId: "agent-1",
+        revision: 1,
+        entries: mirroredAssistant,
+        activity: [
+          ...mirroredAssistant,
+          { kind: "tool", activityId: 1, label: "Code", status: "started" },
+        ],
+      }),
+    ).toThrow();
   });
 
-  it("drops forbidden native fields rather than admitting them to the decoded shape", () => {
+  it("drops forbidden native fields rather than admitting them to either projection", () => {
     const decoded = decodeSnapshot({
       agentId: "agent-1",
       revision: 1,
@@ -110,6 +177,20 @@ describe("ProviderSessionAgentActivitySnapshot", () => {
           timestamp: 123,
         },
       ],
+      activity: [
+        { speaker: "assistant", text: "safe" },
+        {
+          kind: "tool",
+          activityId: 1,
+          label: "Code",
+          status: "failed",
+          nativeToolId: "secret-tool-id",
+          args: { path: "/private" },
+          result: "private output",
+          error: "private error",
+          timestamp: 123,
+        },
+      ],
       nativeId: "secret",
       cwd: "/private/path",
     });
@@ -117,6 +198,10 @@ describe("ProviderSessionAgentActivitySnapshot", () => {
       agentId: "agent-1",
       revision: 1,
       entries: [{ speaker: "assistant", text: "safe" }],
+      activity: [
+        { speaker: "assistant", text: "safe" },
+        { kind: "tool", activityId: 1, label: "Code", status: "failed" },
+      ],
     });
   });
 });

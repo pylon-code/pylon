@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
+
 import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
@@ -442,6 +445,68 @@ function reasoningActivityId(
     : EventId.make(
         `reasoning:${event.providerInstanceId ?? event.provider}:${event.threadId}:${scope}`,
       );
+}
+
+type ToolLifecycleRuntimeEvent = Extract<
+  ProviderRuntimeEvent,
+  { readonly type: "item.started" | "item.updated" | "item.completed" }
+>;
+
+function isPrimeAgentToolLifecycle(event: ToolLifecycleRuntimeEvent): boolean {
+  return event.provider === "primeAgent" && isToolLifecycleItemType(event.payload.itemType);
+}
+
+// Prime emits a fresh eventId for each lifecycle stage. Its scoped item digest
+// lets projection upserts replace start/progress with the terminal activity.
+function toolLifecycleActivityId(event: ToolLifecycleRuntimeEvent): EventId {
+  if (!isPrimeAgentToolLifecycle(event) || event.itemId === undefined) {
+    return event.eventId;
+  }
+  const scope = `${event.providerInstanceId ?? event.provider}\0${event.threadId}\0${event.turnId ?? "session"}\0${event.itemId}`;
+  const digest = NodeCrypto.createHash("sha256").update(scope, "utf8").digest("hex");
+  return EventId.make(`prime-tool:${digest}`);
+}
+
+function toolLifecycleActivityStatus(event: ToolLifecycleRuntimeEvent) {
+  return event.payload.status === undefined ? {} : { status: event.payload.status };
+}
+
+const PRIME_TOOL_ACTIVITY_TITLES = new Set([
+  "IPython",
+  "Shell",
+  "Edit",
+  "Read",
+  "Search",
+  "Web search",
+  "Image",
+  "Agent",
+  "Tool",
+]);
+
+function toolLifecycleActivityTitle(
+  event: ToolLifecycleRuntimeEvent,
+  nonPrimeFallback: string,
+): string {
+  if (!isPrimeAgentToolLifecycle(event)) return event.payload.title ?? nonPrimeFallback;
+  if (event.payload.title !== undefined && PRIME_TOOL_ACTIVITY_TITLES.has(event.payload.title)) {
+    return event.payload.title;
+  }
+  switch (event.payload.itemType) {
+    case "command_execution":
+      return "IPython";
+    case "file_change":
+      return "Edit";
+    case "web_search":
+      return "Search";
+    case "image_view":
+      return "Image";
+    case "collab_agent_tool_call":
+      return "Agent";
+    case "mcp_tool_call":
+    case "dynamic_tool_call":
+      return "Tool";
+  }
+  return "Tool";
 }
 
 export function runtimeEventToActivities(
@@ -1172,22 +1237,27 @@ export function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const primeAgentTool = isPrimeAgentToolLifecycle(event);
       return [
         {
-          id: event.eventId,
+          id: toolLifecycleActivityId(event),
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.updated",
-          summary: event.payload.title ?? "Tool updated",
+          summary: toolLifecycleActivityTitle(event, "Tool updated"),
           payload: {
             itemType: event.payload.itemType,
             ...(event.payload.status ? { status: event.payload.status } : {}),
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
-            ...(event.payload.parentToolUseId
-              ? { parentToolUseId: event.payload.parentToolUseId }
-              : {}),
+            ...(primeAgentTool || !event.payload.detail
+              ? {}
+              : { detail: truncateDetail(event.payload.detail) }),
+            ...(primeAgentTool || event.payload.data === undefined
+              ? {}
+              : { data: event.payload.data }),
+            ...(primeAgentTool || !event.payload.agentId ? {} : { agentId: event.payload.agentId }),
+            ...(primeAgentTool || !event.payload.parentToolUseId
+              ? {}
+              : { parentToolUseId: event.payload.parentToolUseId }),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1306,21 +1376,27 @@ export function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const primeAgentTool = isPrimeAgentToolLifecycle(event);
       return [
         {
-          id: event.eventId,
+          id: toolLifecycleActivityId(event),
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.completed",
-          summary: event.payload.title ?? "Tool",
+          summary: toolLifecycleActivityTitle(event, "Tool"),
           payload: {
             itemType: event.payload.itemType,
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
-            ...(event.payload.parentToolUseId
-              ? { parentToolUseId: event.payload.parentToolUseId }
-              : {}),
+            ...(primeAgentTool ? toolLifecycleActivityStatus(event) : {}),
+            ...(primeAgentTool || !event.payload.detail
+              ? {}
+              : { detail: truncateDetail(event.payload.detail) }),
+            ...(primeAgentTool || event.payload.data === undefined
+              ? {}
+              : { data: event.payload.data }),
+            ...(primeAgentTool || !event.payload.agentId ? {} : { agentId: event.payload.agentId }),
+            ...(primeAgentTool || !event.payload.parentToolUseId
+              ? {}
+              : { parentToolUseId: event.payload.parentToolUseId }),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1360,20 +1436,24 @@ export function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const primeAgentTool = isPrimeAgentToolLifecycle(event);
       return [
         {
-          id: event.eventId,
+          id: toolLifecycleActivityId(event),
           createdAt: event.createdAt,
           tone: "tool",
           kind: "tool.started",
-          summary: `${event.payload.title ?? "Tool"} started`,
+          summary: `${toolLifecycleActivityTitle(event, "Tool")} started`,
           payload: {
             itemType: event.payload.itemType,
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
-            ...(event.payload.parentToolUseId
-              ? { parentToolUseId: event.payload.parentToolUseId }
-              : {}),
+            ...(primeAgentTool ? toolLifecycleActivityStatus(event) : {}),
+            ...(primeAgentTool || !event.payload.detail
+              ? {}
+              : { detail: truncateDetail(event.payload.detail) }),
+            ...(primeAgentTool || !event.payload.agentId ? {} : { agentId: event.payload.agentId }),
+            ...(primeAgentTool || !event.payload.parentToolUseId
+              ? {}
+              : { parentToolUseId: event.payload.parentToolUseId }),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

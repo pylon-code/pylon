@@ -293,18 +293,74 @@ export const ProviderWatchSessionAgentActivityInput = Schema.Struct({
 export type ProviderWatchSessionAgentActivityInput =
   typeof ProviderWatchSessionAgentActivityInput.Type;
 
-/** Assistant-visible text only. Every other native message/content field is forbidden. */
+/** Public tool labels are deliberately short and contain no native tool metadata. */
+export const PROVIDER_SESSION_AGENT_ACTIVITY_TOOL_LABEL_MAX_CHARS = 64;
+
+/** Backward-compatible assistant-only projection for older clients. */
 export const ProviderSessionAgentActivityEntry = Schema.Struct({
   speaker: Schema.Literal("assistant"),
   text: ProviderSessionAgentActivityText,
 });
 export type ProviderSessionAgentActivityEntry = typeof ProviderSessionAgentActivityEntry.Type;
 
+export const ProviderSessionAgentActivityToolEntry = Schema.Struct({
+  kind: Schema.Literal("tool"),
+  activityId: PositiveInt,
+  label: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(PROVIDER_SESSION_AGENT_ACTIVITY_TOOL_LABEL_MAX_CHARS),
+  ),
+  status: Schema.Literals(["started", "completed", "failed"]),
+});
+export type ProviderSessionAgentActivityToolEntry =
+  typeof ProviderSessionAgentActivityToolEntry.Type;
+
+/**
+ * Additive provider-neutral activity consumed by timeline-aware clients. Native
+ * tool ids, inputs, outputs, errors, timing, and metadata have no field here.
+ */
+export const ProviderSessionAgentActivityTimelineEntry = Schema.Union([
+  ProviderSessionAgentActivityEntry,
+  ProviderSessionAgentActivityToolEntry,
+]);
+export type ProviderSessionAgentActivityTimelineEntry =
+  typeof ProviderSessionAgentActivityTimelineEntry.Type;
+
 const providerSessionAgentActivitySnapshotBounds = Schema.makeFilter(
-  (snapshot: { readonly entries: ReadonlyArray<{ readonly text: string }> }) => {
-    const text = snapshot.entries.map((entry) => entry.text).join("");
+  (snapshot: {
+    readonly entries: ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>;
+    readonly activity?:
+      | ReadonlyArray<
+          | { readonly speaker: "assistant"; readonly text: string }
+          | {
+              readonly kind: "tool";
+              readonly activityId: number;
+              readonly label: string;
+            }
+        >
+      | undefined;
+  }) => {
+    const timeline = snapshot.activity ?? snapshot.entries;
+    const text = timeline.map((entry) => ("text" in entry ? entry.text : entry.label)).join("");
     if ([...text].length > PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_CHARS) {
       return `Live activity snapshot text must be at most ${PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_CHARS} Unicode characters.`;
+    }
+    if (snapshot.activity !== undefined) {
+      const assistantEntries = snapshot.activity.filter(
+        (entry): entry is { readonly speaker: "assistant"; readonly text: string } =>
+          "speaker" in entry,
+      );
+      if (
+        assistantEntries.length !== snapshot.entries.length ||
+        assistantEntries.some((entry, index) => entry.text !== snapshot.entries[index]?.text)
+      ) {
+        return "Live activity assistant entries must match the backward-compatible projection.";
+      }
+      const activityIds = snapshot.activity.flatMap((entry) =>
+        "kind" in entry ? [entry.activityId] : [],
+      );
+      if (new Set(activityIds).size !== activityIds.length) {
+        return "Live activity tool ids must be unique within a replacement snapshot.";
+      }
     }
     if (
       new TextEncoder().encode(JSON.stringify(snapshot)).byteLength >
@@ -316,12 +372,17 @@ const providerSessionAgentActivitySnapshotBounds = Schema.makeFilter(
   },
 );
 
-/** A complete replacement snapshot. Revisions are local to one RPC subscription. */
+/** A complete replacement snapshot. Revisions and activity ids are subscription-local. */
 export const ProviderSessionAgentActivitySnapshot = Schema.Struct({
   agentId: RuntimeTaskId.check(Schema.isMaxLength(PROVIDER_AGENT_CONTROL_ID_MAX_CHARS)),
   revision: PositiveInt,
   entries: Schema.Array(ProviderSessionAgentActivityEntry).check(
     Schema.isMaxLength(PROVIDER_SESSION_AGENT_ACTIVITY_MAX_ENTRIES),
+  ),
+  activity: Schema.optional(
+    Schema.Array(ProviderSessionAgentActivityTimelineEntry).check(
+      Schema.isMaxLength(PROVIDER_SESSION_AGENT_ACTIVITY_MAX_ENTRIES),
+    ),
   ),
 }).check(providerSessionAgentActivitySnapshotBounds);
 export type ProviderSessionAgentActivitySnapshot = typeof ProviderSessionAgentActivitySnapshot.Type;

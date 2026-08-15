@@ -29,6 +29,7 @@ import {
   makePrimeAgentDaemonSessionRuntime,
   PRIME_AGENT_DAEMON_RESUME_CURSOR,
   PRIME_AGENT_LIVE_ACTIVITY_REFRESH_DELAY_MS,
+  primeAgentLiveActivityToolLabel,
   sanitizePrimeAgentLiveActivityMessages,
   type PrimeAgentDaemonSessionRuntime,
 } from "./PrimeAgentDaemonSessionRuntime.ts";
@@ -2402,6 +2403,7 @@ describe("Prime Agent live activity privacy boundary", () => {
       },
       {
         role: "toolResult",
+        toolCallId: "native-tool",
         toolName: "bash",
         content: [{ type: "text", text: "private result" }],
         timestamp: 3,
@@ -2409,29 +2411,270 @@ describe("Prime Agent live activity privacy boundary", () => {
       { role: "assistant", content: [{ type: "text", text: "   " }], timestamp: 4 },
     ]);
 
-    expect(entries).toEqual([{ speaker: "assistant", text: "visible answer" }]);
-    expect(JSON.stringify(entries)).not.toContain("private");
-    expect(JSON.stringify(entries)).not.toContain("native-tool");
+    expect(entries).toEqual([
+      { speaker: "assistant", text: "visible answer" },
+      { kind: "tool", activityId: 1, label: "Shell", status: "completed" },
+    ]);
+    expect(entries.every((entry) => Object.keys(entry).length <= 4)).toBe(true);
   });
 
-  it("returns an empty snapshot for realistic thinking and tool-only activity", () => {
-    expect(
-      sanitizePrimeAgentLiveActivityMessages([
-        {
-          role: "assistant",
-          content: [
-            { type: "thinking", thinking: "private reasoning" },
-            { type: "toolCall", id: "native-tool", name: "ipython", arguments: { path: "/tmp" } },
-          ],
-        },
-        {
-          role: "toolResult",
-          toolName: "ipython",
-          content: [{ type: "text", text: "private result" }],
-        },
-      ]),
-    ).toEqual([]);
+  it("hydrates only a coarse tool skeleton and maps IPython without native details", () => {
+    const entries = sanitizePrimeAgentLiveActivityMessages([
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "private reasoning" },
+          {
+            type: "toolCall",
+            id: "native-tool",
+            name: "functions.ipython",
+            arguments: { path: "/tmp/private", code: "secret" },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "native-tool",
+        toolName: "functions.ipython",
+        content: [{ type: "text", text: "private result" }],
+        details: { path: "/private/result" },
+        timestamp: 123,
+      },
+    ]);
+    expect(entries).toEqual([
+      { kind: "tool", activityId: 1, label: "IPython", status: "completed" },
+    ]);
+    expect(Object.keys(entries[0] ?? {}).sort()).toEqual(["activityId", "kind", "label", "status"]);
+    expect(primeAgentLiveActivityToolLabel("ipython")).toBe("IPython");
+    expect(primeAgentLiveActivityToolLabel("functions.ipython")).toBe("IPython");
+    expect(primeAgentLiveActivityToolLabel("/private/custom-tool")).toBe("Tool");
   });
+
+  it("bounds hydrated tool rows and never emits their correlation ids", () => {
+    const entries = sanitizePrimeAgentLiveActivityMessages(
+      Array.from({ length: 100 }, (_, index) => ({
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: `private-id-${index}`,
+            name: index % 2 === 0 ? "ipython" : "unknown-private-tool",
+            arguments: { secret: index },
+          },
+        ],
+      })),
+    );
+    expect(entries).toHaveLength(32);
+    expect(entries.at(-1)).toEqual({
+      kind: "tool",
+      activityId: 64,
+      label: "Tool",
+      status: "started",
+    });
+    expect(
+      entries.every(
+        (entry) => Object.keys(entry).sort().join(",") === "activityId,kind,label,status",
+      ),
+    ).toBe(true);
+  });
+
+  it.effect("projects live tool lifecycle without reading private payload fields", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { emitWatch, make } = fixture({ getWatchMessages: () => [] });
+        const runtime = yield* make();
+        const observed = yield* Queue.unbounded<void>();
+        const fiber = yield* runtime.watchAgentActivity("native-child-active").pipe(
+          Stream.tap(() => Queue.offer(observed, undefined)),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Queue.take(observed);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "tool_execution_start",
+              toolCallId: "native-secret-id",
+              toolName: "functions.ipython",
+              args: { code: "private code", path: "/private/path" },
+              timestamp: 123,
+            },
+          }),
+        );
+        yield* Queue.take(observed);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "tool_execution_update",
+              toolCallId: "native-secret-id",
+              toolName: "functions.ipython",
+              args: { code: "private update" },
+              partialResult: { content: [{ type: "text", text: "private partial" }] },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "tool_execution_end",
+              toolCallId: "native-secret-id",
+              toolName: "functions.ipython",
+              result: { content: [{ type: "text", text: "private result" }] },
+              isError: true,
+              error: "private error",
+            },
+          }),
+        );
+
+        const collected = Array.from(yield* Fiber.join(fiber));
+        expect(collected).toEqual([
+          [],
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "started" }],
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "failed" }],
+        ]);
+        expect(
+          collected
+            .flat()
+            .every(
+              (entry) => Object.keys(entry).sort().join(",") === "activityId,kind,label,status",
+            ),
+        ).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("buffers sanitized tool lifecycle events before the initial read", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let markReadStarted!: () => void;
+        let resolveInitialRead!: (messages: ReadonlyArray<unknown>) => void;
+        const readStarted = new Promise<void>((resolve) => {
+          markReadStarted = resolve;
+        });
+        const initialRead = new Promise<ReadonlyArray<unknown>>((resolve) => {
+          resolveInitialRead = resolve;
+        });
+        const { emitWatch, make } = fixture({
+          getWatchMessages: () => {
+            markReadStarted();
+            return initialRead;
+          },
+        });
+        const runtime = yield* make();
+        const fiber = yield* runtime
+          .watchAgentActivity("native-child-active")
+          .pipe(Stream.take(3), Stream.runCollect, Effect.forkChild);
+        yield* Effect.promise(() => readStarted);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "tool_execution_start",
+              toolCallId: "private-id",
+              toolName: "ipython",
+              args: { path: "/private" },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "tool_execution_end",
+              toolCallId: "private-id",
+              toolName: "ipython",
+              result: { content: [{ type: "text", text: "private" }] },
+              isError: false,
+            },
+          }),
+        );
+        resolveInitialRead([]);
+
+        expect(Array.from(yield* Fiber.join(fiber))).toEqual([
+          [],
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "started" }],
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "completed" }],
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("keeps hydrated terminal tools monotonic across overlapping start events", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let markReadStarted!: () => void;
+        let resolveInitialRead!: (messages: ReadonlyArray<unknown>) => void;
+        const readStarted = new Promise<void>((resolve) => {
+          markReadStarted = resolve;
+        });
+        const initialRead = new Promise<ReadonlyArray<unknown>>((resolve) => {
+          resolveInitialRead = resolve;
+        });
+        const { emitWatch, make } = fixture({
+          getWatchMessages: () => {
+            markReadStarted();
+            return initialRead;
+          },
+        });
+        const runtime = yield* make();
+        const fiber = yield* runtime
+          .watchAgentActivity("native-child-active")
+          .pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+        yield* Effect.promise(() => readStarted);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "tool_execution_start",
+              toolCallId: "x".repeat(100_000),
+              toolName: "ipython",
+              args: { code: "private" },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "After the tool" }],
+              },
+            },
+          }),
+        );
+        resolveInitialRead([
+          {
+            role: "assistant",
+            content: [
+              { type: "toolCall", id: "x".repeat(100_000), name: "ipython", arguments: {} },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "x".repeat(100_000),
+            toolName: "ipython",
+            content: [{ type: "text", text: "private result" }],
+            isError: false,
+          },
+        ]);
+
+        const collected = Array.from(yield* Fiber.join(fiber));
+        expect(collected).toEqual([
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "completed" }],
+          [
+            { kind: "tool", activityId: 1, label: "IPython", status: "completed" },
+            { speaker: "assistant", text: "After the tool" },
+          ],
+        ]);
+      }),
+    ),
+  );
 
   it.effect("coalesces watcher events and closes the second connection when the stream ends", () =>
     Effect.gen(function* () {
@@ -2783,6 +3026,67 @@ describe("Prime Agent live activity privacy boundary", () => {
           ],
         ]);
         expect(captures.watcherMessageReads).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("keeps tool activity ids monotonic and correlated across replacements", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { emitWatch, make } = fixture({
+          getWatchMessages: () => [
+            {
+              role: "assistant",
+              content: [{ type: "toolCall", id: "native-a", name: "ipython", arguments: {} }],
+            },
+          ],
+        });
+        const runtime = yield* make();
+        const observed = yield* Queue.unbounded<void>();
+        const fiber = yield* runtime.watchAgentActivity("native-child-active").pipe(
+          Stream.tap(() => Queue.offer(observed, undefined)),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Queue.take(observed);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_replaced",
+            messages: [
+              {
+                role: "assistant",
+                content: [{ type: "toolCall", id: "native-b", name: "ipython", arguments: {} }],
+              },
+            ],
+          }),
+        );
+        yield* Queue.take(observed);
+        yield* Effect.promise(() =>
+          emitWatch({
+            type: "session_resynced",
+            snapshot: {
+              messages: [
+                {
+                  role: "assistant",
+                  content: [
+                    { type: "toolCall", id: "native-b", name: "ipython", arguments: {} },
+                    { type: "toolCall", id: "native-c", name: "ipython", arguments: {} },
+                  ],
+                },
+              ],
+            },
+          }),
+        );
+
+        expect(Array.from(yield* Fiber.join(fiber))).toEqual([
+          [{ kind: "tool", activityId: 1, label: "IPython", status: "started" }],
+          [{ kind: "tool", activityId: 2, label: "IPython", status: "started" }],
+          [
+            { kind: "tool", activityId: 2, label: "IPython", status: "started" },
+            { kind: "tool", activityId: 3, label: "IPython", status: "started" },
+          ],
+        ]);
       }),
     ),
   );

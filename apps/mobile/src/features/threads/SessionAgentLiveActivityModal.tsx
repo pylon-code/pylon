@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   presentSessionAgentLiveActivity,
   presentSessionAgentLiveActivityAgentSummary,
-  sessionAgentLiveActivityTextRows,
+  sessionAgentLiveActivityRows,
   sessionAgentLiveActivityUnavailableLabel,
 } from "@t3tools/client-runtime/state/session-agent-live-activity";
 import {
@@ -111,7 +111,7 @@ export function SessionAgentLiveActivitySnapshot({
       {presentation.entries.length === 0 ? (
         <View className="py-4">
           <Text accessibilityRole="text" className="text-sm text-foreground-muted">
-            No assistant text yet.
+            No activity yet.
           </Text>
           <Text className="mt-1 text-xs text-foreground-muted">
             Tool arguments, results, and reasoning are not shown.
@@ -120,11 +120,39 @@ export function SessionAgentLiveActivitySnapshot({
       ) : (
         <ScrollView accessibilityLiveRegion="polite" className="shrink">
           <View className="gap-3 py-2">
-            {sessionAgentLiveActivityTextRows(presentation.entries).map((entry) => (
-              <Text key={entry.key} className="text-sm leading-6 text-foreground">
-                {entry.text}
-              </Text>
-            ))}
+            {sessionAgentLiveActivityRows(presentation.entries).map((entry) =>
+              entry.kind === "assistant" ? (
+                <Text key={entry.key} className="text-sm leading-6 text-foreground">
+                  {entry.text}
+                </Text>
+              ) : (
+                <View
+                  key={entry.key}
+                  accessible
+                  accessibilityRole="text"
+                  accessibilityLabel={`${entry.label}: ${entry.statusLabel}`}
+                  className="flex-row items-center gap-2 rounded-xl border border-border bg-secondary px-3 py-2"
+                >
+                  <Text
+                    accessibilityElementsHidden
+                    importantForAccessibility="no-hide-descendants"
+                    className={
+                      entry.status === "failed"
+                        ? "text-danger-foreground"
+                        : entry.status === "completed"
+                          ? "text-emerald-600"
+                          : "text-foreground-muted"
+                    }
+                  >
+                    {entry.status === "completed" ? "✓" : entry.status === "failed" ? "!" : "•"}
+                  </Text>
+                  <Text className="min-w-0 flex-1 text-sm font-t3-bold text-foreground">
+                    {entry.label}
+                  </Text>
+                  <Text className="text-xs text-foreground-muted">{entry.statusLabel}</Text>
+                </View>
+              ),
+            )}
           </View>
           <Text className="mt-2 border-t border-border pt-2 text-xs text-foreground-muted">
             Latest bounded snapshot · Live only

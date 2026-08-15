@@ -29,6 +29,7 @@ import {
   type SessionHarnessRefinementUpdatedPayload,
   type SessionInputQueueUpdatedPayload,
   type ProviderSessionAgentActivitySnapshot,
+  type ProviderSessionAgentActivityTimelineEntry,
   type ProviderTurnStartResult,
   type ThreadId,
   TurnId,
@@ -276,7 +277,7 @@ interface PrimeAgentDaemonSharedActivityStream {
   readonly nativeActiveSessionId: string;
   readonly stop: Deferred.Deferred<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly stream: Stream.Stream<
-    ReadonlyArray<ProviderSessionAgentActivitySnapshot["entries"][number]>,
+    ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>,
     PrimeAgentDaemonSessionRuntimeError
   >;
 }
@@ -3619,7 +3620,8 @@ export function makePrimeAgentDaemonAdapter(
               ),
               Stream.mapEffect((entries) => {
                 const snapshotCharacters = entries.reduce(
-                  (total, entry) => total + [...entry.text].length,
+                  (total, entry) =>
+                    total + [...("speaker" in entry ? entry.text : entry.label)].length,
                   0,
                 );
                 if (
@@ -3639,10 +3641,14 @@ export function makePrimeAgentDaemonAdapter(
                 lifetimeUpdates += 1;
                 lifetimeCharacters += snapshotCharacters;
                 revision += 1;
+                const assistantEntries = entries.flatMap((entry) =>
+                  "speaker" in entry ? [entry] : [],
+                );
                 return Effect.succeed({
                   agentId,
                   revision,
-                  entries,
+                  entries: assistantEntries,
+                  ...(assistantEntries.length === entries.length ? {} : { activity: entries }),
                 } satisfies ProviderSessionAgentActivitySnapshot);
               }),
               Stream.interruptWhen(Deferred.await(stop)),

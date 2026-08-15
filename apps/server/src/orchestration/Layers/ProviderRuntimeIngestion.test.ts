@@ -3685,6 +3685,96 @@ describe("ProviderRuntimeIngestion", () => {
     ]);
   });
 
+  it("persists Prime tool start, progress, and completion as one safe activity", async () => {
+    const harness = await createHarness();
+    const provider = ProviderDriverKind.make("primeAgent");
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-prime-tool");
+    const itemId = asItemId("canonical-prime-tool-/private/native-secret");
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-prime-tool-started-secret"),
+      provider,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "IPython",
+        detail: "print(process.env.PRIVATE_TOKEN)",
+        data: { path: "/private/worktree" },
+      },
+    });
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-prime-tool-updated-secret"),
+      provider,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "IPython",
+        detail: "progress sk-secret-progress",
+        data: { output: "raw secret output" },
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-prime-tool-completed-secret"),
+      provider,
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        itemType: "command_execution",
+        status: "failed",
+        title: "IPython",
+        detail: "failed at /private/worktree/credentials.json",
+        data: { result: "sk-secret-result" },
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "tool.completed" && activity.summary === "IPython",
+      ),
+    );
+    const activities = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) =>
+        activity.kind === "tool.started" ||
+        activity.kind === "tool.updated" ||
+        activity.kind === "tool.completed",
+    );
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      id: expect.stringMatching(/^prime-tool:[0-9a-f]{64}$/),
+      kind: "tool.completed",
+      summary: "IPython",
+      payload: { itemType: "command_execution", status: "failed" },
+    });
+    const serialized = JSON.stringify(activities);
+    for (const secret of [
+      "canonical-prime-tool-/private/native-secret",
+      "evt-prime-tool-started-secret",
+      "evt-prime-tool-updated-secret",
+      "evt-prime-tool-completed-secret",
+      "PRIVATE_TOKEN",
+      "/private/worktree",
+      "sk-secret",
+      "raw secret output",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
   it("persists one safe Prime context-compaction lifecycle row", async () => {
     const harness = await createHarness();
     const provider = ProviderDriverKind.make("primeAgent");

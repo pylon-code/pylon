@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   presentSessionAgentLiveActivity,
   presentSessionAgentLiveActivityAgentSummary,
-  sessionAgentLiveActivityTextRows,
+  sessionAgentLiveActivityRows,
   sessionAgentLiveActivityUnavailableLabel,
 } from "@t3tools/client-runtime/state/session-agent-live-activity";
 import {
@@ -78,7 +78,7 @@ export function AgentLiveActivitySnapshot({
       </div>
       {presentation.entries.length === 0 ? (
         <div role="status" className="p-4 text-sm text-muted-foreground">
-          <p>No assistant text yet.</p>
+          <p>No activity yet.</p>
           <p className="mt-1 text-xs">Tool arguments, results, and reasoning are not shown.</p>
         </div>
       ) : (
@@ -87,16 +87,39 @@ export function AgentLiveActivitySnapshot({
           aria-live="polite"
         >
           <div className="space-y-3">
-            {sessionAgentLiveActivityTextRows(presentation.entries).map((entry) => (
-              <p
-                // Keys derive only from safe assistant text plus its occurrence
-                // within this complete replacement snapshot.
-                key={entry.key}
-                className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground"
-              >
-                {entry.text}
-              </p>
-            ))}
+            {sessionAgentLiveActivityRows(presentation.entries).map((entry) =>
+              entry.kind === "assistant" ? (
+                <p
+                  key={entry.key}
+                  className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground"
+                >
+                  {entry.text}
+                </p>
+              ) : (
+                <div
+                  key={entry.key}
+                  aria-label={`${entry.label}: ${entry.statusLabel}`}
+                  className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2"
+                >
+                  <span
+                    aria-hidden="true"
+                    className={
+                      entry.status === "failed"
+                        ? "text-destructive"
+                        : entry.status === "completed"
+                          ? "text-success"
+                          : "text-muted-foreground"
+                    }
+                  >
+                    {entry.status === "completed" ? "✓" : entry.status === "failed" ? "!" : "•"}
+                  </span>
+                  <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
+                    {entry.label}
+                  </span>
+                  <span className="text-xs text-muted-foreground">{entry.statusLabel}</span>
+                </div>
+              ),
+            )}
           </div>
           <p className="mt-4 border-t border-border/60 pt-2 text-xs text-muted-foreground">
             Latest bounded snapshot · Live only

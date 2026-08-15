@@ -410,3 +410,187 @@ describe("runtimeEventToActivities retry and refinement lifecycle", () => {
     expect(second?.id).not.toBe(activity?.id);
   });
 });
+
+describe("runtimeEventToActivities Prime tool lifecycle", () => {
+  it("uses one opaque activity id and retains only safe lifecycle state", () => {
+    const primeBase = {
+      ...base,
+      provider: ProviderDriverKind.make("primeAgent"),
+      itemId: RuntimeItemId.make("canonical-item-/private/native-secret"),
+      turnId: TurnId.make("turn-prime"),
+    };
+    const started = runtimeEventToActivities({
+      ...primeBase,
+      type: "item.started",
+      eventId: EventId.make("prime-start-secret"),
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "Read /private/worktree/credentials.json",
+        detail: "print(process.env.PRIVATE_TOKEN)",
+        data: { path: "/private/worktree", token: "sk-secret-start" },
+        agentId: "native-agent-secret",
+        parentToolUseId: "native-parent-secret",
+      },
+    })[0];
+    const updated = runtimeEventToActivities({
+      ...primeBase,
+      type: "item.updated",
+      eventId: EventId.make("prime-update-secret"),
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "Read /private/worktree/credentials.json",
+        detail: "progress contains sk-secret-progress",
+        data: { output: "raw secret output" },
+        agentId: "native-agent-secret",
+        parentToolUseId: "native-parent-secret",
+      },
+    })[0];
+    const completed = runtimeEventToActivities({
+      ...primeBase,
+      type: "item.completed",
+      eventId: EventId.make("prime-complete-secret"),
+      payload: {
+        itemType: "command_execution",
+        status: "failed",
+        title: "Read /private/worktree/credentials.json",
+        detail: "failure at /private/worktree/credentials.json",
+        data: { result: "sk-secret-result" },
+        agentId: "native-agent-secret",
+        parentToolUseId: "native-parent-secret",
+      },
+    })[0];
+
+    expect(started).toMatchObject({
+      kind: "tool.started",
+      summary: "IPython started",
+      payload: { itemType: "command_execution", status: "inProgress" },
+    });
+    expect(updated).toMatchObject({
+      id: started?.id,
+      kind: "tool.updated",
+      summary: "IPython",
+      payload: { itemType: "command_execution", status: "inProgress" },
+    });
+    expect(completed).toMatchObject({
+      id: started?.id,
+      kind: "tool.completed",
+      summary: "IPython",
+      payload: { itemType: "command_execution", status: "failed" },
+    });
+    expect(started?.id).toMatch(/^prime-tool:[0-9a-f]{64}$/);
+    const serialized = JSON.stringify([started, updated, completed]);
+    for (const secret of [
+      "canonical-item-/private/native-secret",
+      "prime-start-secret",
+      "prime-update-secret",
+      "prime-complete-secret",
+      "PRIVATE_TOKEN",
+      "/private/worktree",
+      "sk-secret",
+      "raw secret output",
+      "native-agent-secret",
+      "native-parent-secret",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    for (const activity of [started, updated, completed]) {
+      expect(activity?.payload).toEqual(
+        expect.objectContaining({
+          itemType: "command_execution",
+          status: expect.any(String),
+        }),
+      );
+      expect(activity?.payload).not.toHaveProperty("detail");
+      expect(activity?.payload).not.toHaveProperty("data");
+      expect(activity?.payload).not.toHaveProperty("agentId");
+      expect(activity?.payload).not.toHaveProperty("parentToolUseId");
+    }
+  });
+
+  it("preserves event ids and content for every non-Prime provider", () => {
+    const itemId = RuntimeItemId.make("visible-canonical-item");
+    const started = runtimeEventToActivities({
+      ...base,
+      type: "item.started",
+      eventId: EventId.make("codex-tool-start"),
+      itemId,
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "Run command",
+        detail: "echo existing behavior",
+      },
+    })[0];
+    const updated = runtimeEventToActivities({
+      ...base,
+      type: "item.updated",
+      eventId: EventId.make("codex-tool-update"),
+      itemId,
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "Run command",
+        detail: "existing progress",
+        data: { pid: 123 },
+      },
+    })[0];
+    const completed = runtimeEventToActivities({
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("codex-tool-complete"),
+      itemId,
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Run command",
+        detail: "existing result",
+        data: { exitCode: 0 },
+      },
+    })[0];
+
+    expect([started?.id, updated?.id, completed?.id]).toEqual([
+      "codex-tool-start",
+      "codex-tool-update",
+      "codex-tool-complete",
+    ]);
+    expect(started?.payload).toMatchObject({ detail: "echo existing behavior" });
+    expect(started?.payload).not.toHaveProperty("status");
+    expect(updated?.payload).toMatchObject({
+      status: "inProgress",
+      detail: "existing progress",
+      data: { pid: 123 },
+    });
+    expect(completed?.payload).toMatchObject({
+      detail: "existing result",
+      data: { exitCode: 0 },
+    });
+    expect(completed?.payload).not.toHaveProperty("status");
+
+    const fallbackSummaries = [
+      runtimeEventToActivities({
+        ...base,
+        type: "item.started",
+        eventId: EventId.make("codex-tool-start-no-title"),
+        itemId,
+        payload: { itemType: "command_execution", status: "inProgress" },
+      })[0]?.summary,
+      runtimeEventToActivities({
+        ...base,
+        type: "item.updated",
+        eventId: EventId.make("codex-tool-update-no-title"),
+        itemId,
+        payload: { itemType: "command_execution", status: "inProgress" },
+      })[0]?.summary,
+      runtimeEventToActivities({
+        ...base,
+        type: "item.completed",
+        eventId: EventId.make("codex-tool-complete-no-title"),
+        itemId,
+        payload: { itemType: "command_execution", status: "completed" },
+      })[0]?.summary,
+    ];
+    expect(fallbackSummaries).toEqual(["Tool started", "Tool updated", "Tool"]);
+  });
+});

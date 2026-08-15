@@ -11,6 +11,7 @@ import {
   ProviderInstanceId,
   ProviderSessionSideQuestionRequestId,
   type ProviderRuntimeEvent,
+  type ProviderSessionAgentActivityTimelineEntry,
   RuntimeTaskId,
   SessionInteractionRequestId,
   ThreadId,
@@ -229,16 +230,14 @@ interface FakeCaptures {
   readonly activityWatchCalls: Array<string>;
   activityWatchObserved: Queue.Queue<void> | undefined;
   activityWatchUpdates:
-    | Queue.Queue<ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>>
+    | Queue.Queue<ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>>
     | undefined;
   readonly activityWatchUpdatesByEndpoint: Map<
     string,
-    Queue.Queue<ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>>
+    Queue.Queue<ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>>
   >;
   readonly activityWatchFinalizations: Array<string>;
-  activityWatchEntries: Array<
-    ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
-  >;
+  activityWatchEntries: Array<ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>>;
   agentMessageCalls: Array<{ readonly activeSessionId: string; readonly message: string }>;
   agentMessageDisposition: "delivered" | "queued";
   agentMessageFailureReason:
@@ -2688,7 +2687,12 @@ describe("PrimeAgentDaemonAdapter", () => {
             status: "running",
           },
         ];
-        captures.activityWatchEntries = [[{ speaker: "assistant", text: "safe live activity" }]];
+        captures.activityWatchEntries = [
+          [
+            { speaker: "assistant", text: "safe live activity" },
+            { kind: "tool", activityId: 1, label: "Code", status: "started" },
+          ],
+        ];
         const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
           instanceId,
           runtimeFactory: fakeRuntimeFactory(captures),
@@ -2711,6 +2715,10 @@ describe("PrimeAgentDaemonAdapter", () => {
             agentId: "canonical-child",
             revision: 1,
             entries: [{ speaker: "assistant", text: "safe live activity" }],
+            activity: [
+              { speaker: "assistant", text: "safe live activity" },
+              { kind: "tool", activityId: 1, label: "Code", status: "started" },
+            ],
           },
         ]);
         expect(second[0]?.revision).toBe(1);
@@ -2730,9 +2738,7 @@ describe("PrimeAgentDaemonAdapter", () => {
         captures.activityWatchAvailable = true;
         captures.activityWatchObserved = yield* Queue.unbounded<void>();
         const updates =
-          yield* Queue.unbounded<
-            ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
-          >();
+          yield* Queue.unbounded<ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>>();
         captures.activityWatchUpdates = updates;
         captures.agentRoster = [
           {
@@ -2801,13 +2807,9 @@ describe("PrimeAgentDaemonAdapter", () => {
         const captures = makeCaptures();
         captures.activityWatchAvailable = true;
         const firstUpdates =
-          yield* Queue.unbounded<
-            ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
-          >();
+          yield* Queue.unbounded<ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>>();
         const secondUpdates =
-          yield* Queue.unbounded<
-            ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
-          >();
+          yield* Queue.unbounded<ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>>();
         captures.activityWatchUpdatesByEndpoint.set("native-first", firstUpdates);
         captures.activityWatchUpdatesByEndpoint.set("native-second", secondUpdates);
         captures.agentRoster = [
@@ -2855,13 +2857,9 @@ describe("PrimeAgentDaemonAdapter", () => {
         captures.activityWatchAvailable = true;
         captures.activityWatchObserved = yield* Queue.unbounded<void>();
         const oldUpdates =
-          yield* Queue.unbounded<
-            ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
-          >();
+          yield* Queue.unbounded<ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>>();
         const newUpdates =
-          yield* Queue.unbounded<
-            ReadonlyArray<{ readonly speaker: "assistant"; readonly text: string }>
-          >();
+          yield* Queue.unbounded<ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>>();
         captures.activityWatchUpdatesByEndpoint.set("native-old", oldUpdates);
         captures.activityWatchUpdatesByEndpoint.set("native-new", newUpdates);
         captures.agentRoster = [

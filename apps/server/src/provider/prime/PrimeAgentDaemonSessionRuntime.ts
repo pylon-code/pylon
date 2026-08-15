@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
+
 import {
   RUNTIME_RESOURCE_CATALOG_MAX_ITEMS,
   RUNTIME_RESOURCE_DESCRIPTION_MAX_CHARS,
@@ -8,10 +11,12 @@ import {
   PROVIDER_SESSION_AGENT_ACTIVITY_MAX_ENTRIES,
   PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_BYTES,
   PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_CHARS,
+  PROVIDER_SESSION_AGENT_ACTIVITY_TOOL_LABEL_MAX_CHARS,
   PROVIDER_SESSION_INPUT_QUEUE_MAX_COUNT,
   RUNTIME_RESOURCE_NAME_MAX_CHARS,
   type ProviderRefineSessionHarnessResult,
-  type ProviderSessionAgentActivityEntry,
+  type ProviderSessionAgentActivityTimelineEntry,
+  type ProviderSessionAgentActivityToolEntry,
   type ProviderSessionAgentDepthSource,
   type SessionAgentDepthUpdatedPayload,
   type SessionInputQueueDeliveryMode,
@@ -66,9 +71,42 @@ const SIDE_QUESTION_NATIVE_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const PRIME_AGENT_LIVE_ACTIVITY_REFRESH_DELAY_MS = 500;
 const PRIME_AGENT_LIVE_ACTIVITY_PENDING_EVENT_MAX = 64;
+const PRIME_AGENT_LIVE_ACTIVITY_MESSAGE_CONTENT_MAX = 64;
 const liveActivityTextEncoder = new TextEncoder();
-// Reserve room for the canonical agent id, revision, entry envelopes and JSON escaping.
-const LIVE_ACTIVITY_TEXT_BYTE_BUDGET = PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_BYTES - 5_536;
+// Assistant text is mirrored for backward compatibility when tool rows are present.
+// Halving the remaining envelope budget keeps that additive wire snapshot bounded.
+const LIVE_ACTIVITY_TEXT_BYTE_BUDGET = Math.floor(
+  (PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_BYTES - 5_536) / 2,
+);
+
+type PrimeLiveActivityToolEntry = ProviderSessionAgentActivityToolEntry;
+
+interface PrimeLiveActivitySanitizedState {
+  readonly entries: ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>;
+  /** Native ids exist only in this private, attachment-local correlation map. */
+  readonly nativeTools: Map<string, PrimeLiveActivityToolEntry>;
+  readonly nextToolActivityId: number;
+}
+
+type PrimeLiveActivityWatchEvent =
+  | { readonly kind: "closed" }
+  | {
+      readonly kind: "replace";
+      readonly state: PrimeLiveActivitySanitizedState;
+      readonly streamingText?: string;
+    }
+  | {
+      readonly kind: "assistant";
+      readonly phase: "start" | "update" | "end";
+      readonly text: string;
+    }
+  | {
+      readonly kind: "tool";
+      /** Private correlation only; this object is never placed on a public queue. */
+      readonly toolCorrelationKey: string;
+      readonly label: string;
+      readonly status: "started" | "completed" | "failed";
+    };
 
 function truncateLiveActivityText(text: string, maxCharacters: number, maxBytes: number): string {
   let characters = 0;
@@ -93,48 +131,214 @@ function visibleAssistantText(message: unknown): string | undefined {
   ) {
     return undefined;
   }
-  const text = message.content
-    .filter(
-      (part) => Predicate.isObject(part) && part.type === "text" && Predicate.isString(part.text),
-    )
-    .map((part) => part.text as string)
-    .join("");
+  let text = "";
+  let bytes = 0;
+  for (const part of message.content.slice(0, PRIME_AGENT_LIVE_ACTIVITY_MESSAGE_CONTENT_MAX)) {
+    if (!Predicate.isObject(part) || part.type !== "text" || !Predicate.isString(part.text)) {
+      continue;
+    }
+    const addition = truncateLiveActivityText(
+      part.text,
+      PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS - [...text].length,
+      LIVE_ACTIVITY_TEXT_BYTE_BUDGET - bytes,
+    );
+    text += addition;
+    const encodedAddition = JSON.stringify(addition);
+    bytes += liveActivityTextEncoder.encode(encodedAddition.slice(1, -1)).byteLength;
+    if (
+      [...text].length >= PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS ||
+      bytes >= LIVE_ACTIVITY_TEXT_BYTE_BUDGET
+    ) {
+      break;
+    }
+  }
   const trimmed = text.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * Privacy boundary for Prime's AgentMessage union. Only assistant text content
- * survives; roles, tool calls/results, thinking, metadata, ids and timestamps
- * are discarded before a value can enter a Pylon stream.
- */
-export function sanitizePrimeAgentLiveActivityMessages(
-  messages: unknown,
-): ReadonlyArray<ProviderSessionAgentActivityEntry> {
-  if (!Array.isArray(messages)) return [];
-  const entries: Array<ProviderSessionAgentActivityEntry> = [];
+/** Maps an exact native tool name to a fixed, non-sensitive public label. */
+export function primeAgentLiveActivityToolLabel(toolName: unknown): string {
+  if (!Predicate.isString(toolName) || toolName.length > 64) return "Tool";
+  switch (toolName.trim().toLowerCase()) {
+    case "ipython":
+    case "functions.ipython":
+      return "IPython";
+    case "bash":
+    case "functions.bash":
+      return "Shell";
+    case "edit":
+    case "functions.edit":
+    case "apply_patch":
+      return "Edit";
+    case "read":
+    case "functions.read":
+      return "Read";
+    case "grep":
+    case "glob":
+    case "find":
+    case "search":
+      return "Search";
+    case "websearch":
+    case "functions.websearch":
+      return "Web search";
+    case "attach_image":
+    case "functions.attach_image":
+      return "Image";
+    default:
+      return "Tool";
+  }
+}
+
+function liveActivityToolCorrelationKey(salt: string, nativeToolId: string): string {
+  return NodeCrypto.createHash("sha256")
+    .update(salt, "utf8")
+    .update("\0", "utf8")
+    .update(nativeToolId, "utf8")
+    .digest("hex");
+}
+
+function boundedLiveActivityEntries(
+  input: ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>,
+): ReadonlyArray<ProviderSessionAgentActivityTimelineEntry> {
+  const entries: Array<ProviderSessionAgentActivityTimelineEntry> = [];
   let remainingCharacters = PROVIDER_SESSION_AGENT_ACTIVITY_SNAPSHOT_MAX_CHARS;
   let remainingBytes = LIVE_ACTIVITY_TEXT_BYTE_BUDGET;
 
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  for (let index = input.length - 1; index >= 0; index -= 1) {
     if (entries.length >= PROVIDER_SESSION_AGENT_ACTIVITY_MAX_ENTRIES) break;
-    const text = visibleAssistantText(messages[index]);
-    if (text === undefined) continue;
-    const bounded = truncateLiveActivityText(
-      text,
-      Math.min(PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS, remainingCharacters),
-      remainingBytes,
-    );
-    if (bounded.length === 0) break;
-    const characterCount = [...bounded].length;
-    const encodedText = JSON.stringify(bounded);
-    const byteCount = liveActivityTextEncoder.encode(encodedText.slice(1, -1)).byteLength;
-    entries.unshift({ speaker: "assistant", text: bounded });
-    remainingCharacters -= characterCount;
-    remainingBytes -= byteCount;
+    const entry = input[index];
+    if (entry === undefined) continue;
+    if ("speaker" in entry) {
+      const bounded = truncateLiveActivityText(
+        entry.text,
+        Math.min(PROVIDER_SESSION_AGENT_ACTIVITY_ENTRY_MAX_CHARS, remainingCharacters),
+        remainingBytes,
+      );
+      if (bounded.length === 0) break;
+      const encodedText = JSON.stringify(bounded);
+      remainingCharacters -= [...bounded].length;
+      remainingBytes -= liveActivityTextEncoder.encode(encodedText.slice(1, -1)).byteLength;
+      entries.unshift({ speaker: "assistant", text: bounded });
+    } else {
+      const label = truncateLiveActivityText(
+        entry.label,
+        Math.min(PROVIDER_SESSION_AGENT_ACTIVITY_TOOL_LABEL_MAX_CHARS, remainingCharacters),
+        remainingBytes,
+      );
+      if (label.length === 0) break;
+      const encodedLabel = JSON.stringify(label);
+      remainingCharacters -= [...label].length;
+      remainingBytes -= liveActivityTextEncoder.encode(encodedLabel.slice(1, -1)).byteLength;
+      // Keep the object identity used only by the private native-id correlation map.
+      entries.unshift(label === entry.label ? entry : { ...entry, label });
+    }
     if (remainingCharacters === 0 || remainingBytes === 0) break;
   }
   return entries;
+}
+
+function pruneLiveActivityNativeTools(
+  nativeTools: Map<string, PrimeLiveActivityToolEntry>,
+  entries: ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>,
+): void {
+  for (const [nativeId, entry] of nativeTools) {
+    if (!entries.includes(entry)) nativeTools.delete(nativeId);
+  }
+}
+
+function streamingLiveActivityEntryIndex(
+  entries: ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>,
+  streamingEntry: ProviderSessionAgentActivityTimelineEntry | undefined,
+): number {
+  if (streamingEntry === undefined || !("speaker" in streamingEntry)) return -1;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (
+      entry === streamingEntry ||
+      (entry !== undefined && "speaker" in entry && entry.text === streamingEntry.text)
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function sanitizePrimeAgentLiveActivityMessageState(
+  messages: unknown,
+  correlationSalt: string,
+): PrimeLiveActivitySanitizedState {
+  if (!Array.isArray(messages)) {
+    return { entries: [], nativeTools: new Map(), nextToolActivityId: 1 };
+  }
+  let entries: ReadonlyArray<ProviderSessionAgentActivityTimelineEntry> = [];
+  const nativeTools = new Map<string, PrimeLiveActivityToolEntry>();
+  let nextToolActivityId = 1;
+  // A watcher may return an arbitrarily long transcript. Hydration intentionally
+  // considers only a small tail and remains a coarse attach-time skeleton.
+  const boundedMessages = messages.slice(-PROVIDER_SESSION_AGENT_ACTIVITY_MAX_ENTRIES * 2);
+
+  for (const message of boundedMessages) {
+    const text = visibleAssistantText(message);
+    if (text !== undefined) {
+      entries = boundedLiveActivityEntries([...entries, { speaker: "assistant", text }]);
+    }
+    if (
+      Predicate.isObject(message) &&
+      message.role === "assistant" &&
+      Array.isArray(message.content)
+    ) {
+      for (const part of message.content.slice(0, PRIME_AGENT_LIVE_ACTIVITY_MESSAGE_CONTENT_MAX)) {
+        if (!Predicate.isObject(part) || part.type !== "toolCall") continue;
+        const toolKey = Predicate.isString(part.id)
+          ? liveActivityToolCorrelationKey(correlationSalt, part.id)
+          : undefined;
+        if (toolKey === undefined || nativeTools.has(toolKey)) continue;
+        const entry: PrimeLiveActivityToolEntry = {
+          kind: "tool",
+          activityId: nextToolActivityId,
+          label: primeAgentLiveActivityToolLabel(part.name),
+          status: "started",
+        };
+        nextToolActivityId += 1;
+        entries = boundedLiveActivityEntries([...entries, entry]);
+        nativeTools.set(toolKey, entry);
+        pruneLiveActivityNativeTools(nativeTools, entries);
+      }
+    }
+    if (!Predicate.isObject(message) || message.role !== "toolResult") continue;
+    const toolKey = Predicate.isString(message.toolCallId)
+      ? liveActivityToolCorrelationKey(correlationSalt, message.toolCallId)
+      : undefined;
+    if (toolKey === undefined) continue;
+    const previous = nativeTools.get(toolKey);
+    const entry: PrimeLiveActivityToolEntry = {
+      kind: "tool",
+      activityId: previous?.activityId ?? nextToolActivityId,
+      label: previous?.label ?? primeAgentLiveActivityToolLabel(message.toolName),
+      status: message.isError === true ? "failed" : "completed",
+    };
+    if (previous === undefined) nextToolActivityId += 1;
+    const previousIndex = previous === undefined ? -1 : entries.indexOf(previous);
+    entries = boundedLiveActivityEntries(
+      previousIndex < 0
+        ? [...entries, entry]
+        : entries.map((candidate, index) => (index === previousIndex ? entry : candidate)),
+    );
+    nativeTools.set(toolKey, entry);
+    pruneLiveActivityNativeTools(nativeTools, entries);
+  }
+  return { entries, nativeTools, nextToolActivityId };
+}
+
+/**
+ * Privacy boundary for Prime's AgentMessage union. Only assistant text and a
+ * coarse tool skeleton survive. Tool inputs/results, reasoning, metadata,
+ * native ids, paths, timestamps, and error text are never copied.
+ */
+export function sanitizePrimeAgentLiveActivityMessages(
+  messages: unknown,
+): ReadonlyArray<ProviderSessionAgentActivityTimelineEntry> {
+  return sanitizePrimeAgentLiveActivityMessageState(messages, "standalone").entries;
 }
 
 const thinkingLevelSchema = Schema.Literals([
@@ -644,7 +848,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly watchAgentActivity: (
     activeSessionId: string,
   ) => Stream.Stream<
-    ReadonlyArray<ProviderSessionAgentActivityEntry>,
+    ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>,
     PrimeAgentDaemonSessionRuntimeError
   >;
   readonly events: Stream.Stream<PrimeDaemonEvent, never>;
@@ -1931,7 +2135,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       rawActiveSessionId,
     ) =>
       Stream.callback<
-        ReadonlyArray<ProviderSessionAgentActivityEntry>,
+        ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>,
         PrimeAgentDaemonSessionRuntimeError
       >((queue) =>
         Effect.acquireRelease(
@@ -1979,27 +2183,48 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               );
             }
 
+            const activityCorrelationSalt = NodeCrypto.randomUUID();
             let closed = false;
             let initialized = false;
             let pendingEventsTerminal = false;
-            const pendingWatchEvents: Array<unknown> = [];
+            const pendingWatchEvents: Array<PrimeLiveActivityWatchEvent> = [];
             let streamingMessageActive = false;
-            let latestEntries: ReadonlyArray<ProviderSessionAgentActivityEntry> | undefined;
-            let lastPublishedEntries: ReadonlyArray<ProviderSessionAgentActivityEntry> | undefined;
+            let streamingEntry: ProviderSessionAgentActivityTimelineEntry | undefined;
+            let latestEntries: ReadonlyArray<ProviderSessionAgentActivityTimelineEntry> | undefined;
+            let lastPublishedEntries:
+              | ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>
+              | undefined;
+            let nativeTools = new Map<string, PrimeLiveActivityToolEntry>();
+            let nextToolActivityId = 1;
             const pendingEntries =
-              yield* Queue.sliding<ReadonlyArray<ProviderSessionAgentActivityEntry>>(1);
-            const entriesChanged = (next: ReadonlyArray<ProviderSessionAgentActivityEntry>) =>
+              yield* Queue.sliding<ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>>(1);
+            const entryEquals = (
+              left: ProviderSessionAgentActivityTimelineEntry,
+              right: ProviderSessionAgentActivityTimelineEntry | undefined,
+            ) => {
+              if (right === undefined || "speaker" in left !== "speaker" in right) return false;
+              return "speaker" in left && "speaker" in right
+                ? left.text === right.text
+                : "kind" in left &&
+                    "kind" in right &&
+                    left.activityId === right.activityId &&
+                    left.label === right.label &&
+                    left.status === right.status;
+            };
+            const entriesChanged = (
+              next: ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>,
+            ) =>
               lastPublishedEntries === undefined ||
               next.length !== lastPublishedEntries.length ||
-              next.some((entry, index) => entry.text !== lastPublishedEntries?.[index]?.text);
-            const offerEntries = (next: ReadonlyArray<ProviderSessionAgentActivityEntry>) =>
+              next.some((entry, index) => !entryEquals(entry, lastPublishedEntries?.[index]));
+            const offerEntries = (next: ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>) =>
               Effect.gen(function* () {
                 latestEntries = next;
                 if (closed || !entriesChanged(next)) return;
                 lastPublishedEntries = next;
                 yield* Queue.offer(queue, next);
               });
-            const queueEntries = (next: ReadonlyArray<ProviderSessionAgentActivityEntry>) =>
+            const queueEntries = (next: ReadonlyArray<ProviderSessionAgentActivityTimelineEntry>) =>
               Effect.gen(function* () {
                 latestEntries = next;
                 if (!closed) yield* Queue.offer(pendingEntries, next);
@@ -2010,7 +2235,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 closed = true;
                 yield* Queue.fail(queue, error);
               });
-            const replacementEntries = (event: Record<string, unknown>) => {
+            const replacementState = (event: Record<string, unknown>) => {
               const state = Predicate.isObject(event.state) ? event.state : undefined;
               const snapshot = Predicate.isObject(event.snapshot) ? event.snapshot : undefined;
               const replacement = state ?? snapshot;
@@ -2024,53 +2249,135 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 replacement !== undefined && "streamingMessage" in replacement
                   ? replacement.streamingMessage
                   : event.streamingMessage;
-              const visibleStreaming = sanitizePrimeAgentLiveActivityMessages([
-                streamingMessage,
-              ])[0];
               return {
-                entries:
-                  visibleStreaming === undefined
-                    ? sanitizePrimeAgentLiveActivityMessages(messages)
-                    : sanitizePrimeAgentLiveActivityMessages([
-                        ...messages,
-                        {
-                          role: "assistant",
-                          content: [{ type: "text", text: visibleStreaming.text }],
-                        },
-                      ]),
-                streaming: visibleStreaming !== undefined,
+                state: sanitizePrimeAgentLiveActivityMessageState(
+                  messages,
+                  activityCorrelationSalt,
+                ),
+                streamingText: visibleAssistantText(streamingMessage),
               };
             };
-            const updateStreamingMessage = (
-              message: unknown,
-              phase: "start" | "update" | "end",
-            ) => {
-              const visible = sanitizePrimeAgentLiveActivityMessages([message]);
-              if (visible.length === 0) return undefined;
+            const sanitizeWatchEvent = (
+              event: unknown,
+            ): PrimeLiveActivityWatchEvent | undefined => {
+              if (!Predicate.isObject(event) || !Predicate.isString(event.type)) return undefined;
+              if (event.type === "closed") return { kind: "closed" };
+              if (event.type === "session_replaced" || event.type === "session_resynced") {
+                const replacement = replacementState(event);
+                return replacement === undefined
+                  ? undefined
+                  : {
+                      kind: "replace",
+                      state: replacement.state,
+                      ...(replacement.streamingText === undefined
+                        ? {}
+                        : { streamingText: replacement.streamingText }),
+                    };
+              }
+              if (event.type !== "session_event" || !Predicate.isObject(event.event)) {
+                return undefined;
+              }
+              const nativeEvent = event.event;
+              if (
+                nativeEvent.type === "message_start" ||
+                nativeEvent.type === "message_update" ||
+                nativeEvent.type === "message_end"
+              ) {
+                const text = visibleAssistantText(nativeEvent.message);
+                if (text === undefined) return undefined;
+                return {
+                  kind: "assistant",
+                  phase:
+                    nativeEvent.type === "message_start"
+                      ? "start"
+                      : nativeEvent.type === "message_update"
+                        ? "update"
+                        : "end",
+                  text,
+                };
+              }
+              if (
+                nativeEvent.type !== "tool_execution_start" &&
+                nativeEvent.type !== "tool_execution_end"
+              ) {
+                // Progress payloads are deliberately ignored without reading partialResult.
+                return undefined;
+              }
+              if (!Predicate.isString(nativeEvent.toolCallId)) return undefined;
+              return {
+                kind: "tool",
+                toolCorrelationKey: liveActivityToolCorrelationKey(
+                  activityCorrelationSalt,
+                  nativeEvent.toolCallId,
+                ),
+                label: primeAgentLiveActivityToolLabel(nativeEvent.toolName),
+                status:
+                  nativeEvent.type === "tool_execution_start"
+                    ? "started"
+                    : nativeEvent.isError === true
+                      ? "failed"
+                      : "completed",
+              };
+            };
+            const updateStreamingText = (text: string, phase: "start" | "update" | "end") => {
               const committed = [...(latestEntries ?? [])];
+              const streamingIndex = streamingLiveActivityEntryIndex(committed, streamingEntry);
+              if (streamingIndex >= 0) committed.splice(streamingIndex, 1);
+              const lastCommitted = committed.at(-1);
               if (
                 phase === "end" &&
                 !streamingMessageActive &&
-                committed.at(-1)?.text === visible[0]?.text
+                lastCommitted !== undefined &&
+                "speaker" in lastCommitted &&
+                lastCommitted.text === text
               ) {
-                streamingMessageActive = false;
+                streamingEntry = undefined;
                 return committed;
               }
-              if (streamingMessageActive && phase !== "start") committed.pop();
-              const next = sanitizePrimeAgentLiveActivityMessages([
-                ...committed.map((entry) => ({
-                  role: "assistant",
-                  content: [{ type: "text", text: entry.text }],
-                })),
-                message,
+              const next = boundedLiveActivityEntries([
+                ...committed,
+                { speaker: "assistant", text },
               ]);
               streamingMessageActive = phase !== "end";
+              streamingEntry = streamingMessageActive ? next.at(-1) : undefined;
               return next;
             };
-            const handleWatchEvent = (event: unknown) =>
+            const updateTool = (
+              toolCorrelationKey: string,
+              label: string,
+              status: "started" | "completed" | "failed",
+            ) => {
+              const previous = nativeTools.get(toolCorrelationKey);
+              const entries = [...(latestEntries ?? [])];
+              if (
+                previous !== undefined &&
+                (previous.status !== "started" || previous.status === status)
+              ) {
+                return entries;
+              }
+              const entry: PrimeLiveActivityToolEntry = {
+                kind: "tool",
+                activityId: previous?.activityId ?? nextToolActivityId,
+                label: previous?.label ?? label,
+                status,
+              };
+              if (previous === undefined) nextToolActivityId += 1;
+              const previousIndex = previous === undefined ? -1 : entries.indexOf(previous);
+              const next = boundedLiveActivityEntries(
+                previousIndex < 0
+                  ? [...entries, entry]
+                  : entries.map((candidate, index) =>
+                      index === previousIndex ? entry : candidate,
+                    ),
+              );
+              nativeTools.set(toolCorrelationKey, entry);
+              pruneLiveActivityNativeTools(nativeTools, next);
+              return next;
+            };
+            const handleWatchEvent = (event: PrimeLiveActivityWatchEvent) =>
               Effect.gen(function* () {
-                if (closed || !Predicate.isObject(event) || !Predicate.isString(event.type)) return;
-                if (event.type === "closed") {
+                if (closed) return;
+                if (event.kind === "closed") {
                   yield* failActivity(
                     runtimeError(
                       "watch-agent-activity",
@@ -2080,93 +2387,69 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                   );
                   return;
                 }
-                if (event.type === "session_replaced" || event.type === "session_resynced") {
-                  const replacement = replacementEntries(event);
-                  if (replacement !== undefined) {
-                    yield* Queue.poll(pendingEntries);
-                    streamingMessageActive = replacement.streaming;
-                    yield* offerEntries(replacement.entries);
+                if (event.kind === "replace") {
+                  yield* Queue.poll(pendingEntries);
+                  const replacementEntries = new Map<
+                    PrimeLiveActivityToolEntry,
+                    PrimeLiveActivityToolEntry
+                  >();
+                  const replacementTools = new Map<string, PrimeLiveActivityToolEntry>();
+                  for (const [toolKey, incoming] of event.state.nativeTools) {
+                    const existing = nativeTools.get(toolKey);
+                    const reconciled: PrimeLiveActivityToolEntry = {
+                      ...incoming,
+                      activityId: existing?.activityId ?? nextToolActivityId,
+                      ...(existing !== undefined &&
+                      existing.status !== "started" &&
+                      incoming.status === "started"
+                        ? { status: existing.status }
+                        : {}),
+                    };
+                    if (existing === undefined) nextToolActivityId += 1;
+                    replacementEntries.set(incoming, reconciled);
+                    replacementTools.set(toolKey, reconciled);
                   }
+                  nativeTools = replacementTools;
+                  let next: ReadonlyArray<ProviderSessionAgentActivityTimelineEntry> =
+                    event.state.entries.map((entry) =>
+                      "kind" in entry ? (replacementEntries.get(entry) ?? entry) : entry,
+                    );
+                  if (event.streamingText === undefined) {
+                    streamingMessageActive = false;
+                    streamingEntry = undefined;
+                  } else {
+                    next = boundedLiveActivityEntries([
+                      ...next,
+                      { speaker: "assistant", text: event.streamingText },
+                    ]);
+                    streamingMessageActive = true;
+                    streamingEntry = next.at(-1);
+                  }
+                  yield* offerEntries(next);
                   return;
                 }
-                if (event.type !== "session_event" || !Predicate.isObject(event.event)) return;
-                const nativeEvent = event.event;
-                if (
-                  nativeEvent.type === "message_start" ||
-                  nativeEvent.type === "message_update" ||
-                  nativeEvent.type === "message_end"
-                ) {
-                  const phase =
-                    nativeEvent.type === "message_start"
-                      ? "start"
-                      : nativeEvent.type === "message_update"
-                        ? "update"
-                        : "end";
-                  const next = updateStreamingMessage(nativeEvent.message, phase);
-                  if (next === undefined) return;
-                  if (phase === "end") {
-                    yield* Queue.poll(pendingEntries);
-                    yield* offerEntries(next);
-                  } else {
-                    yield* queueEntries(next);
-                  }
+                if (event.kind === "tool") {
+                  yield* offerEntries(
+                    updateTool(event.toolCorrelationKey, event.label, event.status),
+                  );
+                  return;
+                }
+                const next = updateStreamingText(event.text, event.phase);
+                if (event.phase === "end") {
+                  yield* Queue.poll(pendingEntries);
+                  yield* offerEntries(next);
+                } else {
+                  yield* queueEntries(next);
                 }
               });
-
-            const safeAssistantMessage = (text: string) => ({
-              role: "assistant",
-              content: [{ type: "text", text }],
-            });
-            const sanitizePendingWatchEvent = (event: unknown): unknown => {
-              if (!Predicate.isObject(event) || !Predicate.isString(event.type)) return undefined;
-              if (event.type === "closed") return { type: "closed" };
-              if (event.type === "session_replaced" || event.type === "session_resynced") {
-                const replacement = replacementEntries(event);
-                if (replacement === undefined) return { type: event.type };
-                const committed = replacement.streaming
-                  ? replacement.entries.slice(0, -1)
-                  : replacement.entries;
-                const streaming = replacement.streaming ? replacement.entries.at(-1) : undefined;
-                return {
-                  type: event.type,
-                  messages: committed.map((entry) => safeAssistantMessage(entry.text)),
-                  ...(streaming === undefined
-                    ? {}
-                    : { streamingMessage: safeAssistantMessage(streaming.text) }),
-                };
-              }
-              if (event.type !== "session_event" || !Predicate.isObject(event.event)) {
-                return undefined;
-              }
-              const nativeEvent = event.event;
-              if (
-                nativeEvent.type !== "message_start" &&
-                nativeEvent.type !== "message_update" &&
-                nativeEvent.type !== "message_end"
-              ) {
-                return undefined;
-              }
-              const visible = sanitizePrimeAgentLiveActivityMessages([nativeEvent.message]);
-              const message = visible[0];
-              // Tool/reasoning-only events cannot affect the public snapshot,
-              // so they must not consume the bounded initialization budget.
-              if (message === undefined) return undefined;
-              return {
-                type: "session_event",
-                event: {
-                  type: nativeEvent.type,
-                  message: safeAssistantMessage(message.text),
-                },
-              };
-            };
 
             const unsubscribeResult = yield* Effect.try({
               try: () =>
                 watcher.subscribe(async (event) => {
+                  const pending = sanitizeWatchEvent(event);
+                  if (pending === undefined) return;
                   if (!initialized) {
                     if (pendingEventsTerminal) return;
-                    const pending = sanitizePendingWatchEvent(event);
-                    if (pending === undefined) return;
                     if (pendingWatchEvents.length >= PRIME_AGENT_LIVE_ACTIVITY_PENDING_EVENT_MAX) {
                       pendingEventsTerminal = true;
                       await runPromise(
@@ -2181,12 +2464,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                       return;
                     }
                     pendingWatchEvents.push(pending);
-                    if (Predicate.isObject(pending) && pending.type === "closed") {
-                      pendingEventsTerminal = true;
-                    }
+                    if (pending.kind === "closed") pendingEventsTerminal = true;
                     return;
                   }
-                  await runPromise(handleWatchEvent(event));
+                  await runPromise(handleWatchEvent(pending));
                 }),
               catch: () =>
                 runtimeError(
@@ -2222,7 +2503,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 }),
               ),
             );
-            const initialEntries = sanitizePrimeAgentLiveActivityMessages(initialMessages);
+            const initialState = sanitizePrimeAgentLiveActivityMessageState(
+              initialMessages,
+              activityCorrelationSalt,
+            );
+            const initialEntries = initialState.entries;
+            nativeTools = initialState.nativeTools;
+            nextToolActivityId = initialState.nextToolActivityId;
             latestEntries = initialEntries;
             lastPublishedEntries = initialEntries;
             if (!closed) yield* Queue.offer(queue, initialEntries);

@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
+
 import {
   RuntimeItemId,
   RuntimeTaskId,
@@ -39,10 +42,7 @@ interface RuntimeEventContext {
 
 const MAX_TEXT_LENGTH = 100_000;
 const MAX_SCALAR_LENGTH = 4_000;
-const MAX_SCALAR_FIELDS = 32;
-
-type SafeScalar = string | number | boolean | null;
-type SafeData = Readonly<Record<string, SafeScalar>>;
+const PRIME_TOOL_ITEM_ID_HASH_LENGTH = 32;
 
 function bounded(value: string, maximum = MAX_TEXT_LENGTH): string {
   return value.length <= maximum ? value : value.slice(0, maximum);
@@ -51,19 +51,6 @@ function bounded(value: string, maximum = MAX_TEXT_LENGTH): string {
 function boundedNonEmpty(value: string | undefined, maximum = MAX_TEXT_LENGTH): string | undefined {
   if (value === undefined || value.trim().length === 0) return undefined;
   return bounded(value, maximum);
-}
-
-function boundedScalarData(value: SafeData | undefined): SafeData | undefined {
-  if (value === undefined) return undefined;
-
-  const output: Record<string, SafeScalar> = {};
-  for (const [key, item] of Object.entries(value).slice(0, MAX_SCALAR_FIELDS)) {
-    const safeKey = bounded(key, MAX_SCALAR_LENGTH);
-    if (safeKey.length === 0) continue;
-    if (typeof item === "string") output[safeKey] = bounded(item, MAX_SCALAR_LENGTH);
-    else if (typeof item !== "number" || Number.isFinite(item)) output[safeKey] = item;
-  }
-  return Object.keys(output).length > 0 ? output : undefined;
 }
 
 function runtimeBase(input: RuntimeEventContext) {
@@ -145,24 +132,58 @@ function canonicalToolItemType(toolName: string): ToolLifecycleItemType {
   return "dynamic_tool_call";
 }
 
+function canonicalToolTitle(toolName: string): string {
+  switch (toolName.trim().toLowerCase()) {
+    case "ipython":
+    case "functions.ipython":
+      return "IPython";
+    case "bash":
+    case "functions.bash":
+      return "Shell";
+    case "edit":
+    case "functions.edit":
+    case "apply_patch":
+      return "Edit";
+    case "read":
+    case "functions.read":
+      return "Read";
+    case "grep":
+    case "glob":
+    case "find":
+    case "search":
+      return "Search";
+    case "websearch":
+    case "functions.websearch":
+      return "Web search";
+    case "attach_image":
+    case "functions.attach_image":
+      return "Image";
+    default:
+      return "Tool";
+  }
+}
+
+// Native Prime tool-call ids stay behind the adapter boundary. The opaque
+// digest still gives every update for one call the same canonical identity.
+export function canonicalPrimeToolItemId(toolCallId: string): RuntimeItemId {
+  const digest = NodeCrypto.createHash("sha256").update(toolCallId, "utf8").digest("hex");
+  return RuntimeItemId.make(`prime-tool:${digest.slice(0, PRIME_TOOL_ITEM_ID_HASH_LENGTH)}`);
+}
+
 function toolLifecycleDraft(
   input: RuntimeEventContext & {
     readonly lifecycle: "item.started" | "item.updated" | "item.completed";
     readonly toolCallId: string;
     readonly toolName: string;
-    readonly text?: string | undefined;
-    readonly data?: SafeData | undefined;
     readonly failed?: boolean | undefined;
   },
 ): PrimeAgentRuntimeEventDraft | undefined {
   if (input.toolCallId.trim().length === 0) return undefined;
-  const title = boundedNonEmpty(input.toolName, MAX_SCALAR_LENGTH);
-  const detail = boundedNonEmpty(input.text);
-  const data = boundedScalarData(input.data);
+  const title = canonicalToolTitle(input.toolName);
   return {
     ...runtimeBase(input),
     type: input.lifecycle,
-    itemId: RuntimeItemId.make(bounded(input.toolCallId, MAX_SCALAR_LENGTH)),
+    itemId: canonicalPrimeToolItemId(input.toolCallId),
     payload: {
       itemType: canonicalToolItemType(input.toolName),
       status:
@@ -171,9 +192,7 @@ function toolLifecycleDraft(
             ? "failed"
             : "completed"
           : "inProgress",
-      ...(title === undefined ? {} : { title }),
-      ...(detail === undefined ? {} : { detail }),
-      ...(data === undefined ? {} : { data }),
+      title,
     },
   };
 }
@@ -494,7 +513,6 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
         lifecycle: "item.started",
         toolCallId: event.toolCallId,
         toolName: event.toolName,
-        data: event.input,
       });
       return draft === undefined ? [] : [draft];
     }
@@ -504,7 +522,6 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
         lifecycle: "item.updated",
         toolCallId: event.toolCallId,
         toolName: event.toolName,
-        text: event.text,
       });
       return draft === undefined ? [] : [draft];
     }
@@ -514,7 +531,6 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
         lifecycle: "item.completed",
         toolCallId: event.toolCallId,
         toolName: event.toolName,
-        text: event.text,
         failed: event.isError,
       });
       return draft === undefined ? [] : [draft];
