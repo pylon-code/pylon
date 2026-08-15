@@ -21,6 +21,12 @@ jobs:
       APP_VARIANT: preview
       NODE_OPTIONS: --max-old-space-size=8192
       MOBILE_VERSION_POLICY: fingerprint
+      # app.config.ts reads these to build `extra.eas.projectId`, and eas-cli
+      # resolves the project from it. They otherwise live only in a gitignored
+      # .env.local, so without them here every eas command fails with "EAS
+      # project not configured".
+      PYLON_EAS_PROJECT_ID: ${{ vars.PYLON_EAS_PROJECT_ID }}
+      PYLON_EAS_OWNER: ${{ vars.PYLON_EAS_OWNER }}
     steps:
       - id: expo-token
         name: Check for EXPO_TOKEN
@@ -87,6 +93,13 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: eas env:pull preview --non-interactive
+
+      # The preview environment is a mirror; the production workflow refreshes it
+      # from the GitHub `production` environment. Fail here rather than hand a
+      # reviewer a build whose Connect surfaces are silently missing.
+      - name: Verify Connect config reaches the app manifest
+        if: steps.expo-token.outputs.present == 'true'
+        run: node scripts/verify-mobile-connect-config.ts
 
       - name: Deploy with fingerprint check
         if: steps.expo-token.outputs.present == 'true'

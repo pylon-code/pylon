@@ -39,9 +39,17 @@ identifiers, not secrets.
 Web, desktop, mobile, and bundled server builds statically inject the values they consume during
 their build step. A built artifact does not need an environment file at runtime. CI release builds
 should set `T3CODE_CLERK_PUBLISHABLE_KEY`, `T3CODE_CLERK_JWT_TEMPLATE`,
-`T3CODE_CLERK_CLI_OAUTH_CLIENT_ID`, and `T3CODE_RELAY_URL` before building. EAS preview and
-production builds only need the Clerk publishable key, JWT template name, and relay URL in their EAS
-environment.
+`T3CODE_CLERK_CLI_OAUTH_CLIENT_ID`, and `T3CODE_RELAY_URL` before building.
+
+Mobile is the exception, because EAS build servers read their own environment store rather than the
+checkout: a repository-root `.env` is gitignored and never reaches them. The GitHub `production`
+environment stays the single source of truth, and `mobile-eas-production.yml` mirrors those values
+into the EAS `production`, `preview`, and `development` environments before it builds. Both mobile
+workflows then run `scripts/verify-mobile-connect-config.ts`, which resolves the public app manifest
+and fails the job when `clerk.publishableKey`, `clerk.jwtTemplate`, or `relay.url` is absent. That
+check exists because the failure is otherwise invisible: `hasCloudPublicConfig()` omits every Connect
+surface with no error and no empty state, so a misconfigured build looks like an app that simply
+never had the feature.
 
 When any client-facing public value is absent, cloud UI is omitted. The `t3 connect` command group is
 always registered: when the CLI public values are absent, `makeCli` in `apps/server/src/bin.ts`
@@ -236,8 +244,40 @@ codesign --verify --deep --strict "/Applications/Pylon (Alpha).app"
 codesign -d --entitlements :- "/Applications/Pylon (Alpha).app"
 ```
 
-The current mobile UI uses Clerk's native authentication view. If a future mobile browser OAuth
-flow uses a custom redirect URI, add that exact URI to the same allowlist.
+## Mobile Native Redirect Allowlist
+
+Mobile does **not** use `allowed_origins`. That field covers browser-like stacks — Electron and
+browser extensions — which is why the desktop entries above live there. Clerk's native
+authentication view (`AuthView` from `@clerk/expo/native`) is validated against a separate
+**Redirect URLs** resource, reachable in the Dashboard under **Native applications > Allowlist for
+mobile SSO redirect**. Patching `allowed_origins` does not affect it.
+
+The view derives its redirect from the **iOS bundle identifier**, not from the app's URL scheme, so
+each variant needs its own entry:
+
+```text
+com.pylon.code://callback
+com.pylon.code.preview://callback
+com.pylon.code.dev://callback
+```
+
+The Backend API is additive, so adding one entry cannot disturb the others:
+
+```sh
+curl -X POST https://api.clerk.com/v1/redirect_urls \
+  -H "Authorization: Bearer $CLERK_SECRET_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"com.pylon.code.preview://callback"}'
+```
+
+`GET /v1/redirect_urls` lists the current entries and `DELETE /v1/redirect_urls/<id>` removes one.
+
+A missing entry fails at the end of the sign-in flow, not at launch: Clerk renders "The current
+redirect url passed in the sign in or sign up request does not match an authorized redirect URI for
+this instance" and names the rejected URI. Read that URI off the error rather than deriving it — it
+is the exact string the allowlist needs. Note that these are bundle identifiers
+(`com.pylon.code.preview`), while the desktop entries above are URL schemes (`pylon-code`); the two
+namespaces are easy to confuse.
 
 ## Sign-in Surfaces
 
