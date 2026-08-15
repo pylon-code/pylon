@@ -95,6 +95,33 @@ function renderRunningActions(showSendWhileRunning: boolean, hasSendableContent:
   );
 }
 
+function renderQueueCapableRunningActions(
+  showSendWhileRunning: boolean,
+  hasSendableContent: boolean,
+) {
+  return renderToStaticMarkup(
+    createElement(ComposerPrimaryActions, {
+      compact: true,
+      pendingAction: null,
+      isRunning: true,
+      canQueueFollowUp: true,
+      onQueueFollowUp: () => {},
+      showPlanFollowUpPrompt: false,
+      promptHasText: hasSendableContent,
+      isSendBusy: false,
+      sendDisabledReason: null,
+      isConnecting: false,
+      isEnvironmentUnavailable: false,
+      isPreparingWorktree: false,
+      hasSendableContent,
+      showSendWhileRunning,
+      onPreviousPendingQuestion: () => {},
+      onImplementPlanInNewThread: () => {},
+      onInterrupt: () => {},
+    }),
+  );
+}
+
 function renderSendButton() {
   return renderToStaticMarkup(
     createElement(ComposerPrimaryActions, {
@@ -268,6 +295,31 @@ describe("ComposerPrimaryActions", () => {
     const markup = renderRunningActions(true, false);
 
     expect(markup).toContain('aria-label="Stop generation"');
+    expect(markup).not.toContain('aria-label="Send message"');
+  });
+
+  // Most providers advertise a session input queue, so the queue affordance —
+  // not the send fallback — is the path a running turn normally takes.
+  it("offers queue follow-up beside stop while running on a queue-capable provider", () => {
+    const markup = renderQueueCapableRunningActions(false, true);
+
+    expect(markup).toContain('aria-label="Stop generation"');
+    expect(markup).toContain('aria-label="Queue follow-up"');
+    expect(markup).not.toContain('aria-label="Send message"');
+  });
+
+  it("prefers queue follow-up over the send fallback rather than offering both", () => {
+    const markup = renderQueueCapableRunningActions(true, true);
+
+    expect(markup).toContain('aria-label="Queue follow-up"');
+    expect(markup).not.toContain('aria-label="Send message"');
+  });
+
+  it("keeps the queue affordance visible but disabled with an empty composer", () => {
+    const markup = renderQueueCapableRunningActions(true, false);
+
+    expect(markup).toContain('aria-label="Queue follow-up"');
+    expect(markup).toContain("disabled");
     expect(markup).not.toContain('aria-label="Send message"');
   });
 });
