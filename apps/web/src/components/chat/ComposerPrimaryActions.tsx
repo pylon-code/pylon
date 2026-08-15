@@ -30,6 +30,9 @@ interface ComposerPrimaryActionsProps {
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
+  /** Enter-to-send is disabled on mobile viewports, where stop would otherwise
+   * be the only primary action and a running turn could not be steered. */
+  showSendWhileRunning?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -72,6 +75,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isPreparingWorktree,
   hasSendableContent,
   preserveComposerFocusOnPointerDown = false,
+  showSendWhileRunning = false,
   onPreviousPendingQuestion,
   onInterrupt,
   onImplementPlanInNewThread,
@@ -90,7 +94,11 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       type="button"
       className={cn(
         "flex cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none",
-        insidePendingAction ? "size-8 sm:size-7" : "size-8 sm:h-8 sm:w-8",
+        insidePendingAction
+          ? "size-8 sm:size-7"
+          : showSendWhileRunning && hasSendableContent
+            ? "size-9 sm:size-8"
+            : "size-8 sm:h-8 sm:w-8",
       )}
       {...pointerFocusProps}
       onClick={onInterrupt}
@@ -157,46 +165,6 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
-  if (isRunning) {
-    return (
-      <div className="flex items-center justify-end gap-2">
-        {renderStopGenerationButton(false)}
-        {canQueueFollowUp ? (
-          <button
-            type="button"
-            className={cn(
-              "relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-message-action text-message-action-foreground shadow-xs transition-all duration-150 enabled:cursor-pointer enabled:shadow-message-action/24 enabled:inset-shadow-[0_1px_--theme(--color-white/16%)] hover:scale-105 hover:bg-message-action-hover active:shadow-none disabled:pointer-events-none disabled:opacity-30 sm:h-8 sm:w-8",
-            )}
-            {...pointerFocusProps}
-            disabled={
-              isSendBusy ||
-              isSendDisabled ||
-              isConnecting ||
-              isEnvironmentUnavailable ||
-              !hasSendableContent
-            }
-            onClick={onQueueFollowUp}
-            aria-label={isSendBusy ? "Queueing follow-up" : "Queue follow-up"}
-          >
-            {isSendBusy ? (
-              <Spinner className="size-3.5" aria-hidden="true" />
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <path
-                  d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            )}
-          </button>
-        ) : null}
-      </div>
-    );
-  }
-
   if (showPlanFollowUpPrompt) {
     if (promptHasText) {
       return (
@@ -254,7 +222,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
-  return (
+  const sendButton = (
     <button
       type="submit"
       className={cn(
@@ -304,5 +272,53 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         </svg>
       )}
     </button>
+  );
+
+  if (!isRunning) {
+    return sendButton;
+  }
+
+  // While a turn runs, steering it stays reachable. Providers with a session
+  // input queue get the dedicated queue affordance on every viewport; the rest
+  // fall back to plain send, which mobile needs because enter-to-send is off
+  // there and stop would otherwise be the only primary action.
+  return (
+    <div className="flex items-center justify-end gap-2">
+      {renderStopGenerationButton(false)}
+      {canQueueFollowUp ? (
+        <button
+          type="button"
+          className={cn(
+            "relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-message-action text-message-action-foreground shadow-xs transition-all duration-150 enabled:cursor-pointer enabled:shadow-message-action/24 enabled:inset-shadow-[0_1px_--theme(--color-white/16%)] hover:scale-105 hover:bg-message-action-hover active:shadow-none disabled:pointer-events-none disabled:opacity-30 sm:h-8 sm:w-8",
+          )}
+          {...pointerFocusProps}
+          disabled={
+            isSendBusy ||
+            isSendDisabled ||
+            isConnecting ||
+            isEnvironmentUnavailable ||
+            !hasSendableContent
+          }
+          onClick={onQueueFollowUp}
+          aria-label={isSendBusy ? "Queueing follow-up" : "Queue follow-up"}
+        >
+          {isSendBusy ? (
+            <Spinner className="size-3.5" aria-hidden="true" />
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path
+                d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+        </button>
+      ) : showSendWhileRunning && hasSendableContent ? (
+        sendButton
+      ) : null}
+    </div>
   );
 });
