@@ -39,7 +39,9 @@ import {
 } from "@t3tools/client-runtime/state/session-agent-depth";
 import {
   formatProviderSlashCommandDescription,
+  presentSessionResourceInventory,
   resolveSessionSlashCommands,
+  sessionResourceViewIdentity,
   supportsSessionResourceReload,
   type SessionResourcesSnapshot,
 } from "@t3tools/client-runtime/state/session-resources";
@@ -152,6 +154,7 @@ import {
   sessionHarnessRefinementScopeKey as buildSessionHarnessRefinementScopeKey,
 } from "./sessionHarnessRefinementMenu";
 import { SessionAgentLiveActivityModal } from "./SessionAgentLiveActivityModal";
+import { SessionResourcesModal } from "./SessionResourcesModal";
 import { QuickQuestionModal, QuickQuestionTrigger } from "./QuickQuestionModal";
 import {
   canOpenQuickQuestion,
@@ -744,6 +747,20 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.connectionState !== "connected" ||
     props.activeThreadBusy ||
     props.selectedThread.session?.status !== "ready";
+  const sessionResourceInventory = useMemo(
+    () => presentSessionResourceInventory(props.sessionResources, activeSessionProviderStatus),
+    [activeSessionProviderStatus, props.sessionResources],
+  );
+  const [isSessionResourcesOpen, setIsSessionResourcesOpen] = useState(false);
+  const sessionResourcesScopeKey = sessionResourceViewIdentity({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+    providerInstanceId: props.selectedThread.session?.providerInstanceId,
+    sessionStartedAt: props.selectedThread.session?.startedAt,
+  });
+  useEffect(() => {
+    setIsSessionResourcesOpen(false);
+  }, [sessionResourcesScopeKey]);
   const [isReloadingSessionResources, setIsReloadingSessionResources] = useState(false);
   const reloadSessionResources = useCallback(async () => {
     if (sessionResourceReloadDisabled || isReloadingSessionResources) return;
@@ -1180,7 +1197,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const providerSlashCommands = useMemo(
     () =>
       resolveSessionSlashCommands(
-        selectedProviderStatus?.featureCapabilities?.resources?.operations.includes("commands")
+        selectedProviderStatus?.featureCapabilities?.resources?.operations.includes("commands") &&
+          props.sessionResources?.providerInstanceId === selectedProviderStatus.instanceId
           ? props.sessionResources
           : null,
         selectedProviderStatus?.slashCommands ?? [],
@@ -1993,7 +2011,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     />
                   </ControlPillMenu>
                 ) : null}
-                {showSessionResourceReload ? (
+                {sessionResourceInventory !== null ? (
+                  <ComposerToolbarButton
+                    accessibilityLabel={`Session resources. ${sessionResourceInventory.skills.length} skills, ${sessionResourceInventory.prompts.length} prompts.`}
+                    label={`Resources ${sessionResourceInventory.skills.length + sessionResourceInventory.prompts.length}`}
+                    onPress={() => setIsSessionResourcesOpen(true)}
+                    showChevron={false}
+                  />
+                ) : showSessionResourceReload ? (
                   <ComposerToolbarButton
                     accessibilityLabel={
                       isReloadingSessionResources
@@ -2061,6 +2086,19 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         onCancel={props.onCancelSessionSideQuestion}
         onDismiss={() => setQuickQuestionOpenScopeKey(null)}
       />
+      {isSessionResourcesOpen &&
+      sessionResourceInventory !== null &&
+      props.sessionResources !== null ? (
+        <SessionResourcesModal
+          inventory={sessionResourceInventory}
+          snapshot={props.sessionResources}
+          showReload={showSessionResourceReload}
+          reloadDisabled={sessionResourceReloadDisabled}
+          isReloading={isReloadingSessionResources}
+          onReload={reloadSessionResources}
+          onClose={() => setIsSessionResourcesOpen(false)}
+        />
+      ) : null}
       {liveActivityOpen && selectedLiveActivityAgent !== null ? (
         <SessionAgentLiveActivityModal
           key={sessionAgentScopeKey}

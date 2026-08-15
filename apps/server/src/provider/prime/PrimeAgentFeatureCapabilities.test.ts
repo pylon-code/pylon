@@ -45,7 +45,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
     expect(capabilities.automation?.reason).toContain("approval-required");
     expect(capabilities.resources).toMatchObject({
       support: "read-write",
-      operations: ["commands", "reload"],
+      operations: ["skills", "prompts", "commands", "reload"],
     });
     expect(capabilities.inputQueue?.operations).toEqual([
       "observe",

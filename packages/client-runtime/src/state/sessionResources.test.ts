@@ -7,9 +7,12 @@ import {
 } from "@t3tools/contracts";
 
 import {
+  deriveCurrentSessionResources,
   deriveLatestSessionResources,
   formatProviderSlashCommandDescription,
+  presentSessionResourceInventory,
   resolveSessionSlashCommands,
+  sessionResourceViewIdentity,
   supportsSessionResourceReload,
 } from "./sessionResources.ts";
 
@@ -174,6 +177,92 @@ describe("deriveLatestSessionResources", () => {
     ).toBe(fallback);
   });
 
+  it("ignores inventory retained from a previous session incarnation", () => {
+    const activities = [
+      makeActivity({
+        id: "resource-1",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: { available: true, skills: [{ name: "old" }], prompts: [], commands: [] },
+      }),
+    ];
+
+    expect(
+      deriveCurrentSessionResources(activities, ProviderInstanceId.make("prime-work"), undefined),
+    ).toBeNull();
+    expect(
+      deriveCurrentSessionResources(
+        activities,
+        ProviderInstanceId.make("prime-work"),
+        "2026-01-01T00:01:00.000Z",
+      ),
+    ).toBeNull();
+    expect(
+      deriveCurrentSessionResources(
+        activities,
+        ProviderInstanceId.make("prime-work"),
+        "2025-12-31T23:59:00.000Z",
+      )?.skills,
+    ).toEqual([{ name: "old" }]);
+    expect(
+      deriveCurrentSessionResources(
+        activities,
+        ProviderInstanceId.make("prime-work"),
+        "2025-12-31T20:00:00.000-05:00",
+      ),
+    ).toBeNull();
+  });
+
+  it("presents only resource categories advertised by the provider", () => {
+    const snapshot = deriveLatestSessionResources(
+      [
+        makeActivity({
+          id: "resource-1",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          payload: {
+            available: true,
+            skills: [{ name: "review", scope: "project" }],
+            prompts: [{ name: "release", argumentHint: "<version>" }],
+            commands: [],
+          },
+        }),
+      ],
+      ProviderInstanceId.make("prime-work"),
+    );
+
+    expect(
+      presentSessionResourceInventory(snapshot, {
+        featureCapabilities: {
+          version: 1,
+          resources: { support: "read-only", operations: ["skills"] },
+        },
+      }),
+    ).toEqual({
+      skills: [{ name: "review", scope: "project" }],
+      prompts: [],
+      showSkills: true,
+      showPrompts: false,
+    });
+    expect(
+      presentSessionResourceInventory(snapshot, {
+        featureCapabilities: {
+          version: 1,
+          resources: { support: "unavailable", operations: ["skills", "prompts"] },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      presentSessionResourceInventory(
+        snapshot === null ? null : { ...snapshot, available: false },
+        {
+          featureCapabilities: {
+            version: 1,
+            resources: { support: "read-only", operations: ["skills", "prompts"] },
+          },
+        },
+      ),
+    ).toBeNull();
+  });
+
   it("skips malformed replacement payloads", () => {
     const snapshot = deriveLatestSessionResources(
       [
@@ -197,6 +286,23 @@ describe("deriveLatestSessionResources", () => {
     );
 
     expect(snapshot?.updatedAt).toBe("2026-01-01T00:00:00.000Z");
+  });
+});
+
+describe("sessionResourceViewIdentity", () => {
+  it("changes across provider sessions and incarnations", () => {
+    const base = {
+      environmentId: "env-a",
+      threadId: "thread-a",
+      providerInstanceId: "prime-a",
+      sessionStartedAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(sessionResourceViewIdentity(base)).not.toBe(
+      sessionResourceViewIdentity({ ...base, providerInstanceId: "prime-b" }),
+    );
+    expect(sessionResourceViewIdentity(base)).not.toBe(
+      sessionResourceViewIdentity({ ...base, sessionStartedAt: "2026-01-01T00:01:00.000Z" }),
+    );
   });
 });
 

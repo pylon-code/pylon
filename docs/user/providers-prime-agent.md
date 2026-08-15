@@ -82,8 +82,12 @@ cancelled because Prime may place sensitive model or tool material in their pref
 cannot safely make durable; notifications, status, and widgets use the same provider-neutral presentation
 surface. In Full access, the slash-command menu also shows the safe command names, descriptions, and
 argument hints loaded for that thread when its native session starts, including prompt and skill commands.
-While the session is idle, the refresh control reloads Prime's settings, authentication, MCP configuration,
-resources, runtime, and extension lifecycle before replacing the visible command catalog. It is intentionally
+The composer’s **Resources** control shows the saved names, descriptions, scopes, and argument hints for
+the session’s discovered skills and prompts on web, desktop, and mobile. It does not show resource contents,
+paths, diagnostics, or provider-native identifiers, and browsing a resource does not run or modify it. This
+metadata is part of the synchronized thread record and can remain visible after the native session stops.
+While the session is idle, **Reload resources** reloads Prime's settings, authentication, MCP configuration,
+resources, runtime, and extension lifecycle before replacing the visible resource and command catalogs. It is intentionally
 unavailable in Supervised mode. If the reload cannot finish safely, Pylon clears the catalog and closes that
 native session rather than risking a partially reloaded runtime; it never retries automatically. Pylon does not
 send resource paths, diagnostics, or extension source details
