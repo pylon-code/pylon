@@ -36,6 +36,7 @@ import {
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
+  workLogEntryIsMissingResponse,
   workLogEntryIsToolLike,
 } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
@@ -1375,11 +1376,16 @@ const WorkGroupSection = memo(function WorkGroupSection({
     [groupedEntries],
   );
   const onlyToolEntries = nonEmptyEntries.every((entry) => workLogEntryIsToolLike(entry));
-  const groupLabel = onlyToolEntries
-    ? nonEmptyEntries.length === 1
-      ? "1 tool call"
-      : `${nonEmptyEntries.length} tool calls`
-    : "Work Log";
+  const onlyResponseNotices = nonEmptyEntries.every((entry) =>
+    workLogEntryIsMissingResponse(entry),
+  );
+  const groupLabel = onlyResponseNotices
+    ? "Response status"
+    : onlyToolEntries
+      ? nonEmptyEntries.length === 1
+        ? "1 tool call"
+        : `${nonEmptyEntries.length} tool calls`
+      : "Work Log";
 
   if (nonEmptyEntries.length === 0) return null;
 
@@ -2267,6 +2273,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   const displayText = preview ? `${heading} - ${preview}` : heading;
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
   const canExpand = expandedBody !== null;
+  const missingResponse = workLogEntryIsMissingResponse(workEntry);
   const showFailedIndicator = workEntryIndicatesToolFailure(workEntry);
   const showDestructiveRowStyle =
     showFailedIndicator &&
@@ -2353,13 +2360,13 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
                     render={
                       <span
                         className="flex size-4 items-center justify-center"
-                        aria-label="Tool call failed"
+                        aria-label={missingResponse ? "Final response missing" : "Tool call failed"}
                       />
                     }
                   >
                     <DotMatrix aria-hidden state="error" className="size-3.5" />
                   </TooltipTrigger>
-                  <TooltipPopup>Failed</TooltipPopup>
+                  <TooltipPopup>{missingResponse ? "No final response" : "Failed"}</TooltipPopup>
                 </Tooltip>
               ) : showSuccessIndicator ? (
                 <Tooltip>

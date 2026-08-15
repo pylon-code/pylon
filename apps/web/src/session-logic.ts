@@ -174,7 +174,12 @@ export type TimelineEntry =
       entry: WorkLogEntry;
     };
 
+export function workLogEntryIsMissingResponse(entry: WorkLogEntry): boolean {
+  return entry.sourceActivityKind === "turn.response.missing";
+}
+
 export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
+  if (workLogEntryIsMissingResponse(entry)) return false;
   if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") {
     return true;
   }

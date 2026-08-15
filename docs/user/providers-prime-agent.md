@@ -43,6 +43,15 @@ ACP compatibility mode instead, because the daemon API cannot safely preserve ar
 arguments. Pylon shows that fallback in the provider status rather than silently discarding the
 arguments.
 
+## Turn Completion
+
+A Prime turn can contain several assistant segments around tool work. Pylon keeps those segments in
+native order, so a final response appears after the work that preceded it instead of being appended
+to an older message higher in the thread. If Prime authoritatively finishes without public assistant
+text after its latest tool activity, Pylon shows **Prime Agent finished without sending a final
+response.** as a status row rather than inventing an assistant reply. Failures use the corresponding
+stopped status; cancellation remains cancellation.
+
 On Windows, Pylon currently uses ACP compatibility mode because Prime Agent 0.7.2's public named-pipe daemon transport does not expose a verifiable per-user ACL or authenticated handshake. Native daemon mode remains fail-closed there until the transport can prevent another local OS user from impersonating or connecting to the daemon.
 
 Pylon uses a short-lived, prompt-free Prime Agent RPC process to bootstrap the configured-model

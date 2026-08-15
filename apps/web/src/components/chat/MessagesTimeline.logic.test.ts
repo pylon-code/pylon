@@ -541,6 +541,60 @@ describe("deriveMessagesTimelineRows", () => {
     ).toBeDefined();
   });
 
+  it("keeps a missing-response work row visible outside settled-turn folding", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "tool-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "tool-entry",
+            createdAt: "2026-01-01T00:00:05Z",
+            turnId: "turn-1" as never,
+            label: "Read files",
+            tone: "tool",
+            sourceActivityKind: "tool.completed",
+          },
+        },
+        {
+          id: "missing-response-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:20Z",
+          entry: {
+            id: "missing-response-entry",
+            createdAt: "2026-01-01T00:00:20Z",
+            turnId: "turn-1" as never,
+            label: "Prime Agent finished without sending a final response.",
+            tone: "info",
+            sourceActivityKind: "turn.response.missing",
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: "2026-01-01T00:00:20Z",
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.id)).toEqual(["turn-fold:turn-1", "missing-response-entry"]);
+    expect(rows[1]).toMatchObject({
+      kind: "work",
+      groupedEntries: [
+        {
+          sourceActivityKind: "turn.response.missing",
+          label: "Prime Agent finished without sending a final response.",
+        },
+      ],
+    });
+  });
+
   it("derives a sane duration for a steer-superseded turn with one instant commentary message", () => {
     // A steer ends the previous turn early: its only message completes the
     // instant it is created, and trailing work entries land after it. The

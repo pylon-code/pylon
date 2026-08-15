@@ -109,6 +109,25 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     ]);
   });
 
+  it("uses distinct caller-assigned ids for native assistant segments", () => {
+    const first = RuntimeItemId.make("assistant:turn-1:segment:0");
+    const second = RuntimeItemId.make("assistant:turn-1:segment:1");
+    const firstDraft = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      assistantItemId: first,
+      event: { _tag: "MessageStarted", message: assistant({ text: "first" }) },
+    });
+    const secondDraft = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      assistantItemId: second,
+      event: { _tag: "MessageStarted", message: assistant({ text: "final" }) },
+    });
+
+    expect(firstDraft[0]).toMatchObject({ type: "item.started", itemId: first });
+    expect(secondDraft[0]).toMatchObject({ type: "item.started", itemId: second });
+    expect(firstDraft[0]?.itemId).not.toBe(secondDraft[0]?.itemId);
+  });
+
   it("backfills final assistant text only when streaming was explicitly absent", () => {
     const event = {
       _tag: "MessageCompleted",
@@ -386,7 +405,7 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     });
   });
 
-  it("does not complete a replayed run and fails an active run with no assistant", () => {
+  it("keeps replayed runs detached and marks active textless success without inventing prose", () => {
     expect(
       mapPrimeAgentDaemonRuntimeEventDrafts({
         provider,
@@ -404,12 +423,22 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
       },
     ]);
 
-    expect(
-      mapPrimeAgentDaemonRuntimeEventDrafts({
-        ...context,
-        event: { _tag: "RunCompleted", messages: [] },
-      }),
-    ).toEqual([
+    const textless = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      event: { _tag: "RunCompleted", messages: [] },
+    });
+    expect(textless).toEqual([
+      {
+        provider,
+        providerInstanceId,
+        threadId,
+        turnId,
+        type: "runtime.warning",
+        payload: {
+          message: "Prime Agent finished without sending a final response.",
+          detail: { kind: "missing-final-response", outcome: "completed" },
+        },
+      },
       {
         provider,
         providerInstanceId,
@@ -417,8 +446,15 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
         turnId,
         type: "turn.completed",
         payload: {
-          state: "failed",
-          errorMessage: "Prime Agent completed the run without an assistant message.",
+          state: "completed",
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cachedInputTokens: 0,
+            cacheWriteTokens: 0,
+            totalTokens: 0,
+          },
+          totalCostUsd: 0,
         },
       },
       {
@@ -430,6 +466,21 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
         payload: { state: "ready" },
       },
     ]);
+
+    const toolOnly = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      event: {
+        _tag: "RunCompleted",
+        messages: [assistant({ text: "before tool", stopReason: "toolUse" })],
+      },
+    });
+    expect(toolOnly[0]).toMatchObject({
+      type: "runtime.warning",
+      payload: {
+        message: "Prime Agent finished without sending a final response.",
+        detail: { kind: "missing-final-response", outcome: "completed" },
+      },
+    });
   });
 
   it("does not turn aborted or error run endings into successful turns", () => {
@@ -448,14 +499,30 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
         _tag: "RunCompleted",
         messages: [
           assistant({ stopReason: "toolUse" }),
-          assistant({ stopReason: "error", errorMessage: "quota exhausted" }),
+          assistant({ text: "", stopReason: "error", errorMessage: "quota exhausted" }),
         ],
       },
     });
-    expect(failed[0]).toMatchObject({
-      type: "turn.completed",
-      payload: { state: "failed", errorMessage: "quota exhausted" },
+    expect(failed[0]).toEqual({
+      provider,
+      providerInstanceId,
+      threadId,
+      turnId,
+      type: "runtime.error",
+      payload: {
+        message: "Prime Agent stopped before sending a final response.",
+        class: "provider_error",
+        detail: { kind: "missing-final-response", outcome: "failed" },
+      },
     });
+    expect(failed[1]).toMatchObject({
+      type: "turn.completed",
+      payload: {
+        state: "failed",
+        errorMessage: "Prime Agent stopped before sending a final response.",
+      },
+    });
+    expect(JSON.stringify(failed)).not.toContain("quota exhausted");
 
     expect(
       mapPrimeAgentDaemonRuntimeEventDrafts({
@@ -650,6 +717,43 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
         event: { _tag: "CompactionCompleted", outcome: "aborted", willRetry: true },
       }),
     ).toEqual([]);
+  });
+
+  it("uses fixed lifecycle copy instead of native connection or close errors", () => {
+    const connection = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      event: {
+        _tag: "ConnectionStatus",
+        status: "reconnecting",
+        error: "PRIVATE socket path /tmp/native.sock",
+      },
+    });
+    const closed = mapPrimeAgentDaemonRuntimeEventDrafts({
+      ...context,
+      event: { _tag: "SessionClosed", error: "PRIVATE daemon teardown cause" },
+    });
+
+    expect(connection).toEqual([
+      {
+        provider,
+        providerInstanceId,
+        threadId,
+        turnId,
+        type: "session.state.changed",
+        payload: { state: "starting", reason: "Prime Agent connection is unavailable." },
+      },
+    ]);
+    expect(closed).toEqual([
+      {
+        provider,
+        providerInstanceId,
+        threadId,
+        turnId,
+        type: "session.exited",
+        payload: { exitKind: "error", reason: "Prime Agent session closed unexpectedly." },
+      },
+    ]);
+    expect(JSON.stringify([...connection, ...closed])).not.toContain("PRIVATE");
   });
 
   it("never includes native raw payloads and ignores replay, presentation, and duplicate streams", () => {

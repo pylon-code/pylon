@@ -38,6 +38,7 @@ import type { PrimeDaemonEvent, PrimeDaemonMessage } from "./PrimeAgentDaemonEve
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import {
   makePrimeAgentDaemonAdapter,
+  PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS,
   PRIME_AGENT_SIDE_QUESTION_TIMEOUT_MS,
   type PrimeAgentDaemonAdapterLiveOptions,
 } from "./PrimeAgentDaemonAdapter.ts";
@@ -4473,6 +4474,14 @@ describe("PrimeAgentDaemonAdapter", () => {
             "session.state.changed",
           ]);
           expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+          const assistantStarts = turnEvents.filter(
+            (event) =>
+              event.type === "item.started" && event.payload.itemType === "assistant_message",
+          );
+          expect(assistantStarts.map((event) => event.itemId)).toEqual([
+            `assistant:${result.turnId}:segment:0`,
+            `assistant:${result.turnId}:segment:1`,
+          ]);
           expect(turnEvents.find((event) => event.type === "turn.completed")).toMatchObject({
             payload: {
               state: "completed",
@@ -4515,6 +4524,200 @@ describe("PrimeAgentDaemonAdapter", () => {
           yield* Fiber.interrupt(subscription.fiber);
         }),
       ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps an automatic reconnect continuation attached to the original turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "continue after reconnect" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+
+        const failedMessage = {
+          ...assistantMessage("", "error"),
+          errorMessage: "PRIVATE reconnect teardown cause",
+        } satisfies PrimeDaemonMessage;
+        yield* offer(captures, { _tag: "MessageStarted", message: failedMessage });
+        yield* offer(captures, { _tag: "MessageCompleted", message: failedMessage });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [failedMessage] });
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, isStreaming: true, retryAttempt: 1 },
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "active resync barrier" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        yield* TestClock.adjust(PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS + 1);
+        expect(running.pollUnsafe()).toBeUndefined();
+
+        const toolOnlyMessage = assistantMessage("preparing the tool", "toolUse");
+        yield* offer(captures, { _tag: "MessageStarted", message: toolOnlyMessage });
+        yield* offer(captures, { _tag: "MessageCompleted", message: toolOnlyMessage });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [toolOnlyMessage] });
+        yield* offer(captures, { _tag: "RunStarted" });
+
+        const finalMessage = assistantMessage("the recovered final response");
+        yield* offer(captures, {
+          _tag: "AssistantStream",
+          phase: "delta",
+          kind: "text",
+          delta: finalMessage.text,
+        });
+        yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
+
+        const result = yield* Fiber.join(running);
+        expect(result.turnId).toBe(started.turnId);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        const recoveredItemId = `assistant:${result.turnId}:segment:2`;
+        const recoveredStartIndex = turnEvents.findIndex(
+          (event) => event.type === "item.started" && event.itemId === recoveredItemId,
+        );
+        const recoveredDeltaIndex = turnEvents.findIndex(
+          (event) =>
+            event.type === "content.delta" &&
+            event.itemId === recoveredItemId &&
+            event.payload.streamKind === "assistant_text" &&
+            event.payload.delta === finalMessage.text,
+        );
+        expect(recoveredStartIndex).toBeGreaterThanOrEqual(0);
+        expect(recoveredDeltaIndex).toBeGreaterThan(recoveredStartIndex);
+        expect(
+          turnEvents.some(
+            (event) =>
+              (event.type === "runtime.warning" || event.type === "runtime.error") &&
+              typeof event.payload.detail === "object" &&
+              event.payload.detail !== null &&
+              "kind" in event.payload.detail &&
+              event.payload.detail.kind === "missing-final-response",
+          ),
+        ).toBe(false);
+        expect(encodeUnknownJson(subscription.events)).not.toContain(
+          "PRIVATE reconnect teardown cause",
+        );
+        const providerThread = yield* adapter.readThread(threadId);
+        expect(providerThread.turns.every((turn) => turn.items.length === 0)).toBe(true);
+        expect(encodeUnknownJson(providerThread)).not.toContain("PRIVATE reconnect teardown cause");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("settles a genuinely failed daemon run after the bounded retry handoff", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "fail safely" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        const failedMessage = {
+          ...assistantMessage("", "error"),
+          errorMessage: "PRIVATE provider error",
+        } satisfies PrimeDaemonMessage;
+        yield* offer(captures, { _tag: "MessageCompleted", message: failedMessage });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [failedMessage] });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "failure barrier" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(running.pollUnsafe()).toBeUndefined();
+
+        yield* TestClock.adjust(PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS);
+        const result = yield* Fiber.join(running);
+        expect(result.turnId).toBe(started.turnId);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(turnEvents.find((event) => event.type === "runtime.error")).toMatchObject({
+          payload: {
+            message: "Prime Agent stopped before sending a final response.",
+            detail: { kind: "missing-final-response", outcome: "failed" },
+          },
+        });
+        expect(turnEvents.find((event) => event.type === "turn.completed")).toMatchObject({
+          payload: {
+            state: "failed",
+            errorMessage: "Prime Agent stopped before sending a final response.",
+          },
+        });
+        expect(encodeUnknownJson(turnEvents)).not.toContain("PRIVATE provider error");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps input admitted during a failed-run handoff attached to the turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "initial" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        const failedMessage = {
+          ...assistantMessage("", "error"),
+          errorMessage: "PRIVATE transient failure",
+        } satisfies PrimeDaemonMessage;
+        yield* offer(captures, { _tag: "RunCompleted", messages: [failedMessage] });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "handoff input barrier" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+
+        const steered = yield* adapter.sendTurn({ threadId, input: "continue this turn" });
+        expect(steered.turnId).toBe(started.turnId);
+        yield* TestClock.adjust(PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS + 1);
+        expect(running.pollUnsafe()).toBeUndefined();
+        expect(subscription.events.filter((event) => event.type === "turn.completed")).toHaveLength(
+          0,
+        );
+
+        yield* offer(captures, { _tag: "RunStarted" });
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 0,
+          steeringCount: 0,
+          followUpCount: 0,
+        });
+        const finalMessage = assistantMessage("continued final response");
+        yield* offer(captures, { _tag: "MessageStarted", message: finalMessage });
+        yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
+        const result = yield* Fiber.join(running);
+        expect(result.turnId).toBe(started.turnId);
+        expect(
+          subscription.events.filter(
+            (event) => event.type === "turn.completed" && event.turnId === result.turnId,
+          ),
+        ).toHaveLength(1);
+        expect(encodeUnknownJson(subscription.events)).not.toContain("PRIVATE transient failure");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
   );
 
   it.effect("steers an active daemon run without opening or settling another turn", () =>
@@ -5191,12 +5394,24 @@ describe("PrimeAgentDaemonAdapter", () => {
           .pipe(Effect.forkChild);
         yield* awaitObservedType(subscription.observed, "turn.started");
         yield* Queue.take(captures.promptObserved!);
+        const preToolMessage = assistantMessage("partial response before bash");
+        yield* offer(captures, { _tag: "MessageStarted", message: preToolMessage });
+        yield* offer(captures, { _tag: "MessageCompleted", message: preToolMessage });
+        yield* offer(captures, {
+          _tag: "BashStarted",
+          command: "PRIVATE command",
+          excludeFromContext: false,
+          transient: false,
+        });
         yield* offer(captures, {
           _tag: "ExtensionRequest",
           request: { id: "native-close-secret", method: "confirm", title: "Still pending?" },
         });
         const requested = yield* awaitObservedType(subscription.observed, "interaction.requested");
-        yield* offer(captures, { _tag: "SessionClosed", error: "daemon closed" });
+        yield* offer(captures, {
+          _tag: "SessionClosed",
+          error: "PRIVATE daemon closed /tmp/native.sock",
+        });
         const resolved = yield* awaitObservedType(subscription.observed, "interaction.resolved");
         yield* awaitObservedType(subscription.observed, "turn.completed");
         yield* awaitObservedType(subscription.observed, "session.exited");
@@ -5224,6 +5439,24 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(subscription.events.filter((event) => event.type === "session.exited")).toHaveLength(
           1,
         );
+        expect(
+          subscription.events.find(
+            (event) =>
+              event.type === "runtime.error" &&
+              event.turnId === result.turnId &&
+              typeof event.payload.detail === "object" &&
+              event.payload.detail !== null &&
+              "kind" in event.payload.detail &&
+              event.payload.detail.kind === "missing-final-response",
+          ),
+        ).toBeDefined();
+        expect(subscription.events.find((event) => event.type === "session.exited")).toMatchObject({
+          payload: {
+            exitKind: "error",
+            reason: "Prime Agent session closed unexpectedly.",
+          },
+        });
+        expect(encodeUnknownJson(subscription.events)).not.toContain("PRIVATE");
         const stoppedAgain = yield* adapter.stopSession(threadId).pipe(Effect.result);
         expect(stoppedAgain._tag).toBe("Failure");
         yield* Fiber.interrupt(subscription.fiber);

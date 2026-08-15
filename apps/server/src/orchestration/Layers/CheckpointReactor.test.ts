@@ -531,6 +531,10 @@ describe("CheckpointReactor", () => {
     );
     expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
     expect(
+      (thread.checkpoints[0] as { readonly assistantMessageId: string | null } | undefined)
+        ?.assistantMessageId,
+    ).toBeNull();
+    expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 0)),
     ).toBe(true);
     expect(

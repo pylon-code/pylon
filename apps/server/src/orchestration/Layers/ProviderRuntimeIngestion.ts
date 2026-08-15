@@ -236,6 +236,33 @@ function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }
 
+function missingFinalResponseOutcome(
+  event: Extract<ProviderRuntimeEvent, { readonly type: "runtime.warning" | "runtime.error" }>,
+): "completed" | "failed" | undefined {
+  if (event.provider !== "primeAgent") return undefined;
+  const detail = event.payload.detail;
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+    return undefined;
+  }
+  const marker = detail as Record<string, unknown>;
+  const keys = Object.keys(marker);
+  if (
+    keys.length !== 2 ||
+    !keys.includes("kind") ||
+    !keys.includes("outcome") ||
+    marker.kind !== "missing-final-response"
+  ) {
+    return undefined;
+  }
+  if (event.type === "runtime.warning" && marker.outcome === "completed") {
+    return "completed";
+  }
+  if (event.type === "runtime.error" && marker.outcome === "failed") {
+    return "failed";
+  }
+  return undefined;
+}
+
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
   const trimmed = planMarkdown?.trim();
   if (!trimmed) {
@@ -657,6 +684,21 @@ export function runtimeEventToActivities(
     }
 
     case "runtime.error": {
+      const missingResponseOutcome = missingFinalResponseOutcome(event);
+      if (missingResponseOutcome !== undefined) {
+        return [
+          {
+            id: event.eventId,
+            createdAt: event.createdAt,
+            tone: "error",
+            kind: "turn.response.missing",
+            summary: truncateDetail(event.payload.message, 120),
+            payload: { outcome: missingResponseOutcome },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       return [
         {
           id: event.eventId,
@@ -694,6 +736,21 @@ export function runtimeEventToActivities(
     }
 
     case "runtime.warning": {
+      const missingResponseOutcome = missingFinalResponseOutcome(event);
+      if (missingResponseOutcome !== undefined) {
+        return [
+          {
+            id: event.eventId,
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "turn.response.missing",
+            summary: truncateDetail(event.payload.message, 120),
+            payload: { outcome: missingResponseOutcome },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       return [
         {
           id: event.eventId,

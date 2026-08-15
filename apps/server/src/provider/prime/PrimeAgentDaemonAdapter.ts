@@ -17,6 +17,7 @@ import {
   type ProviderSession,
   ProviderDriverKind,
   ProviderInstanceId,
+  RuntimeItemId,
   RuntimeRequestId,
   SessionInteractionRequest,
   SessionInteractionRequestId,
@@ -83,6 +84,11 @@ import {
   mapPrimeAgentDaemonRuntimeEventDrafts,
 } from "./PrimeAgentDaemonRuntimeEvents.ts";
 import {
+  PRIME_AGENT_STOPPED_WITHOUT_FINAL_RESPONSE,
+  PRIME_AGENT_TURN_FAILED,
+  primeAgentMissingFinalResponseDetail,
+} from "./PrimeAgentTerminalResponse.ts";
+import {
   PRIME_AGENT_PERMISSION_EXTENSION_FILENAME,
   PRIME_AGENT_PERMISSION_EXTENSION_MARKER_COMMAND,
   makePrimeAgentPermissionExtensionSource,
@@ -109,6 +115,7 @@ import {
 const PROVIDER = ProviderDriverKind.make("primeAgent");
 const SESSION_STATS_TIMEOUT_MS = 1_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+export const PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS = 3_000;
 export const PRIME_AGENT_SIDE_QUESTION_TIMEOUT_MS = 2 * 60_000;
 const PRIME_AGENT_SIDE_QUESTION_MAX_ACTIVE = 4;
 const unavailableSessionGoal: SessionGoalUpdatedPayload = {
@@ -144,6 +151,16 @@ interface PrimeAgentDaemonActiveTurn {
   readonly completed: Deferred.Deferred<void>;
   cancellationRequested: boolean;
   assistantTextStreamed: boolean;
+  nextAssistantMessageSequence: number;
+  activeAssistantItemId: RuntimeItemId | undefined;
+  lastAssistantHadRenderableText: boolean;
+  runCompletionHandoffSequence: number;
+  pendingRunCompletionHandoff:
+    | {
+        readonly sequence: number;
+        readonly event: Extract<PrimeDaemonEvent, { readonly _tag: "RunCompleted" }>;
+      }
+    | undefined;
   queuedInputCount: number;
   awaitingQueuedRun: boolean;
   queuedActionObserved: boolean;
@@ -399,6 +416,19 @@ type TurnOutcome =
   | { readonly state: "completedWithoutMessage" }
   | { readonly state: "failed"; readonly errorMessage: string }
   | { readonly state: "cancelled" };
+
+type PrimeAgentRunCompletedEvent = Extract<PrimeDaemonEvent, { readonly _tag: "RunCompleted" }>;
+
+function primeAgentRunCompletedNeedsHandoff(event: PrimeAgentRunCompletedEvent): boolean {
+  const lastAssistant = event.messages.findLast((message) => message.role === "assistant");
+  if (lastAssistant?.stopReason === "aborted") return false;
+  return (
+    lastAssistant?.stopReason === "error" ||
+    (lastAssistant?.errorMessage?.trim().length ?? 0) > 0 ||
+    lastAssistant?.stopReason === "toolUse" ||
+    (lastAssistant?.toolCalls.length ?? 0) > 0
+  );
+}
 
 function runtimeOperationError(
   threadId: ThreadId,
@@ -853,25 +883,71 @@ export function makePrimeAgentDaemonAdapter(
       turn: PrimeAgentDaemonActiveTurn | undefined,
     ) =>
       Effect.gen(function* () {
+        let allocatedAssistantItemLazily = false;
+        const allocateAssistantItemId = () => {
+          if (turn === undefined) return undefined;
+          const itemId = RuntimeItemId.make(
+            `assistant:${turn.id}:segment:${turn.nextAssistantMessageSequence}`,
+          );
+          turn.nextAssistantMessageSequence += 1;
+          turn.activeAssistantItemId = itemId;
+          return itemId;
+        };
         if (
           turn !== undefined &&
           event._tag === "MessageStarted" &&
           event.message.role === "assistant"
         ) {
+          // Prime emits one assistant message per model/tool loop. A turn-scoped
+          // item id strands later final text at the first message's timestamp.
+          // Use an opaque subscriber-local sequence instead of native identity.
+          allocateAssistantItemId();
           turn.assistantTextStreamed = false;
+        } else if (
+          turn !== undefined &&
+          turn.activeAssistantItemId === undefined &&
+          ((event._tag === "AssistantStream" && event.kind === "text") ||
+            (event._tag === "MessageCompleted" && event.message.role === "assistant"))
+        ) {
+          // The public stream is ordered, but reconnect recovery can omit a
+          // start. Allocate lazily rather than merging into an earlier item.
+          allocateAssistantItemId();
+          turn.assistantTextStreamed = false;
+          allocatedAssistantItemLazily = true;
         }
         const compactionScope =
           event._tag === "CompactionStarted" || event._tag === "CompactionCompleted"
             ? context.activeCompactionScope
             : undefined;
         const runtimeTurnId = compactionScope === undefined ? turn?.id : compactionScope.turnId;
+        if (
+          allocatedAssistantItemLazily &&
+          runtimeTurnId !== undefined &&
+          turn?.activeAssistantItemId !== undefined
+        ) {
+          yield* offerRuntimeEvent({
+            type: "item.started",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: context.threadId,
+            turnId: runtimeTurnId,
+            itemId: turn.activeAssistantItemId,
+            payload: { itemType: "assistant_message", status: "inProgress" },
+          });
+        }
         const drafts = mapPrimeAgentDaemonRuntimeEventDrafts({
           event,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId: context.threadId,
           ...(runtimeTurnId === undefined ? {} : { turnId: runtimeTurnId }),
-          ...(turn === undefined ? {} : { assistantTextStreamed: turn.assistantTextStreamed }),
+          ...(turn === undefined
+            ? {}
+            : {
+                assistantItemId: turn.activeAssistantItemId,
+                assistantTextStreamed: turn.assistantTextStreamed,
+              }),
         });
         for (const draft of drafts) {
           yield* offerRuntimeEvent({ ...draft, ...(yield* makeEventStamp()) });
@@ -881,9 +957,21 @@ export function makePrimeAgentDaemonAdapter(
           event._tag === "AssistantStream" &&
           event.kind === "text" &&
           event.phase === "delta" &&
-          event.delta !== undefined
+          event.delta !== undefined &&
+          event.delta.trim().length > 0
         ) {
           turn.assistantTextStreamed = true;
+        }
+        if (
+          turn !== undefined &&
+          event._tag === "MessageCompleted" &&
+          event.message.role === "assistant"
+        ) {
+          turn.lastAssistantHadRenderableText =
+            event.message.text.trim().length > 0 &&
+            event.message.stopReason !== "toolUse" &&
+            event.message.toolCalls.length === 0;
+          turn.activeAssistantItemId = undefined;
         }
       });
 
@@ -1054,9 +1142,25 @@ export function makePrimeAgentDaemonAdapter(
 
         const effectiveOutcome: TurnOutcome =
           context.stopRequested || turn.cancellationRequested ? { state: "cancelled" } : outcome;
+        turn.pendingRunCompletionHandoff = undefined;
+        if (effectiveOutcome.state === "failed" && !turn.lastAssistantHadRenderableText) {
+          yield* offerRuntimeEvent({
+            type: "runtime.error",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: context.threadId,
+            turnId: turn.id,
+            payload: {
+              message: PRIME_AGENT_STOPPED_WITHOUT_FINAL_RESPONSE,
+              class: "provider_error",
+              detail: primeAgentMissingFinalResponseDetail("failed"),
+            },
+          });
+        }
         if (effectiveOutcome.state === "completed") {
           yield* publishDrafts(context, effectiveOutcome.event, turn);
-          context.turns.push({ id: turn.id, items: [effectiveOutcome.event] });
+          context.turns.push({ id: turn.id, items: [] });
         } else {
           yield* offerRuntimeEvent({
             type: "turn.completed",
@@ -1093,6 +1197,48 @@ export function makePrimeAgentDaemonAdapter(
       Effect.uninterruptible(
         withThreadLock(context.threadId, settleActiveTurnLocked(context, turn, outcome)),
       );
+
+    const promotePendingRunCompletionToQueuedRun = (turn: PrimeAgentDaemonActiveTurn) => {
+      const pending = turn.pendingRunCompletionHandoff;
+      if (pending === undefined) return;
+      turn.completedRunMessages.push(...pending.event.messages);
+      turn.pendingRunCompletionHandoff = undefined;
+      turn.awaitingQueuedRun = true;
+      turn.queuedActionObserved = false;
+    };
+
+    const schedulePendingRunCompletionHandoff = (
+      context: PrimeAgentDaemonSessionContext,
+      turn: PrimeAgentDaemonActiveTurn,
+      sequence: number,
+    ) =>
+      Effect.forkIn(
+        Effect.sleep(PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS).pipe(
+          Effect.andThen(
+            withThreadLock(
+              context.threadId,
+              Effect.gen(function* () {
+                const pending = turn.pendingRunCompletionHandoff;
+                if (pending === undefined || pending.sequence !== sequence) return;
+                turn.pendingRunCompletionHandoff = undefined;
+                const completionEvent =
+                  turn.completedRunMessages.length === 0
+                    ? pending.event
+                    : {
+                        ...pending.event,
+                        messages: [...turn.completedRunMessages, ...pending.event.messages],
+                      };
+                const settled = yield* settleActiveTurnLocked(context, turn, {
+                  state: "completed",
+                  event: completionEvent,
+                });
+                if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+              }),
+            ),
+          ),
+        ),
+        context.scope,
+      ).pipe(Effect.asVoid);
 
     /** Must be called with the thread lock held. */
     const clearPendingInteractionsLocked = (
@@ -1255,7 +1401,18 @@ export function makePrimeAgentDaemonAdapter(
                     turn.queuedInputCount === 0 &&
                     !event.state.inputQueue.activeAction &&
                     !event.state.isStreaming;
-                  if (turn.awaitingQueuedRun && authoritativeIdle) {
+                  if (turn.pendingRunCompletionHandoff !== undefined) {
+                    if (event.state.isStreaming) {
+                      // The continuation may have started while disconnected,
+                      // so the resync snapshot is an authoritative RunStarted.
+                      turn.completedRunMessages.push(
+                        ...turn.pendingRunCompletionHandoff.event.messages,
+                      );
+                      turn.pendingRunCompletionHandoff = undefined;
+                    }
+                    // An idle snapshot can be the gap before RunStarted. Keep
+                    // the bounded handoff alive until the event or timeout.
+                  } else if (turn.awaitingQueuedRun && authoritativeIdle) {
                     const explicitClear = context.inputQueueClearPending;
                     context.inputQueueClearPending = false;
                     if (explicitClear) {
@@ -1610,6 +1767,17 @@ export function makePrimeAgentDaemonAdapter(
                 turn.queuedActionObserved = false;
                 return false;
               }
+              if (primeAgentRunCompletedNeedsHandoff(event)) {
+                turn.lastAssistantHadRenderableText = false;
+                // A daemon/kernel reconnect can emit a non-final agent_end
+                // and immediately continue the same public run. Keep the Pylon
+                // turn bound briefly so the following RunStarted is not orphaned.
+                turn.runCompletionHandoffSequence += 1;
+                const sequence = turn.runCompletionHandoffSequence;
+                turn.pendingRunCompletionHandoff = { sequence, event };
+                yield* schedulePendingRunCompletionHandoff(context, turn, sequence);
+                return false;
+              }
               const completionEvent =
                 turn.completedRunMessages.length === 0
                   ? event
@@ -1750,10 +1918,23 @@ export function makePrimeAgentDaemonAdapter(
             let publishEvent = true;
             if (event._tag === "RunStarted") {
               context.nativeRunActive = true;
-            } else if (event._tag === "BashStarted") {
+              if (turn?.pendingRunCompletionHandoff !== undefined) {
+                turn.completedRunMessages.push(...turn.pendingRunCompletionHandoff.event.messages);
+                turn.pendingRunCompletionHandoff = undefined;
+              }
+            } else if (
+              event._tag === "ToolStarted" ||
+              event._tag === "ToolProgress" ||
+              event._tag === "ToolCompleted" ||
+              (event._tag === "AssistantStream" && event.kind === "toolCall")
+            ) {
+              if (turn !== undefined) turn.lastAssistantHadRenderableText = false;
+            } else if (event._tag === "BashStarted" || event._tag === "BashOutput") {
               context.nativeBashActive = true;
+              if (turn !== undefined) turn.lastAssistantHadRenderableText = false;
             } else if (event._tag === "BashCompleted") {
               context.nativeBashActive = false;
+              if (turn !== undefined) turn.lastAssistantHadRenderableText = false;
             } else if (event._tag === "GoalUpdated") {
               publishEvent = false;
               yield* updateGoalProjection(
@@ -2586,6 +2767,7 @@ export function makePrimeAgentDaemonAdapter(
                     ),
                   );
                 activeTurn.queuedInputCount += 1;
+                promotePendingRunCompletionToQueuedRun(activeTurn);
                 return {
                   _tag: "Steered" as const,
                   result: {
@@ -2615,6 +2797,11 @@ export function makePrimeAgentDaemonAdapter(
                 completed: yield* Deferred.make<void>(),
                 cancellationRequested: false,
                 assistantTextStreamed: false,
+                nextAssistantMessageSequence: 0,
+                activeAssistantItemId: undefined,
+                lastAssistantHadRenderableText: false,
+                runCompletionHandoffSequence: 0,
+                pendingRunCompletionHandoff: undefined,
                 queuedInputCount: 0,
                 awaitingQueuedRun: false,
                 queuedActionObserved: false,
@@ -2675,18 +2862,20 @@ export function makePrimeAgentDaemonAdapter(
           });
 
           return yield* restore(runPrompt).pipe(
-            Effect.catch((error) =>
+            Effect.catch(() =>
               Effect.gen(function* () {
                 const cancelled = turn.cancellationRequested || turn.controller.signal.aborted;
-                const settled = yield* settleActiveTurn(
+                yield* settleActiveTurn(
                   context,
                   turn,
                   cancelled
                     ? { state: "cancelled" }
-                    : { state: "failed", errorMessage: error.message },
+                    : { state: "failed", errorMessage: PRIME_AGENT_TURN_FAILED },
                 );
-                if (cancelled || !settled) return result;
-                return yield* error;
+                // The prompt was admitted. Its runtime events already carry
+                // the authoritative failed terminal, so do not reclassify it
+                // as a second turn-start failure in orchestration.
+                return result;
               }),
             ),
             Effect.onInterrupt(() =>
@@ -3629,6 +3818,7 @@ export function makePrimeAgentDaemonAdapter(
                   };
               yield* updateInputQueueProjection(context, next);
               turn.queuedInputCount = Math.max(1, next.steeringCount + next.followUpCount);
+              promotePendingRunCompletionToQueuedRun(turn);
               return context.inputQueue;
             }
             if (Exit.isSuccess(reconciled)) {
