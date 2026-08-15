@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
-import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
@@ -109,38 +107,6 @@ async function renderIco(master) {
   return encodePngIco(renditions);
 }
 
-async function renderIcns(macIcon) {
-  const temporaryRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "pylon-iconset-"));
-  const iconsetDirectory = NodePath.join(temporaryRoot, "Pylon.iconset");
-  const outputPath = NodePath.join(temporaryRoot, "Pylon.icns");
-  NodeFS.mkdirSync(iconsetDirectory);
-
-  try {
-    const slots = [
-      [16, "icon_16x16.png"],
-      [32, "icon_16x16@2x.png"],
-      [32, "icon_32x32.png"],
-      [64, "icon_32x32@2x.png"],
-      [128, "icon_128x128.png"],
-      [256, "icon_128x128@2x.png"],
-      [256, "icon_256x256.png"],
-      [512, "icon_256x256@2x.png"],
-      [512, "icon_512x512.png"],
-      [1024, "icon_512x512@2x.png"],
-    ];
-    await Promise.all(
-      slots.map(async ([size, fileName]) => {
-        const contents = await renderPng(macIcon, size);
-        NodeFS.writeFileSync(NodePath.join(iconsetDirectory, fileName), contents);
-      }),
-    );
-    NodeChildProcess.execFileSync("iconutil", ["-c", "icns", iconsetDirectory, "-o", outputPath]);
-    return NodeFS.readFileSync(outputPath);
-  } finally {
-    NodeFS.rmSync(temporaryRoot, { recursive: true, force: true });
-  }
-}
-
 const masters = new Map();
 for (const variant of variants) {
   const master = await renderVariantMaster(variant);
@@ -163,14 +129,11 @@ outputs.set("apps/web/public/favicon-16x16.png", outputs.get(development.favicon
 outputs.set("apps/web/public/favicon-32x32.png", outputs.get(development.favicon32));
 outputs.set("apps/web/public/apple-touch-icon.png", outputs.get(development.appleTouch));
 
+// Desktop packaging and the macOS launcher both read their icons straight from
+// `assets/<channel>/`, so `apps/desktop/resources/icon.*` no longer has a
+// consumer and is not emitted.
 const production = variants[2];
 const productionMaster = masters.get("production");
-outputs.set("apps/desktop/resources/icon.png", await renderPng(productionMaster, 512));
-outputs.set("apps/desktop/resources/icon.ico", outputs.get(production.windows));
-// oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone exporter gates macOS-only iconutil.
-if (process.platform === "darwin") {
-  outputs.set("apps/desktop/resources/icon.icns", await renderIcns(outputs.get(production.macos)));
-}
 
 const androidMarkSvg = NodeFS.readFileSync(
   absolutePath("apps/mobile/assets/widget/T3Mark.svg"),
