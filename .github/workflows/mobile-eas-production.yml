@@ -48,6 +48,12 @@ jobs:
       CLERK_CLI_OAUTH_CLIENT_ID: ${{ vars.CLERK_CLI_OAUTH_CLIENT_ID }}
       RELAY_DOMAIN: ${{ vars.RELAY_DOMAIN }}
       RELAY_API_ZONE_NAME: ${{ vars.RELAY_API_ZONE_NAME }}
+      # app.config.ts reads these to build `extra.eas.projectId`, and eas-cli
+      # resolves the project from it. They otherwise live only in a gitignored
+      # .env.local, so without them here every eas command fails with "EAS
+      # project not configured".
+      PYLON_EAS_PROJECT_ID: ${{ vars.PYLON_EAS_PROJECT_ID }}
+      PYLON_EAS_OWNER: ${{ vars.PYLON_EAS_OWNER }}
     steps:
       - id: expo-token
         name: Check for EXPO_TOKEN
