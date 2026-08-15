@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "1add47b322ab1dfb5010bb363613650176b88088"
-reviewed-through-date: "2026-08-14"
+reviewed-through: "a5e29edeec34fdfab1d44e643b0d12bb924fd261"
+reviewed-through-date: "2026-08-15"
 ---
 
 # T3 upstream review log
@@ -1131,6 +1131,106 @@ identical to upstream, which rules out patch divergence as the cause.
 | M1         | `277a7cb44` / `#4899` | adopted  | `3b2b8d512`     | Signing out of the mobile settings account screen crashed: `UserProfileView` unmounts the instant `isSignedIn` flips false. The fix latches `hasBeenSignedIn` and pops back to `SettingsContent` instead. Clean single-file cherry-pick. Newly reachable for Pylon — mobile Connect sign-in only began working today, so this screen had never been exercised before. |
 
 Deferred register: unchanged and still empty.
+
+## 2026-08-15 (full batch) — `1add47b322ab1dfb5010bb363613650176b88088..a5e29edeec34fdfab1d44e643b0d12bb924fd261`
+
+One hundred upstream commits. `277a7cb44` / `#4899` was already adopted out of band
+earlier the same day (the targeted review above), leaving 99 candidates. **93 adopted**
+onto `upstream/2026-08-15-batch`, **6 skipped**. The developer's decision was "everything
+except Tier C, Pylon branding wins any conflict", so the table below records the two
+Pylon-first departures from a mechanical adoption rather than a per-commit list.
+
+This is the largest batch adopted so far and it is overwhelmingly repair: **86 of the 99
+candidates are `fix`**. Upstream spent the day merging its backlog of old community pull
+requests, which is why so many #4xxx/#5xxx numbers land at once.
+
+Grouped decisions, by area rather than by commit — every candidate not named as skipped
+was adopted:
+
+- **Server and orchestration (12)** — bounded thread activity hydration, the wire
+  projection for streaming `tool.updated`, the provider title mirror no longer clobbering
+  real titles, receipt replay scoped to its own aggregate, snoozed threads settling
+  immediately, SQLite `busy_timeout` instead of `SQLITE_BUSY`, surviving a write to a dead
+  socket, valid MCP preview results, a raisable discovery probe budget, install scripts in
+  npm-global provider updates, long-running git pushes, and files named `HEAD`.
+- **Providers (11)** — six Claude fixes (session-scoped "Always allow", pending user-input
+  settling on stop, command lifecycle messages ignored, hooks skipped during capability
+  probes, repo-local `.agents/skills` discovery, hermetic Windows tests), two Codex, one
+  spanning Codex/Cursor/Grok, OpenCode config inheritance, and the Ultracode description.
+- **Web (38)** — the global styling refactor, panels, sidebar, theme, markdown, transcript,
+  and eight composer fixes.
+- **Desktop (7)**, **mobile (5)**, **source control and pull requests (7)**, **SSH (2)**,
+  **terminal (2)**, **marketing (1)**, **shared (1)**.
+
+Four Pylon-authored commits close the batch: `70fd3fa2b` rebrands what the batch dragged
+in, `46abbcf18` repairs three conflict resolutions, `d50270899` restores the lockfile, and
+`998848720` corrects two keep/drop calls.
+
+**The lockfile nearly shipped broken.** Resolving the styling-refactor conflict reverted
+`pnpm-lock.yaml` to its `origin/pylon` state, silently undoing what the Windows
+update-install pick had added one commit earlier. The branch was then requiring
+`msgpackr-extract` and `@electron/asar` without locking either, and recording the _old_
+`@ff-labs/fff-node` patch hash against the _new_ patch file — the one that fixes asar
+unpacking. `@t3tools/scripts` failed to typecheck and all 53 of its tests failed to load.
+Regenerated with Pylon's pinned pnpm in `d50270899`. **Whenever a conflict resolution runs
+`git add -A`, check `pnpm-lock.yaml` separately.**
+
+**Watch item for the next batch:** upstream `e58cbb9e7` / `#6663` amends `#6665`, which
+this batch adopted, tightening the theme selector to
+`html[data-theme-id]:not([data-theme-id=""])`. It sits just past this cursor. No Pylon code
+path was found that sets `data-theme-id` to the empty string, so this is drift-closing
+rather than a known defect.
+
+| Change set | Upstream                            | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------- | ----------------------------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1         | `d7abd7f3b` + `804cba430` / `#6657` | skipped  | `—`             | A feature and its own revert, both inside this range. Verified they cancel exactly (`git diff d7abd7f3b^ 804cba430` is empty), so adopting the pair is 32 conflicting files for a net no-op.                                                                                                                                                                                                                                                        |
+| G2         | `e25021af7` / `#4128`               | skipped  | `—`             | AUR packaging: `t3code-bin` / `t3code-nightly-bin` PKGBUILDs pointing at `pingdotgg/t3code` releases, plus a publish workflow needing T3's AUR SSH secrets. Entirely T3 distribution infrastructure. Revisit only as a Pylon-owned `pylon-bin`.                                                                                                                                                                                                     |
+| G3         | `e9ae134c5`                         | skipped  | `—`             | Routes feature requests to `pingdotgg/t3code` Discussions. T3 repository governance; Pylon's README and CONTRIBUTING are its own.                                                                                                                                                                                                                                                                                                                   |
+| G4         | `2fc676239` / `#3929`               | skipped  | `—`             | Strips a stray newline from the `CLAUDE.md` symlink target. Pylon's symlink is already 9 bytes (`AGENTS.md`, no trailing newline), so this is already true here.                                                                                                                                                                                                                                                                                    |
+| G5         | `db3278f97` / `#4542`               | skipped  | `—`             | **Pylon already fixed this.** Upstream lifts the mobile hero's Grok mark clear of the headline by moving it to `top: 44px` centred; Pylon did the same thing independently in `ad1693bb3` at `top: 150px` left-aligned, tuned against Pylon's own resized hero (`b732d74ed`). Taking upstream's coordinates would apply T3's geometry to different artwork. The cherry-pick reduced to empty and was dropped.                                       |
+| G6         | `ad117235b` (partial) / `#6201`     | adopted  | `dc7fcfafa`     | DMG installer backgrounds and the production macOS icon pipeline. **Mechanism adopted, artwork rebranded** in `70fd3fa2b`: upstream's SVGs carry a "T3 CODE" wordmark and "Drag T3 Code to Applications". The pipeline itself is correct for Pylon unchanged, because `assets/prod/black-macos-1024.png` is already Pylon artwork despite the compatibility-named file. Upstream's retirement of `apps/desktop/resources/icon.*` was taken with it. |
+
+Two further Pylon-first departures inside adopted commits, both recorded here because a
+future reader will otherwise read them as mistakes:
+
+- **`7afa184a9` / `#4781`** ("keep send reachable while a turn is running on mobile").
+  Upstream removes its early `if (isRunning) return stopButton` and shows the real send
+  button beside stop on mobile viewports. Pylon already solved the same problem
+  differently, with a dedicated queue-follow-up button shown on _every_ viewport — but
+  gated on `supportsSessionInputQueueFollowUp`, a **provider capability**, so providers
+  without a session input queue still had upstream's bug. The two were composed rather
+  than chosen between: the running branch now prefers Pylon's queue affordance and falls
+  back to upstream's plain send when the provider has no queue. Upstream's stop-button
+  sizing condition (`showSendWhileRunning && hasSendableContent`) was taken as-is; it now
+  also governs the queue case, so on a mobile viewport with a queue-capable provider and
+  an empty composer, stop renders 32px beside a disabled 36px queue button. Pre-existing
+  mismatch, narrowed rather than introduced — worth tidying if the row ever looks wrong.
+- **`d5465aebf` / `#4755`** ("retain terminal PR badges after checkout switch"). Upstream's
+  import of lucide's `TerminalIcon` was taken during conflict resolution and then removed:
+  Pylon renders that indicator as `DotMatrix state="terminal"`, not a lucide glyph with
+  `animate-status-pulse`, which Pylon's taste rules forbid.
+
+**Verification.** Typecheck clean across all nine packages (`t3`, web, contracts, shared,
+client-runtime, mobile, desktop, scripts, marketing). `vp lint` exits 0 with three warnings,
+all in upstream-authored code and none in a Pylon resolution. `vp fmt --check` clean over
+2,898 files. Tests: web 2,758 in 283 files; client-runtime 658; shared 355; contracts 342;
+scripts 53; server orchestration/provider/persistence/vcs/pullRequest/mcp/sourceControl.
+`node scripts/export-pylon-brand-icons.mjs --check` reports 39 files current.
+
+Two test notes for whoever runs these next:
+
+- **`apps/server/src/provider/accountDrainEndToEnd.test.ts` hangs for 120s and fails.** It
+  fails **identically on a clean `origin/pylon` worktree**, so it is pre-existing and not
+  batch fallout. Not investigated further here.
+- **`scripts/build-desktop-artifact.test.ts` fails when run from inside Pylon.** The
+  cross-architecture probe test asserts no spawned command carries
+  `ELECTRON_RUN_AS_NODE=1`, but an Electron host exports that variable and the code under
+  test spreads `process.env`. Run it with `env -u ELECTRON_RUN_AS_NODE`; 53/53 pass. CI is
+  unaffected.
+
+**No integration pass in a real client.** No browser, desktop, or mobile run — the batch
+touches the composer, sidebar, theme, DMG chrome, and the PWA manifest, so a web pass is
+the obvious next step.
 
 ## Deferred register
 
