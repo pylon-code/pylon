@@ -21,10 +21,10 @@ This starts the Pylon server on your machine and opens the local web app. Use
 
 ### Pylon fork
 
-Pylon's desktop build installs beside Pylon rather than replacing it. The apps use different
+Pylon's desktop build installs beside T3 Code rather than replacing it. The apps use different
 bundle IDs, URL handlers, Electron profiles, runtime databases, and updater metadata. On macOS the
 local Pylon build installs as `Pylon (Alpha).app`; its default runtime data lives under
-`~/.pylon-code`, while Pylon continues using its own `.t3` and Electron data.
+`~/.pylon-code`, while T3 Code continues using its own `.t3` and Electron data.
 
 From the Pylon repository, build the local macOS installer with:
 

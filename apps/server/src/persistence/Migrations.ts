@@ -55,6 +55,7 @@ import Migration0040 from "./Migrations/040_ProjectionThreadsPinOrderKey.ts";
 import Migration0041 from "./Migrations/041_ProjectionProjectsDefaultThreadEnvMode.ts";
 import Migration0042 from "./Migrations/042_ProjectionProjectFaviconPath.ts";
 import Migration0043 from "./Migrations/043_ProjectionThreadSessionLifecycle.ts";
+import Migration0044 from "./Migrations/044_RepairProjectsDefaultThreadEnvMode.ts";
 /**
  * Migration loader with all migrations defined inline.
  *
@@ -119,6 +120,10 @@ export const migrationEntries = [
   // (pingdotgg/t3code#5775).
   [42, "ProjectionProjectFaviconPath", Migration0042],
   [43, "ProjectionThreadSessionLifecycle", Migration0043],
+  // Session lifecycle also shipped as 41 in an earlier build. Those databases
+  // record 41 as their high water mark, so they skip 41 above and never gain
+  // `default_thread_env_mode`. This re-adds it from above the mark.
+  [44, "RepairProjectsDefaultThreadEnvMode", Migration0044],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
