@@ -50,6 +50,13 @@ export function reconcileInteractionSubmission(
   return state;
 }
 
+export function interactionSubmissionMatchesActive(
+  state: InteractionSubmissionState | null,
+  activeRequestId: SessionInteractionRequestId | null,
+): state is InteractionSubmissionState {
+  return state !== null && state.requestId === activeRequestId;
+}
+
 export interface InteractionSubmissionLock {
   current: SessionInteractionRequestId | null;
 }

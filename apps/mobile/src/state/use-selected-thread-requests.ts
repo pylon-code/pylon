@@ -27,6 +27,7 @@ import {
   beginInteractionSubmission,
   interactionCommandAccepted,
   interactionCommandFailed,
+  interactionSubmissionMatchesActive,
   reconcileInteractionSubmission,
   releaseInteractionSubmissionLock,
   type InteractionSubmissionState,
@@ -308,6 +309,11 @@ export function useSelectedThreadRequests() {
     return onRespondToInteraction(interactionSubmission.requestId, interactionSubmission.response);
   }, [interactionSubmission, onRespondToInteraction]);
 
+  const interactionSubmissionMatches = interactionSubmissionMatchesActive(
+    interactionSubmission,
+    activePendingInteraction?.requestId ?? null,
+  );
+
   return {
     activePendingApproval,
     activePendingUserInput,
@@ -316,15 +322,11 @@ export function useSelectedThreadRequests() {
     activePendingInteraction,
     sessionInteractionPresentation: sessionInteractionState,
     interactionSubmitting:
-      interactionSubmission?.requestId === activePendingInteraction?.requestId &&
-      interactionSubmission.phase === "submitting",
-    interactionError:
-      interactionSubmission?.requestId === activePendingInteraction?.requestId
-        ? interactionSubmission.error
-        : (activeInteractionFailure?.message ?? null),
-    interactionCanRetry:
-      interactionSubmission?.requestId === activePendingInteraction?.requestId &&
-      interactionSubmission.phase === "error",
+      interactionSubmissionMatches && interactionSubmission.phase === "submitting",
+    interactionError: interactionSubmissionMatches
+      ? interactionSubmission.error
+      : (activeInteractionFailure?.message ?? null),
+    interactionCanRetry: interactionSubmissionMatches && interactionSubmission.phase === "error",
     respondingApprovalId,
     respondingUserInputId,
     onRespondToApproval,
