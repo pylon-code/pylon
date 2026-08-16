@@ -1326,14 +1326,24 @@ The review cleared the parts most at risk: the T3 Chat palette converts to OKLCH
 fidelity against the old hex literals, every `useAppearancePreferences` consumer sits inside
 its provider, and the `useColorScheme` migration is complete.
 
-**Open, deferred to the verification pass:** `sidebar-header-actions.tsx`,
-`sidebar-filter-button.tsx`, and `ThreadNavigationSidebar.tsx` swap a hardcoded idle fill for
-`--color-glass-surface`. Light mode is a genuine no-op — both are `rgba(255,255,255,0.72)` —
-but dark mode goes from `rgba(118,118,128,0.24)`, a grey _lift_ above the drawer, to
-`rgba(23,23,23,0.78)`, near-black, under a `rgba(255,255,255,0.06)` hairline. The
-`FallbackHeaderButton` pills on Android and non-Liquid-Glass iOS lose their affordance. The
-replacement token is a Pylon design decision and is being chosen against the simulator across
-all six themes rather than picked blind.
+**The mobile contrast finding was mostly a false positive — resolved, no change made.** The
+review flagged `sidebar-header-actions.tsx`, `sidebar-filter-button.tsx`, and
+`ThreadNavigationSidebar.tsx` for swapping a hardcoded idle fill for `--color-glass-surface`,
+which in dark mode goes from `rgba(118,118,128,0.24)` (a grey _lift_ above the drawer) to
+`rgba(23,23,23,0.78)` (near-black). Checking the call sites settles it:
+
+- `SidebarHeaderActions` and `SidebarFilterButton` each have **exactly one** call site, both
+  passing `grouped`. That branch renders `backgroundColor: "transparent"` with `borderWidth: 0`,
+  so `idleBackgroundColor` is computed and **never applied**. Two of the three files are dead
+  code for this purpose.
+- Only `SidebarHeaderButtonGroup`'s `fallbackBackground` is live, and only when
+  `isLiquidGlassSupported` is false — Android and iOS < 26.
+
+Confirmed on device: swapping the old literal back in and letting fast refresh apply it produced
+**pixel-identical** output on iOS 26.3 — pill fill `rgb(21,21,21)`, background `rgb(10,10,10)`,
+contrast 1.084 either way. Changing a design token on arithmetic alone, for a path that cannot
+be observed on the platform available here, would be worse than leaving it. **Revisit only with
+an Android or iOS < 26 pass**, where the fallback actually renders.
 
 **Verification.** Typecheck clean across web, mobile, shared, `t3`, and desktop — server and
 desktop emit only `TS377xxx` _suggestions_, none in files this batch touched. `vp fmt --check`
@@ -1364,9 +1374,56 @@ Two toolchain notes for whoever runs these next:
   that are not this checkout's. Scope it with `--dir scripts --exclude '**/.prime/**'`. This
   is the same substring-matching trap recorded in the 2026-08-07 batch, with a new directory.
 
-**No integration pass in a real client.** N3 is a mobile feature spanning native headers,
-sheets, terminal, and code review surfaces, so a simulator pass is the obvious next step;
-N1, N2, N4, and N8 want a web pass.
+### Integration passes in real clients
+
+**iOS Simulator (iPhone 17 Pro, iOS 26.3), against a copy of `~/.pylon-code` — 4 projects,
+25 threads, 593 turns.** No native rebuild was needed: the only new native API is
+`getShowcaseTheme`, consumed solely by the screenshot harness through optional chaining, so the
+installed dev client was reused.
+
+- Settings → Appearance lists **Pylon**, T3 Chat, Grove, Ocean, Ember, Iris. The default label
+  reads **"Pylon"**, confirming the branding pass at both the accessibility layer and on screen.
+- Color scheme offers System / Light / Dark. Flipping the simulator to dark with the app on
+  **System** repainted the whole sheet, so the system path works.
+- Selecting **Ember** repainted the Appearance sheet, thread list, thread-route chrome, and
+  primary action buttons; the blue "Working" status label correctly stayed independent of the
+  palette.
+
+Not covered on mobile, with the reason: **review sheets, file previews, and the terminal** were
+unreachable because thread rows expose no tappable accessibility role (a known limitation the
+skill documents) and the thread deep link needs a client-side environment id that is not in the
+database. **`#6635` is Android-only** (`Platform.OS === "android"`) and cannot be observed on
+iOS at all. The showcase harness's new native path was not exercised, since the old dev client
+was reused deliberately.
+
+**Web, via Playwright against system Chrome.** Both fixes in `fe31bc6d7` were proven with a
+negative control — the component was reverted to its pre-fix state, re-tested, then restored:
+
+|          | typing `#ff0000` into `#canvas-hex`                          | Inspect pick with `terminal` filter active          |
+| -------- | ------------------------------------------------------------ | --------------------------------------------------- |
+| pre-fix  | `# → #f → #ff → #ffff00 → #ffff000 → #ffff0000 → #ffff00000` | filter stays `"terminal"`, canvas field count **0** |
+| with fix | `# → #f → #ff → #ff0 → #ff00 → #ff000 → #ff0000`             | filter clears to `""`, canvas field count **1**     |
+
+The pre-fix run is worse than predicted: after snapping at `#ff0` it never recovers, ending at
+`#ffff00000`. Advanced mode was confirmed to expose 20 hex fields against guided mode's 2.
+
+**N4 (`#7132`) verified live**: the command list carries `not-empty:py-3` computing to
+`padding: 12px`, and the scroll viewport reports `scroll-padding: 24px` — both halves of the fix
+applied.
+
+**N8 (`#6392`) was not exercised in the live commit dialog.** Reaching it triggered a real
+"Generating commit message" agent run, so that path was abandoned rather than driven further; it
+also staged the two untracked directories, which was reverted with `git restore --staged`.
+Coverage rests on its own unit tests, which assert the `dir="rtl"` + `<bdi>` markup and the
+tooltip.
+
+**Fixture note worth folding into `AGENTS.md`.** Its "Test data" section points at
+`~/.t3/userdata`, but for Pylon that is now the **wrong** database: it is T3 Code's, carrying
+upstream's migration numbering, and a Pylon server started against a copy of it dies with
+`no such column: continued_from_thread_id`. Pylon's own runtime home, `~/.pylon-code/userdata`,
+holds the correct 37 Pinned / 38 ContinuedFrom / 39 TurnsKeysetIndex / 40 PinOrderKey sequence.
+A fresh database built by this branch applied 37–44 cleanly with 36 retired, so the renumbering
+holds end to end.
 
 ## Deferred register
 
