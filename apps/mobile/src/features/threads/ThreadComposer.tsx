@@ -2198,7 +2198,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             </Pressable>
           </View>
         </KeyboardAvoidingView>
-      </Modal>{" "}
+      </Modal>
       <ImageViewing
         images={previewImageUri ? [{ uri: previewImageUri }] : []}
         imageIndex={0}
