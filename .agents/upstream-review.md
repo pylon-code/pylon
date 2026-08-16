@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "a5e29edeec34fdfab1d44e643b0d12bb924fd261"
-reviewed-through-date: "2026-08-15"
+reviewed-through: "bab4b6f02b8bdaf15fd32636a97f69ff657cec50"
+reviewed-through-date: "2026-08-16"
 ---
 
 # T3 upstream review log
@@ -1231,6 +1231,99 @@ Two test notes for whoever runs these next:
 **No integration pass in a real client.** No browser, desktop, or mobile run — the batch
 touches the composer, sidebar, theme, DMG chrome, and the PWA manifest, so a web pass is
 the obvious next step.
+
+## 2026-08-16 — `a5e29edeec34fdfab1d44e643b0d12bb924fd261..bab4b6f02b8bdaf15fd32636a97f69ff657cec50`
+
+Ten upstream commits, ten change sets. **Nine adopted** onto `upstream/2026-08-16-batch`,
+**one skipped**. A quiet day after the 100-commit sweep: two real features, four small
+fixes, two test-hygiene sweeps, one repo-plumbing change. `git cherry` reported all ten
+absent from Pylon, so nothing was patch-equivalent.
+
+**N1 closes the watch item** left open at the end of the 2026-08-15 batch. Still no Pylon
+code path was found that sets `data-theme-id` to the empty string, so it remains
+drift-closing rather than a fix for a live defect.
+
+**N3 is the substantial one.** Mobile gains the built-in theme library and System/Light/Dark
+selection, and the canonical palettes move out of `apps/web/src/themePalette.ts` into
+`packages/shared/src/themePalettes.ts` + `themePreview.ts` so web and mobile cannot drift.
+Upstream deliberately excluded theme import, creation, and editing on mobile. The
+`packages/shared/package.json` change is subpath exports only — no dependency change, so
+**`pnpm-lock.yaml` is untouched by this batch** (checked explicitly, per the 2026-08-15
+lockfile near-miss).
+
+Branding pass on N3, following the F10 precedent that **theme ids are compatibility
+identifiers and labels are not**: `MOBILE_DEFAULT_THEME_ID` stays `t3-code` so saved mobile
+preferences keep resolving, while its visible label became "Pylon", the new
+`docs/user/mobile-appearance.md` was rewritten to Pylon voice, and two doc comments in
+`mobileDefaultTheme.ts` and `themePreview.ts` were rebranded. Pre-existing "T3 Code" strings
+in `docs/README.md`, `docs/operations/mobile-app-store-screenshots.md`, and
+`scripts/mobile-showcase.test.ts` were confirmed present on `origin/pylon` and left alone as
+branding debt tracked separately.
+
+Three conflicts, all resolved Pylon-first:
+
+- **`ProviderIcon.tsx`** (N3) — both-sides-add on imports. Kept Pylon's `Circle` and
+  `providerIconKind` (the distinct provider marks from B1) and took upstream's
+  `useAppearancePreferences`, dropping the now-unused `useColorScheme`.
+- **`ThreadComposer.tsx`** (N3) — both-sides-add on imports; both kept.
+- **`themePalette.ts`** (N3) — upstream deletes the T3 Chat palettes as they move to the
+  shared package, and Pylon had rebranded four comments inside those deleted blocks.
+  Resolved by taking upstream's file wholesale, then restoring the **three** Pylon rebrands
+  that survive the deletion. Verified `T3_CHAT_LIGHT_COLORS`/`T3_CHAT_DARK_COLORS` have no
+  remaining web references.
+- **`ProviderRegistry.test.ts`** (N5) — Pylon's own "projects pushed rate-limit state onto
+  the instance snapshot" test sits immediately before the test upstream deletes. Kept
+  Pylon's, deleted upstream's.
+
+**Verified upstream's claim rather than trusting it** for N5: `mergeProviderSnapshots` and
+`selectProvidersByKind` have exactly one hit each outside tests in Pylon — their own
+`export` — so the "no production callers" premise holds here too.
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------- | --------------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| N1         | `e58cbb9e7` / `#6663` | adopted  | `c8eca3857`     | Theme selector tightened to `html[data-theme-id]:not([data-theme-id=""])` for specificity without raw `.dark` selectors. Closes the watch item from the 2026-08-15 batch.                                                                                                                                                                                                                                                                                                               |
+| N2         | `2f486ab80` / `#7107` | adopted  | `72cd53a41`     | The Advanced theme editor groups ~60 raw roles into named color families; `updateThemeColorFamily()` derives paired foregrounds only for the family touched, leaving imported palettes otherwise unnormalized.                                                                                                                                                                                                                                                                          |
+| N3         | `d23b181da` / `#6619` | adopted  | `4838326f1`     | Mobile built-in themes plus System/Light/Dark, with palettes and preview generation extracted to `packages/shared`. See the branding and conflict notes above. **Not yet verified on a device or simulator.**                                                                                                                                                                                                                                                                           |
+| N4         | `d484735c6` / `#7132` | adopted  | `bd922a271`     | A keyboard-highlighted command menu item no longer scrolls to rest under the scroll-fade mask. Reaches every `ScrollArea` using `scrollFade`.                                                                                                                                                                                                                                                                                                                                           |
+| N5         | `277322933` / `#6267` | adopted  | `c3ad0b60d`     | Removes 875 lines of duplicate and stale tests across server, web, desktop, mobile, relay, and scripts. Ten of eleven files were byte-identical to upstream; only `ProviderRegistry.test.ts` conflicted.                                                                                                                                                                                                                                                                                |
+| N6         | `3583cd27d` / `#7157` | adopted  | `af01aaf9a`     | Drops four test-only exports and the tests asserting on them, moving coverage to public behavior.                                                                                                                                                                                                                                                                                                                                                                                       |
+| N7         | `4cb676cc1` / `#7171` | adopted  | `33173950b`     | `CLAUDE.md` becomes a regular file containing `@AGENTS.md` instead of a symlink, because Windows checkouts with `core.symlinks=false` materialize it as a plain file that `vp fmt --check` flags and contributors commit back, corrupting the target. **Tradeoff accepted:** a symlink resolves for any reader, while `@AGENTS.md` only resolves for harnesses that honor @imports. Supersedes G4.                                                                                      |
+| N8         | `4c1d99d7f` / `#6392` | adopted  | `8477ddb70`     | Long paths in the commit dialog truncated from the end, hiding the filename. New `StartTruncatedPath` truncates from the start via `dir="rtl"` + `<bdi>`, with the full path in a tooltip.                                                                                                                                                                                                                                                                                              |
+| N9         | `89c52a331` / `#6635` | adopted  | `204671979`     | Two `ThreadSettingsSheet` full-screen routes used the `embedded` Android header, which skips the status-bar inset, so their actions sat under the status bar. **Open question:** five other call sites still use `AndroidSheetHeader` (`GitCommitSheet`, `GitOverviewSheet`, `GitConfirmSheet`, `GitBranchesSheet`, `ConnectOnboardingRouteScreen`); their presentation was not checked.                                                                                                |
+| N10        | `bab4b6f02` / `#7208` | skipped  | `—`             | Removes the Windows-only silent-install warning from the update confirmation so all platforms share the short copy. Upstream's reason is "install times have improved" — a claim about T3's pipeline, not Pylon's Windows builds. Pylon ships Windows and had already rebranded this copy; the warning describes real behavior (no installer window appears) and without it the app reads as hung. Revisit if Pylon measures its own Windows install times and finds the warning stale. |
+
+**Verification.** Typecheck clean across web, mobile, shared, `t3`, and desktop — server and
+desktop emit only `TS377xxx` _suggestions_, none in files this batch touched. `vp fmt --check`
+clean over 96 files. Tests: mobile **790 in 126 files, all passing**; web **2,738 of 2,741 in
+280 files**; shared 10; server `ProviderRegistry` 52; scripts `mobile-showcase` 22.
+
+**The three web failures are a local-environment artifact, not batch fallout**, and they will
+bite the next person too. `apps/web/src/cloud/connectCliAuth.test.ts` assumes
+`VITE_CLERK_CLI_OAUTH_CLIENT_ID` is unset unless a test stubs it — but `apps/web/vite.config.ts`
+publishes that variable through `define:`, which substitutes a string literal at transform time,
+so `vi.stubEnv` cannot override it. This checkout's `.env` sets
+`T3CODE_CLERK_CLI_OAUTH_CLIENT_ID`, which `repoEnv` maps into the `VITE_` name, so the value is
+baked in and the "not configured" assertions can never hold. The test and its entire import graph
+are untouched by this batch, and it fails **in isolation**, so the deleted test files in N5 did
+not perturb it by ordering either. CI has no such `.env` and is unaffected. Caveat: a clean
+`origin/pylon` baseline run was not obtained (the throwaway worktree had no `node_modules`), so
+this rests on the mechanism above rather than on an A/B.
+
+Two toolchain notes for whoever runs these next:
+
+- **`vp lint` could not run at all in this environment**, on this branch _or_ on untouched
+  files: oxlint fails to load `./oxlint-plugin-t3code/index.ts` with
+  `ERR_UNKNOWN_FILE_EXTENSION`, under both Node 22.15.1 and Node 24.13.1. This branch touches
+  neither the plugin nor the lint config, so it is pre-existing environment breakage — but it
+  means **lint coverage for this batch is unproven locally** and CI owns it.
+- Running `vitest run scripts/mobile-showcase.test.ts` from the repository root matched the
+  same filename inside sibling worktrees under `.prime/worktrees` and reported 5 failed files
+  that are not this checkout's. Scope it with `--dir scripts --exclude '**/.prime/**'`. This
+  is the same substring-matching trap recorded in the 2026-08-07 batch, with a new directory.
+
+**No integration pass in a real client.** N3 is a mobile feature spanning native headers,
+sheets, terminal, and code review surfaces, so a simulator pass is the obvious next step;
+N1, N2, N4, and N8 want a web pass.
 
 ## Deferred register
 
