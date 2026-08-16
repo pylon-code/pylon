@@ -87,7 +87,7 @@ We need to be on the same page with terminology. When communicating, use this la
 ## The three ways to hurt yourself
 
 1. **Killing by pattern.** Never `pkill -f`, `pgrep | kill`, or `kill` a PID you found by matching a name, path, or worktree string. Your own agent process has this worktree's path in its argv, and this machine runs several other dev servers at once. Kill only a PID you captured at spawn, or the owner of your port from `ss -H -ltnp` after confirming `/proc/<pid>/cwd` is your worktree.
-2. **Writing to the live install.** `~/.t3/userdata` is the developer's real Pylon/T3-compatible database, in use while you work. Reading it and copying from it are fine, and a good way to get real test data (see Test data). Never start a server against it, never open it read-write, never clean it up.
+2. **Writing to the live install.** `~/.pylon-code/userdata` is Pylon's real database and `~/.t3/userdata` is T3 Code's, and both may be in use while you work. Reading them read-only is fine; copy only from `~/.pylon-code` (see Test data). Never start a server against either, never open either read-write, never clean either up.
 3. **Baking in origins.** Never set `VITE_HTTP_URL` or `VITE_WS_URL` for dev. Dev is single-origin and Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known`. Setting them bakes localhost into the bundle and silently breaks every remote browser.
 
 ## Hit every surface
@@ -107,6 +107,7 @@ The most common defect in this repo is a change that works on the path you teste
 - `vp i` installs. Worktrees get this from the compatibility-named `t3.json` setup script; if module resolution looks broken, it probably did not run.
 - `vp run dev` starts server and web. In a worktree, state defaults to that worktree's gitignored `.t3`, which deliberately outranks an ambient `T3CODE_HOME` so you cannot land on shared state by accident. An explicit `--home-dir` still wins.
 - Ports derive from the worktree path and are stable across restarts, but read the real ones from the `[dev-runner]` line since occupied ports shift.
+- `vp run dev` needs a TTY. Launched from a plain non-interactive background shell it prints its first two lines and exits 0 without ever binding a port, which reads exactly like a fast successful start. Run it under `script -q /dev/null …` or `nohup … &` (there is no `setsid` on macOS), then confirm the port is actually listening before you trust it.
 - Sharing over the tailnet is three steps: run `vp run dev --share` in the background, wait for the `pairingUrl:` line in its output, then hand that full URL to the user with its pairing token intact. Do not wire up `tailscale serve` by hand for this, and do not open the complete pairing URL yourself.
 - The web app requires pairing. For an explicit human handoff, provide the pairing URL rather than the bare origin — a URL without its token is useless to whoever you gave it to. Treat the token as a secret everywhere else: never commit it, capture it in screenshots, or reuse it. If a token got consumed, mint a fresh one with `node apps/server/src/bin.ts pair`; it carries standard scopes, while the startup URL carries admin scopes (needed for Settings → Connections management).
 - Stop what you started, by the PID you tracked. See rule 1.
@@ -115,13 +116,14 @@ The most common defect in this repo is a change that works on the path you teste
 
 An empty database is a bad test. Seed your worktree's `.t3` with a copy of real data instead of pointing at live state:
 
-- Copy from `~/.t3/userdata` (the developer's real data, the most realistic test set) or `~/.t3/dev`. Worktree state lives at `<worktree>/.t3/userdata`.
+- Copy from **`~/.pylon-code/userdata`** — Pylon's own runtime home, and the only realistic fixture that matches this repo's schema. Worktree state still lives at `<worktree>/.t3/userdata`, which is a compatibility-named path, not a second source of data.
+- **Do not seed from `~/.t3/userdata`.** Despite the compatibility-named path, that is T3 Code's database, and it carries upstream's migration numbering. Pylon renumbered 037–040 (`ProjectionThreadsPinned`, `ProjectionThreadsContinuedFrom`, `ProjectionTurnsKeysetIndex`, `ProjectionThreadsPinOrderKey`) and retired id 36, so a Pylon server started against a copy of T3's database records those ids as already applied and then dies on the first query with `no such column: continued_from_thread_id`. Reading it is still fine; seeding from it is not.
 - Snapshot the database with `VACUUM INTO`, which is safe even while a server has the source open and yields one consistent file:
 
   ```bash
   mkdir -p .t3/userdata
   rm -f .t3/userdata/state.sqlite*  # VACUUM INTO refuses to overwrite
-  bun -e "new (require('bun:sqlite').Database)(process.env.HOME + '/.t3/userdata/state.sqlite', { readonly: true }).run(\"VACUUM INTO '.t3/userdata/state.sqlite'\")"
+  bun -e "new (require('bun:sqlite').Database)(process.env.HOME + '/.pylon-code/userdata/state.sqlite', { readonly: true }).run(\"VACUUM INTO '.t3/userdata/state.sqlite'\")"
   ```
 
   A plain `cp` is only safe when no server has the source open, and must bring the `-wal` and `-shm` siblings along. A live file copy is a corrupt copy.

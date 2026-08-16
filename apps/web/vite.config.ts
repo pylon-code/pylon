@@ -75,6 +75,18 @@ const unitTestProject = {
   test: {
     name: "unit",
     include: ["src/**/*.test.{ts,tsx}"],
+    // This config pushes the repo's public Connect configuration into
+    // process.env above, and Vite exposes every VITE_ key from there on
+    // import.meta.env. Tests covering the "not configured" branches would then
+    // pass or fail on whether the developer happens to have Connect set up in
+    // their own .env. Blank them here so the suite is hermetic; a test that
+    // wants a value stubs it with vi.stubEnv.
+    env: {
+      VITE_CLERK_PUBLISHABLE_KEY: "",
+      VITE_CLERK_JWT_TEMPLATE: "",
+      VITE_CLERK_CLI_OAUTH_CLIENT_ID: "",
+      VITE_T3CODE_RELAY_URL: "",
+    },
     // The web runtime suite exercises auth bootstrap, saved environments,
     // and websocket subscription lifecycles. Under the full monorepo test
     // run, those async tests can exceed Vitest's default 5s budget.
