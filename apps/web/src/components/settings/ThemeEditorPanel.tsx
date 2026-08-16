@@ -478,7 +478,14 @@ export function ThemeEditorPanel({
         return {
           ...current,
           [activeAppearance]: isAdvanced
-            ? updateThemeColorFamily(activeAppearance, current[activeAppearance], role, value)
+            ? // Derive the family from the typed value, but keep the field
+              // showing exactly what was typed. Canonicalizing here rewrites the
+              // input mid-keystroke — "#ff0" is a valid color, so "#ff0000"
+              // snaps to yellow on its way to red. Save canonicalizes anyway.
+              {
+                ...updateThemeColorFamily(activeAppearance, current[activeAppearance], role, value),
+                [role]: value,
+              }
             : shouldManageColors
               ? getManagedEditorColors(activeAppearance, nextColors)
               : nextColors,
@@ -497,9 +504,13 @@ export function ThemeEditorPanel({
   const selectThemeRole = useCallback((role: ThemeColorRole, reveal = false) => {
     const visibleRole = getThemeEditorColorFamily(role)?.role ?? role;
     setSelectedRole(visibleRole);
+    // Clear the filter whatever the role resolves to. An inspected role often
+    // folds into a family whose representative is a guided role, and those skip
+    // the Advanced switch below — leaving a stale query that hides the field the
+    // reveal is about to look for.
+    setRoleQuery("");
     if (!THEME_EDITOR_SIMPLE_ROLES.includes(visibleRole)) {
       setIsAdvanced(true);
-      setRoleQuery("");
     }
     if (!reveal) return;
 

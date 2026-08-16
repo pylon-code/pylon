@@ -1292,6 +1292,49 @@ Three conflicts, all resolved Pylon-first:
 | N9         | `89c52a331` / `#6635` | adopted  | `204671979`     | Two `ThreadSettingsSheet` full-screen routes used the `embedded` Android header, which skips the status-bar inset, so their actions sat under the status bar. **Open question:** five other call sites still use `AndroidSheetHeader` (`GitCommitSheet`, `GitOverviewSheet`, `GitConfirmSheet`, `GitBranchesSheet`, `ConnectOnboardingRouteScreen`); their presentation was not checked.                                                                                                |
 | N10        | `bab4b6f02` / `#7208` | skipped  | `—`             | Removes the Windows-only silent-install warning from the update confirmation so all platforms share the short copy. Upstream's reason is "install times have improved" — a claim about T3's pipeline, not Pylon's Windows builds. Pylon ships Windows and had already rebranded this copy; the warning describes real behavior (no installer window appears) and without it the app reads as hung. Revisit if Pylon measures its own Windows install times and finds the warning stale. |
 
+### Inherited defects found by review, fixed Pylon-first
+
+An `xhigh` review of the integration branch surfaced three regressions that arrived **with**
+the adopted commits rather than from any conflict resolution — `ThemeEditorPanel.tsx` is
+byte-identical to `#7107` apart from one rebranded comment, and the mobile files auto-merged.
+All are worth reporting upstream.
+
+- **Advanced editor: an Inspect pick could silently no-op.** `selectThemeRole` resolves the
+  picked role to its family representative _before_ testing `THEME_EDITOR_SIMPLE_ROLES`, which
+  is only `["canvas", "accent"]`. So `chrome`, `toolbar`, `focus`, `update*`, and
+  `terminalCursor` all resolve to a "simple" role and skip both `setIsAdvanced(true)` **and**
+  `setRoleQuery("")`. Already in Advanced with a filter typed, the role is selected but its
+  field stays filtered out of the DOM, so the `scrollIntoView` reveal finds nothing. Fixed by
+  clearing the query unconditionally; the query only affects the Advanced list, so clearing it
+  on a guided-role pick is inert.
+- **Advanced hex fields rewrote themselves mid-keystroke.** `ThemeColorField` fires `onChange`
+  per keystroke and `updateThemeColorFamily` canonicalizes to OKLCH whenever the value parses.
+  Verified against culori directly: `#ff0` parses as yellow and `#ff00` parses as yellow with
+  **alpha 0**, so typing `#ff0000` snapped to `#ffff00` at three characters and the next
+  keystroke appended to _that_. Before `#7107` this reached only the two guided roles; it now
+  reaches ~22 Advanced families. Fixed by keeping the typed string for the edited role while
+  still deriving its family companions — `decodeThemeColors` canonicalizes every role at save,
+  which is how Advanced already behaved before this commit.
+- **Mobile dark-mode pill contrast** — see the open item below.
+
+Two further findings were confirmed and deliberately **not** fixed: `mergeProviderSnapshots`,
+`selectProvidersByKind`, `requireNonNegativeInteger`, and `showcaseSceneUrl` now have zero
+callers and zero coverage, because `#6267` deleted their tests and kept the exports. Removing
+them is upstream's call to make; deleting them here buys nothing and costs divergence.
+
+The review cleared the parts most at risk: the T3 Chat palette converts to OKLCH with exact
+fidelity against the old hex literals, every `useAppearancePreferences` consumer sits inside
+its provider, and the `useColorScheme` migration is complete.
+
+**Open, deferred to the verification pass:** `sidebar-header-actions.tsx`,
+`sidebar-filter-button.tsx`, and `ThreadNavigationSidebar.tsx` swap a hardcoded idle fill for
+`--color-glass-surface`. Light mode is a genuine no-op — both are `rgba(255,255,255,0.72)` —
+but dark mode goes from `rgba(118,118,128,0.24)`, a grey _lift_ above the drawer, to
+`rgba(23,23,23,0.78)`, near-black, under a `rgba(255,255,255,0.06)` hairline. The
+`FallbackHeaderButton` pills on Android and non-Liquid-Glass iOS lose their affordance. The
+replacement token is a Pylon design decision and is being chosen against the simulator across
+all six themes rather than picked blind.
+
 **Verification.** Typecheck clean across web, mobile, shared, `t3`, and desktop — server and
 desktop emit only `TS377xxx` _suggestions_, none in files this batch touched. `vp fmt --check`
 clean over 96 files. Tests: mobile **790 in 126 files, all passing**; web **2,738 of 2,741 in
