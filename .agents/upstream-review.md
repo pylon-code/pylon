@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "a5e29edeec34fdfab1d44e643b0d12bb924fd261"
-reviewed-through-date: "2026-08-15"
+reviewed-through: "bab4b6f02b8bdaf15fd32636a97f69ff657cec50"
+reviewed-through-date: "2026-08-16"
 ---
 
 # T3 upstream review log
@@ -1232,10 +1232,209 @@ Two test notes for whoever runs these next:
 touches the composer, sidebar, theme, DMG chrome, and the PWA manifest, so a web pass is
 the obvious next step.
 
+## 2026-08-16 — `a5e29edeec34fdfab1d44e643b0d12bb924fd261..bab4b6f02b8bdaf15fd32636a97f69ff657cec50`
+
+Ten upstream commits, ten change sets. **Nine adopted** onto `upstream/2026-08-16-batch`,
+**one skipped**. A quiet day after the 100-commit sweep: two real features, four small
+fixes, two test-hygiene sweeps, one repo-plumbing change. `git cherry` reported all ten
+absent from Pylon, so nothing was patch-equivalent.
+
+**N1 closes the watch item** left open at the end of the 2026-08-15 batch. Still no Pylon
+code path was found that sets `data-theme-id` to the empty string, so it remains
+drift-closing rather than a fix for a live defect.
+
+**N3 is the substantial one.** Mobile gains the built-in theme library and System/Light/Dark
+selection, and the canonical palettes move out of `apps/web/src/themePalette.ts` into
+`packages/shared/src/themePalettes.ts` + `themePreview.ts` so web and mobile cannot drift.
+Upstream deliberately excluded theme import, creation, and editing on mobile. The
+`packages/shared/package.json` change is subpath exports only — no dependency change, so
+**`pnpm-lock.yaml` is untouched by this batch** (checked explicitly, per the 2026-08-15
+lockfile near-miss).
+
+Branding pass on N3, following the F10 precedent that **theme ids are compatibility
+identifiers and labels are not**: `MOBILE_DEFAULT_THEME_ID` stays `t3-code` so saved mobile
+preferences keep resolving, while its visible label became "Pylon", the new
+`docs/user/mobile-appearance.md` was rewritten to Pylon voice, and two doc comments in
+`mobileDefaultTheme.ts` and `themePreview.ts` were rebranded. Pre-existing "T3 Code" strings
+in `docs/README.md`, `docs/operations/mobile-app-store-screenshots.md`, and
+`scripts/mobile-showcase.test.ts` were confirmed present on `origin/pylon` and left alone as
+branding debt tracked separately.
+
+Three conflicts, all resolved Pylon-first:
+
+- **`ProviderIcon.tsx`** (N3) — both-sides-add on imports. Kept Pylon's `Circle` and
+  `providerIconKind` (the distinct provider marks from B1) and took upstream's
+  `useAppearancePreferences`, dropping the now-unused `useColorScheme`.
+- **`ThreadComposer.tsx`** (N3) — both-sides-add on imports; both kept.
+- **`themePalette.ts`** (N3) — upstream deletes the T3 Chat palettes as they move to the
+  shared package, and Pylon had rebranded four comments inside those deleted blocks.
+  Resolved by taking upstream's file wholesale, then restoring the **three** Pylon rebrands
+  that survive the deletion. Verified `T3_CHAT_LIGHT_COLORS`/`T3_CHAT_DARK_COLORS` have no
+  remaining web references.
+- **`ProviderRegistry.test.ts`** (N5) — Pylon's own "projects pushed rate-limit state onto
+  the instance snapshot" test sits immediately before the test upstream deletes. Kept
+  Pylon's, deleted upstream's.
+
+**Verified upstream's claim rather than trusting it** for N5: `mergeProviderSnapshots` and
+`selectProvidersByKind` have exactly one hit each outside tests in Pylon — their own
+`export` — so the "no production callers" premise holds here too.
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------- | --------------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| N1         | `e58cbb9e7` / `#6663` | adopted  | `c8eca3857`     | Theme selector tightened to `html[data-theme-id]:not([data-theme-id=""])` for specificity without raw `.dark` selectors. Closes the watch item from the 2026-08-15 batch.                                                                                                                                                                                                                                                                                                               |
+| N2         | `2f486ab80` / `#7107` | adopted  | `72cd53a41`     | The Advanced theme editor groups ~60 raw roles into named color families; `updateThemeColorFamily()` derives paired foregrounds only for the family touched, leaving imported palettes otherwise unnormalized.                                                                                                                                                                                                                                                                          |
+| N3         | `d23b181da` / `#6619` | adopted  | `4838326f1`     | Mobile built-in themes plus System/Light/Dark, with palettes and preview generation extracted to `packages/shared`. See the branding and conflict notes above. **Not yet verified on a device or simulator.**                                                                                                                                                                                                                                                                           |
+| N4         | `d484735c6` / `#7132` | adopted  | `bd922a271`     | A keyboard-highlighted command menu item no longer scrolls to rest under the scroll-fade mask. Reaches every `ScrollArea` using `scrollFade`.                                                                                                                                                                                                                                                                                                                                           |
+| N5         | `277322933` / `#6267` | adopted  | `c3ad0b60d`     | Removes 875 lines of duplicate and stale tests across server, web, desktop, mobile, relay, and scripts. Ten of eleven files were byte-identical to upstream; only `ProviderRegistry.test.ts` conflicted.                                                                                                                                                                                                                                                                                |
+| N6         | `3583cd27d` / `#7157` | adopted  | `af01aaf9a`     | Drops four test-only exports and the tests asserting on them, moving coverage to public behavior.                                                                                                                                                                                                                                                                                                                                                                                       |
+| N7         | `4cb676cc1` / `#7171` | adopted  | `33173950b`     | `CLAUDE.md` becomes a regular file containing `@AGENTS.md` instead of a symlink, because Windows checkouts with `core.symlinks=false` materialize it as a plain file that `vp fmt --check` flags and contributors commit back, corrupting the target. **Tradeoff accepted:** a symlink resolves for any reader, while `@AGENTS.md` only resolves for harnesses that honor @imports. Supersedes G4.                                                                                      |
+| N8         | `4c1d99d7f` / `#6392` | adopted  | `8477ddb70`     | Long paths in the commit dialog truncated from the end, hiding the filename. New `StartTruncatedPath` truncates from the start via `dir="rtl"` + `<bdi>`, with the full path in a tooltip.                                                                                                                                                                                                                                                                                              |
+| N9         | `89c52a331` / `#6635` | adopted  | `204671979`     | Two `ThreadSettingsSheet` full-screen routes used the `embedded` Android header, which skips the status-bar inset, so their actions sat under the status bar. **Open question:** five other call sites still use `AndroidSheetHeader` (`GitCommitSheet`, `GitOverviewSheet`, `GitConfirmSheet`, `GitBranchesSheet`, `ConnectOnboardingRouteScreen`); their presentation was not checked.                                                                                                |
+| N10        | `bab4b6f02` / `#7208` | skipped  | `—`             | Removes the Windows-only silent-install warning from the update confirmation so all platforms share the short copy. Upstream's reason is "install times have improved" — a claim about T3's pipeline, not Pylon's Windows builds. Pylon ships Windows and had already rebranded this copy; the warning describes real behavior (no installer window appears) and without it the app reads as hung. Revisit if Pylon measures its own Windows install times and finds the warning stale. |
+
+### Inherited defects found by review, fixed Pylon-first
+
+An `xhigh` review of the integration branch surfaced three regressions that arrived **with**
+the adopted commits rather than from any conflict resolution — `ThemeEditorPanel.tsx` is
+byte-identical to `#7107` apart from one rebranded comment, and the mobile files auto-merged.
+All are worth reporting upstream.
+
+- **Advanced editor: an Inspect pick could silently no-op.** `selectThemeRole` resolves the
+  picked role to its family representative _before_ testing `THEME_EDITOR_SIMPLE_ROLES`, which
+  is only `["canvas", "accent"]`. So `chrome`, `toolbar`, `focus`, `update*`, and
+  `terminalCursor` all resolve to a "simple" role and skip both `setIsAdvanced(true)` **and**
+  `setRoleQuery("")`. Already in Advanced with a filter typed, the role is selected but its
+  field stays filtered out of the DOM, so the `scrollIntoView` reveal finds nothing. Fixed by
+  clearing the query unconditionally; the query only affects the Advanced list, so clearing it
+  on a guided-role pick is inert.
+- **Advanced hex fields rewrote themselves mid-keystroke.** `ThemeColorField` fires `onChange`
+  per keystroke and `updateThemeColorFamily` canonicalizes to OKLCH whenever the value parses.
+  Verified against culori directly: `#ff0` parses as yellow and `#ff00` parses as yellow with
+  **alpha 0**, so typing `#ff0000` snapped to `#ffff00` at three characters and the next
+  keystroke appended to _that_. Before `#7107` this reached only the two guided roles; it now
+  reaches ~22 Advanced families. Fixed by keeping the typed string for the edited role while
+  still deriving its family companions — `decodeThemeColors` canonicalizes every role at save,
+  which is how Advanced already behaved before this commit.
+- **Mobile dark-mode pill contrast** — see the open item below.
+
+Two further findings were confirmed and deliberately **not** fixed: `mergeProviderSnapshots`,
+`selectProvidersByKind`, `requireNonNegativeInteger`, and `showcaseSceneUrl` now have zero
+callers and zero coverage, because `#6267` deleted their tests and kept the exports. Removing
+them is upstream's call to make; deleting them here buys nothing and costs divergence.
+
+The review cleared the parts most at risk: the T3 Chat palette converts to OKLCH with exact
+fidelity against the old hex literals, every `useAppearancePreferences` consumer sits inside
+its provider, and the `useColorScheme` migration is complete.
+
+**The mobile contrast finding was mostly a false positive — resolved, no change made.** The
+review flagged `sidebar-header-actions.tsx`, `sidebar-filter-button.tsx`, and
+`ThreadNavigationSidebar.tsx` for swapping a hardcoded idle fill for `--color-glass-surface`,
+which in dark mode goes from `rgba(118,118,128,0.24)` (a grey _lift_ above the drawer) to
+`rgba(23,23,23,0.78)` (near-black). Checking the call sites settles it:
+
+- `SidebarHeaderActions` and `SidebarFilterButton` each have **exactly one** call site, both
+  passing `grouped`. That branch renders `backgroundColor: "transparent"` with `borderWidth: 0`,
+  so `idleBackgroundColor` is computed and **never applied**. Two of the three files are dead
+  code for this purpose.
+- Only `SidebarHeaderButtonGroup`'s `fallbackBackground` is live, and only when
+  `isLiquidGlassSupported` is false — Android and iOS < 26.
+
+Confirmed on device: swapping the old literal back in and letting fast refresh apply it produced
+**pixel-identical** output on iOS 26.3 — pill fill `rgb(21,21,21)`, background `rgb(10,10,10)`,
+contrast 1.084 either way. Changing a design token on arithmetic alone, for a path that cannot
+be observed on the platform available here, would be worse than leaving it. **Revisit only with
+an Android or iOS < 26 pass**, where the fallback actually renders.
+
+**Verification.** Typecheck clean across web, mobile, shared, `t3`, and desktop — server and
+desktop emit only `TS377xxx` _suggestions_, none in files this batch touched. `vp fmt --check`
+clean over 96 files. Tests: mobile **790 in 126 files, all passing**; web **2,738 of 2,741 in
+280 files**; shared 10; server `ProviderRegistry` 52; scripts `mobile-showcase` 22.
+
+**The three web failures are a local-environment artifact, not batch fallout.**
+`apps/web/src/cloud/connectCliAuth.test.ts` assumes `VITE_CLERK_CLI_OAUTH_CLIENT_ID` is unset
+unless a test stubs it, and this checkout's `.env` sets `T3CODE_CLERK_CLI_OAUTH_CLIENT_ID`, which
+`loadRepoEnv` maps into the `VITE_` name. `apps/web/vite.config.ts` then `Object.assign`s that map
+into `process.env` at module scope, and Vite exposes every `VITE_` key from `process.env` on
+`import.meta.env` — so the test reads the developer's real Connect configuration and the "not
+configured" assertions cannot hold. The test and its entire import graph are untouched by this
+batch, it fails **in isolation**, and it fails **identically on a clean `origin/pylon`
+checkout**, so the deleted test files in N5 did not perturb it by ordering either. CI has no such
+`.env` and is unaffected.
+
+> **Correction.** An earlier revision of this entry blamed `define:` in `apps/web/vite.config.ts`,
+> reasoning that a textual substitution cannot be reached by `vi.stubEnv`. That is wrong.
+> Instrumenting the config showed `mode: "test"` is detected and scoping `define` out of test mode
+> left the tests failing exactly as before, which rules it out. The `process.env` assignment above
+> is the actual mechanism. Fixed separately on `fix/agent-docs-and-test-isolation` by blanking
+> those keys on the web unit-test project.
+
+Two toolchain notes for whoever runs these next:
+
+- **`vp lint` could not run at all in this environment**, on this branch _or_ on untouched
+  files: oxlint fails to load `./oxlint-plugin-t3code/index.ts` with
+  `ERR_UNKNOWN_FILE_EXTENSION`, under both Node 22.15.1 and Node 24.13.1. This branch touches
+  neither the plugin nor the lint config, so it is pre-existing environment breakage — but it
+  means **lint coverage for this batch is unproven locally** and CI owns it.
+- Running `vitest run scripts/mobile-showcase.test.ts` from the repository root matched the
+  same filename inside sibling worktrees under `.prime/worktrees` and reported 5 failed files
+  that are not this checkout's. Scope it with `--dir scripts --exclude '**/.prime/**'`. This
+  is the same substring-matching trap recorded in the 2026-08-07 batch, with a new directory.
+
+### Integration passes in real clients
+
+**iOS Simulator (iPhone 17 Pro, iOS 26.3), against a copy of `~/.pylon-code` — 4 projects,
+25 threads, 593 turns.** No native rebuild was needed: the only new native API is
+`getShowcaseTheme`, consumed solely by the screenshot harness through optional chaining, so the
+installed dev client was reused.
+
+- Settings → Appearance lists **Pylon**, T3 Chat, Grove, Ocean, Ember, Iris. The default label
+  reads **"Pylon"**, confirming the branding pass at both the accessibility layer and on screen.
+- Color scheme offers System / Light / Dark. Flipping the simulator to dark with the app on
+  **System** repainted the whole sheet, so the system path works.
+- Selecting **Ember** repainted the Appearance sheet, thread list, thread-route chrome, and
+  primary action buttons; the blue "Working" status label correctly stayed independent of the
+  palette.
+
+Not covered on mobile, with the reason: **review sheets, file previews, and the terminal** were
+unreachable because thread rows expose no tappable accessibility role (a known limitation the
+skill documents) and the thread deep link needs a client-side environment id that is not in the
+database. **`#6635` is Android-only** (`Platform.OS === "android"`) and cannot be observed on
+iOS at all. The showcase harness's new native path was not exercised, since the old dev client
+was reused deliberately.
+
+**Web, via Playwright against system Chrome.** Both fixes in `fe31bc6d7` were proven with a
+negative control — the component was reverted to its pre-fix state, re-tested, then restored:
+
+|          | typing `#ff0000` into `#canvas-hex`                          | Inspect pick with `terminal` filter active          |
+| -------- | ------------------------------------------------------------ | --------------------------------------------------- |
+| pre-fix  | `# → #f → #ff → #ffff00 → #ffff000 → #ffff0000 → #ffff00000` | filter stays `"terminal"`, canvas field count **0** |
+| with fix | `# → #f → #ff → #ff0 → #ff00 → #ff000 → #ff0000`             | filter clears to `""`, canvas field count **1**     |
+
+The pre-fix run is worse than predicted: after snapping at `#ff0` it never recovers, ending at
+`#ffff00000`. Advanced mode was confirmed to expose 20 hex fields against guided mode's 2.
+
+**N4 (`#7132`) verified live**: the command list carries `not-empty:py-3` computing to
+`padding: 12px`, and the scroll viewport reports `scroll-padding: 24px` — both halves of the fix
+applied.
+
+**N8 (`#6392`) was not exercised in the live commit dialog.** Reaching it triggered a real
+"Generating commit message" agent run, so that path was abandoned rather than driven further; it
+also staged the two untracked directories, which was reverted with `git restore --staged`.
+Coverage rests on its own unit tests, which assert the `dir="rtl"` + `<bdi>` markup and the
+tooltip.
+
+**Fixture note, fixed separately on `fix/agent-docs-and-test-isolation`.** `AGENTS.md`'s "Test
+data" section pointed at `~/.t3/userdata`, which for Pylon is the **wrong** database: it is T3
+Code's, carrying upstream's migration numbering, and a Pylon server started against a copy of it
+dies with `no such column: continued_from_thread_id`. Pylon's own runtime home,
+`~/.pylon-code/userdata`, holds the correct 37 Pinned / 38 ContinuedFrom / 39 TurnsKeysetIndex /
+40 PinOrderKey sequence. A fresh database built by this branch applied 37–44 cleanly with 36
+retired, so the renumbering holds end to end.
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
-(see the sixth batch above); the eighth through twelfth batches each deferred
+(see the sixth batch above); every batch since, through 2026-08-16, deferred
 nothing new. Entries are removed once adopted or skipped, so an
 empty register means nothing is waiting._
 
