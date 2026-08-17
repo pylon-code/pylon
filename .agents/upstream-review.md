@@ -1434,7 +1434,7 @@ retired, so the renumbering holds end to end.
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
-(see the sixth batch above); the eighth through twelfth batches each deferred
+(see the sixth batch above); every batch since, through 2026-08-16, deferred
 nothing new. Entries are removed once adopted or skipped, so an
 empty register means nothing is waiting._
 
