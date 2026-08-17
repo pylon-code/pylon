@@ -1350,17 +1350,23 @@ desktop emit only `TS377xxx` _suggestions_, none in files this batch touched. `v
 clean over 96 files. Tests: mobile **790 in 126 files, all passing**; web **2,738 of 2,741 in
 280 files**; shared 10; server `ProviderRegistry` 52; scripts `mobile-showcase` 22.
 
-**The three web failures are a local-environment artifact, not batch fallout**, and they will
-bite the next person too. `apps/web/src/cloud/connectCliAuth.test.ts` assumes
-`VITE_CLERK_CLI_OAUTH_CLIENT_ID` is unset unless a test stubs it — but `apps/web/vite.config.ts`
-publishes that variable through `define:`, which substitutes a string literal at transform time,
-so `vi.stubEnv` cannot override it. This checkout's `.env` sets
-`T3CODE_CLERK_CLI_OAUTH_CLIENT_ID`, which `repoEnv` maps into the `VITE_` name, so the value is
-baked in and the "not configured" assertions can never hold. The test and its entire import graph
-are untouched by this batch, and it fails **in isolation**, so the deleted test files in N5 did
-not perturb it by ordering either. CI has no such `.env` and is unaffected. Caveat: a clean
-`origin/pylon` baseline run was not obtained (the throwaway worktree had no `node_modules`), so
-this rests on the mechanism above rather than on an A/B.
+**The three web failures are a local-environment artifact, not batch fallout.**
+`apps/web/src/cloud/connectCliAuth.test.ts` assumes `VITE_CLERK_CLI_OAUTH_CLIENT_ID` is unset
+unless a test stubs it, and this checkout's `.env` sets `T3CODE_CLERK_CLI_OAUTH_CLIENT_ID`, which
+`loadRepoEnv` maps into the `VITE_` name. `apps/web/vite.config.ts` then `Object.assign`s that map
+into `process.env` at module scope, and Vite exposes every `VITE_` key from `process.env` on
+`import.meta.env` — so the test reads the developer's real Connect configuration and the "not
+configured" assertions cannot hold. The test and its entire import graph are untouched by this
+batch, it fails **in isolation**, and it fails **identically on a clean `origin/pylon`
+checkout**, so the deleted test files in N5 did not perturb it by ordering either. CI has no such
+`.env` and is unaffected.
+
+> **Correction.** An earlier revision of this entry blamed `define:` in `apps/web/vite.config.ts`,
+> reasoning that a textual substitution cannot be reached by `vi.stubEnv`. That is wrong.
+> Instrumenting the config showed `mode: "test"` is detected and scoping `define` out of test mode
+> left the tests failing exactly as before, which rules it out. The `process.env` assignment above
+> is the actual mechanism. Fixed separately on `fix/agent-docs-and-test-isolation` by blanking
+> those keys on the web unit-test project.
 
 Two toolchain notes for whoever runs these next:
 
@@ -1417,13 +1423,13 @@ also staged the two untracked directories, which was reverted with `git restore 
 Coverage rests on its own unit tests, which assert the `dir="rtl"` + `<bdi>` markup and the
 tooltip.
 
-**Fixture note worth folding into `AGENTS.md`.** Its "Test data" section points at
-`~/.t3/userdata`, but for Pylon that is now the **wrong** database: it is T3 Code's, carrying
-upstream's migration numbering, and a Pylon server started against a copy of it dies with
-`no such column: continued_from_thread_id`. Pylon's own runtime home, `~/.pylon-code/userdata`,
-holds the correct 37 Pinned / 38 ContinuedFrom / 39 TurnsKeysetIndex / 40 PinOrderKey sequence.
-A fresh database built by this branch applied 37–44 cleanly with 36 retired, so the renumbering
-holds end to end.
+**Fixture note, fixed separately on `fix/agent-docs-and-test-isolation`.** `AGENTS.md`'s "Test
+data" section pointed at `~/.t3/userdata`, which for Pylon is the **wrong** database: it is T3
+Code's, carrying upstream's migration numbering, and a Pylon server started against a copy of it
+dies with `no such column: continued_from_thread_id`. Pylon's own runtime home,
+`~/.pylon-code/userdata`, holds the correct 37 Pinned / 38 ContinuedFrom / 39 TurnsKeysetIndex /
+40 PinOrderKey sequence. A fresh database built by this branch applied 37–44 cleanly with 36
+retired, so the renumbering holds end to end.
 
 ## Deferred register
 
