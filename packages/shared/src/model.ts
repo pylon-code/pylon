@@ -354,6 +354,29 @@ export function resolvePromptInjectedEffort(
   return null;
 }
 
+/** Prime Agent's built-in slug for deferring to its own configured model. */
+export const PRIME_AGENT_DEFAULT_MODEL_SLUG = "default";
+
+/**
+ * Prime Agent can only defer to its own model when a session starts: it exposes no
+ * way to hand model choice back mid-session, so the server refuses the switch. Clients
+ * use this to disable the option with a reason instead of letting it fail on send.
+ */
+export function isPrimeAgentDefaultModelUnavailable(input: {
+  readonly providerDriver: string | undefined;
+  readonly nextModel: string;
+  readonly currentModel: string | undefined;
+  readonly hasStartedSession: boolean;
+}): boolean {
+  return (
+    input.hasStartedSession &&
+    input.providerDriver === "primeAgent" &&
+    input.nextModel === PRIME_AGENT_DEFAULT_MODEL_SLUG &&
+    input.currentModel !== undefined &&
+    input.currentModel !== PRIME_AGENT_DEFAULT_MODEL_SLUG
+  );
+}
+
 export function applyClaudePromptEffortPrefix(
   text: string,
   effort: string | null | undefined,

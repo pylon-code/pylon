@@ -6,6 +6,7 @@ import {
   createModelCapabilities,
   createModelSelection,
   getModelSelectionBooleanOptionValue,
+  isPrimeAgentDefaultModelUnavailable,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
   getProviderOptionBooleanSelectionValue,
@@ -153,5 +154,37 @@ describe("model slug normalization", () => {
 
     expect(normalizeModelSlug("opus", claude)).toBe("claude-opus-5");
     expect(normalizeCustomModelSlug(" opus ")).toBe("opus");
+  });
+});
+
+describe("Prime Agent default model availability", () => {
+  const base = {
+    providerDriver: "primeAgent",
+    nextModel: "default",
+    currentModel: "anthropic/claude-sonnet-4.5",
+    hasStartedSession: true,
+  };
+
+  it("blocks returning a started Prime session to its own default", () => {
+    expect(isPrimeAgentDefaultModelUnavailable(base)).toBe(true);
+  });
+
+  it("allows the default before a session starts", () => {
+    expect(isPrimeAgentDefaultModelUnavailable({ ...base, hasStartedSession: false })).toBe(false);
+  });
+
+  it("allows a session already running the default to keep it", () => {
+    expect(isPrimeAgentDefaultModelUnavailable({ ...base, currentModel: "default" })).toBe(false);
+  });
+
+  it("allows picking a named Prime model mid-session", () => {
+    expect(isPrimeAgentDefaultModelUnavailable({ ...base, nextModel: "openai/gpt-5.4" })).toBe(
+      false,
+    );
+  });
+
+  it("leaves other providers' default slugs alone", () => {
+    expect(isPrimeAgentDefaultModelUnavailable({ ...base, providerDriver: "codex" })).toBe(false);
+    expect(isPrimeAgentDefaultModelUnavailable({ ...base, providerDriver: undefined })).toBe(false);
   });
 });

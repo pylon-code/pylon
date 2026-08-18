@@ -46,6 +46,7 @@ import {
   type SessionResourcesSnapshot,
 } from "@t3tools/client-runtime/state/session-resources";
 import { PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS } from "@t3tools/contracts";
+import { isPrimeAgentDefaultModelUnavailable } from "@t3tools/shared/model";
 import type {
   EnvironmentId,
   MessageId,
@@ -537,9 +538,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       const isCurrent =
         option.selection.instanceId === currentModelSelection.instanceId &&
         option.selection.model === currentModelSelection.model;
-      return !isCurrent &&
-        props.selectedThread.session != null &&
-        (modelChangesLocked || option.requiresNewThreadForModelChange)
+      if (isCurrent || props.selectedThread.session == null) return undefined;
+      if (
+        isPrimeAgentDefaultModelUnavailable({
+          providerDriver: option.providerDriver,
+          nextModel: option.selection.model,
+          currentModel: currentModelSelection.model,
+          hasStartedSession: true,
+        })
+      ) {
+        return "Start a new thread to use Prime Agent Default";
+      }
+      return modelChangesLocked || option.requiresNewThreadForModelChange
         ? "Start a new thread to use this model"
         : undefined;
     },

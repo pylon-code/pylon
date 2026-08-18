@@ -10,6 +10,7 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import { isPrimeAgentDefaultModelUnavailable } from "@t3tools/shared/model";
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadShell } from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
@@ -406,7 +407,9 @@ export function deriveLockedProvider(input: {
 }
 
 export function getStartedThreadModelChangeBlockReason(input: {
-  providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "requiresNewThreadForModelChange">>;
+  providers: ReadonlyArray<
+    Pick<ServerProvider, "instanceId" | "driver" | "requiresNewThreadForModelChange">
+  >;
   hasStartedSession: boolean;
   currentModelSelection: ModelSelection;
   currentProviderInstanceId?: ModelSelection["instanceId"] | null | undefined;
@@ -431,6 +434,20 @@ export function getStartedThreadModelChangeBlockReason(input: {
   const nextProvider = input.providers.find(
     (snapshot) => snapshot.instanceId === input.nextModelSelection.instanceId,
   );
+  if (
+    isPrimeAgentDefaultModelUnavailable({
+      providerDriver: nextProvider?.driver,
+      nextModel: input.nextModelSelection.model,
+      currentModel: currentModelSelection.model,
+      hasStartedSession: input.hasStartedSession,
+    })
+  ) {
+    return {
+      title: "Start a new chat to use Prime Agent Default",
+      description:
+        "Prime Agent cannot hand model choice back to its own default once a conversation is running.",
+    };
+  }
   if (
     currentProvider?.requiresNewThreadForModelChange !== true &&
     nextProvider?.requiresNewThreadForModelChange !== true
