@@ -22,11 +22,32 @@ describe("SessionGoalControl", () => {
   it("renders a provider-neutral, read-only goal trigger", () => {
     const html = renderToStaticMarkup(<SessionGoalControl snapshot={snapshot} />);
 
-    expect(html).toContain("Goal budget limited");
+    expect(html).toContain("Session goal budget limited");
     expect(html).toContain("Finish the provider integration");
-    expect(html).toContain("Read-only");
+    expect(html).toContain("Managed in chat");
     expect(html).toContain("Budget limited");
     expect(html).not.toContain("goalId");
     expect(html).not.toContain("lastError");
+  });
+
+  it("explains how to start an idle goal without showing empty usage metrics", () => {
+    const html = renderToStaticMarkup(
+      <SessionGoalControl
+        snapshot={{
+          ...snapshot,
+          active: false,
+          status: "idle",
+          objective: "",
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          continuationsUsed: 0,
+        }}
+      />,
+    );
+
+    expect(html).toContain("No goal");
+    expect(html).toContain("Ask the agent to start a persistent goal");
+    expect(html).not.toContain(">Tokens<");
+    expect(html).not.toContain(">Elapsed<");
   });
 });

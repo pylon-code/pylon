@@ -13,12 +13,17 @@ import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 export function SessionGoalControl(props: { readonly snapshot: SessionGoalSnapshot }) {
   const { snapshot } = props;
   const status = formatSessionGoalStatus(snapshot.status);
+  const hasGoal =
+    snapshot.active || snapshot.status !== "idle" || Boolean(snapshot.objective?.trim());
   const objective = snapshot.objective
     ? boundSessionGoalObjective(snapshot.objective)
-    : snapshot.active
+    : hasGoal
       ? "Objective unavailable"
-      : "No active objective";
+      : "No persistent goal is active.";
   const accessibilityObjective = boundSessionGoalObjective(objective, 120);
+  const accessibilityManagement = hasGoal
+    ? "Managed in chat."
+    : "Managed in chat. Ask the agent to start a persistent goal.";
 
   return (
     <Popover>
@@ -34,7 +39,7 @@ export function SessionGoalControl(props: { readonly snapshot: SessionGoalSnapsh
               "hover:bg-accent data-[pressed]:bg-accent",
               "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
             )}
-            aria-label={`Goal ${status.toLowerCase()}: ${accessibilityObjective}. Read-only.`}
+            aria-label={`Session goal ${status.toLowerCase()}: ${accessibilityObjective} ${accessibilityManagement}`}
           >
             <TargetIcon className="size-3.5" aria-hidden="true" />
             <span className="max-w-20 truncate text-[11px] font-medium">{status}</span>
@@ -53,32 +58,38 @@ export function SessionGoalControl(props: { readonly snapshot: SessionGoalSnapsh
             <div className="font-medium text-muted-foreground text-xs">Session goal</div>
             <div className="flex items-center gap-1.5 text-[11px]">
               <span className="font-medium text-foreground">{status}</span>
-              <span className="text-secondary-label">· Read-only</span>
+              <span className="text-secondary-label">· Managed in chat</span>
             </div>
           </div>
           <p className="line-clamp-5 break-words text-pretty text-xs leading-4 text-foreground">
             {objective}
           </p>
-          <dl className="grid gap-1.5 border-border/70 border-t pt-2 text-[11px] leading-4">
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-secondary-label">Tokens</dt>
-              <dd className="font-medium tabular-nums text-muted-foreground">
-                {formatSessionGoalTokenUsage(snapshot)}
-              </dd>
+          {hasGoal ? (
+            <dl className="grid gap-1.5 border-border/70 border-t pt-2 text-[11px] leading-4">
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-secondary-label">Tokens</dt>
+                <dd className="font-medium tabular-nums text-muted-foreground">
+                  {formatSessionGoalTokenUsage(snapshot)}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-secondary-label">Elapsed</dt>
+                <dd className="font-medium tabular-nums text-muted-foreground">
+                  {formatSessionGoalElapsed(snapshot.timeUsedSeconds)}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-secondary-label">Continuations</dt>
+                <dd className="font-medium tabular-nums text-muted-foreground">
+                  {snapshot.continuationsUsed.toLocaleString()}
+                </dd>
+              </div>
+            </dl>
+          ) : (
+            <div className="border-border/70 border-t pt-2 text-pretty text-[11px] leading-4 text-muted-foreground">
+              Goals keep work moving across turns. Ask the agent: “Start a persistent goal to …”
             </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-secondary-label">Elapsed</dt>
-              <dd className="font-medium tabular-nums text-muted-foreground">
-                {formatSessionGoalElapsed(snapshot.timeUsedSeconds)}
-              </dd>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-secondary-label">Continuations</dt>
-              <dd className="font-medium tabular-nums text-muted-foreground">
-                {snapshot.continuationsUsed.toLocaleString()}
-              </dd>
-            </div>
-          </dl>
+          )}
         </div>
       </PopoverPopup>
     </Popover>

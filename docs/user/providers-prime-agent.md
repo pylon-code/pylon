@@ -94,13 +94,15 @@ cancelled because Prime may place sensitive model or tool material in their pref
 cannot safely make durable; notifications, status, and widgets use the same provider-neutral presentation
 surface. In Full access, the slash-command menu also shows the safe command names, descriptions, and
 argument hints loaded for that thread when its native session starts, including prompt and skill commands.
-The composer’s **Resources** control shows the saved names, descriptions, scopes, and argument hints for
-the session’s discovered skills and prompts on web, desktop, and mobile. It does not show resource contents,
-paths, diagnostics, or provider-native identifiers, and browsing a resource does not run or modify it. This
-metadata is part of the synchronized thread record and can remain visible after the native session stops.
-While the session is idle, **Reload resources** reloads Prime's settings, authentication, MCP configuration,
-resources, runtime, and extension lifecycle before replacing the visible resource and command catalogs. It is intentionally
-unavailable in Supervised mode. If the reload cannot finish safely, Pylon clears the catalog and closes that
+The composer shows the saved names, descriptions, scopes, and argument hints for the session’s
+discovered skills and prompts under **Harness** on web and desktop and **Resources** on mobile. It does
+not show resource contents, paths, diagnostics, or provider-native identifiers, and browsing a resource
+does not run or modify it. This metadata is part of the synchronized thread record and can remain visible
+after the native session stops. While the session is idle, **Reload commands and resources** under
+**Harness** reloads Prime's settings, authentication, MCP configuration, resources, runtime, and extension
+lifecycle before replacing the visible resource and command catalogs. Use it after adding or changing a
+session command, skill, or prompt; ordinary messages and project-file edits do not require a reload. It
+is intentionally unavailable in Supervised mode. If the reload cannot finish safely, Pylon clears the catalog and closes that
 native session rather than risking a partially reloaded runtime; it never retries automatically. Pylon does not
 send resource paths, diagnostics, or extension source details
 to clients. Supervised sessions keep discovered commands disabled. Observed Prime subagents appear in Pylon's Agents hierarchy. In Full access, an active agent can be stopped from its Agents row on web or desktop, or from the **Agents** control on mobile. Pylon waits for Prime's native cancelled status instead of marking the agent stopped optimistically; completed output and activity remain in the thread. A cancellation racing natural completion is treated as already settled, and Pylon never retries an uncertain cancellation automatically. Supervised sessions do not offer this control because child-agent spawning is disabled. In Full access, a live agent with a native message endpoint can also receive a direct message from its Agents row. Pylon reports only whether Prime delivered the message immediately or queued it behind current work; that receipt does not mean the agent read, answered, or completed it. Pylon does not copy the message or Prime's receipt identifiers into its event store, activity history, diagnostics, or other clients. Prime necessarily adds the text to the selected child agent's private native transcript and context so the agent can act on it. Sending is never retried automatically; if delivery becomes uncertain, sending again may duplicate the message. Supervised and ACP sessions do not offer native agent messaging.
@@ -124,20 +126,23 @@ the session's native automatic-compaction setting rather than assuming compactio
 
 Full-access daemon sessions expose context controls beside the context-window meter. **Compact now** is admitted only after Pylon confirms the native session is idle; it never accepts custom instructions. While compaction is active, **Abort compaction** requests Prime's native cancellation, but the control stays active until Prime reports a terminal outcome. **Automatic compaction** changes the current session and Prime's provider-wide default, which the control states explicitly. These mutations are serialized with other session controls and are never retried automatically. If a response is ambiguous and authoritative state cannot be restored, Pylon closes the native session instead of guessing. Supervised and ACP sessions do not offer these controls.
 
-Full-access daemon sessions with goal observation expose a read-only **Goal** control in the web,
-desktop, and mobile composers. It shows a bounded objective, provider-neutral status, token budget and
-usage, elapsed seconds, and continuation count. Pylon does not send Prime's native goal ID,
-timestamps, stop reasons, or errors to clients. Pylon stores this safe projection, including the
-objective, in the thread so authenticated remote clients can see the same state; Prime retains the
-full native goal in its session. The control cannot create, update, pause, resume, complete, or clear
-a goal because Prime Agent 0.7.3 does not expose daemon mutation methods for them. Prime's goal skill
-can still make those changes inside the agent conversation. Switching provider instances, entering
+Full-access daemon sessions with goal observation expose an agent-managed **Goal** status in the web,
+desktop, and mobile composers. **No goal** means no persistent objective is active; ask Prime Agent to
+“start a persistent goal to …” when work should continue across turns. An active status shows a bounded
+objective, provider-neutral status, token budget and usage, elapsed seconds, and continuation count.
+Pylon does not send Prime's native goal ID, timestamps, stop reasons, or errors to clients. Pylon stores
+this safe projection, including the objective, in the thread so authenticated remote clients can see the
+same state; Prime retains the full native goal in its session. The composer cannot create, update, pause,
+resume, complete, or clear a goal because Prime Agent 0.7.3 does not expose daemon mutation methods for
+them. Prime's goal skill can still make those changes inside the agent conversation. Switching provider
+instances, entering
 Supervised mode, using ACP compatibility mode, or receiving an unavailable snapshot removes the old
 goal instead of leaving stale state visible.
 
-Daemon-backed sessions also expose an **Agent spawn depth** control while the session is idle. Depth
-0 disables recursive child-agent spawning; depths 1 through 4 bound how many nested levels Prime may
-create. The choice applies only to that native session and never changes Prime's global setting.
+Daemon-backed sessions also expose **Subagent depth** under **Harness** on web and desktop and an
+**Agent spawn depth** control on mobile while the session is idle. Depth 0 disables recursive child-agent
+spawning; depths 1 through 4 bound how many nested levels Prime may create. The choice applies only to
+that native session and never changes Prime's global setting.
 Supervised sessions show the policy-fixed depth 0 and cannot change it.
 
 When Prime compacts a daemon-backed thread, Pylon shows one provider-neutral lifecycle row. Pylon
