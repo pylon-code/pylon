@@ -26,6 +26,17 @@ on:
         required: false
         type: string
 
+# A self-hosted capacity outage does not cancel queued jobs; GitHub kills them
+# at its own 24h queue cap. With no group here, the nightlies from 2026-08-03
+# to 08-06 stacked up 23 deep and sat ~480 VM-hours waiting for runners that
+# never arrived. Nightlies now share one group so a fresh run supersedes a
+# stuck predecessor. Tag releases and manual dispatches key off run_id, so they
+# are always unique and never cancel one another: losing a real release to a
+# scheduling race is far worse than paying for a duplicate build.
+concurrency:
+  group: release-${{ github.event_name == 'schedule' && 'nightly' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'schedule' }}
+
 permissions:
   contents: read
   id-token: none
@@ -245,8 +256,16 @@ jobs:
             --github-output \
             --github-env-file "$RUNNER_TEMP/relay-client-tracing.env"
 
+      # Non-fatal on purpose, matching the same reasoning as the upload in
+      # ci.yml. Actions storage is an org-wide quota that anything in the
+      # account can exhaust, and when it is full every upload in every repo
+      # fails. Connect is already optional here and the loader below degrades
+      # to a build without relay tracing, so a storage condition must not take
+      # down the release matrix — which is exactly what killed every nightly
+      # from 2026-08-11 onward.
       - name: Upload relay client tracing config
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: relay-client-tracing-config
           path: ${{ runner.temp }}/relay-client-tracing.env
@@ -441,6 +460,7 @@ jobs:
 
       - name: Download relay client tracing config
         uses: actions/download-artifact@v8
+        continue-on-error: true
         with:
           name: relay-client-tracing-config
           path: ${{ runner.temp }}/relay-client-tracing
@@ -449,9 +469,17 @@ jobs:
         shell: bash
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
-          # The artifact is always uploaded so the download stays uniform, but
-          # it carries no variables when Connect is not configured.
-          if ! grep -q '^T3CODE_RELAY_CLIENT_OTLP_TRACES_' "$config_path" 2>/dev/null; then
+          # The upload is best-effort against a shared storage quota, so the
+          # file can be missing entirely. Building without relay tracing is the
+          # correct way to degrade, but it is worth surfacing: a silently
+          # untraced production build should not look identical to a healthy one.
+          if [[ ! -f "$config_path" ]]; then
+            echo "::warning::Relay client tracing config artifact unavailable; building without Connect tracing."
+            exit 0
+          fi
+          # Present but carrying no variables when Connect is not configured at
+          # all, which is a supported setup rather than a problem.
+          if ! grep -q '^T3CODE_RELAY_CLIENT_OTLP_TRACES_' "$config_path"; then
             echo "No relay client tracing config; continuing without it." >&2
             exit 0
           fi
@@ -736,7 +764,11 @@ jobs:
           name: resource-monitor-${{ matrix.resource_key }}
           path: resource-monitor-publish/${{ matrix.resource_key }}/*
           if-no-files-found: error
-          retention-days: 7
+          # Consumed by the CLI publish job in this same run, so it only has to
+          # outlive the matrix. The old 7-day window was the one release
+          # artifact held above the minimum, and Actions storage is billed by
+          # GB-hour against a quota this repo already sits on top of.
+          retention-days: 1
 
   publish_cli:
     name: Publish CLI to npm
@@ -778,6 +810,7 @@ jobs:
 
       - name: Download relay client tracing config
         uses: actions/download-artifact@v8
+        continue-on-error: true
         with:
           name: relay-client-tracing-config
           path: ${{ runner.temp }}/relay-client-tracing
@@ -786,9 +819,17 @@ jobs:
         shell: bash
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
-          # The artifact is always uploaded so the download stays uniform, but
-          # it carries no variables when Connect is not configured.
-          if ! grep -q '^T3CODE_RELAY_CLIENT_OTLP_TRACES_' "$config_path" 2>/dev/null; then
+          # The upload is best-effort against a shared storage quota, so the
+          # file can be missing entirely. Building without relay tracing is the
+          # correct way to degrade, but it is worth surfacing: a silently
+          # untraced production build should not look identical to a healthy one.
+          if [[ ! -f "$config_path" ]]; then
+            echo "::warning::Relay client tracing config artifact unavailable; building without Connect tracing."
+            exit 0
+          fi
+          # Present but carrying no variables when Connect is not configured at
+          # all, which is a supported setup rather than a problem.
+          if ! grep -q '^T3CODE_RELAY_CLIENT_OTLP_TRACES_' "$config_path"; then
             echo "No relay client tracing config; continuing without it." >&2
             exit 0
           fi
@@ -1060,6 +1101,7 @@ jobs:
 
       - name: Download relay client tracing config
         uses: actions/download-artifact@v8
+        continue-on-error: true
         with:
           name: relay-client-tracing-config
           path: ${{ runner.temp }}/relay-client-tracing
@@ -1068,9 +1110,17 @@ jobs:
         shell: bash
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
-          # The artifact is always uploaded so the download stays uniform, but
-          # it carries no variables when Connect is not configured.
-          if ! grep -q '^T3CODE_RELAY_CLIENT_OTLP_TRACES_' "$config_path" 2>/dev/null; then
+          # The upload is best-effort against a shared storage quota, so the
+          # file can be missing entirely. Building without relay tracing is the
+          # correct way to degrade, but it is worth surfacing: a silently
+          # untraced production build should not look identical to a healthy one.
+          if [[ ! -f "$config_path" ]]; then
+            echo "::warning::Relay client tracing config artifact unavailable; building without Connect tracing."
+            exit 0
+          fi
+          # Present but carrying no variables when Connect is not configured at
+          # all, which is a supported setup rather than a problem.
+          if ! grep -q '^T3CODE_RELAY_CLIENT_OTLP_TRACES_' "$config_path"; then
             echo "No relay client tracing config; continuing without it." >&2
             exit 0
           fi
