@@ -3962,6 +3962,68 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("restores Prime's own default when a thread switches to Prime Agent Default", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId, model: "openai/first" },
+        });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const failure = yield* adapter
+          .sendTurn({ threadId, input: "hello", modelSelection: { instanceId, model: "default" } })
+          .pipe(Effect.flip);
+
+        // "default" is Pylon's sentinel for letting Prime choose, not a provider/model
+        // selector, so it must never reach setModel as an id.
+        expect(captures.models).not.toContain("default");
+        expect(failure).toMatchObject({
+          operation: "sendTurn",
+          issue: expect.stringContaining("cannot return to its own default model"),
+        });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps running a thread that stays on Prime Agent Default", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId, model: "default" },
+        });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "hello", modelSelection: { instanceId, model: "default" } })
+          .pipe(Effect.forkChild);
+        yield* Queue.take(captures.promptObserved!);
+
+        // Prime already owns the model here, so the same selection is a no-op, not a change.
+        expect(captures.models).toEqual([]);
+
+        yield* Fiber.interrupt(turnFiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("persists a server-private identity behind the opaque v3 cursor", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -114,6 +114,8 @@ import {
 } from "./PrimeAgentSessionIdentity.ts";
 
 const PROVIDER = ProviderDriverKind.make("primeAgent");
+/** Defers to Prime's own configured or restored model instead of forcing one. */
+const PRIME_AGENT_DEFAULT_MODEL = "default";
 const SESSION_STATS_TIMEOUT_MS = 1_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 export const PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS = 3_000;
@@ -2821,6 +2823,20 @@ export function makePrimeAgentDaemonAdapter(
                   operation: "sendTurn",
                   reason: "busy",
                   issue: "Prime Agent cannot start a turn during context compaction.",
+                });
+              }
+              // "default" defers to Prime's own model rather than naming one, and Prime
+              // exposes no daemon method to restore that choice inside a running session.
+              // Reject the switch rather than run the old model behind a default label.
+              if (
+                requestedModel === PRIME_AGENT_DEFAULT_MODEL &&
+                context.session.model !== PRIME_AGENT_DEFAULT_MODEL
+              ) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "sendTurn",
+                  issue:
+                    "Prime Agent cannot return to its own default model in a running session. Start a new thread to use Prime Agent Default.",
                 });
               }
               yield* applyTurnSelection(context, input.threadId, requestedModel, turnControls);
