@@ -1,0 +1,70 @@
+name: CI Mobile Native
+
+# Split out of ci.yml so it can be path-filtered. The job needs a macOS runner
+# for swiftlint, and macOS is the most expensive tier we buy, but the check it
+# runs only ever reads .swift/.kt/.kts under apps/mobile -- roughly four seconds
+# of actual linting behind about forty seconds of runner setup. Filtering on
+# apps/mobile/** would still be wrong: only 3 of the last 40 merged PRs touched
+# native sources, while 18 touched something under apps/mobile, so the broad
+# filter would boot macOS six times more often than the check can do any work.
+on:
+  pull_request:
+    paths:
+      - "apps/mobile/**/*.swift"
+      - "apps/mobile/**/*.kt"
+      - "apps/mobile/**/*.kts"
+      - "apps/mobile/.swiftlint.yml"
+      - "apps/mobile/detekt.yml"
+      - "apps/mobile/.editorconfig"
+      - "apps/mobile/Brewfile"
+      - "scripts/mobile-native-static-check.ts"
+      - ".github/workflows/ci-mobile-native.yml"
+  push:
+    branches:
+      - pylon
+    paths:
+      - "apps/mobile/**/*.swift"
+      - "apps/mobile/**/*.kt"
+      - "apps/mobile/**/*.kts"
+      - "apps/mobile/.swiftlint.yml"
+      - "apps/mobile/detekt.yml"
+      - "apps/mobile/.editorconfig"
+      - "apps/mobile/Brewfile"
+      - "scripts/mobile-native-static-check.ts"
+      - ".github/workflows/ci-mobile-native.yml"
+
+concurrency:
+  group: ci-mobile-native-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  mobile_native_static_analysis:
+    name: Mobile Native Static Analysis
+    runs-on: blacksmith-6vcpu-macos-26
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
+      - name: Install mobile native static analysis tools
+        run: brew bundle install --file apps/mobile/Brewfile
+
+      - name: Lint mobile native sources
+        run: vp run lint:mobile
