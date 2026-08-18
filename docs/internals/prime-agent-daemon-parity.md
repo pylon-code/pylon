@@ -76,6 +76,15 @@ export local file-backed `AuthStorage` and `SettingsManager` SDK APIs, but they 
 methods and require separate ownership, locking, callback, and reload design before Pylon can expose
 them safely.
 
+Returning model choice to Prime's own default belongs on that list. `setModel` demands an explicit
+provider and id, and `AgentConnectionModelCatalog` carries only `models` and `configuredProviders`,
+so a session that has already run on a named model cannot be handed back to Prime's default. Pylon's
+**Prime Agent Default** selection is therefore honored when a session starts and refused mid-session,
+rather than leaving a thread on its previous model behind a default label. Revisit when Prime
+publishes either a session method that restores its own default or an authoritative default id in the
+catalog: either one makes this a real selection, so probe for the capability and apply it in
+`applyTurnSelection`'s caller instead of failing.
+
 When Prime adds a public, reconnect-safe outcome, Pylon should add a capability probe and a typed
 provider-neutral vertical rather than sending raw daemon commands across the client boundary.
 

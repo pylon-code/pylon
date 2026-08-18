@@ -114,6 +114,8 @@ import {
 } from "./PrimeAgentSessionIdentity.ts";
 
 const PROVIDER = ProviderDriverKind.make("primeAgent");
+/** Defers to Prime's own configured or restored model instead of forcing one. */
+const PRIME_AGENT_DEFAULT_MODEL = "default";
 const SESSION_STATS_TIMEOUT_MS = 1_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 export const PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS = 3_000;
@@ -2821,6 +2823,27 @@ export function makePrimeAgentDaemonAdapter(
                   operation: "sendTurn",
                   reason: "busy",
                   issue: "Prime Agent cannot start a turn during context compaction.",
+                });
+              }
+              // "default" defers to Prime's own model rather than naming one, and Prime
+              // exposes no daemon method to restore that choice inside a running session:
+              // `setModel` demands an explicit provider and id, and `getModelCatalog`
+              // returns only models and configuredProviders with no default to re-select.
+              // Reject the switch rather than run the old model behind a default label.
+              //
+              // Revisit when Prime publishes either a session method that returns model
+              // choice to its own default, or an authoritative default id in the catalog.
+              // Either one turns this into a real selection: probe for the capability and
+              // apply it here instead of failing. Tracked in the parity ledger.
+              if (
+                requestedModel === PRIME_AGENT_DEFAULT_MODEL &&
+                context.session.model !== PRIME_AGENT_DEFAULT_MODEL
+              ) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "sendTurn",
+                  issue:
+                    "Prime Agent cannot return to its own default model in a running session. Start a new thread to use Prime Agent Default.",
                 });
               }
               yield* applyTurnSelection(context, input.threadId, requestedModel, turnControls);
