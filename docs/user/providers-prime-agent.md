@@ -71,9 +71,10 @@ in the picker to continue. Threads left on **Prime Agent Default** follow the ne
 instead of failing.
 
 **Prime Agent Default** can only be chosen for a thread that has not already run on a named model.
-Prime Agent exposes no way to hand model choice back to itself inside a running session, so switching
-an existing thread to it reports that the thread must start fresh rather than quietly continuing on
-the model it was already using. Naming a different model in an existing thread still works normally.
+Prime Agent exposes no way to hand model choice back to itself inside a running session, so once a
+conversation is running the picker shows the option as unavailable and points you at a new chat
+instead of quietly continuing on the model it was already using. Naming a different model in an
+existing thread still works normally.
 
 While a daemon-backed turn is working, sending another message steers the same turn. The separate
 **Queue follow-up** action admits the current draft for the next native run instead. Pylon shows only

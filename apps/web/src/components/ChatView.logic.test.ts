@@ -2,6 +2,7 @@ import {
   EnvironmentId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
@@ -312,10 +313,16 @@ describe("getStartedThreadModelChangeBlockReason", () => {
   const providers = [
     {
       instanceId: ProviderInstanceId.make("codex"),
+      driver: ProviderDriverKind.make("codex"),
     },
     {
       instanceId: ProviderInstanceId.make("grok"),
+      driver: ProviderDriverKind.make("grok"),
       requiresNewThreadForModelChange: true,
+    },
+    {
+      instanceId: ProviderInstanceId.make("prime"),
+      driver: ProviderDriverKind.make("primeAgent"),
     },
   ];
 
@@ -348,6 +355,44 @@ describe("getStartedThreadModelChangeBlockReason", () => {
         nextModelSelection: {
           instanceId: ProviderInstanceId.make("grok"),
           model: "grok-build",
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("blocks switching a started Prime Agent thread back to Prime Agent Default", () => {
+    expect(
+      getStartedThreadModelChangeBlockReason({
+        providers,
+        hasStartedSession: true,
+        currentModelSelection: {
+          instanceId: ProviderInstanceId.make("prime"),
+          model: "anthropic/claude-sonnet-4.5",
+        },
+        nextModelSelection: {
+          instanceId: ProviderInstanceId.make("prime"),
+          model: "default",
+        },
+      }),
+    ).toEqual({
+      title: "Start a new chat to use Prime Agent Default",
+      description:
+        "Prime Agent cannot hand model choice back to its own default once a conversation is running.",
+    });
+  });
+
+  it("allows a started Prime Agent thread to keep picking named models", () => {
+    expect(
+      getStartedThreadModelChangeBlockReason({
+        providers,
+        hasStartedSession: true,
+        currentModelSelection: {
+          instanceId: ProviderInstanceId.make("prime"),
+          model: "default",
+        },
+        nextModelSelection: {
+          instanceId: ProviderInstanceId.make("prime"),
+          model: "anthropic/claude-sonnet-4.5",
         },
       }),
     ).toBeNull();
