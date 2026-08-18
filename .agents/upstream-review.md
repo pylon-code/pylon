@@ -1597,11 +1597,24 @@ at runtime rather than by lint alone: **zero** native `title` attributes remain 
 elements in the rendered DOM. `#7077`'s Reviewers row renders above the conversation and the
 Summary/Timeline/Code tabs load.
 
-**Two items were not reachable.** `#7219`'s usage breakdown never finished loading against
-the seeded 334 MB database (the page reported one request waiting longer than 15s), and no
-pull request in reach carried either an approval or an 11-comment thread, so `#6466`'s **Load
-more comments** and `#7077`'s verdict rows were not exercised — which is also why DEF-3's
-visible symptom could not be reproduced live and rests on source reading.
+**`#7219` was verified on a second pass**, once the usage query was given long enough to
+finish against the seeded 334 MB database. The breakdown shows 29 daily rows, Aug 18 back to
+Jul 20; restoring the old `.slice(0, 8)` and reloading with the browser cache disabled drops
+it to 8, ending at Aug 11. Note the first attempt at that negative control reported 29 rows
+for both sides — Vite had reused a warm module graph, so an A/B against a running dev server
+needs the cache disabled to mean anything.
+
+**`#6466`'s Load more comments and `#7077`'s verdict rows remain unexercised.** No repository
+in reach carries a single approved review, GitHub does not allow approving one's own pull
+request, and a disposable clone of `pingdotgg/t3code` added as a project did not surface in
+the pull request list, whose repository discovery did not pick it up.
+
+**That search right-sized DEF-3.** Its symptom needs one review thread longer than ten
+comments, and across upstream's most-reviewed pull requests the largest thread anywhere was
+**five** — `#4849` (100 review comments, largest thread 5), `#7077` (61, 5), `#6466` (24, 3),
+`#7107` (14, 3). The defect is real and the fix stands, since the flag asserts something
+untrue and its reader drops a feature on it, but it fires on unusually long single threads
+rather than on busy pull requests generally.
 
 **Mobile (N7, N8) was not exercised at all.**
 
