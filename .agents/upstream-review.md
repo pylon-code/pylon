@@ -1511,7 +1511,12 @@ included. `pnpm-lock.yaml` is untouched by this batch — no change set adds a d
 | N10        | `13458e651` / `#7296` | adopted  | `05c123968`     | One `mx-0!` class centering the context usage meter's SVG.                                                                                                                                                                                                                                    |
 | N11        | `3723722f7` / `#7364` | adopted  | `1d1851a91`     | Bot cleanup removing a second `expect(only()).toBe(true)`. Verified genuinely redundant — `claimWorkspaceBasenameLookup` returns a pure comparison, so the repeat asserts nothing new. Adopted only to keep the file aligned with upstream and conflict-free later.                           |
 
-### Inherited defects found by review, deferred to a follow-up
+### Inherited defects found by review, fixed in a follow-up
+
+> **Closed.** Both were fixed on `fix/pull-request-quota-followups` the same day,
+> with regression tests that were checked against the unfixed code first. DEF-3
+> and DEF-4 have been retired from the register. The account below is kept
+> because it explains why the batch shipped without them.
 
 An `xhigh` review of the integration branch confirmed all five Pylon-first
 resolutions are clean — including the `BrowserDeviceToolbar` equivalence claim,
@@ -1592,20 +1597,34 @@ at runtime rather than by lint alone: **zero** native `title` attributes remain 
 elements in the rendered DOM. `#7077`'s Reviewers row renders above the conversation and the
 Summary/Timeline/Code tabs load.
 
-**Two items were not reachable.** `#7219`'s usage breakdown never finished loading against
-the seeded 334 MB database (the page reported one request waiting longer than 15s), and no
-pull request in reach carried either an approval or an 11-comment thread, so `#6466`'s **Load
-more comments** and `#7077`'s verdict rows were not exercised — which is also why DEF-3's
-visible symptom could not be reproduced live and rests on source reading.
+**`#7219` was verified on a second pass**, once the usage query was given long enough to
+finish against the seeded 334 MB database. The breakdown shows 29 daily rows, Aug 18 back to
+Jul 20; restoring the old `.slice(0, 8)` and reloading with the browser cache disabled drops
+it to 8, ending at Aug 11. Note the first attempt at that negative control reported 29 rows
+for both sides — Vite had reused a warm module graph, so an A/B against a running dev server
+needs the cache disabled to mean anything.
+
+**`#6466`'s Load more comments and `#7077`'s verdict rows remain unexercised.** No repository
+in reach carries a single approved review, GitHub does not allow approving one's own pull
+request, and a disposable clone of `pingdotgg/t3code` added as a project did not surface in
+the pull request list, whose repository discovery did not pick it up.
+
+**That search right-sized DEF-3.** Its symptom needs one review thread longer than ten
+comments, and across upstream's most-reviewed pull requests the largest thread anywhere was
+**five** — `#4849` (100 review comments, largest thread 5), `#7077` (61, 5), `#6466` (24, 3),
+`#7107` (14, 3). The defect is real and the fix stands, since the flag asserts something
+untrue and its reader drops a feature on it, but it fires on unusually long single threads
+rather than on busy pull requests generally.
 
 **Mobile (N7, N8) was not exercised at all.**
 
 ## Deferred register
 
-_DEF-1 and DEF-2 were adopted on 2026-08-11 (see the sixth batch above). The
-register was empty from then through 2026-08-18, when the batch review added
-DEF-3 and DEF-4 — both inherited upstream defects, not upstream work awaiting a
-decision. Entries are removed once adopted or skipped._
+_The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
+(see the sixth batch above). DEF-3 and DEF-4 were opened and closed on
+2026-08-18: the 2026-08-18 batch review found them, the batch shipped without
+them so the adoption stayed faithful, and `fix/pull-request-quota-followups`
+fixed both the same day. Entries are removed once adopted, skipped, or fixed._
 
 Upstream work that has been reviewed and consciously _not_ adopted yet, with
 the condition that should trigger a fresh look. Entries stay here until they
@@ -1616,7 +1635,5 @@ Every review must read this register before reporting new candidates,
 re-evaluate each `Revisit when` against the current upstream head, and report
 the outcome. See Phase 2.5 of the `review-t3-upstream` skill.
 
-| ID    | Upstream                                      | Deferred on | Revisit when                                                                                                                                                                                                                                                                                                                                                                                                 | Why deferred                                                                                                                                                                                                                                                                                                                                            |
-| ----- | --------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| DEF-3 | `ba46f922a` / `#6466` + `c7e6d711d` / `#7077` | 2026-08-18  | Immediately — this is queued Pylon work, not a wait on upstream. Close it when a Pylon branch narrows GitHub's `truncated` to the thread-list cursor and feeds the full thread to the prompt builder, or when `git log bab4b6f02..t3code-upstream/main -- apps/server/src/pullRequest/GitHubPullRequestCli.ts apps/web/src/components/pullRequest/pullRequestDetail.logic.ts` shows upstream fixed it first. | `truncated` narrowed to "a thread has an 11th reply" while three readers still treat it as "the conversation is short of the host": the approval badge is suppressed, the handoff prompt gains a spurious notice, and the agent receives only a thread's oldest 10 comments. Deferred to keep the adoption PR faithful; see the 2026-08-18 batch notes. |
-| DEF-4 | `ba46f922a` / `#6466`                         | 2026-08-18  | Same follow-up branch as DEF-3. Also re-check on any upstream change to `apps/server/src/sourceControl/githubGraphQlBudget.ts`.                                                                                                                                                                                                                                                                              | `observe` compares GitHub's true `remaining` against a locally-reserved figure, so honest responses are always discarded and the cost estimate only ratchets upward; a failed call leaks its reservation. Fails safe and resets hourly, which is why it is queued rather than blocking.                                                                 |
+| ID  | Upstream | Deferred on | Revisit when | Why deferred |
+| --- | -------- | ----------- | ------------ | ------------ |

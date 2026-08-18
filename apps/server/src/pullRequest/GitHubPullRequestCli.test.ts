@@ -2216,7 +2216,11 @@ layer("GitHubPullRequestCli.layer", (it) => {
         commentCount: 3,
         nextCommentsCursor: "Y3Vyc29yOjI",
       });
-      assert.isTrue(conversation.truncated);
+      // Paged, as the name says, and not truncated: the cursor travels with the thread and the
+      // reader takes the rest whenever they want it. Callers treat the flag as "this is all the
+      // host will give you" and hide the header's approval count on it, which a reply that is
+      // one press away must not cost.
+      assert.isFalse(conversation.truncated);
     }),
   );
 

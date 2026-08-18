@@ -446,13 +446,21 @@ function reviewThreadContext(
       thread.line === null ? "file" : `L${thread.line}${thread.side === "left" ? " (before)" : ""}`,
     // Bot bookkeeping lives in HTML comments and would otherwise eat the length bound before
     // the finding itself got any of it.
+    //
+    // A long thread arrives as its opening replies plus a cursor, and the rest is read only
+    // when someone presses Load more. The agent cannot press it, so a thread that was still
+    // going says so — otherwise the handoff reads as a settled discussion when what it holds
+    // is the start of one, and the resolution is the part that matters.
     text: bounded(
-      thread.comments
-        .flatMap((comment) => {
+      [
+        ...thread.comments.flatMap((comment) => {
           const body = visibleBody(comment.body);
           return body === null ? [] : [`${comment.author?.login ?? "ghost"}: ${body}`];
-        })
-        .join("\n"),
+        }),
+        ...(thread.nextCommentsCursor === undefined
+          ? []
+          : ["(Later replies in this thread were not read.)"]),
+      ].join("\n"),
     ),
     diff: "",
     fenceLanguage: inferReviewCommentFenceLanguage(thread.path),
