@@ -72,7 +72,6 @@ export function ConnectionStatusDot({
   const dot = (
     <button
       type="button"
-      title={tooltipText}
       aria-label={tooltipText}
       className="relative flex size-3.5 shrink-0 cursor-help items-center justify-center rounded-full outline-hidden"
     >

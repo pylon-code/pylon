@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "bab4b6f02b8bdaf15fd32636a97f69ff657cec50"
-reviewed-through-date: "2026-08-16"
+reviewed-through: "82b8a9380298509d68170961d9717be62836e490"
+reviewed-through-date: "2026-08-18"
 ---
 
 # T3 upstream review log
@@ -1431,12 +1431,181 @@ dies with `no such column: continued_from_thread_id`. Pylon's own runtime home,
 40 PinOrderKey sequence. A fresh database built by this branch applied 37–44 cleanly with 36
 retired, so the renumbering holds end to end.
 
+## 2026-08-18 — `bab4b6f02b8bdaf15fd32636a97f69ff657cec50..82b8a9380298509d68170961d9717be62836e490`
+
+Eleven upstream commits, eleven change sets, one PR each. **All eleven adopted** onto
+`upstream/2026-08-18-batch`. `git cherry` reported every one absent from Pylon, so nothing
+was patch-equivalent. The deferred register was empty going in and stays empty.
+
+**N1 (`#6466`) is the most valuable change here and applied without a single conflict.**
+One GitHub pull request detail load was spending 104 GraphQL points: it asked for 100
+replies per review thread, followed every reply cursor, and refreshed every minute. The
+commit adds an Effect cooldown service keyed by provider **plus host**, native rate-limit
+detection for GitHub, GitLab, Bitbucket, and Azure DevOps, a GitHub GraphQL cost budget
+that reserves the last 10% for interactive actions, and 10-reply pagination behind a **Load
+more comments** button. Upstream measured 104 → 14 points on a 44-thread pull request.
+Pylon shipped the multi-provider pull requests page in `9a886cc9d`, so this is quota
+protection for a surface users already have. **Three behavior changes ride along and were
+accepted deliberately:** long threads paginate instead of loading eagerly, live refresh
+slows from 1 minute to 5, and the idle cutoff moves from 5 minutes to 6.
+
+**N3 (`#7209`) carried the only real integration cost.** It adds a
+`t3code/no-native-title-tooltip` oxlint rule at **error** severity and migrates 33 native
+`title` tooltips to `Tooltip`/`TooltipTrigger`/`TooltipPopup`. Because the rule lands at
+error, upstream's migration is not sufficient on its own — the rule also fires on
+Pylon-only surfaces upstream cannot see. Running it found **four sites in one Pylon-only
+file**, `ProviderUsageMatrix.tsx`, fixed in `18fbcc8d5`. Three became styled tooltips; the
+row-label cell carries `whitespace-nowrap` **without** truncation, so its `title` only
+repeated text already fully visible, and it was dropped rather than converted. Predicting
+the violation set by grep was unreliable — a naive scan over-reported by flagging type
+annotations (`<void>`, `<typeof>`) and `title` props on custom components. Running the rule
+is the only trustworthy count.
+
+**N5 (`#7083`) is stacked on N4 (`#7082`)** and its three conflicts against `origin/pylon`
+all evaporated once N4 was applied first: they were only ever "this file does not exist
+yet". Applying strictly in upstream chronological order also made N6 (`#7077`) clean, which
+conflicts on two files when probed on its own because N3 rewrites them first.
+
+Conflicts and adaptations, all resolved Pylon-first:
+
+- **`ServerUpdateAction.tsx`** (N3) — upstream replaced the same span with a plain
+  destructive dot. Kept Pylon's `<DotMatrix state="error">`, took the tooltip wrapper.
+- **`Sidebar.tsx`** (N3) — the "Dismiss Woke notification" pill. Upstream's version carries
+  `text-amber-700 dark:text-amber-300`; Pylon's themed `text-warning` token stays. Only the
+  tooltip was adopted. Verified no amber/warning drift landed elsewhere in the file.
+- **`BrowserDeviceToolbar.tsx`** (N3) — Pylon's aspect-ratio lock button from `#6509`.
+  Upstream's `cn(aspectRatio !== null && …)` guards are constant inside each ternary branch,
+  so they say exactly what Pylon's direct classes say; Pylon's plainer form was kept.
+- **`SettingsPanels.logic.test.ts`** (N4) — both sides append `describe` blocks at the file
+  tail, so the merge misaligned the closing braces. Both blocks kept.
+- **`CodexSessionRuntime.test.ts`** (N5) — branding. Upstream turned the
+  `CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS` constant into
+  `codexDefaultModeDeveloperInstructions(hasBrowserTools)`. Took the function, kept Pylon's
+  `/Pylon/` assertion.
+
+**Two Pylon-first fixes beyond conflict resolution** (`979d9558c`):
+
+1. `#7083` added `NodeAssert.doesNotMatch(instructions, /T3 Code collaborative browser/)`.
+   Pylon renamed that heading to "Pylon collaborative browser" long ago, so the assertion
+   passed **vacuously** — it proved the absence of a string that is never present on any
+   code path. Repointed at Pylon's actual heading, where it now has teeth. Note the sibling
+   `/t3-code/` assertion is correct as-is: that is the MCP **server name**, a compatibility
+   identifier, not product copy.
+2. The new `IntegrationsSettings.tsx` module comment named T3 Code. Rebranded.
+
+`routeTree.gen.ts` is generated, so its diff was checked rather than trusted: the route
+imports in the merged file match the route files on disk exactly, `settings.integrations`
+included. `pnpm-lock.yaml` is untouched by this batch — no change set adds a dependency.
+
+| Change set | Upstream              | Decision | Pylon reference | Rationale or revisit condition                                                                                                                                                                                                                                                                |
+| ---------- | --------------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| N1         | `ba46f922a` / `#6466` | adopted  | `08c8b390d`     | Shared per-provider/host rate-limit cooldown, GitHub GraphQL cost budget reserving the final 10% for user actions, and paginated review-thread replies. 104 → 14 GraphQL points on a 44-thread PR. Clean cherry-pick across 41 files. Contract change: new `pullRequests.threadComments` RPC. |
+| N2         | `82b8a9380` / `#7172` | adopted  | `5f5efc3fa`     | A late `task.progress` carrying no `status` was re-adding an already-idle task to the live set, leaving the sidebar on **Working** with zero live agents. Status-free progress can now refresh a live task but never resurrect a dead one.                                                    |
+| N3         | `fee10def1` / `#7209` | adopted  | `3dde64f61`     | New `no-native-title-tooltip` oxlint rule at error severity plus the migration of 33 sites. Three Pylon conflicts above; four Pylon-only violations fixed separately in `18fbcc8d5`.                                                                                                          |
+| N4         | `949feb61e` / `#7082` | adopted  | `0e3fd4617`     | New **Settings → Integrations** page: default preview viewport, zoom, appearance, and floating-preview auto-show. Renders disabled on web clients because these are desktop-local Chromium preferences — the correct multi-surface call, made upstream.                                       |
+| N5         | `cd096b9ad` / `#7083` | adopted  | `cf36558bd`     | **Agent browser access** toggle, on by default. Withholds the MCP credential in `prepareMcpSession`, the single place one is minted, so one branch covers all five providers. Takes effect on new sessions only; a running agent keeps its credential for up to 24h.                          |
+| N6         | `c7e6d711d` / `#7077` | adopted  | `9f208cab3`     | A review verdict becomes a first-class timeline row with the reviewer's avatar instead of a grey lowercase word inside a collapsed comments group, and the empty markdown block beneath an approval is gone. `COMMENTED`-only reviews still group as conversation.                            |
+| N7         | `cebac353d` / `#7321` | adopted  | `03579737e`     | Mobile rendered structured-input options as label-only chips while web and desktop showed descriptions the contract already carried. Closes a multi-surface gap.                                                                                                                              |
+| N8         | `33a8b07dd` / `#7276` | adopted  | `a6b9659a0`     | `SymbolView` does not redraw when only the SF Symbol name changes, so the Snoozed and Settled shelf chevrons froze at first render pointing opposite directions. Now one `chevron.down` plus a state-driven 180° transform. No continuous animation.                                          |
+| N9         | `a4cc1367b` / `#7219` | adopted  | `c9815194a`     | The usage breakdown table was `.slice(0, 8)` over a window that can hold 90 periods, with nothing on screen saying so. Cap removed, newest first.                                                                                                                                             |
+| N10        | `13458e651` / `#7296` | adopted  | `05c123968`     | One `mx-0!` class centering the context usage meter's SVG.                                                                                                                                                                                                                                    |
+| N11        | `3723722f7` / `#7364` | adopted  | `1d1851a91`     | Bot cleanup removing a second `expect(only()).toBe(true)`. Verified genuinely redundant — `claimWorkspaceBasenameLookup` returns a pure comparison, so the repeat asserts nothing new. Adopted only to keep the file aligned with upstream and conflict-free later.                           |
+
+### Inherited defects found by review, deferred to a follow-up
+
+An `xhigh` review of the integration branch confirmed all five Pylon-first
+resolutions are clean — including the `BrowserDeviceToolbar` equivalence claim,
+which holds: upstream's `cn(aspectRatio !== null && …)` guards are constant
+inside each ternary branch. It also surfaced two defects that arrived **with**
+the upstream commits and exist in upstream `main` too. Both were verified
+against the source and consciously **not** fixed in this batch, so the adoption
+stays faithful and the fixes get their own review. Tracked as DEF-3 and DEF-4.
+
+1. **`#6466` narrowed `truncated` without narrowing what reads it.** Review-thread
+   comments went from `first: 100` plus cursor-following to `first: 10`
+   (`gitHubPullRequestJson.ts:696`), so `truncated`
+   (`GitHubPullRequestCli.ts:1589`) now means "some thread has an 11th reply"
+   rather than "the conversation is short of the host". Three readers were
+   written against the old meaning:
+   - `PullRequestDetailPanel.tsx:1088` gates `approvalCount` on
+     `!detail.commentsTruncated`, so **`#7077`'s approval badge disappears** on
+     any pull request with one long thread. The verdicts it counts come from
+     `gh pr view --json reviews`, which the provider's own comment
+     (`GitHubPullRequestProvider.ts:348`) says is never truncated — the gate
+     keys on a signal unrelated to the data it guards.
+   - `pullRequestDetail.logic.ts:634` appends the truncation notice to the
+     handoff prompt on those same pull requests.
+   - `pullRequestDetail.logic.ts:449` serialises `thread.comments` into the
+     agent prompt, now the **oldest 10** of a thread where it used to be up to 1000. `#6466`'s new paging is UI-only state inside `ReviewThreadCard` and
+     never reaches the prompt builder, so "Fix in a thread" hands the agent the
+     opening of a discussion and not its resolution.
+
+   Note the gate is defensible for GitLab, Bitbucket, and Azure DevOps, whose
+   `commentsTruncated` derives from conversation reads that do carry verdicts —
+   so the fix belongs at GitHub's `truncated`, not at the shared gate.
+
+2. **`#6466`'s GraphQL cost estimate only ratchets upward.** `query` reserves the
+   _previous_ query's cost (`githubGraphQlBudget.ts:96`) and `observe` discards
+   any response whose `remaining` is `>=` the stored value
+   (`githubGraphQlBudget.ts:126`). Reserving always pushes the local figure
+   below GitHub's true remaining, so an honest response always looks "higher"
+   and is thrown away with its `cost`, `limit`, and `remaining`. The estimate
+   updates only when a query costs _more_ than the last, so the 12-point
+   review-threads read poisons every subsequent 1-point read for the window.
+   The out-of-order guard is right in intent; it just compares against a
+   reserved value rather than the last observed one. A failed `gh` call leaks
+   its reservation outright, since `observe` runs only on the success path.
+   Bounded by the hourly reset, and it fails safe — reads pause early rather
+   than quota being overspent.
+
+**One review finding was dismissed.** A task whose first liveness event is a
+status-free `progress` cannot register under `#7172`'s new guard
+(`ThreadBackgroundLiveness.ts:136`). That matches the module's documented
+intent — "After a server restart the registry is empty until new task events
+arrive, which matches reality: orphaned background work is not live" — so it is
+behavior, not a defect.
+
+**One nit accepted.** The `<td>` row label whose `title` was dropped in
+`18fbcc8d5` cannot clip in its own cell, but the table sits inside a
+`w-[min(25rem,calc(100vw-2rem))]` popover with `overflow-clip`, so at three or
+more accounts on a narrow viewport it can be cut off with no tooltip to recover
+it. Low severity; folded into the DEF-3/DEF-4 follow-up if convenient.
+
+### Verification
+
+Typecheck clean across `contracts`, `shared`, `client-runtime`, `web`, `desktop`, `server`
+(exit 0; remaining output is pre-existing Effect `suggestion` diagnostics) and `mobile`
+separately. Targeted tests: **server 35 files / 707 tests**, **web 32 files / 245 tests**,
+**desktop 1 / 7**, **oxlint plugin 1 / 11** — all passing. `vp lint` over the touched trees
+reports **0 errors**; `vp fmt --check` clean over 2595 files.
+
+One new lint warning arrived with N5 and was removed in `4719407a6`: `#7083` imports
+`EnvironmentId` into `ProviderService.test.ts` without using it. Confirmed dead upstream too,
+so it is worth reporting rather than a merge artifact.
+
+**Browser pass**, against the branch with a database seeded from `~/.pylon-code` and live
+GitHub data. Confirmed: the new **Settings → Integrations** page lists in the nav, with
+`#7083`'s **Agent browser access** enabled and `#7082`'s four client-local defaults dimmed
+as one block reading "Only available in the desktop app." — the intended split, since one is
+a `ServerSetting` and the others are desktop-local Chromium preferences. `#7209` was checked
+at runtime rather than by lint alone: **zero** native `title` attributes remain on intrinsic
+elements in the rendered DOM. `#7077`'s Reviewers row renders above the conversation and the
+Summary/Timeline/Code tabs load.
+
+**Two items were not reachable.** `#7219`'s usage breakdown never finished loading against
+the seeded 334 MB database (the page reported one request waiting longer than 15s), and no
+pull request in reach carried either an approval or an 11-comment thread, so `#6466`'s **Load
+more comments** and `#7077`'s verdict rows were not exercised — which is also why DEF-3's
+visible symptom could not be reproduced live and rests on source reading.
+
+**Mobile (N7, N8) was not exercised at all.**
+
 ## Deferred register
 
-_The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
-(see the sixth batch above); every batch since, through 2026-08-16, deferred
-nothing new. Entries are removed once adopted or skipped, so an
-empty register means nothing is waiting._
+_DEF-1 and DEF-2 were adopted on 2026-08-11 (see the sixth batch above). The
+register was empty from then through 2026-08-18, when the batch review added
+DEF-3 and DEF-4 — both inherited upstream defects, not upstream work awaiting a
+decision. Entries are removed once adopted or skipped._
 
 Upstream work that has been reviewed and consciously _not_ adopted yet, with
 the condition that should trigger a fresh look. Entries stay here until they
@@ -1447,5 +1616,7 @@ Every review must read this register before reporting new candidates,
 re-evaluate each `Revisit when` against the current upstream head, and report
 the outcome. See Phase 2.5 of the `review-t3-upstream` skill.
 
-| ID  | Upstream | Deferred on | Revisit when | Why deferred |
-| --- | -------- | ----------- | ------------ | ------------ |
+| ID    | Upstream                                      | Deferred on | Revisit when                                                                                                                                                                                                                                                                                                                                                                                                 | Why deferred                                                                                                                                                                                                                                                                                                                                            |
+| ----- | --------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DEF-3 | `ba46f922a` / `#6466` + `c7e6d711d` / `#7077` | 2026-08-18  | Immediately — this is queued Pylon work, not a wait on upstream. Close it when a Pylon branch narrows GitHub's `truncated` to the thread-list cursor and feeds the full thread to the prompt builder, or when `git log bab4b6f02..t3code-upstream/main -- apps/server/src/pullRequest/GitHubPullRequestCli.ts apps/web/src/components/pullRequest/pullRequestDetail.logic.ts` shows upstream fixed it first. | `truncated` narrowed to "a thread has an 11th reply" while three readers still treat it as "the conversation is short of the host": the approval badge is suppressed, the handoff prompt gains a spurious notice, and the agent receives only a thread's oldest 10 comments. Deferred to keep the adoption PR faithful; see the 2026-08-18 batch notes. |
+| DEF-4 | `ba46f922a` / `#6466`                         | 2026-08-18  | Same follow-up branch as DEF-3. Also re-check on any upstream change to `apps/server/src/sourceControl/githubGraphQlBudget.ts`.                                                                                                                                                                                                                                                                              | `observe` compares GitHub's true `remaining` against a locally-reserved figure, so honest responses are always discarded and the cost estimate only ratchets upward; a failed call leaks its reservation. Fails safe and resets hourly, which is why it is queued rather than blocking.                                                                 |
