@@ -1,3 +1,4 @@
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
 import { getTimestampFormatOptions, parseTimestampDate } from "~/timestampFormat";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
@@ -46,13 +47,17 @@ function UsageCell({
 }) {
   if (cell.usedPercent === undefined) {
     return (
-      <div
-        title={`${label} is not reported for this account`}
-        aria-label={`${label}: not reported`}
-      >
-        <span className="text-sm text-muted-foreground/40">—</span>
-        <div className="mt-1.5 h-1 w-full rounded-full bg-muted/40" />
-      </div>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <div aria-label={`${label}: not reported`}>
+              <span className="text-sm text-muted-foreground/40">—</span>
+              <div className="mt-1.5 h-1 w-full rounded-full bg-muted/40" />
+            </div>
+          }
+        />
+        <TooltipPopup>{`${label} is not reported for this account`}</TooltipPopup>
+      </Tooltip>
     );
   }
 
@@ -161,17 +166,23 @@ export function ProviderUsageMatrix({
                   />
                   {/* Only the thread's account holds full contrast. Weight alone
                       cannot carry this when both names are foreground. */}
-                  <span
-                    className={cn(
-                      "min-w-0 max-w-28 truncate text-xs",
-                      account.isActive
-                        ? "font-semibold text-foreground"
-                        : "font-medium text-muted-foreground",
-                    )}
-                    title={account.displayName}
-                  >
-                    {account.displayName}
-                  </span>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <span
+                          className={cn(
+                            "min-w-0 max-w-28 truncate text-xs",
+                            account.isActive
+                              ? "font-semibold text-foreground"
+                              : "font-medium text-muted-foreground",
+                          )}
+                        >
+                          {account.displayName}
+                        </span>
+                      }
+                    />
+                    <TooltipPopup>{account.displayName}</TooltipPopup>
+                  </Tooltip>
                 </span>
                 {/* Indented past the marker so the status hangs under the name
                     rather than under the dot. Kept even though the tint says the
@@ -192,12 +203,16 @@ export function ProviderUsageMatrix({
                   // Terse because the column is only as wide as an account
                   // name: "checked 7m ago" wraps here and pushes the whole card
                   // taller. The full phrasing lives in the tooltip.
-                  <span
-                    className="block ps-3 text-[10px] font-normal whitespace-nowrap text-muted-foreground/50"
-                    title={`Last successful reading ${age} ago`}
-                  >
-                    {age} old
-                  </span>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <span className="block ps-3 text-[10px] font-normal whitespace-nowrap text-muted-foreground/50">
+                          {age} old
+                        </span>
+                      }
+                    />
+                    <TooltipPopup>{`Last successful reading ${age} ago`}</TooltipPopup>
+                  </Tooltip>
                 ) : null}
               </th>
             );
@@ -207,10 +222,7 @@ export function ProviderUsageMatrix({
       <tbody>
         {matrix.rows.map((row, rowIndex) => (
           <tr key={row.label} className="border-b border-border/50 last:border-0">
-            <td
-              className="py-2.5 pr-2 align-top text-xs whitespace-nowrap text-muted-foreground"
-              title={row.label}
-            >
+            <td className="py-2.5 pr-2 align-top text-xs whitespace-nowrap text-muted-foreground">
               {row.label}
             </td>
             {row.cells.map((cell, index) => {
