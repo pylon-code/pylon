@@ -3094,7 +3094,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       const method = yield* requireMethod("set-model", connection!.setModel);
       const output = yield* Effect.tryPromise({
         try: () => method.call(connection, selected.provider, selected.modelId),
-        catch: () => runtimeError("set-model", "request-failed", "The daemon model switch failed."),
+        catch: () =>
+          runtimeError(
+            "set-model",
+            "request-failed",
+            // A Prime release can drop a model id from its catalog, which rejects a
+            // durable Pylon selection here rather than at discovery. Name that cause
+            // without copying Prime's native error text across the boundary.
+            "Prime Agent rejected the selected model. It may no longer exist in Prime Agent's catalog; select another model.",
+          ),
       });
       const decoded = decodeModel(output);
       if (Option.isNone(decoded)) {

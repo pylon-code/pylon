@@ -159,6 +159,7 @@ function fixture(options?: {
   readonly omitRefine?: boolean;
   readonly abortCompactionImpl?: () => Promise<unknown>;
   readonly setAutoCompactionImpl?: (enabled: boolean) => Promise<unknown>;
+  readonly setModelImpl?: (provider: string, modelId: string) => Promise<unknown>;
 }) {
   const captures: Captures = {
     order: [],
@@ -412,6 +413,7 @@ function fixture(options?: {
     }
     setModel(provider: string, modelId: string): Promise<unknown> {
       captures.connectionCalls.push({ method: "setModel", args: [provider, modelId] });
+      if (options?.setModelImpl) return options.setModelImpl(provider, modelId);
       return Promise.resolve({
         provider,
         id: modelId,
@@ -1691,6 +1693,25 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
             ["getSessionStats", []],
           ].map(([method, args]) => ({ method, args })),
         );
+      }),
+    ),
+  );
+
+  it.effect("reports a rejected model selection without leaking Prime's native error", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // A Prime release can drop a model id the thread still selects durably.
+        const { make } = fixture({
+          setModelImpl: () =>
+            Promise.reject(new Error("unknown model cerebras/zai-glm-4.7 at /native/secret/path")),
+        });
+        const runtime = yield* make();
+
+        const error = yield* runtime.setModel("cerebras/zai-glm-4.7").pipe(Effect.flip);
+
+        expect(error).toMatchObject({ operation: "set-model", reason: "request-failed" });
+        expect(error.detail).toContain("no longer exist in Prime Agent's catalog");
+        expect(error.detail).not.toContain("/native/secret/path");
       }),
     ),
   );
