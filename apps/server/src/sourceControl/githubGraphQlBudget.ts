@@ -13,7 +13,19 @@ const RATE_LIMIT_SELECTION = "rateLimit { cost limit remaining resetAt }";
 interface GraphQlBudgetSnapshot {
   readonly cost: number;
   readonly limit: number;
+  /**
+   * What is left after subtracting the reads issued since the last answer. Reserving keeps
+   * concurrent reads from each spending the same points, so this runs below what GitHub last
+   * said and is the figure the pause is judged against.
+   */
   readonly remaining: number;
+  /**
+   * The last figure GitHub itself reported, untouched by reservations. Staleness is judged
+   * against this and not against `remaining`: a reservation always pushes `remaining` below
+   * the truth, so comparing an honest answer with it would read as "quota went up" and throw
+   * the answer away.
+   */
+  readonly observedRemaining: number;
   readonly resetAtMs: number;
 }
 
@@ -59,7 +71,9 @@ function snapshotFrom(raw: string): GraphQlBudgetSnapshot | null {
       return null;
     }
     const resetAtMs = Date.parse(resetAt);
-    return Number.isFinite(resetAtMs) ? { cost, limit, remaining, resetAtMs } : null;
+    return Number.isFinite(resetAtMs)
+      ? { cost, limit, remaining, observedRemaining: remaining, resetAtMs }
+      : null;
   } catch {
     return null;
   }
@@ -125,7 +139,8 @@ export const make = Effect.gen(function* () {
       if (
         previous !== undefined &&
         (snapshot.resetAtMs < previous.resetAtMs ||
-          (snapshot.resetAtMs === previous.resetAtMs && snapshot.remaining >= previous.remaining))
+          (snapshot.resetAtMs === previous.resetAtMs &&
+            snapshot.remaining >= previous.observedRemaining))
       ) {
         return current;
       }

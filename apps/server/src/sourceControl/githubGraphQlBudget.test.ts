@@ -18,6 +18,13 @@ function rateLimit(remaining: number, limit = 5_000, resetAt = RESET_AT): string
   });
 }
 
+/** The same answer with its price named, for the tests that turn on how much a read cost. */
+function rateLimitCosting(cost: number, remaining: number, limit = 5_000): string {
+  return JSON.stringify({
+    data: { rateLimit: { cost, limit, remaining, resetAt: RESET_AT } },
+  });
+}
+
 describe("GitHub GraphQL budget", () => {
   it.effect("adds rate metadata to a read query", () =>
     Effect.gen(function* () {
@@ -157,6 +164,55 @@ describe("GitHub GraphQL budget", () => {
         _tag: "SourceControlRateLimitPausedError",
         retryAt: Date.parse(RESET_AT),
       });
+    }).pipe(Effect.provide(GitHubGraphQlBudget.layer)),
+  );
+
+  // The reserve is deducted from what GitHub last said, so an honest answer always looks
+  // higher than the running figure. Judging staleness against it discarded every truthful
+  // response, leaving the estimate to climb only when a read cost more than the one before —
+  // one 100-point read then priced every 1-point read at 100 for the rest of the window.
+  it.effect("takes a cheaper answer that lands above the reserved figure", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(BEFORE_RESET);
+      const budget = yield* GitHubGraphQlBudget.GitHubGraphQlBudget;
+      yield* budget.observe("github.com", rateLimitCosting(100, 600));
+
+      // Reserves 100 against 600, which leaves exactly the floor.
+      expect(yield* budget.query("github.com", "query { viewer { login } }")).toContain(
+        "rateLimit",
+      );
+      // GitHub spent one point, not another hundred. 599 is above the reserved 500 and below
+      // the 600 it last reported, so it is news and not an answer that arrived out of order.
+      yield* budget.observe("github.com", rateLimitCosting(1, 599));
+
+      expect(yield* budget.query("github.com", "query { viewer { login } }")).toContain(
+        "rateLimit",
+      );
+    }).pipe(Effect.provide(GitHubGraphQlBudget.layer)),
+  );
+
+  // A read that never answers — a network flap, a `gh` failure — keeps its reserve, because
+  // only the success path observes. The next answer carries the host's own figure, so it puts
+  // the estimate back rather than leaving the leak to accumulate until the window resets.
+  it.effect("clears reserves left behind by reads that never answered", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(BEFORE_RESET);
+      const budget = yield* GitHubGraphQlBudget.GitHubGraphQlBudget;
+      yield* budget.observe("github.com", rateLimitCosting(100, 900));
+
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        expect(yield* budget.query("github.com", "query { viewer { login } }")).toContain(
+          "rateLimit",
+        );
+      }
+      // Four reserves took the estimate to the floor while GitHub barely moved.
+      yield* Effect.flip(budget.query("github.com", "query { viewer { login } }"));
+
+      yield* budget.observe("github.com", rateLimitCosting(1, 899));
+
+      expect(yield* budget.query("github.com", "query { viewer { login } }")).toContain(
+        "rateLimit",
+      );
     }).pipe(Effect.provide(GitHubGraphQlBudget.layer)),
   );
 
