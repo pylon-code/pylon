@@ -2826,8 +2826,15 @@ export function makePrimeAgentDaemonAdapter(
                 });
               }
               // "default" defers to Prime's own model rather than naming one, and Prime
-              // exposes no daemon method to restore that choice inside a running session.
+              // exposes no daemon method to restore that choice inside a running session:
+              // `setModel` demands an explicit provider and id, and `getModelCatalog`
+              // returns only models and configuredProviders with no default to re-select.
               // Reject the switch rather than run the old model behind a default label.
+              //
+              // Revisit when Prime publishes either a session method that returns model
+              // choice to its own default, or an authoritative default id in the catalog.
+              // Either one turns this into a real selection: probe for the capability and
+              // apply it here instead of failing. Tracked in the parity ledger.
               if (
                 requestedModel === PRIME_AGENT_DEFAULT_MODEL &&
                 context.session.model !== PRIME_AGENT_DEFAULT_MODEL
