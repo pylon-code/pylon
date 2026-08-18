@@ -4,16 +4,16 @@ import { ProjectFavicon } from "./ProjectFavicon";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 import { cn } from "~/lib/utils";
 
-const META_ICON_CLASS = "size-3 shrink-0 text-muted-foreground/70";
+export const COMMAND_PALETTE_META_ICON_CLASS = "size-3 shrink-0 text-muted-foreground/70";
 
-function Dot() {
+export function CommandPaletteMetaDot() {
   return <span className="shrink-0 text-muted-foreground/50">·</span>;
 }
 
 /** A worktree reads as a checkout of its own; anything else is the project directory. */
 function WorkspaceIcon(props: { isWorktree: boolean }) {
   const Icon = props.isWorktree ? FolderGit2Icon : FolderIcon;
-  return <Icon className={META_ICON_CLASS} aria-hidden />;
+  return <Icon className={COMMAND_PALETTE_META_ICON_CLASS} aria-hidden />;
 }
 
 export function ThreadCommandSubtitle(props: {
@@ -61,7 +61,7 @@ export function ThreadCommandSubtitle(props: {
 
       {branchLabel ? (
         <>
-          {projectLabel ? <Dot /> : null}
+          {projectLabel ? <CommandPaletteMetaDot /> : null}
           <span className="inline-flex min-w-0 items-center gap-1">
             <WorkspaceIcon isWorktree={isWorktree} />
             <span className="min-w-0 truncate">{branchLabel}</span>
@@ -71,7 +71,7 @@ export function ThreadCommandSubtitle(props: {
 
       {showHarness && props.driverKind ? (
         <>
-          {projectLabel || branchLabel ? <Dot /> : null}
+          {projectLabel || branchLabel ? <CommandPaletteMetaDot /> : null}
           <ProviderInstanceIcon
             driverKind={props.driverKind}
             displayName={props.providerDisplayName ?? props.driverKind}
@@ -82,7 +82,7 @@ export function ThreadCommandSubtitle(props: {
 
       {props.isCurrent ? (
         <>
-          {projectLabel || branchLabel || showHarness ? <Dot /> : null}
+          {projectLabel || branchLabel || showHarness ? <CommandPaletteMetaDot /> : null}
           <span className="shrink-0">Current thread</span>
         </>
       ) : null}
