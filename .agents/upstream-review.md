@@ -1511,6 +1511,66 @@ included. `pnpm-lock.yaml` is untouched by this batch — no change set adds a d
 | N10        | `13458e651` / `#7296` | adopted  | `05c123968`     | One `mx-0!` class centering the context usage meter's SVG.                                                                                                                                                                                                                                    |
 | N11        | `3723722f7` / `#7364` | adopted  | `1d1851a91`     | Bot cleanup removing a second `expect(only()).toBe(true)`. Verified genuinely redundant — `claimWorkspaceBasenameLookup` returns a pure comparison, so the repeat asserts nothing new. Adopted only to keep the file aligned with upstream and conflict-free later.                           |
 
+### Inherited defects found by review, deferred to a follow-up
+
+An `xhigh` review of the integration branch confirmed all five Pylon-first
+resolutions are clean — including the `BrowserDeviceToolbar` equivalence claim,
+which holds: upstream's `cn(aspectRatio !== null && …)` guards are constant
+inside each ternary branch. It also surfaced two defects that arrived **with**
+the upstream commits and exist in upstream `main` too. Both were verified
+against the source and consciously **not** fixed in this batch, so the adoption
+stays faithful and the fixes get their own review. Tracked as DEF-3 and DEF-4.
+
+1. **`#6466` narrowed `truncated` without narrowing what reads it.** Review-thread
+   comments went from `first: 100` plus cursor-following to `first: 10`
+   (`gitHubPullRequestJson.ts:696`), so `truncated`
+   (`GitHubPullRequestCli.ts:1589`) now means "some thread has an 11th reply"
+   rather than "the conversation is short of the host". Three readers were
+   written against the old meaning:
+   - `PullRequestDetailPanel.tsx:1088` gates `approvalCount` on
+     `!detail.commentsTruncated`, so **`#7077`'s approval badge disappears** on
+     any pull request with one long thread. The verdicts it counts come from
+     `gh pr view --json reviews`, which the provider's own comment
+     (`GitHubPullRequestProvider.ts:348`) says is never truncated — the gate
+     keys on a signal unrelated to the data it guards.
+   - `pullRequestDetail.logic.ts:634` appends the truncation notice to the
+     handoff prompt on those same pull requests.
+   - `pullRequestDetail.logic.ts:449` serialises `thread.comments` into the
+     agent prompt, now the **oldest 10** of a thread where it used to be up to 1000. `#6466`'s new paging is UI-only state inside `ReviewThreadCard` and
+     never reaches the prompt builder, so "Fix in a thread" hands the agent the
+     opening of a discussion and not its resolution.
+
+   Note the gate is defensible for GitLab, Bitbucket, and Azure DevOps, whose
+   `commentsTruncated` derives from conversation reads that do carry verdicts —
+   so the fix belongs at GitHub's `truncated`, not at the shared gate.
+
+2. **`#6466`'s GraphQL cost estimate only ratchets upward.** `query` reserves the
+   _previous_ query's cost (`githubGraphQlBudget.ts:96`) and `observe` discards
+   any response whose `remaining` is `>=` the stored value
+   (`githubGraphQlBudget.ts:126`). Reserving always pushes the local figure
+   below GitHub's true remaining, so an honest response always looks "higher"
+   and is thrown away with its `cost`, `limit`, and `remaining`. The estimate
+   updates only when a query costs _more_ than the last, so the 12-point
+   review-threads read poisons every subsequent 1-point read for the window.
+   The out-of-order guard is right in intent; it just compares against a
+   reserved value rather than the last observed one. A failed `gh` call leaks
+   its reservation outright, since `observe` runs only on the success path.
+   Bounded by the hourly reset, and it fails safe — reads pause early rather
+   than quota being overspent.
+
+**One review finding was dismissed.** A task whose first liveness event is a
+status-free `progress` cannot register under `#7172`'s new guard
+(`ThreadBackgroundLiveness.ts:136`). That matches the module's documented
+intent — "After a server restart the registry is empty until new task events
+arrive, which matches reality: orphaned background work is not live" — so it is
+behavior, not a defect.
+
+**One nit accepted.** The `<td>` row label whose `title` was dropped in
+`18fbcc8d5` cannot clip in its own cell, but the table sits inside a
+`w-[min(25rem,calc(100vw-2rem))]` popover with `overflow-clip`, so at three or
+more accounts on a narrow viewport it can be cut off with no tooltip to recover
+it. Low severity; folded into the DEF-3/DEF-4 follow-up if convenient.
+
 ### Verification
 
 Typecheck clean across `contracts`, `shared`, `client-runtime`, `web`, `desktop`, `server`
@@ -1523,17 +1583,29 @@ One new lint warning arrived with N5 and was removed in `4719407a6`: `#7083` imp
 `EnvironmentId` into `ProviderService.test.ts` without using it. Confirmed dead upstream too,
 so it is worth reporting rather than a merge artifact.
 
-**Not verified in a real client.** This batch was integrated and checked statically only. The
-user-visible surfaces that would most repay a pass are the new Settings → Integrations panel
-(N4/N5), the pull request detail (N1's Load more comments and N6's verdict rows), and the two
-mobile changes (N7, N8).
+**Browser pass**, against the branch with a database seeded from `~/.pylon-code` and live
+GitHub data. Confirmed: the new **Settings → Integrations** page lists in the nav, with
+`#7083`'s **Agent browser access** enabled and `#7082`'s four client-local defaults dimmed
+as one block reading "Only available in the desktop app." — the intended split, since one is
+a `ServerSetting` and the others are desktop-local Chromium preferences. `#7209` was checked
+at runtime rather than by lint alone: **zero** native `title` attributes remain on intrinsic
+elements in the rendered DOM. `#7077`'s Reviewers row renders above the conversation and the
+Summary/Timeline/Code tabs load.
+
+**Two items were not reachable.** `#7219`'s usage breakdown never finished loading against
+the seeded 334 MB database (the page reported one request waiting longer than 15s), and no
+pull request in reach carried either an approval or an 11-comment thread, so `#6466`'s **Load
+more comments** and `#7077`'s verdict rows were not exercised — which is also why DEF-3's
+visible symptom could not be reproduced live and rests on source reading.
+
+**Mobile (N7, N8) was not exercised at all.**
 
 ## Deferred register
 
-_The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
-(see the sixth batch above); every batch since, through 2026-08-18, deferred
-nothing new. Entries are removed once adopted or skipped, so an
-empty register means nothing is waiting._
+_DEF-1 and DEF-2 were adopted on 2026-08-11 (see the sixth batch above). The
+register was empty from then through 2026-08-18, when the batch review added
+DEF-3 and DEF-4 — both inherited upstream defects, not upstream work awaiting a
+decision. Entries are removed once adopted or skipped._
 
 Upstream work that has been reviewed and consciously _not_ adopted yet, with
 the condition that should trigger a fresh look. Entries stay here until they
@@ -1544,5 +1616,7 @@ Every review must read this register before reporting new candidates,
 re-evaluate each `Revisit when` against the current upstream head, and report
 the outcome. See Phase 2.5 of the `review-t3-upstream` skill.
 
-| ID  | Upstream | Deferred on | Revisit when | Why deferred |
-| --- | -------- | ----------- | ------------ | ------------ |
+| ID    | Upstream                                      | Deferred on | Revisit when                                                                                                                                                                                                                                                                                                                                                                                                 | Why deferred                                                                                                                                                                                                                                                                                                                                            |
+| ----- | --------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DEF-3 | `ba46f922a` / `#6466` + `c7e6d711d` / `#7077` | 2026-08-18  | Immediately — this is queued Pylon work, not a wait on upstream. Close it when a Pylon branch narrows GitHub's `truncated` to the thread-list cursor and feeds the full thread to the prompt builder, or when `git log bab4b6f02..t3code-upstream/main -- apps/server/src/pullRequest/GitHubPullRequestCli.ts apps/web/src/components/pullRequest/pullRequestDetail.logic.ts` shows upstream fixed it first. | `truncated` narrowed to "a thread has an 11th reply" while three readers still treat it as "the conversation is short of the host": the approval badge is suppressed, the handoff prompt gains a spurious notice, and the agent receives only a thread's oldest 10 comments. Deferred to keep the adoption PR faithful; see the 2026-08-18 batch notes. |
+| DEF-4 | `ba46f922a` / `#6466`                         | 2026-08-18  | Same follow-up branch as DEF-3. Also re-check on any upstream change to `apps/server/src/sourceControl/githubGraphQlBudget.ts`.                                                                                                                                                                                                                                                                              | `observe` compares GitHub's true `remaining` against a locally-reserved figure, so honest responses are always discarded and the cost estimate only ratchets upward; a failed call leaks its reservation. Fails safe and resets hourly, which is why it is queued rather than blocking.                                                                 |
