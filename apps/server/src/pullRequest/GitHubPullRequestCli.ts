@@ -1586,7 +1586,11 @@ export const make = Effect.gen(function* () {
           // GitHub's own count of each thread, so the number the page shows is the host's even
           // where a bound kept some of the words on GitHub.
           commentCount: entries.reduce((total, entry) => total + entry.commentCount, 0),
-          truncated: cursor !== null || entries.some((entry) => entry.nextCommentCursor !== null),
+          // Only the thread walk itself. A thread whose replies stop short carries its cursor
+          // to the client, which reads the rest on demand, so it is paged and not truncated —
+          // and readers of this flag drop a whole feature when it is set (the header's approval
+          // count goes away), which a reachable reply must not cost.
+          truncated: cursor !== null,
           reactions,
           reactionsById,
           reviewers,

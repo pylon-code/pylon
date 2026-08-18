@@ -782,6 +782,33 @@ describe("one finding handed over on its own", () => {
     expect(handoff.prompt).not.toContain("rename the helper");
   });
 
+  it("says so when the thread was still going past what was read", () => {
+    // Replies past the first page arrive only when someone presses Load more, and an agent
+    // cannot. Handing over the opening of an argument as though it were the whole of one hides
+    // exactly the part that settled it.
+    const handoff = buildFixFindingHandoff({
+      ...base,
+      finding: {
+        kind: "thread",
+        thread: { ...reviewThread, nextCommentsCursor: "Y3Vyc29yOjI" },
+      },
+    });
+
+    expect(handoff.reviewComments[0]?.text).toContain("reviewer: rename the helper");
+    expect(handoff.reviewComments[0]?.text).toContain(
+      "(Later replies in this thread were not read.)",
+    );
+  });
+
+  it("says nothing of the kind about a thread that was read whole", () => {
+    const handoff = buildFixFindingHandoff({
+      ...base,
+      finding: { kind: "thread", thread: reviewThread },
+    });
+
+    expect(handoff.reviewComments[0]?.text).toBe("reviewer: rename the helper");
+  });
+
   it("quotes a review remark, which has no line to attach it to", () => {
     const handoff = buildFixFindingHandoff({
       ...base,
