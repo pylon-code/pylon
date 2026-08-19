@@ -5,7 +5,7 @@ import {
   SettingsIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { memo, useCallback } from "react";
+import { memo, useCallback, useId } from "react";
 import { Link, useCanGoBack, useLocation, useNavigate } from "@tanstack/react-router";
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
@@ -204,7 +204,6 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   // The footer's Usage entry becomes the way back out of the page it opened,
   // so a full-page route is never a one-way door. History is preferred over a
   // hardcoded route so Back returns to the thread the user actually came from.
-  const canGoBack = useCanGoBack();
   const handleBackClick = useCallback(() => {
     closeMobileSidebar();
     if (canGoBack) {
