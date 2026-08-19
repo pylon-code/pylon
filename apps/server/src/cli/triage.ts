@@ -169,7 +169,7 @@ export const triageCommand = Command.make("triage", {
   model: modelFlag,
 }).pipe(
   Command.withDescription(
-    "Investigate a T3 Code problem on this machine with claude or codex, and help file a good issue.",
+    "Investigate a Pylon problem on this machine with claude or codex, and help file a good issue.",
   ),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
@@ -182,6 +182,14 @@ export const triageCommand = Command.make("triage", {
       const explicitBaseDir = Option.getOrUndefined(flags.baseDir);
       const envHome = yield* Config.string("T3CODE_HOME").pipe(Config.option);
       const baseDir = yield* resolveBaseDir(explicitBaseDir ?? Option.getOrUndefined(envHome));
+      // Unset by default. `pylon-code/pylon` is private, so pointing triage at
+      // it would send users to a tracker they cannot open; inheriting T3's
+      // would file Pylon bugs in someone else's. Set this to a repository you
+      // want triage issues in, for example https://github.com/you/pylon-issues.
+      const repository = yield* Config.string("PYLON_TRIAGE_REPOSITORY").pipe(
+        Config.option,
+        Config.map(Option.getOrNull),
+      );
       const paths = yield* ServerConfig.deriveServerPaths(baseDir, undefined, {});
 
       const now = yield* DateTime.now;
@@ -203,6 +211,7 @@ export const triageCommand = Command.make("triage", {
           releaseTag: version.includes("-nightly.")
             ? `v${version} (nightly build; if this tag does not exist, clone main)`
             : `v${version}`,
+          repository,
           os: `${yield* HostProcessPlatform} ${yield* HostProcessArchitecture} (${NodeOS.release()})`,
           nodeVersion: process.version,
           launchedAs: yield* resolveCliCommand("triage"),
