@@ -195,11 +195,9 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   }, [closeMobileSidebar, navigate]);
 
   const handleUsageClick = useCallback(() => {
-    if (isMobile) {
-      setOpenMobile(false);
-    }
+    closeMobileSidebar();
     void navigate({ to: "/usage" });
-  }, [isMobile, navigate, setOpenMobile]);
+  }, [closeMobileSidebar, navigate]);
 
   // The footer's Usage entry becomes the way back out of the page it opened,
   // so a full-page route is never a one-way door. History is preferred over a

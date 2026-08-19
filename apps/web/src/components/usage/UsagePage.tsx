@@ -225,7 +225,13 @@ export function UsagePage() {
                       </span>
                     </div>
 
-                    {PROVIDER_ORDER.map((provider) => {
+                    {/* Only providers the user has actually used. Pylon ships
+                        Cursor, Grok, and OpenCode disabled by default, so
+                        iterating PROVIDER_ORDER buries the one real row under
+                        four "0 sessions · $0.00" rows for most installs. */}
+                    {PROVIDER_ORDER.filter((provider) =>
+                      merged.providers.some((entry) => entry.provider === provider),
+                    ).map((provider) => {
                       const totals = merged.providers.find((entry) => entry.provider === provider);
                       const share =
                         metric === "cost" ? (totals?.costShare ?? 0) : (totals?.tokenShare ?? 0);
