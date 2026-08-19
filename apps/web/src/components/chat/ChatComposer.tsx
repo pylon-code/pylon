@@ -1606,16 +1606,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const selectedPromptEffort = composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
+  // Plan mode is legacy and off by default. Gating here covers both entry
+  // points, because the /plan and /default slash commands are derived from
+  // this same flag. ChatView forces the effective mode back to "default" while
+  // it is off, so hiding the toggle cannot strand a thread in plan mode.
+  const planModeUiEnabled = settings.planModeEnabled;
   const composerProviderControls = useMemo(
     () => ({
       showInteractionModeToggle:
-        selectedProviderEntry?.snapshot.showInteractionModeToggle ??
-        getProviderInteractionModeToggle(providerStatuses, selectedProvider),
+        planModeUiEnabled &&
+        (selectedProviderEntry?.snapshot.showInteractionModeToggle ??
+          getProviderInteractionModeToggle(providerStatuses, selectedProvider)),
       supportedRuntimeModes: getServerProviderSupportedRuntimeModes(
         selectedProviderEntry?.snapshot,
       ),
     }),
-    [providerStatuses, selectedProvider, selectedProviderEntry],
+    [planModeUiEnabled, providerStatuses, selectedProvider, selectedProviderEntry],
   );
   const resolvedRuntimeMode = resolveServerProviderRuntimeMode(
     selectedProviderEntry?.snapshot,
