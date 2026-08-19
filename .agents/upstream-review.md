@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "f2d5fc91e3030e5c3956fdadc13e1eaa25bcabe3"
+reviewed-through: "a850895f6833b99d90fc6c50192b5eaa4966d5c7"
 reviewed-through-date: "2026-08-19"
 ---
 
@@ -1754,6 +1754,90 @@ Validation:
   actually run rather than filtered to nothing.
 - `vp i` resolved the canary native binaries on darwin-arm64 and the lockfile passed the
   supply-chain policy check. The other three platform binaries are unverified here.
+
+## 2026-08-19 (third) — `f2d5fc91e3030e5c3956fdadc13e1eaa25bcabe3..a850895f6833b99d90fc6c50192b5eaa4966d5c7`
+
+Eleven upstream commits, seven change sets, one PR. **Ten adopted, one skipped** onto
+`upstream/2026-08-19-batch3`. `git cherry` reported every one absent from Pylon. The
+deferred register was empty going in and stays empty.
+
+**The skip is the important part of this batch.** `80c37f1a7` (`#6420`) hides opencode's
+plan agent when legacy plan mode is off — and legacy plan mode is a setting Pylon does not
+have. Its `planModeEnabled` flag arrived upstream in `48aa875c0` (`#5551`), which this
+ledger records as **skipped at F6**: Pylon keeps plan mode as a first-class composer
+affordance, and H1 later confirmed "Pylon has no `planModeEnabled` flag". The cherry-pick
+conflicted in `SettingsPanels.tsx` and `modelSelection.ts` precisely because it tried to
+reintroduce the rejected Settings row. Adopting it would have dragged in the setting F6
+deliberately refused. **Skipped as a dependent of a skipped commit** — the same reasoning
+should apply to any future `#6420`-adjacent work.
+
+**`#7153` carried the only substantial conflict.** It extracts the sidebar footer into a
+`SidebarUtilityMenu`, generalizing `onFooterPage` (usage + pull requests) into
+`currentFooterPage` (settings + usage + pull requests). Pylon's footer had diverged
+47/-24 from upstream's parent through three Pylon-only commits — `b2a4dcd1f` (compact
+footer actions), `7a32d19b9` (back button on the usage page), and `dfd869c2f` (Claude
+account drain pill). Resolution took upstream's side on all five hunks after confirming
+its `SidebarUtilityItem` is markup-identical to Pylon's compact row and that
+`SidebarAccountDrainPill` lives in `SidebarChromeFooter`, outside the conflicted block.
+
+**That resolution then broke typecheck twice, and no test caught it** — nothing covers
+`SidebarChrome.tsx`. Taking upstream's import line dropped `useId`, which Pylon's own
+`PylonMark` cube logo uses, and `canGoBack` ended up declared twice because upstream's
+refactor absorbed Pylon's back-button declaration. Fixed in `d5eb43421`. Worth
+remembering: for a file where fork divergence is behavioral rather than textual, typecheck
+is the only gate.
+
+Conflicts and adaptations, all resolved Pylon-first:
+
+| File                                                                                    | Conflict                                                                  | Resolution                                                                                                                                                           |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/web/src/components/sidebar/SidebarChrome.tsx`                                     | `#7153` extracts the footer menu; Pylon had three fork-only commits in it | Took upstream's five hunks after verifying markup equivalence and that the drain pill sits outside the block. Repaired `useId` and duplicate `canGoBack` afterwards. |
+| `docs/user/source-control.md`                                                           | `#7588` adds a `gh` version requirement written as "T3 Code"              | Rebranded. A second added line was missed on the first pass and caught by review.                                                                                    |
+| `apps/web/src/components/settings/SettingsPanels.tsx`, `apps/web/src/modelSelection.ts` | `#6420` reintroduces the rejected `planModeEnabled` Settings row          | Not resolved — the commit was skipped (see above).                                                                                                                   |
+
+Review and validation:
+
+- 17 changed test files, **238 tests, 0 failures**.
+- Typecheck clean across web, desktop, server, shared, and contracts.
+- An xhigh review produced 14 findings. Three fixed in `0cd9b2593`; the rest describe
+  upstream implementation choices adopted as-is.
+
+**One reviewer finding was investigated and deliberately rejected.** It called the install
+button vanishing during an update check a regression from `#6269`. Half right: `#6269` does
+remove the guard that skipped checks while an update was downloaded, so the poller now runs
+one every four minutes and the button does blink. But hiding install while checking is
+older, explicitly tested behavior — `desktopUpdate.logic.test.ts` asserts "hides the
+install action while checking for a newer release" — and re-checking a queued update is the
+entire point of `#6269`. Changing `resolveDesktopUpdateButtonAction` broke that test, which
+is the correct signal. The interaction is upstream's trade, recorded here rather than
+unpicked inside an adoption PR.
+
+Fixed from the review:
+
+- **Usage listed every supported provider**, used or not. `#7147` switched the summary
+  column from `merged.providers` to `PROVIDER_ORDER`. This is worse in Pylon than upstream
+  because Cursor, Grok, and OpenCode became disabled by default the day before, so a normal
+  install buries its one real provider under four `0 sessions · $0.00` rows.
+- The missed `docs/user/source-control.md` branding line.
+- `handleUsageClick` still inlining the mobile-sidebar close that `#7153` extracted.
+
+Still open from this batch, not acted on:
+
+- `ElectronMenu.ts` never resets `sectionStartedByExplicitSeparator`, so a destructive item
+  not adjacent to an explicit separator loses its automatic one. Latent today because
+  `buildThreadActionMenuItems` happens to place them adjacently.
+- "Close others" / "Close to the right" / "Close all" skip the terminal close confirmation
+  that `#7592` added to closing a single terminal — the more destructive path is unguarded.
+- `PullRequestDetailPanel`'s new early return renders the summary ghost for every tab,
+  dropping the per-tab skeletons whose removed comment explained they existed to stop a
+  summary outline flashing under a timeline heading.
+- `rightPanelAvailable` in `_chat.pull-requests.tsx` narrowed to "a pull-request surface is
+  selected", which can disable the only control that closes an already-open panel.
+- OpenCode's new `debug skill` probe forces the inventory retry path — a fixed one-second
+  sleep and a redundant respawn on every provider status check — when the subcommand is
+  missing or errors.
+- `flattenOpenCodeSkills` copies the full description into `shortDescription` and never
+  sets `scope`, unlike the Codex and Claude adapters.
 
 ## Deferred register
 
