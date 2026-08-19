@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { ClerkProvider } from "@clerk/react";
-import { passkeys as electronPasskeys } from "@clerk/electron/passkeys";
+import { passkeys } from "@clerk/electron/passkeys";
 import { ClerkProvider as ElectronClerkProvider } from "@clerk/electron/react";
 import { createHashHistory, createBrowserHistory } from "@tanstack/react-router";
 
@@ -37,14 +37,9 @@ if (isElectron) {
 
 const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
-// @clerk/electron reports passkey autofill as supported but executes the
-// "quiet" autofill request as a modal prompt, so Clerk's sign-in form pops an
-// OS passkey dialog the moment it mounts. Report autofill as unsupported; the
-// explicit "Use passkey" button keeps working.
-// Upstream: https://github.com/clerk/javascript/issues/9496
-const passkeys = {
-  ...electronPasskeys,
-  isAutoFillSupported: () => Promise.resolve(false),
+// First Clerk UI build containing https://github.com/clerk/javascript/pull/9500.
+const electronClerkUI = {
+  __internal_clerkUIVersion: "1.30.5-canary.v20260819050620",
 };
 
 const app = <AppRoot router={router} />;
@@ -54,6 +49,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     {clerkPublishableKey && hasCloudPublicConfig() ? (
       isElectron ? (
         <ElectronClerkProvider
+          {...electronClerkUI}
           appearance={clerkAppearance}
           publishableKey={clerkPublishableKey}
           passkeys={passkeys}
