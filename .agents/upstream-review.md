@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "2aa5f095fc3bb65c00cc4efce66a5473e2d4554a"
+reviewed-through: "f2d5fc91e3030e5c3956fdadc13e1eaa25bcabe3"
 reviewed-through-date: "2026-08-19"
 ---
 
@@ -1701,6 +1701,59 @@ Open questions raised by this batch, for a later decision:
   and `#7445`'s frame-capture accounting — with no shared state between them.
 - **A muted preview tab loses its speaker affordance** once the guest goes silent
   (`tabAudioState` returns "none"), leaving no in-strip way to see or undo the mute.
+
+## 2026-08-19 (second) — `2aa5f095fc3bb65c00cc4efce66a5473e2d4554a..f2d5fc91e3030e5c3956fdadc13e1eaa25bcabe3`
+
+Three upstream commits, three change sets, one PR. **All three adopted** onto
+`upstream/2026-08-19-batch2`. `git cherry` reported every one absent from Pylon. The
+deferred register was empty going in and stays empty.
+
+**N3 (`#7522`) supersedes work adopted hours earlier in the first 2026-08-19 batch.**
+`6a687ee4` had added a local shim in `apps/web/src/main.tsx` overriding
+`isAutoFillSupported` to `false`, because `@clerk/electron` reported passkey autofill as
+supported while executing the "quiet" request as a modal OS dialog — so the sign-in form
+popped a system passkey prompt the moment it mounted. Upstream has now deleted that shim
+in favour of a library fix (clerk/javascript#9500).
+
+**The developer chose to adopt it to stay in step with upstream, over a recommendation to
+defer.** The trade was stated plainly and decided: Pylon already had correct behavior from
+the shim, so adoption buys no user-visible change, and the cost is six **canary**
+prereleases pinned to one dated build (`v20260819050620`) — `@clerk/electron`,
+`@clerk/electron-passkeys`, and four platform-specific native binaries
+(`darwin-arm64`, `darwin-x64`, `win32-arm64-msvc`, `win32-x64-msvc`) — all added to
+`minimumReleaseAgeExclude`, plus reliance on the explicitly-internal
+`__internal_clerkUIVersion` prop. At adoption time `npm view @clerk/electron dist-tags`
+still reported `latest: 0.0.33`; there is no stable `0.0.34`.
+
+**Follow-up this creates:** unpin the canaries once Clerk promotes a stable release
+containing PR #9500. Check with `npm view @clerk/electron dist-tags` — when `latest` is
+`0.0.34` or newer, move the catalog off the canary strings and drop the six
+`minimumReleaseAgeExclude` entries. Until then Pylon ships prerelease native binaries in
+its desktop builds.
+
+**N2 (`#6562`)** reorders desktop shutdown so the window closes before cleanup runs
+rather than hanging visible through it, threading `ElectronWindow` into lifecycle
+registration. It is adjacent to `#7397` (`QuitHold`) adopted in the first batch but does
+not address that commit's watchdog gap, which stays open.
+
+**N1 (`#7491`)** is a one-line Tailwind fix adding `flex items-center` so sidebar status
+pills align with project names.
+
+Conflicts and adaptations, all resolved Pylon-first:
+
+| File                                                     | Conflict                                                                                                                                               | Resolution                                                                                                                                                                                                                                  |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/desktop/src/app/DesktopLifecycle.test.ts`          | `#6562` hoists the inline Electron fakes to module-scope helpers and deletes the per-test copies; Pylon's copy carried `name: Effect.succeed("Pylon")` | Took upstream's deletion — the test body below now calls `makeElectronAppLayer(appListeners)` — and restored Pylon's product name on the hoisted fake, which had arrived as "T3 Code".                                                      |
+| `apps/web/src/components/clerk/electronPasskeys.test.ts` | New test stubs `location` as `t3code:` / `app` with rpId `clerk.t3.codes`                                                                              | Rewritten to Pylon's `pylon-code:` renderer protocol and a placeholder rpId. Behavior is identical either way: `originCanSatisfyRpId` can never be satisfied by a custom scheme, which is what pushes both assertions onto the native path. |
+
+Validation:
+
+- 3 changed test files, **13 tests, 0 failures** (with the `.prime/` and `.claude/worktrees/`
+  excludes noted in the previous batch).
+- Typecheck clean for `@t3tools/web` and `@t3tools/desktop`, both confirmed to have
+  actually run rather than filtered to nothing.
+- `vp i` resolved the canary native binaries on darwin-arm64 and the lockfile passed the
+  supply-chain policy check. The other three platform binaries are unverified here.
 
 ## Deferred register
 
