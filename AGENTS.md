@@ -139,6 +139,7 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 - Backend behavior changes ship with focused tests for that behavior.
 - The server is event-sourced and its async flows emit typed receipts. Wait on receipts and worker drains, never on sleeps or polling. A test that needs a timeout to pass is wrong.
 - Upon request, user-visible frontend changes should get one integrated pass in a real client: `test-pylon-app` for web, `test-pylon-mobile` for mobile. The primary agent does this once after integrating. Subagents do not launch their own dev servers. Ask permission before doing computer use or spinning up browsers.
+- Use the `ship-pylon-mobile` skill for getting a build onto a physical iPhone, or when an installed iOS app is broken or stale. It owns the EAS build, OTA, and rollback paths, and the fingerprint check that keeps a JS update from landing on a binary that cannot run it.
 
 ## Landing changes
 
