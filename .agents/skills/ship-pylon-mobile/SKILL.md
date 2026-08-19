@@ -25,6 +25,12 @@ then breaks the app.
 **So this skill performs the check Expo is not performing.** Never publish an OTA
 without comparing fingerprints first.
 
+The argument that defeats every "but my change is JS-only" objection: **`eas
+update` publishes the whole bundle built from your working tree, not your diff.**
+Whatever native-dependent code merged in the meantime rides along with the
+one-line string fix. The size of your change is irrelevant; the distance between
+the tree and the installed binary is what matters.
+
 ## Prerequisites
 
 `eas` must be installed globally:
@@ -127,12 +133,46 @@ Confirm against the actual symptom.
   mobile build is per-PR, gated on the `🚀 Mobile Continuous Deployment` label.
   A phone stays stale until someone acts.
 
+## Rationalizations, and why they fail
+
+Every one of these was produced by an agent under demo-deadline pressure.
+
+| Rationalization                                         | Reality                                                                                                                                            |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "My diff is one line and touches no native code"        | `eas update` ships the whole tree's bundle, not your diff. Everything merged since the build rides along.                                          |
+| "The fingerprint policy will stop it if it's wrong"     | Not on this binary. `preview:local` pins `appVersion`, so the guard is off and the update lands regardless.                                        |
+| "Updates are enabled, so publishing is fine"            | Whether updates are _enabled_ is a different question from whether this update is _compatible_. Only the fingerprint answers the second.           |
+| "It'll just silently not land, so it's harmless to try" | Backwards. A mismatched OTA under `appVersion` lands and breaks the app. Silent non-delivery is the `fingerprint` policy's behavior, not this one. |
+| "No time for a rebuild before the demo"                 | A broken app mid-demo costs more than a stale label. Start the rebuild and keep talking.                                                           |
+
+### The cherry-pick escape hatch
+
+Cherry-picking the fix onto the phone's build commit and publishing from there
+can make an OTA safe while native inputs have drifted. It is a last resort, not
+the fast path — **when a rebuild fits in the time available, rebuild.** Reach for
+this only when it genuinely does not.
+
+If you do use it:
+
+- Base the branch on the **git commit**, which is the `commit` field of the
+  status script's output. It is not the build id — those are different
+  identifiers and confusing them silently bases the branch on the wrong tree, or
+  on nothing.
+- Run the status script again against that branch and publish only on an
+  `OTA SAFE` verdict. Being "identical by construction" is a prediction; the
+  verdict is a measurement.
+- A cherry-pick that conflicts means the trees have diverged more than assumed.
+  Stop and rebuild.
+
 ## Red flags — stop
 
 - About to run `eas update` without having run the status script
 - Verdict said `REBUILD REQUIRED` and an OTA looks "worth trying anyway"
 - Reaching for `eas update` because a rebuild is slow
 - Publishing without `MOBILE_VERSION_POLICY=appVersion`
+- Reasoning about native drift from `git log` or changed paths instead of from
+  the fingerprint — the paths that feed it are not obvious, and guessing has
+  produced confidently wrong answers
 
 The first two are how the app gets bricked. A rebuild is slower and always safe;
 a wrong OTA is fast and lands on the device with no guard.
