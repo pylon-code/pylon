@@ -78,6 +78,27 @@ export class TriageAgentSpawnError extends Schema.TaggedErrorClass<TriageAgentSp
 
 // signal 0 delivers nothing; it only reports whether the pid exists. EPERM
 // means it exists but belongs to another user, which still counts as alive.
+/**
+ * Pylon's runtime home. `~/.t3` belongs to T3 Code; triage must never default
+ * to inspecting — or writing into — another product's install.
+ */
+const PYLON_RUNTIME_HOME_DIR_NAME = ".pylon-code";
+
+/**
+ * Reads an optional URL-ish setting, treating blank as absent. `Config.string`
+ * accepts an empty value, so an exported-but-empty variable would otherwise
+ * read as configured and silently defeat the "not configured" guard the
+ * playbook depends on.
+ */
+const readOptionalUrlConfig = (name: string) =>
+  Config.string(name).pipe(
+    Config.option,
+    Config.map((value) => {
+      const trimmed = Option.getOrUndefined(value)?.trim();
+      return trimmed && trimmed.length > 0 ? trimmed : null;
+    }),
+  );
+
 const isProcessAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -181,15 +202,28 @@ export const triageCommand = Command.make("triage", {
       // precedence as `t3 pair`).
       const explicitBaseDir = Option.getOrUndefined(flags.baseDir);
       const envHome = yield* Config.string("T3CODE_HOME").pipe(Config.option);
-      const baseDir = yield* resolveBaseDir(explicitBaseDir ?? Option.getOrUndefined(envHome));
+      const requestedBaseDir = explicitBaseDir ?? Option.getOrUndefined(envHome);
+      // `resolveBaseDir` falls back to `~/.t3`, which is T3 Code's runtime
+      // home, not Pylon's. Handing an agent that path would point it at another
+      // product's database, logs, and secrets — and creating the scratch dir
+      // under it would write into a live T3 install. So when nothing is
+      // specified, prefer Pylon's own home if it is actually there.
+      const baseDir = yield* requestedBaseDir
+        ? resolveBaseDir(requestedBaseDir)
+        : Effect.gen(function* () {
+            const pylonHome = path.join(NodeOS.homedir(), PYLON_RUNTIME_HOME_DIR_NAME);
+            return (yield* fs.exists(pylonHome)) ? pylonHome : yield* resolveBaseDir(undefined);
+          });
+
       // Unset by default. `pylon-code/pylon` is private, so pointing triage at
       // it would send users to a tracker they cannot open; inheriting T3's
-      // would file Pylon bugs in someone else's. Set this to a repository you
-      // want triage issues in, for example https://github.com/you/pylon-issues.
-      const repository = yield* Config.string("PYLON_TRIAGE_REPOSITORY").pipe(
-        Config.option,
-        Config.map(Option.getOrNull),
-      );
+      // would file Pylon bugs in someone else's.
+      //
+      // Two knobs, because the source repository and the issue tracker are not
+      // the same place for Pylon the way they were for upstream: the agent
+      // clones one to read code and searches/files in the other.
+      const issueRepository = yield* readOptionalUrlConfig("PYLON_TRIAGE_REPOSITORY");
+      const sourceRepository = yield* readOptionalUrlConfig("PYLON_TRIAGE_SOURCE_REPOSITORY");
       const paths = yield* ServerConfig.deriveServerPaths(baseDir, undefined, {});
 
       const now = yield* DateTime.now;
@@ -208,10 +242,13 @@ export const triageCommand = Command.make("triage", {
         buildTriageContext({
           generatedAt: DateTime.formatIso(now),
           version,
-          releaseTag: version.includes("-nightly.")
-            ? `v${version} (nightly build; if this tag does not exist, clone main)`
-            : `v${version}`,
-          repository,
+          // The bare ref only. The playbook substitutes this straight into
+          // `git clone --branch`, so a parenthetical caveat here becomes part
+          // of the ref and the clone fails.
+          releaseTag: `v${version}`,
+          isNightly: version.includes("-nightly."),
+          issueRepository,
+          sourceRepository,
           os: `${yield* HostProcessPlatform} ${yield* HostProcessArchitecture} (${NodeOS.release()})`,
           nodeVersion: process.version,
           launchedAs: yield* resolveCliCommand("triage"),

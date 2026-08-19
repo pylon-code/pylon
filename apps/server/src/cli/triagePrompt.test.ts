@@ -13,10 +13,11 @@ import {
 } from "./triagePrompt.ts";
 
 it("stays byte-identical to .github/triage/PLAYBOOK.md", () => {
-  // Old releases fetch the repo copy from `main` and follow it when it differs
-  // from their bundled playbook. The two must say the same thing at HEAD, or a
-  // playbook edit silently changes behavior only for old (or only for new)
-  // installs. Edit both files together.
+  // Pylon has no runtime playbook fetch — the repo is private, so there is no
+  // unauthenticated raw URL — which makes the embedded copy the only playbook a
+  // release follows. The `.md` stays the human-editable source; this assertion
+  // is what stops the shipped copy from drifting away from it. Edit both files
+  // together, or regenerate the constant from the `.md`.
   const canonicalPath = NodePath.join(
     import.meta.dirname,
     "../../../../.github/triage/PLAYBOOK.md",
@@ -43,7 +44,9 @@ const baseContextInput = {
   generatedAt: "2026-08-13T00:00:00.000Z",
   version: "0.0.33",
   releaseTag: "v0.0.33",
-  repository: null,
+  isNightly: false,
+  issueRepository: null,
+  sourceRepository: null,
   os: "linux x64 (7.0.0)",
   nodeVersion: "v24.0.0",
   launchedAs: "npx t3 triage",
@@ -74,19 +77,36 @@ it("context file carries every path the playbook depends on", () => {
   assert.include(context, "v0.0.33");
 });
 
-it("context file tells the agent not to post when no repository is configured", () => {
+it("context file tells the agent not to post when no issue repository is configured", () => {
   // The default. `pylon-code/pylon` is private, so an agent that tried to file
   // there would send the user to a 404 and lose the issue it just wrote.
-  const context = buildTriageContext({ ...baseContextInput, repository: null });
+  const context = buildTriageContext({ ...baseContextInput, issueRepository: null });
   assert.include(context, "not configured");
   assert.include(context, "write it to a file");
 });
 
-it("context file names the configured repository when one is set", () => {
+it("context file keeps the source and issue repositories distinct", () => {
+  // One value cannot serve both roles: an issues-only repo carries no code, so
+  // cloning it would leave the agent mapping stack traces against an empty tree.
   const context = buildTriageContext({
     ...baseContextInput,
-    repository: "https://github.com/example/pylon-issues",
+    sourceRepository: "https://github.com/example/pylon",
+    issueRepository: "https://github.com/example/pylon-issues",
   });
-  assert.include(context, "https://github.com/example/pylon-issues");
-  assert.notInclude(context, "not configured");
+  assert.include(
+    context,
+    "Source repository (clone this to read code): https://github.com/example/pylon",
+  );
+  assert.include(
+    context,
+    "Issue repository (search and file here): https://github.com/example/pylon-issues",
+  );
+});
+
+it("release tag stays a bare git ref, with the nightly caveat on its own line", () => {
+  // The playbook substitutes the tag straight into `git clone --branch`, so a
+  // parenthetical inside it becomes part of the ref and the clone fails.
+  const context = buildTriageContext({ ...baseContextInput, isNightly: true });
+  assert.include(context, "- Release tag for this version: v0.0.33\n");
+  assert.include(context, "Nightly build: this tag may not exist");
 });
