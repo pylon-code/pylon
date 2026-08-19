@@ -1839,6 +1839,38 @@ Still open from this batch, not acted on:
 - `flattenOpenCodeSkills` copies the full description into `shortDescription` and never
   sets `scope`, unlike the Codex and Claude adapters.
 
+## 2026-08-19 (F6 reversal) — legacy plan mode
+
+Not a batch: a reversal of a standing decision, recorded so the ledger does not
+keep asserting something that is no longer true.
+
+**F6 (`48aa875c0` / `#5551`) was skipped** on the argument that plan mode is
+first-class in Claude Code and Codex, so dropping the composer's Build/Plan
+toggle would cost Pylon more than it cost T3. **H1 extended it** by dropping
+upstream's plan-mode Settings row. The developer has since concluded the toggle
+goes unused in practice and asked to match upstream.
+
+Pylon now has a `planModeEnabled` client setting, default off, gating the
+composer toggle and the `/plan` and `/default` slash commands, with `ChatView`
+forcing the effective mode back to `"default"` while it is off so no thread is
+stranded in plan mode with its toggle hidden. Pylon Mobile already carried a
+device-local `planModeEnabled` preference documented as the counterpart of this
+key, so the surfaces now agree rather than diverge.
+
+**Ported, not cherry-picked.** `#5551` is 338 commits back and touches
+`ChatComposer.tsx`, which has diverged hard — 4240 lines here against upstream's
+2824 — and its Beta-panel placement plus `sidebar-v2` search entries were
+superseded upstream anyway. Replaying that snapshot would have imported a shape
+neither project has. Pylon implements upstream's current end state instead.
+
+With the flag in place, **`80c37f1a7` (`#6420`) was adopted**, closing the skip
+recorded in the third 2026-08-19 batch. Its two conflicts were additive and
+unioned; the `legacy-plan-mode` settings-search id is registered against
+`/settings/general`, where Pylon keeps its other legacy rows.
+
+F6 and H1 stay in their original batch tables as historical record — they
+describe what was decided then. This entry is what supersedes them.
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
