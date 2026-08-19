@@ -967,7 +967,11 @@ export const make = Effect.gen(function* () {
           upstreamHeadIsDefault &&
           !headContext.isCrossRepository
         ) {
-          return { latest: null, headContext };
+          // Also a "we did not ask" case, so it carries `skipped` for the same
+          // reason the unpublished-branch guard below does: recording it as a
+          // null answer would wipe the branch's last-known PR and drop a Merged
+          // badge that is still correct.
+          return { latest: null, headContext, skipped: true };
         }
         // Only skip when the branch is untracked as well: anything carrying an
         // upstream keeps the old behaviour.
