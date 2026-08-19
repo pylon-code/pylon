@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 const publicKeyOptions = {
   allowCredentials: [],
   challenge: new Uint8Array([1]),
-  rpId: "clerk.t3.codes",
+  rpId: "clerk.example.com",
   timeout: 60_000,
   userVerification: "preferred" as const,
 };
@@ -15,7 +15,9 @@ const stubNativePasskeys = () => {
     error: { code: "cancelled", message: "user cancelled" },
   });
 
-  vi.stubGlobal("location", { protocol: "t3code:", hostname: "app" });
+  // Pylon's renderer protocol, not T3's. A custom scheme can never satisfy an
+  // rpId, which is what pushes both cases below onto the native path.
+  vi.stubGlobal("location", { protocol: "pylon-code:", hostname: "app" });
   vi.stubGlobal("window", {
     PublicKeyCredential: vi.fn(),
     __clerk_internal_electron_passkeys: {
