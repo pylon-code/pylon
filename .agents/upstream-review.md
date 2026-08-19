@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "82b8a9380298509d68170961d9717be62836e490"
-reviewed-through-date: "2026-08-18"
+reviewed-through: "2aa5f095fc3bb65c00cc4efce66a5473e2d4554a"
+reviewed-through-date: "2026-08-19"
 ---
 
 # T3 upstream review log
@@ -1617,6 +1617,90 @@ untrue and its reader drops a feature on it, but it fires on unusually long sing
 rather than on busy pull requests generally.
 
 **Mobile (N7, N8) was not exercised at all.**
+
+## 2026-08-19 — `82b8a9380298509d68170961d9717be62836e490..2aa5f095fc3bb65c00cc4efce66a5473e2d4554a`
+
+Twenty-two upstream commits, ten change sets, one PR. **Twenty commits adopted** onto
+`upstream/2026-08-19-batch`; two skipped. `git cherry` reported every one absent from Pylon,
+so nothing was patch-equivalent. The deferred register was empty going in and stays empty.
+
+**CS-1 (`#7459`) is the most valuable change here.** It flips the Grok and OpenCode schema
+defaults to `false` (Cursor was already `false` in Pylon) and adds
+`providerInstanceConfigEnabledFlag` / `resolveProviderInstanceEnabled`, resolving an
+envelope-vs-config `enabled` conflict most-restrictively so a user's explicit disable is
+never silently undone. **Accepted consequence worth remembering:** `writeSettingsAtomically`
+strips values equal to the default, so an install that had Grok on by matching the old
+default has nothing written for it and comes back disabled after this change. That is the
+point of the commit rather than a regression, but it is a one-way default flip with no
+migration, and the sparse-persistence detail means an explicit opt-in is indistinguishable
+from an untouched default.
+
+**CS-2 (`#7473` then `#7477`) had to be taken as an ordered pair.** `#7477` deletes
+`macArch.ts` and `macArch.test.ts` outright and moves detection into `download.astro` and
+`index.astro`, superseding the fix in `#7473`. Adopting only the later commit risks a
+delete/modify conflict. The end state deliberately serves **every** Mac the arm64 build from
+the hero button, with a code comment saying not to add arch detection back — browsers cannot
+tell Apple Silicon from Intel, and Intel users choose on `/download`.
+
+**CS-3 (`#7445` then `#7460`) is likewise inseparable**: the first throttles hidden preview
+rendering, the second exempts cold start because the first regressed first paint.
+
+**The launchd change (`#6286`) carried every branding conflict in the batch** — three files,
+all resolved Pylon-first by taking upstream's platform-aware behavior and keeping Pylon's
+copy. The launch agent label stays the compatibility identifier `com.t3tools.t3code.service`
+per AGENTS.md; see the open question below.
+
+Conflicts and adaptations, all resolved Pylon-first:
+
+| File                                                                          | Conflict                                                                                                        | Resolution                                                                                                                                                                                                                                 |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `apps/web/src/components/ThreadCommandSubtitle.tsx`                           | `#7392` adds a `ThreadCommandSubtitleVariant` design-review toggle; Pylon had simplified that away              | Kept Pylon's single `WorkspaceIcon(isWorktree)` and dropped the variant harness; adopted the `COMMAND_PALETTE_META_ICON_CLASS` / `CommandPaletteMetaDot` renames the new palette imports. Nothing outside the file referenced the variant. |
+| `apps/web/src/components/chat/ChatComposer.tsx`                               | `#7122` against a file that has diverged structurally (Pylon 4240 lines vs upstream 2824)                       | Manual port of the two-line change (import + placeholder constant) onto Pylon's file. Applied byte-wise because the file carries 6 NUL bytes and defeats `grep`.                                                                           |
+| `apps/web/src/providerInstances.ts`, `.../settings/ProviderSettingsPanel.tsx` | Import-list collision: Pylon's `providerInstancePrioritySortKey` vs upstream's `resolveProviderInstanceEnabled` | Union — both symbols are used.                                                                                                                                                                                                             |
+| `apps/server/src/cli/service.ts`, `apps/server/src/cli/connect.ts`            | `#6286` platform-aware copy written as "T3 Code" / "T3 Connect"                                                 | Took the darwin/else branching, kept Pylon naming.                                                                                                                                                                                         |
+| `docs/user/background-service.md`                                             | Same, plus a whole new Platform Support section                                                                 | Adopted the macOS content verbatim except product names; kept the literal `t3code.service` and `com.t3tools.t3code.service.plist` paths because that is what the code writes.                                                              |
+
+Skipped:
+
+| ID    | Upstream             | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CS-10 | `db0659fe` (`#7421`) | AUR launcher icon paths. Pylon has no `packaging/aur` directory, so it is not applicable.                                                                                                                                                                                                                                                                                                                                                                                      |
+| CS-9  | `324ddda3` (`#6563`) | `npx t3 triage`. 779 insertions whose playbook hardcodes `pingdotgg/t3code`, fetches the playbook from T3's raw GitHub URL, searches T3's issues, and builds a `github.com/pingdotgg/t3code/issues/new` URL. Adopting as-is would funnel Pylon users' bug reports into T3's tracker. Held for a from-scratch Pylon implementation, which needs a product decision first: `pylon-code/pylon` is private, so there is no public tracker for a user's generated issue to land in. |
+
+Review and validation:
+
+- 21 changed test files, **617 tests, 0 failures**. Note for future sessions: `vp test run`
+  globs nested worktrees under `.prime/` and `.claude/worktrees/`, which have no
+  `node_modules`, producing ~72 phantom module-resolution failures **and still exiting 0**.
+  Pass `--exclude '**/.prime/**' --exclude '**/.claude/worktrees/**'` for a real signal.
+- Typecheck clean across 8 packages (server, web, desktop, contracts, shared, client-runtime,
+  marketing, mobile).
+- Validated live in the web client against a seeded copy of real data: pairing, the new
+  composer placeholder, Settings → Providers showing Cursor/Grok/OpenCode disabled, and the
+  command palette rendering the new project-location subtitle.
+- An xhigh review produced 13 findings. One was confirmed and fixed in `7d0a295db`: the
+  `#7317` inherited-upstream guard returned without `skipped`, so the caller wiped the
+  branch's last-known PR and dropped the Merged-badge fallback — the adjacent
+  unpublished-branch guard sets that flag for exactly this reason. **Worth sending upstream.**
+  The rest describe upstream design tradeoffs that were adopted as-is rather than rewritten
+  inside an adoption PR; the notable ones are recorded below.
+
+Open questions raised by this batch, for a later decision:
+
+- **The launchd label is `com.t3tools.t3code.service`.** AGENTS.md forbids renaming
+  compatibility identifiers during adoption, so it was kept. But Pylon's stated goal is that
+  Pylon and T3 Code can be installed side by side, and both would now claim the same launch
+  agent label and TCC records on one Mac. Upstream's own comment says the label is chosen so
+  those never collide — which only holds for a single product.
+- **`QuitHold`** (`#7397`) clears its watchdog on entering `quitOnRelease` without installing
+  a replacement, so if key events stop arriving mid-hold the "Hold to Quit" overlay can stay
+  up with no quit.
+- **The launchd plist has no `StartLimitBurst` equivalent**, so a server that cannot boot
+  respawns every 5 seconds indefinitely where systemd gives up after 5 failures in 300s.
+- **`backgroundThrottling` now has two independent owners** — `#7460`'s first-reveal trigger
+  and `#7445`'s frame-capture accounting — with no shared state between them.
+- **A muted preview tab loses its speaker affordance** once the guest goes silent
+  (`tabAudioState` returns "none"), leaving no in-strip way to see or undo the mute.
 
 ## Deferred register
 
