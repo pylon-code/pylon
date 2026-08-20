@@ -1946,6 +1946,51 @@ Open questions raised by this batch:
 - **`#7595` made the Past-24h empty state unreachable**: `hours` is always 24 entries, so
   an idle day renders 24 `$0.00` rows instead of "No activity in this window."
 
+## 2026-08-20 (DEF-5) — composer state drawers
+
+**DEF-5 adopted and retired.** `#7150` and `#7152` are in, on branch
+`upstream/def-5-composer`. The register is empty again.
+
+The first attempt merged upstream's diff into Pylon's composer block by block and
+compiled to 8 JSX errors: upstream flattens the fragment and provider-frame divs into
+one `<form>`, and Pylon's layers cannot host its drawer tree. The two are ends of one
+restructure, so the merge could not converge in that direction.
+
+**What worked was reversing it.** Take upstream's composer as the base, then replay
+Pylon's divergence onto it with `git apply --3way`. That is the same reconciliation
+pointed the way that converges: 8 conflicts instead of a hand-rebuild of 1460 lines, and
+every non-structural Pylon feature applied clean. The developer chose this direction
+explicitly — maximum fidelity to upstream over minimum divergence.
+
+Resolved Pylon-first where the two genuinely disagree:
+
+| Conflict | Resolution |
+| --- | --- |
+| Command-menu position | Pylon's settle loop from `ce5371d41` with upstream's drawer-aware measurement inside it. Upstream schedules from a plain ResizeObserver on the ancestors, which that commit established does not fire while the composer glides into place — the bug it fixed and browser-verified at 2200px. Measurement kept, scheduling not. |
+| Runtime mode | `resolvedRuntimeMode` / `supportedRuntimeModes` over upstream's plain `runtimeMode`, at the footer and the compact controls menu. |
+| Quick question, session resources, ComposerPrimaryActions props | Pylon's, which are supersets. |
+| Form root, drawer tree, inline task/stash badges | Upstream's. |
+
+**`ThreadHandoffTab` was lost and restored.** It lived in the form root upstream replaced,
+so it survived as an unused import — invisible to typecheck. A symbol-by-symbol sweep of
+20 Pylon composer features against `origin/pylon` caught it. **`#7152` also deleted
+`activeTurnInProgress` as collateral** across ChatView, the props interface, the row
+activity context, and the shared test fixture — upstream never had it, so its diff context
+swept it up. Both are worth remembering: a green typecheck does not prove a three-way
+merge preserved fork-only code, and the sweep is what does.
+
+MessagesTimeline was reconciled rather than replaced — its divergence is only ~93 lines —
+unioning upstream's `isExpandedToolGroupEntry` plumbing with Pylon's response-status label,
+session-notification row, failure/success/neutral indicators, and its `DotMatrix` marker
+(upstream's replacement is three staggered pulsing dots that repaint every vsync).
+
+Validation: typecheck clean across 7 packages, 370 tests over 26 composer and timeline
+suites, and a live pass confirming the composer renders with both upstream drawer hooks and
+the command menu positions to upstream's exact drawer math (offset 22px = the inset, width
+= form width less twice it). **Not verified in a browser:** the settle loop's dynamic
+re-anchoring, because the composer could not be made to move in the test environment, and a
+thread exercising `#7152`'s collapsed tool rows.
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
@@ -1965,4 +2010,3 @@ the outcome. See Phase 2.5 of the `review-t3-upstream` skill.
 
 | ID    | Upstream                                  | Deferred on | Revisit when                                                                                                                                                                                                                                                                                                                 | Why deferred                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ----- | ----------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| DEF-5 | `#7150` `792a1404f` + `#7152` `4a9edff4c` | 2026-08-20  | Whenever the composer is next worked on deliberately. This is scheduled work, not a bet on upstream changing, so there is no waiting condition to poll. Before starting, check `git log --oneline 792a1404f..t3code-upstream/main -- apps/web/src/components/chat/ChatComposer.tsx` for follow-ups that should land with it. | `#7150` rewrites 1084 lines of `ChatComposer.tsx` against 50 Pylon commits and a 4837-vs-2824 line divergence. A full block-by-block resolution compiled to 8 JSX errors: upstream flattens the fragment and provider-frame divs into one `<form>`, so its 335-line drawer tree cannot be hosted by Pylon's layers. Needs the composer rebuilt on upstream's structure with Pylon's ThreadHandoffTab, provider frame classes, settle loop, `resolvedRuntimeMode`, and Quick question / session-resource controls grafted back. `#7152` depends on it. |
