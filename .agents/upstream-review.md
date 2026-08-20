@@ -1932,9 +1932,11 @@ Open questions raised by this batch:
   behavior; whether it is the behavior Pylon wants is undecided. The doc comment on
   `dropSupersededToolUpdatedActivities` still asserts an invariant measured under the old
   identity.
-- **`toolLifecycleIdentity`'s fallback joins with no separator** (`[itemType, label,
-detail].join("")`), where both clients join on a unit-separator character. Distinct
-  rows can collide. Latent and pre-existing, but the function was touched here.
+- ~~`toolLifecycleIdentity`'s fallback joins with no separator.~~ **Withdrawn — false
+  positive.** The separator is a unit-separator character, which is invisible in source
+  output, so the call reads as `join("")` in a terminal and in review tooling; `cat -v`
+  shows the real `join("^_")`. Pylon and upstream are byte-identical here. Recorded so
+  the same illusion does not get re-reported.
 - **`tool.started` now persists the provider's full unprojected `data`.** The
   `item.updated` branch wraps in `projectActivityPayload`; `tool.started` does not, so a
   large Write stores the whole body — and both clients skip `tool.started` rows entirely.
