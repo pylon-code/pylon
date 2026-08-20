@@ -1256,6 +1256,7 @@ export function runtimeEventToActivities(
           summary: toolLifecycleActivityTitle(event, "Tool updated"),
           payload: {
             itemType: event.payload.itemType,
+            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(primeAgentTool || !event.payload.detail
               ? {}
@@ -1395,6 +1396,7 @@ export function runtimeEventToActivities(
           summary: toolLifecycleActivityTitle(event, "Tool"),
           payload: {
             itemType: event.payload.itemType,
+            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
             ...(primeAgentTool ? toolLifecycleActivityStatus(event) : {}),
             ...(primeAgentTool || !event.payload.detail
               ? {}
@@ -1455,6 +1457,7 @@ export function runtimeEventToActivities(
           summary: `${toolLifecycleActivityTitle(event, "Tool")} started`,
           payload: {
             itemType: event.payload.itemType,
+            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
             ...(primeAgentTool ? toolLifecycleActivityStatus(event) : {}),
             ...(primeAgentTool || !event.payload.detail
               ? {}
