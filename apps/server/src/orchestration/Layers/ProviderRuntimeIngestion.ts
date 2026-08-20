@@ -1256,7 +1256,9 @@ export function runtimeEventToActivities(
           summary: toolLifecycleActivityTitle(event, "Tool updated"),
           payload: {
             itemType: event.payload.itemType,
-            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
+            // A Prime tool's itemId is a canonical path, so it stays behind the
+            // same gate as the rest of the native detail.
+            ...(primeAgentTool || event.itemId === undefined ? {} : { toolCallId: event.itemId }),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(primeAgentTool || !event.payload.detail
               ? {}
@@ -1396,8 +1398,14 @@ export function runtimeEventToActivities(
           summary: toolLifecycleActivityTitle(event, "Tool"),
           payload: {
             itemType: event.payload.itemType,
-            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
-            ...(primeAgentTool ? toolLifecycleActivityStatus(event) : {}),
+            // A Prime tool's itemId is a canonical path, so it stays behind the
+            // same gate as the rest of the native detail.
+            ...(primeAgentTool || event.itemId === undefined ? {} : { toolCallId: event.itemId }),
+            ...(primeAgentTool
+              ? toolLifecycleActivityStatus(event)
+              : event.payload.status
+                ? { status: event.payload.status }
+                : {}),
             ...(primeAgentTool || !event.payload.detail
               ? {}
               : { detail: truncateDetail(event.payload.detail) }),
@@ -1457,11 +1465,20 @@ export function runtimeEventToActivities(
           summary: `${toolLifecycleActivityTitle(event, "Tool")} started`,
           payload: {
             itemType: event.payload.itemType,
-            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
-            ...(primeAgentTool ? toolLifecycleActivityStatus(event) : {}),
+            // A Prime tool's itemId is a canonical path, so it stays behind the
+            // same gate as the rest of the native detail.
+            ...(primeAgentTool || event.itemId === undefined ? {} : { toolCallId: event.itemId }),
+            ...(primeAgentTool
+              ? toolLifecycleActivityStatus(event)
+              : event.payload.status
+                ? { status: event.payload.status }
+                : {}),
             ...(primeAgentTool || !event.payload.detail
               ? {}
               : { detail: truncateDetail(event.payload.detail) }),
+            ...(primeAgentTool || event.payload.data === undefined
+              ? {}
+              : { data: event.payload.data }),
             ...(primeAgentTool || !event.payload.agentId ? {} : { agentId: event.payload.agentId }),
             ...(primeAgentTool || !event.payload.parentToolUseId
               ? {}
