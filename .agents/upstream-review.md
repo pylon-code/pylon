@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "beab6886f45bf42906d0bd01aefe5dfe9e66a867"
-reviewed-through-date: "2026-08-20"
+reviewed-through: "730ce9edd9873144c1d2b01e5f1c85414c3760ad"
+reviewed-through-date: "2026-08-21"
 ---
 
 # T3 upstream review log
@@ -1991,6 +1991,54 @@ the command menu positions to upstream's exact drawer math (offset 22px = the in
 re-anchoring, because the composer could not be made to move in the test environment, and a
 thread exercising `#7152`'s collapsed tool rows.
 
+## 2026-08-21 — `beab6886f45bf42906d0bd01aefe5dfe9e66a867..730ce9edd9873144c1d2b01e5f1c85414c3760ad`
+
+Eight upstream commits, five change sets. **Seven adopted** onto
+`upstream/2026-08-21-batch`; **one deferred** (DEF-6). `git cherry` reported every one
+absent from Pylon. The register was empty going in and gains one entry.
+
+**Two of these walk back work adopted the day before, which is the fork strategy behaving
+as intended.** `#7718` reverts `#7595`, whose Past-24h breakdown rendered 24 rows of
+`$0.00` on an idle day — a defect an xhigh review flagged here and the ledger recorded as
+an open question. Upstream found it too and reverted, so the wart leaves with the revert
+and a 110-line `UsagePage.test.tsx` arrives with it. `#7089` partially reverses `#7459`,
+which had been adopted as the most valuable change of the first 2026-08-19 batch.
+
+**`#7089` is deferred because upstream's own CI is failing on it.** Their CI is green at
+`5ff5f735e` and red at `730ce9edd`. The commit flips Cursor's default to `true` and adds
+`enables every built-in provider by default`, which expects `grok` and `opencode` to be
+`true` — but upstream's schema still has both `false`, and the pre-existing
+`enables only the stable bindings by default` expects all three `false`. Both tests are in
+upstream's tree and cannot both pass. Probing the commit onto Pylon reproduced exactly
+that: it applies cleanly, then both tests fail. Adopting it would import a known-broken
+commit.
+
+**`#7719` is the substantial one** at 743 insertions, though roughly 650 of that is two new
+test files. Only 88 lines touch `serverRuntimeStartup.ts`, which carries just two Pylon
+commits, and a stuck session at startup no longer aborts global startup.
+
+Conflicts and adaptations, all resolved Pylon-first:
+
+| File                                                                                           | Conflict                                                                                                    | Resolution                                                                                                                              |
+| ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/web/src/components/ChatView.tsx`                                                         | `#7664` adds a `client-runtime/errors` import beside Pylon's turn-cost and side-question imports            | Union.                                                                                                                                  |
+| `orphanedProviderSessionStartup.integration.test.ts`, `serverRuntimeStartup.reconcile.test.ts` | `#7719` stubs `ProviderServiceShape` with the ten members upstream has; Pylon's shape carries nineteen more | Stubbed to `Effect.die("unused")` with `watchSessionAgentActivity` returning an empty stream, matching `ProviderSessionReaper.test.ts`. |
+
+Validation:
+
+- Typecheck clean across 7 packages, each confirmed to have run.
+- The three new upstream suites pass; no tracked file is unformatted.
+- **Two local-only failures were investigated and are not regressions.**
+  `runtimeAbi.test.ts` fails to load `ghostty-vt.wasm?inline` and
+  `accountDrainEndToEnd.test.ts` times out at 60s — both fail identically on unmodified
+  `origin/pylon`, and `pylon`'s CI is green, so both are local environment differences.
+  Worth knowing before chasing either.
+
+Process note: `vp check --fix apps packages` applies lint autofixes beyond formatting. It
+rewrote an unrelated `ids.includes` into a `Set` in `ProjectionSnapshotQuery.test.ts`,
+which was reverted to keep the batch scoped. Prefer `vp fmt` on the specific files, or
+review what `--fix` touched before committing.
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
@@ -2008,5 +2056,6 @@ Every review must read this register before reporting new candidates,
 re-evaluate each `Revisit when` against the current upstream head, and report
 the outcome. See Phase 2.5 of the `review-t3-upstream` skill.
 
-| ID  | Upstream | Deferred on | Revisit when | Why deferred |
-| --- | -------- | ----------- | ------------ | ------------ |
+| ID    | Upstream            | Deferred on | Revisit when                                                                                                                                                             | Why deferred                                                                                                                                                                              |
+| ----- | ------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DEF-6 | `#7089` `730ce9edd` | 2026-08-21  | When upstream's CI goes green on or after this commit. Check with `gh run list --repo pingdotgg/t3code --branch main --limit 12 --json headSha,name,conclusion --jq '.[] | select(.name=="CI")'`— it is failing at`730ce9edd`and green at`5ff5f735e`. Re-probe before adopting: cherry-pick onto a scratch branch and run `packages/contracts/src/settings.test.ts`. | Flips Cursor's default to `true` and adds `enables every built-in provider by default`, which expects `grok` and `opencode` enabled while upstream's schema has both `false` and the existing `enables only the stable bindings by default` expects all three `false`. The two tests cannot both pass; upstream's main is red because of it. Probed onto Pylon: applies clean, both tests fail. Also partially reverses `#7459`, adopted 2026-08-19. |
