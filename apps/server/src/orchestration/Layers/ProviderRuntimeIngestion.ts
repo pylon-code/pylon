@@ -1401,11 +1401,7 @@ export function runtimeEventToActivities(
             // A Prime tool's itemId is a canonical path, so it stays behind the
             // same gate as the rest of the native detail.
             ...(primeAgentTool || event.itemId === undefined ? {} : { toolCallId: event.itemId }),
-            ...(primeAgentTool
-              ? toolLifecycleActivityStatus(event)
-              : event.payload.status
-                ? { status: event.payload.status }
-                : {}),
+            ...toolLifecycleActivityStatus(event),
             ...(primeAgentTool || !event.payload.detail
               ? {}
               : { detail: truncateDetail(event.payload.detail) }),
@@ -1468,11 +1464,7 @@ export function runtimeEventToActivities(
             // A Prime tool's itemId is a canonical path, so it stays behind the
             // same gate as the rest of the native detail.
             ...(primeAgentTool || event.itemId === undefined ? {} : { toolCallId: event.itemId }),
-            ...(primeAgentTool
-              ? toolLifecycleActivityStatus(event)
-              : event.payload.status
-                ? { status: event.payload.status }
-                : {}),
+            ...toolLifecycleActivityStatus(event),
             ...(primeAgentTool || !event.payload.detail
               ? {}
               : { detail: truncateDetail(event.payload.detail) }),

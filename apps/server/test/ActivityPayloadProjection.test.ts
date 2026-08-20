@@ -266,9 +266,16 @@ describe("superseded tool.updated snapshot dedup", () => {
       readonly title?: string;
       readonly detail?: string;
       readonly toolCallId?: string;
+      readonly payloadToolCallId?: string;
     } = {},
   ): OrchestrationThreadActivity {
-    const { turn = "turn-a", title = "File change", detail, toolCallId } = options;
+    const {
+      turn = "turn-a",
+      title = "File change",
+      detail,
+      toolCallId,
+      payloadToolCallId,
+    } = options;
     return {
       id: EventId.make(id),
       tone: "tool",
@@ -277,6 +284,7 @@ describe("superseded tool.updated snapshot dedup", () => {
       payload: {
         itemType: "file_change",
         title,
+        ...(payloadToolCallId ? { toolCallId: payloadToolCallId } : {}),
         ...(detail ? { detail } : {}),
         data: {
           ...(toolCallId ? { toolCallId } : {}),
@@ -315,6 +323,30 @@ describe("superseded tool.updated snapshot dedup", () => {
 
     // Same itemType/title, different call: only call-a's update is superseded.
     expect(projectedIds([otherCall, update, completed])).toEqual([otherCall.id, completed.id]);
+  });
+
+  it("matches on a payload-level toolCallId, even when details differ", () => {
+    // `preserve tool lifecycle identity` (#7151) sets `payload.toolCallId` on
+    // every tool activity, and the identity prefers it over the
+    // itemType/title/detail triple. That is deliberately broader than the
+    // fallback: updates whose detail differs from the completion's — an
+    // accumulating command output, say — now collapse into it. The clients read
+    // only `data.toolCallId`, so they keep those rows live and the snapshot
+    // does not. Change this expectation only on purpose.
+    const first = makeToolLifecycleActivity("upd-1", "tool.updated", {
+      payloadToolCallId: "call-x",
+      detail: "writing 1/3",
+    });
+    const second = makeToolLifecycleActivity("upd-2", "tool.updated", {
+      payloadToolCallId: "call-x",
+      detail: "writing 2/3",
+    });
+    const completed = makeToolLifecycleActivity("done-x", "tool.completed", {
+      payloadToolCallId: "call-x",
+      detail: "wrote 3 files",
+    });
+
+    expect(projectedIds([first, second, completed])).toEqual([completed.id]);
   });
 
   it("keeps updates with no matching completion", () => {
