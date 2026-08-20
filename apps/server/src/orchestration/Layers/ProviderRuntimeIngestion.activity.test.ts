@@ -555,8 +555,13 @@ describe("runtimeEventToActivities Prime tool lifecycle", () => {
       "codex-tool-update",
       "codex-tool-complete",
     ]);
-    expect(started?.payload).toMatchObject({ detail: "echo existing behavior" });
-    expect(started?.payload).not.toHaveProperty("status");
+    // `#7151` carries the adapter's status onto every tool lifecycle row, not
+    // just Prime's. These assertions previously described the behavior before
+    // that commit rather than guarding a Pylon invariant, so they follow it.
+    expect(started?.payload).toMatchObject({
+      detail: "echo existing behavior",
+      status: "inProgress",
+    });
     expect(updated?.payload).toMatchObject({
       status: "inProgress",
       detail: "existing progress",
@@ -568,8 +573,8 @@ describe("runtimeEventToActivities Prime tool lifecycle", () => {
     expect(completed?.payload).toMatchObject({
       detail: "existing result",
       data: { exitCode: 0 },
+      status: "completed",
     });
-    expect(completed?.payload).not.toHaveProperty("status");
 
     const fallbackSummaries = [
       runtimeEventToActivities({
