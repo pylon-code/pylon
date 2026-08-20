@@ -35,6 +35,7 @@ import {
 } from "@t3tools/client-runtime/connection";
 import { deriveReportedTurnCosts } from "@t3tools/client-runtime/state/turn-costs";
 import { canAskSessionSideQuestion } from "@t3tools/client-runtime/state/session-side-question";
+import { wasBootstrapThreadDeleted } from "@t3tools/client-runtime/errors";
 import {
   changeRequestAutoSettles,
   effectiveSettled,
@@ -5844,6 +5845,20 @@ function ChatViewContent(props: ChatViewProps) {
       }
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
+        if (isLocalDraftThread && draftId && wasBootstrapThreadDeleted(error)) {
+          const failedDraftSession = getDraftSession(draftId);
+          if (failedDraftSession?.threadId === threadIdForSend) {
+            setLogicalProjectDraftThreadId(
+              failedDraftSession.logicalProjectKey,
+              scopeProjectRef(failedDraftSession.environmentId, failedDraftSession.projectId),
+              draftId,
+              {
+                threadId: newThreadId(),
+                createdAt: new Date().toISOString(),
+              },
+            );
+          }
+        }
         setThreadError(
           threadIdForSend,
           error instanceof Error
