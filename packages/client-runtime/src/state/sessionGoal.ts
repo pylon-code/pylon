@@ -78,7 +78,7 @@ export function formatSessionGoalStatus(status: SessionGoalStatus): string {
     case "error":
       return "Error";
     case "idle":
-      return "Idle";
+      return "No goal";
   }
 }
 

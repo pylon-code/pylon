@@ -18,15 +18,34 @@ const snapshot = {
 };
 
 describe("session goal menu", () => {
-  it("presents bounded read-only goal status and usage", () => {
+  it("presents bounded agent-managed goal status and usage", () => {
     const actions = buildSessionGoalMenuActions(snapshot);
     expect(actions).toHaveLength(3);
-    expect(actions[0]).toMatchObject({ subtitle: "Objective · Read-only" });
+    expect(actions[0]).toMatchObject({ subtitle: "Objective · Managed in chat" });
     expect(actions[1]).toMatchObject({ title: "Active" });
     expect(actions[2]).toMatchObject({
       title: "1,250 / 10,000 tokens",
       subtitle: "2m 5s elapsed · 2 continuations",
     });
     expect(actions.every((action) => action.attributes.disabled)).toBe(true);
+  });
+
+  it("teaches users how to start an idle goal instead of showing empty usage", () => {
+    const actions = buildSessionGoalMenuActions({
+      ...snapshot,
+      active: false,
+      status: "idle",
+      objective: "",
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      continuationsUsed: 0,
+    });
+
+    expect(actions[0]).toMatchObject({ title: "No persistent goal is active." });
+    expect(actions[1]).toMatchObject({ title: "No goal" });
+    expect(actions[2]).toMatchObject({
+      title: "Start a persistent goal to …",
+      subtitle: "Ask the agent in chat",
+    });
   });
 });

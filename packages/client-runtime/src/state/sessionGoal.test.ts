@@ -10,6 +10,7 @@ import {
   boundSessionGoalObjective,
   deriveActiveSessionGoal,
   formatSessionGoalElapsed,
+  formatSessionGoalStatus,
   formatSessionGoalTokenUsage,
   supportsSessionGoalObservation,
 } from "./sessionGoal.ts";
@@ -129,5 +130,6 @@ describe("session goal state", () => {
       "1,250 / 10,000 tokens",
     );
     expect(formatSessionGoalElapsed(125)).toBe("2m 5s");
+    expect(formatSessionGoalStatus("idle")).toBe("No goal");
   });
 });

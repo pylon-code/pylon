@@ -1943,11 +1943,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   </ControlPillMenu>
                 ) : null}
                 {props.sessionGoal ? (
-                  <ControlPillMenu title="Session goal · Read-only" actions={sessionGoalActions}>
+                  <ControlPillMenu
+                    title="Session goal · Managed in chat"
+                    actions={sessionGoalActions}
+                  >
                     <ComposerToolbarButton
-                      accessibilityLabel={`Goal ${formatSessionGoalStatus(props.sessionGoal.status).toLowerCase()}. Read-only.`}
+                      accessibilityLabel={`Session goal ${formatSessionGoalStatus(props.sessionGoal.status).toLowerCase()}. Managed in chat.`}
                       icon="target"
-                      label={`Goal ${formatSessionGoalStatus(props.sessionGoal.status)}`}
+                      label={
+                        props.sessionGoal.status === "idle"
+                          ? "No goal"
+                          : `Goal ${formatSessionGoalStatus(props.sessionGoal.status)}`
+                      }
                     />
                   </ControlPillMenu>
                 ) : null}
@@ -2039,10 +2046,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   <ComposerToolbarButton
                     accessibilityLabel={
                       isReloadingSessionResources
-                        ? "Reloading session resources"
-                        : "Reload session resources"
+                        ? "Reloading session commands and resources"
+                        : "Reload session commands and resources after changing commands, skills, or prompts"
                     }
                     icon="arrow.clockwise"
+                    label={isReloadingSessionResources ? "Reloading…" : "Reload resources"}
                     disabled={sessionResourceReloadDisabled || isReloadingSessionResources}
                     onPress={() => void reloadSessionResources()}
                     showChevron={false}

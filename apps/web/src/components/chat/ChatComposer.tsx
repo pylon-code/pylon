@@ -144,6 +144,7 @@ import {
 } from "./composerProviderState";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { SessionGoalControl } from "./SessionGoalControl";
+import { SessionHarnessControl } from "./SessionHarnessControl";
 import { SessionInputQueueControl } from "./SessionInputQueueControl";
 import { resolveContextWindowModelDisplayName } from "./ContextWindowMeter.logic";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -288,8 +289,6 @@ import {
   LockIcon,
   LockOpenIcon,
   PenLineIcon,
-  LibraryIcon,
-  RefreshCwIcon,
   SparklesIcon,
   XIcon,
 } from "lucide-react";
@@ -1220,11 +1219,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     supportsSessionAgentDepth(activeSessionProviderStatus);
   const [isSettingSessionAgentDepth, setIsSettingSessionAgentDepth] = useState(false);
   const sessionAgentDepthAccessibleLabel =
-    sessionAgentDepth === null || (sessionAgentDepth.writable && sessionAgentDepth.settable)
+    sessionAgentDepth === null
       ? "Agent spawn depth"
-      : !sessionAgentDepth.writable
-        ? `Agent spawn depth ${sessionAgentDepth.maxDepth}, fixed by session policy`
-        : `Agent spawn depth ${sessionAgentDepth.maxDepth}, unavailable until the session is idle`;
+      : sessionAgentDepth.writable && sessionAgentDepth.settable
+        ? `Agent spawn depth ${sessionAgentDepth.maxDepth}`
+        : !sessionAgentDepth.writable
+          ? `Agent spawn depth ${sessionAgentDepth.maxDepth}, fixed by session policy`
+          : `Agent spawn depth ${sessionAgentDepth.maxDepth}, unavailable until the session is idle`;
   const sessionAgentDepthDisabled =
     !canSetSessionAgentDepth(activeSessionProviderStatus, sessionAgentDepth) ||
     activeThread?.session?.status !== "ready" ||
@@ -4026,75 +4027,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       <TooltipPopup side="top">Quick question</TooltipPopup>
                     </Tooltip>
                   ) : null}
-                  {showSessionAgentDepth && sessionAgentDepth !== null ? (
-                    <Tooltip>
-                      <Select
-                        value={String(sessionAgentDepth.maxDepth)}
-                        disabled={sessionAgentDepthDisabled}
-                        onValueChange={(value) => void setSessionAgentDepth(value)}
-                      >
-                        <TooltipTrigger
-                          render={
-                            <ComposerSelectControl
-                              className="font-medium"
-                              aria-label={sessionAgentDepthAccessibleLabel}
-                            />
-                          }
-                        >
-                          <ComposerControlIcon icon={BotIcon} opticalSize="large" />
-                          <SelectValue>Depth {sessionAgentDepth.maxDepth}</SelectValue>
-                        </TooltipTrigger>
-                        <SelectPopup alignItemWithTrigger={false}>
-                          {sessionAgentDepth.maxDepth > sessionAgentDepth.maxSettableDepth ? (
-                            <SelectItem
-                              value={String(sessionAgentDepth.maxDepth)}
-                              disabled
-                              className="min-w-56 py-2"
-                            >
-                              <div className="grid gap-0.5">
-                                <span className="font-medium text-foreground">
-                                  Depth {sessionAgentDepth.maxDepth}
-                                </span>
-                                <span className="text-muted-foreground text-xs leading-4">
-                                  Current provider setting · choose a bounded value below
-                                </span>
-                              </div>
-                            </SelectItem>
-                          ) : null}
-                          {Array.from(
-                            { length: sessionAgentDepth.maxSettableDepth + 1 },
-                            (_, maxDepth) => (
-                              <SelectItem
-                                key={maxDepth}
-                                value={String(maxDepth)}
-                                className="min-w-56 py-2"
-                              >
-                                <div className="grid gap-0.5">
-                                  <span className="font-medium text-foreground">
-                                    Depth {maxDepth}
-                                  </span>
-                                  <span className="text-muted-foreground text-xs leading-4">
-                                    {maxDepth === 0
-                                      ? "Do not spawn recursive agents"
-                                      : maxDepth === 1
-                                        ? "Allow direct child agents"
-                                        : `Allow up to ${maxDepth} recursive levels`}
-                                  </span>
-                                </div>
-                              </SelectItem>
-                            ),
-                          )}
-                        </SelectPopup>
-                      </Select>
-                      <TooltipPopup side="top">
-                        {!sessionAgentDepth.writable
-                          ? `Agent spawn depth ${sessionAgentDepth.maxDepth}, fixed by session policy`
-                          : sessionAgentDepth.settable
-                            ? "Agent spawn depth for future subagents"
-                            : `Agent spawn depth ${sessionAgentDepth.maxDepth}, unavailable until the session is idle`}
-                      </TooltipPopup>
-                    </Tooltip>
-                  ) : null}
                   {showSessionInputQueueModes && sessionInputQueue ? (
                     <SessionInputQueueControl
                       snapshot={sessionInputQueue}
@@ -4133,48 +4065,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       </TooltipPopup>
                     </Tooltip>
                   ) : null}
-                  {sessionResourceInventory !== null ? (
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <ComposerControl
-                            type="button"
-                            aria-label={`Session resources: ${sessionResourceInventory.skills.length} skills, ${sessionResourceInventory.prompts.length} prompts`}
-                            onClick={() => setIsSessionResourcesOpen(true)}
-                          />
-                        }
-                      >
-                        <ComposerControlIcon icon={LibraryIcon} />
-                        <span className="text-xs font-medium">
-                          Resources ·{" "}
-                          {sessionResourceInventory.skills.length +
-                            sessionResourceInventory.prompts.length}
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipPopup side="top">
-                        Browse saved session skills and prompts
-                      </TooltipPopup>
-                    </Tooltip>
-                  ) : showSessionResourceReload ? (
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <ComposerControl
-                            type="button"
-                            aria-label="Reload session resources"
-                            disabled={sessionResourceReloadDisabled || isReloadingSessionResources}
-                            onClick={() => void reloadSessionResources()}
-                          />
-                        }
-                      >
-                        <ComposerControlIcon icon={RefreshCwIcon} />
-                      </TooltipTrigger>
-                      <TooltipPopup side="top">
-                        {isReloadingSessionResources
-                          ? "Reloading session resources…"
-                          : "Reload session commands and resources"}
-                      </TooltipPopup>
-                    </Tooltip>
+                  {showSessionAgentDepth ||
+                  sessionResourceInventory !== null ||
+                  showSessionResourceReload ? (
+                    <SessionHarnessControl
+                      agentDepth={showSessionAgentDepth ? sessionAgentDepth : null}
+                      agentDepthDisabled={sessionAgentDepthDisabled}
+                      agentDepthAccessibleLabel={
+                        showSessionAgentDepth ? sessionAgentDepthAccessibleLabel : null
+                      }
+                      resourceInventory={sessionResourceInventory}
+                      showResourceReload={showSessionResourceReload}
+                      resourceReloadDisabled={sessionResourceReloadDisabled}
+                      isReloadingResources={isReloadingSessionResources}
+                      onSetAgentDepth={(maxDepth) => void setSessionAgentDepth(String(maxDepth))}
+                      onOpenResources={() => setIsSessionResourcesOpen(true)}
+                      onReloadResources={() => void reloadSessionResources()}
+                    />
                   ) : null}
                 </div>
 
