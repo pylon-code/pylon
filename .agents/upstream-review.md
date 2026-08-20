@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "a850895f6833b99d90fc6c50192b5eaa4966d5c7"
-reviewed-through-date: "2026-08-19"
+reviewed-through: "beab6886f45bf42906d0bd01aefe5dfe9e66a867"
+reviewed-through-date: "2026-08-20"
 ---
 
 # T3 upstream review log
@@ -1871,6 +1871,81 @@ unioned; the `legacy-plan-mode` settings-search id is registered against
 F6 and H1 stay in their original batch tables as historical record — they
 describe what was decided then. This entry is what supersedes them.
 
+## 2026-08-20 — `a850895f6833b99d90fc6c50192b5eaa4966d5c7..beab6886f45bf42906d0bd01aefe5dfe9e66a867`
+
+Eight upstream commits, four change sets. **Six adopted** onto
+`upstream/2026-08-20-batch`; **two deferred** (see DEF-5). `git cherry` reported every
+one absent from Pylon. The register was empty going in and gains one entry.
+
+**`#7602` closes the canary follow-up opened by the second 2026-08-19 batch.** It moves
+`@clerk/electron` to stable `0.0.34`, `@clerk/electron-passkeys` back to `0.0.3`, and
+deletes all four platform-specific native canary entries from `minimumReleaseAgeExclude`.
+Verified against the condition the ledger recorded: `npm view @clerk/electron dist-tags`
+now reports `latest: 0.0.34`. Pylon no longer ships prerelease native binaries, and the
+"only darwin-arm64 was ever exercised" risk retires with them.
+
+**`#7150` and `#7152` are deferred, not skipped.** `#7150` rewrites 1084 lines of
+`ChatComposer.tsx` — a file with 50 Pylon commits, structurally divergent at 4837 lines
+against upstream's 2824. A full pass was made: all 11 conflict blocks were classified and
+individually resolved, keeping Pylon's settle loop, `resolvedRuntimeMode`, the 169 lines
+of Quick question and session-resource controls, and the ThreadHandoffTab wrapper, while
+taking upstream's drawer measurement and its 335-line drawer structure. The result did
+not compile — 8 JSX errors — because upstream flattens the fragment and nested
+provider-frame divs into one `<form>` and its added tree cannot be hosted by Pylon's
+layers. The two are ends of one restructure. `#7152` then conflicts on
+`MessagesTimeline` because it genuinely depends on `#7150`.
+
+**One conflict resolution leaked a secret and Pylon's own test caught it.** Adopting
+`#7151` as a plain union put upstream's unconditional `toolCallId: event.itemId` beside
+Pylon's `primeAgentTool` gating rather than behind it. A Prime tool's itemId is a
+canonical filesystem path, so the projection began carrying
+`canonical-prime-tool-/private/native-secret` — exactly what the gating exists to
+withhold. Fixed in `0d70d9aec`; the guarding assertion lives in
+`ProviderRuntimeIngestion.test.ts`.
+
+Conflicts and adaptations, all resolved Pylon-first:
+
+| File                                                               | Conflict                                                                                                                          | Resolution                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts` | `#7151` adds `toolCallId`, `status`, and `data` spreads to three tool payloads; Pylon gates the same payloads on `primeAgentTool` | `toolCallId` placed behind Pylon's gate; upstream's `status` kept for non-Prime alongside Pylon's derived Prime status; `tool.started` regained upstream's `data`. A later review collapsed the status ternary — both arms were identical. |
+
+Review and validation:
+
+- 4 changed test files, **115 tests, 0 failures**; the projection suite is 20 after the
+  test added below. Typecheck clean across 7 packages, each confirmed to have run.
+- Validated live in the web client against a seeded copy of real data: pairing, thread
+  view, the Usage page including the "Hourly cost by provider" chart, and Settings →
+  Appearance with its theme list and Import theme. No error surfaces anywhere.
+  **Not verified:** `#7595`'s chronological hour ordering — the chart exposes no hour
+  labels to the DOM, so ordering could not be asserted from the browser.
+- An xhigh review produced 13 findings. Two were fixed in `2cf95d544`. The rest are
+  upstream design decisions adopted as-is; the ones worth acting on later are below.
+
+Open questions raised by this batch:
+
+- **The snapshot dedupe widened.** `toolLifecycleIdentity` now prefers a payload-level
+  `toolCallId`, and `#7151` sets one on every tool activity, so identity is `id:<itemId>`
+  where it used to fall back to itemType/title/detail. The clients read only
+  `data.toolCallId` (`session-logic.ts` `extractToolCallId`, mobile's
+  `deriveToolLifecycleCollapseKey`), so they cannot mirror it: in-flight rows with
+  differing details render live and collapse after a reload. A test now pins the
+  behavior; whether it is the behavior Pylon wants is undecided. The doc comment on
+  `dropSupersededToolUpdatedActivities` still asserts an invariant measured under the old
+  identity.
+- ~~`toolLifecycleIdentity`'s fallback joins with no separator.~~ **Withdrawn — false
+  positive.** The separator is a unit-separator character, which is invisible in source
+  output, so the call reads as `join("")` in a terminal and in review tooling; `cat -v`
+  shows the real `join("^_")`. Pylon and upstream are byte-identical here. Recorded so
+  the same illusion does not get re-reported.
+- **`tool.started` now persists the provider's full unprojected `data`.** The
+  `item.updated` branch wraps in `projectActivityPayload`; `tool.started` does not, so a
+  large Write stores the whole body — and both clients skip `tool.started` rows entirely.
+- **`#7642` doubles `MAX_UNCOMPRESSED_BYTES` to 100 MB** and raises `MAX_ZIP_ENTRIES`, a
+  relaxation of an anti-zip-bomb guard, to accommodate extensions shipping `node_modules`
+  the importer never reads. Bounding only the theme payload would fix the class.
+- **`#7595` made the Past-24h empty state unreachable**: `hours` is always 24 entries, so
+  an idle day renders 24 `$0.00` rows instead of "No activity in this window."
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
@@ -1888,5 +1963,6 @@ Every review must read this register before reporting new candidates,
 re-evaluate each `Revisit when` against the current upstream head, and report
 the outcome. See Phase 2.5 of the `review-t3-upstream` skill.
 
-| ID  | Upstream | Deferred on | Revisit when | Why deferred |
-| --- | -------- | ----------- | ------------ | ------------ |
+| ID    | Upstream                                  | Deferred on | Revisit when                                                                                                                                                                                                                                                                                                                 | Why deferred                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ----- | ----------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DEF-5 | `#7150` `792a1404f` + `#7152` `4a9edff4c` | 2026-08-20  | Whenever the composer is next worked on deliberately. This is scheduled work, not a bet on upstream changing, so there is no waiting condition to poll. Before starting, check `git log --oneline 792a1404f..t3code-upstream/main -- apps/web/src/components/chat/ChatComposer.tsx` for follow-ups that should land with it. | `#7150` rewrites 1084 lines of `ChatComposer.tsx` against 50 Pylon commits and a 4837-vs-2824 line divergence. A full block-by-block resolution compiled to 8 JSX errors: upstream flattens the fragment and provider-frame divs into one `<form>`, so its 335-line drawer tree cannot be hosted by Pylon's layers. Needs the composer rebuilt on upstream's structure with Pylon's ThreadHandoffTab, provider frame classes, settle loop, `resolvedRuntimeMode`, and Quick question / session-resource controls grafted back. `#7152` depends on it. |
