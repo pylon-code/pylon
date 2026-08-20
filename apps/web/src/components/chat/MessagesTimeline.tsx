@@ -557,13 +557,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       latestTurnId: latestTurn?.turnId ?? null,
       workingStepLabel,
     }),
-    [
-      activeTurnInProgress,
-      isRevertingCheckpoint,
-      isWorking,
-      latestTurn?.turnId,
-      workingStepLabel,
-    ],
+    [activeTurnInProgress, isRevertingCheckpoint, isWorking, latestTurn?.turnId, workingStepLabel],
   );
 
   // Stable renderItem — no closure deps. Row components read shared state
