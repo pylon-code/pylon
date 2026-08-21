@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "730ce9edd9873144c1d2b01e5f1c85414c3760ad"
+reviewed-through: "be7d35aaeb49a04483ec5e0d2284e8b5b70a3b6e"
 reviewed-through-date: "2026-08-21"
 ---
 
@@ -2039,13 +2039,111 @@ rewrote an unrelated `ids.includes` into a `Set` in `ProjectionSnapshotQuery.tes
 which was reverted to keep the batch scoped. Prefer `vp fmt` on the specific files, or
 review what `--fix` touched before committing.
 
+## 2026-08-21 (second) — `730ce9edd9873144c1d2b01e5f1c85414c3760ad..be7d35aaeb49a04483ec5e0d2284e8b5b70a3b6e`
+
+Twenty-three upstream commits, twenty-one change sets, plus DEF-6 coming due. **Twenty
+adopted** onto `upstream/2026-08-21-second-batch`; **three skipped**. `git cherry` reported
+every one absent from Pylon. The register had one entry going in and is empty coming out.
+
+**DEF-6 came due and was adopted.** `#7725` (`fe875020`) is the reconciliation the deferral
+was waiting for: it deletes the `enables every built-in provider by default` test that
+contradicted `enables only the stable bindings by default`, and updates the survivor to
+expect `cursor: true`. Upstream's head is self-consistent again. Re-probed exactly as the
+register instructed — `#7089` + `#7725` cherry-picked onto a scratch branch, 39/39 pass in
+`settings.test.ts`, which a repo-wide grep confirms is the only place asserting a cursor
+default. Net effect: Cursor is probed on fresh installs again, while `#7459`'s substance
+survives because Grok and OpenCode stay `false`.
+
+| ID    | Upstream                                 | Decision | Pylon commit             | Notes                                                                                                                                                                                                                                |
+| ----- | ---------------------------------------- | -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| DEF-6 | `#7089` + `#7725`                        | adopted  | `c438de541`, `2492437f9` | Retires the register's only entry. See above.                                                                                                                                                                                        |
+| CS-1  | `#7103` `1afe5545b`, `#7676` `6d5c6c4a6` | adopted  | `988e0c902`, `94757c591` | Pinned threads stop jumping and reshuffling after a drag. Directly serves a Pylon feature — pinning carries Pylon's own renumbered migrations 037/040.                                                                               |
+| CS-2  | `#7292` `f3fcfe1f6`                      | adopted  | `80ec5302b`              | Sidebar provider icons resolve per environment. Default instance ids are driver slugs, so the old flat map collided across environments — a bug Pylon's remote/multi-environment emphasis makes likelier to hit.                     |
+| CS-3  | `#7277` `ce8ca5bb3`                      | adopted  | `5b7f961d6`              | Thread-jump hints hide while the terminal has focus, instead of advertising a shortcut that types into the shell.                                                                                                                    |
+| CS-4  | `#6519` `e2697d63e`                      | adopted  | `f469c0875`              | Scrolling back to the live edge resumes following the stream, by releasing the send-time anchor that kept `maintainScrollAtEnd` off.                                                                                                 |
+| CS-5  | `#7737` `e723501227`                     | adopted  | `e7c269276`              | Skills listed in the composer slash menu, web and mobile.                                                                                                                                                                            |
+| CS-6  | `#7740` `68966c1e6`                      | adopted  | `0b2756131`              | Space above the composer shoulder tabs; collapses two duplicated four-term conditions into `showShoulderTabs`.                                                                                                                       |
+| CS-7  | `#7741` `6d3bf01b4`                      | adopted  | `81f2c6905`              | File-link tooltips show the full path instead of repeating the chip.                                                                                                                                                                 |
+| CS-8  | `#7485` `18f6d0348`                      | adopted  | `aa578a97e`              | Terminal encodes shifted characters correctly via `ghosttyConsumedMods`.                                                                                                                                                             |
+| CS-9  | `#7561` `be7d35aae`                      | adopted  | `5570d4793`              | Preview loading bar moves from a rAF/React-state loop to a CSS `scaleX` animation and deletes `useLoadingProgress`. Finite, compositor-driven, honors `prefers-reduced-motion` — consistent with Pylon's no-continuous-repaint rule. |
+| CS-10 | `#7580` `f0fb83aff`                      | adopted  | `23a2bf262`              | Theme library buttons, search, and import dialog polish.                                                                                                                                                                             |
+| CS-11 | `#7697` `20e5a3396`                      | adopted  | `76bec3343`              | **Security.** Pylon accepted any `vscode:`/`cursor:`/`windsurf:` URL for the OS handler; this narrows it to a `vscode-remote` host with an `/ssh-remote+` path and no embedded credentials.                                          |
+| CS-12 | `#7659` `4bdbd8ce1`                      | adopted  | `5de72ea62`              | Keeps `gpt-daybreak-*` out of the legacy-model bucket.                                                                                                                                                                               |
+| CS-13 | `#6409` `820e5639c`                      | adopted  | `8a6eda454`              | HTML assets served with `charset=utf-8`.                                                                                                                                                                                             |
+| CS-14 | `#6326` `12c497083`                      | adopted  | `ba96e0601`              | `git worktree add` gets 300s instead of 30s; a 375k-file repo takes ~40s.                                                                                                                                                            |
+| CS-15 | `#7760` `549201fcf`                      | adopted  | `5b786060c`, `b83d50ad8` | GitHub clones default to HTTPS and `owner/repo` normalizes to a GitHub URL. User-visible, so `docs/user/source-control.md` gained a line.                                                                                            |
+| CS-16 | `#7286` `d7b9a689f`                      | adopted  | `7a3e8ed8a`              | CI parallelization. **Manual port, not a cherry-pick** — see below.                                                                                                                                                                  |
+| CS-17 | `#7283` `8f7da3b99`                      | skipped  | —                        | Gates the macOS native lint runner on native paths. **Pylon already solved this**, better: PR #51 moved the check into its own `ci-mobile-native.yml` with a native GitHub path filter, no gate job and no extra action dependency.  |
+| CS-18 | `#7762` `9f12eab38`                      | adopted  | `b0b551d3f`              | CI guard, gitignore, and AGENTS.md rule rejecting committed `.github/pr-assets/`. Pylon had none, so this is pure prevention.                                                                                                        |
+| CS-19 | `#7665` `9167622a4`                      | adopted  | `ca5114ee3`, `044f511f9` | Plans out of the repository. Developer chose full adoption. See below.                                                                                                                                                               |
+| CS-20 | `#7728` `7107a98a2`                      | skipped  | —                        | Vouches two upstream contributors. `.github/VOUCHED.td` is fork governance; Pylon's list already diverges by 5 insertions / 18 deletions.                                                                                            |
+| CS-21 | `#7658` `45a2c4b2a`                      | skipped  | —                        | Upstream's user count 100k → 200k. Pylon's AGENTS.md prose is fork-specific.                                                                                                                                                         |
+
+**CS-19 was larger than its commit title.** `#7665` reads as a deletion but also adds
+`docs/internals/work-artifacts.md`, an AGENTS.md "Plans and work artifacts" section, a
+`docs/README.md` index entry, a `vite.config.ts` ignore-pattern removal, and two test
+fixtures that referenced `.plans/` paths. Upstream deleted 32 files; Pylon tracked 34. The
+two survivors — `prime-agent-integration.md` and `prime-agent-native-parity.md` — are live
+design documents for a shipping Pylon provider, not abandoned intentions, so the adopted
+policy's own rule applied: durable architecture goes to `docs/internals/`. They moved there
+and were added to the docs index, rather than being deleted or stranded as tracked files
+inside a now-gitignored directory.
+
+**CS-16 is the only hand-written change here.** Pylon's `ci.yml` had diverged too far for
+upstream's diff to apply. Ported: `--parallel` for the non-server suites, three shards for
+`apps/server` (278 test files at `fileParallelism: false`, up from upstream's 239), and Rust
+split into its own 4vcpu job. Two Pylon-first departures:
+
+- The transfer-result upload keeps `continue-on-error: true` from Pylon's own #9 fix **and**
+  gains upstream's presence gate. They guard different failures — the gate stops the two
+  shards that legitimately produce nothing from racing for the artifact name; the flag stops
+  an exhausted org artifact quota from failing a run whose tests passed. Taking either alone
+  would have lost a real protection.
+- Both test jobs pass `--fail-if-no-match`, which upstream does not use. Without it a filter
+  matching no package only warns and exits 0 — exactly the silent no-op AGENTS.md warns
+  about, and a renamed package would turn a test job green having tested nothing.
+
+Conflicts, all resolved Pylon-first:
+
+| File                        | Conflict                                                                                               | Resolution                                                                                                                                                                                               |
+| --------------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ChatComposer.tsx`          | Pylon wraps the form in a fragment for `ThreadHandoffTab`, shifting every line by two spaces           | Kept Pylon's tree, applied upstream's three edits by hand with a byte-level script — the file holds six NUL bytes that defeat `grep` without `-a`, and the merged result matches upstream's own +14/-11. |
+| `providerInstances.test.ts` | Pylon's `rateLimit` and upstream's `accentColor` are adjacent optional spreads in the same test helper | Both kept; git had already merged the input type union cleanly.                                                                                                                                          |
+| `MessagesTimeline.test.tsx` | Upstream's new end-following test lands exactly where Pylon's revert-capability test sits              | Both kept.                                                                                                                                                                                               |
+
+Validation:
+
+- 19 test files / 374 tests across web, contracts, client-runtime, desktop, mobile, and the
+  two touched server suites — all pass.
+- Typecheck clean across 6 packages, each confirmed to have run. The remaining diagnostics
+  are pre-existing Effect `suggestion` hints in files this batch never touched.
+- `actionlint` on the rewritten `ci.yml` reports nothing beyond the pre-existing unknown
+  Blacksmith runner labels.
+- The sharded server command was run locally before being trusted in CI.
+
+Recorded, not fixed: `ThemeSearchSection.tsx`'s search effect carries a comment saying
+`installingId` and `sortBy` are "deliberately not dependencies" when `installingId` is in
+the dependency array — only `sortBy` is omitted — above an
+`// eslint-disable-next-line react-hooks/exhaustive-deps` that is inert, because this repo
+lints with oxlint. `vp check` on the file reports no warnings, and our copy is byte-identical
+to upstream's, so correcting the comment would trade a clean file for divergence. Left for
+upstream to fix, the same way `#7718` handed back `#7595`'s defect for free this batch.
+
+Known follow-up, deliberately not in this batch: `docs/internals/work-artifacts.md` arrives
+carrying the `> For maintainers. Using T3 Code? See docs/user` banner. That is not a
+regression this batch introduced — every sibling in `docs/internals/` already carries the
+same line, so the new file matches its neighbours. Fixing one file would leave the set
+inconsistent; the whole `docs/internals/` banner sweep belongs in a dedicated branding PR.
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
 (see the sixth batch above). DEF-3 and DEF-4 were opened and closed on
 2026-08-18: the 2026-08-18 batch review found them, the batch shipped without
 them so the adoption stayed faithful, and `fix/pull-request-quota-followups`
-fixed both the same day. Entries are removed once adopted, skipped, or fixed._
+fixed both the same day. DEF-6 was opened 2026-08-21 and adopted the same
+day, once `#7725` reconciled the tests it was blocked on. Entries are removed
+once adopted, skipped, or fixed._
 
 Upstream work that has been reviewed and consciously _not_ adopted yet, with
 the condition that should trigger a fresh look. Entries stay here until they
@@ -2056,6 +2154,5 @@ Every review must read this register before reporting new candidates,
 re-evaluate each `Revisit when` against the current upstream head, and report
 the outcome. See Phase 2.5 of the `review-t3-upstream` skill.
 
-| ID    | Upstream            | Deferred on | Revisit when                                                                                                                                                             | Why deferred                                                                                                                                                                              |
-| ----- | ------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| DEF-6 | `#7089` `730ce9edd` | 2026-08-21  | When upstream's CI goes green on or after this commit. Check with `gh run list --repo pingdotgg/t3code --branch main --limit 12 --json headSha,name,conclusion --jq '.[] | select(.name=="CI")'`— it is failing at`730ce9edd`and green at`5ff5f735e`. Re-probe before adopting: cherry-pick onto a scratch branch and run `packages/contracts/src/settings.test.ts`. | Flips Cursor's default to `true` and adds `enables every built-in provider by default`, which expects `grok` and `opencode` enabled while upstream's schema has both `false` and the existing `enables only the stable bindings by default` expects all three `false`. The two tests cannot both pass; upstream's main is red because of it. Probed onto Pylon: applies clean, both tests fail. Also partially reverses `#7459`, adopted 2026-08-19. |
+| ID  | Upstream | Deferred on | Revisit when | Why deferred |
+| --- | -------- | ----------- | ------------ | ------------ |

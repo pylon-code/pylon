@@ -1,5 +1,7 @@
 # Prime Agent native parity plan
 
+> For maintainers. Using T3 Code? See [docs/user](../user/).
+
 ## Acceptance bar
 
 The ACP provider on this branch is a validated compatibility fallback, not the finished integration. The finished first-party provider must expose every stable, machine-facing Prime Agent capability that makes sense in Pylon, keep unsupported Prime API gaps explicit, and preserve the same server-owned behavior for local, desktop, hosted web, relay/tunnel, and mobile clients.
