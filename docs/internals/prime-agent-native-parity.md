@@ -1,6 +1,6 @@
 # Prime Agent native parity plan
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using Pylon? See [docs/user](../user/).
 
 ## Acceptance bar
 
