@@ -20,6 +20,9 @@ Pylon works with the platforms your team already uses:
 - Open the Command Palette (`Cmd/Ctrl + K`) → **Add Project**
 - Choose **GitHub repository**, **GitLab repository**, **Bitbucket repository**, **Azure DevOps repository**, or paste any **Git URL**
 - Enter the repository path (`owner/repo`, `group/project`, `workspace/repository`, or `project/repository`) or a full Git URL, pick a destination, and start coding
+- GitHub repositories clone over HTTPS, so a working `gh auth login` is all you need and no SSH key
+  setup is required. GitLab, Bitbucket, and Azure DevOps still clone over SSH. Paste a full
+  `git@` URL to force SSH for any provider
 
 **Publish local projects to the cloud**
 
