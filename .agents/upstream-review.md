@@ -2121,6 +2121,14 @@ Validation:
   Blacksmith runner labels.
 - The sharded server command was run locally before being trusted in CI.
 
+Recorded, not fixed: `ThemeSearchSection.tsx`'s search effect carries a comment saying
+`installingId` and `sortBy` are "deliberately not dependencies" when `installingId` is in
+the dependency array — only `sortBy` is omitted — above an
+`// eslint-disable-next-line react-hooks/exhaustive-deps` that is inert, because this repo
+lints with oxlint. `vp check` on the file reports no warnings, and our copy is byte-identical
+to upstream's, so correcting the comment would trade a clean file for divergence. Left for
+upstream to fix, the same way `#7718` handed back `#7595`'s defect for free this batch.
+
 Known follow-up, deliberately not in this batch: `docs/internals/work-artifacts.md` arrives
 carrying the `> For maintainers. Using T3 Code? See docs/user` banner. That is not a
 regression this batch introduced — every sibling in `docs/internals/` already carries the
