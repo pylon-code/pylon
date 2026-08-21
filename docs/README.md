@@ -36,6 +36,8 @@ policy in [CONTRIBUTING.md](../CONTRIBUTING.md); agent rules in [AGENTS.md](../A
 - [Environment auth](./internals/environment-auth.md)
 - [Pylon Connect](./internals/t3-connect.md)
 - [CI gates](./internals/ci.md)
+- [Prime Agent native parity](./internals/prime-agent-native-parity.md)
+- [Prime Agent integration investigation](./internals/prime-agent-integration.md)
 - [Engineering work artifacts](./internals/work-artifacts.md)
 
 ### Runbooks
