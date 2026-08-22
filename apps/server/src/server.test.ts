@@ -5268,6 +5268,58 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("stamps the connecting client's origin onto commands it dispatches", () =>
+    Effect.gen(function* () {
+      const origins: Array<unknown> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (_command, options) =>
+              Effect.sync(() => origins.push(options?.origin)).pipe(Effect.as({ sequence: 1 })),
+          },
+        },
+      });
+
+      const createThreadCommand = (commandId: CommandId, threadId: ThreadId) =>
+        ({
+          type: "thread.create",
+          commandId,
+          threadId,
+          projectId: defaultProjectId,
+          title: "Origin test",
+          modelSelection: defaultModelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }) as const;
+
+      const wsUrl = yield* getWsServerUrl("/ws?clientSurface=mobile&clientAppVersion=1.2.3");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand](
+            createThreadCommand(CommandId.make("cmd-origin"), ThreadId.make("thread-origin")),
+          ),
+        ),
+      );
+
+      // A client that announces nothing must not manufacture an empty origin:
+      // absent stays absent so old clients read as unattributed, not as "web".
+      const bareWsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(bareWsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand](
+            createThreadCommand(CommandId.make("cmd-bare"), ThreadId.make("thread-bare")),
+          ),
+        ),
+      );
+
+      assert.deepEqual(origins, [{ surface: "mobile", appVersion: "1.2.3" }, undefined]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("routes websocket rpc projects.writeFile errors", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

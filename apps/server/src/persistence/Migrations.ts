@@ -56,6 +56,7 @@ import Migration0041 from "./Migrations/041_ProjectionProjectsDefaultThreadEnvMo
 import Migration0042 from "./Migrations/042_ProjectionProjectFaviconPath.ts";
 import Migration0043 from "./Migrations/043_ProjectionThreadSessionLifecycle.ts";
 import Migration0044 from "./Migrations/044_RepairProjectsDefaultThreadEnvMode.ts";
+import Migration0045 from "./Migrations/045_AuthSessionClientConnection.ts";
 /**
  * Migration loader with all migrations defined inline.
  *
@@ -124,6 +125,10 @@ export const migrationEntries = [
   // record 41 as their high water mark, so they skip 41 above and never gain
   // `default_thread_env_mode`. This re-adds it from above the mark.
   [44, "RepairProjectsDefaultThreadEnvMode", Migration0044],
+  // Upstream shipped this as 41 (pingdotgg/t3code#7774). Pylon already holds 41
+  // through 44, so it lands here instead. Reusing 41 would let environments that
+  // already recorded it silently skip these columns.
+  [45, "AuthSessionClientConnection", Migration0045],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
