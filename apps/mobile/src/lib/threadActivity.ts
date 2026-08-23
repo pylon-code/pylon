@@ -1173,9 +1173,13 @@ function deriveThreadFeedTurnFolds(
   feed: ReadonlyArray<ThreadFeedEntry>,
   latestTurn: ThreadFeedLatestTurn | null,
 ): ReadonlyMap<string, ThreadFeedTurnFold> {
+  const firstAssistantMessageIdByTurn = new Map<TurnId, string>();
   const terminalAssistantMessageIdByTurn = new Map<TurnId, string>();
   for (const entry of feed) {
     if (entry.type === "message" && entry.message.role === "assistant" && entry.message.turnId) {
+      if (!firstAssistantMessageIdByTurn.has(entry.message.turnId)) {
+        firstAssistantMessageIdByTurn.set(entry.message.turnId, entry.id);
+      }
       terminalAssistantMessageIdByTurn.set(entry.message.turnId, entry.id);
     }
   }
@@ -1223,11 +1227,13 @@ function deriveThreadFeedTurnFolds(
       continue;
     }
 
+    const firstAssistantMessageId = firstAssistantMessageIdByTurn.get(turnId);
     const terminalAssistantMessageId = terminalAssistantMessageIdByTurn.get(turnId);
     const hiddenEntryIds = new Set(
       entries
         .filter(
           (entry) =>
+            entry.id !== firstAssistantMessageId &&
             entry.id !== terminalAssistantMessageId &&
             !(
               entry.type === "activity-group" &&
@@ -1241,8 +1247,9 @@ function deriveThreadFeedTurnFolds(
     }
 
     const firstEntry = entries[0];
+    const firstHiddenEntry = entries.find((entry) => hiddenEntryIds.has(entry.id));
     const lastEntry = entries.at(-1);
-    if (!firstEntry || !lastEntry) {
+    if (!firstEntry || !firstHiddenEntry || !lastEntry) {
       continue;
     }
     const terminalEntry = terminalAssistantMessageId
@@ -1271,9 +1278,9 @@ function deriveThreadFeedTurnFolds(
         ? `Worked for ${duration}`
         : "Worked";
 
-    foldsByAnchorId.set(firstEntry.id, {
+    foldsByAnchorId.set(firstHiddenEntry.id, {
       turnId,
-      createdAt: firstEntry.createdAt,
+      createdAt: firstHiddenEntry.createdAt,
       hiddenEntryIds,
       label,
     });

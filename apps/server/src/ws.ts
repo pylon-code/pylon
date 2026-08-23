@@ -15,9 +15,11 @@ import {
   type AuthAccessStreamEvent,
   type AuthEnvironmentScope,
   AuthSessionId,
+  ClientSurface,
   CommandId,
   type DiscoveredLocalServerList,
   EventId,
+  type OrchestrationClientOrigin,
   type OrchestrationCommand,
   type GitActionProgressEvent,
   type GitManagerServiceError,
@@ -369,8 +371,32 @@ function toAuthAccessStreamEvent(
   }
 }
 
+const isClientSurface = Schema.is(ClientSurface);
+const MAX_CLIENT_APP_VERSION_LENGTH = 64;
+
+// Optional client identity announced on the /ws upgrade URL next to wsTicket.
+// Lenient by design: absent or malformed values degrade to {} so a connection
+// never fails over attribution metadata.
+function readClientConnectionOrigin(
+  request: HttpServerRequest.HttpServerRequest,
+): OrchestrationClientOrigin {
+  const url = HttpServerRequest.toURL(request);
+  if (Option.isNone(url)) {
+    return {};
+  }
+  const surface = url.value.searchParams.get("clientSurface");
+  const appVersion = url.value.searchParams.get("clientAppVersion")?.trim() ?? "";
+  return {
+    ...(isClientSurface(surface) ? { surface } : {}),
+    ...(appVersion !== "" && appVersion.length <= MAX_CLIENT_APP_VERSION_LENGTH
+      ? { appVersion }
+      : {}),
+  };
+}
+
 const makeWsRpcLayer = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
+  clientOrigin: OrchestrationClientOrigin,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
 ) =>
   WsRpcGroup.toLayer(
@@ -379,6 +405,18 @@ const makeWsRpcLayer = (
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+      // Every command dispatched on this connection carries the connecting
+      // client's origin, including server-generated bootstrap sub-commands:
+      // the client's request caused them.
+      const hasClientOrigin =
+        clientOrigin.surface !== undefined || clientOrigin.appVersion !== undefined;
+      const dispatchFromClient: OrchestrationEngine.OrchestrationEngineShape["dispatch"] = (
+        command,
+      ) =>
+        orchestrationEngine.dispatch(
+          command,
+          hasClientOrigin ? { origin: clientOrigin } : undefined,
+        );
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
@@ -537,7 +575,7 @@ const makeWsRpcLayer = (
           activityId: serverEventId,
         }).pipe(
           Effect.flatMap(({ commandId, activityId }) =>
-            orchestrationEngine.dispatch({
+            dispatchFromClient({
               type: "thread.activity.append",
               commandId,
               threadId: input.threadId,
@@ -792,7 +830,7 @@ const makeWsRpcLayer = (
             createdThread
               ? serverCommandId("bootstrap-thread-delete").pipe(
                   Effect.flatMap((commandId) =>
-                    orchestrationEngine.dispatch({
+                    dispatchFromClient({
                       type: "thread.delete",
                       commandId,
                       threadId: command.threadId,
@@ -919,7 +957,7 @@ const makeWsRpcLayer = (
 
           const bootstrapProgram = Effect.gen(function* () {
             if (bootstrap?.createThread) {
-              yield* orchestrationEngine.dispatch({
+              yield* dispatchFromClient({
                 type: "thread.create",
                 commandId: yield* serverCommandId("bootstrap-thread-create"),
                 threadId: command.threadId,
@@ -966,7 +1004,7 @@ const makeWsRpcLayer = (
                 path: null,
               });
               targetWorktreePath = worktree.worktree.path;
-              yield* orchestrationEngine.dispatch({
+              yield* dispatchFromClient({
                 type: "thread.meta.update",
                 commandId: yield* serverCommandId("bootstrap-thread-meta-update"),
                 threadId: command.threadId,
@@ -978,7 +1016,7 @@ const makeWsRpcLayer = (
 
             yield* runSetupProgram();
 
-            return yield* orchestrationEngine.dispatch(finalTurnStartCommand);
+            return yield* dispatchFromClient(finalTurnStartCommand);
           });
 
           return yield* bootstrapProgram.pipe(
@@ -1018,13 +1056,11 @@ const makeWsRpcLayer = (
         const dispatchEffect =
           normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
             ? dispatchBootstrapTurnStart(normalizedCommand)
-            : orchestrationEngine
-                .dispatch(normalizedCommand)
-                .pipe(
-                  Effect.mapError((cause) =>
-                    toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
-                  ),
-                );
+            : dispatchFromClient(normalizedCommand).pipe(
+                Effect.mapError((cause) =>
+                  toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+                ),
+              );
 
         return startup
           .enqueueCommand(dispatchEffect)
@@ -2616,11 +2652,13 @@ export const websocketRpcRouteLayer = Layer.unwrap(
             failEnvironmentInternal("internal_error", error),
           ),
         );
+        const clientOrigin = readClientConnectionOrigin(request);
+        yield* sessions.recordClientConnection(session.sessionId, clientOrigin);
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           disableTracing: true,
         }).pipe(
           Effect.provide(
-            makeWsRpcLayer(session, previewAutomationBroker).pipe(
+            makeWsRpcLayer(session, clientOrigin, previewAutomationBroker).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(

@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "be7d35aaeb49a04483ec5e0d2284e8b5b70a3b6e"
-reviewed-through-date: "2026-08-21"
+reviewed-through: "30be31195883635aba96031a8d79c255fb28b438"
+reviewed-through-date: "2026-08-23"
 ---
 
 # T3 upstream review log
@@ -2135,6 +2135,126 @@ regression this batch introduced — every sibling in `docs/internals/` already 
 same line, so the new file matches its neighbours. Fixing one file would leave the set
 inconsistent; the whole `docs/internals/` banner sweep belongs in a dedicated branding PR.
 
+## 2026-08-23 — `be7d35aaeb49a04483ec5e0d2284e8b5b70a3b6e..30be31195883635aba96031a8d79c255fb28b438`
+
+Twenty-seven upstream commits, twenty-six change sets, **all adopted** onto
+`upstream/2026-08-23-batch`. `git cherry` reported every one absent from Pylon. A read-only
+`git merge-tree` probe predicted five conflicts before any branch existed; all five landed
+where predicted. The register was empty going in and is empty coming out.
+
+**One standing revisit condition was retired.** The 2026-08-04 `U-4326` row said "revisit
+when `#4326` merges". It never will: `#4326` is **closed, unmerged**. Pylon's manual port of
+provider usage limits is now permanently Pylon-owned code with no upstream form to reconcile
+against, so that row's condition is dead rather than pending. Recorded here because the row
+lives in a batch table, not the register, and would otherwise wait forever.
+
+| ID    | Upstream                                 | Decision                  | Pylon commit             | Notes                                                                                                                                                                          |
+| ----- | ---------------------------------------- | ------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CS-1  | `#7792` `0a46daaf6`                      | adopted                   | `88e258007`              | Timeline scrolls when a composer banner grows, instead of leaving messages behind it.                                                                                          |
+| CS-2  | `#7817` `837f6b871`                      | adopted                   | `05937cb19`              | Double-click the chat header title to rename a thread.                                                                                                                         |
+| CS-3  | `#7772` `292c6dd8c`                      | adopted                   | `e90d7c4c9`              | Model picker double border.                                                                                                                                                    |
+| CS-4  | `#7796` `9b5d41687`                      | adopted                   | `f7e146bcc`              | Tooltip on the sidebar un-settle button — a reverse state that was reachable but unlabelled.                                                                                   |
+| CS-5  | `#7809` `c3e37094e`                      | adopted                   | `be9d13ea4`              | Terminal codepoints convert in 4k chunks so a long combining-mark run stops blowing the spread-argument cap.                                                                   |
+| CS-6  | `#7821` `e0b4f4639`                      | adopted                   | `374ca28e4`              | Cmd+Enter creates a thread in the background. **Conflict** — see below.                                                                                                        |
+| CS-7  | `#7794` `b381fdb12`                      | adopted                   | `2be8f63e4`              | Launcher shortcuts stop hijacking the empty composer. **Pylon had already fixed this independently**; upstream's version won on merit — see below.                             |
+| CS-8  | `#7823` `44e4a7071`                      | adopted                   | `d7e881517`              | Project icons can come from outside the workspace. Widens `AssetAccess` past workspace-root containment — see below.                                                           |
+| CS-9  | `#7845` `592c5983c`                      | adopted                   | `4e09640f5`              | Terminal mouse-motion reports dedupe. Serves both Pylon principles at once: fewer frames and a smaller websocket payload.                                                      |
+| CS-10 | `#6633` `421088c27`                      | adopted                   | `f89682efd`              | Malformed thread-search keys decode to `Option.none` instead of throwing through the atom family.                                                                              |
+| CS-11 | `#7086` `035058a23`                      | adopted                   | `99ed4a893`              | Cloud environments filter on `isRelayManaged`, so a directly-saved backend stops hiding the cloud environment sharing its id. Doc comment reworded off "T3 Connect".           |
+| CS-12 | `#7774` `11f051373`                      | adopted (with adaptation) | `848d5e0c2`              | Client-origin plumbing. **Migration renumbered 041 → 045, and the three PostHog events were deliberately dropped** — see below.                                                |
+| CS-13 | `#7893` `ce91284f8`                      | adopted                   | `7da6053de`              | A tool group's failure indicator reflects its last entry rather than any entry, so a failure followed by a successful retry stops reading as failed. Visible behavior change.  |
+| CS-14 | `#6439` `f34b9d31b`                      | adopted                   | `67cd7461d`              | Command-click on folder links containing spaces.                                                                                                                               |
+| CS-15 | `#7897` `2274444e9`                      | adopted (with adaptation) | `3d49297ef`              | Anchor scan runs forward and stops at the first anchored item, so follow-ups stop jumping to the top. Web, mobile, and shared. Prop renamed for Pylon — see below.             |
+| CS-16 | `#7873` `0ede2ed0d`                      | adopted                   | `a3e109013`              | Drops a redundant release-note assertion.                                                                                                                                      |
+| CS-17 | `#7856` `2c4158f87`                      | adopted                   | `9d8f96d91`              | Wide ordered-list markers.                                                                                                                                                     |
+| CS-18 | `#7213` `49c2b4471`                      | adopted                   | `49566000e`              | Remote launch runs under `sh -l`, so the user's PATH loads and a provider CLI installed via a shell profile is found. Directly serves remote-ready.                            |
+| CS-19 | `#7116` `d9c1732b2`                      | adopted                   | `38822cbfc`              | A tailscale spawn defect no longer takes the advertised endpoints down with it. Pylon ships the tunnel path.                                                                   |
+| CS-20 | `#4503` `dedcd99a9`                      | adopted                   | `757dd45ae`              | Codex service-tier labels stay readable.                                                                                                                                       |
+| CS-21 | `#6433` `77c9d1eb5`, `#7940` `5a7a7cf29` | adopted                   | `2aa153361`, `9f4439aed` | Workspace images render in chat markdown (web, mobile, iOS native) and keep their intrinsic dimensions. `#7940` conflicts alone and applies cleanly once `#6433` lands.        |
+| CS-22 | `#7723` `6c693baec`                      | adopted                   | `0f6f2e5f5`              | A turn's first and terminal assistant messages both stay visible; only the middle folds. **Conflict** — see below.                                                             |
+| CS-23 | `#7906` `6e9c57f7b`                      | adopted                   | `622b8c0af`              | Appearance contrast control, 50–200%. Adds 82 `--contrast-*` variables as an indirection over the theme tokens — see below.                                                    |
+| CS-24 | `#7937` `4e00471d1`                      | adopted                   | `43b33c759`              | Codex `interacted` no longer re-marks a settled child as running, so completed threads stop showing "working".                                                                 |
+| CS-25 | `#7761` `4e169df1d`                      | adopted                   | `6409ff619`              | Duplicate provider-update progress.                                                                                                                                            |
+| CS-26 | `#7078` `30be31195`                      | adopted                   | `b29a20c0e`              | Base branch falls back to the remote's recorded default instead of assuming `main`. Pylon's own default branch is `pylon`, so this repository is squarely in the failing case. |
+
+**CS-12 landed as plumbing only, by explicit developer decision.** `#7774` ships two
+separable things: origin metadata (client surface and app version stamped onto auth sessions
+and orchestration event metadata) and three PostHog events — `client.connected`,
+`client.thread.started`, `client.turn.requested`. Pylon's `AnalyticsService` still defaults
+`T3CODE_POSTHOG_KEY` to **T3's** project key with telemetry enabled, so adopting the events
+as written would have reported every Pylon user's thread and turn activity into T3's
+analytics project. The metadata was kept and the three `analytics.record` calls dropped,
+along with the now-unused `clientOriginAnalyticsProps` helper, the service acquisition, and
+its import. Upstream's analytics test in `server.test.ts` was replaced with one covering what
+Pylon retains — that `clientSurface`/`clientAppVersion` on the `/ws` URL reach the dispatched
+command's origin, and that a client announcing nothing yields `undefined` rather than a
+manufactured empty origin. `OrchestrationEngine.test.ts`'s origin-stamping test was kept
+verbatim. The inherited PostHog key is a pre-existing condition this batch did not create and
+deliberately did not widen; it deserves its own PR.
+
+**CS-12 also collided on migration ids.** Upstream's `041_AuthSessionClientConnection` lands
+on Pylon's existing `041_ProjectionProjectsDefaultThreadEnvMode`. Pylon runs 41 through 44,
+so it was renumbered to **045**, matching the precedent set for 037–040. The migration file,
+its test file, and the test's `layer(...)` label were all renamed.
+
+**CS-7 is the one place upstream's version replaced working Pylon code.** Pylon had already
+fixed the empty-composer hijack inline, with a comment explaining that an empty
+contenteditable is still a typing context. Upstream's `#7794` extracts the same rule into an
+exported `surfaceShortcutTargetsTypingContext` whose selector is strictly more precise: the
+`:not([contenteditable="false"])` clause lets `closest` walk past a non-editable island to an
+editable host, where Pylon's `closest("[contenteditable]")` would stop at the island and
+suppress the shortcut. Upstream's comment carries the same reasoning Pylon's did, so nothing
+was lost by taking it, and the shared helper reduces future divergence.
+
+Conflicts, all resolved Pylon-first:
+
+| File                                                       | Conflict                                                                                                                | Resolution                                                                                                                                                                                                 |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ChatComposer.tsx`                                         | Pylon's four session-queue callbacks sit where `#7821` adds `intent` to `onSend`                                        | Both kept. Edited byte-wise: the file holds NUL bytes that make `grep` treat it as binary without `-a`.                                                                                                    |
+| `ChatView.tsx`                                             | `#7821`'s background-submission tracking wraps a `startThreadTurn` call Pylon had already split into a follow-up branch | `backgroundThreadRef` hoisted above Pylon's branch, since code below the conflict already referenced it. Safe because `background` requires `isLocalDraftThread`, which has no running turn to queue onto. |
+| `RightPanelTabs.tsx`                                       | Pylon's independent fix for the same bug                                                                                | Took upstream's helper on merit — see CS-7 above.                                                                                                                                                          |
+| `Migrations.ts`                                            | Upstream's new `041` against Pylon's `041`–`044`                                                                        | Renumbered to `045` with a comment recording why, matching the 037–040 precedent.                                                                                                                          |
+| `threadActivity.ts`                                        | `#7723`'s first-assistant exemption lands in the same fold loop as Pylon's `terminalResponseNotice` exemption           | Both guards kept; they compose.                                                                                                                                                                            |
+| `threadActivity.test.ts`, `MessagesTimeline.logic.test.ts` | Git interleaved two unrelated tests that occupy the same lines                                                          | Rebuilt both files from their sources rather than untangling the interleave: upstream's four edits reapplied to the shared test, upstream's new test inserted beside Pylon's, all tests preserved.         |
+
+Three defects that upstream's own CI would not have caught, because they only exist where
+Pylon has diverged. All three were found by reading verification output rather than trusting
+exit codes, and are fixed in `4626ce462`:
+
+- `#7821` inserts `submissionIntent` as `onSend`'s **second** parameter. Pylon already had
+  `directAnnotation` and `delivery` in positions 2 and 3, so Pylon's own `onQueueFollowUp`
+  caller silently passed `"follow-up"` into `directAnnotation`. `tsgo` reported this while
+  still exiting 0.
+- `#7897` reads `props.selectedThreadQueueCount` on `ThreadDetailScreen`. Pylon calls the same
+  value `localOutboxCount`; both are fed from `composer.selectedThreadQueueCount` at the route,
+  so only the name differs.
+- `#7774`'s migration test pinned upstream's ids — migrate to 40, then to 41. Under Pylon's
+  renumbering the columns are added at 45, so against upstream's ids the assertions ran
+  against a table that never gained them.
+
+Validation:
+
+- **2221 tests pass** across the touched suites: 766 web, 1062 server (including
+  `server.test.ts`), 393 across mobile, client-runtime, shared, contracts, ssh, and tailscale.
+  Zero failures in this worktree.
+- Every run also globs the nested worktrees under `.claude/`, `.prime/`, and `.superconductor/`,
+  which fail to collect for want of their own `node_modules`. Every reported failure was
+  confirmed to carry a `worktrees` path segment before the run was accepted. This is a
+  pre-existing vitest discovery quirk, not a defect in this batch.
+- Typecheck clean across all seven touched packages, each confirmed to have actually run.
+  Remaining server diagnostics are pre-existing Effect `suggestion` hints in files this batch
+  never touched.
+- `vp check` over all 139 changed TypeScript files: **0 errors, 3 warnings**, none introduced
+  here. `core.ts`'s `new Array(count)` is `#7809` verbatim; `contextMenuFallback.test.ts`'s
+  `no-this-alias` is identical in Pylon and upstream; `MessagesTimeline.tsx`'s dead
+  `workEntryIndicatesToolFailure` import is Pylon-only and predates this batch.
+- A stale pnpm hard copy of the local `t3-markdown-text` module masked `#6433`'s new exports
+  until `vp i` relinked it. Local-environment only; a clean CI install is unaffected.
+
+Not done, and deliberately: no real-client pass in web or mobile. `#6433`/`#7940` change iOS
+native markdown rendering and `#7906` restyles the token layer, so both warrant a look in a
+running client before release.
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
@@ -2142,8 +2262,10 @@ _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
 2026-08-18: the 2026-08-18 batch review found them, the batch shipped without
 them so the adoption stayed faithful, and `fix/pull-request-quota-followups`
 fixed both the same day. DEF-6 was opened 2026-08-21 and adopted the same
-day, once `#7725` reconciled the tests it was blocked on. Entries are removed
-once adopted, skipped, or fixed._
+day, once `#7725` reconciled the tests it was blocked on. The 2026-08-23 batch
+opened no new entries and left it empty; it did retire the dead `U-4326`
+revisit condition recorded in the 2026-08-04 table, since that pull request
+closed unmerged. Entries are removed once adopted, skipped, or fixed._
 
 Upstream work that has been reviewed and consciously _not_ adopted yet, with
 the condition that should trigger a fresh look. Entries stay here until they
