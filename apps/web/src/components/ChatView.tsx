@@ -7679,7 +7679,9 @@ function ChatViewContent(props: ChatViewProps) {
                             composerTerminalContextsRef={composerTerminalContextsRef}
                             composerElementContextsRef={composerElementContextsRef}
                             onSend={onSend}
-                            onQueueFollowUp={() => onSend(undefined, undefined, "follow-up")}
+                            onQueueFollowUp={() =>
+                              onSend(undefined, "foreground", undefined, "follow-up")
+                            }
                             onClearSessionInputQueue={onClearSessionInputQueue}
                             onRemoveOnlySessionInputQueueItem={onRemoveOnlySessionInputQueueItem}
                             onSetSessionInputQueueMode={onSetSessionInputQueueMode}

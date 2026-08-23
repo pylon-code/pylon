@@ -618,7 +618,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
         submittedMessageId: messageId,
         hasStartedTurn: props.selectedThread.latestTurn !== null,
         hasUserMessage,
-        queuedMessageCount: props.selectedThreadQueueCount,
+        queuedMessageCount: props.localOutboxCount,
       }),
     );
     composerEditorRef.current?.blur();
@@ -627,7 +627,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     anchorMessageId,
     props.onSendMessage,
     props.selectedThread.latestTurn,
-    props.selectedThreadQueueCount,
+    props.localOutboxCount,
     selectedThreadFeed,
     selectedThreadKey,
   ]);
