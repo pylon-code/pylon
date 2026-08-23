@@ -5,6 +5,6 @@ composer and shows how many characters need to be removed. Shorten the draft or 
 multiple messages, then send again in the same thread.
 
 On desktop, press `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux from a new thread to
-start it in the background. T3 Code opens another new thread and shows an **Open** action for the
+start it in the background. Pylon opens another new thread and shows an **Open** action for the
 thread that started. The new thread keeps the selected workspace mode and base branch. If **New
 worktree** is selected, each background thread creates its own worktree.
