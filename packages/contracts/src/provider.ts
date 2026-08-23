@@ -537,6 +537,28 @@ export class ProviderRespondToInteractionError extends Schema.TaggedErrorClass<P
     reason: Schema.Literals(["session-not-ready", "unsupported", "stale", "request-failed"]),
   },
 ) {}
+export const ProviderUploadFeedbackInput = Schema.Struct({
+  threadId: ThreadId,
+  reason: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderUploadFeedbackInput = typeof ProviderUploadFeedbackInput.Type;
+
+export const ProviderUploadFeedbackResult = Schema.Struct({
+  feedbackId: TrimmedNonEmptyString,
+});
+export type ProviderUploadFeedbackResult = typeof ProviderUploadFeedbackResult.Type;
+
+export class ProviderUploadFeedbackError extends Schema.TaggedErrorClass<ProviderUploadFeedbackError>()(
+  "ProviderUploadFeedbackError",
+  {
+    threadId: ThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Failed to upload feedback for thread ${this.threadId}.`;
+  }
+}
 
 const ProviderEventKind = Schema.Literals(["session", "notification", "request", "error"]);
 

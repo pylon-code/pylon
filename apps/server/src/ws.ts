@@ -42,6 +42,7 @@ import {
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
+  ProviderUploadFeedbackError,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   type ServerSelfUpdateError,
@@ -1774,6 +1775,20 @@ const makeWsRpcLayer = (
             { "rpc.aggregate": "provider" },
           ),
 
+        [WS_METHODS.providerUploadFeedback]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerUploadFeedback,
+            providerService.uploadFeedback(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderUploadFeedbackError({
+                    threadId: input.threadId,
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,

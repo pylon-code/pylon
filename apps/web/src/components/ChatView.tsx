@@ -43,6 +43,12 @@ import {
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
 import {
+  codexFeedbackMessage,
+  parseCodexFeedbackCommand,
+  submitCodexFeedback,
+  type CodexFeedbackSubmission,
+} from "@t3tools/client-runtime/state/threads";
+import {
   parseScopedThreadKey,
   scopedThreadKey,
   scopeProjectRef,
@@ -134,6 +140,7 @@ import {
   type TurnDiffSummary,
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
+import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
@@ -1325,6 +1332,9 @@ function ChatViewContent(props: ChatViewProps) {
     threadEnvironment.setSessionInputQueueMode,
     "session input queue mode update",
   );
+  const uploadThreadFeedback = useAtomCommand(threadEnvironment.uploadFeedback, {
+    reportFailure: false,
+  });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -1484,6 +1494,16 @@ function ChatViewContent(props: ChatViewProps) {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
+  const [feedbackSubmissionsByThreadKey, setFeedbackSubmissionsByThreadKey] = useState<
+    Record<string, ReadonlyArray<CodexFeedbackSubmission>>
+  >({});
+  const feedbackSubmissions = useMemo(
+    () => feedbackSubmissionsByThreadKey[routeThreadKey] ?? [],
+    [feedbackSubmissionsByThreadKey, routeThreadKey],
+  );
+  const feedbackUploading = feedbackSubmissions.some(
+    (submission) => submission.status === "uploading",
+  );
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const [localDraftErrorsByDraftId, setLocalDraftErrorsByDraftId] = useState<
@@ -1550,6 +1570,7 @@ function ChatViewContent(props: ChatViewProps) {
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
+  const feedbackUploadsInFlightRef = useRef(new Set<string>());
   const terminalUiOpenByThreadRef = useRef<Record<string, boolean>>({});
 
   useLayoutEffect(() => {
@@ -2827,16 +2848,29 @@ function ChatViewContent(props: ChatViewProps) {
             return changed ? { ...message, attachments } : message;
           });
 
-    if (optimisticUserMessages.length === 0) {
+    const localMessages = [
+      ...optimisticUserMessages,
+      ...feedbackSubmissions.flatMap((submission) =>
+        submission.status === "interrupted"
+          ? []
+          : [codexFeedbackMessage(submission), codexFeedbackMessage(submission, "assistant")],
+      ),
+    ];
+    if (localMessages.length === 0) {
       return serverMessagesWithPreviewHandoff;
     }
     const serverIds = new Set(serverMessagesWithPreviewHandoff.map((message) => message.id));
-    const pendingMessages = optimisticUserMessages.filter((message) => !serverIds.has(message.id));
+    const pendingMessages = localMessages.filter((message) => !serverIds.has(message.id));
     if (pendingMessages.length === 0) {
       return serverMessagesWithPreviewHandoff;
     }
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
-  }, [attachmentPreviewHandoffByMessageId, displayServerMessages, optimisticUserMessages]);
+  }, [
+    attachmentPreviewHandoffByMessageId,
+    displayServerMessages,
+    feedbackSubmissions,
+    optimisticUserMessages,
+  ]);
   const reportedTurnCosts = useMemo(
     () => deriveReportedTurnCosts(activeThread?.activities ?? []),
     [activeThread?.activities],
@@ -5386,7 +5420,8 @@ function ChatViewContent(props: ChatViewProps) {
       isSendBusy ||
       isConnecting ||
       threadDetailLoading ||
-      sendInFlightRef.current
+      sendInFlightRef.current ||
+      feedbackUploadsInFlightRef.current.has(routeThreadKey)
     ) {
       notifyDirectAnnotationAttached();
       return;
@@ -5461,6 +5496,101 @@ function ChatViewContent(props: ChatViewProps) {
         composerPreviewAnnotations.length +
         composerReviewComments.length,
     });
+    const feedbackCommand =
+      ctxSelectedProvider === "codex" &&
+      composerImages.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      composerElementContexts.length === 0 &&
+      composerPreviewAnnotations.length === 0 &&
+      composerReviewComments.length === 0
+        ? parseCodexFeedbackCommand(trimmed)
+        : null;
+    if (feedbackCommand) {
+      if (!isServerThread || activeThread.session === null) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: "Start a Codex thread first",
+            description: "Send a message before you submit feedback.",
+          }),
+        );
+        return;
+      }
+      feedbackUploadsInFlightRef.current.add(routeThreadKey);
+      const result = await submitCodexFeedback({
+        submission: {
+          id: newMessageId(),
+          command: trimmed,
+          createdAt: new Date().toISOString(),
+        },
+        clearDraft: () => {
+          promptRef.current = "";
+          clearComposerDraftContent(composerDraftTarget);
+          composerRef.current?.resetCursorState();
+          scrollToEnd();
+        },
+        onUpdate: (submission) => {
+          setFeedbackSubmissionsByThreadKey((current) => {
+            const existing = current[routeThreadKey] ?? [];
+            const found = existing.some((entry) => entry.id === submission.id);
+            return {
+              ...current,
+              [routeThreadKey]: found
+                ? existing.map((entry) => (entry.id === submission.id ? submission : entry))
+                : [...existing, submission],
+            };
+          });
+        },
+        upload: () =>
+          uploadThreadFeedback({
+            environmentId,
+            input: {
+              threadId: activeThread.id,
+              ...feedbackCommand,
+            },
+          }),
+      }).finally(() => {
+        feedbackUploadsInFlightRef.current.delete(routeThreadKey);
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not send feedback to OpenAI",
+              description: chatActionErrorMessage(squashAtomCommandFailure(result)),
+            }),
+          );
+        }
+        return;
+      }
+      const feedbackId = result.value.feedbackId;
+      toastManager.add(
+        stackedThreadToast({
+          type: "success",
+          title: "Feedback sent to OpenAI",
+          description: `Thread ID: ${feedbackId}`,
+          timeout: 0,
+          actionProps: {
+            children: "Copy ID",
+            onClick: () => {
+              void writeTextToClipboard(feedbackId, "Codex feedback thread ID").catch(
+                (error: unknown) => {
+                  toastManager.add(
+                    stackedThreadToast({
+                      type: "error",
+                      title: "Could not copy thread ID",
+                      description: chatActionErrorMessage(error),
+                    }),
+                  );
+                },
+              );
+            },
+          },
+        }),
+      );
+      return;
+    }
     if (!directAnnotation && showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
@@ -7636,11 +7766,13 @@ function ChatViewContent(props: ChatViewProps) {
                             isConnecting={isConnecting}
                             isSendBusy={isSendBusy}
                             sendDisabledReason={
-                              threadDetailLoading
-                                ? "Messages loading"
-                                : activeSessionInteraction
-                                  ? "Resolve the session request to continue"
-                                  : null
+                              feedbackUploading
+                                ? "Sending feedback"
+                                : threadDetailLoading
+                                  ? "Messages loading"
+                                  : activeSessionInteraction
+                                    ? "Resolve the session request to continue"
+                                    : null
                             }
                             isPreparingWorktree={isPreparingWorktree}
                             externalDrawerAttached={externalComposerDrawerAttached}
