@@ -966,6 +966,8 @@ export function deriveMessagesTimelineRows(input: {
           }
 
           if (hiddenEntries.length > 0) {
+            const latestToolEntry = visibleGroupedEntries.findLast(workLogEntryIsToolLike);
+
             nextRows.push({
               kind: "work-toggle",
               id: `work-toggle:${timelineEntry.id}`,
@@ -976,13 +978,16 @@ export function deriveMessagesTimelineRows(input: {
               onlyToolEntries: hiddenEntries.every(workLogEntryIsToolLike),
               summary: null,
               summaryKind: null,
-              // Not the same question as the all-tool toggle above: this one
-              // covers only the hidden prefix while the tail renders as its own
-              // rows, each showing its own status. A failure in here has no
-              // other representation, so last-entry would hide it outright.
-              hasFailure: hiddenEntries.some((entry) =>
-                workEntryDisplayIndicatesToolFailure(entry),
-              ),
+              // Two questions at once (#7999). A failure hidden behind this
+              // toggle has no other representation - the tail renders as its
+              // own rows - so `.some` is needed; but if the group's latest tool
+              // call succeeded, the run recovered and red would be wrong. The
+              // all-tool toggle above stands in for a whole group, so it needs
+              // only the second half.
+              hasFailure:
+                latestToolEntry !== undefined &&
+                workEntryDisplayIndicatesToolFailure(latestToolEntry) &&
+                hiddenEntries.some(workEntryDisplayIndicatesToolFailure),
             });
           }
         }
