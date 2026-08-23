@@ -325,6 +325,86 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("refuses an external favicon whose canonical target is not an image", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-favicon-symlink-workspace-",
+      });
+      const pictures = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-favicon-symlink-pictures-",
+      });
+      // The allowlist runs on the path we are handed, so a .png name pointing at
+      // an .html target used to be served as text/html on the app's own origin.
+      const secretPath = path.join(pictures, "notes.html");
+      const decoyPath = path.join(pictures, "icon.png");
+      yield* fileSystem.writeFileString(secretPath, "<h1>private</h1>");
+      yield* fileSystem.symlink(secretPath, decoyPath);
+
+      const error = yield* issueAssetUrl({
+        resource: { _tag: "project-favicon", cwd: root },
+        projectFaviconPath: decoyPath,
+      }).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(AssetPreviewTypeValidationError);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("refuses a workspace favicon symlinked to a non-image inside the workspace", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-favicon-symlink-inside-",
+      });
+      // Containment cannot catch this one: both ends are inside the workspace,
+      // so only checking the canonical extension rejects it.
+      const secretPath = path.join(root, "notes.html");
+      const decoyPath = path.join(root, "icon.png");
+      yield* fileSystem.writeFileString(secretPath, "<h1>private</h1>");
+      yield* fileSystem.symlink(secretPath, decoyPath);
+
+      const error = yield* issueAssetUrl({
+        resource: { _tag: "project-favicon", cwd: root },
+        projectFaviconPath: "icon.png",
+      }).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(AssetPreviewTypeValidationError);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("stops serving a favicon that became a symlink to a non-image after issuance", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-favicon-swapped-",
+      });
+      const faviconPath = path.join(root, "icon.png");
+      yield* fileSystem.writeFile(faviconPath, new Uint8Array([1, 2, 3]));
+
+      const result = yield* issueAssetUrl({
+        resource: { _tag: "project-favicon", cwd: root },
+        projectFaviconPath: "icon.png",
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+
+      // The URL was minted against a real PNG. Swapping the file for a symlink
+      // to an .html afterwards clears the containment check, so the canonical
+      // extension is the only thing standing between the token and text/html.
+      const secretPath = path.join(root, "notes.html");
+      yield* fileSystem.writeFileString(secretPath, "<h1>private</h1>");
+      yield* fileSystem.remove(faviconPath);
+      yield* fileSystem.symlink(secretPath, faviconPath);
+
+      expect(
+        yield* resolveAsset(suffix.slice(0, separatorIndex), suffix.slice(separatorIndex + 1)),
+      ).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("ignores a client favicon path hint", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

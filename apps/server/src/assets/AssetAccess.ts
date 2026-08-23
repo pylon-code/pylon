@@ -168,6 +168,17 @@ const resolveCanonicalWorkspaceFile = Effect.fn("AssetAccess.resolveCanonicalWor
   },
 );
 
+/**
+ * Project favicons are served with a Content-Type derived from the path that is
+ * actually opened (see `assetResponseHeaders`), so the image allowlist has to
+ * hold for the canonical file rather than the name it was reached by. Checking
+ * only the requested path lets `icon.png` symlink to `notes.html` and be served
+ * as `text/html` on the app's own origin. Applies to workspace favicons too: a
+ * symlink inside the workspace clears the containment check unchanged.
+ */
+const asCanonicalImageFile = (canonicalPath: string | null): string | null =>
+  canonicalPath !== null && isWorkspaceImagePreviewPath(canonicalPath) ? canonicalPath : null;
+
 const resolveCanonicalWorkspaceFileForRequest = (input: {
   readonly workspaceRoot: string;
   readonly relativePath: string;
@@ -349,6 +360,9 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
           resource: input.resource,
         });
       }
+      if (canonicalFaviconPath && asCanonicalImageFile(canonicalFaviconPath) === null) {
+        return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
+      }
       claims =
         isExternalOverride && canonicalFaviconPath
           ? {
@@ -470,10 +484,12 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
 
   if (claims.kind === "project-favicon") {
     if (claims.relativePath === null) return null;
-    const faviconPath = yield* resolveCanonicalWorkspaceFileForRequest({
-      workspaceRoot: claims.workspaceRoot,
-      relativePath: claims.relativePath,
-    });
+    const faviconPath = asCanonicalImageFile(
+      yield* resolveCanonicalWorkspaceFileForRequest({
+        workspaceRoot: claims.workspaceRoot,
+        relativePath: claims.relativePath,
+      }),
+    );
     return faviconPath ? ({ kind: "file", path: faviconPath } satisfies ResolvedAsset) : null;
   }
 
@@ -487,7 +503,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       ),
       Effect.orElseSucceed(() => null),
     );
-    return faviconPath === claims.filePath
+    return faviconPath === claims.filePath && asCanonicalImageFile(faviconPath) !== null
       ? ({ kind: "file", path: faviconPath } satisfies ResolvedAsset)
       : null;
   }
