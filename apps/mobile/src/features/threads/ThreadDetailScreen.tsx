@@ -601,36 +601,48 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     selectedThreadKey,
   ]);
 
+  // handleSendMessage is handed to the memoized composer, so its identity has to
+  // survive a streaming turn. The anchor inputs are read once the send resolves
+  // and never during render, so committed state is the right source: keeping them
+  // in deps would rebuild the callback on every delta and re-render the whole
+  // composer subtree with it.
+  const submissionAnchorInputsRef = useRef({
+    hasUserMessage: false,
+    hasStartedTurn: false,
+    queuedMessageCount: 0,
+  });
+  useEffect(() => {
+    submissionAnchorInputsRef.current = {
+      hasUserMessage: selectedThreadFeed.some(
+        (entry) => entry.type === "message" && entry.message.role === "user",
+      ),
+      hasStartedTurn: props.selectedThread.latestTurn !== null,
+      queuedMessageCount: props.localOutboxCount,
+    };
+  }, [selectedThreadFeed, props.selectedThread.latestTurn, props.localOutboxCount]);
+
   const handleSendMessage = useCallback(async () => {
     const targetThreadKey = selectedThreadKey;
-    const hasUserMessage = selectedThreadFeed.some(
-      (entry) => entry.type === "message" && entry.message.role === "user",
-    );
+    const { hasUserMessage, hasStartedTurn, queuedMessageCount } =
+      submissionAnchorInputsRef.current;
     const messageId = await props.onSendMessage();
     if (messageId === null || selectedThreadKeyRef.current !== targetThreadKey) {
       return messageId;
     }
 
     setSubmittedMessageId(messageId);
-    setAnchorMessageId(
+    setAnchorMessageId((currentAnchorMessageId) =>
       resolveThreadFeedSubmissionAnchor({
-        currentAnchorMessageId: anchorMessageId,
+        currentAnchorMessageId,
         submittedMessageId: messageId,
-        hasStartedTurn: props.selectedThread.latestTurn !== null,
+        hasStartedTurn,
         hasUserMessage,
-        queuedMessageCount: props.localOutboxCount,
+        queuedMessageCount,
       }),
     );
     composerEditorRef.current?.blur();
     return messageId;
-  }, [
-    anchorMessageId,
-    props.onSendMessage,
-    props.selectedThread.latestTurn,
-    props.localOutboxCount,
-    selectedThreadFeed,
-    selectedThreadKey,
-  ]);
+  }, [props.onSendMessage, selectedThreadKey]);
 
   const collapseComposer = useCallback(() => {
     composerEditorRef.current?.blur();

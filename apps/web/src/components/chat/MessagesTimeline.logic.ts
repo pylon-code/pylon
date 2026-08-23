@@ -908,6 +908,10 @@ export function deriveMessagesTimelineRows(input: {
             onlyToolEntries: true,
             summary: summarizeToolGroup(visibleGroupedEntries),
             summaryKind,
+            // This toggle stands in for the whole group - collapsed, no other row
+            // renders - so it answers "how did this run end", and a failure that
+            // was retried successfully is not a failure (#7893). The overflow
+            // toggle below deliberately asks a different question; see there.
             hasFailure: workEntryDisplayIndicatesToolFailure(visibleGroupedEntries.at(-1)!),
           });
           if (expanded) {
@@ -972,6 +976,10 @@ export function deriveMessagesTimelineRows(input: {
               onlyToolEntries: hiddenEntries.every(workLogEntryIsToolLike),
               summary: null,
               summaryKind: null,
+              // Not the same question as the all-tool toggle above: this one
+              // covers only the hidden prefix while the tail renders as its own
+              // rows, each showing its own status. A failure in here has no
+              // other representation, so last-entry would hide it outright.
               hasFailure: hiddenEntries.some((entry) =>
                 workEntryDisplayIndicatesToolFailure(entry),
               ),
