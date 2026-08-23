@@ -172,29 +172,91 @@ describe("surface shortcuts", () => {
 });
 
 describe("surface shortcut typing contexts", () => {
-  // Selector-aware stub: closest() answers only tokens the combined selector
-  // would actually match, mirroring how the browser resolves it.
-  const makeTarget = (matches: string | null) => ({
+  // The helper is a one-line delegation to closest(), so the selector IS the
+  // logic and a stub that substring-matches the selector string asserts nothing
+  // - it reports success whether the :not() clause is present, absent, or
+  // inverted. There is no DOM environment in this repo, so this fake walks a
+  // modeled ancestor chain and evaluates the selector the helper actually
+  // passes. Edit the selector and these expectations move with it.
+  type FakeElement = {
+    readonly tag: string;
+    readonly attrs: Readonly<Record<string, string>>;
+    parent: FakeElement | null;
+  };
+
+  const el = (tag: string, attrs: Record<string, string> = {}): FakeElement => ({
+    tag,
+    attrs,
+    parent: null,
+  });
+
+  const within = (host: FakeElement, child: FakeElement): FakeElement => {
+    child.parent = host;
+    return child;
+  };
+
+  const matches = (node: FakeElement, selector: string): boolean => {
+    const trimmed = selector.trim();
+    const negation = /^(.*?):not\((.+)\)$/.exec(trimmed);
+    if (negation) {
+      return matches(node, negation[1]!) && !matches(node, negation[2]!);
+    }
+    const attribute = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(trimmed);
+    if (attribute) {
+      const value = node.attrs[attribute[1]!];
+      return value !== undefined && (attribute[2] === undefined || value === attribute[2]);
+    }
+    return node.tag === trimmed;
+  };
+
+  const target = (node: FakeElement) => ({
     closest(selectors: string) {
-      if (matches === null || !selectors.includes(matches)) return null;
-      return {};
+      const parts = selectors.split(",");
+      for (let current: FakeElement | null = node; current; current = current.parent) {
+        if (parts.some((part) => matches(current!, part))) return current;
+      }
+      return null;
     },
   });
 
-  it("treats form fields and every editable region as typing contexts", () => {
-    expect(surfaceShortcutTargetsTypingContext(makeTarget("input"))).toBe(true);
-    expect(surfaceShortcutTargetsTypingContext(makeTarget("textarea"))).toBe(true);
-    expect(surfaceShortcutTargetsTypingContext(makeTarget("select"))).toBe(true);
+  const editableHost = () => el("div", { contenteditable: "true" });
+
+  it.each([
+    ["an input", () => el("input")],
+    ["a textarea", () => el("textarea")],
+    ["a select", () => el("select")],
+    ["an explicitly editable host", editableHost],
     // The chat composer is a contenteditable that sits empty until a draft
     // exists; launcher letters claimed from it redirected prompts into shells.
-    // The :not clause sees past contenteditable="false" islands to an editable
-    // host around them, so nested editors stay protected too.
-    expect(surfaceShortcutTargetsTypingContext(makeTarget("[contenteditable]"))).toBe(true);
+    [
+      "a descendant of an empty composer",
+      () => within(el("div", { contenteditable: "" }), el("span")),
+    ],
+    // closest() must see past a non-editable island to the editable host around
+    // it, or a chip inside the composer swallows the composer's protection.
+    [
+      "a non-editable island inside an editable host",
+      () => within(editableHost(), el("span", { contenteditable: "false" })),
+    ],
+  ])("treats %s as a typing context", (_label, build) => {
+    expect(surfaceShortcutTargetsTypingContext(target(build()))).toBe(true);
   });
 
-  it("claims letters when focus sits outside any editable region", () => {
+  it.each([
+    ["a plain button", () => el("button")],
+    // Upstream's helper deliberately differs from the inline guard Pylon had
+    // here: an island with no editable ancestor is not a typing context, so the
+    // launcher keeps its letter. Dropping the :not() clause flips this case.
+    [
+      "a standalone non-editable island",
+      () => within(el("div"), el("span", { contenteditable: "false" })),
+    ],
+  ])("claims letters from %s", (_label, build) => {
+    expect(surfaceShortcutTargetsTypingContext(target(build()))).toBe(false);
+  });
+
+  it("claims letters when there is no target at all", () => {
     expect(surfaceShortcutTargetsTypingContext(null)).toBe(false);
-    expect(surfaceShortcutTargetsTypingContext(makeTarget(null))).toBe(false);
   });
 });
 

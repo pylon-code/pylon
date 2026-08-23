@@ -806,7 +806,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
     isServerThread: _isServerThread,
-    isLocalDraftThread: _isLocalDraftThread,
+    isLocalDraftThread,
     forceExpandedOnMobile,
     projectSelectionRequired,
     phase,
@@ -2761,7 +2761,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             isMobileViewport,
             shiftKey: event.shiftKey,
             modifierKey: event.metaKey || event.ctrlKey,
-            isDraftThread: routeKind === "draft",
+            // Draft-ness comes from the thread, not the route: a draft thread
+            // is addressable under /$environmentId/$threadId (getDraftThreadByRef),
+            // where routeKind is "server" but the thread has not started. ChatView
+            // gates the background branch on this same value, so deriving it from
+            // routeKind silently downgraded mod+enter to a foreground send there.
+            isDraftThread: isLocalDraftThread,
           })
         : null;
     if (submissionIntent) {
