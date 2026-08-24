@@ -43,6 +43,7 @@ import {
   type PrimeAgentDaemonThinkingLevel,
 } from "./PrimeAgentDaemonBridge.ts";
 import {
+  decodePrimeAgentDaemonChildren,
   decodePrimeAgentDaemonEvent,
   decodePrimeAgentDaemonSessionState,
   type PrimeDaemonEvent,
@@ -1172,6 +1173,18 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         "Managed execution policy verification requires one explicit extension with discovery disabled.",
       );
     }
+    const sessionRuntimeConfig: Record<string, unknown> = {
+      cwd,
+      sessionDir,
+      noBuiltinTools: false,
+      noExtensions: input.disableExtensionDiscovery ?? false,
+      noSkills: false,
+      noContextFiles: false,
+      ...(configuredAgentDir ? { agentDir: configuredAgentDir } : {}),
+      ...(configuredExtensions.length > 0 ? { extensions: configuredExtensions } : {}),
+      ...(configuredModel && configuredModel !== "default" ? { model: configuredModel } : {}),
+      ...(input.thinkingLevel === undefined ? {} : { thinking: input.thinkingLevel }),
+    };
     const createResponse = yield* Effect.tryPromise({
       try: () =>
         client.request(
@@ -1181,20 +1194,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             ...(resumeSessionId === undefined
               ? { continueRecent: shouldContinue }
               : { sessionPath: resumeSessionId, continueRecent: false }),
-            config: {
-              cwd,
-              sessionDir,
-              noBuiltinTools: false,
-              noExtensions: input.disableExtensionDiscovery ?? false,
-              noSkills: false,
-              noContextFiles: false,
-              ...(configuredAgentDir ? { agentDir: configuredAgentDir } : {}),
-              ...(configuredExtensions.length > 0 ? { extensions: configuredExtensions } : {}),
-              ...(configuredModel && configuredModel !== "default"
-                ? { model: configuredModel }
-                : {}),
-              ...(input.thinkingLevel === undefined ? {} : { thinking: input.thinkingLevel }),
-            },
+            config: sessionRuntimeConfig,
           },
           COMMAND_TIMEOUT_MS,
         ),
@@ -1252,6 +1252,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           closeClientOnDispose: false,
           supportsExtensionUi: true,
           ownedSession: true,
+          ownedSessionRecoveryConfig: sessionRuntimeConfig,
           ...(input.disableAutoReconnect === true ? {} : { recoverDaemon: input.manager.recover }),
         }),
       catch: () =>
@@ -2022,7 +2023,38 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     ): Effect.Effect<ReadonlyArray<PrimeAgentDaemonChild>, PrimeAgentDaemonSessionRuntimeError> =>
       Effect.gen(function* () {
         yield* ensureOpen(operation);
-        return [...knownAgentRoster.values()];
+        const method = connection!.getRlmChildSnapshots;
+        if (!Predicate.isFunction(method)) return [...knownAgentRoster.values()];
+        const output = yield* Effect.tryPromise({
+          try: () => method.call(connection),
+          catch: () =>
+            runtimeError(
+              operation,
+              "request-failed",
+              "Could not refresh the Prime Agent agent roster.",
+            ),
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: COMMAND_TIMEOUT_MS,
+            orElse: () =>
+              runtimeError(
+                operation,
+                "request-timed-out",
+                "Timed out while refreshing the Prime Agent agent roster.",
+              ),
+          }),
+        );
+        const children = decodePrimeAgentDaemonChildren(output);
+        if (children === undefined) {
+          return yield* runtimeError(
+            operation,
+            "invalid-response",
+            "Prime Agent returned an invalid authoritative agent roster.",
+          );
+        }
+        knownAgentRoster.clear();
+        for (const child of children) knownAgentRoster.set(child.id, child);
+        return children;
       });
 
     const getAgentRoster = readAgentRoster("get-agent-roster");
@@ -3112,6 +3144,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "The daemon returned an invalid model response.",
         );
       }
+      sessionRuntimeConfig.model = `${decoded.value.provider}/${decoded.value.id}`;
       return {
         id: decoded.value.id,
         name: decoded.value.name,
@@ -3131,6 +3164,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         const method = yield* requireMethod("set-thinking-level", connection!.setThinkingLevel);
         yield* callVoid("set-thinking-level", () => method.call(connection, level));
+        sessionRuntimeConfig.thinking = level;
       },
     );
 

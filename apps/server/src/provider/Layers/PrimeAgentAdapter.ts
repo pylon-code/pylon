@@ -44,7 +44,9 @@ import {
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import {
   makePrimeAgentAcpRuntime,
+  parsePrimeAgentAcpTerminalUpdate,
   primeAgentLaunchArgsIssue,
+  type PrimeAgentAcpTerminalUpdate,
 } from "../acp/PrimeAgentAcpSupport.ts";
 import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
 import { canonicalPrimeToolItemId } from "../prime/PrimeAgentDaemonRuntimeEvents.ts";
@@ -75,11 +77,19 @@ export interface PrimeAgentAdapterLiveOptions {
   readonly startupWarning?: string;
 }
 
+type PrimeAgentAcpTerminalSettlement =
+  | { readonly state: "settled"; readonly outcome: "result" | "error" }
+  | { readonly state: "invalid" };
+
 interface PrimeAgentActiveTurn {
   readonly id: TurnId;
   readonly cancellation: Deferred.Deferred<void>;
+  readonly terminalQuiescence: Deferred.Deferred<PrimeAgentAcpTerminalSettlement>;
   cancellationRequested: boolean;
   hasPublicAssistantTextAfterLatestToolBoundary: boolean;
+  nativePromptTurnId: number | undefined;
+  lastNativeEventSequence: number | undefined;
+  terminalQuiescenceExpected: boolean;
 }
 
 interface PrimeAgentSessionContext {
@@ -93,6 +103,55 @@ interface PrimeAgentSessionContext {
   activeTurn: PrimeAgentActiveTurn | undefined;
   stopRequested: boolean;
   stopped: boolean;
+}
+
+function observePrimeAgentAcpTerminalUpdate(
+  ctx: PrimeAgentSessionContext | undefined,
+  update: PrimeAgentAcpTerminalUpdate,
+): Effect.Effect<void> {
+  const activeTurn = ctx?.activeTurn;
+  if (activeTurn === undefined) return Effect.void;
+  if (update.phase === "invalid") {
+    activeTurn.terminalQuiescenceExpected = true;
+    return Deferred.succeed(activeTurn.terminalQuiescence, { state: "invalid" }).pipe(
+      Effect.asVoid,
+    );
+  }
+  if (
+    activeTurn.lastNativeEventSequence !== undefined &&
+    update.eventSequence <= activeTurn.lastNativeEventSequence
+  ) {
+    return Effect.void;
+  }
+  activeTurn.lastNativeEventSequence = update.eventSequence;
+
+  if (update.phase === "responseBoundary") {
+    if (activeTurn.nativePromptTurnId !== undefined) {
+      activeTurn.terminalQuiescenceExpected = true;
+      return Deferred.succeed(activeTurn.terminalQuiescence, { state: "invalid" }).pipe(
+        Effect.asVoid,
+      );
+    }
+    activeTurn.nativePromptTurnId = update.promptTurnId;
+    activeTurn.terminalQuiescenceExpected = update.terminalQuiescenceExpected;
+    return Effect.void;
+  }
+
+  if (
+    activeTurn.nativePromptTurnId === undefined ||
+    activeTurn.nativePromptTurnId !== update.promptTurnId ||
+    !activeTurn.terminalQuiescenceExpected
+  ) {
+    activeTurn.terminalQuiescenceExpected = true;
+    return Deferred.succeed(activeTurn.terminalQuiescence, { state: "invalid" }).pipe(
+      Effect.asVoid,
+    );
+  }
+  activeTurn.terminalQuiescenceExpected = true;
+  return Deferred.succeed(activeTurn.terminalQuiescence, {
+    state: "settled",
+    outcome: update.outcome,
+  }).pipe(Effect.asVoid);
 }
 
 export function parsePrimeAgentResumeMarker(raw: unknown): boolean {
@@ -449,6 +508,7 @@ export function makePrimeAgentAdapter(
           );
 
           const sessionScope = yield* Scope.make("sequential");
+          let sessionContext: PrimeAgentSessionContext | undefined;
           let sessionScopeTransferred = false;
           yield* Effect.addFinalizer(() =>
             sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
@@ -467,6 +527,12 @@ export function makePrimeAgentAdapter(
             continueSession: parsePrimeAgentResumeMarker(input.resumeCursor),
             model,
             clientInfo: { name: "pylon", version: "0.0.0" },
+            observeSessionUpdate: (notification) => {
+              const update = parsePrimeAgentAcpTerminalUpdate(notification);
+              return update === undefined
+                ? Effect.void
+                : observePrimeAgentAcpTerminalUpdate(sessionContext, update);
+            },
             ...acpNativeLoggers,
           }).pipe(
             Effect.provideService(Crypto.Crypto, crypto),
@@ -524,6 +590,7 @@ export function makePrimeAgentAdapter(
             stopRequested: false,
             stopped: false,
           };
+          sessionContext = ctx;
 
           const notificationFiber = yield* Stream.runDrain(
             Stream.mapEffect(acp.getEvents(), (event) =>
@@ -777,8 +844,12 @@ export function makePrimeAgentAdapter(
               const activeTurn: PrimeAgentActiveTurn = {
                 id: turnId,
                 cancellation: yield* Deferred.make<void>(),
+                terminalQuiescence: yield* Deferred.make<PrimeAgentAcpTerminalSettlement>(),
                 cancellationRequested: false,
                 hasPublicAssistantTextAfterLatestToolBoundary: false,
+                nativePromptTurnId: undefined,
+                lastNativeEventSequence: undefined,
+                terminalQuiescenceExpected: false,
               };
               ctx.activeTurn = activeTurn;
               ctx.lastPlanFingerprint = undefined;
@@ -802,7 +873,7 @@ export function makePrimeAgentAdapter(
               turnId,
               payload: { model: ctx.session.model ?? "default" },
             });
-            const result = yield* Effect.raceFirst(
+            const promptExit = yield* Effect.raceFirst(
               ctx.acp.prompt({ prompt }),
               Deferred.await(activeTurn.cancellation).pipe(
                 Effect.as({ stopReason: "cancelled" as const }),
@@ -811,13 +882,52 @@ export function makePrimeAgentAdapter(
               Effect.mapError((error) =>
                 mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
               ),
+              Effect.exit,
             );
+            // Prime Agent 0.8 publishes a response boundary before the ACP response and
+            // an authoritative terminal-quiescence envelope after descendant work settles.
+            // Older releases publish neither, so their prompt response remains terminal.
+            // A stopped session has already shut down its notification consumer, so it
+            // must not enqueue a barrier that can no longer be acknowledged.
+            const promptCancelled =
+              Exit.isSuccess(promptExit) && promptExit.value.stopReason === "cancelled";
+            if (!promptCancelled && !activeTurn.cancellationRequested && !ctx.stopRequested) {
+              yield* ctx.acp.drainEvents;
+            }
+            const terminal =
+              activeTurn.terminalQuiescenceExpected && !promptCancelled
+                ? yield* Effect.raceFirst(
+                    Deferred.await(activeTurn.terminalQuiescence),
+                    Deferred.await(activeTurn.cancellation).pipe(
+                      Effect.as({ state: "cancelled" as const }),
+                    ),
+                  )
+                : undefined;
+            if (terminal?.state === "invalid") {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "session/prompt",
+                detail: "Prime Agent returned invalid terminal-quiescence metadata.",
+              });
+            }
+            if (Exit.isFailure(promptExit) && terminal?.state !== "cancelled") {
+              return yield* Effect.failCause(promptExit.cause);
+            }
+            const result = Exit.isSuccess(promptExit)
+              ? promptExit.value
+              : ({ stopReason: "cancelled" } as const);
             const settled = yield* settleActiveTurn(
               ctx,
               turnId,
-              result.stopReason === "cancelled"
-                ? { state: "cancelled" }
-                : { state: "completed", stopReason: result.stopReason ?? null },
+              terminal?.state === "settled" && terminal.outcome === "error"
+                ? {
+                    state: "failed",
+                    errorMessage: PRIME_AGENT_TURN_FAILED,
+                    terminalFailure: true,
+                  }
+                : terminal?.state === "cancelled" || result.stopReason === "cancelled"
+                  ? { state: "cancelled" }
+                  : { state: "completed", stopReason: result.stopReason ?? null },
               true,
             );
             if (!settled && !activeTurn.cancellationRequested && !ctx.stopRequested) {

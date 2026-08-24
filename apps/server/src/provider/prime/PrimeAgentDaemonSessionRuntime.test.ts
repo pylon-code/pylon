@@ -113,6 +113,7 @@ interface Captures {
 function fixture(options?: {
   readonly rawSnapshot?: unknown;
   readonly rawSnapshotImpl?: () => unknown;
+  readonly authoritativeRlmChildren?: unknown;
   readonly createResponse?: unknown;
   readonly duringSnapshot?: ReadonlyArray<unknown>;
   readonly duringResourceSnapshot?: ReadonlyArray<unknown>;
@@ -272,6 +273,9 @@ function fixture(options?: {
       if (options?.omitQueueMutation === true) {
         Object.defineProperty(this, "mutateQueuedMessage", { value: undefined });
       }
+      if (options?.authoritativeRlmChildren === undefined) {
+        Object.defineProperty(this, "getRlmChildSnapshots", { value: undefined });
+      }
     }
     static attach(
       _client: PrimeAgentDaemonClient,
@@ -300,6 +304,10 @@ function fixture(options?: {
         });
       }
       return options?.rawSnapshotImpl?.() ?? options?.rawSnapshot ?? snapshot();
+    }
+    getRlmChildSnapshots(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getRlmChildSnapshots", args: [] });
+      return Promise.resolve(options?.authoritativeRlmChildren);
     }
     getState(): Promise<unknown> {
       captures.connectionCalls.push({ method: "getState", args: [] });
@@ -662,6 +670,17 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
               closeClientOnDispose: false,
               supportsExtensionUi: true,
               ownedSession: true,
+              ownedSessionRecoveryConfig: {
+                cwd: "/work/project",
+                sessionDir: "/state/provider-sessions/thread-safe",
+                agentDir: "/state/prime-agent-home",
+                noBuiltinTools: false,
+                noExtensions: false,
+                noSkills: false,
+                noContextFiles: false,
+                model: "openai/gpt-5.3-codex",
+                thinking: "high",
+              },
             });
             yield* Effect.promise(() => captures.reconnectOptions[0]!.recoverDaemon());
             expect(captures.recoverCount).toBe(1);
@@ -938,6 +957,55 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(roster[0]).not.toHaveProperty("sessionDir");
         expect(cancelled).toBe(true);
         expect(captures.connectionCalls).toEqual([{ method: "cancelRlmChild", args: ["child-1"] }]);
+      }),
+    ),
+  );
+
+  it.effect("prefers the authoritative 0.8 agent roster and rejects malformed refreshes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const authoritative = fixture({
+          authoritativeRlmChildren: [
+            {
+              id: "child-2",
+              activeSessionId: "active-child-2",
+              label: "new child",
+              status: "running",
+              sessionDir: "/private/child-2",
+            },
+          ],
+        });
+        const runtime = yield* authoritative.make();
+        authoritative.captures.connectionCalls.splice(0);
+
+        expect(yield* runtime.getAgentRoster).toEqual([
+          expect.objectContaining({ id: "child-2", status: "running" }),
+        ]);
+        expect(authoritative.captures.connectionCalls).toEqual([
+          { method: "getRlmChildSnapshots", args: [] },
+        ]);
+
+        const malformed = fixture({ authoritativeRlmChildren: { children: [] } });
+        const malformedRuntime = yield* malformed.make();
+        const error = yield* malformedRuntime.getAgentRoster.pipe(Effect.flip);
+        expect(error).toMatchObject({
+          operation: "get-agent-roster",
+          reason: "invalid-response",
+        });
+
+        const oversized = fixture({
+          authoritativeRlmChildren: Array.from({ length: 101 }, (_, index) => ({
+            id: `child-${index}`,
+            label: "child",
+            status: "running",
+            sessionDir: `/private/child-${index}`,
+          })),
+        });
+        const oversizedRuntime = yield* oversized.make();
+        expect(yield* oversizedRuntime.getAgentRoster.pipe(Effect.flip)).toMatchObject({
+          operation: "get-agent-roster",
+          reason: "invalid-response",
+        });
       }),
     ),
   );
@@ -1255,6 +1323,12 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(captures.reconnectOptions).toEqual([]);
         expect(captures.order).not.toContain("request-recovery");
         expect(captures.attachOptions[0]).not.toHaveProperty("recoverDaemon");
+        expect(captures.attachOptions[0]).toMatchObject({
+          ownedSessionRecoveryConfig: {
+            extensions: ["/state/pylon/permission.mjs"],
+            noExtensions: true,
+          },
+        });
         expect(captures.connectionCalls).toEqual([
           { method: "setRlmMaxDepth", args: [0] },
           { method: "getResourceSnapshot", args: [] },
@@ -1676,6 +1750,12 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(stats).not.toHaveProperty("sessionFile");
         expect(stats).not.toHaveProperty("sessionId");
         expect(stats).not.toHaveProperty("cost");
+        expect(captures.attachOptions[0]).toMatchObject({
+          ownedSessionRecoveryConfig: {
+            model: "prime/model/with/slashes",
+            thinking: "xhigh",
+          },
+        });
         expect(captures.connectionCalls).toEqual(
           [
             ["getResourceSnapshot", []],

@@ -8,7 +8,9 @@ import {
   buildPrimeAgentAcpSpawnInput,
   isPrimeAgentAcpPrivateThoughtUpdate,
   makePrimeAgentEnvironment,
+  parsePrimeAgentAcpTerminalUpdate,
   primeAgentLaunchArgsIssue,
+  PRIME_AGENT_ACP_META_NAMESPACE,
   PRIME_AGENT_HOME_ENV,
 } from "./PrimeAgentAcpSupport.ts";
 
@@ -31,6 +33,7 @@ describe("PrimeAgentAcpSupport", () => {
 
     expect(spawn.command).toBe("prime-agent-custom");
     expect(spawn.cwd).toBe("/workspace");
+    expect(spawn.extendEnv).toBe(false);
     expect(spawn.args).toEqual([
       "--verbose",
       "--theme",
@@ -98,13 +101,88 @@ describe("PrimeAgentAcpSupport", () => {
     expect(isPrimeAgentAcpPrivateThoughtUpdate(answer)).toBe(false);
   });
 
+  it("accepts only correlated terminal-quiescence metadata with a settled child roster", () => {
+    const notification = (metadata: Readonly<Record<string, unknown>>) => ({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { [PRIME_AGENT_ACP_META_NAMESPACE]: metadata },
+      },
+    });
+
+    expect(
+      parsePrimeAgentAcpTerminalUpdate(
+        notification({
+          promptTurnId: 3,
+          eventSequence: 8,
+          phase: "responseBoundary",
+          outcome: "result",
+          terminalQuiescenceExpected: true,
+        }),
+      ),
+    ).toEqual({
+      promptTurnId: 3,
+      eventSequence: 8,
+      phase: "responseBoundary",
+      outcome: "result",
+      terminalQuiescenceExpected: true,
+    });
+    expect(
+      parsePrimeAgentAcpTerminalUpdate(
+        notification({
+          promptTurnId: 3,
+          eventSequence: 9,
+          phase: "terminalQuiescence",
+          outcome: "error",
+          quiescence: { outstandingSubagents: 0, remainingAutonomousContinuations: 1 },
+        }),
+      ),
+    ).toEqual({
+      promptTurnId: 3,
+      eventSequence: 9,
+      phase: "terminalQuiescence",
+      outcome: "error",
+      outstandingSubagents: 0,
+      remainingAutonomousContinuations: 1,
+    });
+    expect(
+      parsePrimeAgentAcpTerminalUpdate(
+        notification({
+          promptTurnId: 3,
+          eventSequence: 9,
+          phase: "terminalQuiescence",
+          outcome: "result",
+          quiescence: { outstandingSubagents: 1, remainingAutonomousContinuations: 0 },
+        }),
+      ),
+    ).toEqual({ phase: "invalid" });
+    expect(
+      parsePrimeAgentAcpTerminalUpdate(
+        notification({
+          promptTurnId: 3,
+          eventSequence: 8,
+          phase: "responseBoundary",
+          outcome: "result",
+        }),
+      ),
+    ).toEqual({ phase: "invalid" });
+    expect(parsePrimeAgentAcpTerminalUpdate({ private: "payload" })).toBeUndefined();
+  });
+
   it("maps agentHomePath to Prime Agent's documented home environment", () => {
     const environment = makePrimeAgentEnvironment(
       { agentHomePath: "~/.prime/pylon-work" },
-      { PATH: "/bin" },
+      {
+        PATH: "/bin",
+        PRIME_AGENT_INTERNAL_DAEMON_WORKER: "1",
+        PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN: "secret",
+        RLM_DEPTH: "2",
+        RLM_MAX_DEPTH: "4",
+      },
     );
     expect(environment).toEqual({
       PATH: "/bin",
+      RLM_MAX_DEPTH: "4",
       [PRIME_AGENT_HOME_ENV]: NodePath.join(NodeOS.homedir(), ".prime/pylon-work"),
     });
   });
