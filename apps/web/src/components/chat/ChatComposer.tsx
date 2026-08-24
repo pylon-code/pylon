@@ -1926,7 +1926,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         settings.showSkillsInSlashMenu,
       );
       const providerSlashCommandItems = getProviderSlashCommandsForSlashMenu(
-        selectedProviderStatus?.slashCommands ?? [],
+        providerSlashCommands,
         slashMenuSkills,
       ).map((command) => ({
         id: `provider-slash-command:${selectedProvider}:${command.name}`,
