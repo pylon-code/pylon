@@ -1007,7 +1007,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
-    attachments: Schema.Array(UploadChatAttachment),
+    attachments: Schema.Array(Schema.Union([UploadChatAttachment, ChatAttachment])),
   }),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
@@ -1039,7 +1039,11 @@ const ClientThreadInputQueueFollowUpCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
-    attachments: Schema.Array(UploadChatAttachment),
+    // Same union as thread.turn.start (#8048): the composer produces uploaded
+    // attachments once the environment advertises attachmentUploads, and this
+    // Pylon-only command shares the composer and the server-side normalizer,
+    // which already branches on `"dataUrl" in attachment` for both.
+    attachments: Schema.Array(Schema.Union([UploadChatAttachment, ChatAttachment])),
   }),
   createdAt: IsoDateTime,
 });
