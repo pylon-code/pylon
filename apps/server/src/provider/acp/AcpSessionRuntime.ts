@@ -55,6 +55,8 @@ export interface AcpSpawnInput {
   readonly args: ReadonlyArray<string>;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  /** Whether to merge the current process environment into `env`. Defaults to true. */
+  readonly extendEnv?: boolean;
 }
 
 export interface AcpSessionRuntimeOptions {
@@ -80,6 +82,10 @@ export interface AcpSessionRuntimeOptions {
   readonly shouldDiscardSessionUpdate?: (
     notification: EffectAcpSchema.SessionNotification,
   ) => boolean;
+  /** Observes accepted root-session metadata without copying it into the generic event stream. */
+  readonly observeSessionUpdate?: (
+    notification: EffectAcpSchema.SessionNotification,
+  ) => Effect.Effect<void, never>;
 }
 
 export interface AcpSessionRequestLogEvent {
@@ -336,13 +342,17 @@ export const make = (
     const spawnCommand = yield* resolveSpawnCommand(
       options.spawn.command,
       options.spawn.args,
-      options.spawn.env ? { env: options.spawn.env, extendEnv: true } : {},
+      options.spawn.env
+        ? { env: options.spawn.env, extendEnv: options.spawn.extendEnv ?? true }
+        : {},
     );
     const child = yield* spawner
       .spawn(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
-          ...(options.spawn.env ? { env: options.spawn.env, extendEnv: true } : {}),
+          ...(options.spawn.env
+            ? { env: options.spawn.env, extendEnv: options.spawn.extendEnv ?? true }
+            : {}),
           shell: spawnCommand.shell,
         }),
       )
@@ -399,6 +409,9 @@ export const make = (
           notification.sessionId !== startState.result.sessionId
         ) {
           return;
+        }
+        if (options.observeSessionUpdate !== undefined) {
+          yield* options.observeSessionUpdate(notification);
         }
         yield* handleSessionUpdate({
           queue: eventQueue,

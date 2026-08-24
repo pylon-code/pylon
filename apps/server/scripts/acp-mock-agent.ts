@@ -42,6 +42,20 @@ const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
+const primeTerminalQuiescenceDelayMs = Number(
+  process.env.T3_ACP_PRIME_TERMINAL_QUIESCENCE_DELAY_MS ?? "0",
+);
+const primeTerminalQuiescenceOutcome =
+  process.env.T3_ACP_PRIME_TERMINAL_QUIESCENCE_OUTCOME === "error" ? "error" : "result";
+if (process.env.T3_ACP_ASSERT_TOP_LEVEL_ENV === "1") {
+  const inheritedInternal = Object.keys(process.env).find(
+    (name) => name.startsWith("PRIME_AGENT_INTERNAL_") || name === "RLM_DEPTH",
+  );
+  if (inheritedInternal !== undefined || process.env.RLM_MAX_DEPTH !== "4") {
+    throw new Error("Mock ACP process inherited private Prime Agent worker context.");
+  }
+}
+
 const permissionOptionIds = {
   allowOnce: process.env.T3_ACP_ALLOW_ONCE_OPTION_ID ?? "allow-once",
   allowAlways: process.env.T3_ACP_ALLOW_ALWAYS_OPTION_ID ?? "allow-always",
@@ -465,6 +479,59 @@ const program = Effect.gen(function* () {
 
       if (failPrompt) {
         return yield* AcpError.AcpRequestError.internalError("Mock prompt failure");
+      }
+
+      if (Number.isFinite(primeTerminalQuiescenceDelayMs) && primeTerminalQuiescenceDelayMs > 0) {
+        const namespace = "ai.primeintellect.prime-agent";
+        writeJsonRpcNotification("session/update", {
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "before terminal quiescence" },
+          },
+        });
+        writeJsonRpcNotification("session/update", {
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "session_info_update",
+            _meta: {
+              [namespace]: {
+                promptTurnId: promptCount,
+                eventSequence: promptCount * 2 - 1,
+                phase: "responseBoundary",
+                outcome: primeTerminalQuiescenceOutcome,
+                terminalQuiescenceExpected: true,
+              },
+            },
+          },
+        });
+        const terminalPromptTurnId = promptCount;
+        yield* Effect.sleep(primeTerminalQuiescenceDelayMs).pipe(
+          Effect.andThen(
+            Effect.sync(() =>
+              writeJsonRpcNotification("session/update", {
+                sessionId: requestedSessionId,
+                update: {
+                  sessionUpdate: "session_info_update",
+                  _meta: {
+                    [namespace]: {
+                      promptTurnId: terminalPromptTurnId,
+                      eventSequence: terminalPromptTurnId * 2,
+                      phase: "terminalQuiescence",
+                      outcome: primeTerminalQuiescenceOutcome,
+                      quiescence: {
+                        outstandingSubagents: 0,
+                        remainingAutonomousContinuations: 0,
+                      },
+                    },
+                  },
+                },
+              }),
+            ),
+          ),
+          Effect.forkDetach,
+        );
+        return { stopReason: "end_turn" };
       }
 
       if (emitStaleXAiPromptCompleteBeforeSecondHang && promptCount === 1) {

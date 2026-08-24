@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -773,4 +774,66 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       yield* cancelledAdapter.stopSession(cancelledThreadId);
       yield* Fiber.interrupt(cancelledEventFiber);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect("waits for Prime Agent 0.8 terminal quiescence before settling ACP fallback turns", () =>
+  Effect.gen(function* () {
+    const tempDir = yield* Effect.promise(() =>
+      NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "prime-agent-acp-quiescence-")),
+    );
+    const wrapperPath = NodePath.join(tempDir, "fake-prime-agent.sh");
+    const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+    yield* Effect.promise(() =>
+      NodeFSP.writeFile(
+        wrapperPath,
+        `#!/bin/sh
+exec ${process.execPath} ${mockAgentPath} "$@"
+`,
+        "utf8",
+      ),
+    );
+    yield* Effect.promise(() => NodeFSP.chmod(wrapperPath, 0o755));
+
+    const adapter = yield* makePrimeAgentAdapter(decodeSettings({ binaryPath: wrapperPath }), {
+      instanceId: ProviderInstanceId.make("primeAgent-quiescence"),
+      environment: {
+        ...process.env,
+        T3_ACP_PRIME_TERMINAL_QUIESCENCE_DELAY_MS: "500",
+        T3_ACP_PRIME_TERMINAL_QUIESCENCE_OUTCOME: "error",
+        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        T3_ACP_ASSERT_TOP_LEVEL_ENV: "1",
+        PRIME_AGENT_INTERNAL_TEST_WORKER: "nested",
+        RLM_DEPTH: "3",
+        RLM_MAX_DEPTH: "4",
+      },
+    });
+    const threadId = ThreadId.make("terminal-quiescence");
+    const terminalFiber = yield* adapter.streamEvents.pipe(
+      Stream.filter(
+        (event): event is TurnCompletedEvent =>
+          event.threadId === threadId && event.type === "turn.completed",
+      ),
+      Stream.runHead,
+      Effect.forkChild,
+    );
+    yield* Effect.yieldNow;
+    yield* adapter.startSession({
+      threadId,
+      provider: ProviderDriverKind.make("primeAgent"),
+      cwd: process.cwd(),
+      runtimeMode: "full-access",
+    });
+
+    yield* adapter.sendTurn({
+      threadId,
+      input: "wait for descendants",
+      attachments: [],
+    });
+    const terminal = yield* Fiber.join(terminalFiber);
+    assert.isTrue(Option.isSome(terminal));
+    if (Option.isSome(terminal)) {
+      assert.equal(terminal.value.payload.state, "failed");
+    }
+    yield* adapter.stopSession(threadId);
+  }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );

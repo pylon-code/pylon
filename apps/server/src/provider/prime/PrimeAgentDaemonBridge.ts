@@ -8,6 +8,8 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
+import { sanitizePrimeAgentTopLevelEnvironment } from "./PrimeAgentEnvironment.ts";
+
 export const PRIME_AGENT_DAEMON_PROTOCOL_NAME = "prime-agent.daemon" as const;
 export const PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION = 7 as const;
 
@@ -107,6 +109,7 @@ export interface PrimeAgentDaemonSessionWatcher {
 export interface PrimeAgentDaemonAgentConnection {
   readonly subscribe: (listener: (event: unknown) => void | Promise<void>) => () => void;
   readonly getInitialSnapshot: () => Promise<unknown>;
+  readonly getRlmChildSnapshots?: () => Promise<unknown>;
   readonly getState?: () => Promise<unknown>;
   readonly promptAndWait: (
     message: string,
@@ -162,16 +165,25 @@ export interface PrimeAgentDaemonAgentConnection {
   readonly dispose: () => Promise<unknown>;
 }
 
+export type PrimeAgentDaemonAgentConnectionOptions = Readonly<Record<string, unknown>> & {
+  readonly closeClientOnDispose?: boolean;
+  readonly supportsExtensionUi?: boolean;
+  readonly ownedSession?: boolean;
+  readonly recoverDaemon?: () => Promise<void>;
+  /** Fresh owner-held configuration used only if a client-owned worker must be relaunched. */
+  readonly ownedSessionRecoveryConfig?: Readonly<Record<string, unknown>>;
+};
+
 export interface PrimeAgentDaemonAgentConnectionConstructor {
   new (
     client: PrimeAgentDaemonClient,
     activeSessionId: string,
-    options?: Readonly<Record<string, unknown>>,
+    options?: PrimeAgentDaemonAgentConnectionOptions,
   ): PrimeAgentDaemonAgentConnection;
   readonly attach: (
     client: PrimeAgentDaemonClient,
     activeSessionId: string,
-    options?: Readonly<Record<string, unknown>>,
+    options?: PrimeAgentDaemonAgentConnectionOptions,
   ) => Promise<PrimeAgentDaemonAgentConnection>;
 }
 
@@ -509,13 +521,7 @@ export const loadPrimeAgentDaemonBridge = Effect.fn("loadPrimeAgentDaemonBridge"
 });
 
 /**
- * A daemon launched by Pylon must not inherit Prime Agent's private worker role.
- * Prefix filtering is deliberate: upstream may add internal coordination fields.
+ * A daemon launched by Pylon must not inherit Prime Agent's private worker role
+ * or the recursion depth of a Prime session that happened to launch Pylon.
  */
-export function sanitizePrimeAgentDaemonEnvironment(
-  environment: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(environment).filter(([name]) => !name.startsWith("PRIME_AGENT_INTERNAL_")),
-  );
-}
+export const sanitizePrimeAgentDaemonEnvironment = sanitizePrimeAgentTopLevelEnvironment;

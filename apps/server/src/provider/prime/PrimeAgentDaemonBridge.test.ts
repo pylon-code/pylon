@@ -303,11 +303,13 @@ describe("PrimeAgentDaemonBridge", () => {
       PRIME_AGENT_INTERNAL_DAEMON_WORKER: "1",
       PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN: "secret",
       PRIME_AGENT_INTERNAL_FUTURE_COORDINATION_FIELD: "future",
+      RLM_DEPTH: "3",
+      RLM_MAX_DEPTH: "5",
     };
 
     const sanitized = sanitizePrimeAgentDaemonEnvironment(input);
 
-    expect(sanitized).toEqual({ PATH: "/usr/bin" });
+    expect(sanitized).toEqual({ PATH: "/usr/bin", RLM_MAX_DEPTH: "5" });
     expect(input.PRIME_AGENT_INTERNAL_DAEMON_WORKER).toBe("1");
   });
 });

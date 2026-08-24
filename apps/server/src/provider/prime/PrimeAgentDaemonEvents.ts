@@ -463,6 +463,9 @@ export type PrimeAgentDaemonConnectionEvent = typeof PrimeAgentDaemonConnectionE
 
 const decodeConnectionEvent = Schema.decodeUnknownOption(PrimeAgentDaemonConnectionEvent);
 const decodeMessage = Schema.decodeUnknownOption(PrimeAgentDaemonMessage);
+const decodeRlmChildren = Schema.decodeUnknownOption(
+  Schema.Array(rlmChild).check(Schema.isMaxLength(100)),
+);
 const decodeEventType = Schema.decodeUnknownOption(Schema.Struct({ type: Schema.String }));
 
 const knownConnectionEventTypes = new Set([
@@ -1006,6 +1009,15 @@ function mapChild(
     activity: value.activity,
     error: optionalBounded(value.error, MAX_PREVIEW_LENGTH),
   };
+}
+
+export function decodePrimeAgentDaemonChildren(
+  value: unknown,
+):
+  | ReadonlyArray<Extract<PrimeDaemonEvent, { readonly _tag: "ChildUpdated" }>["child"]>
+  | undefined {
+  const decoded = decodeRlmChildren(value);
+  return Option.isSome(decoded) ? decoded.value.map(mapChild) : undefined;
 }
 
 function mapQueueMode(

@@ -3,15 +3,112 @@ import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import type * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveProviderHomePath } from "../../pathExpansion.ts";
+import { sanitizePrimeAgentTopLevelEnvironment } from "../prime/PrimeAgentEnvironment.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 
 export const PRIME_AGENT_HOME_ENV = "PRIME_AGENT_CODING_AGENT_DIR";
+export const PRIME_AGENT_ACP_META_NAMESPACE = "ai.primeintellect.prime-agent";
+
+const primeAgentAcpTerminalNotificationSchema = Schema.Struct({
+  sessionId: Schema.String,
+  update: Schema.Struct({
+    sessionUpdate: Schema.Literal("session_info_update"),
+    _meta: Schema.Struct({
+      [PRIME_AGENT_ACP_META_NAMESPACE]: Schema.Struct({
+        promptTurnId: Schema.Int.check(Schema.isGreaterThan(0)),
+        eventSequence: Schema.Int.check(Schema.isGreaterThan(0)),
+        phase: Schema.Literals(["responseBoundary", "terminalQuiescence"]),
+        outcome: Schema.Literals(["result", "error"]),
+        terminalQuiescenceExpected: Schema.optional(Schema.Boolean),
+        quiescence: Schema.optional(
+          Schema.Struct({
+            outstandingSubagents: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+            remainingAutonomousContinuations: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+          }),
+        ),
+      }),
+    }),
+  }),
+});
+const decodePrimeAgentAcpTerminalNotification = Schema.decodeUnknownOption(
+  primeAgentAcpTerminalNotificationSchema,
+);
+const decodePrimeAgentAcpTerminalTarget = Schema.decodeUnknownOption(
+  Schema.Struct({
+    sessionId: Schema.String,
+    update: Schema.Struct({
+      sessionUpdate: Schema.Literal("session_info_update"),
+      _meta: Schema.Struct({
+        [PRIME_AGENT_ACP_META_NAMESPACE]: Schema.Struct({
+          phase: Schema.Literals(["responseBoundary", "terminalQuiescence"]),
+        }),
+      }),
+    }),
+  }),
+);
+
+type PrimeAgentAcpTerminalMeta =
+  (typeof primeAgentAcpTerminalNotificationSchema.Type)["update"]["_meta"][typeof PRIME_AGENT_ACP_META_NAMESPACE];
+
+export type PrimeAgentAcpTerminalUpdate =
+  | { readonly phase: "invalid" }
+  | {
+      readonly phase: "responseBoundary";
+      readonly promptTurnId: number;
+      readonly eventSequence: number;
+      readonly outcome: "result" | "error";
+      readonly terminalQuiescenceExpected: boolean;
+    }
+  | {
+      readonly phase: "terminalQuiescence";
+      readonly promptTurnId: number;
+      readonly eventSequence: number;
+      readonly outcome: "result" | "error";
+      readonly outstandingSubagents: 0;
+      readonly remainingAutonomousContinuations: number;
+    };
+
+export function parsePrimeAgentAcpTerminalUpdate(
+  notification: unknown,
+): PrimeAgentAcpTerminalUpdate | undefined {
+  const decoded = decodePrimeAgentAcpTerminalNotification(notification);
+  if (Option.isNone(decoded)) {
+    return Option.isSome(decodePrimeAgentAcpTerminalTarget(notification))
+      ? { phase: "invalid" }
+      : undefined;
+  }
+  const metadata: PrimeAgentAcpTerminalMeta =
+    decoded.value.update._meta[PRIME_AGENT_ACP_META_NAMESPACE];
+  if (metadata.phase === "responseBoundary") {
+    if (metadata.terminalQuiescenceExpected === undefined) return { phase: "invalid" };
+    return {
+      phase: metadata.phase,
+      promptTurnId: metadata.promptTurnId,
+      eventSequence: metadata.eventSequence,
+      outcome: metadata.outcome,
+      terminalQuiescenceExpected: metadata.terminalQuiescenceExpected,
+    };
+  }
+  if (metadata.quiescence === undefined || metadata.quiescence.outstandingSubagents !== 0) {
+    return { phase: "invalid" };
+  }
+  return {
+    phase: metadata.phase,
+    promptTurnId: metadata.promptTurnId,
+    eventSequence: metadata.eventSequence,
+    outcome: metadata.outcome,
+    outstandingSubagents: 0,
+    remainingAutonomousContinuations: metadata.quiescence.remainingAutonomousContinuations,
+  };
+}
 
 const RESERVED_PRIME_AGENT_LAUNCH_ARGS = [
   "--mode",
@@ -64,10 +161,11 @@ export function makePrimeAgentEnvironment(
   settings: Pick<PrimeAgentSettings, "agentHomePath"> | null | undefined,
   environment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
+  const sanitized = sanitizePrimeAgentTopLevelEnvironment(environment);
   const agentHomePath = settings?.agentHomePath.trim();
   return agentHomePath
-    ? { ...environment, [PRIME_AGENT_HOME_ENV]: resolveProviderHomePath(agentHomePath) }
-    : { ...environment };
+    ? { ...sanitized, [PRIME_AGENT_HOME_ENV]: resolveProviderHomePath(agentHomePath) }
+    : sanitized;
 }
 
 export function buildPrimeAgentAcpSpawnInput(input: {
@@ -96,6 +194,7 @@ export function buildPrimeAgentAcpSpawnInput(input: {
     ],
     cwd: input.cwd,
     env: makePrimeAgentEnvironment(input.settings, input.environment),
+    extendEnv: false,
   };
 }
 
