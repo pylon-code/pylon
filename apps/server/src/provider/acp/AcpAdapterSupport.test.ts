@@ -11,6 +11,10 @@ describe("AcpAdapterSupport", () => {
     expect(acpPermissionOutcome("decline")).toBe("reject-once");
   });
 
+  it("treats acceptAlways as an approval rather than falling through to reject", () => {
+    expect(acpPermissionOutcome("acceptAlways")).toBe("allow-always");
+  });
+
   it("maps ACP request errors to provider adapter request errors", () => {
     const error = mapAcpToAdapterError(
       ProviderDriverKind.make("cursor"),

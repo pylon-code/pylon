@@ -399,6 +399,7 @@ export function toOpenCodePermissionReply(
     case "accept":
       return "once";
     case "acceptForSession":
+    case "acceptAlways":
       return "always";
     case "decline":
     case "cancel":
