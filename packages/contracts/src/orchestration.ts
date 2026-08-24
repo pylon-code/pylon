@@ -18,6 +18,7 @@ import {
   ProjectId,
   ProviderItemId,
   ThreadId,
+  ProviderApprovalDecision,
   TrimmedNonEmptyString,
   TrimmedString,
   TurnId,
@@ -142,17 +143,15 @@ export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";
-export const ProviderRequestKind = Schema.Literals(["command", "file-read", "file-change"]);
+export const ProviderRequestKind = Schema.Literals([
+  "command",
+  "file-read",
+  "file-change",
+  "mcp-elicitation",
+]);
 export type ProviderRequestKind = typeof ProviderRequestKind.Type;
 export const AssistantDeliveryMode = Schema.Literals(["buffered", "streaming"]);
 export type AssistantDeliveryMode = typeof AssistantDeliveryMode.Type;
-export const ProviderApprovalDecision = Schema.Literals([
-  "accept",
-  "acceptForSession",
-  "decline",
-  "cancel",
-]);
-export type ProviderApprovalDecision = typeof ProviderApprovalDecision.Type;
 export const ProviderUserInputAnswers = Schema.Record(Schema.String, Schema.Unknown);
 export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 

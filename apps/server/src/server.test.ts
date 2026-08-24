@@ -119,7 +119,6 @@ import {
   ProviderValidationError,
 } from "./provider/Errors.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
-import * as ProviderService from "./provider/Services/ProviderService.ts";
 import { ProviderAdapterRequestError } from "./provider/Errors.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
