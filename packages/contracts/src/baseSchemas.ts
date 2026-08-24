@@ -94,3 +94,24 @@ export const ApprovalRequestId = makeEntityId("ApprovalRequestId");
 export type ApprovalRequestId = typeof ApprovalRequestId.Type;
 export const CheckpointRef = makeEntityId("CheckpointRef");
 export type CheckpointRef = typeof CheckpointRef.Type;
+
+/**
+ * Approval vocabulary lives here rather than in orchestration.ts because
+ * providerRuntime.ts needs `ProviderApprovalOption` as a value (#8058) while
+ * orchestration.ts already imports providerRuntime for its session payloads.
+ * Upstream has no such edge, so importing across those two closes a cycle here
+ * that only shows up at runtime — typecheck hoists the types and stays quiet.
+ */
+export const ProviderApprovalDecision = Schema.Literals([
+  "accept",
+  "acceptForSession",
+  "acceptAlways",
+  "decline",
+  "cancel",
+]);
+export type ProviderApprovalDecision = typeof ProviderApprovalDecision.Type;
+export const ProviderApprovalOption = Schema.Struct({
+  decision: ProviderApprovalDecision,
+  label: TrimmedNonEmptyString,
+});
+export type ProviderApprovalOption = typeof ProviderApprovalOption.Type;

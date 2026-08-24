@@ -35,6 +35,7 @@ const clientSettings: ClientSettings = {
   fontSizeTerminal: 12,
   fontSmoothing: true,
   glassOpacity: 80,
+  showSkillsInSlashMenu: false,
   providerModelPreferences: {},
   showProviderUsageInContextPopover: true,
   sidebarAutoSettleAfterDays: 3,

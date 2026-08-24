@@ -3002,7 +3002,8 @@ export function makePrimeAgentDaemonAdapter(
               detail: `Unknown or stale Prime Agent approval '${requestId}' for thread '${threadId}'.`,
             });
           }
-          const confirmed = decision === "accept" || decision === "acceptForSession";
+          const confirmed =
+            decision === "accept" || decision === "acceptForSession" || decision === "acceptAlways";
           if (decision === "cancel") context.approvalsAcceptedForSession = false;
           yield* context.runtime
             .respondToExtensionUiRequest(pending.nativeId, { confirmed })
@@ -3018,7 +3019,8 @@ export function makePrimeAgentDaemonAdapter(
               detail: `Prime Agent approval '${requestId}' was already resolved.`,
             });
           }
-          if (decision === "acceptForSession") context.approvalsAcceptedForSession = true;
+          if (decision === "acceptForSession" || decision === "acceptAlways")
+            context.approvalsAcceptedForSession = true;
           yield* syncAgentDepthSettableLocked(context);
           yield* updateCompactionProjectionLocked(context);
           yield* offerRuntimeEvent({
