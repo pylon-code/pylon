@@ -3837,7 +3837,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         yield* stopSessionInternal(existingContext, {
           emitExitEvent: false,
-        });
+        }).pipe(
+          // Replacement cleanup is best-effort: never block the new session on
+          // either typed failures or unexpected defects from tearing down the old one.
+          Effect.catchCause((cause) =>
+            Effect.logWarning("claude.session.replace.stop-failed", {
+              threadId: input.threadId,
+              cause,
+            }),
+          ),
+        );
       }
 
       const startedAt = yield* nowIso;
@@ -4144,11 +4153,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
 
-        if (decision === "accept" || decision === "acceptForSession") {
+        if (
+          decision === "accept" ||
+          decision === "acceptForSession" ||
+          decision === "acceptAlways"
+        ) {
           return {
             behavior: "allow",
             updatedInput: toolInput,
-            ...(decision === "acceptForSession"
+            ...(decision === "acceptForSession" || decision === "acceptAlways"
               ? {
                   updatedPermissions: toSessionPermissionUpdates(
                     toolName,
