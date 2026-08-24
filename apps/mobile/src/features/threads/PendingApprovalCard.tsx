@@ -17,10 +17,13 @@ export interface PendingApprovalCardProps {
   ) => Promise<unknown>;
 }
 
+// Mirrors the web fallback in ComposerPendingApprovalActions: a provider that
+// sends no options must still offer the same way out on every client.
 const DEFAULT_APPROVAL_OPTIONS = [
   { decision: "accept", label: "Allow once" },
   { decision: "acceptForSession", label: "Allow session" },
   { decision: "decline", label: "Decline" },
+  { decision: "cancel", label: "Cancel turn" },
 ] satisfies ReadonlyArray<ProviderApprovalOption>;
 
 export function PendingApprovalCard(props: PendingApprovalCardProps) {
