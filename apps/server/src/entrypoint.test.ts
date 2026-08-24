@@ -8,7 +8,13 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { isEntrypoint } from "./entrypoint.ts";
 
-const makeTempDir = () => NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-entrypoint-test-"));
+// realpath the fixture root: macOS resolves os.tmpdir() to /var/folders/... while
+// /var is itself a symlink to /private/var, so realpathSync() below would resolve
+// the prefix as well as the entry link and never match a moduleUrl built from the
+// unresolved path. Node hands import.meta.url over fully resolved, so resolving
+// here is what actually mirrors the runtime.
+const makeTempDir = () =>
+  NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-entrypoint-test-")));
 
 describe("isEntrypoint", () => {
   it("uses the runtime answer when Node provides one", () => {
