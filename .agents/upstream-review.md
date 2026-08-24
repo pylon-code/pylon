@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "30be31195883635aba96031a8d79c255fb28b438"
-reviewed-through-date: "2026-08-23"
+reviewed-through: "f035a0f4cdf4abaa6704673af7b5a4a321149ba2"
+reviewed-through-date: "2026-08-24"
 ---
 
 # T3 upstream review log
@@ -2255,6 +2255,166 @@ Not done, and deliberately: no real-client pass in web or mobile. `#6433`/`#7940
 native markdown rendering and `#7906` restyles the token layer, so both warrant a look in a
 running client before release.
 
+## 2026-08-24 — `30be31195883635aba96031a8d79c255fb28b438..f035a0f4cdf4abaa6704673af7b5a4a321149ba2`
+
+Forty-one upstream commits. **Thirty-seven adopted** onto `upstream/2026-08-24-batch`, **four
+skipped**. `git cherry` reported every one absent from Pylon. The read-only `git merge-tree`
+probe predicted fifteen conflicts; several resolved themselves once earlier commits landed.
+The register was empty going in and is empty coming out.
+
+The developer's standing instruction for this batch was to stay in step with upstream unless
+a change makes no sense for Pylon, and to adopt rather than defer work that is merely hard.
+Two of the four skips were decided by the developer up front; the other two were found during
+integration and are argued below.
+
+| ID    | Upstream            | Decision                  | Pylon commit | Notes                                                                                                                                                                         |
+| ----- | ------------------- | ------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CS-1  | `#7913` `fdd1572b6` | adopted                   | `00ff9c0cf`  | Sidebar project menu row padding.                                                                                                                                             |
+| CS-2  | `#7953` `afa830980` | adopted                   | `5eafdf203`  | Clients reconnect after credentials fail during a remote server update.                                                                                                       |
+| CS-3  | `#7949` `3db38b881` | adopted (with adaptation) | `7490b2ce4`  | Codex `/feedback` uploads the thread to OpenAI. 36 files, 18 conflict hunks. Doc reworded off "T3 Code" — see below.                                                          |
+| CS-4  | `#5891` `4d12e5222` | adopted                   | `72950957c`  | Stop kills no longer leave Claude work running.                                                                                                                               |
+| CS-5  | `#7970` `2433f4c1c` | **skipped**               | —            | One line in `.macroscope/approvability.md`. Pylon has no such file and no Macroscope in CI — see below.                                                                       |
+| CS-6  | `#7969` `f70eeeeb0` | adopted                   | `a4dab0fcc`  | Settled pinned threads move into the settled section.                                                                                                                         |
+| CS-7  | `#7975` `25dcee00a` | adopted (with adaptation) | `ccdeeec09`  | Release build and Windows packaging speedups. Pylon's `PUBLISH_CLI_TO_NPM` opt-in gate kept alongside upstream's new `quality` dependency.                                    |
+| CS-8  | `#7971` `ea8c9e5ca` | adopted                   | `bfbd6ba59`  | Tool calls no longer leave a blank page mid-thread.                                                                                                                           |
+| CS-9  | `#7999` `b1670ac7d` | adopted                   | `6576f1d5d`  | Recovered tool failures stop marking work logs red — refines the split documented in PR #69; see below.                                                                       |
+| CS-10 | `#7942` `55c909334` | adopted                   | `107af7ca5`  | Mobile markdown image requests isolate per thread.                                                                                                                            |
+| CS-11 | `#8009` `9da0fab08` | adopted (with adaptation) | `cb7e0f2c6`  | Skills redesign in the `$` and `/` menus. Pylon already carries `planModeEnabled`, so only `showSkillsInSlashMenu` was taken from the shared settings hunks.                  |
+| CS-12 | `#8016` `09df91f72` | adopted                   | `b5a8569e3`  | Right panel toggle clicks work again after closing on desktop.                                                                                                                |
+| CS-13 | `#8000` `5427ca056` | adopted                   | `b524949f5`  | Server update banners sit flush with the composer.                                                                                                                            |
+| CS-14 | `#8006` `fa219001d` | adopted                   | `b49ad7918`  | Work log rows are reused while streaming.                                                                                                                                     |
+| CS-15 | `#7968` `a9cd94eb9` | adopted                   | `330a6ebca`  | Provider badge legibility in dark themes.                                                                                                                                     |
+| CS-16 | `#8005` `69e5ad884` | adopted                   | `d8a3271f1`  | Uppercase URL schemes count as secure.                                                                                                                                        |
+| CS-17 | `#6412` `b4be33f07` | adopted                   | `6fab4907c`  | Release notes stay visible while downloading.                                                                                                                                 |
+| CS-18 | `#7563` `17dbe8dda` | adopted                   | `88a99be16`  | Usage views list only providers with usage. Upstream's `activeProviders` covers seven call sites where Pylon had fixed one inline; Pylon's rationale moved to the definition. |
+| CS-19 | `#8052` `643daa516` | adopted                   | `2948657d9`  | Expanded tool calls stop hiding thread content.                                                                                                                               |
+| CS-20 | `#8056` `b60a2c0b9` | adopted                   | `55d106abb`  | Removes two no-op live-activity tests Pylon adopted the day before. Verified independently — see below.                                                                       |
+| CS-21 | `#7967` `10626c537` | adopted                   | `52f3452bf`  | Terminal sidebar grouping.                                                                                                                                                    |
+| CS-22 | `#8058` `7c6163c67` | adopted (with adaptation) | `724dbb4ec`  | Codex app-access approval prompts. **Closed an import cycle in Pylon** — see below.                                                                                           |
+| CS-23 | `#8048` `e9f50c3ef` | adopted (with adaptation) | `8a3ecd827`  | Image attachments upload before sending. Pylon's follow-up queue command needed the same widening — see below.                                                                |
+| CS-24 | `#7675` `58ba55944` | adopted                   | `a9b799ce5`  | OpenCode skill discovery output is bounded.                                                                                                                                   |
+| CS-25 | `#5152` `9eba1252c` | adopted                   | `2015220d0`  | Mobile thread shelf collapse state persists.                                                                                                                                  |
+| CS-26 | `#5385` `2d2efff28` | adopted                   | `bd6b176af`  | Android tablet thread controls restored.                                                                                                                                      |
+| CS-27 | `#5585` `f9a726e62` | adopted                   | `811768e05`  | First thread open lands above the composer on Android.                                                                                                                        |
+| CS-28 | `#7674` `be3da50e9` | adopted                   | `d6e261bf5`  | Submodules are checked out in a new worktree.                                                                                                                                 |
+| CS-29 | `#6216` `ba30177b5` | **skipped**               | —            | Merged PR badges after branch deletion. **Pylon already solved this and upstream's version regresses it** — see below.                                                        |
+| CS-30 | `#6472` `229b05df0` | adopted                   | `eae8524d3`  | Live pull request reads are fresh.                                                                                                                                            |
+| CS-31 | `#7579` `6f5c951a4` | adopted (with adaptation) | `d29878267`  | Semver comparison for client/server skew. Upstream's new `MISMATCH_HINT` constant said "T3 Code version"; kept Pylon's wording.                                               |
+| CS-32 | `#8068` `c0047c252` | adopted                   | `996207b53`  | Follow-ups stop leaving giant blank space (legendapp patch + lockfile).                                                                                                       |
+| CS-33 | `#8070` `e31e568bd` | **skipped**               | —            | Disables automatic Vercel deployments on pull requests. **Pylon deliberately enabled them** — see below.                                                                      |
+| CS-34 | `#8071` `a00218741` | **skipped**               | —            | Vouches repeat contributors. `.github/VOUCHED.td` is fork governance; Pylon's list diverges by 5 insertions / 32 deletions. Same call as `#7728` last batch.                  |
+| CS-35 | `#7583` `6a2608292` | adopted (with adaptation) | `efde49559`  | Authoritative subagent model when snapshots race `task_started`. Both forks add a different fallback to one chain — see below.                                                |
+| CS-36 | `#7100` `04df98db4` | adopted                   | `bd49ff34a`  | Auto-accept edits honored for OpenCode.                                                                                                                                       |
+| CS-37 | `#7141` `3fd506433` | adopted                   | `2e46f909c`  | CLI runs on Node versions without `import.meta.main`. Its test needed a macOS fixture fix — see below.                                                                        |
+| CS-38 | `#7412` `17822fab7` | adopted                   | `82c2354ff`  | Provider interrupt failures recover.                                                                                                                                          |
+| CS-39 | `#7839` `01fc7d228` | adopted                   | `abb9040fd`  | A thread's worktree is recreated before starting a turn.                                                                                                                      |
+| CS-40 | `#8076` `e6a109b9f` | adopted                   | `9b094b4c3`  | Thread delete no longer fails on an already-removed worktree.                                                                                                                 |
+| CS-41 | `#8083` `f035a0f4c` | adopted                   | `8ac255d3e`  | Update notices stop showing through the composer.                                                                                                                             |
+
+**CS-20 was verified rather than trusted.** `#8056` deletes two tests Pylon adopted the day
+before in `#7893`, calling them no-ops. Both halves of upstream's argument check out
+independently: each test supplies exactly one activity, and both filters keep a singleton —
+`dropStaleContextWindowActivities` maps the lone activity's turn to index 0 and keeps index 0,
+and `dropSupersededToolUpdatedActivities` returns early when no completion exists. So they pass
+whether or not the filters are wrongly applied to live events. The coverage upstream names as
+the replacement is present in Pylon and does exercise `projectActivityEvent`.
+
+**CS-9 refines PR #69's finding, and upstream got there too.** #69 documented why the two
+`work-toggle` producers use different failure predicates. `#7999` says the earlier fix "covered
+tool-only groups but missed mixed work logs" and lands the better answer: the overflow toggle
+now requires _both_ that a hidden entry failed and that the group's latest tool entry still
+shows failure. That is the conjunction of the two concerns, not a replacement for either. The
+comment at that site was rewritten accordingly.
+
+**CS-22 closed a runtime import cycle that only exists in Pylon.** Upstream has
+`providerRuntime.ts` import `ProviderApprovalOption` from `orchestration.ts` — a one-way edge
+for them. Pylon's `orchestration.ts` already imports `providerRuntime.ts` for its session
+payloads, so that edge closes a cycle: `Schema.Array(ProviderApprovalOption)` evaluated
+`undefined` at module init and the approval suite failed to collect. Typecheck hoists the types
+and never sees it. `ProviderApprovalDecision` and `ProviderApprovalOption` moved to
+`baseSchemas.ts`, a leaf both files already import. Pylon's decision union keeps its extra
+`"acceptAlways"` literal, which upstream does not have and which the first move dropped.
+
+**CS-23 needed Pylon's follow-up queue widened to match.** `thread.input-queue.follow-up` is
+Pylon-only and shares the composer with `thread.turn.start`, so it takes the same widened
+attachment union upstream applied to turn-start. The server-side normalizer already branches on
+`"dataUrl" in attachment` for both commands, so nothing else was required.
+`cleanupFailedUploadedAttachments` was extended to the follow-up command too: both claim
+uploaded copies during normalization, so both leak them on a failed dispatch. Upstream only
+guards turn-start because it has no such command.
+
+**CS-23 also tried to reinstate analytics the last batch removed.** Its `ws.ts` hunk carries
+both the attachment cleanup and `recordClientCommandAnalytics`, which the 2026-08-23 batch
+deliberately dropped when `#7774` landed as plumbing only. The cleanup was taken; the analytics
+call was not.
+
+**CS-29 is skipped because Pylon already shipped this fix and upstream's regresses it.**
+`#6216` preserves a merged PR badge after the remote branch is deleted and pruned. Pylon already
+implements exactly that, with its own `skipped` mechanism, and already carries the same test —
+which passes on clean `pylon`. Upstream's version changes `isUnpublishedBranch` to treat
+configured branch upstream metadata as proof of publication; applied on top of Pylon's
+machinery it makes the lookup fire again and blanks the cached badge. Isolated to be sure:
+cherry-picked alone onto clean `origin/pylon`, the test fails. With `#6216` dropped,
+`GitManager.test.ts` is 246/246.
+
+**CS-33 is skipped because it reverses a deliberate Pylon decision.** `#8070` adds
+`git: { deploymentEnabled: false }` to `apps/marketing/vercel.ts`. Pylon already sets
+`deploymentEnabled: true` there, with a comment recording that deployments were held off only
+while the site carried T3's product copy and legal pages, and enabled once that copy was gone.
+The cherry-pick produced a duplicate `git:` key — the later one wins, so behavior was
+accidentally unchanged and only the linter caught it. AGENTS.md resolves conflicts Pylon-first
+and prefers the later Pylon-specific product decision.
+
+**CS-5 is skipped because it configures a bot Pylon does not run.** `.macroscope/approvability.md`
+does not exist in Pylon and no workflow references Macroscope. Adopting would create the file
+solely to configure something that never executes.
+
+**CS-3's user doc was reworded.** `docs/user/providers-codex.md` arrived saying "T3 Code uploads
+the thread and Codex logs to OpenAI". `docs/user/` is shipped-product voice, so that reads
+"Pylon". The feature itself is opt-in per invocation — the user types `/feedback` — and it does
+upload the thread and Codex logs to OpenAI, which the doc states plainly.
+
+**CS-37's test could not pass on macOS.** `#7141`'s fixture builds `moduleUrl` from an
+unresolved temp path while the implementation realpaths `process.argv[1]`. On macOS
+`os.tmpdir()` sits under the `/var` → `/private/var` symlink, so `realpathSync` resolves the
+prefix as well as the entry link and the two never match. Node hands `import.meta.url` over
+fully resolved, so resolving the fixture root is what actually mirrors the runtime. Fixed in
+`a178bd116`; green on Linux CI either way, red on every macOS checkout without it.
+
+Conflicts of note, all resolved Pylon-first:
+
+| File                           | Conflict                                                                                                | Resolution                                                                                                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ChatComposer.tsx` (`#8058`)   | A 50-vs-76 line conflict from Pylon's fragment wrapper and its two-space indent shift                   | Upstream's real change to this file is **two lines** — an `options` prop on two call sites. Applied directly; the rest was git noise.                           |
+| `ChatComposer.tsx` (`#8048`)   | git aligned Pylon's collapsed-mobile row and bottom toolbar against upstream's stash menu and image map | Unrelated regions. Pylon's tree kept; upstream's two real changes applied at Pylon's own sites.                                                                 |
+| `use-thread-composer-state.ts` | Seven hunks, mostly import reordering plus a rewritten `selectedThreadFeed`                             | Pylon's imports are a superset; upstream's feedback symbols added beside them. `onSendMessage` deps unioned.                                                    |
+| `ClaudeAdapter.ts` (`#7583`)   | Both forks add a fallback to the same `model` chain                                                     | Merged to `bufferedModel ?? launchInput?.model ?? previousAgent?.model ?? session.model` — upstream's ordering, Pylon's arm below the explicit launch override. |
+| `ClaudeAdapter.test.ts`        | Upstream's purely additive test anchored inside Pylon's own resume test and interleaved them            | Inserted as a whole block at the test boundary. Both tests present; suite passes 207.                                                                           |
+| `release.yml`                  | Pylon's `PUBLISH_CLI_TO_NPM` opt-in against upstream's new `quality` dependency                         | Both kept.                                                                                                                                                      |
+| `versionSkew.test.ts`          | Upstream's new `MISMATCH_HINT` constant carries T3 branding                                             | Constant adopted, wording kept Pylon's.                                                                                                                         |
+
+Two duplicate imports survived a clean git merge and were caught by typecheck, not by the
+merge: `WS_METHODS` in `threadCommands.ts` and `ProviderService` in `server.test.ts`.
+
+Validation:
+
+- **3309 tests pass** across the 58 touched test files. The one failure in this worktree,
+  `build-desktop-artifact > skips the primary native probe for cross-architecture Windows
+payloads`, is **pre-existing on `origin/pylon`** and host-arch dependent: the test passes
+  `targetArch: "arm64"`, which is not cross-architecture on an Apple Silicon machine, so the
+  probe legitimately runs. Verified by running it against an untouched `origin/pylon` checkout.
+- Every run also globs the nested worktrees under `.claude/`, `.prime/`, and `.superconductor/`,
+  which fail to collect for want of their own `node_modules`. Every reported failure was
+  confirmed to carry a `worktrees` path segment before the run was accepted.
+- Typecheck clean across all seven touched packages, each confirmed to have run.
+- `vp check` over 153 changed TypeScript files: **0 errors, 1 warning**, and that warning is
+  upstream-verbatim (`for (const pending of [...map.values()])` in `ClaudeAdapter.ts`).
+- `vp i` was re-run after `#8068` changed a patch file and the lockfile.
+
+Not done, and deliberately: no real-client pass in web or mobile. `#8009` redesigns the slash
+and `$` menus, `#8048` changes composer attachment UI, and `#8058` changes approval prompts on
+both clients; all three warrant a look in a running client before release.
+
 ## Deferred register
 
 _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
@@ -2262,7 +2422,8 @@ _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
 2026-08-18: the 2026-08-18 batch review found them, the batch shipped without
 them so the adoption stayed faithful, and `fix/pull-request-quota-followups`
 fixed both the same day. DEF-6 was opened 2026-08-21 and adopted the same
-day, once `#7725` reconciled the tests it was blocked on. The 2026-08-23 batch
+day, once `#7725` reconciled the tests it was blocked on. The 2026-08-24 batch
+opened no new entries either. The 2026-08-23 batch
 opened no new entries and left it empty; it did retire the dead `U-4326`
 revisit condition recorded in the 2026-08-04 table, since that pull request
 closed unmerged. Entries are removed once adopted, skipped, or fixed._
