@@ -2267,6 +2267,16 @@ a change makes no sense for Pylon, and to adopt rather than defer work that is m
 Two of the four skips were decided by the developer up front; the other two were found during
 integration and are argued below.
 
+**Erratum: four `cherry picked from commit` trailers are wrong.** The trailers on `efde49559`,
+`8a3ecd827`, `724dbb4ec`, and `ccdeeec09` carry 40-character SHAs that do not resolve; only their
+first nine characters match the real upstream commits. The `Upstream` column below is correct and
+is the authoritative provenance record for this batch — prefer it over any commit trailer. The
+real commits are `6a2608292dd7ba01516112c276e475e6b64e4e2c` (CS-35),
+`e9f50c3efcb02a199042364ead292e164274e716` (CS-23),
+`7c6163c67aa122fa7c13466536c012888db102c6` (CS-22), and
+`25dcee00a6e12db2781a17b326e6e34de0d4ced7` (CS-7). The trailers were left unrewritten rather than
+force-pushing a rewrite of all 37 commits on an open pull request.
+
 | ID    | Upstream            | Decision                  | Pylon commit | Notes                                                                                                                                                                         |
 | ----- | ------------------- | ------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | CS-1  | `#7913` `fdd1572b6` | adopted                   | `00ff9c0cf`  | Sidebar project menu row padding.                                                                                                                                             |
@@ -2332,8 +2342,8 @@ for them. Pylon's `orchestration.ts` already imports `providerRuntime.ts` for it
 payloads, so that edge closes a cycle: `Schema.Array(ProviderApprovalOption)` evaluated
 `undefined` at module init and the approval suite failed to collect. Typecheck hoists the types
 and never sees it. `ProviderApprovalDecision` and `ProviderApprovalOption` moved to
-`baseSchemas.ts`, a leaf both files already import. Pylon's decision union keeps its extra
-`"acceptAlways"` literal, which upstream does not have and which the first move dropped.
+`baseSchemas.ts`, a leaf both files already import. The decision union also gains upstream's new
+`"acceptAlways"` literal, which arrived in `7c6163c67` and which the first move dropped.
 
 **CS-23 needed Pylon's follow-up queue widened to match.** `thread.input-queue.follow-up` is
 Pylon-only and shares the composer with `thread.turn.start`, so it takes the same widened
