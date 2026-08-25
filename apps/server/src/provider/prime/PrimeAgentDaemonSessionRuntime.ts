@@ -384,6 +384,31 @@ const createFailureSchema = Schema.Struct({
   success: Schema.Literal(false),
   error: Schema.String,
 });
+const resumeQueueSuccessSchema = Schema.Struct({
+  type: Schema.Literal("response"),
+  command: Schema.Literal("resume_queue"),
+  success: Schema.Literal(true),
+});
+const resumeQueueEmptySchema = Schema.Struct({
+  type: Schema.Literal("response"),
+  command: Schema.Literal("resume_queue"),
+  success: Schema.Literal(false),
+  error: Schema.Literal("No queued work to resume"),
+});
+const sessionListSuccessSchema = Schema.Struct({
+  type: Schema.Literal("response"),
+  command: Schema.Literal("list"),
+  success: Schema.Literal(true),
+  data: Schema.Struct({
+    sessions: Schema.Array(
+      Schema.Struct({
+        activeSessionId: Schema.optional(Schema.String),
+        sessionId: Schema.String,
+        sessionFile: Schema.optional(Schema.String),
+      }),
+    ),
+  }),
+});
 const modelSchema = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -507,6 +532,9 @@ const decodeImage = Schema.decodeUnknownOption(imageSchema);
 const decodeExtensionUiResponse = Schema.decodeUnknownOption(extensionUiResponseSchema);
 const decodeCreateSuccess = Schema.decodeUnknownOption(createSuccessSchema);
 const decodeCreateFailure = Schema.decodeUnknownOption(createFailureSchema);
+const decodeResumeQueueSuccess = Schema.decodeUnknownOption(resumeQueueSuccessSchema);
+const decodeResumeQueueEmpty = Schema.decodeUnknownOption(resumeQueueEmptySchema);
+const decodeSessionListSuccess = Schema.decodeUnknownOption(sessionListSuccessSchema);
 const decodeModel = Schema.decodeUnknownOption(modelSchema);
 const decodeAvailableModels = Schema.decodeUnknownOption(availableModelsSchema);
 const decodeModelCatalog = Schema.decodeUnknownOption(modelCatalogSchema);
@@ -690,6 +718,7 @@ const runtimeErrorOperation = Schema.Literals([
   "set-auto-compaction",
   "abort",
   "abort-and-clear-queue",
+  "resume-after-abort",
   "side-question",
   "abort-side-question",
   "model-catalog",
@@ -1180,6 +1209,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let unsubscribe: (() => void) | undefined;
     let disposed = false;
     let disposeStarted = false;
+    let needsResumeAfterAbort = false;
     let connectionGeneration = 0;
     let rlmEventContinuityValid = true;
     let rlmTurnUsageBaseline: PrimeDaemonUsage | undefined;
@@ -1205,6 +1235,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
       | undefined;
     const rlmQuiescenceSemaphore = yield* Semaphore.make(1);
+    const resumeAfterAbortSemaphore = yield* Semaphore.make(1);
 
     // A recovered transport can leave Prime's original prompt RPC unresolved even
     // after its worker accepted and completed the input. Release only from the same
@@ -3006,11 +3037,93 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       },
     );
 
+    const resolveCurrentActiveSessionId = Effect.fn(
+      "PrimeAgentDaemonSessionRuntime.resolveCurrentActiveSessionId",
+    )(function* () {
+      const output = yield* Effect.tryPromise({
+        try: () => client.request({ type: "list", includeClientOwned: true }, COMMAND_TIMEOUT_MS),
+        catch: () =>
+          runtimeError(
+            "resume-after-abort",
+            "request-failed",
+            "The daemon did not resolve the current session after aborting.",
+          ),
+      });
+      const listed = decodeSessionListSuccess(output);
+      if (Option.isNone(listed)) {
+        return yield* runtimeError(
+          "resume-after-abort",
+          "invalid-response",
+          "The daemon returned an invalid session list while resuming input.",
+        );
+      }
+      const matching = listed.value.data.sessions.filter(
+        (candidate) =>
+          candidate.activeSessionId !== undefined &&
+          (candidate.sessionId.trim() === sessionId ||
+            candidate.sessionFile?.trim() === sessionFile),
+      );
+      if (matching.length !== 1) {
+        return yield* runtimeError(
+          "resume-after-abort",
+          "invalid-response",
+          "The daemon did not identify one current session while resuming input.",
+        );
+      }
+      const currentActiveSessionId = matching[0]?.activeSessionId?.trim() ?? "";
+      if (currentActiveSessionId.length === 0) {
+        return yield* runtimeError(
+          "resume-after-abort",
+          "invalid-response",
+          "The daemon omitted the current session identity while resuming input.",
+        );
+      }
+      return currentActiveSessionId;
+    });
+
+    const resumeAfterAbort = Effect.fn("PrimeAgentDaemonSessionRuntime.resumeAfterAbort")(
+      function* () {
+        return yield* resumeAfterAbortSemaphore.withPermit(
+          Effect.gen(function* () {
+            if (!needsResumeAfterAbort) return false;
+            yield* ensureOpen("resume-after-abort");
+            const currentActiveSessionId = yield* resolveCurrentActiveSessionId();
+            const output = yield* Effect.tryPromise({
+              try: () =>
+                client.request(
+                  { type: "resume_queue", activeSessionId: currentActiveSessionId },
+                  COMMAND_TIMEOUT_MS,
+                ),
+              catch: () =>
+                runtimeError(
+                  "resume-after-abort",
+                  "request-failed",
+                  "The daemon did not resume session input after aborting.",
+                ),
+            });
+            if (
+              Option.isNone(decodeResumeQueueSuccess(output)) &&
+              Option.isNone(decodeResumeQueueEmpty(output))
+            ) {
+              return yield* runtimeError(
+                "resume-after-abort",
+                "invalid-response",
+                "The daemon returned an invalid session input resume response.",
+              );
+            }
+            needsResumeAfterAbort = false;
+            return true;
+          }),
+        );
+      },
+    );
+
     const prompt = Effect.fn("PrimeAgentDaemonSessionRuntime.prompt")(function* (
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
       yield* ensureOpen("prompt");
       yield* awaitMcpRecovery;
+      const resumedAfterAbort = yield* resumeAfterAbort();
       const images = yield* validateImages("prompt", promptInput.images);
       yield* validatePromptContent("prompt", promptInput.text, images);
       if (rlmQuiescenceAvailable && promptInput.rlmQuiescenceToken !== undefined) {
@@ -3040,7 +3153,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       // completion through events and the correlated quiescence barrier.
       yield* callVoid("prompt", () => {
         const request = connection!.promptAndWait(promptInput.text, {
-          queueIfBusy: false,
+          queueIfBusy: resumedAfterAbort,
+          ...(resumedAfterAbort ? { streamingBehavior: "followUp" as const } : {}),
           ...(images.length === 0 ? {} : { images }),
           ...(promptInput.signal === undefined ? {} : { signal: promptInput.signal }),
         });
@@ -3311,6 +3425,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     const abortAndClearQueue = Effect.gen(function* () {
       yield* ensureOpen("abort-and-clear-queue");
       const method = yield* requireMethod("abort-and-clear-queue", connection!.abortAndClearQueue);
+      // Prime suspends new session input as soon as abort begins. Keep this set
+      // even when the response is lost because the native side effect may have run.
+      needsResumeAfterAbort = true;
       const output = yield* Effect.tryPromise({
         try: () => method.call(connection),
         catch: () =>

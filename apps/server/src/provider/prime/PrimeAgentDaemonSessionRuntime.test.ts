@@ -171,6 +171,8 @@ function fixture(options?: {
     message: string,
     options?: PrimeAgentDaemonPromptOptions,
   ) => Promise<unknown>;
+  readonly resumeQueueResponses?: ReadonlyArray<unknown>;
+  readonly listedActiveSessionId?: string;
   readonly waitForHeadlessCompletionImpl?: (options: {
     readonly waitForRlmQuiescence?: boolean;
   }) => Promise<unknown>;
@@ -197,6 +199,8 @@ function fixture(options?: {
   };
   let listener: ((event: unknown) => void | Promise<void>) | undefined;
   let watcherListener: ((event: unknown) => void | Promise<void>) | undefined;
+  let queuedInputSuspended = false;
+  let resumeQueueRequestCount = 0;
 
   class FakeClient implements PrimeAgentDaemonClient {
     isConnected = true;
@@ -233,6 +237,36 @@ function fixture(options?: {
           success: true,
           data: { status },
         }));
+      }
+      if (command.type === "list") {
+        return Promise.resolve({
+          type: "response",
+          command: "list",
+          success: true,
+          data: {
+            sessions: [
+              {
+                activeSessionId: options?.listedActiveSessionId ?? "active-secret-1",
+                sessionId: "session-1",
+                sessionFile: "/state/provider-sessions/thread-safe/session.jsonl",
+              },
+            ],
+          },
+        });
+      }
+      if (command.type === "resume_queue") {
+        captures.connectionCalls.push({ method: "resumeQueue", args: [] });
+        queuedInputSuspended = false;
+        const configuredResponse = options?.resumeQueueResponses?.[resumeQueueRequestCount];
+        resumeQueueRequestCount += 1;
+        return Promise.resolve(
+          configuredResponse ?? {
+            type: "response",
+            command: "resume_queue",
+            success: false,
+            error: "No queued work to resume",
+          },
+        );
       }
       return Promise.resolve(
         options?.createResponse ?? {
@@ -348,6 +382,11 @@ function fixture(options?: {
       promptOptions?: PrimeAgentDaemonPromptOptions,
     ): Promise<unknown> {
       captures.connectionCalls.push({ method: "prompt", args: [message, promptOptions] });
+      if (queuedInputSuspended) {
+        return Promise.reject(
+          new Error("Cannot admit a session action while queued session input is suspended."),
+        );
+      }
       return options?.promptAndWaitImpl?.(message, promptOptions) ?? Promise.resolve(undefined);
     }
     waitForHeadlessCompletion(
@@ -388,6 +427,7 @@ function fixture(options?: {
     }
     abortAndClearQueue(): Promise<unknown> {
       captures.connectionCalls.push({ method: "abortAndClearQueue", args: [] });
+      queuedInputSuspended = true;
       return Promise.resolve({ steering: [], followUp: [] });
     }
     getQueue(): Promise<unknown> {
@@ -2409,6 +2449,105 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(
           captures.connectionCalls.some((call) => call.method === "waitForHeadlessCompletion"),
         ).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("resumes prompt admission after aborting and clearing queued input", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture();
+        const runtime = yield* make();
+
+        yield* runtime.abortAndClearQueue;
+        yield* runtime.prompt({ text: "continue after interrupt" });
+
+        expect(captures.commands).toContainEqual({
+          type: "list",
+          includeClientOwned: true,
+        });
+        expect(captures.commands).toContainEqual({
+          type: "resume_queue",
+          activeSessionId: "active-secret-1",
+        });
+        expect(captures.connectionCalls.slice(-3)).toEqual([
+          { method: "abortAndClearQueue", args: [] },
+          { method: "resumeQueue", args: [] },
+          {
+            method: "prompt",
+            args: [
+              "continue after interrupt",
+              { queueIfBusy: true, streamingBehavior: "followUp" },
+            ],
+          },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("resumes the replacement active session after reconnecting", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, emit, make } = fixture({
+          listedActiveSessionId: "active-secret-recovered",
+        });
+        const runtime = yield* make();
+
+        yield* Effect.promise(() => emit({ type: "session_resynced", snapshot: snapshot(5) }));
+        yield* runtime.abortAndClearQueue;
+        yield* runtime.prompt({ text: "continue after reconnect and interrupt" });
+
+        expect(captures.commands).toContainEqual({
+          type: "resume_queue",
+          activeSessionId: "active-secret-recovered",
+        });
+        expect(captures.commands).not.toContainEqual({
+          type: "resume_queue",
+          activeSessionId: "active-secret-1",
+        });
+      }),
+    ),
+  );
+
+  it.effect("fails closed when Prime does not confirm input resume after abort", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({
+          resumeQueueResponses: [
+            {
+              type: "response",
+              command: "resume_queue",
+              success: false,
+              error: "private daemon rejection at /secret/path",
+            },
+            {
+              type: "response",
+              command: "resume_queue",
+              success: false,
+              error: "No queued work to resume",
+            },
+          ],
+        });
+        const runtime = yield* make();
+
+        yield* runtime.abortAndClearQueue;
+        const error = yield* runtime.prompt({ text: "retry after interrupt" }).pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          operation: "resume-after-abort",
+          reason: "invalid-response",
+          detail: "The daemon returned an invalid session input resume response.",
+        });
+        expect(error.detail).not.toContain("/secret/path");
+
+        yield* runtime.prompt({ text: "retry after failed resume" });
+        expect(captures.commands.filter((command) => command.type === "resume_queue")).toHaveLength(
+          2,
+        );
+        expect(captures.connectionCalls.at(-1)).toEqual({
+          method: "prompt",
+          args: ["retry after failed resume", { queueIfBusy: true, streamingBehavior: "followUp" }],
+        });
       }),
     ),
   );
