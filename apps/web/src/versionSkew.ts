@@ -30,7 +30,7 @@ function versionCore(version: string): string {
 }
 
 /**
- * The skew a user can act on: the connected server runs an older T3 Code than
+ * The skew a user can act on: the connected server runs an older Pylon than
  * this client, so the server is the side that needs updating.
  *
  * Versions compare as semver on their core `major.minor.patch` only. Nightlies
