@@ -243,6 +243,83 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         SELECT count FROM thread_shell_updates
       `;
       assert.deepEqual(threadShellUpdates, [{ count: 1 }]);
+
+      // Pylon's Prime adapter uses generic interaction activities for pending
+      // user input. They must keep the full summary refresh that routine tool
+      // activity can skip.
+      yield* sql`UPDATE thread_shell_updates SET count = 0`;
+      yield* eventStore.append({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-interaction-requested"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        occurredAt: "2026-01-01T00:00:00.300Z",
+        commandId: CommandId.make("cmd-interaction-requested"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-interaction-requested"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("activity-interaction-requested"),
+            tone: "approval",
+            kind: "interaction.requested",
+            summary: "Waiting for input",
+            payload: { requestId: "interaction-1" },
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00.300Z",
+          },
+        },
+      });
+      yield* projectionPipeline.bootstrap;
+
+      threadShellUpdates = yield* sql<{ readonly count: number }>`
+        SELECT count FROM thread_shell_updates
+      `;
+      assert.deepEqual(threadShellUpdates, [{ count: 2 }]);
+      let pendingInput = yield* sql<{ readonly count: number }>`
+        SELECT pending_user_input_count AS count
+        FROM projection_threads
+        WHERE thread_id = 'thread-1'
+      `;
+      assert.deepEqual(pendingInput, [{ count: 1 }]);
+
+      yield* sql`UPDATE thread_shell_updates SET count = 0`;
+      yield* eventStore.append({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-interaction-resolved"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        occurredAt: "2026-01-01T00:00:00.400Z",
+        commandId: CommandId.make("cmd-interaction-resolved"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-interaction-resolved"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("activity-interaction-resolved"),
+            tone: "approval",
+            kind: "interaction.resolved",
+            summary: "Input received",
+            payload: { requestId: "interaction-1" },
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00.400Z",
+          },
+        },
+      });
+      yield* projectionPipeline.bootstrap;
+
+      threadShellUpdates = yield* sql<{ readonly count: number }>`
+        SELECT count FROM thread_shell_updates
+      `;
+      assert.deepEqual(threadShellUpdates, [{ count: 2 }]);
+      pendingInput = yield* sql<{ readonly count: number }>`
+        SELECT pending_user_input_count AS count
+        FROM projection_threads
+        WHERE thread_id = 'thread-1'
+      `;
+      assert.deepEqual(pendingInput, [{ count: 0 }]);
       yield* sql`DROP TRIGGER count_thread_shell_updates`;
       yield* sql`DROP TABLE thread_shell_updates`;
 

@@ -147,6 +147,11 @@ function shouldRefreshThreadShellSummary(event: OrchestrationEvent): boolean {
     case "user-input.requested":
     case "user-input.resolved":
     case "provider.user-input.respond.failed":
+    // Pylon's Prime adapter emits generic interaction activities for the same
+    // pending-input shell count. Skipping these would leave the sidebar stale.
+    case "interaction.requested":
+    case "interaction.resolved":
+    case "provider.interaction.respond.failed":
       return true;
     default:
       return false;
