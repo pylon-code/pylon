@@ -737,7 +737,6 @@ export interface ChatComposerProps {
 
   // Context window
   compactDisabled: boolean;
-  compactDisabledReason: string | null;
 
   // Ephemeral session side question
   quickQuestionAvailable: boolean;
@@ -864,7 +863,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadModelSelection,
     activeThreadActivities,
     compactDisabled,
-    compactDisabledReason,
     quickQuestionAvailable,
     quickQuestionIdentity,
     resolvedTheme,

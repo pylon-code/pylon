@@ -8070,7 +8070,6 @@ function ChatViewContent(props: ChatViewProps) {
                             }
                             activeThreadModelSelection={activeThread?.modelSelection}
                             compactDisabled={compactDisabled}
-                            compactDisabledReason={compactDisabledReason}
                             activeThreadActivities={activeThread?.activities}
                             quickQuestionAvailable={quickQuestionAvailable}
                             quickQuestionIdentity={quickQuestionIdentity}
