@@ -90,6 +90,7 @@ export function deriveLatestContextWindowSnapshot(
       toolUses: asNonNegativeFiniteNumber(payload?.toolUses),
       durationMs: asNonNegativeFiniteNumber(payload?.durationMs),
       compactsAutomatically: asBoolean(payload?.compactsAutomatically) ?? false,
+      autoCompactThreshold: asNonNegativeFiniteNumber(payload?.autoCompactThreshold),
       updatedAt: activity.createdAt,
     };
   }
