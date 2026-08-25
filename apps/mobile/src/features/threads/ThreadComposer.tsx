@@ -129,6 +129,10 @@ import {
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { useComposerPathSearch } from "../../state/use-composer-path-search";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
+import {
+  getProviderSkillsForSlashMenu,
+  getProviderSlashCommandsForSlashMenu,
+} from "@t3tools/client-runtime/providerSkills";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
 import {
   type ExistingThreadSettingsRouteSession,
@@ -1297,8 +1301,20 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ];
       const builtIn = allBuiltIn.filter((item) => item.command.includes(q));
 
+      // Shared with web so both clients agree on what the `/` menu contains.
+      // `showSkillsInSlashMenu` is passed as its contract default because the
+      // synced settings blob is web-only today; the enabled filter and the
+      // native-command dedupe do not depend on it.
+      const slashMenuSkills = getProviderSkillsForSlashMenu(
+        selectedProviderStatus?.skills ?? [],
+        true,
+      );
+
       const providerCommands: ComposerCommandItem[] = [];
-      for (const cmd of providerSlashCommands) {
+      for (const cmd of getProviderSlashCommandsForSlashMenu(
+        providerSlashCommands,
+        slashMenuSkills,
+      )) {
         if (!cmd.name.toLowerCase().includes(q)) continue;
         providerCommands.push({
           id: `pcmd:${cmd.name}`,
@@ -1309,7 +1325,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         });
       }
 
-      const skillItems = (selectedProviderStatus?.skills ?? [])
+      const skillItems = slashMenuSkills
         .filter((skill) => matchesSlashSkillQuery(skill, q))
         .map((skill) => ({
           id: `skill:${skill.name}`,

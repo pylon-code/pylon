@@ -37,6 +37,21 @@ describe("getProviderSkillsForSlashMenu", () => {
       "ask-matt",
     ]);
   });
+
+  it("drops disabled skills so they cannot leak into the slash menu", () => {
+    const skills = [
+      { name: "ask-matt", path: "/skills/ask-matt/SKILL.md", enabled: true },
+      { name: "retired", path: "/skills/retired/SKILL.md", enabled: false },
+    ];
+    expect(getProviderSkillsForSlashMenu(skills, true).map((skill) => skill.name)).toEqual([
+      "ask-matt",
+    ]);
+  });
+
+  it("hides every skill when the slash menu is set to commands only", () => {
+    const skills = [{ name: "ask-matt", path: "/skills/ask-matt/SKILL.md", enabled: true }];
+    expect(getProviderSkillsForSlashMenu(skills, false)).toEqual([]);
+  });
 });
 
 describe("getProviderSlashCommandsForSlashMenu", () => {
