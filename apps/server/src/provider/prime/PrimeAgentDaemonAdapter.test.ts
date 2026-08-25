@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
   ApprovalRequestId,
+  EnvironmentId,
   PrimeAgentSettings,
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
   ProviderDriverKind,
@@ -28,6 +29,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import type {
@@ -930,6 +932,45 @@ describe("PrimeAgentDaemonAdapter", () => {
       }),
     ).pipe(Effect.provide(testLayer)),
   );
+  it.effect("passes the thread-scoped Pylon MCP server into the daemon runtime", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const mcpSession = {
+          providerSessionId: "provider-session-prime-test",
+          threadId,
+          environmentId: EnvironmentId.make("environment-prime-test"),
+          providerInstanceId: instanceId,
+          endpoint: "http://127.0.0.1:4321/mcp/provider-session-prime-test",
+          authorizationHeader: "Bearer scoped-secret",
+          expiresAt: 4_000_000_000_000,
+        };
+        yield* Effect.acquireRelease(
+          Effect.sync(() => McpProviderSession.setMcpProviderSession(mcpSession)),
+          () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+        );
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        expect(captures.runtimeInputs).toHaveLength(1);
+        expect(captures.runtimeInputs[0]?.mcpServer).toEqual({
+          ownerId: `pylon:${mcpSession.providerSessionId}`,
+          server: {
+            name: "t3-code",
+            type: "http",
+            url: mcpSession.endpoint,
+            headers: { Authorization: mcpSession.authorizationHeader },
+          },
+        });
+        yield* adapter.stopSession(threadId);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("fails closed when the loaded managed extension source changes", () =>
     Effect.scoped(
       Effect.gen(function* () {

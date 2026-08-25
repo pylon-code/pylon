@@ -27,6 +27,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -518,6 +519,7 @@ export function makePrimeAgentAdapter(
             provider: PROVIDER,
             threadId: input.threadId,
           });
+          const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
           const acp = yield* makePrimeAgentAcpRuntime({
             primeAgentSettings,
             ...(options?.environment ? { environment: options.environment } : {}),
@@ -526,6 +528,23 @@ export function makePrimeAgentAdapter(
             sessionDir,
             continueSession: parsePrimeAgentResumeMarker(input.resumeCursor),
             model,
+            ...(mcpSession === undefined
+              ? {}
+              : {
+                  mcpServers: [
+                    {
+                      type: "http" as const,
+                      name: "t3-code",
+                      url: mcpSession.endpoint,
+                      headers: [
+                        {
+                          name: "Authorization",
+                          value: mcpSession.authorizationHeader,
+                        },
+                      ],
+                    },
+                  ],
+                }),
             clientInfo: { name: "pylon", version: "0.0.0" },
             observeSessionUpdate: (notification) => {
               const update = parsePrimeAgentAcpTerminalUpdate(notification);

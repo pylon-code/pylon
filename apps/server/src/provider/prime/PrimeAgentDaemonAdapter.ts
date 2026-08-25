@@ -53,6 +53,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { resolveProviderHomePath } from "../../pathExpansion.ts";
 import {
   ProviderAdapterProcessError,
@@ -2348,10 +2349,24 @@ export function makePrimeAgentDaemonAdapter(
             scopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
           );
           const agentDir = primeAgentSettings.agentHomePath.trim();
+          const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
           const runtime = yield* runtimeFactory({
             manager,
             cwd,
             sessionDir,
+            ...(mcpSession === undefined
+              ? {}
+              : {
+                  mcpServer: {
+                    ownerId: `pylon:${mcpSession.providerSessionId}`,
+                    server: {
+                      name: "t3-code",
+                      type: "http" as const,
+                      url: mcpSession.endpoint,
+                      headers: { Authorization: mcpSession.authorizationHeader },
+                    },
+                  },
+                }),
             ...(agentDir.length === 0 ? {} : { agentDir: resolveProviderHomePath(agentDir) }),
             ...(model === "default" ? {} : { model }),
             ...(approvalRequired

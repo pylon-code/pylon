@@ -208,14 +208,21 @@ Daemon-backed threads resume the exact Prime transcript selected for that Pylon 
 transcript is removed or its private identity cannot be verified, Pylon reports a resume failure
 instead of silently opening a blank or merely recent Prime session.
 
+## Browser access
+
+When **Settings → Integrations → Browser → Allow agent browser access** is enabled, new Prime Agent
+sessions receive Pylon's thread-scoped preview tools. This works in daemon-backed sessions and ACP
+compatibility mode. The scoped connection is removed when the provider session stops. Turning browser
+access off withholds both the tools and their instructions; it does not affect browser tabs you control.
+
 ## Current Limitations
 
 - Prime Agent 0.8.0 has no daemon-native or operating-system sandbox policy. Supervised mode gates
   tool admission but does not restrict an approved tool.
 - Authentication is managed in Prime Agent, not Pylon.
-- Plan mode, provider-conversation rollback, general per-item queue editing or reordering, and
-  Pylon's per-thread MCP bridge are not supported yet. Pylon integrates Prime Agent 0.8.0's mutation
-  API only for removing a lane's sole item. With multiple count-only items, clients cannot identify a
+- Plan mode, provider-conversation rollback, and general per-item queue editing or reordering are
+  not supported yet. Pylon integrates Prime Agent 0.8.0's mutation API only for removing a lane's
+  sole item. With multiple count-only items, clients cannot identify a
   specific target safely without exposing queued text, and ambiguous mutations are never retried.
 - Pylon does not present live Prime reasoning streams, durable or historical child-session transcripts,
   cost breakdowns, goal mutations, heartbeats, saved-session history, or native package or MCP catalogs as first-class features. Active children have only the bounded **Live activity** view described above.

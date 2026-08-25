@@ -34,6 +34,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import {
+  type PrimeAgentDaemonAcpMcpServer,
   type PrimeAgentDaemonAgentConnection,
   type PrimeAgentDaemonExtensionUiResponse,
   type PrimeAgentDaemonImage,
@@ -631,6 +632,7 @@ const runtimeErrorOperation = Schema.Literals([
   "configure-client",
   "create-session",
   "attach-session",
+  "configure-mcp",
   "initial-snapshot",
   "verify-extension",
   "reload-resources",
@@ -703,6 +705,11 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
   readonly requiredExtension?: {
     readonly path: string;
     readonly markerCommand: string;
+  };
+  /** Pylon-owned, thread-scoped MCP server attached only for this live provider session. */
+  readonly mcpServer?: {
+    readonly ownerId: string;
+    readonly server: PrimeAgentDaemonAcpMcpServer;
   };
   readonly resumeCursor?: unknown;
   /** Private stable native id selected from the server-owned identity sidecar. */
@@ -1263,10 +1270,72 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         ),
     }).pipe(Effect.onError(() => completeUnattachedOwnedSession));
 
-    const closeAttachedSession = Effect.promise(async () => {
-      await connection?.dispose().catch(() => undefined);
-      client.close();
+    let mcpAttached = false;
+    const releaseMcpServer = Effect.suspend(() => {
+      const configured = input.mcpServer;
+      const release = connection?.releaseAcpMcpServers;
+      if (!mcpAttached || configured === undefined || !Predicate.isFunction(release)) {
+        return Effect.void;
+      }
+      mcpAttached = false;
+      return Effect.tryPromise({
+        try: () =>
+          release
+            .call(connection, configured.ownerId, [configured.server.name])
+            .then(() => undefined),
+        catch: () =>
+          runtimeError(
+            "configure-mcp",
+            "request-failed",
+            "Could not release Pylon's scoped MCP server from the Prime Agent session.",
+          ),
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("Could not release Prime Agent's Pylon MCP session.", {
+            operation: error.operation,
+            reason: error.reason,
+          }),
+        ),
+      );
     });
+    const closeAttachedSession = releaseMcpServer.pipe(
+      Effect.andThen(
+        Effect.promise(async () => {
+          await connection?.dispose().catch(() => undefined);
+          client.close();
+        }),
+      ),
+    );
+    const configureMcpServer = Effect.gen(function* () {
+      const configured = input.mcpServer;
+      if (configured === undefined) return;
+      const supports = connection?.supportsAcpMcpServers;
+      const replace = connection?.replaceAcpMcpServers;
+      const release = connection?.releaseAcpMcpServers;
+      if (
+        !Predicate.isFunction(supports) ||
+        !Predicate.isFunction(replace) ||
+        !Predicate.isFunction(release) ||
+        supports.call(connection) !== true
+      ) {
+        return yield* runtimeError(
+          "configure-mcp",
+          "incompatible-api",
+          "The installed Prime Agent daemon cannot attach Pylon's scoped MCP server. Upgrade Prime Agent or disable agent browser access for this session.",
+        );
+      }
+      yield* Effect.tryPromise({
+        try: () => replace.call(connection, [configured.server], configured.ownerId),
+        catch: () =>
+          runtimeError(
+            "configure-mcp",
+            "request-failed",
+            "Prime Agent rejected Pylon's scoped MCP server configuration.",
+          ),
+      });
+      mcpAttached = true;
+    });
+    yield* configureMcpServer.pipe(Effect.onError(() => closeAttachedSession));
     let verifiedInventory:
       | readonly [typeof resourceSnapshotSchema.Type, typeof commandsSchema.Type]
       | undefined;
@@ -1487,6 +1556,98 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       handlePrivateSideQuestionEvent(raw).pipe(
         Effect.flatMap((handled) => (handled ? Effect.void : offerDecoded(raw))),
       );
+    let mcpRecoveryTail = Promise.resolve();
+    let mcpRecoveryPending = false;
+    let mcpRecoveryFailed = false;
+    const routeMcpAwareRawEvent = (raw: unknown): Promise<void> => {
+      const rawType =
+        typeof raw === "object" && raw !== null && "type" in raw && typeof raw.type === "string"
+          ? raw.type
+          : undefined;
+      if (
+        input.mcpServer === undefined ||
+        (rawType !== "session_resynced" && rawType !== "connection_status" && rawType !== "closed")
+      ) {
+        return runPromise(routeRawEvent(raw));
+      }
+      const delivery = mcpRecoveryTail.then(() =>
+        runPromise(
+          Effect.gen(function* () {
+            if (rawType === "connection_status") {
+              const status =
+                "status" in (raw as object) &&
+                typeof (raw as { readonly status?: unknown }).status === "string"
+                  ? (raw as { readonly status: string }).status
+                  : undefined;
+              if (status === "reconnecting") {
+                mcpAttached = false;
+                mcpRecoveryPending = true;
+              }
+              if (status === "connected" && mcpRecoveryPending) {
+                mcpRecoveryPending = false;
+                mcpRecoveryFailed = true;
+                yield* routeRawEvent({
+                  type: "closed",
+                  error: "Prime Agent reconnected without restoring Pylon's scoped browser tools.",
+                });
+                return;
+              }
+              if (status === "connected" && mcpRecoveryFailed) return;
+              yield* routeRawEvent(raw);
+              return;
+            }
+            if (rawType === "session_resynced" && mcpRecoveryPending && !mcpRecoveryFailed) {
+              const restored = yield* configureMcpServer.pipe(
+                Effect.as(true),
+                Effect.orElseSucceed(() => false),
+              );
+              mcpRecoveryPending = false;
+              if (!restored) {
+                mcpRecoveryFailed = true;
+                yield* routeRawEvent({
+                  type: "closed",
+                  error:
+                    "Pylon browser tools could not be restored after the Prime Agent daemon reconnected.",
+                });
+                return;
+              }
+            }
+            if (rawType === "closed") {
+              mcpRecoveryPending = false;
+              mcpRecoveryFailed = true;
+            }
+            if (!mcpRecoveryFailed || rawType === "closed") yield* routeRawEvent(raw);
+          }),
+        ),
+      );
+      mcpRecoveryTail = delivery.catch(() => undefined);
+      return delivery;
+    };
+    const awaitMcpRecovery = Effect.suspend(() =>
+      input.mcpServer === undefined
+        ? Effect.void
+        : Effect.tryPromise({
+            try: () => mcpRecoveryTail,
+            catch: () =>
+              runtimeError(
+                "configure-mcp",
+                "request-failed",
+                "Could not restore Pylon browser tools after the Prime Agent daemon reconnected.",
+              ),
+          }).pipe(
+            Effect.andThen(
+              Effect.suspend(() =>
+                mcpRecoveryFailed
+                  ? runtimeError(
+                      "configure-mcp",
+                      "request-failed",
+                      "Pylon browser tools are unavailable after the Prime Agent daemon reconnected.",
+                    )
+                  : Effect.void,
+              ),
+            ),
+          ),
+    );
 
     // The initial snapshot reserves one queue slot. Admission is cumulative for
     // the whole initialization phase: draining a batch never reopens capacity.
@@ -1501,7 +1662,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         bufferedEvents.push(event);
         return;
       }
-      return runPromise(routeRawEvent(event));
+      return routeMcpAwareRawEvent(event);
     });
 
     const rawSnapshot = yield* Effect.tryPromise({
@@ -2588,6 +2749,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
       yield* ensureOpen("prompt");
+      yield* awaitMcpRecovery;
       const images = yield* validateImages("prompt", promptInput.images);
       yield* validatePromptContent("prompt", promptInput.text, images);
       yield* callVoid("prompt", () =>
@@ -2603,6 +2765,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
       yield* ensureOpen("steer");
+      yield* awaitMcpRecovery;
       const images = yield* validateImages("steer", promptInput.images);
       yield* validatePromptContent("steer", promptInput.text, images);
       const method = yield* requireMethod("steer", connection!.steer);
@@ -2613,6 +2776,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
       yield* ensureOpen("follow-up");
+      yield* awaitMcpRecovery;
       const images = yield* validateImages("follow-up", promptInput.images);
       yield* validatePromptContent("follow-up", promptInput.text, images);
       const method = yield* requireMethod("follow-up", connection!.followUp);
@@ -3267,6 +3431,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         bestEffortAbortSideQuestion(nativeId, active),
       ).pipe(
         Effect.andThen(failActivePrivateSideQuestions()),
+        Effect.andThen(releaseMcpServer),
         Effect.andThen(
           Effect.tryPromise({
             try: () => connection!.dispose(),

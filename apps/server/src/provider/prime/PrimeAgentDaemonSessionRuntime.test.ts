@@ -32,6 +32,7 @@ import {
   primeAgentLiveActivityToolLabel,
   sanitizePrimeAgentLiveActivityMessages,
   type PrimeAgentDaemonSessionRuntime,
+  type PrimeAgentDaemonSessionRuntimeInput,
 } from "./PrimeAgentDaemonSessionRuntime.ts";
 import { PRIME_AGENT_ACP_RESUME_CURSOR } from "./PrimeAgentResumeCursor.ts";
 
@@ -119,6 +120,10 @@ function fixture(options?: {
   readonly duringResourceSnapshot?: ReadonlyArray<unknown>;
   readonly afterSnapshotEvent?: unknown;
   readonly attachFailure?: boolean;
+  readonly omitMcpSupport?: boolean;
+  readonly mcpSupported?: boolean;
+  readonly replaceMcpImpl?: () => Promise<unknown>;
+  readonly releaseMcpImpl?: () => Promise<unknown>;
   readonly resourceSnapshot?: unknown;
   readonly commands?: unknown;
   readonly modelCatalog?: unknown;
@@ -272,6 +277,13 @@ function fixture(options?: {
       }
       if (options?.omitQueueMutation === true) {
         Object.defineProperty(this, "mutateQueuedMessage", { value: undefined });
+      }
+      if (options?.omitMcpSupport === true) {
+        Object.defineProperties(this, {
+          supportsAcpMcpServers: { value: undefined },
+          replaceAcpMcpServers: { value: undefined },
+          releaseAcpMcpServers: { value: undefined },
+        });
       }
       if (options?.authoritativeRlmChildren === undefined) {
         Object.defineProperty(this, "getRlmChildSnapshots", { value: undefined });
@@ -478,6 +490,23 @@ function fixture(options?: {
         }
       );
     }
+    supportsAcpMcpServers(): boolean {
+      captures.connectionCalls.push({ method: "supportsAcpMcpServers", args: [] });
+      return options?.mcpSupported ?? true;
+    }
+    replaceAcpMcpServers(servers: ReadonlyArray<unknown>, ownerId: string): Promise<unknown> {
+      captures.order.push("replace-mcp");
+      captures.connectionCalls.push({ method: "replaceAcpMcpServers", args: [servers, ownerId] });
+      return options?.replaceMcpImpl?.() ?? Promise.resolve(undefined);
+    }
+    releaseAcpMcpServers(ownerId: string, serverNames: ReadonlyArray<string>): Promise<unknown> {
+      captures.order.push("release-mcp");
+      captures.connectionCalls.push({
+        method: "releaseAcpMcpServers",
+        args: [ownerId, serverNames],
+      });
+      return options?.releaseMcpImpl?.() ?? Promise.resolve(undefined);
+    }
     reload(): Promise<unknown> {
       captures.connectionCalls.push({ method: "reload", args: [] });
       return options?.reloadImpl?.() ?? Promise.resolve(undefined);
@@ -568,6 +597,7 @@ function fixture(options?: {
       );
     }
     dispose(): Promise<unknown> {
+      captures.order.push("dispose");
       captures.disposeCount += 1;
       return Promise.resolve(undefined);
     }
@@ -602,6 +632,7 @@ function fixture(options?: {
     extensions?: ReadonlyArray<string>,
     requiredExtension?: { readonly path: string; readonly markerCommand: string },
     resumeSessionId?: string,
+    mcpServer?: PrimeAgentDaemonSessionRuntimeInput["mcpServer"],
   ) =>
     makePrimeAgentDaemonSessionRuntime({
       manager,
@@ -616,6 +647,7 @@ function fixture(options?: {
         : { disableExtensionDiscovery: true, disableAutoReconnect: true, requiredExtension }),
       ...(resumeCursor === undefined ? {} : { resumeCursor }),
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
+      ...(mcpServer === undefined ? {} : { mcpServer }),
     });
   const emit = (event: unknown) => Promise.resolve(listener?.(event));
   const emitWatch = (event: unknown) => Promise.resolve(watcherListener?.(event));
@@ -690,6 +722,203 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(captures.closeCount).toBe(1);
         expect(captures.unsubscribeCount).toBe(1);
       }),
+  );
+
+  it.effect("attaches Pylon's scoped MCP server before the initial snapshot and releases it", () =>
+    Effect.gen(function* () {
+      const { captures, make } = fixture();
+      const mcpServer = {
+        ownerId: "pylon:provider-session-1",
+        server: {
+          name: "t3-code",
+          type: "http" as const,
+          url: "http://127.0.0.1:4321/mcp/provider-session-1",
+          headers: { Authorization: "Bearer scoped-secret" },
+        },
+      };
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* make(undefined, undefined, undefined, undefined, mcpServer);
+          expect(captures.order).toEqual([
+            "request-recovery",
+            "attach",
+            "replace-mcp",
+            "subscribe",
+            "snapshot",
+          ]);
+          expect(
+            captures.connectionCalls.find((call) => call.method === "replaceAcpMcpServers"),
+          ).toEqual({
+            method: "replaceAcpMcpServers",
+            args: [[mcpServer.server], mcpServer.ownerId],
+          });
+        }),
+      );
+
+      expect(
+        captures.connectionCalls.find((call) => call.method === "releaseAcpMcpServers"),
+      ).toEqual({
+        method: "releaseAcpMcpServers",
+        args: [mcpServer.ownerId, [mcpServer.server.name]],
+      });
+      expect(captures.order.indexOf("release-mcp")).toBeLessThan(captures.order.indexOf("dispose"));
+      expect(captures.disposeCount).toBe(1);
+      expect(captures.closeCount).toBe(1);
+    }),
+  );
+
+  it.effect("does not replace live MCP ownership for an ordinary resync snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, emit, make } = fixture();
+        const runtime = yield* make(undefined, undefined, undefined, undefined, {
+          ownerId: "pylon:provider-session-1",
+          server: {
+            name: "t3-code",
+            type: "http",
+            url: "http://127.0.0.1:4321/mcp/provider-session-1",
+            headers: { Authorization: "Bearer scoped-secret" },
+          },
+        });
+        const eventsFiber = yield* collectEvents(runtime, 2).pipe(Effect.forkChild);
+
+        yield* Effect.promise(() => emit({ type: "session_resynced", snapshot: snapshot(5) }));
+
+        expect((yield* Fiber.join(eventsFiber)).map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "SessionResynced",
+        ]);
+        expect(
+          captures.connectionCalls.filter((call) => call.method === "replaceAcpMcpServers"),
+        ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("reattaches Pylon's scoped MCP server before publishing a daemon resync", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, emit, make } = fixture();
+        const runtime = yield* make(undefined, undefined, undefined, undefined, {
+          ownerId: "pylon:provider-session-1",
+          server: {
+            name: "t3-code",
+            type: "http",
+            url: "http://127.0.0.1:4321/mcp/provider-session-1",
+            headers: { Authorization: "Bearer scoped-secret" },
+          },
+        });
+        const eventsFiber = yield* collectEvents(runtime, 4).pipe(Effect.forkChild);
+
+        yield* Effect.promise(() =>
+          emit({ type: "connection_status", status: "reconnecting", error: "private" }),
+        );
+        yield* Effect.promise(() => emit({ type: "session_resynced", snapshot: snapshot(5) }));
+        yield* Effect.promise(() => emit({ type: "connection_status", status: "connected" }));
+
+        const events = yield* Fiber.join(eventsFiber);
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "ConnectionStatus",
+          "SessionResynced",
+          "ConnectionStatus",
+        ]);
+        expect(
+          captures.connectionCalls.filter((call) => call.method === "replaceAcpMcpServers"),
+        ).toHaveLength(2);
+      }),
+    ),
+  );
+
+  it.effect("blocks a waiting prompt when scoped MCP recovery fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let replacements = 0;
+        let signalReplacementStarted: () => void = () => undefined;
+        const replacementStarted = new Promise<void>((resolve) => {
+          signalReplacementStarted = resolve;
+        });
+        let rejectRecovery: (reason?: unknown) => void = () => undefined;
+        const { captures, emit, make } = fixture({
+          replaceMcpImpl: () => {
+            replacements += 1;
+            if (replacements === 1) return Promise.resolve(undefined);
+            signalReplacementStarted();
+            return new Promise((_, reject) => {
+              rejectRecovery = reject;
+            });
+          },
+        });
+        const runtime = yield* make(undefined, undefined, undefined, undefined, {
+          ownerId: "pylon:provider-session-1",
+          server: {
+            name: "t3-code",
+            type: "http",
+            url: "http://127.0.0.1:4321/mcp/provider-session-1",
+            headers: { Authorization: "Bearer scoped-secret" },
+          },
+        });
+        const eventsFiber = yield* collectEvents(runtime, 3).pipe(Effect.forkChild);
+
+        yield* Effect.promise(() =>
+          emit({ type: "connection_status", status: "reconnecting", error: "private" }),
+        );
+        const resyncFiber = yield* Effect.promise(() =>
+          emit({ type: "session_resynced", snapshot: snapshot(5) }),
+        ).pipe(Effect.forkChild);
+        yield* Effect.promise(() => replacementStarted);
+        const promptFiber = yield* runtime
+          .prompt({ text: "must not run without browser tools" })
+          .pipe(Effect.result, Effect.forkChild);
+        yield* Effect.yieldNow;
+        rejectRecovery(new Error("still streaming"));
+        yield* Fiber.join(resyncFiber);
+        yield* Effect.promise(() => emit({ type: "connection_status", status: "connected" }));
+
+        const events = yield* Fiber.join(eventsFiber);
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "ConnectionStatus",
+          "SessionClosed",
+        ]);
+        const prompt = yield* Fiber.join(promptFiber);
+        expect(prompt).toMatchObject({
+          _tag: "Failure",
+          failure: { operation: "configure-mcp", reason: "request-failed" },
+        });
+        expect(captures.connectionCalls.filter((call) => call.method === "prompt")).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("fails closed before snapshot when the daemon cannot own scoped MCP servers", () =>
+    Effect.gen(function* () {
+      const { captures, make } = fixture({ omitMcpSupport: true });
+      const result = yield* Effect.scoped(
+        make(undefined, undefined, undefined, undefined, {
+          ownerId: "pylon:provider-session-1",
+          server: {
+            name: "t3-code",
+            type: "http",
+            url: "http://127.0.0.1:4321/mcp/provider-session-1",
+            headers: { Authorization: "Bearer scoped-secret" },
+          },
+        }).pipe(Effect.result),
+      );
+
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "PrimeAgentDaemonSessionRuntimeError",
+          operation: "configure-mcp",
+          reason: "incompatible-api",
+        },
+      });
+      expect(captures.order).not.toContain("snapshot");
+      expect(captures.disposeCount).toBe(1);
+      expect(captures.closeCount).toBe(1);
+    }),
   );
 
   it.effect("projects a bounded path-free session resource catalog", () =>

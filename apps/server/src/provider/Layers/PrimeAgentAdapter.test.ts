@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import {
+  EnvironmentId,
   PrimeAgentSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -25,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   makePrimeAgentAdapter,
   parsePrimeAgentResumeMarker,
@@ -126,6 +128,19 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     assert.equal(rejectedLaunchArgs._tag, "Failure");
 
     const threadId = ThreadId.make("resume/thread");
+    const mcpSession = {
+      providerSessionId: "provider-session-prime-acp-test",
+      threadId,
+      environmentId: EnvironmentId.make("environment-prime-acp-test"),
+      providerInstanceId: ProviderInstanceId.make("primeAgent"),
+      endpoint: "http://127.0.0.1:4321/mcp/provider-session-prime-acp-test",
+      authorizationHeader: "Bearer scoped-secret",
+      expiresAt: 4_000_000_000_000,
+    };
+    yield* Effect.acquireRelease(
+      Effect.sync(() => McpProviderSession.setMcpProviderSession(mcpSession)),
+      () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+    );
     const startupWarning = yield* Deferred.make<void>();
     const unavailableResources =
       yield* Deferred.make<
@@ -316,6 +331,25 @@ exec ${process.execPath} ${mockAgentPath} "$@"
           .map((line) => JSON.parse(line) as unknown),
       ),
     );
+    const newSessionEntry = requestEntries.find(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        "method" in entry &&
+        entry.method === "session/new",
+    );
+    assert.isDefined(newSessionEntry);
+    const newSessionParams = (
+      newSessionEntry as { readonly params?: { readonly mcpServers?: unknown } }
+    ).params;
+    assert.deepEqual(newSessionParams?.mcpServers, [
+      {
+        name: "t3-code",
+        type: "http",
+        url: mcpSession.endpoint,
+        headers: [{ name: "Authorization", value: mcpSession.authorizationHeader }],
+      },
+    ]);
     assert.isTrue(
       requestEntries.some(
         (entry) =>
