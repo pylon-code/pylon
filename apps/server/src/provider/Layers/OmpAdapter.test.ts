@@ -60,7 +60,7 @@ printf '\n' >> ${JSON.stringify(input.argvLogPath)}`
 ${exports}
 ${stderrFlood}
 ${argvLog}
-exec bun ${JSON.stringify(mockAgentPath)} "$@"
+exec ${JSON.stringify(process.execPath)} ${JSON.stringify(mockAgentPath)} "$@"
 `;
   await NodeFSP.writeFile(wrapperPath, script, "utf8");
   await NodeFSP.chmod(wrapperPath, 0o755);

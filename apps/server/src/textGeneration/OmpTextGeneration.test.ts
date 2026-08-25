@@ -49,7 +49,7 @@ function makeOmpWrapper(dir: string, env: Record<string, string>): string {
       "  exit 11",
       "fi",
       'if [ -n "$T3_OMP_ARGV_LOG" ]; then printf "%s\n" "$*" > "$T3_OMP_ARGV_LOG"; fi',
-      `exec bun ${JSON.stringify(mockAgentPath)}`,
+      `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(mockAgentPath)}`,
       "",
     ].join("\n"),
     "utf8",
