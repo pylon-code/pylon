@@ -915,10 +915,13 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [preflight, build, publish_cli]
+    needs: [preflight, quality, build, publish_cli]
     # The desktop release is the point of this workflow, so a skipped CLI
     # publish must not withhold it. A failed one still does.
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.publish_cli.result == 'success' || needs.publish_cli.result == 'skipped') }}
+    # `quality` must stay in `needs`: it is the only job running check and test,
+    # and the CLI publish that also depends on it is opt-in, so without this the
+    # desktop release ships from a commit whose suites are red.
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.quality.result == 'success' && needs.build.result == 'success' && (needs.publish_cli.result == 'success' || needs.publish_cli.result == 'skipped') }}
     runs-on: ubuntu-latest
     # Uploading the desktop artifacts regularly outruns 10 minutes, and it does
     # so after a 90-minute build (pingdotgg/t3code#6034).
