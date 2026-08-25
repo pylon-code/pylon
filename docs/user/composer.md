@@ -8,6 +8,9 @@ In the web and desktop apps, on servers that support direct uploads, images uplo
 add them. The send button becomes available after every upload finishes. Failed uploads can be
 retried or removed. The mobile app sends images with the message instead.
 
+On web and desktop, HEIC and HEIF photos are automatically converted to JPEG when you drag them into
+the composer or paste them into a message.
+
 ## Commands and skills
 
 Type `/` to open the command menu. Type `$` to find and add a skill. Skill rows show their source,
