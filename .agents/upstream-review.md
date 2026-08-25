@@ -2462,8 +2462,27 @@ failure on Apple Silicon: its alleged cross-architecture fixture is arm64, so th
 the same assertion fails on clean `pylon`.
 
 No real-client pass ran during integration. Web/mobile UI verification still requires explicit
-computer-use permission. The separate post-integration review required by the developer is recorded
-in the branch/PR handoff rather than treated as optional validation.
+computer-use permission.
+
+### Post-integration review
+
+The final rebased branch received a separate source-level review after integration. A fresh fetch
+confirmed that upstream `main` still ends at `bd9ed2b4`, so no commit appeared after the original
+review. Patch coverage includes every upstream-touched file; the only path differences are the two
+A9 migration files deliberately renamed from 042 to 046. A zero-context added-line scan found no T3
+product name, app id, renderer protocol, artifact name, or hosted-origin drift. The migration
+manifest is unique and ordered through 046. The Pylon-specific Prime activity kinds used to derive
+pending input are a subset of the optimized refresh allowlist. Contracts, capability gating,
+server projection and persistence, web, mobile, reverse actions, connection modes, and user docs
+were each checked with no confirmed cross-surface omission.
+
+A production web build also passed. It confirms that `heic-to/csp` resolves and remains a separate
+lazy chunk, so HEIC support does not increase the initial bundle. Two risks remain visible for
+maintainer review: that decoder chunk is 2.995 MB minified / 751 KB gzip on first use, and
+`heic-to@1.5.2` declares LGPL-3.0 while Pylon has no artifact-level third-party notice flow. The
+known Apple Silicon packaging-test baseline failure remains unrelated. Real-client screenshots and
+manual interaction checks were not run because browser/computer-use permission was requested but
+not granted.
 
 ## Deferred register
 
