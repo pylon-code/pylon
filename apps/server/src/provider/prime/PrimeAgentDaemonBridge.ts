@@ -123,6 +123,9 @@ export interface PrimeAgentDaemonAgentConnection {
     message: string,
     options?: PrimeAgentDaemonPromptOptions,
   ) => Promise<unknown>;
+  readonly waitForHeadlessCompletion?: (options?: {
+    readonly waitForRlmQuiescence?: boolean;
+  }) => Promise<unknown>;
   readonly steer?: (
     message: string,
     images?: ReadonlyArray<PrimeAgentDaemonImage>,

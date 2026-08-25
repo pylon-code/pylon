@@ -159,6 +159,8 @@ interface PrimeAgentDaemonActiveTurn {
   activeAssistantItemId: RuntimeItemId | undefined;
   lastAssistantHadRenderableText: boolean;
   runCompletionHandoffSequence: number;
+  terminalQuiescenceGeneration: number;
+  terminalQuiescenceToken: string | undefined;
   pendingRunCompletionHandoff:
     | {
         readonly sequence: number;
@@ -452,6 +454,10 @@ function runtimeOperationError(
         detail: error.detail,
         cause: error,
       });
+}
+
+function rlmQuiescenceToken(turnId: TurnId, generation: number): string {
+  return `${turnId}:${generation}`;
 }
 
 function runtimeStartError(
@@ -1224,6 +1230,10 @@ export function makePrimeAgentDaemonAdapter(
               Effect.gen(function* () {
                 const pending = turn.pendingRunCompletionHandoff;
                 if (pending === undefined || pending.sequence !== sequence) return;
+                // Prime 0.8's public RLM barrier is the authoritative boundary for
+                // descendant-triggered parent continuations. Its FIFO marker settles
+                // the turn; a heuristic timer must never overtake it.
+                if (turn.terminalQuiescenceToken !== undefined) return;
                 // Prime emits agent_end before it checks for automatic compaction. A
                 // long compaction must not exhaust the short reconnect handoff grace;
                 // its terminal event or snapshot starts fresh continuation grace.
@@ -1439,6 +1449,9 @@ export function makePrimeAgentDaemonAdapter(
                     }
                     // An idle snapshot can be the gap before RunStarted. Keep
                     // the bounded handoff alive until the event or timeout.
+                  } else if (turn.terminalQuiescenceToken !== undefined && authoritativeIdle) {
+                    // The public RLM barrier, not an idle reconnect snapshot, owns
+                    // settlement while descendant continuations may still arrive.
                   } else if (turn.awaitingQueuedRun && authoritativeIdle) {
                     const explicitClear = context.inputQueueClearPending;
                     context.inputQueueClearPending = false;
@@ -1781,6 +1794,64 @@ export function makePrimeAgentDaemonAdapter(
           return;
         }
 
+        if (event._tag === "RlmQuiesced") {
+          const outcome = yield* withThreadLock(
+            context.threadId,
+            Effect.gen(function* () {
+              const turn = context.activeTurn;
+              if (turn === undefined || turn.terminalQuiescenceToken !== event.token) {
+                return { settled: false, stop: false };
+              }
+              turn.terminalQuiescenceToken = undefined;
+              if (!context.runtime.isRlmQuiescenceGenerationCurrent(event.connectionGeneration)) {
+                const settled = yield* settleActiveTurnLocked(context, turn, {
+                  state: "failed",
+                  errorMessage:
+                    "Prime Agent reconnected before descendant quiescence could be confirmed.",
+                });
+                context.stopRequested = true;
+                return { settled, stop: true };
+              }
+              const pending = turn.pendingRunCompletionHandoff;
+              if (pending === undefined && !turn.awaitingQueuedRun) {
+                return { settled: false, stop: false };
+              }
+              const completionEvent: Extract<PrimeDaemonEvent, { readonly _tag: "RunCompleted" }> =
+                {
+                  ...(pending ?? { event: { _tag: "RunCompleted", messages: [] } }).event,
+                  messages:
+                    pending === undefined
+                      ? turn.completedRunMessages
+                      : [...turn.completedRunMessages, ...pending.event.messages],
+                  ...(event.usage === undefined ? {} : { usageOverride: event.usage }),
+                };
+              const settled = yield* settleActiveTurnLocked(context, turn, {
+                state: "completed",
+                event: completionEvent,
+              });
+              return { settled, stop: false };
+            }),
+          );
+          if (outcome.settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+          if (outcome.stop) {
+            yield* Effect.forkDetach(
+              Effect.yieldNow.pipe(
+                Effect.andThen(
+                  withThreadMutationLock(
+                    context.threadId,
+                    stopSessionInternal(
+                      context,
+                      "Prime Agent session closed after descendant quiescence became uncertain.",
+                    ),
+                  ),
+                ),
+                Effect.ignore,
+              ),
+            );
+          }
+          return;
+        }
+
         if (event._tag === "RunCompleted") {
           const settled = yield* withThreadLock(
             context.threadId,
@@ -1792,6 +1863,18 @@ export function makePrimeAgentDaemonAdapter(
                 turn.completedRunMessages.push(...event.messages);
                 turn.awaitingQueuedRun = true;
                 turn.queuedActionObserved = false;
+                return false;
+              }
+              if (turn.terminalQuiescenceToken !== undefined) {
+                const previous = turn.pendingRunCompletionHandoff;
+                if (previous !== undefined) {
+                  turn.completedRunMessages.push(...previous.event.messages);
+                }
+                turn.runCompletionHandoffSequence += 1;
+                turn.pendingRunCompletionHandoff = {
+                  sequence: turn.runCompletionHandoffSequence,
+                  event,
+                };
                 return false;
               }
               if (primeAgentRunCompletedNeedsHandoff(event)) {
@@ -2030,11 +2113,13 @@ export function makePrimeAgentDaemonAdapter(
                   event.queuedCount === 0
                 ) {
                   context.inputQueueClearPending = false;
-                  const settled = yield* settleActiveTurnLocked(context, turn, {
-                    state: "completed",
-                    event: { _tag: "RunCompleted", messages: turn.completedRunMessages },
-                  });
-                  if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+                  if (turn.terminalQuiescenceToken === undefined) {
+                    const settled = yield* settleActiveTurnLocked(context, turn, {
+                      state: "completed",
+                      event: { _tag: "RunCompleted", messages: turn.completedRunMessages },
+                    });
+                    if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+                  }
                 } else if (turn.awaitingQueuedRun && turn.queuedActionObserved) {
                   const clearExit = yield* context.runtime.abortAndClearQueue.pipe(Effect.exit);
                   yield* settleActiveTurnLocked(context, turn, {
@@ -2179,6 +2264,60 @@ export function makePrimeAgentDaemonAdapter(
             cause: disposeExit.cause,
           });
         }
+      });
+
+    const awaitRlmQuiescence = (context: PrimeAgentDaemonSessionContext, token: string) =>
+      context.runtime
+        .waitForRlmQuiescence(token)
+        .pipe(
+          Effect.mapError((error) =>
+            runtimeOperationError(context.threadId, "session/rlm-quiescence", error),
+          ),
+        );
+
+    const stopAfterRlmQuiescenceFailure = (
+      context: PrimeAgentDaemonSessionContext,
+      turn: PrimeAgentDaemonActiveTurn,
+      token: string,
+    ) =>
+      withThreadMutationLock(
+        context.threadId,
+        Effect.gen(function* () {
+          if (
+            sessions.get(context.threadId) !== context ||
+            context.stopped ||
+            context.activeTurn !== turn ||
+            turn.cancellationRequested ||
+            turn.terminalQuiescenceToken !== token
+          ) {
+            return;
+          }
+          yield* settleActiveTurnLocked(context, turn, {
+            state: "failed",
+            errorMessage: "Prime Agent could not confirm descendant quiescence.",
+          });
+          yield* stopSessionInternal(
+            context,
+            "Prime Agent session closed after descendant quiescence could not be confirmed.",
+          ).pipe(Effect.ignore);
+        }),
+      );
+
+    /** Must be called with the thread lock held. */
+    const rearmRlmQuiescenceLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      turn: PrimeAgentDaemonActiveTurn,
+    ) =>
+      Effect.gen(function* () {
+        if (!context.runtime.rlmQuiescenceAvailable) return;
+        turn.terminalQuiescenceGeneration += 1;
+        const token = rlmQuiescenceToken(turn.id, turn.terminalQuiescenceGeneration);
+        turn.terminalQuiescenceToken = token;
+        yield* Effect.forkDetach(
+          awaitRlmQuiescence(context, token).pipe(
+            Effect.catch(() => stopAfterRlmQuiescenceFailure(context, turn, token)),
+          ),
+        );
       });
 
     const startSession: PrimeAgentAdapterShape["startSession"] = (input) =>
@@ -2819,6 +2958,7 @@ export function makePrimeAgentDaemonAdapter(
                   );
                 activeTurn.queuedInputCount += 1;
                 promotePendingRunCompletionToQueuedRun(activeTurn);
+                yield* rearmRlmQuiescenceLocked(context, activeTurn);
                 return {
                   _tag: "Steered" as const,
                   result: {
@@ -2873,6 +3013,10 @@ export function makePrimeAgentDaemonAdapter(
                 activeAssistantItemId: undefined,
                 lastAssistantHadRenderableText: false,
                 runCompletionHandoffSequence: 0,
+                terminalQuiescenceGeneration: context.runtime.rlmQuiescenceAvailable ? 1 : 0,
+                terminalQuiescenceToken: context.runtime.rlmQuiescenceAvailable
+                  ? rlmQuiescenceToken(turnId, 1)
+                  : undefined,
                 pendingRunCompletionHandoff: undefined,
                 queuedInputCount: 0,
                 awaitingQueuedRun: false,
@@ -2907,6 +3051,7 @@ export function makePrimeAgentDaemonAdapter(
             resumeCursor: context.session.resumeCursor,
           };
 
+          const initialRlmQuiescenceToken = turn.terminalQuiescenceToken;
           const runPrompt = Effect.gen(function* () {
             const turnModel = requestedModel || context.session.model || "default";
             yield* offerRuntimeEvent({
@@ -2922,6 +3067,9 @@ export function makePrimeAgentDaemonAdapter(
               .prompt({
                 text,
                 ...(images.length === 0 ? {} : { images }),
+                ...(initialRlmQuiescenceToken === undefined
+                  ? {}
+                  : { rlmQuiescenceToken: initialRlmQuiescenceToken }),
                 signal: turn.controller.signal,
               })
               .pipe(
@@ -2929,6 +3077,35 @@ export function makePrimeAgentDaemonAdapter(
                   runtimeOperationError(input.threadId, "session/prompt", error),
                 ),
               );
+            if (initialRlmQuiescenceToken !== undefined) {
+              yield* awaitRlmQuiescence(context, initialRlmQuiescenceToken).pipe(
+                Effect.catch((error) =>
+                  withThreadMutationLock(
+                    context.threadId,
+                    Effect.gen(function* () {
+                      if (
+                        context.activeTurn !== turn ||
+                        turn.terminalQuiescenceToken !== initialRlmQuiescenceToken
+                      ) {
+                        return;
+                      }
+                      if (turn.cancellationRequested || turn.controller.signal.aborted) {
+                        return yield* error;
+                      }
+                      yield* settleActiveTurnLocked(context, turn, {
+                        state: "failed",
+                        errorMessage: "Prime Agent could not confirm descendant quiescence.",
+                      });
+                      yield* stopSessionInternal(
+                        context,
+                        "Prime Agent session closed after descendant quiescence could not be confirmed.",
+                      ).pipe(Effect.ignore);
+                      return yield* error;
+                    }),
+                  ),
+                ),
+              );
+            }
             yield* Deferred.await(turn.completed);
             return result;
           });
@@ -3898,6 +4075,7 @@ export function makePrimeAgentDaemonAdapter(
               yield* updateInputQueueProjection(context, next);
               turn.queuedInputCount = Math.max(1, next.steeringCount + next.followUpCount);
               promotePendingRunCompletionToQueuedRun(turn);
+              yield* rearmRlmQuiescenceLocked(context, turn);
               return context.inputQueue;
             }
             if (Exit.isSuccess(reconciled)) {
@@ -3943,11 +4121,13 @@ export function makePrimeAgentDaemonAdapter(
                   !status.isStreaming
                 ) {
                   context.inputQueueClearPending = false;
-                  const settled = yield* settleActiveTurnLocked(context, turn, {
-                    state: "completed",
-                    event: { _tag: "RunCompleted", messages: turn.completedRunMessages },
-                  });
-                  if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+                  if (turn.terminalQuiescenceToken === undefined) {
+                    const settled = yield* settleActiveTurnLocked(context, turn, {
+                      state: "completed",
+                      event: { _tag: "RunCompleted", messages: turn.completedRunMessages },
+                    });
+                    if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+                  }
                 } else if (status.activeAction || status.isStreaming) {
                   context.inputQueueClearPending = false;
                 }
@@ -4050,11 +4230,13 @@ export function makePrimeAgentDaemonAdapter(
                   !status.isStreaming
                 ) {
                   context.inputQueueClearPending = false;
-                  const settled = yield* settleActiveTurnLocked(context, turn, {
-                    state: "completed",
-                    event: { _tag: "RunCompleted", messages: turn.completedRunMessages },
-                  });
-                  if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+                  if (turn.terminalQuiescenceToken === undefined) {
+                    const settled = yield* settleActiveTurnLocked(context, turn, {
+                      state: "completed",
+                      event: { _tag: "RunCompleted", messages: turn.completedRunMessages },
+                    });
+                    if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+                  }
                 }
               }
               context.inputQueueClearPending = false;

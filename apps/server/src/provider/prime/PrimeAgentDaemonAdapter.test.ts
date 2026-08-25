@@ -136,6 +136,7 @@ interface FakeCaptures {
       readonly mimeType: string;
     }>;
     readonly signal: AbortSignal | undefined;
+    readonly rlmQuiescenceToken: string | undefined;
   }>;
   readonly followUps: Array<{ readonly text: string; readonly imageCount: number }>;
   followUpFailure: boolean;
@@ -271,6 +272,13 @@ interface FakeCaptures {
     | undefined;
   sideQuestionFailure: boolean;
   promptObserved: Queue.Queue<void> | undefined;
+  rlmQuiescenceAvailable: boolean;
+  rlmQuiescenceRelease: Deferred.Deferred<void> | undefined;
+  readonly rlmQuiescenceCalls: Array<string>;
+  rlmQuiescenceObserved: Queue.Queue<string> | undefined;
+  rlmQuiescenceFailure: boolean;
+  rlmConnectionGeneration: number;
+  rlmQuiescenceUsage: typeof usage | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
   startupEvents: Array<PrimeDaemonEvent>;
 }
@@ -385,6 +393,13 @@ function makeCaptures(): FakeCaptures {
     sideQuestionRelease: undefined,
     sideQuestionFailure: false,
     promptObserved: undefined,
+    rlmQuiescenceAvailable: false,
+    rlmQuiescenceRelease: undefined,
+    rlmQuiescenceCalls: [],
+    rlmQuiescenceObserved: undefined,
+    rlmQuiescenceFailure: false,
+    rlmConnectionGeneration: 0,
+    rlmQuiescenceUsage: undefined,
     queue: undefined,
     startupEvents: [],
   };
@@ -698,15 +713,45 @@ function fakeRuntimeFactory(
             return captures.agentDepth;
           }),
         events: Stream.fromQueue(queue),
+        rlmQuiescenceAvailable: captures.rlmQuiescenceAvailable,
+        waitForRlmQuiescence: (token) =>
+          Effect.gen(function* () {
+            captures.rlmQuiescenceCalls.push(token);
+            if (captures.rlmQuiescenceObserved !== undefined) {
+              yield* Queue.offer(captures.rlmQuiescenceObserved, token);
+            }
+            if (captures.rlmQuiescenceRelease !== undefined) {
+              yield* Deferred.await(captures.rlmQuiescenceRelease);
+            }
+            if (captures.rlmQuiescenceFailure) {
+              return yield* new PrimeAgentDaemonSessionRuntimeError({
+                operation: "rlm-quiescence",
+                reason: "request-failed",
+                detail: "quiescence failed",
+              });
+            }
+            yield* Queue.offer(queue, {
+              _tag: "RlmQuiesced",
+              token,
+              connectionGeneration: captures.rlmConnectionGeneration,
+              ...(captures.rlmQuiescenceUsage === undefined
+                ? {}
+                : { usage: captures.rlmQuiescenceUsage }),
+            });
+          }),
+        isRlmQuiescenceGenerationCurrent: (generation) =>
+          generation === captures.rlmConnectionGeneration,
         prompt: (prompt) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             captures.order.push("prompt");
             captures.prompts.push({
               text: prompt.text,
               images: prompt.images ?? [],
               signal: prompt.signal,
+              rlmQuiescenceToken: prompt.rlmQuiescenceToken,
             });
-          }).pipe(Effect.andThen(Queue.offer(promptObserved, undefined)), Effect.asVoid),
+            yield* Queue.offer(promptObserved, undefined);
+          }),
         steer: (steer) =>
           Effect.sync(() => {
             captures.order.push("steer");
@@ -4614,6 +4659,421 @@ describe("PrimeAgentDaemonAdapter", () => {
           yield* Fiber.interrupt(subscription.fiber);
         }),
       ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "keeps asynchronous child continuations attached through authoritative quiescence",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          captures.rlmQuiescenceAvailable = true;
+          captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+          captures.rlmQuiescenceUsage = {
+            inputTokens: 101,
+            outputTokens: 37,
+            cachedInputTokens: 503,
+            cacheWriteTokens: 11,
+            totalTokens: 652,
+            totalCostUsd: 0.321,
+          };
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+
+          const running = yield* adapter
+            .sendTurn({ threadId, input: "wait for asynchronous children" })
+            .pipe(Effect.forkChild);
+          const started = yield* awaitObservedType(subscription.observed, "turn.started");
+          yield* Queue.take(captures.promptObserved!);
+
+          // The child roster can arrive just after the root model boundary. The
+          // native barrier, rather than local timing, keeps the Pylon turn open.
+          yield* offer(captures, { _tag: "RunCompleted", messages: [] });
+          yield* offer(captures, {
+            _tag: "ChildUpdated",
+            child: { id: "child-first", label: "first", status: "running" },
+          });
+          yield* offer(captures, {
+            _tag: "ChildUpdated",
+            child: { id: "child-second", label: "second", status: "running" },
+          });
+          yield* offer(captures, {
+            _tag: "SessionInfoChanged",
+            name: "children admitted barrier",
+          });
+          yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+          expect(running.pollUnsafe()).toBeUndefined();
+          expect(subscription.events.some((event) => event.type === "turn.completed")).toBe(false);
+
+          yield* offer(captures, {
+            _tag: "ChildUpdated",
+            child: { id: "child-second", label: "second", status: "done" },
+          });
+          yield* offer(captures, {
+            _tag: "ChildUpdated",
+            child: { id: "child-first", label: "first", status: "done" },
+          });
+          yield* offer(captures, { _tag: "RunStarted" });
+          const finalMessage = assistantMessage("the asynchronous parent final response");
+          yield* offer(captures, { _tag: "MessageStarted", message: finalMessage });
+          yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+          yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
+          yield* offer(captures, {
+            _tag: "SessionInfoChanged",
+            name: "parent continuation barrier",
+          });
+          yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+          expect(running.pollUnsafe()).toBeUndefined();
+          expect(subscription.events.some((event) => event.type === "turn.completed")).toBe(false);
+
+          yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+          const result = yield* Fiber.join(running);
+
+          expect(result.turnId).toBe(started.turnId);
+          const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+          expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+          expect(turnEvents.find((event) => event.type === "turn.completed")).toMatchObject({
+            payload: {
+              usage: {
+                inputTokens: 101,
+                outputTokens: 37,
+                cachedInputTokens: 503,
+                cacheWriteTokens: 11,
+                totalTokens: 652,
+              },
+              totalCostUsd: 0.321,
+            },
+          });
+          expect(
+            turnEvents.some(
+              (event) =>
+                event.type === "content.delta" &&
+                event.payload.streamKind === "assistant_text" &&
+                event.payload.delta === finalMessage.text,
+            ),
+          ).toBe(true);
+          expect(
+            turnEvents
+              .filter((event) => event.type === "task.completed")
+              .map((event) => event.payload),
+          ).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ taskId: "child-first", status: "completed" }),
+              expect.objectContaining({ taskId: "child-second", status: "completed" }),
+            ]),
+          );
+          expect(
+            turnEvents.some(
+              (event) =>
+                (event.type === "runtime.warning" || event.type === "runtime.error") &&
+                typeof event.payload.detail === "object" &&
+                event.payload.detail !== null &&
+                "kind" in event.payload.detail &&
+                event.payload.detail.kind === "missing-final-response",
+            ),
+          ).toBe(false);
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("settles once when asynchronous children quiesce without a parent reply", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "handle a cancelled child" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        yield* offer(captures, {
+          _tag: "ChildUpdated",
+          child: { id: "child-cancelled", label: "cancelled", status: "running" },
+        });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [] });
+        yield* offer(captures, {
+          _tag: "ChildUpdated",
+          child: { id: "child-cancelled", label: "cancelled", status: "cancelled" },
+        });
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+
+        const result = yield* Fiber.join(running);
+        expect(result.turnId).toBe(started.turnId);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(turnEvents.find((event) => event.type === "runtime.warning")).toMatchObject({
+          payload: {
+            detail: { kind: "missing-final-response", outcome: "completed" },
+          },
+        });
+        expect(turnEvents.find((event) => event.type === "task.completed")).toMatchObject({
+          payload: { taskId: "child-cancelled", status: "stopped" },
+        });
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("ignores an old quiescence marker after a steer rearms the active turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "start child work" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        const initialToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+        yield* offer(captures, {
+          _tag: "RunCompleted",
+          messages: [assistantMessage("initial response", "toolUse")],
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "initial boundary" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+
+        const steered = yield* adapter.sendTurn({ threadId, input: "include this follow-up" });
+        expect(steered.turnId).toBe(started.turnId);
+        const currentToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+        expect(currentToken).not.toBe(initialToken);
+
+        yield* offer(captures, {
+          _tag: "RlmQuiesced",
+          token: initialToken,
+          connectionGeneration: 0,
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "stale marker drained" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(subscription.events.some((event) => event.type === "turn.completed")).toBe(false);
+
+        yield* offer(captures, { _tag: "RunStarted" });
+        yield* offer(captures, {
+          _tag: "QueueChanged",
+          queuedCount: 0,
+          steeringCount: 0,
+          followUpCount: 0,
+        });
+        const finalMessage = assistantMessage("final response after steering");
+        yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        const result = yield* Fiber.join(running);
+
+        expect(result.turnId).toBe(started.turnId);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(
+          turnEvents.some(
+            (event) =>
+              event.type === "content.delta" &&
+              event.payload.streamKind === "assistant_text" &&
+              event.payload.delta === finalMessage.text,
+          ),
+        ).toBe(true);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps queue-clear settlement behind its marker and ignores it in the next turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const first = yield* adapter
+          .sendTurn({ threadId, input: "queue work then clear it" })
+          .pipe(Effect.forkChild);
+        yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.rlmQuiescenceObserved);
+        yield* offer(captures, {
+          _tag: "RunCompleted",
+          messages: [assistantMessage("waiting for queued input", "toolUse")],
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "queue clear boundary" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        const steered = yield* adapter.sendTurn({ threadId, input: "remove this input" });
+        const staleToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+        yield* adapter.clearSessionInputQueue!(threadId);
+        expect(subscription.events.some((event) => event.type === "turn.completed")).toBe(false);
+
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        const firstResult = yield* Fiber.join(first);
+        expect(firstResult.turnId).toBe(steered.turnId);
+        expect(
+          subscription.events.filter(
+            (event) => event.turnId === firstResult.turnId && event.type === "turn.completed",
+          ),
+        ).toHaveLength(1);
+
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        const second = yield* adapter
+          .sendTurn({ threadId, input: "a new canonical turn" })
+          .pipe(Effect.forkChild);
+        const secondStarted = yield* awaitObservedType(subscription.observed, "turn.started");
+        const secondToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+        expect(secondToken).not.toBe(staleToken);
+        const secondMessage = assistantMessage("second turn final");
+        yield* offer(captures, { _tag: "RunCompleted", messages: [secondMessage] });
+        yield* offer(captures, {
+          _tag: "RlmQuiesced",
+          token: staleToken,
+          connectionGeneration: 0,
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "old turn marker drained" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(
+          subscription.events.filter(
+            (event) => event.turnId === secondStarted.turnId && event.type === "turn.completed",
+          ),
+        ).toHaveLength(0);
+
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        const secondResult = yield* Fiber.join(second);
+        expect(secondResult.turnId).toBe(secondStarted.turnId);
+        expect(
+          subscription.events.filter(
+            (event) => event.turnId === secondResult.turnId && event.type === "turn.completed",
+          ),
+        ).toHaveLength(1);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails and disposes a session whose current quiescence marker crossed reconnect", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "reconnect during child work" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        const token = yield* Queue.take(captures.rlmQuiescenceObserved);
+        yield* offer(captures, { _tag: "RunCompleted", messages: [] });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "pending reconnect" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+
+        captures.rlmConnectionGeneration = 1;
+        yield* offer(captures, {
+          _tag: "RlmQuiesced",
+          token,
+          connectionGeneration: 0,
+        });
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.join(running);
+        yield* awaitObservedType(subscription.observed, "session.exited");
+
+        const turnEvents = subscription.events.filter((event) => event.turnId === started.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(turnEvents.find((event) => event.type === "turn.completed")).toMatchObject({
+          payload: { state: "failed" },
+        });
+        expect(captures.disposeCount).toBe(1);
+        const nextError = yield* adapter
+          .sendTurn({ threadId, input: "must not reuse uncertain native state" })
+          .pipe(Effect.flip);
+        expect(nextError).toMatchObject({ _tag: "ProviderAdapterSessionNotFoundError" });
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails and disposes the session when its authoritative barrier rejects", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "barrier failure with a running child" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.rlmQuiescenceObserved);
+        yield* offer(captures, {
+          _tag: "ChildUpdated",
+          child: { id: "child-running", label: "running", status: "running" },
+        });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [] });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "barrier failure pending" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+
+        captures.rlmQuiescenceFailure = true;
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.join(running);
+        yield* awaitObservedType(subscription.observed, "session.exited");
+
+        const turnEvents = subscription.events.filter((event) => event.turnId === started.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(turnEvents.find((event) => event.type === "turn.completed")).toMatchObject({
+          payload: { state: "failed" },
+        });
+        expect(captures.disposeCount).toBe(1);
+        expect(
+          subscription.events.filter(
+            (event) => event.turnId === started.turnId && event.type === "content.delta",
+          ),
+        ).toHaveLength(0);
+        const nextError = yield* adapter
+          .sendTurn({ threadId, input: "must start a replacement session first" })
+          .pipe(Effect.flip);
+        expect(nextError).toMatchObject({ _tag: "ProviderAdapterSessionNotFoundError" });
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
   );
 
   it.effect("keeps an automatic reconnect continuation attached to the original turn", () =>

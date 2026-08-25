@@ -31,6 +31,7 @@ import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import {
@@ -48,6 +49,7 @@ import {
   decodePrimeAgentDaemonEvent,
   decodePrimeAgentDaemonSessionState,
   type PrimeDaemonEvent,
+  type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import { PRIME_AGENT_EVENT_BUFFER_CAPACITY } from "./PrimeAgentEventBuffer.ts";
@@ -61,6 +63,7 @@ import {
 export { PRIME_AGENT_DAEMON_RESUME_CURSOR } from "./PrimeAgentResumeCursor.ts";
 
 const COMMAND_TIMEOUT_MS = 30_000;
+const RLM_QUIESCENCE_STATS_TIMEOUT_MS = 2_000;
 const SIDE_QUESTION_TERMINAL_MAX_BYTES = 8_192;
 const SIDE_QUESTION_TERMINAL_MAX_CODEPOINTS = 8_192;
 const SIDE_QUESTION_MAX_UPDATES = 512;
@@ -465,11 +468,23 @@ const commandsSchema = Schema.Array(
     }),
   }),
 );
+const nonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const nonNegativeFinite = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
 const sessionStatsSchema = Schema.Struct({
   sessionId: Schema.NonEmptyString,
+  tokens: Schema.optional(
+    Schema.Struct({
+      input: nonNegativeInt,
+      output: nonNegativeInt,
+      cacheRead: nonNegativeInt,
+      cacheWrite: nonNegativeInt,
+      total: nonNegativeInt,
+    }),
+  ),
+  cost: Schema.optional(nonNegativeFinite),
   contextUsage: Schema.optional(
     Schema.Struct({
-      tokens: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+      tokens: Schema.NullOr(nonNegativeInt),
       contextWindow: Schema.Int.check(Schema.isGreaterThan(0)),
     }),
   ),
@@ -501,6 +516,24 @@ const decodeSessionStats = Schema.decodeUnknownOption(sessionStatsSchema);
 const decodeRlmMaxDepthStatus = Schema.decodeUnknownOption(rlmMaxDepthStatusSchema);
 const decodeAgentMessageReceipt = Schema.decodeUnknownOption(agentMessageReceiptSchema);
 const decodeRefinementResult = Schema.decodeUnknownOption(refinementResultSchema);
+
+function subtractCumulativeUsage(
+  current: PrimeDaemonUsage | undefined,
+  baseline: PrimeDaemonUsage | undefined,
+): PrimeDaemonUsage | undefined {
+  if (current === undefined || baseline === undefined) return undefined;
+  const usage = {
+    inputTokens: current.inputTokens - baseline.inputTokens,
+    outputTokens: current.outputTokens - baseline.outputTokens,
+    cachedInputTokens: current.cachedInputTokens - baseline.cachedInputTokens,
+    cacheWriteTokens: current.cacheWriteTokens - baseline.cacheWriteTokens,
+    totalTokens: current.totalTokens - baseline.totalTokens,
+    totalCostUsd: current.totalCostUsd - baseline.totalCostUsd,
+  };
+  return Object.values(usage).every((value) => Number.isFinite(value) && value >= 0)
+    ? usage
+    : undefined;
+}
 
 function providerAgentDepthSource(
   source: (typeof rlmMaxDepthStatusSchema.Type)["source"],
@@ -643,6 +676,7 @@ const runtimeErrorOperation = Schema.Literals([
   "message-agent",
   "watch-agent-activity",
   "prompt",
+  "rlm-quiescence",
   "steer",
   "follow-up",
   "get-input-queue",
@@ -719,6 +753,8 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
 export interface PrimeAgentDaemonPromptInput {
   readonly text: string;
   readonly images?: ReadonlyArray<PrimeAgentDaemonImage>;
+  /** Correlates the initial descendant barrier with one Pylon turn/input generation. */
+  readonly rlmQuiescenceToken?: string;
   /** Cancels prompt admission before the daemon accepts ownership of the turn. */
   readonly signal?: AbortSignal;
 }
@@ -779,6 +815,7 @@ export interface PrimeAgentDaemonReloadResourcesResult {
 
 /** Provider-neutral session usage fields projected from Prime's private daemon response. */
 export interface PrimeAgentDaemonSessionStats {
+  readonly usage?: PrimeDaemonUsage | undefined;
   readonly contextUsage?:
     | {
         readonly usedTokens: number | null;
@@ -860,6 +897,12 @@ export interface PrimeAgentDaemonSessionRuntime {
     PrimeAgentDaemonSessionRuntimeError
   >;
   readonly events: Stream.Stream<PrimeDaemonEvent, never>;
+  /** True only when Prime exposes its authoritative descendant-quiescence barrier. */
+  readonly rlmQuiescenceAvailable: boolean;
+  readonly waitForRlmQuiescence: (
+    token: string,
+  ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  readonly isRlmQuiescenceGenerationCurrent: (generation: number) => boolean;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
   ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
@@ -1134,6 +1177,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let unsubscribe: (() => void) | undefined;
     let disposed = false;
     let disposeStarted = false;
+    let connectionGeneration = 0;
+    let rlmEventContinuityValid = true;
+    let rlmTurnUsageBaseline: PrimeDaemonUsage | undefined;
+    const rlmQuiescenceSemaphore = yield* Semaphore.make(1);
 
     const closeClient = Effect.sync(() => {
       client.close();
@@ -1564,6 +1611,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         typeof raw === "object" && raw !== null && "type" in raw && typeof raw.type === "string"
           ? raw.type
           : undefined;
+      const connectionStatus =
+        rawType === "connection_status" &&
+        "status" in (raw as object) &&
+        typeof (raw as { readonly status?: unknown }).status === "string"
+          ? (raw as { readonly status: string }).status
+          : undefined;
+      if (connectionStatus === "reconnecting") {
+        connectionGeneration += 1;
+        rlmEventContinuityValid = false;
+      }
       if (
         input.mcpServer === undefined ||
         (rawType !== "session_resynced" && rawType !== "connection_status" && rawType !== "closed")
@@ -1574,11 +1631,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         runPromise(
           Effect.gen(function* () {
             if (rawType === "connection_status") {
-              const status =
-                "status" in (raw as object) &&
-                typeof (raw as { readonly status?: unknown }).status === "string"
-                  ? (raw as { readonly status: string }).status
-                  : undefined;
+              const status = connectionStatus;
               if (status === "reconnecting") {
                 mcpAttached = false;
                 mcpRecoveryPending = true;
@@ -1932,6 +1985,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
 
     const agentMessageAvailable =
       input.requiredExtension === undefined && Predicate.isFunction(connection!.sendAgentMessage);
+    const rlmQuiescenceAvailable = Predicate.isFunction(connection!.waitForHeadlessCompletion);
     const compactionAvailable =
       input.requiredExtension === undefined &&
       Predicate.isFunction(connection!.getState) &&
@@ -2745,6 +2799,73 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         ).pipe(Effect.catch((error) => Queue.fail(queue, error))),
       );
 
+    const readRlmUsage = Effect.fn("PrimeAgentDaemonSessionRuntime.readRlmUsage")(function* () {
+      const statsOption = yield* getSessionStats.pipe(
+        Effect.timeoutOption(RLM_QUIESCENCE_STATS_TIMEOUT_MS),
+        Effect.orElseSucceed(() => Option.none()),
+      );
+      return Option.isSome(statsOption) ? statsOption.value.usage : undefined;
+    });
+
+    const waitForRlmQuiescence = Effect.fn("PrimeAgentDaemonSessionRuntime.waitForRlmQuiescence")(
+      function* (token: string) {
+        yield* rlmQuiescenceSemaphore.withPermit(
+          Effect.gen(function* () {
+            yield* ensureOpen("rlm-quiescence");
+            if (!rlmQuiescenceAvailable) return;
+            if (!rlmEventContinuityValid) {
+              return yield* runtimeError(
+                "rlm-quiescence",
+                "request-failed",
+                "Prime Agent reconnected before descendant quiescence could be confirmed.",
+              );
+            }
+            const waitForHeadlessCompletion = yield* requireMethod(
+              "rlm-quiescence",
+              connection!.waitForHeadlessCompletion,
+            );
+            const startedConnectionGeneration = connectionGeneration;
+            // Prime's result is autonomous-provider state. Pylon needs only the
+            // authoritative ordering boundary and never projects the native payload.
+            yield* Effect.tryPromise({
+              try: () =>
+                waitForHeadlessCompletion.call(connection, {
+                  waitForRlmQuiescence: true,
+                }),
+              catch: () =>
+                runtimeError(
+                  "rlm-quiescence",
+                  "request-failed",
+                  "Prime Agent could not confirm descendant quiescence.",
+                ),
+            });
+            if (!rlmEventContinuityValid || connectionGeneration !== startedConnectionGeneration) {
+              return yield* runtimeError(
+                "rlm-quiescence",
+                "request-failed",
+                "Prime Agent reconnected before descendant quiescence could be confirmed.",
+              );
+            }
+            const currentUsage = yield* readRlmUsage();
+            if (!rlmEventContinuityValid || connectionGeneration !== startedConnectionGeneration) {
+              return yield* runtimeError(
+                "rlm-quiescence",
+                "request-failed",
+                "Prime Agent reconnected before descendant quiescence could be confirmed.",
+              );
+            }
+            const usage = subtractCumulativeUsage(currentUsage, rlmTurnUsageBaseline);
+            yield* Queue.offer(eventQueue, {
+              _tag: "RlmQuiesced",
+              token,
+              connectionGeneration: startedConnectionGeneration,
+              ...(usage === undefined ? {} : { usage }),
+            });
+          }),
+        );
+      },
+    );
+
     const prompt = Effect.fn("PrimeAgentDaemonSessionRuntime.prompt")(function* (
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
@@ -2752,6 +2873,12 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* awaitMcpRecovery;
       const images = yield* validateImages("prompt", promptInput.images);
       yield* validatePromptContent("prompt", promptInput.text, images);
+      if (rlmQuiescenceAvailable && promptInput.rlmQuiescenceToken !== undefined) {
+        rlmEventContinuityValid = true;
+        rlmTurnUsageBaseline = yield* readRlmUsage();
+      } else {
+        rlmTurnUsageBaseline = undefined;
+      }
       yield* callVoid("prompt", () =>
         connection!.promptAndWait(promptInput.text, {
           queueIfBusy: false,
@@ -3388,14 +3515,28 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "The daemon returned invalid session usage.",
         );
       }
-      return decoded.value.contextUsage === undefined
-        ? {}
-        : ({
-            contextUsage: {
-              usedTokens: decoded.value.contextUsage.tokens,
-              maxTokens: decoded.value.contextUsage.contextWindow,
-            },
-          } satisfies PrimeAgentDaemonSessionStats);
+      const usage =
+        decoded.value.tokens === undefined || decoded.value.cost === undefined
+          ? undefined
+          : {
+              inputTokens: decoded.value.tokens.input,
+              outputTokens: decoded.value.tokens.output,
+              cachedInputTokens: decoded.value.tokens.cacheRead,
+              cacheWriteTokens: decoded.value.tokens.cacheWrite,
+              totalTokens: decoded.value.tokens.total,
+              totalCostUsd: decoded.value.cost,
+            };
+      return {
+        ...(usage === undefined ? {} : { usage }),
+        ...(decoded.value.contextUsage === undefined
+          ? {}
+          : {
+              contextUsage: {
+                usedTokens: decoded.value.contextUsage.tokens,
+                maxTokens: decoded.value.contextUsage.contextWindow,
+              },
+            }),
+      } satisfies PrimeAgentDaemonSessionStats;
     });
 
     // Keep initialization admission active through every control-plane read.
@@ -3500,6 +3641,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       watchAgentActivityAvailable,
       watchAgentActivity,
       events: Stream.fromQueue(eventQueue),
+      rlmQuiescenceAvailable,
+      waitForRlmQuiescence,
+      isRlmQuiescenceGenerationCurrent: (generation) =>
+        rlmEventContinuityValid && generation === connectionGeneration,
       prompt,
       steer,
       followUp,

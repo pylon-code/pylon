@@ -147,6 +147,7 @@ function fixture(options?: {
   readonly watchSessionMalformed?: boolean;
   readonly getWatchMessages?: () => ReadonlyArray<unknown> | Promise<ReadonlyArray<unknown>>;
   readonly sessionStats?: unknown;
+  readonly getSessionStatsImpl?: () => Promise<unknown>;
   readonly getQueueImpl?: () => Promise<unknown>;
   readonly clearQueueImpl?: () => Promise<unknown>;
   readonly mutateQueuedMessageImpl?: (
@@ -166,6 +167,10 @@ function fixture(options?: {
   readonly abortCompactionImpl?: () => Promise<unknown>;
   readonly setAutoCompactionImpl?: (enabled: boolean) => Promise<unknown>;
   readonly setModelImpl?: (provider: string, modelId: string) => Promise<unknown>;
+  readonly waitForHeadlessCompletionImpl?: (options: {
+    readonly waitForRlmQuiescence?: boolean;
+  }) => Promise<unknown>;
+  readonly omitRlmQuiescence?: boolean;
 }) {
   const captures: Captures = {
     order: [],
@@ -285,6 +290,9 @@ function fixture(options?: {
           releaseAcpMcpServers: { value: undefined },
         });
       }
+      if (options?.omitRlmQuiescence === true) {
+        Object.defineProperty(this, "waitForHeadlessCompletion", { value: undefined });
+      }
       if (options?.authoritativeRlmChildren === undefined) {
         Object.defineProperty(this, "getRlmChildSnapshots", { value: undefined });
       }
@@ -337,6 +345,18 @@ function fixture(options?: {
     ): Promise<unknown> {
       captures.connectionCalls.push({ method: "prompt", args: [message, promptOptions] });
       return Promise.resolve(undefined);
+    }
+    waitForHeadlessCompletion(
+      waitOptions: { readonly waitForRlmQuiescence?: boolean } = {},
+    ): Promise<unknown> {
+      captures.connectionCalls.push({
+        method: "waitForHeadlessCompletion",
+        args: [waitOptions],
+      });
+      return (
+        options?.waitForHeadlessCompletionImpl?.(waitOptions) ??
+        Promise.resolve({ privateAutonomousStatus: "discarded" })
+      );
     }
     steer(message: string, images?: ReadonlyArray<PrimeAgentDaemonImage>): Promise<unknown> {
       captures.connectionCalls.push({ method: "steer", args: [message, images] });
@@ -513,6 +533,7 @@ function fixture(options?: {
     }
     getSessionStats(): Promise<unknown> {
       captures.connectionCalls.push({ method: "getSessionStats", args: [] });
+      if (options?.getSessionStatsImpl !== undefined) return options.getSessionStatsImpl();
       return Promise.resolve(
         options?.sessionStats ?? {
           sessionFile: "/daemon/private/session.jsonl",
@@ -1948,6 +1969,257 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     }),
   );
 
+  it.effect("orders the authoritative RLM quiescence marker after native run events", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let emitNative: ((event: unknown) => Promise<unknown>) | undefined;
+        const test = fixture({
+          waitForHeadlessCompletionImpl: async (waitOptions) => {
+            expect(waitOptions).toEqual({ waitForRlmQuiescence: true });
+            await emitNative?.({
+              type: "session_event",
+              event: { type: "agent_end", messages: [] },
+            });
+            return { privateAutonomousStatus: "discarded" };
+          },
+        });
+        emitNative = test.emit;
+        const runtime = yield* test.make();
+        const collecting = yield* collectEvents(runtime, 3).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+
+        const token = "turn-1:1";
+        yield* runtime.prompt({ text: "wait for descendants", rlmQuiescenceToken: token });
+        yield* runtime.waitForRlmQuiescence(token);
+        const events = yield* Fiber.join(collecting);
+
+        expect(runtime.rlmQuiescenceAvailable).toBe(true);
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "RunCompleted",
+          "RlmQuiesced",
+        ]);
+        expect(events.every((event) => !("privateAutonomousStatus" in event))).toBe(true);
+        expect(events.at(-1)).toMatchObject({
+          _tag: "RlmQuiesced",
+          token,
+          connectionGeneration: 0,
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cachedInputTokens: 0,
+            cacheWriteTokens: 0,
+            totalTokens: 0,
+            totalCostUsd: 0,
+          },
+        });
+      }),
+    ),
+  );
+
+  it.effect("serializes rearmed quiescence barriers", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let activeBarriers = 0;
+        let maxActiveBarriers = 0;
+        let barrierStarts = 0;
+        const releases: Array<() => void> = [];
+        let resolveFirstStart: (() => void) | undefined;
+        let resolveSecondStart: (() => void) | undefined;
+        const firstStarted = new Promise<void>((resolve) => {
+          resolveFirstStart = resolve;
+        });
+        const secondStarted = new Promise<void>((resolve) => {
+          resolveSecondStart = resolve;
+        });
+        const test = fixture({
+          waitForHeadlessCompletionImpl: () =>
+            new Promise((resolve) => {
+              activeBarriers += 1;
+              maxActiveBarriers = Math.max(maxActiveBarriers, activeBarriers);
+              barrierStarts += 1;
+              (barrierStarts === 1 ? resolveFirstStart : resolveSecondStart)?.();
+              releases.push(() => {
+                activeBarriers -= 1;
+                resolve({ result: "completed" });
+              });
+            }),
+        });
+        const runtime = yield* test.make();
+        yield* runtime.prompt({ text: "start descendants", rlmQuiescenceToken: "turn-1:1" });
+        const first = yield* runtime
+          .waitForRlmQuiescence("turn-1:1")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstStarted);
+        const second = yield* runtime
+          .waitForRlmQuiescence("turn-1:2")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+
+        expect(barrierStarts).toBe(1);
+        expect(maxActiveBarriers).toBe(1);
+        releases.shift()?.();
+        yield* Fiber.join(first);
+        yield* Effect.promise(() => secondStarted);
+        expect(barrierStarts).toBe(2);
+        expect(maxActiveBarriers).toBe(1);
+        releases.shift()?.();
+        yield* Fiber.join(second);
+      }),
+    ),
+  );
+
+  it.effect("rejects a quiescence barrier that overlaps daemon reconnect recovery", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let releaseBarrier: (() => void) | undefined;
+        let reportBarrierStarted: (() => void) | undefined;
+        const barrierStarted = new Promise<void>((resolve) => {
+          reportBarrierStarted = resolve;
+        });
+        const barrierRelease = new Promise<void>((resolve) => {
+          releaseBarrier = resolve;
+        });
+        let releaseMcpRecovery: (() => void) | undefined;
+        let reportMcpRecoveryStarted: (() => void) | undefined;
+        const mcpRecoveryStarted = new Promise<void>((resolve) => {
+          reportMcpRecoveryStarted = resolve;
+        });
+        const mcpRecoveryRelease = new Promise<void>((resolve) => {
+          releaseMcpRecovery = resolve;
+        });
+        let replaceMcpCalls = 0;
+        const test = fixture({
+          waitForHeadlessCompletionImpl: () => {
+            reportBarrierStarted?.();
+            return barrierRelease;
+          },
+          replaceMcpImpl: () => {
+            replaceMcpCalls += 1;
+            if (replaceMcpCalls === 1) return Promise.resolve(undefined);
+            reportMcpRecoveryStarted?.();
+            return mcpRecoveryRelease;
+          },
+        });
+        const runtime = yield* test.make(undefined, undefined, undefined, undefined, {
+          ownerId: "pylon:provider-session-reconnect",
+          server: {
+            name: "t3-code",
+            type: "http",
+            url: "http://127.0.0.1:4321/mcp/provider-session-reconnect",
+            headers: { Authorization: "Bearer scoped-secret" },
+          },
+        });
+        const token = "turn-reconnect:1";
+        yield* runtime.prompt({ text: "wait through reconnect", rlmQuiescenceToken: token });
+        const waiting = yield* runtime
+          .waitForRlmQuiescence(token)
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => barrierStarted);
+
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        const resyncDelivery = test.emit({
+          type: "session_resynced",
+          snapshot: snapshot(99),
+        });
+        yield* Effect.promise(() => mcpRecoveryStarted);
+        expect(runtime.isRlmQuiescenceGenerationCurrent(0)).toBe(false);
+        releaseBarrier?.();
+
+        const error = yield* Fiber.join(waiting);
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent reconnected before descendant quiescence could be confirmed.",
+        });
+        releaseMcpRecovery?.();
+        yield* Effect.promise(() => resyncDelivery);
+      }),
+    ),
+  );
+
+  it.effect("reports the full cumulative usage delta at authoritative quiescence", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const stats = [
+          {
+            sessionId: "session-1",
+            tokens: { input: 100, output: 20, cacheRead: 300, cacheWrite: 5, total: 425 },
+            cost: 0.25,
+          },
+          {
+            sessionId: "session-1",
+            tokens: { input: 160, output: 35, cacheRead: 500, cacheWrite: 8, total: 703 },
+            cost: 0.5,
+          },
+        ];
+        const test = fixture({ getSessionStatsImpl: () => Promise.resolve(stats.shift()) });
+        const runtime = yield* test.make();
+        const collecting = yield* collectEvents(runtime, 2).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const token = "turn-usage:1";
+
+        yield* runtime.prompt({ text: "include child usage", rlmQuiescenceToken: token });
+        yield* runtime.waitForRlmQuiescence(token);
+
+        expect((yield* Fiber.join(collecting)).at(-1)).toMatchObject({
+          _tag: "RlmQuiesced",
+          token,
+          usage: {
+            inputTokens: 60,
+            outputTokens: 15,
+            cachedInputTokens: 200,
+            cacheWriteTokens: 3,
+            totalTokens: 278,
+            totalCostUsd: 0.25,
+          },
+        });
+      }),
+    ),
+  );
+
+  it.effect("fails a prompt safely when the advertised RLM barrier cannot complete", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { make } = fixture({
+          waitForHeadlessCompletionImpl: () =>
+            Promise.reject(new Error("private daemon failure at /secret/path")),
+        });
+        const runtime = yield* make();
+
+        yield* runtime.prompt({ text: "wait safely", rlmQuiescenceToken: "turn-1:1" });
+        const error = yield* runtime.waitForRlmQuiescence("turn-1:1").pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent could not confirm descendant quiescence.",
+        });
+        expect(error.detail).not.toContain("/secret/path");
+      }),
+    ),
+  );
+
+  it.effect("retains prompt settlement for older connections without an RLM barrier", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({ omitRlmQuiescence: true });
+        const runtime = yield* make();
+
+        yield* runtime.prompt({ text: "legacy prompt" });
+
+        expect(runtime.rlmQuiescenceAvailable).toBe(false);
+        expect(
+          captures.connectionCalls.some((call) => call.method === "waitForHeadlessCompletion"),
+        ).toBe(false);
+      }),
+    ),
+  );
+
   it.effect("exposes typed operations and strips native model payloads", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1955,7 +2227,13 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         const runtime = yield* make();
         const images = [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }] as const;
         const signal = new AbortController().signal;
-        yield* runtime.prompt({ text: "prompt", images, signal });
+        yield* runtime.prompt({
+          text: "prompt",
+          images,
+          signal,
+          rlmQuiescenceToken: "turn-typed:1",
+        });
+        yield* runtime.waitForRlmQuiescence("turn-typed:1");
         yield* runtime.steer({ text: "steer", images });
         yield* runtime.followUp({ text: "follow", images });
         yield* runtime.abort;
@@ -1974,6 +2252,14 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(selected).not.toHaveProperty("baseUrl");
         expect(selected).not.toHaveProperty("headers");
         expect(stats).toEqual({
+          usage: {
+            inputTokens: 120,
+            outputTokens: 30,
+            cachedInputTokens: 850,
+            cacheWriteTokens: 10,
+            totalTokens: 1_010,
+            totalCostUsd: 0.42,
+          },
           contextUsage: { usedTokens: 320, maxTokens: 200_000 },
         });
         expect(stats).not.toHaveProperty("sessionFile");
@@ -1990,7 +2276,10 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
             ["getResourceSnapshot", []],
             ["getCommands", []],
             ["getRlmMaxDepthStatus", []],
+            ["getSessionStats", []],
             ["prompt", ["prompt", { queueIfBusy: false, images, signal }]],
+            ["waitForHeadlessCompletion", [{ waitForRlmQuiescence: true }]],
+            ["getSessionStats", []],
             ["steer", ["steer", images]],
             ["followUp", ["follow", images]],
             ["abort", []],

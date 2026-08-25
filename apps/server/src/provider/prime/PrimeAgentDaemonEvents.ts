@@ -676,7 +676,19 @@ export interface PrimeDaemonSessionState {
 
 export type PrimeDaemonEvent =
   | { readonly _tag: "RunStarted" }
-  | { readonly _tag: "RunCompleted"; readonly messages: ReadonlyArray<PrimeDaemonMessage> }
+  | {
+      readonly _tag: "RunCompleted";
+      readonly messages: ReadonlyArray<PrimeDaemonMessage>;
+      /** Authoritative cumulative-session delta captured at descendant quiescence. */
+      readonly usageOverride?: PrimeDaemonUsage | undefined;
+    }
+  /** Server-owned FIFO marker; untrusted daemon notifications can never decode to this tag. */
+  | {
+      readonly _tag: "RlmQuiesced";
+      readonly token: string;
+      readonly connectionGeneration: number;
+      readonly usage?: PrimeDaemonUsage | undefined;
+    }
   | { readonly _tag: "TurnStarted" }
   | {
       readonly _tag: "TurnCompleted";

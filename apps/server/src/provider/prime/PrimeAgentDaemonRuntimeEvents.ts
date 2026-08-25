@@ -379,7 +379,7 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
         message?.stopReason !== "toolUse" &&
         message?.toolCalls.length === 0;
       const missingFinalResponse = state !== "cancelled" && !hasFinalResponse;
-      const usage = aggregateAssistantUsage(runMessages);
+      const usage = event.usageOverride ?? aggregateAssistantUsage(runMessages);
       const completed: PrimeAgentRuntimeEventDraft = {
         ...base,
         type: "turn.completed",
@@ -673,6 +673,7 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
         },
       ];
     }
+    case "RlmQuiesced":
     case "AgentMessageSent":
     case "QueueChanged":
     case "ThinkingLevelChanged":
