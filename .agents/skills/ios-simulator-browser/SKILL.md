@@ -34,6 +34,8 @@ Keep serve-sim on its default `127.0.0.1` binding. Do not expose its preview to 
 4. Keep the terminal alive and open the exact local URL printed by serve-sim in the agent's browser.
 5. Verify that a live simulator frame renders. A loaded wrapper page is not sufficient evidence.
 
+If the preview loads but the stream logs `error encoding frame: encodingFailed`, stop only the owned stream and restart the same UDID with `--codec mjpeg`. Verify that the browser receives a nonzero live frame before claiming success.
+
 ## Observe while driving semantically
 
 - Let the user watch the serve-sim stream while XcodeBuildMCP performs `snapshot_ui`, semantic taps, typing, gestures, and screenshots.
