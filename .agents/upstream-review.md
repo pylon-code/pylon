@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "f035a0f4cdf4abaa6704673af7b5a4a321149ba2"
+reviewed-through: "bd9ed2b4bbda3dd6e468df1cb06233e29c4a9f5c"
 reviewed-through-date: "2026-08-24"
 ---
 
@@ -2424,6 +2424,46 @@ payloads`, is **pre-existing on `origin/pylon`** and host-arch dependent: the te
 Not done, and deliberately: no real-client pass in web or mobile. `#8009` redesigns the slash
 and `$` menus, `#8048` changes composer attachment UI, and `#8058` changes approval prompts on
 both clients; all three warrant a look in a running client before release.
+
+## 2026-08-25 — `f035a0f4cdf4abaa6704673af7b5a4a321149ba2..bd9ed2b4bbda3dd6e468df1cb06233e29c4a9f5c`
+
+Twelve upstream commits grouped into ten change sets. The developer approved the full batch. Nine
+sets produced source changes on `upstream/2026-08-25-bd9ed2-batch`; A6 was already present in
+Pylon, so its cherry-pick was correctly empty. The deferred register was empty going in and remains
+empty.
+
+Pylon-first reconciliation was required in three places. A5's projection optimization now preserves
+full shell-summary refreshes for Pylon's `interaction.requested`, `interaction.resolved`, and
+`provider.interaction.respond.failed` activities, with a request/resolution regression test. A8
+keeps Pylon's application ids, protocols, product/artifact names, local ad-hoc signing, and optional
+passkey setup while enabling upstream's batched signed-build hook. A9's upstream migration 042 was
+renumbered to **046** because Pylon already owns 042 through 045; using 042 would silently skip the
+linked-PR column on existing Pylon databases.
+
+| ID  | Upstream                                    | Decision                  | Pylon reference          | Notes                                                                                                                                                 |
+| --- | ------------------------------------------- | ------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1  | `5f1147cad` / `#8124`                       | adopted                   | `0875df643`              | Nightly-to-nightly skew compares the full date/run while stable/nightly compatibility remains core-version based. Pylon wording retained.             |
+| A2  | `8287f2c3a`, `a1379db81` / `#8111`, `#8108` | adopted                   | `adc19dbec`, `f4608a35c` | Usage skeleton matches the loaded layout and model rows follow the selected cost/token metric. Pylon's active-provider rationale retained.            |
+| A3  | `883e1a3cd` / `#7488`                       | adopted                   | `79b4bec99`              | Terminal links show hover affordance only with the activation modifier; uppercase URL schemes also activate correctly.                                |
+| A4  | `a09f92171`, `99960383d` / `#8081`, `#8098` | adopted                   | `2b7f2e6be`, `f7e8c7522` | Windows, spaced, HTML, and XML agent file links reach the integrated viewer on the applicable web/mobile surfaces. Unsafe schemes remain rejected.    |
+| A5  | `c034f51bb` / `#8150`                       | adopted with adaptation   | `c21a6c05b`, `0f99d52af` | Routine assistant/tool events stop rescanning full histories. Pylon interaction activities remain summary-changing.                                   |
+| A6  | `2394998aa` / `#8163`                       | adopted (already present) | `877dad32a`              | Both `@xmldom/xmldom` deprecation records already existed; the upstream cherry-pick was empty and skipped.                                            |
+| A7  | `143341b0b` / `#8089`                       | adopted                   | `92bbc7ccf`              | Configurable `mod+shift+s` settles or restores the active thread and stays inactive in the terminal.                                                  |
+| A8  | `63eb0429f` / `#8093`                       | adopted with adaptation   | `d6a20af51`              | Batches macOS codesign calls, trims staged dependencies, and excludes Windows terminal binaries without crossing Pylon's desktop identity boundaries. |
+| A9  | `3c75eb113` / `#8160`                       | adopted with adaptation   | `ddc4cfb50`              | Persisted PR-to-thread linking across server, contracts, web, and mobile. Migration renumbered 042 → 046.                                             |
+| A10 | `bd9ed2b4b` / `#8161`                       | adopted                   | `21a40af90`              | Web/desktop HEIC and HEIF attachments convert to guarded JPEG through a lazy `heic-to` decoder.                                                       |
+
+Focused validation before ledger commit: 516 changed-behavior tests pass (285 web, 73 server, 87
+contracts/client-runtime, 56 mobile, 15 version-skew), plus the macOS signing test. All seven
+affected package typechecks pass. Lint reports 0 errors and two pre-existing `prefer-set-has`
+warnings in an untouched part of `ProjectionSnapshotQuery.test.ts`; formatting is clean over all 70
+changed source/doc/config files. `build-desktop-artifact.test.ts` has one pre-existing host-dependent
+failure on Apple Silicon: its alleged cross-architecture fixture is arm64, so the native probe runs;
+the same assertion fails on clean `pylon`.
+
+No real-client pass ran during integration. Web/mobile UI verification still requires explicit
+computer-use permission. The separate post-integration review required by the developer is recorded
+in the branch/PR handoff rather than treated as optional validation.
 
 ## Deferred register
 
