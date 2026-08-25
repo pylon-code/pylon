@@ -1,11 +1,20 @@
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   ContextCompactionControls,
   ContextWindowMeter,
   HarnessRefinementControls,
 } from "./ContextWindowMeter";
+
+vi.mock("../ui/popover", () => ({
+  Popover: ({ children }: { children: ReactNode }) => children,
+  PopoverPopup: ({ children }: { children: ReactNode }) => children,
+  PopoverTrigger: ({ closeDelay, render }: { closeDelay: number; render: ReactNode }) => (
+    <div data-close-delay={closeDelay}>{render}</div>
+  ),
+}));
 
 const snapshot = {
   available: true,
@@ -133,5 +142,31 @@ describe("ContextWindowMeter local harness refinement", () => {
     expect(controls).toContain("disabled");
     expect(controls.match(/<button/g)).toHaveLength(1);
     expect(controls).not.toContain("Refine local harness");
+  });
+});
+
+describe("ContextWindowMeter hover popover", () => {
+  it("lingers while the pointer travels to a control, and closes at once without one", () => {
+    const withControls = renderToStaticMarkup(
+      <ContextWindowMeter
+        usage={null}
+        modelDisplayName="Claude"
+        timestampFormat="12-hour"
+        compaction={{
+          snapshot,
+          pendingAction: null,
+          canCompact: true,
+          canAbort: false,
+          canSetAuto: true,
+          ...handlers,
+        }}
+      />,
+    );
+    const informational = renderToStaticMarkup(
+      <ContextWindowMeter usage={null} modelDisplayName="Claude" timestampFormat="12-hour" />,
+    );
+
+    expect(withControls).toContain('data-close-delay="150"');
+    expect(informational).toContain('data-close-delay="0"');
   });
 });

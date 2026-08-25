@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "bd9ed2b4bbda3dd6e468df1cb06233e29c4a9f5c"
-reviewed-through-date: "2026-08-24"
+reviewed-through: "e67074f80933a27bd3cdc4e24f486358407690fb"
+reviewed-through-date: "2026-08-25"
 ---
 
 # T3 upstream review log
@@ -12,6 +12,59 @@ This ledger is the durable handoff between upstream-review sessions. The `review
 Deferred decisions remain listed after the cursor advances so later sessions can revisit them without rediscovering the entire upstream range.
 
 ## Review batches
+
+## 2026-08-25 — `bd9ed2b4bbda3dd6e468df1cb06233e29c4a9f5c..e67074f80933a27bd3cdc4e24f486358407690fb`
+
+Twelve upstream commits grouped into ten change sets. The developer approved the full batch with an
+explicit instruction to adapt rather than transplant. `git cherry` found none of them already
+present. The deferred register was empty going in and remains empty.
+
+Three change sets needed Pylon-first reconciliation.
+
+**B1 dropped its analytics half.** `#8169` extends the `client.connected` PostHog event with device
+model and OS major version. Pylon deleted that event, and the two beside it, in CS-12 of the
+2026-08-21 batch (`#7774`, `848d5e0c2`) because `AnalyticsService` still defaults
+`T3CODE_POSTHOG_KEY` to **T3's** project key — adopting this as written would have reported every
+Pylon user's device model into T3's analytics. The presentation metadata was kept, since Settings →
+Connections already renders device type and OS per session. The `clientOs`, `clientOsMajorVersion`,
+and `clientDeviceModel` websocket URL parameters went with the event: their only consumer was
+`readMobileDeviceAnalyticsProps`. `server.test.ts` keeps Pylon's replacement assertion. The mobile
+label stays "Pylon Mobile".
+
+**B6 met a compaction UI Pylon already had.** `#8144` adds a resume-compaction prompt plus an
+`onCompact` button trio on `ContextWindowMeter`. Pylon's meter already owns
+`ContextCompactionControls` and `HarnessRefinementControls`, so the button trio and the composer
+footer block that rendered it were dropped rather than shipped as a second control for one action;
+upstream's footer is also a region Pylon had restructured, so taking it would have rendered a
+duplicate. Upstream's popover `closeDelay` change was kept but rewired onto Pylon's control props,
+with a test pinning both states. `autoCompactThreshold` derivation went to
+`packages/client-runtime/src/state/contextWindow.ts`, where `#7150` moved the deriver, using
+Pylon's `asNonNegativeFiniteNumber`. ChatView derives the snapshot once for both the banner and the
+handoff offer instead of upstream's second identical memo, and the composer keeps deriving its own,
+so only `compactDisabled`/`compactDisabledReason` cross that boundary. The feature itself — the
+adapter's question, the shared copy module, and the banner — landed intact.
+
+**B4 and B5 are one decision.** `#8175` flips Cursor to off-by-default; `#8176` is the migration
+that re-enables cursor, grok, and opencode instances the user has actually run. Adopting `#8175`
+alone would silently disable Cursor for existing users. Pylon's `primeAgent` defaults to enabled
+and is untouched by the migration's three-driver list, which is correct — it was never flipped off.
+
+| ID  | Upstream            | Decision                  | Pylon reference | Notes                                                                                                                          |
+| --- | ------------------- | ------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| B1  | `#8169` `bce680926` | adopted (with adaptation) | `3e3a29750`     | Mobile device model and OS major version. **Analytics half dropped** — see above.                                              |
+| B2  | `#7279` `afc834280` | adopted                   | `af7b14dbb`     | Bounds cumulative tool-output growth in the ACP runtime, which Pylon uses for Cursor, Grok, and Prime Agent. Clean.            |
+| B3  | `#8172` `e6d487e4f` | adopted                   | `ca7b7ceff`     | Thread shortcut hints wait 200 ms before appearing. Clean.                                                                     |
+| B4  | `#8175` `43f723f80` | adopted                   | `bf0af7111`     | Cursor is off by default, opt-in from Settings. Pairs with B5.                                                                 |
+| B5  | `#8176` `06de9e90a` | adopted                   | `49d5bd033`     | Re-enables optional providers already in use, so B4 cannot disable a working Cursor. Pairs with B4.                            |
+| B6  | `#8144` `c7222ca4d` | adopted (with adaptation) | `8e1cea5a0`     | Claude resume-compaction prompt. **Meter button trio dropped; Pylon's controls kept** — see above.                             |
+| B7  | `#8117` `589a9d0e2` | adopted                   | `772a67d46`     | client-runtime retries queries after a connection interruption. Matters for Pylon's remote and relay modes. Clean.             |
+| B8  | `#8173` `1baf99195` | adopted                   | `5950f780a`     | Keeps provider CLIs on PATH in the macOS background service. Clean.                                                            |
+| B9  | `#8182` `c6b8bb825` | adopted                   | `9e6067000`     | macOS desktop preview builds from a `preview:mac` PR label. Generic: globs `release/*.dmg`, so it picks up Pylon's own naming. |
+| B10 | `#8177` `1a4a7596c` | adopted                   | `cf3fc451a`     | Release runbook covers verifying remote updates that carry migrations. Maintainer doc; `npx t3` left as a compatibility name.  |
+| B11 | —                   | reconciliation            | `10e7ffef5`     | Mobile's own snapshot fixture needed `autoCompactThreshold`; the model.test.ts conflict boundary left a describe block open.   |
+
+**B9 needs a repository label to fire.** The workflow is gated on `preview:mac`. Creating that
+label is the only step between this batch and a working macOS preview build.
 
 ## 2026-08-03 — `69dfb7f09a473d270a8b127cb1c39836fa1c6bc4..30c96228067bcd3a49e432ec898e52d4acb04297`
 

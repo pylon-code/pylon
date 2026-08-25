@@ -25,6 +25,7 @@ function snapshot(
     toolUses: null,
     durationMs: null,
     compactsAutomatically: false,
+    autoCompactThreshold: null,
     updatedAt: "2026-03-23T00:00:00.000Z",
     ...input,
     usedTokens: input.usedTokens,
