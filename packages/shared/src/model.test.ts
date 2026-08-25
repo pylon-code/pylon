@@ -187,6 +187,9 @@ describe("Prime Agent default model availability", () => {
   it("leaves other providers' default slugs alone", () => {
     expect(isPrimeAgentDefaultModelUnavailable({ ...base, providerDriver: "codex" })).toBe(false);
     expect(isPrimeAgentDefaultModelUnavailable({ ...base, providerDriver: undefined })).toBe(false);
+  });
+});
+
 describe("applyClaudePromptEffortPrefix", () => {
   it("keeps slash commands intact when ultrathink is selected", () => {
     expect(applyClaudePromptEffortPrefix("/compact", "ultrathink")).toBe("/compact");
