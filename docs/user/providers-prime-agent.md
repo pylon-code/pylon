@@ -67,6 +67,13 @@ finish its immediate response before delegated descendants settle. Pylon waits f
 terminal-quiescence signal, so the turn does not finish early while descendant work or a resulting goal
 continuation is still active.
 
+In native daemon mode, an active turn can continue through a temporary daemon transport reconnect when
+Prime supplies complete replay data or an exact completed-message snapshot. Root tool work, delegated
+children, and the parent response remain part of the original turn. If Pylon cannot prove that the
+reconnected stream is complete, it fails the turn once and closes that Prime session instead of retrying
+your prompt or guessing at missing output. Restarting the Pylon server is a separate boundary and does not
+yet adopt Prime work that is still running in another process.
+
 On Windows, Pylon currently uses ACP compatibility mode because Prime Agent 0.8.0's public named-pipe daemon transport does not expose a verifiable per-user ACL or authenticated handshake. Native daemon mode remains fail-closed there until the transport can prevent another local OS user from impersonating or connecting to the daemon.
 
 Pylon uses a short-lived, prompt-free Prime Agent RPC process to bootstrap the configured-model

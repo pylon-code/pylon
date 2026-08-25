@@ -30,6 +30,10 @@ function drainEvents(input: {
   readonly turnStarted?: Deferred.Deferred<void>;
   readonly turnCompleted?: Deferred.Deferred<TurnCompleted>;
   readonly runCompleted?: Deferred.Deferred<void>;
+  readonly toolPlanned?: Deferred.Deferred<void>;
+  readonly resynced?: Deferred.Deferred<
+    Extract<PrimeDaemonEvent, { readonly _tag: "SessionResynced" }>
+  >;
   readonly aborted?: Deferred.Deferred<void>;
 }) {
   return input.runtime.events.pipe(
@@ -39,7 +43,11 @@ function drainEvents(input: {
           yield* Deferred.succeed(input.turnStarted, undefined);
         }
         if (event._tag === "TurnCompleted") {
-          if (input.turnCompleted !== undefined) {
+          if (
+            input.turnCompleted !== undefined &&
+            event.message.stopReason !== "toolUse" &&
+            event.message.toolCalls.length === 0
+          ) {
             yield* Deferred.succeed(input.turnCompleted, event);
           }
           if (event.message.stopReason === "aborted" && input.aborted !== undefined) {
@@ -53,6 +61,21 @@ function drainEvents(input: {
           input.aborted !== undefined
         ) {
           yield* Deferred.succeed(input.aborted, undefined);
+        }
+        if (
+          event._tag === "MessageCompleted" &&
+          event.message.role === "assistant" &&
+          event.message.toolCalls.length > 0 &&
+          input.toolPlanned !== undefined
+        ) {
+          yield* Deferred.succeed(input.toolPlanned, undefined);
+        }
+        if (
+          event._tag === "SessionResynced" &&
+          event.connectionGeneration !== undefined &&
+          input.resynced !== undefined
+        ) {
+          yield* Deferred.succeed(input.resynced, event);
         }
         if (event._tag === "RunCompleted") {
           if (input.runCompleted !== undefined) {
@@ -188,6 +211,86 @@ it.live.skipIf(!configuredExecutable)(
             });
             const completion = yield* Deferred.await(completedTurn);
             yield* Deferred.await(completedRun);
+
+            let disconnectTransport: (() => void) | undefined;
+            const reconnectManager = {
+              ...manager,
+              openClient: () =>
+                manager.openClient().pipe(
+                  Effect.tap((client) =>
+                    Effect.sync(() => {
+                      // Prime 0.8.0 has no public fault-injection hook. Destroy only
+                      // this scoped client's socket; the daemon and worker stay alive.
+                      const transport = (
+                        client as typeof client & {
+                          socket?: { destroy: (error?: Error) => void };
+                        }
+                      ).socket;
+                      if (transport !== undefined) {
+                        disconnectTransport = () =>
+                          transport.destroy(new Error("Pylon real test transport fault"));
+                      }
+                    }),
+                  ),
+                ),
+            };
+            const reconnecting = yield* makePrimeAgentDaemonSessionRuntime({
+              manager: reconnectManager,
+              cwd: root,
+              sessionDir: NodePath.join(manager.sessionDir, "phase-1-reconnecting"),
+              thinkingLevel: "off",
+              disableExtensionDiscovery: true,
+            });
+            if (preferredModel !== undefined) {
+              yield* reconnecting.setModel(`${preferredModel.provider}/${preferredModel.id}`);
+            }
+            const reconnectToolPlanned = yield* Deferred.make<void>();
+            const reconnectResynced =
+              yield* Deferred.make<
+                Extract<PrimeDaemonEvent, { readonly _tag: "SessionResynced" }>
+              >();
+            const reconnectCompleted = yield* Deferred.make<TurnCompleted>();
+            const reconnectRunCompleted = yield* Deferred.make<void>();
+            const reconnectDrain = yield* drainEvents({
+              runtime: reconnecting,
+              toolPlanned: reconnectToolPlanned,
+              resynced: reconnectResynced,
+              turnCompleted: reconnectCompleted,
+              runCompleted: reconnectRunCompleted,
+            });
+            const reconnectToken = "real-transport-reconnect:1";
+            const reconnectPromptText =
+              "Use the IPython tool exactly once to print PYLON_TRANSPORT_TOOL_OK, then reply with exactly PYLON_TRANSPORT_RECONNECT_OK and nothing else.";
+            const reconnectPrompt = yield* reconnecting
+              .prompt({
+                text: reconnectPromptText,
+                rlmQuiescenceToken: reconnectToken,
+              })
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(reconnectToolPlanned);
+            const disconnect = disconnectTransport;
+            if (disconnect === undefined) {
+              return yield* Effect.die(
+                new Error("The real Prime daemon client did not expose reconnect control."),
+              );
+            }
+            disconnect();
+            const resynced = yield* Deferred.await(reconnectResynced);
+            expect(resynced).toMatchObject({
+              replayContinuity: "complete",
+              connectionGeneration: 1,
+            });
+            expect(reconnecting.resolveReconnectSnapshot(1, true)).toBe(true);
+            yield* Fiber.join(reconnectPrompt);
+            const reconnectCompletion = yield* Deferred.await(reconnectCompleted);
+            yield* Deferred.await(reconnectRunCompleted);
+            yield* reconnecting.waitForRlmQuiescence(reconnectToken);
+            expect(reconnectCompletion.message.text.trim()).toBe("PYLON_TRANSPORT_RECONNECT_OK");
+            yield* reconnecting.dispose;
+            yield* Fiber.await(reconnectDrain);
+            expect(
+              NodeFS.readFileSync(reconnecting.sessionFile, "utf8").split(reconnectPromptText),
+            ).toHaveLength(2);
 
             const sameModel = catalog.find(
               (model) =>

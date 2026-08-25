@@ -628,6 +628,26 @@ describe("PrimeAgentDaemonEvents", () => {
     });
   });
 
+  it("bounds reconnect transcript snapshots to their newest completed messages", () => {
+    const decoded = decodePrimeAgentDaemonEvent({
+      type: "session_resynced",
+      snapshot: {
+        state: { ...state, messageCount: 105 },
+        messages: Array.from({ length: 105 }, (_, index) => ({
+          role: "user",
+          content: `message-${index}`,
+          timestamp: index,
+        })),
+      },
+    });
+
+    expect(decoded).toMatchObject({ _tag: "SessionResynced" });
+    if (decoded._tag !== "SessionResynced") throw new Error("expected resync");
+    expect(decoded.messages).toHaveLength(100);
+    expect(decoded.messages[0]).toMatchObject({ role: "user", text: "message-5" });
+    expect(decoded.messages[99]).toMatchObject({ role: "user", text: "message-104" });
+  });
+
   it("maps resync, replacement, connection, heartbeat, and close events", () => {
     expect(
       decodePrimeAgentDaemonEvent({
@@ -638,6 +658,13 @@ describe("PrimeAgentDaemonEvents", () => {
           streamingMessage: assistant([{ type: "text", text: "Hi" }]),
           children: [child],
           lastEventSequence: 42,
+          replay: {
+            status: "complete",
+            fromSequence: 42,
+            toSequence: 42,
+            fromCursor: { generation: "daemon-1", sequence: 42 },
+            toCursor: { generation: "daemon-1", sequence: 42 },
+          },
         },
       }),
     ).toMatchObject({
@@ -665,6 +692,7 @@ describe("PrimeAgentDaemonEvents", () => {
       messages: [{ role: "user", text: "Hello" }],
       children: [{ id: "child-1" }],
       lastEventSequence: 42,
+      replayContinuity: "complete",
     });
     expect(
       decodePrimeAgentDaemonEvent({
@@ -683,7 +711,55 @@ describe("PrimeAgentDaemonEvents", () => {
           continuationsUsed: 0,
         },
       },
+      replayContinuity: "unknown",
     });
+    expect(
+      decodePrimeAgentDaemonEvent({
+        type: "session_resynced",
+        snapshot: {
+          state,
+          messages: [],
+          lastEventSequence: 44,
+          replay: {
+            status: "complete",
+            toSequence: 44,
+            toCursor: { generation: "daemon-1", sequence: 44 },
+          },
+        },
+      }),
+    ).toMatchObject({ _tag: "SessionResynced", replayContinuity: "complete" });
+    expect(
+      decodePrimeAgentDaemonEvent({
+        type: "session_resynced",
+        snapshot: {
+          state,
+          messages: [],
+          lastEventSequence: 44,
+          replay: {
+            status: "complete",
+            fromSequence: 40,
+            toSequence: 44,
+            fromCursor: { generation: "daemon-1", sequence: 40 },
+            toCursor: { generation: "daemon-2", sequence: 44 },
+          },
+        },
+      }),
+    ).toMatchObject({ _tag: "SessionResynced", replayContinuity: "unavailable" });
+    expect(
+      decodePrimeAgentDaemonEvent({
+        type: "session_resynced",
+        snapshot: {
+          state,
+          messages: [],
+          lastEventSequence: 44,
+          replay: {
+            status: "partial",
+            toSequence: 44,
+            reason: "cursor history was incomplete",
+          },
+        },
+      }),
+    ).toMatchObject({ _tag: "SessionResynced", replayContinuity: "unavailable" });
     expect(
       decodePrimeAgentDaemonEvent({ type: "session_replaced", state, messages: [] }),
     ).toMatchObject({ _tag: "SessionReplaced", state: { sessionName: "daemon-events" } });

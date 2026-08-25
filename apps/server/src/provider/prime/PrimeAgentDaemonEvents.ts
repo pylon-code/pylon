@@ -384,7 +384,7 @@ const sessionState = Schema.Struct({
   retryAttempt: Schema.Number,
   sessionId: Schema.String,
   sessionName: Schema.optional(Schema.String),
-  messageCount: Schema.Number,
+  messageCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   autoCompactionEnabled: Schema.Boolean,
   steeringMode: Schema.optional(queueMode),
   followUpMode: Schema.optional(queueMode),
@@ -394,12 +394,27 @@ const sessionState = Schema.Struct({
   recap: Schema.optional(Schema.String),
 });
 
+const eventCursor = Schema.Struct({
+  generation: Schema.String,
+  sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+
+const reconnectReplay = Schema.Struct({
+  status: Schema.Literals(["complete", "partial", "unavailable"]),
+  fromSequence: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  toSequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  fromCursor: Schema.optional(eventCursor),
+  toCursor: Schema.optional(eventCursor),
+  reason: Schema.optional(Schema.String),
+});
+
 const sessionSnapshot = Schema.Struct({
   state: sessionState,
   messages: Schema.Array(Schema.Unknown),
   streamingMessage: Schema.optional(Schema.Unknown),
   children: Schema.optional(Schema.Array(rlmChild)),
   lastEventSequence: Schema.optional(Schema.Number),
+  replay: Schema.optional(reconnectReplay),
 });
 
 const extensionMethod = Schema.Literals([
@@ -511,8 +526,10 @@ const knownSessionEventTypes = new Set([
 ]);
 
 const MAX_TEXT_LENGTH = 100_000;
+export const PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS = MAX_TEXT_LENGTH;
 const MAX_PREVIEW_LENGTH = 4_000;
 const MAX_LIST_ITEMS = 100;
+export const PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES = MAX_LIST_ITEMS;
 const MAX_SCALAR_FIELDS = 32;
 
 type PrimeDaemonScalar = string | number | boolean | null;
@@ -829,6 +846,10 @@ export type PrimeDaemonEvent =
         Extract<PrimeDaemonEvent, { readonly _tag: "ChildUpdated" }>["child"]
       >;
       readonly lastEventSequence?: number | undefined;
+      /** Prime replay status after validating the snapshot tail metadata. */
+      readonly replayContinuity?: "complete" | "unavailable" | "unknown" | undefined;
+      /** Local Pylon transport generation, attached by the session runtime. */
+      readonly connectionGeneration?: number | undefined;
     }
   | { readonly _tag: "SessionStatus"; readonly recap?: string | undefined }
   | {
@@ -992,7 +1013,7 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
 }
 
 function mapUnknownMessages(values: ReadonlyArray<unknown>): ReadonlyArray<PrimeDaemonMessage> {
-  return values.flatMap((value) => {
+  return values.slice(-PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES).flatMap((value) => {
     const decoded = decodeMessage(value);
     return Option.isSome(decoded) ? [mapMessage(decoded.value)] : [];
   });
@@ -1312,6 +1333,32 @@ function mapSessionEvent(event: typeof agentSessionEvent.Type): PrimeDaemonEvent
   }
 }
 
+function reconnectReplayContinuity(
+  snapshot: Extract<
+    PrimeAgentDaemonConnectionEvent,
+    { readonly type: "session_resynced" }
+  >["snapshot"],
+): "complete" | "unavailable" | "unknown" {
+  const replay = snapshot.replay;
+  if (replay === undefined) return "unknown";
+  if (replay.status !== "complete") return "unavailable";
+  const from = replay.fromCursor;
+  const to = replay.toCursor;
+  if (snapshot.lastEventSequence !== replay.toSequence) return "unavailable";
+  if (to !== undefined && to.sequence !== replay.toSequence) return "unavailable";
+  if (replay.fromSequence !== undefined && replay.fromSequence > replay.toSequence) {
+    return "unavailable";
+  }
+  if (
+    from !== undefined &&
+    (replay.fromSequence !== from.sequence ||
+      (to !== undefined && from.generation !== to.generation))
+  ) {
+    return "unavailable";
+  }
+  return "complete";
+}
+
 export function mapPrimeAgentDaemonConnectionEvent(
   event: PrimeAgentDaemonConnectionEvent,
 ): PrimeDaemonEvent {
@@ -1339,6 +1386,7 @@ export function mapPrimeAgentDaemonConnectionEvent(
             : undefined,
         children: (event.snapshot.children ?? []).slice(0, MAX_LIST_ITEMS).map(mapChild),
         lastEventSequence: event.snapshot.lastEventSequence,
+        replayContinuity: reconnectReplayContinuity(event.snapshot),
       };
     }
     case "session_status":
