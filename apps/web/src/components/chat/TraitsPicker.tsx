@@ -411,6 +411,7 @@ export function buildTraitsTriggerDisplay(input: {
   let fastModeFallbackLabel: string | null = null;
   let fastModeEnabled = false;
   const labels: Array<string> = [];
+  const unresolvedSelectLabels: Array<string> = [];
   for (const descriptor of input.descriptors) {
     if (descriptor.id === "fastMode" && descriptor.type === "boolean") {
       fastModeEnabled = descriptor.currentValue === true;
@@ -440,6 +441,8 @@ export function buildTraitsTriggerDisplay(input: {
           : getProviderOptionCurrentLabel(descriptor);
     if (typeof label === "string" && label.length > 0) {
       labels.push(label);
+    } else if (descriptor.type === "select" && descriptor.label.trim().length > 0) {
+      unresolvedSelectLabels.push(descriptor.label.trim());
     }
   }
 
@@ -448,6 +451,9 @@ export function buildTraitsTriggerDisplay(input: {
   // no label at all, printing a bogus "Normal" for a model without fast mode.
   if (labels.length === 0 && fastModeFallbackLabel !== null) {
     return { label: fastModeFallbackLabel, showFastModeIcon: false };
+  }
+  if (labels.length === 0 && unresolvedSelectLabels.length > 0) {
+    return { label: unresolvedSelectLabels.join(" · "), showFastModeIcon: fastModeEnabled };
   }
   return { label: labels.join(" · "), showFastModeIcon: fastModeEnabled };
 }
