@@ -101,7 +101,7 @@ export interface ProviderServiceLiveOptions {
    * test see whether a credential was requested at all.
    */
   readonly issueMcpCredential?: typeof McpSessionRegistry.issueActiveMcpCredential;
-  /** Same seam as `issueMcpCredential`, for observing the deny path's revoke. */
+  /** Same seam as `issueMcpCredential`, for observing session credential revocation. */
   readonly revokeMcpCredential?: typeof McpSessionRegistry.revokeActiveMcpThread;
 }
 
@@ -305,9 +305,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       return credential;
     });
   const clearMcpSession = (threadId: ThreadId) =>
-    McpSessionRegistry.revokeActiveMcpThread(threadId).pipe(
-      Effect.tap(() => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
+    revokeMcpCredential(threadId).pipe(
+      Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
     );
+  const clearAllMcpSessions = McpSessionRegistry.revokeAllActiveMcpCredentials().pipe(
+    Effect.ensuring(Effect.sync(() => McpProviderSession.clearAllMcpProviderSessions())),
+  );
 
   const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.succeed(event).pipe(
@@ -363,22 +366,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
     });
 
-  const processRuntimeEvent = (
-    source: {
-      readonly instanceId: ProviderInstanceId;
-      readonly provider: ProviderDriverKind;
-    },
-    event: ProviderRuntimeEvent,
-  ): Effect.Effect<void> =>
-    Effect.sync(() => correlateRuntimeEventWithInstance(source, event)).pipe(
-      Effect.flatMap((canonicalEvent) =>
-        increment(providerRuntimeEventsTotal, {
-          provider: canonicalEvent.provider,
-          eventType: canonicalEvent.type,
-        }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
-      ),
-    );
-
   // `subscribedAdapters` is our source-of-truth for "which instance adapters
   // are currently wired into the runtime event bus". It both tracks the set
   // of live subscriptions (so `reconcileInstanceSubscriptions` can diff and
@@ -394,6 +381,36 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const getAdapterEntries = Ref.get(subscribedAdapters).pipe(
     Effect.map((map) => Array.from(map.entries())),
   );
+
+  const processRuntimeEvent = (
+    source: {
+      readonly instanceId: ProviderInstanceId;
+      readonly provider: ProviderDriverKind;
+      readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+    },
+    event: ProviderRuntimeEvent,
+  ): Effect.Effect<void> =>
+    Effect.sync(() => correlateRuntimeEventWithInstance(source, event)).pipe(
+      Effect.flatMap((canonicalEvent) =>
+        increment(providerRuntimeEventsTotal, {
+          provider: canonicalEvent.provider,
+          eventType: canonicalEvent.type,
+        }).pipe(
+          Effect.andThen(publishRuntimeEvent(canonicalEvent)),
+          Effect.andThen(
+            Effect.gen(function* () {
+              if (canonicalEvent.type !== "session.exited") return;
+              const mcpSession = McpProviderSession.readMcpProviderSession(canonicalEvent.threadId);
+              if (mcpSession?.providerInstanceId !== source.instanceId) return;
+              const currentAdapters = yield* Ref.get(subscribedAdapters);
+              if (currentAdapters.get(source.instanceId) !== source.adapter) return;
+              const stillActive = yield* source.adapter.hasSession(canonicalEvent.threadId);
+              if (!stillActive) yield* clearMcpSession(canonicalEvent.threadId);
+            }),
+          ),
+        ),
+      ),
+    );
 
   // Rebuild the map of id → adapter from the registry and fork a new event
   // subscription for every instance that is either brand new or whose adapter
@@ -418,6 +435,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             {
               instanceId: id,
               provider: adapter.provider,
+              adapter,
             },
             event,
           ),
@@ -1630,9 +1648,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.thread_id": input.threadId,
         });
         if (routed.isActive) {
-          yield* routed.adapter.stopSession(routed.threadId);
+          yield* routed.adapter
+            .stopSession(routed.threadId)
+            .pipe(Effect.ensuring(clearMcpSession(input.threadId)));
+        } else {
+          yield* clearMcpSession(input.threadId);
         }
-        yield* clearMcpSession(input.threadId);
         yield* directory.upsert({
           threadId: input.threadId,
           provider: routed.adapter.provider,
@@ -1853,9 +1874,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }),
       ),
     ).pipe(Effect.asVoid);
-    yield* Effect.forEach(currentAdapters, ([, adapter]) => adapter.stopAll()).pipe(Effect.asVoid);
-    yield* McpSessionRegistry.revokeAllActiveMcpCredentials();
-    McpProviderSession.clearAllMcpProviderSessions();
+    yield* Effect.forEach(currentAdapters, ([, adapter]) => adapter.stopAll()).pipe(
+      Effect.asVoid,
+      Effect.ensuring(clearAllMcpSessions),
+    );
     const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
     yield* Effect.forEach(bindings, (binding) =>
       Effect.gen(function* () {

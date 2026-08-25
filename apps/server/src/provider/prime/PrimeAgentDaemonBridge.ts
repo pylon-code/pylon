@@ -68,6 +68,14 @@ export interface PrimeAgentDaemonPromptOptions {
   readonly signal?: AbortSignal;
 }
 
+/** Public Prime Agent shape used to attach Pylon's scoped HTTP MCP server. */
+export interface PrimeAgentDaemonAcpMcpServer {
+  readonly name: string;
+  readonly type: "http";
+  readonly url: string;
+  readonly headers: Record<string, string>;
+}
+
 export type PrimeAgentDaemonExtensionUiResponse =
   | { readonly value: string }
   | { readonly confirmed: boolean }
@@ -156,6 +164,15 @@ export interface PrimeAgentDaemonAgentConnection {
   ) => Promise<unknown>;
   readonly getCommands: () => Promise<unknown>;
   readonly getResourceSnapshot: () => Promise<unknown>;
+  readonly supportsAcpMcpServers?: () => boolean;
+  readonly replaceAcpMcpServers?: (
+    servers: ReadonlyArray<PrimeAgentDaemonAcpMcpServer>,
+    ownerId: string,
+  ) => Promise<unknown>;
+  readonly releaseAcpMcpServers?: (
+    ownerId: string,
+    serverNames: ReadonlyArray<string>,
+  ) => Promise<unknown>;
   readonly getModelCatalog?: () => Promise<unknown>;
   readonly getAvailableModels?: () => Promise<unknown>;
   readonly reload: () => Promise<unknown>;

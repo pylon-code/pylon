@@ -16,6 +16,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
+  EnvironmentId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -29,6 +30,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { it, assert, describe, vi } from "@effect/vitest";
 
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -59,6 +61,7 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
@@ -2551,40 +2554,46 @@ validation.layer("ProviderServiceLive validation", (it) => {
 describe("agent browser access", () => {
   const revokedThreads: Array<ThreadId> = [];
 
+  const makeAgentBrowserProviderLayer = (
+    enableAgentBrowserAccess: boolean,
+    codex: ReturnType<typeof makeFakeCodexAdapter>,
+    options: NonNullable<Parameters<typeof makeProviderServiceLive>[0]>,
+  ) => {
+    const providerAdapterLayer = Layer.succeed(
+      ProviderAdapterRegistry.ProviderAdapterRegistry,
+      makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
+    );
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    return makeProviderServiceLive(options).pipe(
+      Layer.provide(providerAdapterLayer),
+      Layer.provide(directoryLayer),
+      Layer.provide(ServerSettings.ServerSettingsService.layerTest({ enableAgentBrowserAccess })),
+      Layer.provide(serverConfigTestLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+  };
+
   const startSessionWith = (enableAgentBrowserAccess: boolean, threadId: ThreadId) =>
     Effect.gen(function* () {
       const issued: Array<ThreadId> = [];
       const codex = makeFakeCodexAdapter();
-      const providerAdapterLayer = Layer.succeed(
-        ProviderAdapterRegistry.ProviderAdapterRegistry,
-        makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
-      );
-      const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
-        Layer.provide(SqlitePersistenceMemory),
-      );
-      const directoryLayer = ProviderSessionDirectoryLive.pipe(
-        Layer.provide(runtimeRepositoryLayer),
-      );
-      const providerLayer = makeProviderServiceLive({
+      const providerLayer = makeAgentBrowserProviderLayer(enableAgentBrowserAccess, codex, {
         issueMcpCredential: (request) =>
           Effect.sync(() => {
             issued.push(request.threadId);
             return undefined;
           }),
         revokeMcpCredential: (revoked) => Effect.sync(() => void revokedThreads.push(revoked)),
-      }).pipe(
-        Layer.provide(providerAdapterLayer),
-        Layer.provide(directoryLayer),
-        Layer.provide(ServerSettings.ServerSettingsService.layerTest({ enableAgentBrowserAccess })),
-        Layer.provide(serverConfigTestLayer),
-        Layer.provide(AnalyticsService.layerTest),
-        Layer.provide(
-          Layer.succeed(
-            ProviderEventLoggers.ProviderEventLoggers,
-            ProviderEventLoggers.NoOpProviderEventLoggers,
-          ),
-        ),
-      );
+      });
 
       yield* Effect.gen(function* () {
         const provider = yield* ProviderService.ProviderService;
@@ -2598,6 +2607,17 @@ describe("agent browser access", () => {
 
       return issued;
     });
+
+  const issuedBrowserCredential = (threadId: ThreadId) => ({
+    config: {
+      environmentId: EnvironmentId.make("environment-browser-test"),
+      threadId,
+      providerSessionId: `provider-session-${threadId}`,
+      providerInstanceId: codexInstanceId,
+      endpoint: `http://127.0.0.1:4321/mcp/provider-session-${threadId}`,
+      authorizationHeader: "Bearer scoped-secret",
+    },
+  });
 
   // Credential issuance is the observable that matters: it is the only place a
   // credential is minted, and `/mcp` accepts nothing else, so withholding it is
@@ -2631,6 +2651,82 @@ describe("agent browser access", () => {
       const issued = yield* startSessionWith(true, threadId);
 
       assert.deepEqual(issued, [threadId]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("revokes the MCP credential when an adapter session exits on its own", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-browser-terminal");
+      const codex = makeFakeCodexAdapter();
+      const revoked = yield* Deferred.make<ThreadId>();
+      const providerLayer = makeAgentBrowserProviderLayer(true, codex, {
+        issueMcpCredential: (request) => Effect.succeed(issuedBrowserCredential(request.threadId)),
+        revokeMcpCredential: (revokedThreadId) =>
+          Deferred.succeed(revoked, revokedThreadId).pipe(Effect.asVoid),
+      });
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+        assert.isDefined(McpProviderSession.readMcpProviderSession(threadId));
+        yield* codex.stopSession(threadId);
+        yield* Effect.yieldNow;
+        codex.emit({
+          type: "session.exited",
+          eventId: asEventId("evt-browser-terminal"),
+          provider: CODEX_DRIVER,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId,
+          payload: { exitKind: "error" },
+        });
+
+        assert.equal(yield* Deferred.await(revoked), threadId);
+        assert.isUndefined(McpProviderSession.readMcpProviderSession(threadId));
+      }).pipe(Effect.provide(providerLayer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("revokes the MCP credential even when explicit adapter stop fails", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-browser-stop-failure");
+      const codex = makeFakeCodexAdapter();
+      const revoked = yield* Deferred.make<ThreadId>();
+      codex.stopSession.mockImplementationOnce(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: CODEX_DRIVER,
+            method: "stopSession",
+            detail: "synthetic stop failure",
+          }),
+        ),
+      );
+      const providerLayer = makeAgentBrowserProviderLayer(true, codex, {
+        issueMcpCredential: (request) => Effect.succeed(issuedBrowserCredential(request.threadId)),
+        revokeMcpCredential: (revokedThreadId) =>
+          Deferred.succeed(revoked, revokedThreadId).pipe(Effect.asVoid),
+      });
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+        assert.isDefined(McpProviderSession.readMcpProviderSession(threadId));
+
+        const stopped = yield* provider.stopSession({ threadId }).pipe(Effect.result);
+
+        assert.equal(stopped._tag, "Failure");
+        assert.equal(yield* Deferred.await(revoked), threadId);
+        assert.isUndefined(McpProviderSession.readMcpProviderSession(threadId));
+      }).pipe(Effect.provide(providerLayer));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
