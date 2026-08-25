@@ -49,15 +49,30 @@ export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>) {
   return [effectiveEditor, setLastEditor] as const;
 }
 
+function resolvePreferredEditorState(availableEditors: readonly EditorId[]) {
+  const availableEditorIds = new Set(availableEditors);
+  const stored = getLocalStorageItem(LAST_EDITOR_KEY, EditorId);
+  if (stored && availableEditorIds.has(stored)) {
+    return { editor: stored, shouldPersist: false } as const;
+  }
+  return {
+    editor: EDITORS.find((editor) => availableEditorIds.has(editor.id))?.id ?? null,
+    shouldPersist: true,
+  } as const;
+}
+
+export function resolvePreferredEditor(availableEditors: readonly EditorId[]): EditorId | null {
+  return resolvePreferredEditorState(availableEditors).editor;
+}
+
 export function resolveAndPersistPreferredEditor(
   availableEditors: readonly EditorId[],
 ): EditorId | null {
-  const availableEditorIds = new Set(availableEditors);
-  const stored = getLocalStorageItem(LAST_EDITOR_KEY, EditorId);
-  if (stored && availableEditorIds.has(stored)) return stored;
-  const editor = EDITORS.find((editor) => availableEditorIds.has(editor.id))?.id ?? null;
-  if (editor) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
-  return editor ?? null;
+  const resolved = resolvePreferredEditorState(availableEditors);
+  if (resolved.editor && resolved.shouldPersist) {
+    setLocalStorageItem(LAST_EDITOR_KEY, resolved.editor, EditorId);
+  }
+  return resolved.editor;
 }
 
 export function useOpenInPreferredEditor(

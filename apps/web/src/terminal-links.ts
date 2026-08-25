@@ -106,8 +106,8 @@ function isAbsolutePath(value: string): boolean {
   return value.startsWith("/") || isWindowsAbsolutePath(value);
 }
 
-function isWindowsPathStyle(value: string): boolean {
-  return isWindowsAbsolutePath(value) || /[A-Za-z]:\\/.test(value);
+function pathSeparatorForBase(value: string): "/" | "\\" {
+  return value.includes("\\") ? "\\" : "/";
 }
 
 function joinPath(base: string, next: string, separator: "/" | "\\"): string {
@@ -277,11 +277,11 @@ export function resolvePathLinkTarget(rawPath: string, cwd: string): string {
   if (path.startsWith("~/")) {
     const home = inferHomeFromCwd(cwd);
     if (home) {
-      const separator: "/" | "\\" = isWindowsPathStyle(home) ? "\\" : "/";
+      const separator = pathSeparatorForBase(home);
       resolvedPath = joinPath(home, path.slice(2), separator);
     }
   } else if (!isAbsolutePath(path)) {
-    const separator: "/" | "\\" = isWindowsPathStyle(cwd) ? "\\" : "/";
+    const separator = pathSeparatorForBase(cwd);
     resolvedPath = joinPath(cwd, path, separator);
   }
 

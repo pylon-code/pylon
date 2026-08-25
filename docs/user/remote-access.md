@@ -32,6 +32,14 @@ That gives you:
 - transport security at the network layer
 - less exposure than opening the server to the public internet
 
+## File Actions on Remote Environments
+
+On the same machine as an environment, file chips in chat and pull request text can open the file
+in your preferred editor or reveal it in Finder, File Explorer, or Files. Pylon hides these native
+shell actions when the environment is remote or its location is still being resolved. This prevents
+a remote browser from opening a file manager on an unattended server. Integrated preview, browser,
+and copy-path actions remain available when supported.
+
 ## Enabling Network Access
 
 There are three ways to reach your server from another device: expose the desktop app's backend,
