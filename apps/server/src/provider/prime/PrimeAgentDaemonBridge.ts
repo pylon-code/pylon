@@ -65,6 +65,7 @@ export interface PrimeAgentDaemonImage {
 export interface PrimeAgentDaemonPromptOptions {
   readonly images?: ReadonlyArray<PrimeAgentDaemonImage>;
   readonly queueIfBusy?: boolean;
+  readonly streamingBehavior?: "followUp";
   readonly signal?: AbortSignal;
 }
 

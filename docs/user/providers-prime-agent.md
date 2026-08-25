@@ -106,8 +106,9 @@ privacy-safe steering and follow-up counts; it never sends queued prompt preview
 session and survive reconnects for as long as the native session does. When either lane contains
 exactly one item, the same control can remove that sole steering or follow-up input without revealing
 its queued text. It also clears all pending inputs without interrupting current work, while stopping the
-turn aborts current work and clears the native queue atomically. A queued follow-up remains in the
-conversation as your durable intent; if admission fails, Pylon marks it as not queued. Clearing session
+turn aborts current work, clears the native queue atomically, and resumes native input admission before
+the session becomes reusable. A queued follow-up remains in the conversation as your durable intent; if
+admission fails, Pylon marks it as not queued. Clearing session
 inputs does not erase conversation history. On mobile, these shared session inputs
 remain separate from pending sends saved on that device. Native select, confirm, and input dialogs appear in
 the session panel. Submitted free-form input is sent through a transient provider RPC and is not
