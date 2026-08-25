@@ -36,7 +36,7 @@ and share with OpenAI employees.
 
 ## Approve access to other apps
 
-When a Codex tool needs access to an app such as Safari, T3 Code shows the app name and asks for
+When a Codex tool needs access to an app such as Safari, Pylon shows the app name and asks for
 approval. You can approve, decline, or cancel the request from the desktop app, web app, or mobile
 app. Some tools also offer approval for the current session or permanent approval.
 
