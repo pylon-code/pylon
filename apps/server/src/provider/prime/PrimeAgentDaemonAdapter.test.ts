@@ -37,7 +37,11 @@ import type {
   PrimeAgentDaemonServiceTier,
   PrimeAgentDaemonThinkingLevel,
 } from "./PrimeAgentDaemonBridge.ts";
-import type { PrimeDaemonEvent, PrimeDaemonMessage } from "./PrimeAgentDaemonEvents.ts";
+import {
+  PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES,
+  type PrimeDaemonEvent,
+  type PrimeDaemonMessage,
+} from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import {
   makePrimeAgentDaemonAdapter,
@@ -278,6 +282,7 @@ interface FakeCaptures {
   rlmQuiescenceObserved: Queue.Queue<string> | undefined;
   rlmQuiescenceFailure: boolean;
   rlmConnectionGeneration: number;
+  rlmContinuityValid: boolean;
   rlmQuiescenceUsage: typeof usage | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
   startupEvents: Array<PrimeDaemonEvent>;
@@ -399,6 +404,7 @@ function makeCaptures(): FakeCaptures {
     rlmQuiescenceObserved: undefined,
     rlmQuiescenceFailure: false,
     rlmConnectionGeneration: 0,
+    rlmContinuityValid: true,
     rlmQuiescenceUsage: undefined,
     queue: undefined,
     startupEvents: [],
@@ -740,6 +746,13 @@ function fakeRuntimeFactory(
             });
           }),
         isRlmQuiescenceGenerationCurrent: (generation) =>
+          captures.rlmContinuityValid && generation === captures.rlmConnectionGeneration,
+        resolveReconnectSnapshot: (generation, reconciled) => {
+          if (generation !== captures.rlmConnectionGeneration) return false;
+          captures.rlmContinuityValid = reconciled;
+          return true;
+        },
+        isConnectionGenerationCurrent: (generation) =>
           generation === captures.rlmConnectionGeneration,
         prompt: (prompt) =>
           Effect.gen(function* () {
@@ -5071,6 +5084,565 @@ describe("PrimeAgentDaemonAdapter", () => {
           .sendTurn({ threadId, input: "must start a replacement session first" })
           .pipe(Effect.flip);
         expect(nextError).toMatchObject({ _tag: "ProviderAdapterSessionNotFoundError" });
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("recovers a completed response from an exact reconnect snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "finish before the resync projection" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.rlmQuiescenceObserved);
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, isStreaming: false, messageCount: 1 },
+          messages: [assistantMessage("recovered final response")],
+          lastEventSequence: 12,
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "snapshot applied" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(captures.rlmContinuityValid).toBe(true);
+
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        const result = yield* Fiber.join(running);
+        expect(result.turnId).toBe(started.turnId);
+        const turnEvents = subscription.events.filter((event) => event.turnId === started.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.started")).toHaveLength(1);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(encodeUnknownJson(turnEvents)).toContain("recovered final response");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("recovers only the missing suffix of partially streamed assistant text", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "recover a partial assistant stream" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.rlmQuiescenceObserved);
+        yield* offer(captures, {
+          _tag: "MessageStarted",
+          message: assistantMessage(""),
+        });
+        yield* offer(captures, {
+          _tag: "AssistantStream",
+          phase: "delta",
+          kind: "text",
+          delta: "partial ",
+        });
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, messageCount: 1 },
+          messages: [assistantMessage("partial recovered final")],
+          lastEventSequence: 18,
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "partial stream applied" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.join(running);
+
+        const turnEvents = subscription.events.filter((event) => event.turnId === started.turnId);
+        expect(
+          turnEvents
+            .filter((event) => event.type === "content.delta")
+            .map((event) => event.payload.delta),
+        ).toEqual(["partial ", "recovered final"]);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("settles an exact recovered final when the native barrier is unavailable", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "recover without a native barrier" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, messageCount: 1 },
+          messages: [assistantMessage("recovered without barrier")],
+          lastEventSequence: 47,
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+        });
+        yield* Fiber.join(running);
+
+        const turnEvents = subscription.events.filter((event) => event.turnId === started.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.started")).toHaveLength(1);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(encodeUnknownJson(turnEvents)).toContain("recovered without barrier");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("ignores a stale resync from an older reconnect generation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "ignore stale reconnect state" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.rlmQuiescenceObserved);
+        captures.rlmConnectionGeneration = 2;
+        captures.rlmContinuityValid = true;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, messageCount: 1 },
+          messages: [assistantMessage("stale snapshot must not project")],
+          lastEventSequence: 52,
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+        });
+        const finalMessage = assistantMessage("current generation final");
+        yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.join(running);
+
+        const turnEvents = subscription.events.filter((event) => event.turnId === started.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.started")).toHaveLength(1);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(encodeUnknownJson(turnEvents)).toContain("current generation final");
+        expect(encodeUnknownJson(turnEvents)).not.toContain("stale snapshot must not project");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("recovers root tool work without duplicating its lifecycle", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "run one root tool across reconnect" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.rlmQuiescenceObserved);
+        const toolCallMessage = {
+          ...assistantMessage("", "toolUse"),
+          toolCalls: [{ id: "tool-root-reconnect", name: "bash", input: { command: "pwd" } }],
+        } satisfies PrimeDaemonMessage;
+        // The completed assistant tool call was observed, but its separate
+        // tool-start event was lost with the transport.
+        yield* offer(captures, { _tag: "MessageCompleted", message: toolCallMessage });
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: {
+            ...initialSnapshot().state,
+            isStreaming: true,
+            isBashRunning: true,
+            messageCount: 1,
+          },
+          messages: [toolCallMessage],
+          lastEventSequence: 22,
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "tool snapshot applied" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+
+        const toolResult = {
+          role: "toolResult",
+          timestamp: 2,
+          toolCallId: "tool-root-reconnect",
+          toolName: "bash",
+          text: "/work/project",
+          imageMimeTypes: [],
+          isError: false,
+        } satisfies PrimeDaemonMessage;
+        const finalMessage = assistantMessage("root tool recovery complete");
+        yield* offer(captures, {
+          _tag: "ToolCompleted",
+          toolCallId: "tool-root-reconnect",
+          toolName: "bash",
+          text: "/work/project",
+          isError: false,
+        });
+        yield* offer(captures, { _tag: "MessageCompleted", message: toolResult });
+        yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        yield* offer(captures, {
+          _tag: "RunCompleted",
+          messages: [toolCallMessage, toolResult, finalMessage],
+        });
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.join(running);
+
+        const turnEvents = subscription.events.filter((event) => event.turnId === started.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.started")).toHaveLength(1);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(
+          turnEvents.filter(
+            (event) =>
+              event.type === "item.started" && event.payload.itemType === "command_execution",
+          ),
+        ).toHaveLength(1);
+        expect(encodeUnknownJson(turnEvents)).toContain("root tool recovery complete");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps a pending child and its parent continuation on the canonical turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "wait for a child across reconnect" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.rlmQuiescenceObserved);
+        const childCallMessage = {
+          ...assistantMessage("", "toolUse"),
+          toolCalls: [{ id: "child-tool-reconnect", name: "rlm" }],
+        } satisfies PrimeDaemonMessage;
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, isStreaming: false, messageCount: 1 },
+          messages: [childCallMessage],
+          children: [
+            {
+              id: "child-reconnect",
+              label: "child",
+              status: "running",
+              activeSessionId: "private-child-session",
+            },
+          ],
+          lastEventSequence: 32,
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "child snapshot applied" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        yield* offer(captures, {
+          _tag: "ChildUpdated",
+          child: { id: "child-reconnect", label: "child", status: "done" },
+        });
+        yield* offer(captures, { _tag: "RunStarted" });
+        const finalMessage = assistantMessage("parent resumed after child");
+        yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.join(running);
+
+        const turnEvents = subscription.events.filter((event) => event.turnId === started.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.started")).toHaveLength(1);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(encodeUnknownJson(turnEvents)).toContain("parent resumed after child");
+        expect(captures.disposeCount).toBe(0);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("reconciles an exact rolling transcript tail at the snapshot bound", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "keep only a bounded exact transcript tail" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.rlmQuiescenceObserved);
+        const messages = Array.from(
+          { length: PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES + 1 },
+          (_, index) =>
+            ({
+              role: "user",
+              timestamp: index,
+              text: `queued-${index}`,
+              imageMimeTypes: [],
+            }) satisfies PrimeDaemonMessage,
+        );
+        for (const message of messages) {
+          yield* offer(captures, { _tag: "MessageCompleted", message });
+        }
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: {
+            ...initialSnapshot().state,
+            messageCount: messages.length,
+          },
+          messages: messages.slice(-PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES),
+          lastEventSequence: 62,
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "bounded tail applied" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(captures.rlmContinuityValid).toBe(true);
+
+        const finalMessage = assistantMessage("bounded tail recovered");
+        yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.join(running);
+
+        const turnEvents = subscription.events.filter((event) => event.turnId === started.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(encodeUnknownJson(turnEvents)).toContain("bounded tail recovered");
+        expect(encodeUnknownJson(turnEvents)).not.toContain(
+          "Prime Agent could not safely recover the active turn after reconnecting.",
+        );
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects an unavailable replay with no bounded transcript overlap", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "reject a transcript gap at the bound" })
+          .pipe(Effect.forkChild);
+        yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.rlmQuiescenceObserved);
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: {
+            role: "user",
+            timestamp: 0,
+            text: "observed anchor",
+            imageMimeTypes: [],
+          },
+        });
+        const disconnectedMessages = Array.from(
+          { length: PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES },
+          (_, index) =>
+            ({
+              role: "user",
+              timestamp: index + 1,
+              text: `disconnected-${index}`,
+              imageMimeTypes: [],
+            }) satisfies PrimeDaemonMessage,
+        );
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, messageCount: 101 },
+          messages: disconnectedMessages,
+          lastEventSequence: 68,
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+        });
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.join(running);
+        yield* awaitObservedType(subscription.observed, "session.exited");
+
+        expect(captures.disposeCount).toBe(1);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails closed when an idle reconnect adds unobserved native history", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, messageCount: 1 },
+          messages: [assistantMessage("unobserved idle history")],
+          lastEventSequence: 72,
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+        });
+        const exited = yield* awaitObservedType(subscription.observed, "session.exited");
+
+        expect(exited).toMatchObject({
+          payload: {
+            reason: "Prime Agent session closed after reconnect recovery could not be confirmed.",
+          },
+        });
+        expect(captures.disposeCount).toBe(1);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails once and disposes when a reconnect snapshot is not an exact suffix", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "reject an ambiguous snapshot" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.rlmQuiescenceObserved);
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: assistantMessage("observed tool boundary", "toolUse"),
+        });
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, messageCount: 1 },
+          messages: [assistantMessage("different native history", "toolUse")],
+          lastEventSequence: 42,
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+        });
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.join(running);
+        yield* awaitObservedType(subscription.observed, "session.exited");
+
+        const turnEvents = subscription.events.filter((event) => event.turnId === started.turnId);
+        expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        expect(turnEvents.find((event) => event.type === "turn.completed")).toMatchObject({
+          payload: {
+            state: "failed",
+            errorMessage:
+              "Prime Agent could not safely recover the active turn after reconnecting.",
+          },
+        });
+        expect(turnEvents.find((event) => event.type === "runtime.error")).toMatchObject({
+          payload: {
+            message: "Prime Agent could not safely recover the active turn after reconnecting.",
+          },
+        });
+        expect(encodeUnknownJson(turnEvents)).not.toContain(
+          "Prime Agent stopped before sending a final response.",
+        );
+        expect(captures.disposeCount).toBe(1);
         yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),

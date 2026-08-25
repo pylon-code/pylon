@@ -1,3 +1,5 @@
+import * as NodeCrypto from "node:crypto";
+
 import {
   ApprovalRequestId,
   EventId,
@@ -70,7 +72,12 @@ import type {
   PrimeAgentDaemonServiceTier,
   PrimeAgentDaemonThinkingLevel,
 } from "./PrimeAgentDaemonBridge.ts";
-import type { PrimeDaemonEvent, PrimeDaemonMessage } from "./PrimeAgentDaemonEvents.ts";
+import {
+  PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS,
+  PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES,
+  type PrimeDaemonEvent,
+  type PrimeDaemonMessage,
+} from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import {
   makePrimeAgentEventPubSub,
@@ -155,6 +162,8 @@ interface PrimeAgentDaemonActiveTurn {
   readonly completed: Deferred.Deferred<void>;
   cancellationRequested: boolean;
   assistantTextStreamed: boolean;
+  assistantTextEmitted: string;
+  assistantTextRecoveryComparable: boolean;
   nextAssistantMessageSequence: number;
   activeAssistantItemId: RuntimeItemId | undefined;
   lastAssistantHadRenderableText: boolean;
@@ -171,6 +180,9 @@ interface PrimeAgentDaemonActiveTurn {
   awaitingQueuedRun: boolean;
   queuedActionObserved: boolean;
   readonly completedRunMessages: Array<PrimeDaemonMessage>;
+  readonly nativeTranscriptBaselineMessageCount: number;
+  readonly observedToolStarts: Set<string>;
+  readonly observedToolCompletions: Set<string>;
   readonly command?: "compact" | undefined;
 }
 
@@ -307,6 +319,9 @@ interface PrimeAgentDaemonSessionContext {
   usageRefreshSequence: number;
   eventFiber: Fiber.Fiber<void, never> | undefined;
   readonly turns: Array<{ readonly id: TurnId; readonly items: Array<unknown> }>;
+  nativeTranscript: Array<PrimeDaemonMessage>;
+  nativeTranscriptMessageCount: number;
+  readonly nativeTranscriptFingerprints: Set<string>;
   readonly pendingInteractions: Map<
     SessionInteractionRequestId,
     PrimeAgentDaemonPendingInteraction
@@ -420,7 +435,11 @@ type TurnOutcome =
       readonly event: Extract<PrimeDaemonEvent, { readonly _tag: "RunCompleted" }>;
     }
   | { readonly state: "completedWithoutMessage" }
-  | { readonly state: "failed"; readonly errorMessage: string }
+  | {
+      readonly state: "failed";
+      readonly errorMessage: string;
+      readonly runtimeErrorMessage?: string;
+    }
   | { readonly state: "cancelled" };
 
 type PrimeAgentRunCompletedEvent = Extract<PrimeDaemonEvent, { readonly _tag: "RunCompleted" }>;
@@ -434,6 +453,79 @@ function primeAgentRunCompletedNeedsHandoff(event: PrimeAgentRunCompletedEvent):
     lastAssistant?.stopReason === "toolUse" ||
     (lastAssistant?.toolCalls.length ?? 0) > 0
   );
+}
+
+function primeDaemonMessageFingerprint(message: PrimeDaemonMessage): string {
+  return NodeCrypto.createHash("sha256").update(JSON.stringify(message), "utf8").digest("hex");
+}
+
+// Reconnect snapshots keep only a bounded completed-message tail. Absolute
+// message counts make a shifted tail exact without retaining the full history.
+function reconcileTranscriptTail(input: {
+  readonly observed: ReadonlyArray<PrimeDaemonMessage>;
+  readonly observedCount: number;
+  readonly snapshot: ReadonlyArray<PrimeDaemonMessage>;
+  readonly snapshotCount: number;
+}):
+  | {
+      readonly missingMessages: ReadonlyArray<PrimeDaemonMessage>;
+      readonly overlapCount: number;
+    }
+  | undefined {
+  if (
+    input.observed.length !==
+      Math.min(input.observedCount, PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES) ||
+    input.snapshot.length !==
+      Math.min(input.snapshotCount, PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES) ||
+    input.snapshotCount < input.observedCount
+  ) {
+    return undefined;
+  }
+  const observedStart = input.observedCount - input.observed.length;
+  const snapshotStart = input.snapshotCount - input.snapshot.length;
+  if (snapshotStart > input.observedCount) return undefined;
+
+  const overlapStart = Math.max(observedStart, snapshotStart);
+  for (let absoluteIndex = overlapStart; absoluteIndex < input.observedCount; absoluteIndex += 1) {
+    const observedMessage = input.observed[absoluteIndex - observedStart];
+    const snapshotMessage = input.snapshot[absoluteIndex - snapshotStart];
+    if (
+      observedMessage === undefined ||
+      snapshotMessage === undefined ||
+      primeDaemonMessageFingerprint(observedMessage) !==
+        primeDaemonMessageFingerprint(snapshotMessage)
+    ) {
+      return undefined;
+    }
+  }
+  return {
+    missingMessages: input.snapshot.slice(input.observedCount - snapshotStart),
+    overlapCount: input.observedCount - overlapStart,
+  };
+}
+
+function appendTranscriptMessages(
+  transcript: Array<PrimeDaemonMessage>,
+  fingerprints: Set<string>,
+  messages: ReadonlyArray<PrimeDaemonMessage>,
+): number {
+  let appendedCount = 0;
+  for (const message of messages) {
+    const fingerprint = primeDaemonMessageFingerprint(message);
+    if (fingerprints.has(fingerprint)) continue;
+    fingerprints.add(fingerprint);
+    transcript.push(message);
+    appendedCount += 1;
+  }
+  const overflow = transcript.length - PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES;
+  if (overflow > 0) {
+    transcript.splice(0, overflow);
+    fingerprints.clear();
+    for (const message of transcript) {
+      fingerprints.add(primeDaemonMessageFingerprint(message));
+    }
+  }
+  return appendedCount;
 }
 
 function runtimeOperationError(
@@ -913,6 +1005,8 @@ export function makePrimeAgentDaemonAdapter(
           // Use an opaque subscriber-local sequence instead of native identity.
           allocateAssistantItemId();
           turn.assistantTextStreamed = false;
+          turn.assistantTextEmitted = "";
+          turn.assistantTextRecoveryComparable = true;
         } else if (
           turn !== undefined &&
           turn.activeAssistantItemId === undefined &&
@@ -923,6 +1017,8 @@ export function makePrimeAgentDaemonAdapter(
           // start. Allocate lazily rather than merging into an earlier item.
           allocateAssistantItemId();
           turn.assistantTextStreamed = false;
+          turn.assistantTextEmitted = "";
+          turn.assistantTextRecoveryComparable = true;
           allocatedAssistantItemLazily = true;
         }
         const compactionScope =
@@ -967,9 +1063,18 @@ export function makePrimeAgentDaemonAdapter(
           event._tag === "AssistantStream" &&
           event.kind === "text" &&
           event.phase === "delta" &&
-          event.delta !== undefined &&
-          event.delta.trim().length > 0
+          event.delta !== undefined
         ) {
+          if (
+            turn.assistantTextEmitted.length + event.delta.length >
+            PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS
+          ) {
+            turn.assistantTextRecoveryComparable = false;
+          }
+          turn.assistantTextEmitted = (turn.assistantTextEmitted + event.delta).slice(
+            0,
+            PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS,
+          );
           turn.assistantTextStreamed = true;
         }
         if (
@@ -982,7 +1087,156 @@ export function makePrimeAgentDaemonAdapter(
             event.message.stopReason !== "toolUse" &&
             event.message.toolCalls.length === 0;
           turn.activeAssistantItemId = undefined;
+          turn.assistantTextEmitted = "";
+          turn.assistantTextRecoveryComparable = true;
         }
+      });
+
+    const reconcileTranscriptSnapshotLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      event: Extract<PrimeDaemonEvent, { readonly _tag: "SessionResynced" }>,
+    ) =>
+      Effect.gen(function* () {
+        const reconciliation = reconcileTranscriptTail({
+          observed: context.nativeTranscript,
+          observedCount: context.nativeTranscriptMessageCount,
+          snapshot: event.messages,
+          snapshotCount: event.state.messageCount,
+        });
+        if (reconciliation === undefined) return false;
+        if (
+          event.replayContinuity !== "complete" &&
+          (event.streamingMessage !== undefined ||
+            (context.nativeTranscriptMessageCount > 0 && reconciliation.overlapCount === 0))
+        ) {
+          return false;
+        }
+
+        const turn = context.activeTurn;
+        const firstMissingAssistant = reconciliation.missingMessages.find(
+          (message) => message.role === "assistant",
+        );
+        if (
+          turn?.activeAssistantItemId !== undefined &&
+          ((firstMissingAssistant !== undefined &&
+            (!turn.assistantTextRecoveryComparable ||
+              !firstMissingAssistant.text.startsWith(turn.assistantTextEmitted))) ||
+            (firstMissingAssistant === undefined &&
+              event.streamingMessage === undefined &&
+              !event.state.isStreaming))
+        ) {
+          return false;
+        }
+
+        const { missingMessages } = reconciliation;
+        if (context.activeTurn === undefined && missingMessages.length > 0) return false;
+        context.nativeTranscript = [...event.messages];
+        context.nativeTranscriptMessageCount = event.state.messageCount;
+        context.nativeTranscriptFingerprints.clear();
+        for (const message of event.messages) {
+          context.nativeTranscriptFingerprints.add(primeDaemonMessageFingerprint(message));
+        }
+
+        if (turn === undefined) return true;
+        const snapshotStartMessageCount = event.state.messageCount - event.messages.length;
+        const currentTurnMessages = event.messages.slice(
+          Math.max(0, turn.nativeTranscriptBaselineMessageCount - snapshotStartMessageCount),
+        );
+        for (const message of missingMessages) {
+          if (message.role !== "assistant") continue;
+          const recoveredPrefix =
+            turn.activeAssistantItemId === undefined ? "" : turn.assistantTextEmitted;
+          if (turn.activeAssistantItemId === undefined) {
+            yield* publishDrafts(context, { _tag: "MessageStarted", message }, turn);
+          }
+          turn.assistantTextStreamed = false;
+          yield* publishDrafts(
+            context,
+            {
+              _tag: "MessageCompleted",
+              message: { ...message, text: message.text.slice(recoveredPrefix.length) },
+            },
+            turn,
+          );
+          turn.lastAssistantHadRenderableText =
+            message.text.trim().length > 0 &&
+            message.stopReason !== "toolUse" &&
+            message.toolCalls.length === 0;
+        }
+
+        // Completed messages prove missing tool lifecycle without republishing
+        // assistant prose that the adapter already observed before disconnect.
+        for (const message of currentTurnMessages) {
+          if (message.role === "assistant") {
+            for (const toolCall of message.toolCalls) {
+              if (turn.observedToolStarts.has(toolCall.id)) continue;
+              turn.observedToolStarts.add(toolCall.id);
+              turn.lastAssistantHadRenderableText = false;
+              yield* publishDrafts(
+                context,
+                {
+                  _tag: "ToolStarted",
+                  toolCallId: toolCall.id,
+                  toolName: toolCall.name,
+                  ...(toolCall.input === undefined ? {} : { input: toolCall.input }),
+                },
+                turn,
+              );
+            }
+          } else if (message.role === "toolResult") {
+            if (!turn.observedToolStarts.has(message.toolCallId)) {
+              turn.observedToolStarts.add(message.toolCallId);
+              yield* publishDrafts(
+                context,
+                {
+                  _tag: "ToolStarted",
+                  toolCallId: message.toolCallId,
+                  toolName: message.toolName,
+                },
+                turn,
+              );
+            }
+            if (!turn.observedToolCompletions.has(message.toolCallId)) {
+              turn.observedToolCompletions.add(message.toolCallId);
+              yield* publishDrafts(
+                context,
+                {
+                  _tag: "ToolCompleted",
+                  toolCallId: message.toolCallId,
+                  toolName: message.toolName,
+                  text: message.text,
+                  isError: message.isError,
+                },
+                turn,
+              );
+            }
+            turn.lastAssistantHadRenderableText = false;
+          }
+        }
+
+        const authoritativeRunIdle =
+          !event.state.isStreaming &&
+          !event.state.isCompacting &&
+          !event.state.isBashRunning &&
+          !event.state.inputQueue.activeAction;
+        const snapshotProvesRunOutput = currentTurnMessages.some(
+          (message) => message.role === "assistant" || message.role === "toolResult",
+        );
+        if (
+          authoritativeRunIdle &&
+          event.replayContinuity !== "complete" &&
+          snapshotProvesRunOutput &&
+          !turn.awaitingQueuedRun &&
+          turn.pendingRunCompletionHandoff === undefined
+        ) {
+          const sequence = ++turn.runCompletionHandoffSequence;
+          turn.pendingRunCompletionHandoff = {
+            sequence,
+            event: { _tag: "RunCompleted", messages: currentTurnMessages },
+          };
+          context.nativeRunActive = false;
+        }
+        return true;
       });
 
     /** Must be called with the thread lock held. Reservations leave only in stream finalizers. */
@@ -1153,7 +1407,11 @@ export function makePrimeAgentDaemonAdapter(
         const effectiveOutcome: TurnOutcome =
           context.stopRequested || turn.cancellationRequested ? { state: "cancelled" } : outcome;
         turn.pendingRunCompletionHandoff = undefined;
-        if (effectiveOutcome.state === "failed" && !turn.lastAssistantHadRenderableText) {
+        if (
+          effectiveOutcome.state === "failed" &&
+          (!turn.lastAssistantHadRenderableText ||
+            effectiveOutcome.runtimeErrorMessage !== undefined)
+        ) {
           yield* offerRuntimeEvent({
             type: "runtime.error",
             ...(yield* makeEventStamp()),
@@ -1162,9 +1420,12 @@ export function makePrimeAgentDaemonAdapter(
             threadId: context.threadId,
             turnId: turn.id,
             payload: {
-              message: PRIME_AGENT_STOPPED_WITHOUT_FINAL_RESPONSE,
+              message:
+                effectiveOutcome.runtimeErrorMessage ?? PRIME_AGENT_STOPPED_WITHOUT_FINAL_RESPONSE,
               class: "provider_error",
-              detail: primeAgentMissingFinalResponseDetail("failed"),
+              ...(effectiveOutcome.runtimeErrorMessage === undefined
+                ? { detail: primeAgentMissingFinalResponseDetail("failed") }
+                : {}),
             },
           });
         }
@@ -1376,10 +1637,43 @@ export function makePrimeAgentDaemonAdapter(
       Effect.gen(function* () {
         yield* logNativeKind(context.threadId, event);
         if (event._tag === "SessionResynced") {
+          let reconnectRecoveryFailed = false;
+          let recoveredSnapshotRunCompletion = false;
           yield* withThreadLock(
             context.threadId,
             Effect.gen(function* () {
               if (sessions.get(context.threadId) === context && !context.stopped) {
+                const reconnectGeneration = event.connectionGeneration;
+                if (
+                  reconnectGeneration !== undefined &&
+                  !context.runtime.isConnectionGenerationCurrent(reconnectGeneration)
+                ) {
+                  return;
+                }
+                if (reconnectGeneration !== undefined) {
+                  const activeTurn = context.activeTurn;
+                  const pendingRunCompletionBefore = activeTurn?.pendingRunCompletionHandoff;
+                  const reconciled = yield* reconcileTranscriptSnapshotLocked(context, event);
+                  recoveredSnapshotRunCompletion =
+                    activeTurn !== undefined &&
+                    pendingRunCompletionBefore === undefined &&
+                    activeTurn.pendingRunCompletionHandoff !== undefined;
+                  context.runtime.resolveReconnectSnapshot(reconnectGeneration, reconciled);
+                  if (!reconciled) {
+                    if (activeTurn !== undefined) {
+                      yield* settleActiveTurnLocked(context, activeTurn, {
+                        state: "failed",
+                        errorMessage:
+                          "Prime Agent could not safely recover the active turn after reconnecting.",
+                        runtimeErrorMessage:
+                          "Prime Agent could not safely recover the active turn after reconnecting.",
+                      });
+                    }
+                    context.stopRequested = true;
+                    reconnectRecoveryFailed = true;
+                    return;
+                  }
+                }
                 context.autoCompactionEnabled = event.state.autoCompactionEnabled;
                 context.nativeRunActive = event.state.isStreaming;
                 context.nativeBashActive = event.state.isBashRunning;
@@ -1435,7 +1729,22 @@ export function makePrimeAgentDaemonAdapter(
                     !event.state.inputQueue.activeAction &&
                     !event.state.isStreaming;
                   if (turn.pendingRunCompletionHandoff !== undefined) {
-                    if (event.state.isStreaming) {
+                    if (
+                      recoveredSnapshotRunCompletion &&
+                      turn.terminalQuiescenceToken === undefined &&
+                      authoritativeIdle
+                    ) {
+                      const pending = turn.pendingRunCompletionHandoff;
+                      if (primeAgentRunCompletedNeedsHandoff(pending.event)) {
+                        yield* schedulePendingRunCompletionHandoff(context, turn, pending.sequence);
+                      } else {
+                        const settled = yield* settleActiveTurnLocked(context, turn, {
+                          state: "completed",
+                          event: pending.event,
+                        });
+                        if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+                      }
+                    } else if (event.state.isStreaming) {
                       // The continuation may have started while disconnected,
                       // so the resync snapshot is an authoritative RunStarted.
                       turn.completedRunMessages.push(
@@ -1485,7 +1794,12 @@ export function makePrimeAgentDaemonAdapter(
           if (context.stopRequested && !context.stopped) {
             yield* withThreadMutationLock(
               context.threadId,
-              stopSessionInternal(context, "Prime Agent session state could not be reconciled."),
+              stopSessionInternal(
+                context,
+                reconnectRecoveryFailed
+                  ? "Prime Agent session closed after reconnect recovery could not be confirmed."
+                  : "Prime Agent session state could not be reconciled.",
+              ),
             ).pipe(Effect.ignore, Effect.forkDetach);
           } else if (context.lifecycleStarted) {
             yield* refreshContextUsage(context).pipe(Effect.forkDetach);
@@ -2042,13 +2356,27 @@ export function makePrimeAgentDaemonAdapter(
                 turn.completedRunMessages.push(...turn.pendingRunCompletionHandoff.event.messages);
                 turn.pendingRunCompletionHandoff = undefined;
               }
+            } else if (event._tag === "MessageCompleted") {
+              context.nativeTranscriptMessageCount += appendTranscriptMessages(
+                context.nativeTranscript,
+                context.nativeTranscriptFingerprints,
+                [event.message],
+              );
             } else if (
               event._tag === "ToolStarted" ||
               event._tag === "ToolProgress" ||
               event._tag === "ToolCompleted" ||
               (event._tag === "AssistantStream" && event.kind === "toolCall")
             ) {
-              if (turn !== undefined) turn.lastAssistantHadRenderableText = false;
+              if (turn !== undefined) {
+                turn.lastAssistantHadRenderableText = false;
+                if (event._tag === "ToolStarted") {
+                  turn.observedToolStarts.add(event.toolCallId);
+                } else if (event._tag === "ToolCompleted") {
+                  turn.observedToolStarts.add(event.toolCallId);
+                  turn.observedToolCompletions.add(event.toolCallId);
+                }
+              }
             } else if (event._tag === "BashStarted" || event._tag === "BashOutput") {
               context.nativeBashActive = true;
               if (turn !== undefined) turn.lastAssistantHadRenderableText = false;
@@ -2701,6 +3029,11 @@ export function makePrimeAgentDaemonAdapter(
             usageRefreshSequence: 0,
             eventFiber: undefined,
             turns: [],
+            nativeTranscript: [...runtime.initialSnapshot.messages],
+            nativeTranscriptMessageCount: runtime.initialSnapshot.state.messageCount,
+            nativeTranscriptFingerprints: new Set(
+              runtime.initialSnapshot.messages.map(primeDaemonMessageFingerprint),
+            ),
             pendingInteractions: new Map(),
             pendingApprovals: new Map(),
             permissionToken,
@@ -3009,6 +3342,8 @@ export function makePrimeAgentDaemonAdapter(
                 completed: yield* Deferred.make<void>(),
                 cancellationRequested: false,
                 assistantTextStreamed: false,
+                assistantTextEmitted: "",
+                assistantTextRecoveryComparable: true,
                 nextAssistantMessageSequence: 0,
                 activeAssistantItemId: undefined,
                 lastAssistantHadRenderableText: false,
@@ -3022,6 +3357,9 @@ export function makePrimeAgentDaemonAdapter(
                 awaitingQueuedRun: false,
                 queuedActionObserved: false,
                 completedRunMessages: [],
+                nativeTranscriptBaselineMessageCount: context.nativeTranscriptMessageCount,
+                observedToolStarts: new Set(),
+                observedToolCompletions: new Set(),
                 ...(/^\/compact(?:\s|$)/.test(text) ? { command: "compact" as const } : {}),
               };
               context.activeTurn = turn;

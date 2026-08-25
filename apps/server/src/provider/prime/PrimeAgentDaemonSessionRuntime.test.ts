@@ -167,6 +167,10 @@ function fixture(options?: {
   readonly abortCompactionImpl?: () => Promise<unknown>;
   readonly setAutoCompactionImpl?: (enabled: boolean) => Promise<unknown>;
   readonly setModelImpl?: (provider: string, modelId: string) => Promise<unknown>;
+  readonly promptAndWaitImpl?: (
+    message: string,
+    options?: PrimeAgentDaemonPromptOptions,
+  ) => Promise<unknown>;
   readonly waitForHeadlessCompletionImpl?: (options: {
     readonly waitForRlmQuiescence?: boolean;
   }) => Promise<unknown>;
@@ -344,7 +348,7 @@ function fixture(options?: {
       promptOptions?: PrimeAgentDaemonPromptOptions,
     ): Promise<unknown> {
       captures.connectionCalls.push({ method: "prompt", args: [message, promptOptions] });
-      return Promise.resolve(undefined);
+      return options?.promptAndWaitImpl?.(message, promptOptions) ?? Promise.resolve(undefined);
     }
     waitForHeadlessCompletion(
       waitOptions: { readonly waitForRlmQuiescence?: boolean } = {},
@@ -2128,6 +2132,9 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         yield* Effect.promise(() => mcpRecoveryStarted);
         expect(runtime.isRlmQuiescenceGenerationCurrent(0)).toBe(false);
         releaseBarrier?.();
+        releaseMcpRecovery?.();
+        yield* Effect.promise(() => resyncDelivery);
+        expect(runtime.resolveReconnectSnapshot(1, false)).toBe(true);
 
         const error = yield* Fiber.join(waiting);
         expect(error).toMatchObject({
@@ -2135,8 +2142,194 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           reason: "request-failed",
           detail: "Prime Agent reconnected before descendant quiescence could be confirmed.",
         });
-        releaseMcpRecovery?.();
-        yield* Effect.promise(() => resyncDelivery);
+      }),
+    ),
+  );
+
+  it.effect("accepts a same-cursor reconnect generation with complete replay", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const test = fixture();
+        const runtime = yield* test.make();
+        const collecting = yield* collectEvents(runtime, 4).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const token = "turn-reconnect-complete:1";
+        yield* runtime.prompt({ text: "recover after reconnect", rlmQuiescenceToken: token });
+
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(1),
+              replay: {
+                status: "complete",
+                fromSequence: 1,
+                toSequence: 1,
+                fromCursor: { generation: "daemon-1", sequence: 1 },
+                toCursor: { generation: "daemon-1", sequence: 1 },
+              },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* runtime.waitForRlmQuiescence(token);
+        const events = yield* Fiber.join(collecting);
+
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "ConnectionStatus",
+          "SessionResynced",
+          "RlmQuiesced",
+        ]);
+        expect(events[2]).toMatchObject({
+          _tag: "SessionResynced",
+          replayContinuity: "complete",
+          connectionGeneration: 1,
+          lastEventSequence: 1,
+        });
+        expect(events[3]).toMatchObject({
+          _tag: "RlmQuiesced",
+          token,
+          connectionGeneration: 1,
+        });
+        expect(runtime.isRlmQuiescenceGenerationCurrent(1)).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("adopts an admitted prompt when its recovered request never returns", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () => {
+            reportPromptStarted?.();
+            return new Promise(() => {});
+          },
+        });
+        const runtime = yield* test.make();
+        for (let index = 0; index < 101; index += 1) {
+          yield* Effect.promise(() =>
+            test.emit({
+              type: "session_event",
+              event: {
+                type: "message_end",
+                message: {
+                  role: "user",
+                  content: `historical-${index}`,
+                  timestamp: index,
+                },
+              },
+            }),
+          );
+        }
+        const prompting = yield* runtime
+          .prompt({ text: "recover this admitted prompt" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              state: { ...snapshot(5).state, messageCount: 102 },
+              messages: [
+                ...Array.from({ length: 99 }, (_, index) => ({
+                  role: "user" as const,
+                  content: `historical-${index + 2}`,
+                  timestamp: index + 2,
+                })),
+                {
+                  role: "user",
+                  content: "recover this admitted prompt",
+                  timestamp: 101,
+                },
+              ],
+              replay: {
+                status: "unavailable",
+                fromSequence: 5,
+                toSequence: 5,
+                fromCursor: { generation: "daemon-1", sequence: 5 },
+                toCursor: { generation: "daemon-1", sequence: 5 },
+                reason: "test fallback",
+              },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Fiber.join(prompting);
+
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(runtime.isConnectionGenerationCurrent(1)).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("awaits reconnect proof when a recovered prompt request rejects first", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const prompting = yield* runtime
+          .prompt({ text: "recover this rejected request" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        rejectPrompt(new Error("recovered command result was rejected"));
+        yield* Effect.yieldNow;
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              state: { ...snapshot(5).state, messageCount: 1 },
+              messages: [
+                {
+                  role: "user",
+                  content: "recover this rejected request",
+                  timestamp: 1,
+                },
+              ],
+              replay: {
+                status: "complete",
+                toSequence: 5,
+                toCursor: { generation: "daemon-1", sequence: 5 },
+              },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Fiber.join(prompting);
+
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(runtime.isConnectionGenerationCurrent(1)).toBe(true);
       }),
     ),
   );

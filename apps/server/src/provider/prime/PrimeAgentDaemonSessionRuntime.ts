@@ -903,6 +903,9 @@ export interface PrimeAgentDaemonSessionRuntime {
     token: string,
   ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly isRlmQuiescenceGenerationCurrent: (generation: number) => boolean;
+  /** Resolves a reconnect generation after the adapter validates the public snapshot suffix. */
+  readonly resolveReconnectSnapshot: (generation: number, reconciled: boolean) => boolean;
+  readonly isConnectionGenerationCurrent: (generation: number) => boolean;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
   ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
@@ -1180,7 +1183,79 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let connectionGeneration = 0;
     let rlmEventContinuityValid = true;
     let rlmTurnUsageBaseline: PrimeDaemonUsage | undefined;
+    let observedCompletedMessageCount = 0;
+    let activePromptRecovery:
+      | {
+          readonly baselineMessageCount: number;
+          readonly signal: AbortSignal | undefined;
+          readonly promise: Promise<void>;
+          readonly resolve: () => void;
+          reconnectGeneration: number | undefined;
+          activityObserved: boolean;
+          snapshotProvesAdmission: boolean;
+          settled: boolean;
+        }
+      | undefined;
+    let reconnectResolution:
+      | {
+          readonly generation: number;
+          readonly promise: Promise<boolean>;
+          readonly resolve: (reconciled: boolean) => void;
+          settled: boolean;
+        }
+      | undefined;
     const rlmQuiescenceSemaphore = yield* Semaphore.make(1);
+
+    // A recovered transport can leave Prime's original prompt RPC unresolved even
+    // after its worker accepted and completed the input. Release only from the same
+    // generation proof used by the adapter; never issue another prompt command.
+    const settlePromptRecoveryIfProven = () => {
+      const prompt = activePromptRecovery;
+      const reconnect = reconnectResolution;
+      if (
+        prompt === undefined ||
+        prompt.settled ||
+        prompt.signal?.aborted === true ||
+        !prompt.snapshotProvesAdmission ||
+        prompt.reconnectGeneration === undefined ||
+        reconnect === undefined ||
+        reconnect.generation !== prompt.reconnectGeneration ||
+        !reconnect.settled ||
+        !rlmEventContinuityValid
+      ) {
+        return;
+      }
+      prompt.settled = true;
+      prompt.resolve();
+    };
+
+    const settleReconnectResolution = (generation: number, reconciled: boolean) => {
+      const pending = reconnectResolution;
+      if (pending === undefined || pending.generation !== generation || pending.settled)
+        return false;
+      pending.settled = true;
+      rlmEventContinuityValid = reconciled;
+      pending.resolve(reconciled);
+      if (reconciled) settlePromptRecoveryIfProven();
+      return true;
+    };
+
+    const beginReconnectResolution = () => {
+      if (reconnectResolution !== undefined && !reconnectResolution.settled) {
+        reconnectResolution.settled = true;
+        reconnectResolution.resolve(false);
+      }
+      let resolve!: (reconciled: boolean) => void;
+      const promise = new Promise<boolean>((complete) => {
+        resolve = complete;
+      });
+      reconnectResolution = {
+        generation: connectionGeneration,
+        promise,
+        resolve,
+        settled: false,
+      };
+    };
 
     const closeClient = Effect.sync(() => {
       client.close();
@@ -1460,6 +1535,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let initializationAcceptedEventCount = 0;
     const bufferedEvents: unknown[] = [];
     let lastSnapshotSequence: number | undefined;
+    let lastSnapshotConnectionGeneration = 0;
     const knownAgentRoster = new Map<string, PrimeAgentDaemonChild>();
 
     interface ActivePrivateSideQuestion {
@@ -1588,13 +1664,66 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
     };
 
+    const eventProvesPromptActivity = (event: PrimeDaemonEvent) =>
+      event._tag === "RunStarted" ||
+      event._tag === "RunCompleted" ||
+      event._tag === "TurnStarted" ||
+      event._tag === "TurnCompleted" ||
+      event._tag === "MessageStarted" ||
+      event._tag === "MessageCompleted" ||
+      event._tag === "AssistantStream" ||
+      event._tag === "ToolStarted" ||
+      event._tag === "ToolProgress" ||
+      event._tag === "ToolCompleted" ||
+      event._tag === "BashStarted" ||
+      event._tag === "BashOutput" ||
+      event._tag === "BashCompleted";
+
     const offerDecoded = (raw: unknown) => {
-      const event = safeEvent(decodePrimeAgentDaemonEvent(raw));
-      if (event._tag === "SessionResynced" && event.lastEventSequence !== undefined) {
-        if (lastSnapshotSequence !== undefined && event.lastEventSequence <= lastSnapshotSequence) {
+      const decoded = safeEvent(decodePrimeAgentDaemonEvent(raw));
+      const eventConnectionGeneration = connectionGeneration;
+      const reconnectSnapshot =
+        decoded._tag === "SessionResynced" &&
+        reconnectResolution !== undefined &&
+        reconnectResolution.generation === eventConnectionGeneration &&
+        !reconnectResolution.settled;
+      const event =
+        reconnectSnapshot && decoded._tag === "SessionResynced"
+          ? { ...decoded, connectionGeneration: eventConnectionGeneration }
+          : decoded;
+      if (event._tag === "SessionResynced") {
+        if (
+          event.lastEventSequence !== undefined &&
+          lastSnapshotSequence !== undefined &&
+          lastSnapshotConnectionGeneration === eventConnectionGeneration &&
+          event.lastEventSequence <= lastSnapshotSequence
+        ) {
           return Effect.void;
         }
         lastSnapshotSequence = event.lastEventSequence;
+        lastSnapshotConnectionGeneration = eventConnectionGeneration;
+        const prompt = activePromptRecovery;
+        if (prompt !== undefined && event.connectionGeneration !== undefined) {
+          prompt.reconnectGeneration = event.connectionGeneration;
+          prompt.snapshotProvesAdmission =
+            prompt.activityObserved || event.state.messageCount > prompt.baselineMessageCount;
+        }
+        observedCompletedMessageCount = event.state.messageCount;
+      } else if (event._tag === "MessageCompleted") {
+        observedCompletedMessageCount += 1;
+      }
+      const prompt = activePromptRecovery;
+      if (prompt !== undefined && eventProvesPromptActivity(event)) {
+        prompt.activityObserved = true;
+        if (
+          prompt.reconnectGeneration === eventConnectionGeneration &&
+          reconnectResolution?.generation === eventConnectionGeneration &&
+          reconnectResolution.settled &&
+          rlmEventContinuityValid
+        ) {
+          prompt.snapshotProvesAdmission = true;
+          settlePromptRecoveryIfProven();
+        }
       }
       trackAgentRoster(event);
       return Queue.offer(eventQueue, event).pipe(Effect.asVoid);
@@ -1620,6 +1749,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       if (connectionStatus === "reconnecting") {
         connectionGeneration += 1;
         rlmEventContinuityValid = false;
+        beginReconnectResolution();
+      } else if (rawType === "closed") {
+        settleReconnectResolution(connectionGeneration, false);
       }
       if (
         input.mcpServer === undefined ||
@@ -1777,6 +1909,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       );
     }
     lastSnapshotSequence = initialEvent.lastEventSequence;
+    lastSnapshotConnectionGeneration = connectionGeneration;
+    observedCompletedMessageCount = initialEvent.state.messageCount;
     trackAgentRoster(initialEvent);
 
     const initialResources =
@@ -2807,24 +2941,42 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return Option.isSome(statsOption) ? statsOption.value.usage : undefined;
     });
 
+    const awaitReconnectResolution = Effect.fn(
+      "PrimeAgentDaemonSessionRuntime.awaitReconnectResolution",
+    )(function* () {
+      const generation = connectionGeneration;
+      const pending = reconnectResolution;
+      if (pending !== undefined && pending.generation === generation && !pending.settled) {
+        const reconciled = yield* Effect.promise(() => pending.promise);
+        if (!reconciled) {
+          return yield* runtimeError(
+            "rlm-quiescence",
+            "request-failed",
+            "Prime Agent reconnected before descendant quiescence could be confirmed.",
+          );
+        }
+      }
+      if (!rlmEventContinuityValid || generation !== connectionGeneration) {
+        return yield* runtimeError(
+          "rlm-quiescence",
+          "request-failed",
+          "Prime Agent reconnected before descendant quiescence could be confirmed.",
+        );
+      }
+      return generation;
+    });
+
     const waitForRlmQuiescence = Effect.fn("PrimeAgentDaemonSessionRuntime.waitForRlmQuiescence")(
       function* (token: string) {
         yield* rlmQuiescenceSemaphore.withPermit(
           Effect.gen(function* () {
             yield* ensureOpen("rlm-quiescence");
             if (!rlmQuiescenceAvailable) return;
-            if (!rlmEventContinuityValid) {
-              return yield* runtimeError(
-                "rlm-quiescence",
-                "request-failed",
-                "Prime Agent reconnected before descendant quiescence could be confirmed.",
-              );
-            }
+            yield* awaitReconnectResolution();
             const waitForHeadlessCompletion = yield* requireMethod(
               "rlm-quiescence",
               connection!.waitForHeadlessCompletion,
             );
-            const startedConnectionGeneration = connectionGeneration;
             // Prime's result is autonomous-provider state. Pylon needs only the
             // authoritative ordering boundary and never projects the native payload.
             yield* Effect.tryPromise({
@@ -2839,26 +2991,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                   "Prime Agent could not confirm descendant quiescence.",
                 ),
             });
-            if (!rlmEventContinuityValid || connectionGeneration !== startedConnectionGeneration) {
-              return yield* runtimeError(
-                "rlm-quiescence",
-                "request-failed",
-                "Prime Agent reconnected before descendant quiescence could be confirmed.",
-              );
-            }
+            yield* awaitReconnectResolution();
             const currentUsage = yield* readRlmUsage();
-            if (!rlmEventContinuityValid || connectionGeneration !== startedConnectionGeneration) {
-              return yield* runtimeError(
-                "rlm-quiescence",
-                "request-failed",
-                "Prime Agent reconnected before descendant quiescence could be confirmed.",
-              );
-            }
+            const completedConnectionGeneration = yield* awaitReconnectResolution();
             const usage = subtractCumulativeUsage(currentUsage, rlmTurnUsageBaseline);
             yield* Queue.offer(eventQueue, {
               _tag: "RlmQuiesced",
               token,
-              connectionGeneration: startedConnectionGeneration,
+              connectionGeneration: completedConnectionGeneration,
               ...(usage === undefined ? {} : { usage }),
             });
           }),
@@ -2875,16 +3015,60 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* validatePromptContent("prompt", promptInput.text, images);
       if (rlmQuiescenceAvailable && promptInput.rlmQuiescenceToken !== undefined) {
         rlmEventContinuityValid = true;
+        reconnectResolution = undefined;
         rlmTurnUsageBaseline = yield* readRlmUsage();
       } else {
         rlmTurnUsageBaseline = undefined;
       }
-      yield* callVoid("prompt", () =>
-        connection!.promptAndWait(promptInput.text, {
+      let resolveRecovery!: () => void;
+      const recoveryPromise = new Promise<void>((resolve) => {
+        resolveRecovery = resolve;
+      });
+      const recovery = {
+        baselineMessageCount: observedCompletedMessageCount,
+        signal: promptInput.signal,
+        promise: recoveryPromise,
+        resolve: resolveRecovery,
+        reconnectGeneration: undefined,
+        activityObserved: false,
+        snapshotProvesAdmission: false,
+        settled: false,
+      };
+      activePromptRecovery = recovery;
+      // Promise.race deliberately leaves Prime's request-recovery handler attached.
+      // If its replayed result later rejects, the adopted native execution still owns
+      // completion through events and the correlated quiescence barrier.
+      yield* callVoid("prompt", () => {
+        const request = connection!.promptAndWait(promptInput.text, {
           queueIfBusy: false,
           ...(images.length === 0 ? {} : { images }),
           ...(promptInput.signal === undefined ? {} : { signal: promptInput.signal }),
-        }),
+        });
+        const requestWithRecovery = request.catch(async (error: unknown) => {
+          const reconnect = reconnectResolution;
+          const canAwaitReconnect =
+            reconnect !== undefined &&
+            (recovery.reconnectGeneration === reconnect.generation || !reconnect.settled);
+          if (canAwaitReconnect) {
+            const reconciled = await reconnect.promise;
+            if (
+              reconciled &&
+              recovery.reconnectGeneration === reconnect.generation &&
+              recovery.snapshotProvesAdmission
+            ) {
+              await recovery.promise;
+              return;
+            }
+          }
+          throw error;
+        });
+        return Promise.race([requestWithRecovery, recovery.promise]);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (activePromptRecovery === recovery) activePromptRecovery = undefined;
+          }),
+        ),
       );
     });
 
@@ -3566,6 +3750,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     const dispose = Effect.suspend(() => {
       if (disposed || disposeStarted) return Effect.void;
       disposeStarted = true;
+      settleReconnectResolution(connectionGeneration, false);
       unsubscribe?.();
       const nativeSideQuestions = [...activePrivateSideQuestions.entries()];
       return Effect.forEach(nativeSideQuestions, ([nativeId, active]) =>
@@ -3645,6 +3830,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       waitForRlmQuiescence,
       isRlmQuiescenceGenerationCurrent: (generation) =>
         rlmEventContinuityValid && generation === connectionGeneration,
+      resolveReconnectSnapshot: settleReconnectResolution,
+      isConnectionGenerationCurrent: (generation) => generation === connectionGeneration,
       prompt,
       steer,
       followUp,
