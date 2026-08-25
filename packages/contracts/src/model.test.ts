@@ -14,3 +14,15 @@ describe("Prime Agent model metadata", () => {
     expect(PROVIDER_DISPLAY_NAMES[primeAgent]).toBe("Prime Agent");
   });
 });
+
+describe("Oh My Pi model metadata", () => {
+  const omp = ProviderDriverKind.make("omp");
+
+  it("uses the profile default selection understood by the Oh My Pi driver", () => {
+    expect(DEFAULT_MODEL_BY_PROVIDER[omp]).toBe("default");
+  });
+
+  it("presents the first-party driver with its product name", () => {
+    expect(PROVIDER_DISPLAY_NAMES[omp]).toBe("Oh My Pi");
+  });
+});

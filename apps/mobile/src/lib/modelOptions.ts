@@ -1,11 +1,11 @@
-import type {
-  ModelCapabilities,
-  ModelSelection,
-  RuntimeMode,
-  ServerConfig as T3ServerConfig,
-} from "@t3tools/contracts";
 import {
   getServerProviderSupportedRuntimeModes,
+  PROVIDER_DISPLAY_NAMES,
+  type ModelCapabilities,
+  type ModelSelection,
+  type ProviderDriverKind,
+  type RuntimeMode,
+  type ServerConfig as T3ServerConfig,
   resolveServerProviderRuntimeMode,
 } from "@t3tools/contracts";
 import {
@@ -40,10 +40,7 @@ function providerDisplayLabel(provider: {
   readonly instanceId: string;
 }): string {
   if (provider.displayName) return provider.displayName;
-  if (provider.driver === "codex") return "Codex";
-  if (provider.driver === "claudeAgent") return "Claude";
-  if (provider.driver === "primeAgent") return "Prime Agent";
-  return provider.instanceId;
+  return PROVIDER_DISPLAY_NAMES[provider.driver as ProviderDriverKind] ?? provider.instanceId;
 }
 
 function normalizeSelectionOptions(
@@ -163,7 +160,7 @@ export function buildModelOptions(
       options.set(key, {
         key,
         label: model.name,
-        subtitle: providerLabel,
+        subtitle: model.subProvider ? `${providerLabel} · ${model.subProvider}` : providerLabel,
         providerKey: provider.instanceId,
         providerLabel,
         providerDriver: provider.driver,

@@ -2,6 +2,7 @@ import {
   classifyTaskAgentKind,
   EventId,
   MessageId,
+  ProviderDriverKind,
   ThreadId,
   TurnId,
   type OrchestrationThreadActivity,
@@ -19,6 +20,7 @@ import {
   findLatestProposedPlan,
   hasActionableProposedPlan,
   isLatestTurnSettled,
+  PROVIDER_OPTIONS,
   workLogEntryIsToolLike,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
@@ -2391,5 +2393,16 @@ describe("session activity performance", () => {
     const startedAt = performance.now();
     expect(deriveWorkLogEntries(updatedActivities)).toHaveLength(20_001);
     expect(performance.now() - startedAt).toBeLessThan(100);
+  });
+});
+
+describe("provider options", () => {
+  it("offers Oh My Pi as a first-party Early Access provider", () => {
+    expect(PROVIDER_OPTIONS).toContainEqual({
+      value: ProviderDriverKind.make("omp"),
+      label: "Oh My Pi",
+      available: true,
+      pickerSidebarBadge: "new",
+    });
   });
 });

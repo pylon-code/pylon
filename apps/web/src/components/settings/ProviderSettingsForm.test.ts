@@ -39,6 +39,22 @@ describe("ProviderSettingsForm helpers", () => {
     });
   });
 
+  it("exposes Oh My Pi as an Early Access profile-aware instance driver", () => {
+    const omp = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("omp")];
+
+    expect(omp).toMatchObject({ label: "Oh My Pi", badgeLabel: "Early Access" });
+    expect(deriveProviderSettingsFields(omp!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "profile",
+    ]);
+    expect(
+      deriveProviderSettingsFields(omp!).find((field) => field.key === "profile"),
+    ).toMatchObject({
+      label: "Profile",
+      placeholder: "e.g. work",
+    });
+  });
+
   it("sources labels and descriptions from schema annotations", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();

@@ -194,6 +194,7 @@ const config: ExpoConfig = {
   },
   orientation: "portrait",
   icon: variant.assets.appIcon,
+  assetBundlePatterns: ["assets/**/*"],
   userInterfaceStyle: "automatic",
   // Over-the-air updates follow the configured EAS project. Off until one is
   // set: an update URL is a remote code channel, and inheriting T3's would let

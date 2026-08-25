@@ -244,6 +244,44 @@ describe("buildProviderInstanceUpdatePatch", () => {
     expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
     expect(patch.providers).toBeUndefined();
   });
+
+  it("updates one Oh My Pi profile without collapsing another instance", () => {
+    const workId = ProviderInstanceId.make("omp_work");
+    const personalId = ProviderInstanceId.make("omp_personal");
+    const omp = ProviderDriverKind.make("omp");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [workId]: {
+          driver: omp,
+          displayName: "Oh My Pi Work",
+          config: { binaryPath: "omp", profile: "work" },
+        },
+        [personalId]: {
+          driver: omp,
+          displayName: "Oh My Pi Personal",
+          config: { binaryPath: "omp", profile: "personal" },
+        },
+      },
+    };
+    const nextWork = {
+      driver: omp,
+      displayName: "Oh My Pi Work",
+      config: { binaryPath: "/remote/bin/omp", profile: "work" },
+    } satisfies ProviderInstanceConfig;
+
+    const patch = buildProviderInstanceUpdatePatch({
+      settings,
+      instanceId: workId,
+      instance: nextWork,
+      driver: omp,
+      isDefault: false,
+    });
+
+    expect(patch.providerInstances?.[workId]).toEqual(nextWork);
+    expect(patch.providerInstances?.[personalId]).toEqual(settings.providerInstances[personalId]);
+    expect(patch.providers).toBeUndefined();
+  });
 });
 
 describe("buildProviderInstanceReorderPatch", () => {
