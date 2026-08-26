@@ -107,6 +107,18 @@ export interface ProviderRegistryShape {
   }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
   /**
+   * Re-read the backends an instance signs in to on its own, when it has a
+   * `capacity` source, and fold the result onto its snapshot.
+   *
+   * Called when a turn completes on the instance: the one moment an agent's
+   * own credential is guaranteed fresh. Returns as soon as the read is
+   * admitted — it runs off the caller's path — and is floored per instance so
+   * a burst of short turns costs one read. Unknown instances and instances
+   * without a capacity source are no-ops.
+   */
+  readonly refreshProviderCapacity: (instanceId: ProviderInstanceId) => Effect.Effect<void>;
+
+  /**
    * Stream of provider snapshot updates — one emission per aggregated
    * change. The array contains the full current state.
    */

@@ -210,6 +210,7 @@ function createProviderRegistryHarness() {
     readonly observedAt: string;
     readonly windows: ReadonlyArray<ServerProviderUsageWindow>;
   }> = [];
+  const capacityCalls: Array<ProviderInstanceId> = [];
 
   const layer = Layer.mock(ProviderRegistry)({
     setProviderRateLimitState: (input) =>
@@ -222,9 +223,13 @@ function createProviderRegistryHarness() {
         usageWindowCalls.push(input);
         return [];
       }),
+    refreshProviderCapacity: (instanceId) =>
+      Effect.sync(() => {
+        capacityCalls.push(instanceId);
+      }),
   });
 
-  return { layer, rateLimitCalls, usageWindowCalls };
+  return { layer, rateLimitCalls, usageWindowCalls, capacityCalls };
 }
 
 type ProviderRuntimeTestReadModel = OrchestrationReadModel;
@@ -508,10 +513,49 @@ describe("ProviderRuntimeIngestion", () => {
       setProviderSession: provider.setSession,
       rateLimitCalls: providerRegistry.rateLimitCalls,
       usageWindowCalls: providerRegistry.usageWindowCalls,
+      capacityCalls: providerRegistry.capacityCalls,
       runEffect,
       drain,
     };
   }
+
+  describe("turn.completed capacity refresh", () => {
+    // A completed turn is when an agent that signs in on its own holds a
+    // fresh credential; the registry decides whether a read is worth it.
+    it("asks the registry to re-read the instance's capacity when a turn completes", async () => {
+      const harness = await createHarness();
+      const primeInstance = ProviderInstanceId.make("primeAgent");
+
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-prime-turn-completed"),
+        provider: ProviderDriverKind.make("primeAgent"),
+        providerInstanceId: primeInstance,
+        threadId: asThreadId("thread-unknown"),
+        createdAt: "2026-08-04T18:30:00.000Z",
+        payload: { state: "completed" },
+      });
+      await harness.drain();
+
+      expect(harness.capacityCalls).toEqual([primeInstance]);
+    });
+
+    it("leaves the registry alone when the event names no instance", async () => {
+      const harness = await createHarness();
+
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-anon-turn-completed"),
+        provider: ProviderDriverKind.make("claude"),
+        threadId: asThreadId("thread-unknown"),
+        createdAt: "2026-08-04T18:30:00.000Z",
+        payload: { state: "completed" },
+      });
+      await harness.drain();
+
+      expect(harness.capacityCalls).toEqual([]);
+    });
+  });
 
   describe("account.rate-limits.updated", () => {
     const claudeInstance = ProviderInstanceId.make("claude-primary");

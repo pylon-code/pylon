@@ -1176,6 +1176,136 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
+      it.effect(
+        "re-reads an instance's own capacity after a turn, no more than once a minute",
+        () =>
+          Effect.gen(function* () {
+            const primeDriver = ProviderDriverKind.make("primeAgent");
+            const primeInstanceId = ProviderInstanceId.make("primeAgent");
+            const probedAt = "2026-08-04T18:00:00.000Z";
+            // The overlay only applies when it is newer than the probe.
+            yield* TestClock.setTime(Date.parse(probedAt) + 1_000);
+            const initialProvider = {
+              instanceId: primeInstanceId,
+              driver: primeDriver,
+              status: "ready",
+              enabled: true,
+              installed: true,
+              auth: { status: "authenticated" },
+              checkedAt: probedAt,
+              version: "0.8.0",
+              models: [],
+              slashCommands: [],
+              skills: [],
+              backends: [{ backend: "openai-codex", accountId: "acct_123" }],
+            } as const satisfies ServerProvider;
+            const reads = yield* Ref.make(0);
+            const instance = {
+              instanceId: primeInstanceId,
+              driverKind: primeDriver,
+              continuationIdentity: {
+                driverKind: primeDriver,
+                continuationKey: "prime:instance:primeAgent",
+              },
+              displayName: undefined,
+              enabled: true,
+              snapshot: {
+                maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                  provider: primeDriver,
+                  packageName: null,
+                }),
+                getSnapshot: Effect.succeed(initialProvider),
+                refresh: Effect.never,
+                streamChanges: Stream.empty,
+              },
+              adapter: {} as ProviderInstance["adapter"],
+              textGeneration: {} as ProviderInstance["textGeneration"],
+              capacity: {
+                refresh: Ref.updateAndGet(reads, (count) => count + 1).pipe(
+                  Effect.map((count) => [
+                    {
+                      backend: "openai-codex",
+                      accountId: "acct_123",
+                      usageLimits: {
+                        source: "primeAgentCodex",
+                        checkedAt: probedAt,
+                        windows: [
+                          { label: "Weekly", usedPercent: 40 + count, windowDurationMins: 10_080 },
+                        ],
+                      },
+                    },
+                  ]),
+                ),
+              },
+            } satisfies ProviderInstance;
+            const instanceRegistryLayer = Layer.succeed(
+              ProviderInstanceRegistry.ProviderInstanceRegistry,
+              {
+                getInstance: (instanceId) =>
+                  Effect.succeed(instanceId === primeInstanceId ? instance : undefined),
+                listInstances: Effect.succeed([instance]),
+                listUnavailable: Effect.succeed([]),
+                streamChanges: Stream.empty,
+                subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+              },
+            );
+            const scope = yield* Scope.make();
+            yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+            const runtimeServices = yield* Layer.build(
+              ProviderRegistryLive.pipe(
+                Layer.provideMerge(instanceRegistryLayer),
+                Layer.provideMerge(
+                  ServerConfig.layerTest(process.cwd(), {
+                    prefix: "t3-provider-registry-capacity-",
+                  }),
+                ),
+                Layer.provideMerge(NodeServices.layer),
+              ),
+            ).pipe(Scope.provide(scope));
+
+            yield* Effect.gen(function* () {
+              const registry = yield* ProviderRegistry.ProviderRegistry;
+              const weekly = (providers: ReadonlyArray<ServerProvider>) =>
+                providers[0]?.backends?.[0]?.usageLimits?.windows[0]?.usedPercent;
+              const settled = (expected: number) =>
+                Effect.gen(function* () {
+                  let providers = yield* registry.getProviders;
+                  for (
+                    let attempt = 0;
+                    attempt < 50 && weekly(providers) !== expected;
+                    attempt += 1
+                  ) {
+                    yield* Effect.yieldNow;
+                    providers = yield* registry.getProviders;
+                  }
+                  return providers;
+                });
+
+              // Two turns back to back cost one read.
+              yield* registry.refreshProviderCapacity(primeInstanceId);
+              yield* registry.refreshProviderCapacity(primeInstanceId);
+              assert.strictEqual(weekly(yield* settled(41)), 41);
+              assert.strictEqual(yield* Ref.get(reads), 1);
+
+              // Inside the floor a further turn still costs nothing.
+              yield* TestClock.adjust("30 seconds");
+              yield* registry.refreshProviderCapacity(primeInstanceId);
+              yield* Effect.yieldNow;
+              assert.strictEqual(yield* Ref.get(reads), 1);
+
+              // Past it, the next turn reads again and the newer number lands.
+              yield* TestClock.adjust("31 seconds");
+              yield* registry.refreshProviderCapacity(primeInstanceId);
+              assert.strictEqual(weekly(yield* settled(42)), 42);
+              assert.strictEqual(yield* Ref.get(reads), 2);
+
+              // An instance with nothing to read, or none at all, is a no-op.
+              yield* registry.refreshProviderCapacity(ProviderInstanceId.make("codex_missing"));
+              assert.strictEqual(yield* Ref.get(reads), 2);
+            }).pipe(Effect.provide(runtimeServices));
+          }),
+      );
+
       it.effect("persists the merged snapshot when a live update has empty models", () =>
         Effect.gen(function* () {
           const cursorDriver = ProviderDriverKind.make("cursor");

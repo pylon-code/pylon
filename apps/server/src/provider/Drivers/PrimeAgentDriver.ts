@@ -26,6 +26,9 @@ import {
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { readPrimeAgentBackends } from "../primeAgentBackends.ts";
+
+/** A reading under this age is served from the shared cache even after a turn. */
+const PRIME_AGENT_TURN_END_CAPACITY_FRESH_MS = 60_000;
 import { makePrimeAgentDaemonAdapter } from "../prime/PrimeAgentDaemonAdapter.ts";
 import { negotiatePrimeAgentBackend } from "../prime/PrimeAgentBackendSelection.ts";
 import { makePrimeAgentDaemonManager } from "../prime/PrimeAgentDaemonManager.ts";
@@ -199,11 +202,33 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
 
       // What Prime is signed in to, so the composer can show the capacity of
       // the account Prime actually uses rather than assume it.
-      const readBackends = readPrimeAgentBackends(effectiveConfig).pipe(
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.provideService(HttpClient.HttpClient, httpClient),
-      );
+      const provideBackendServices = <A, E>(
+        effect: Effect.Effect<
+          A,
+          E,
+          | never
+          | FileSystem.FileSystem
+          | Path.Path
+          | HttpClient.HttpClient
+          | ChildProcessSpawner.ChildProcessSpawner
+        >,
+      ) =>
+        effect.pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+      const readBackends = provideBackendServices(readPrimeAgentBackends(effectiveConfig));
+      // After a turn the credential Prime just used is fresh and the number
+      // just changed: read again unless a reading under a minute old exists.
+      const capacity = {
+        refresh: provideBackendServices(
+          readPrimeAgentBackends(effectiveConfig, {
+            freshForMs: PRIME_AGENT_TURN_END_CAPACITY_FRESH_MS,
+          }),
+        ),
+      };
       const checkProvider = checkPrimeAgentProviderStatus(effectiveConfig, processEnv, {
         readBackends,
       }).pipe(
@@ -283,6 +308,7 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         snapshot,
         adapter,
         textGeneration,
+        capacity,
       } satisfies ProviderInstance;
     }),
 };

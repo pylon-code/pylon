@@ -1,6 +1,12 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import { HttpClient } from "effect/unstable/http";
 
-import { primeAgentSignInsFromAuthFile } from "./primeAgentBackends.ts";
+import { primeAgentSignInsFromAuthFile, readPrimeAgentBackends } from "./primeAgentBackends.ts";
 
 const NOW = Date.parse("2026-08-06T12:00:00.000Z");
 
@@ -23,11 +29,25 @@ const AUTH_FILE = {
 };
 
 describe("primeAgentSignInsFromAuthFile", () => {
-  it("keeps the Codex identity and a fresh Anthropic token", () => {
+  it("keeps each backend's identity and its token while fresh", () => {
     assert.deepStrictEqual(primeAgentSignInsFromAuthFile(JSON.stringify(AUTH_FILE), NOW), [
       { backend: "anthropic", accessToken: "access-secret" },
-      { backend: "openai-codex", accountId: "acct_123" },
+      { backend: "openai-codex", accountId: "acct_123", accessToken: "access-secret" },
     ]);
+  });
+
+  // The identity outlives the token: matching a configured Codex account
+  // needs no credential, only reading Prime's own capacity does.
+  it("keeps the Codex identity after its token has expired", () => {
+    const expired = {
+      ...AUTH_FILE,
+      "openai-codex": { ...AUTH_FILE["openai-codex"], expires: NOW - 1 },
+    };
+
+    assert.deepStrictEqual(primeAgentSignInsFromAuthFile(JSON.stringify(expired), NOW)[1], {
+      backend: "openai-codex",
+      accountId: "acct_123",
+    });
   });
 
   // Prime only refreshes the token while it is running on Anthropic; sending
@@ -67,3 +87,70 @@ describe("primeAgentSignInsFromAuthFile", () => {
     assert.deepStrictEqual(primeAgentSignInsFromAuthFile(raw, NOW), []);
   });
 });
+
+// The usage endpoint must never be reached here: Anthropic's token is expired
+// in this fixture, so a request would mean the freshness rule is broken.
+const UnreachableHttpClient = Layer.succeed(
+  HttpClient.HttpClient,
+  HttpClient.make(() => Effect.die("the usage endpoint must not be called")),
+);
+
+it.layer(Layer.mergeAll(NodeServices.layer, UnreachableHttpClient))(
+  "readPrimeAgentBackends",
+  (it) => {
+    it.effect("reads Prime's own ChatGPT capacity and skips an expired Anthropic token", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-prime-home-" });
+        const cacheDir = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-prime-cache-" });
+        const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+        yield* fs.writeFileString(
+          path.join(home, "auth.json"),
+          `{"anthropic":{"type":"oauth","access":"stale","expires":${nowMs - 1}},` +
+            `"openai-codex":{"type":"oauth","access":"fresh-secret","expires":${nowMs + 60 * 60_000},"accountId":"acct_123"}}`,
+        );
+        const reads: string[] = [];
+
+        const backends = yield* readPrimeAgentBackends(
+          { agentHomePath: home },
+          {
+            sharedCacheDir: cacheDir,
+            readCodexWindows: (signIn) =>
+              Effect.sync(() => {
+                reads.push(`${signIn.accountId}:${signIn.accessToken}`);
+                return {
+                  rateLimits: { primary: { usedPercent: 40, windowDurationMins: 10_080 } },
+                };
+              }),
+          },
+        );
+
+        assert.deepStrictEqual(reads, ["acct_123:fresh-secret"]);
+        assert.deepStrictEqual(backends, [
+          { backend: "anthropic" },
+          {
+            backend: "openai-codex",
+            accountId: "acct_123",
+            usageLimits: {
+              source: "primeAgentCodex",
+              checkedAt: backends[1]?.usageLimits?.checkedAt ?? "",
+              windows: [{ label: "Weekly", usedPercent: 40, windowDurationMins: 10_080 }],
+            },
+          },
+        ]);
+
+        // A second read inside the shared window is served from the cache:
+        // one process and one request per window, however many servers ask.
+        const again = yield* readPrimeAgentBackends(
+          { agentHomePath: home },
+          {
+            sharedCacheDir: cacheDir,
+            readCodexWindows: () => Effect.die("must be served from the shared reading"),
+          },
+        );
+        assert.strictEqual(again[1]?.usageLimits?.windows[0]?.usedPercent, 40);
+      }).pipe(Effect.scoped),
+    );
+  },
+);

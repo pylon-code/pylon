@@ -89,9 +89,10 @@ export function usageWindowsFromCodexRateLimitSnapshot(
 export function usageLimitsFromCodexRateLimits(
   response: CodexSchema.V2GetAccountRateLimitsResponse,
   checkedAt: string,
+  source: string = "codexAppServer",
 ): ServerProviderUsageLimits | undefined {
   const windows = usageWindowsFromCodexRateLimitSnapshot(response.rateLimits);
-  return windows.length > 0 ? { source: "codexAppServer", checkedAt, windows } : undefined;
+  return windows.length > 0 ? { source, checkedAt, windows } : undefined;
 }
 
 /**

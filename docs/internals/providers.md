@@ -200,11 +200,16 @@ windows as `usedPercent` plus a reset time. Three mechanisms keep that gauge pre
   credentials of its own, so its snapshot carries `backends`
   ([`primeAgentBackends.ts`][prime-backends]): for OpenAI Codex the ChatGPT account id, which a
   configured Codex instance also reports as `auth.accountId`
-  ([`codexAccountIdentity.ts`][codex-identity]); for Anthropic a capacity reading taken with Prime's
-  own token while it is fresh, under Prime's own shared-cache key. Clients show a Prime thread the
-  capacity Prime is verified to use — its own Anthropic reading, or the Codex instance whose account
-  id matches — and fall back to the configured accounts labelled as assumed only when neither can be
-  read.
+  ([`codexAccountIdentity.ts`][codex-identity]), plus — while Prime's token is fresh — Prime's own
+  reading: Anthropic through the usage endpoint, ChatGPT through a throwaway Codex app-server in an
+  empty scoped home, signed in with `chatgptAuthTokens` (access token and account id only, never the
+  refresh token). Both go through the shared cache under Prime's own keys. Prime only refreshes a
+  backend's token while running a turn on it, so `ProviderInstance.capacity` re-reads the backends
+  when a turn completes on the instance (`ProviderRegistry.refreshProviderCapacity`, floored to one
+  read per instance per minute, off the ingestion path); the periodic probe covers the rest. Clients
+  show a Prime thread the capacity Prime is verified to use — its own reading, or the Codex instance
+  whose account id matches — and fall back to the configured accounts labelled as assumed only when
+  neither can be read.
 
 Windows are matched by duration, never by label: anything under a day is the session window,
 anything of a week or more is a weekly, and the first weekly is the account-wide one. That is what

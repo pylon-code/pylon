@@ -2146,6 +2146,14 @@ const make = Effect.gen(function* () {
       if (event.type === "account.rate-limits.updated") {
         return yield* applyProviderRateLimitEvent(event);
       }
+      // A completed turn is the one moment an agent that signs in on its own
+      // holds a fresh credential for the backend it just used; re-read its
+      // capacity now rather than on the next poll. Ahead of the thread guard
+      // on purpose — the account is shared by every thread — and cheap: the
+      // registry floors it per instance and runs it off this path.
+      if (event.type === "turn.completed" && event.providerInstanceId !== undefined) {
+        yield* providerRegistry.refreshProviderCapacity(event.providerInstanceId);
+      }
 
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
