@@ -189,7 +189,13 @@ jobs:
     needs: [preflight]
     if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # `vp run test` runs the whole repository's suites serially here — the
+    # same work ci.yml spreads over four jobs. On a 4-vCPU GitHub-hosted
+    # runner the job lands around fifteen minutes (the Test step alone was
+    # still running at 7m44s when a 10-minute ceiling cut it on 2026-08-26,
+    # cancelling the first nightly after the runner migration), so give it
+    # 2x headroom. Blacksmith's 8 vCPU did the Test step in 3m16s.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
