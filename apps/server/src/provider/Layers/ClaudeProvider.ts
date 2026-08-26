@@ -45,7 +45,7 @@ import {
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { discoverClaudeSkills } from "../Drivers/ClaudeSkills.ts";
-import { fetchClaudeOAuthUsageLimits } from "../claudeOAuthUsage.ts";
+import { type ClaudeOAuthUsageRead, fetchClaudeOAuthUsage } from "../claudeOAuthUsage.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -864,6 +864,8 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
   | {
       readonly accountIdentity: string | undefined;
       readonly usageLimits: ServerProviderUsageLimits | undefined;
+      /** Set when the usage endpoint answered 429: how long to stay away. */
+      readonly throttledForMs?: number | undefined;
     }
   | undefined,
   never,
@@ -875,7 +877,7 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const runOptions = { closeStdin: true as const, ...(cwd ? { cwd } : {}) };
 
-  const [authResult, usageLimits] = yield* Effect.all(
+  const [authResult, usageRead] = yield* Effect.all(
     [
       runClaudeCommand(claudeSettings, ["auth", "status", "--json"], environment, runOptions).pipe(
         Effect.map(Option.some),
@@ -883,23 +885,24 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
         Effect.map(Option.flatten),
         Effect.catchCause(() => Effect.succeed(Option.none<CommandResult>())),
       ),
-      fetchClaudeOAuthUsageLimits(claudeSettings, checkedAt).pipe(
+      fetchClaudeOAuthUsage(claudeSettings, checkedAt).pipe(
         Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
-        Effect.catchCause(() =>
-          Effect.succeed(Option.none<ServerProviderUsageLimits | undefined>()),
-        ),
-        Effect.map((usage) => Option.getOrUndefined(usage) ?? undefined),
+        Effect.catchCause(() => Effect.succeed(Option.none<ClaudeOAuthUsageRead>())),
+        Effect.map(Option.getOrUndefined),
       ),
     ],
     { concurrency: "unbounded" },
   );
-  if (Option.isNone(authResult) && usageLimits === undefined) return undefined;
+  if (Option.isNone(authResult) && usageRead === undefined) return undefined;
 
   return {
     accountIdentity: Option.isSome(authResult)
       ? accountIdentityFromAuthStatus(authResult.value)
       : undefined,
-    usageLimits,
+    usageLimits: usageRead?.usageLimits,
+    ...(usageRead?.throttledForMs !== undefined
+      ? { throttledForMs: usageRead.throttledForMs }
+      : {}),
   };
 });
 

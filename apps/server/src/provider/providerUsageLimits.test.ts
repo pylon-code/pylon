@@ -218,6 +218,61 @@ describe("applyPushedUsageWindows", () => {
   });
 });
 
+// A session reports its windows on every API call; most say the same
+// thing. Each accepted push republishes the provider list to every client,
+// so a same-value push only lands once the reading is a minute old.
+it("skips a push that repeats the current reading within a minute", () => {
+  const applied = applyPushedUsageWindows(
+    PROBED,
+    [
+      pushed(
+        {
+          label: "Session",
+          usedPercent: 10.3,
+          windowDurationMins: 300,
+          resetsAt: "2026-08-04T22:00:00.000Z",
+        },
+        "2026-08-04T18:00:30.000Z",
+      ),
+    ],
+    { nowMs: NOW_MS, maxAgeMs: MAX_AGE_MS, source: "push" },
+  );
+
+  expect(applied).toBe(PROBED);
+});
+
+it("lets a same-value push refresh the reading's age after a minute", () => {
+  const applied = applyPushedUsageWindows(
+    PROBED,
+    [
+      pushed(
+        { label: "Session", usedPercent: 10, windowDurationMins: 300 },
+        "2026-08-04T18:01:00.000Z",
+      ),
+    ],
+    { nowMs: NOW_MS, maxAgeMs: MAX_AGE_MS, source: "push" },
+  );
+
+  expect(applied?.checkedAt).toBe("2026-08-04T18:01:00.000Z");
+  expect(applied?.windows[0]?.usedPercent).toBe(10);
+});
+
+it("applies a changed value immediately", () => {
+  const applied = applyPushedUsageWindows(
+    PROBED,
+    [
+      pushed(
+        { label: "Session", usedPercent: 11, windowDurationMins: 300 },
+        "2026-08-04T18:00:05.000Z",
+      ),
+    ],
+    { nowMs: NOW_MS, maxAgeMs: MAX_AGE_MS, source: "push" },
+  );
+
+  expect(applied?.windows[0]?.usedPercent).toBe(11);
+  expect(applied?.checkedAt).toBe("2026-08-04T18:00:05.000Z");
+});
+
 describe("accumulatePushedUsageWindows", () => {
   it("keeps one entry per window, newest observation winning", () => {
     const retained = accumulatePushedUsageWindows(

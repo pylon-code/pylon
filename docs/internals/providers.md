@@ -177,6 +177,14 @@ windows as `usedPercent` plus a reset time. Three mechanisms keep that gauge pre
   (`ServerProvider.rateLimit`); the two are parsed independently.
 - **Nothing persisted.** Both overlays are re-learned after a restart from the next probe or push;
   the on-disk snapshot cache deliberately drops `usageLimits`.
+- **Request budget.** Both usage endpoints answer 429 when hammered, and several worktree servers
+  may share one account. A good Claude reading is cached for five minutes, so every snapshot
+  refresh inside that window — the fastest refresh profile, a reconnect, a manual refresh — is
+  served without a request; a 429 backs off for its `Retry-After` (bounded to 1–30 minutes, five
+  by default). Codex reads inside its status probe, which runs at most once per refresh interval.
+  Pushed updates cost nothing outbound, and a push that repeats the current number is folded in at
+  most once a minute so a busy turn cannot republish the provider list per tool call. Clients only
+  offer a manual refresh once a reading is older than that cache.
 
 Windows are matched by duration, never by label: anything under a day is the session window,
 anything of a week or more is a weekly, and the first weekly is the account-wide one. That is what

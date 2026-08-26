@@ -156,6 +156,25 @@ function parseMs(value: string): number | undefined {
 }
 
 /**
+ * A running session can report its windows on every API call. Most of those
+ * say the same thing as the last one, and each accepted push republishes the
+ * provider list to every client, so a push that changes nothing visible is
+ * folded in only once a minute — enough to keep the reading's age honest
+ * without a snapshot per tool call.
+ */
+export const SAME_VALUE_PUSH_INTERVAL_MS = 60_000;
+
+function isSameReading(
+  current: ServerProviderUsageWindow,
+  pushed: ServerProviderUsageWindow,
+): boolean {
+  return (
+    Math.round(current.usedPercent) === Math.round(pushed.usedPercent) &&
+    (pushed.resetsAt === undefined || pushed.resetsAt === current.resetsAt)
+  );
+}
+
+/**
  * Overlay pushed windows onto the most recent probe reading.
  *
  * Only pushes newer than the reading apply — a probe that ran after a push is
@@ -181,7 +200,16 @@ export function applyPushedUsageWindows(
     const observedAtMs = parseMs(entry.observedAt);
     if (observedAtMs === undefined) return false;
     if (options.nowMs - observedAtMs > options.maxAgeMs) return false;
-    return currentCheckedAtMs === undefined || observedAtMs > currentCheckedAtMs;
+    if (currentCheckedAtMs === undefined) return true;
+    if (observedAtMs <= currentCheckedAtMs) return false;
+    // Same number as the reading already shows: not worth a republish until
+    // the reading is old enough that saying "still current" means something.
+    const index = current ? findSameUsageWindowIndex(current.windows, entry.window) : -1;
+    const matched = index === -1 ? undefined : current?.windows[index];
+    if (matched && isSameReading(matched, entry.window)) {
+      return observedAtMs - currentCheckedAtMs >= SAME_VALUE_PUSH_INTERVAL_MS;
+    }
+    return true;
   });
   if (applicable.length === 0) return current;
 

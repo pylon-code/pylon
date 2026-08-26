@@ -271,16 +271,54 @@ export function usageLimitsFromClaudeOAuthResponse(
 }
 
 /**
- * Fetch usage for one configured instance, or `undefined` when it cannot be
- * read — no token, an expired one, an unreachable endpoint, or a payload this
- * build does not recognize. Every one of those is a caller's cue to fall back
- * to the CLI probe rather than an error to propagate.
+ * How long to stay away from the endpoint after it answered 429.
+ *
+ * `Retry-After` is honoured when present, as seconds or an HTTP date, and
+ * bounded: never under a minute, so a burst of retries cannot itself keep the
+ * limit tripped, and never over half an hour, past which the retained reading
+ * has expired and a fresh attempt is worth more than obedience. Without the
+ * header the wait matches the normal poll, so a throttled account is retried
+ * no faster than a healthy one would be read.
  */
-export const fetchClaudeOAuthUsageLimits = Effect.fn("fetchClaudeOAuthUsageLimits")(function* (
+export const OAUTH_USAGE_THROTTLE_DEFAULT_MS = 5 * 60_000;
+export const OAUTH_USAGE_THROTTLE_MIN_MS = 60_000;
+export const OAUTH_USAGE_THROTTLE_MAX_MS = 30 * 60_000;
+
+export function throttleDelayFromRetryAfter(retryAfter: string | undefined, nowMs: number): number {
+  const clamp = (value: number) =>
+    Math.max(OAUTH_USAGE_THROTTLE_MIN_MS, Math.min(OAUTH_USAGE_THROTTLE_MAX_MS, value));
+  const trimmed = retryAfter?.trim();
+  if (!trimmed) return OAUTH_USAGE_THROTTLE_DEFAULT_MS;
+  if (/^\d+$/u.test(trimmed)) return clamp(Number(trimmed) * 1000);
+  const atMs = Date.parse(trimmed);
+  if (!Number.isFinite(atMs)) return OAUTH_USAGE_THROTTLE_DEFAULT_MS;
+  return clamp(atMs - nowMs);
+}
+
+/**
+ * One read of the endpoint. `usageLimits` is absent when it could not be
+ * read — no token, an expired one, an unreachable endpoint, or a payload this
+ * build does not recognize — and `throttledForMs` is set when the endpoint
+ * itself asked for room, so the caller can back off rather than retry on its
+ * usual failure cadence.
+ */
+export interface ClaudeOAuthUsageRead {
+  readonly usageLimits: ServerProviderUsageLimits | undefined;
+  readonly throttledForMs?: number | undefined;
+}
+
+const NOT_READ: ClaudeOAuthUsageRead = { usageLimits: undefined };
+
+/**
+ * Fetch usage for one configured instance. Every failure is a caller's cue
+ * to fall back to the last retained reading rather than an error to
+ * propagate; a 429 additionally says how long to wait.
+ */
+export const fetchClaudeOAuthUsage = Effect.fn("fetchClaudeOAuthUsage")(function* (
   config: Pick<ClaudeSettings, "homePath">,
   checkedAt: string,
 ): Effect.fn.Return<
-  ServerProviderUsageLimits | undefined,
+  ClaudeOAuthUsageRead,
   never,
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
@@ -288,7 +326,7 @@ export const fetchClaudeOAuthUsageLimits = Effect.fn("fetchClaudeOAuthUsageLimit
   | Path.Path
 > {
   const token = yield* readClaudeAccessToken(config);
-  if (!token) return undefined;
+  if (!token) return NOT_READ;
 
   const client = yield* HttpClient.HttpClient;
   const request = HttpClientRequest.get(OAUTH_USAGE_URL).pipe(
@@ -300,13 +338,20 @@ export const fetchClaudeOAuthUsageLimits = Effect.fn("fetchClaudeOAuthUsageLimit
     Effect.timeoutOption(OAUTH_USAGE_TIMEOUT_MS),
     Effect.catchCause(() => Effect.succeed(Option.none())),
   );
-  if (Option.isNone(response)) return undefined;
-  if (response.value.status < 200 || response.value.status >= 300) return undefined;
+  if (Option.isNone(response)) return NOT_READ;
+  if (response.value.status === 429) {
+    const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+    return {
+      usageLimits: undefined,
+      throttledForMs: throttleDelayFromRetryAfter(response.value.headers["retry-after"], nowMs),
+    };
+  }
+  if (response.value.status < 200 || response.value.status >= 300) return NOT_READ;
 
   const payload = yield* response.value.json.pipe(
     Effect.map(Option.some),
     Effect.catchCause(() => Effect.succeed(Option.none<unknown>())),
   );
-  if (Option.isNone(payload)) return undefined;
-  return usageLimitsFromClaudeOAuthResponse(payload.value, checkedAt);
+  if (Option.isNone(payload)) return NOT_READ;
+  return { usageLimits: usageLimitsFromClaudeOAuthResponse(payload.value, checkedAt) };
 });

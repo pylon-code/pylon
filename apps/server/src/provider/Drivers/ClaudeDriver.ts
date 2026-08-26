@@ -69,10 +69,14 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
-// Short enough that the fastest refresh profile and a manual refresh both see
-// a current reading, long enough to coalesce the burst of snapshot reads a
-// settings change or reconnect produces against a rate-limited endpoint.
-const USAGE_PROBE_SUCCESS_TTL = Duration.minutes(1);
+// The usage endpoint is rate limited and answers 429 under load, so a good
+// reading is held for the length of the default poll: every snapshot refresh
+// inside that window — the fastest refresh profile, a reconnect, a manual
+// refresh — is served from cache, and one instance costs the endpoint at most
+// one request per five minutes. Pushed updates from running sessions keep the
+// gauge moving in between without a request. A failed read backs off for a
+// minute, or for as long as a 429 asked.
+const USAGE_PROBE_SUCCESS_TTL = Duration.minutes(5);
 const USAGE_PROBE_FAILURE_TTL = Duration.minutes(1);
 
 function isClaudeNativeCommandPath(commandPath: string): boolean {
@@ -197,7 +201,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           // still shows up promptly.
           timeToLive: Exit.match({
             onSuccess: (result) =>
-              result?.usageLimits ? USAGE_PROBE_SUCCESS_TTL : USAGE_PROBE_FAILURE_TTL,
+              result?.usageLimits
+                ? USAGE_PROBE_SUCCESS_TTL
+                : result?.throttledForMs !== undefined
+                  ? Duration.millis(result.throttledForMs)
+                  : USAGE_PROBE_FAILURE_TTL,
             onFailure: () => USAGE_PROBE_FAILURE_TTL,
           }),
         },
