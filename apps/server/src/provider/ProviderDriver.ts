@@ -25,6 +25,7 @@ import type {
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
+  ServerProviderBackend,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -71,6 +72,18 @@ export interface ProviderInstance {
   readonly snapshot: ServerProviderShape;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
+  /**
+   * Re-read the backends this instance signs in to on its own, when it has
+   * any (see `ServerProvider.backends`). The registry runs it after a turn
+   * completes on the instance — the one moment an agent's own credential is
+   * guaranteed fresh — and folds the result onto the snapshot. Optional:
+   * drivers that use Pylon's configured accounts have nothing to read.
+   */
+  readonly capacity?: ProviderCapacitySource | undefined;
+}
+
+export interface ProviderCapacitySource {
+  readonly refresh: Effect.Effect<ReadonlyArray<ServerProviderBackend>>;
 }
 
 export interface ProviderContinuationIdentity {

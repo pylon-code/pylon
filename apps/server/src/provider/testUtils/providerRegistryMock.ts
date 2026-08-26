@@ -16,6 +16,7 @@ export const makeProviderRegistryMock = (
   setProviderMaintenanceActionState: () => Effect.succeed(providers),
   setProviderRateLimitState: () => Effect.succeed(providers),
   mergeProviderUsageWindows: () => Effect.succeed(providers),
+  refreshProviderCapacity: () => Effect.void,
   streamChanges: Stream.empty,
 });
 

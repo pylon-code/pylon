@@ -27,11 +27,13 @@ import {
   ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
+  type ServerProviderBackend,
   type ServerProviderRateLimit,
   type ServerProviderUpdateState,
   type ServerProviderUsageWindow,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -317,6 +319,21 @@ export const ProviderRegistryLive = Layer.effect(
         { readonly source: string; readonly windows: ReadonlyArray<PushedUsageWindow> }
       >
     >(new Map());
+    // Backends re-read after a turn on an instance that signs in on its own
+    // (see `ProviderInstance.capacity`). Volatile like the other overlays; a
+    // probe that ran after the read supersedes it.
+    const capacityOverlayRef = yield* Ref.make<
+      ReadonlyMap<
+        ProviderInstanceId,
+        { readonly backends: ReadonlyArray<ServerProviderBackend>; readonly observedAt: string }
+      >
+    >(new Map());
+    // One capacity read in flight per instance, and no more than one a minute:
+    // a burst of short turns must cost the backend one request, not one each.
+    const capacityRunsRef = yield* Ref.make<
+      ReadonlyMap<ProviderInstanceId, { readonly startedAtMs: number; readonly running: boolean }>
+    >(new Map());
+    const registryScope = yield* Effect.scope;
 
     // Live-source registry — the dynamic counterpart to the boot-time
     // `bootSources`. Keyed by `instanceId`; the stored `ProviderInstance`
@@ -412,12 +429,25 @@ export const ProviderRegistryLive = Layer.effect(
      * snapshot. Probes rebuild snapshots from scratch, so anything not stored
      * in a Ref has to be re-applied here or it silently disappears.
      */
+    const applyProviderCapacity = Effect.fn("applyProviderCapacity")(function* (
+      provider: ServerProvider,
+    ) {
+      const overlay = (yield* Ref.get(capacityOverlayRef)).get(provider.instanceId);
+      if (!overlay) return provider;
+      const overlayMs = Date.parse(overlay.observedAt);
+      const probedMs = Date.parse(provider.checkedAt);
+      if (!Number.isFinite(overlayMs)) return provider;
+      if (Number.isFinite(probedMs) && overlayMs <= probedMs) return provider;
+      return { ...provider, backends: overlay.backends };
+    });
+
     const applyVolatileProviderState = Effect.fn("applyVolatileProviderState")(function* (
       provider: ServerProvider,
     ) {
       const withUpdateState = yield* applyProviderUpdateState(provider);
       const withRateLimit = yield* applyProviderRateLimit(withUpdateState);
-      return yield* applyProviderUsageLimits(withRateLimit);
+      const withUsage = yield* applyProviderUsageLimits(withRateLimit);
+      return yield* applyProviderCapacity(withUsage);
     });
 
     const upsertProviders = Effect.fn("upsertProviders")(function* (
@@ -588,6 +618,62 @@ export const ProviderRegistryLive = Layer.effect(
       return yield* upsertProviders([nextProvider], {
         persist: false,
       });
+    });
+
+    const CAPACITY_REFRESH_FLOOR_MS = 60_000;
+
+    const refreshProviderCapacity = Effect.fn("refreshProviderCapacity")(function* (
+      instanceId: ProviderInstanceId,
+    ) {
+      const capacity = (yield* Ref.get(liveSubsRef)).get(instanceId)?.capacity;
+      if (!capacity) return;
+      const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const admitted = yield* Ref.modify(capacityRunsRef, (previous) => {
+        const current = previous.get(instanceId);
+        if (
+          current &&
+          (current.running || nowMs - current.startedAtMs < CAPACITY_REFRESH_FLOOR_MS)
+        ) {
+          return [false, previous] as const;
+        }
+        const next = new Map(previous);
+        next.set(instanceId, { startedAtMs: nowMs, running: true });
+        return [true, next] as const;
+      });
+      if (!admitted) return;
+
+      const settle = Ref.update(capacityRunsRef, (previous) => {
+        const current = previous.get(instanceId);
+        if (!current) return previous;
+        const next = new Map(previous);
+        next.set(instanceId, { ...current, running: false });
+        return next;
+      });
+      yield* capacity.refresh.pipe(
+        Effect.flatMap((backends) =>
+          Effect.gen(function* () {
+            const observedAtMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+            yield* Ref.update(capacityOverlayRef, (previous) => {
+              const next = new Map(previous);
+              next.set(instanceId, {
+                backends,
+                observedAt: DateTime.formatIso(DateTime.makeUnsafe(observedAtMs)),
+              });
+              return next;
+            });
+            const existingProviders = yield* Ref.get(providersRef);
+            const matchingProvider = existingProviders.find(
+              (candidate) => candidate.instanceId === instanceId,
+            );
+            if (!matchingProvider) return;
+            const nextProvider = yield* applyVolatileProviderState(matchingProvider);
+            yield* upsertProviders([nextProvider], { persist: false });
+          }),
+        ),
+        Effect.ensuring(settle),
+        Effect.ignoreCause({ log: true }),
+        Effect.forkIn(registryScope),
+      );
     });
 
     const refreshOneSource = Effect.fn("refreshOneSource")(function* (
@@ -777,6 +863,15 @@ export const ProviderRegistryLive = Layer.effect(
           }
           return next;
         });
+        yield* Ref.update(capacityOverlayRef, (previous) => {
+          const next = new Map(previous);
+          for (const instanceId of previous.keys()) {
+            if (!knownInstanceIds.has(instanceId)) {
+              next.delete(instanceId);
+            }
+          }
+          return next;
+        });
       }),
     );
     const syncLiveSourcesAndContinue = syncLiveSources.pipe(
@@ -864,6 +959,7 @@ export const ProviderRegistryLive = Layer.effect(
       setProviderMaintenanceActionState,
       setProviderRateLimitState,
       mergeProviderUsageWindows,
+      refreshProviderCapacity,
       get streamChanges() {
         return Stream.fromPubSub(changesPubSub);
       },

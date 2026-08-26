@@ -219,9 +219,9 @@ also mean the selected model has no registered price.
 
 Prime Agent runs each model on that backend's own subscription, so the capacity readout beside the
 composer follows the selected model. Pylon reads Prime's sign-ins to show the right account: Prime's
-own Anthropic reading while Prime has used Anthropic recently, or the configured Codex account whose
-identity matches Prime's. Only when neither can be read does it fall back to your configured
-accounts, and it says so. See [the composer](composer.md#subscription-capacity).
+own Anthropic or ChatGPT reading while Prime has used that backend recently — re-read after every
+Prime turn — or the configured Codex account whose identity matches Prime's. Only when neither can be
+read does it fall back to your configured accounts, and it says so. See [the composer](composer.md#subscription-capacity).
 
 ## Execution Approvals
 

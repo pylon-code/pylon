@@ -341,6 +341,12 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
   /** Provenance stamped on a fresh reading. */
   readonly source: string;
   readonly sharedCacheDir?: string | undefined;
+  /**
+   * How recent a shared reading must be to be served instead of read again.
+   * Defaults to the shared window; a caller that knows the number just
+   * changed — a turn finished on this credential — passes a shorter bound.
+   */
+  readonly freshForMs?: number | undefined;
 }): Effect.fn.Return<
   ClaudeOAuthUsageRead,
   never,
@@ -351,6 +357,7 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
   const shared = decideSharedUsageRead(
     yield* readSharedUsageEntry(cacheDir, input.cacheKey),
     nowMs,
+    input.freshForMs,
   );
   if (shared.kind === "fresh") {
     return { usageLimits: shared.usageLimits, cacheForMs: shared.cacheForMs };

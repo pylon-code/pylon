@@ -194,6 +194,7 @@ function makeRegistry(
       setProviderMaintenanceActionState,
       setProviderRateLimitState: () => Ref.get(providersRef),
       mergeProviderUsageWindows: () => Ref.get(providersRef),
+      refreshProviderCapacity: () => Effect.void,
       streamChanges: Stream.empty,
     };
 

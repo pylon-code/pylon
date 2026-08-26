@@ -42,10 +42,11 @@ machine shares that one reading, so running several does not multiply the reques
 dims and says how old it is once a reading has fallen behind, and only then offers **Refresh**.
 
 Prime Agent signs in to its backends on its own, so a Prime thread shows the capacity of the
-account Prime is actually using for the selected model. For an Anthropic model that is Prime's own
-reading whenever Prime has used that backend recently; for an OpenAI Codex model it is the configured
-Codex account whose identity matches Prime's sign-in. When neither can be read, Pylon shows your
-configured accounts for that backend and the popover says the match is assumed. If Prime is signed in
+account Prime is actually using for the selected model: Prime's own reading for Anthropic and for
+ChatGPT whenever Prime has used that backend recently, refreshed again each time a Prime turn
+finishes. For an OpenAI Codex model without a recent reading it is the configured Codex account whose
+identity matches Prime's sign-in. When neither can be read, Pylon shows your configured accounts for
+that backend and the popover says the match is assumed. If Prime is signed in
 to a Codex account that is not configured in Pylon, the readout says the capacity is unavailable
 rather than showing another account's numbers. Prime's own default model, and backends Pylon has no
 provider for, show nothing.
