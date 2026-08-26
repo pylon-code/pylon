@@ -36,7 +36,10 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
-import { rateLimitFromRuntimeEventPayload } from "../../provider/providerRateLimitEvents.ts";
+import {
+  rateLimitFromRuntimeEventPayload,
+  usageWindowsFromRuntimeEventPayload,
+} from "../../provider/providerRateLimitEvents.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { isGitRepository } from "../../git/Utils.ts";
@@ -2103,26 +2106,39 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * Record a pushed subscription verdict against the instance that reported
-   * it. Nothing here is thread-scoped, so it runs ahead of the thread guard in
+   * Record what a pushed rate-limit event says against the instance that
+   * reported it: the subscription verdict (is the account refusing turns) and
+   * the usage windows it carries (how much is left). Nothing here is
+   * thread-scoped, so it runs ahead of the thread guard in
    * `processRuntimeEvent`: an account drains for every thread at once, and the
    * verdict must land even when the reporting thread is not in the read model.
    *
    * Both the missing-instance and unparseable-payload cases leave prior state
-   * untouched rather than clearing it — a verdict Pylon cannot attribute is
-   * worse than a slightly stale one, and `resetsAt` bounds the staleness.
+   * untouched rather than clearing it — a reading Pylon cannot attribute is
+   * worse than a slightly stale one, and `resetsAt` / the retention window
+   * bound the staleness. The two halves are independent: a Codex event
+   * carries windows and no verdict, a Claude event may carry either or both.
    */
   const applyProviderRateLimitEvent = Effect.fn("applyProviderRateLimitEvent")(function* (
     event: Extract<ProviderRuntimeEvent, { type: "account.rate-limits.updated" }>,
   ) {
     if (event.providerInstanceId === undefined) return;
     const state = rateLimitFromRuntimeEventPayload(event.payload, event.createdAt);
-    if (!state) return;
-
-    yield* providerRegistry.setProviderRateLimitState({
-      instanceId: event.providerInstanceId,
-      state,
-    });
+    if (state) {
+      yield* providerRegistry.setProviderRateLimitState({
+        instanceId: event.providerInstanceId,
+        state,
+      });
+    }
+    const usage = usageWindowsFromRuntimeEventPayload(event.payload);
+    if (usage) {
+      yield* providerRegistry.mergeProviderUsageWindows({
+        instanceId: event.providerInstanceId,
+        source: usage.source,
+        observedAt: event.createdAt,
+        windows: usage.windows,
+      });
+    }
   });
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>

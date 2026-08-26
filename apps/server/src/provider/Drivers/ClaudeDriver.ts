@@ -69,6 +69,15 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
+// The usage endpoint is rate limited and answers 429 under load. A good
+// reading is shared machine-wide for five minutes (`sharedUsageReadCache`),
+// and the probe reports how long its answer stands — the rest of that shared
+// window, the wait a 429 asked for, or a short retry while another server is
+// mid-read — so this in-memory cache never holds a private copy past the
+// shared one. Every snapshot refresh inside the window (the fastest refresh
+// profile, a reconnect, a manual refresh) is served without a request.
+// Pushed updates from running sessions keep the gauge moving in between. A
+// read that failed for any other reason backs off for a minute.
 const USAGE_PROBE_FAILURE_TTL = Duration.minutes(1);
 
 function isClaudeNativeCommandPath(commandPath: string): boolean {
@@ -193,8 +202,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           // still shows up promptly.
           timeToLive: Exit.match({
             onSuccess: (result) =>
-              result?.accountIdentity && result?.usageLimits
-                ? CAPABILITIES_PROBE_TTL
+              result?.cacheForMs !== undefined
+                ? Duration.millis(result.cacheForMs)
                 : USAGE_PROBE_FAILURE_TTL,
             onFailure: () => USAGE_PROBE_FAILURE_TTL,
           }),

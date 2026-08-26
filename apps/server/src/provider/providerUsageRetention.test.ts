@@ -4,7 +4,11 @@ import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 
-import { isRetainedUsageFresh, retainUsageLimits } from "./providerUsageRetention.ts";
+import {
+  isRetainedUsageFresh,
+  retainSnapshotUsageLimits,
+  retainUsageLimits,
+} from "./providerUsageRetention.ts";
 
 const NOW = Date.parse("2026-08-06T12:00:00.000Z");
 
@@ -80,6 +84,68 @@ describe("retainUsageLimits", () => {
       const lastKnown = yield* Ref.make<ServerProviderUsageLimits | undefined>(undefined);
 
       assert.isUndefined(yield* retainUsageLimits(lastKnown, undefined));
+    }),
+  );
+});
+
+describe("retainSnapshotUsageLimits", () => {
+  const snapshot = (input: {
+    readonly auth: "authenticated" | "unauthenticated" | "unknown";
+    readonly usageLimits?: ServerProviderUsageLimits;
+  }) => ({
+    auth: { status: input.auth },
+    ...(input.usageLimits ? { usageLimits: input.usageLimits } : {}),
+  });
+
+  // Codex reads its windows over the network inside the status probe; one
+  // slow answer must not blank a gauge the previous probe filled.
+  it.effect("carries the last reading onto a probe that lost it", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const previous = usage("2026-08-06T11:59:00.000Z");
+      const lastKnown = yield* Ref.make<ServerProviderUsageLimits | undefined>(previous);
+
+      const result = yield* retainSnapshotUsageLimits(
+        lastKnown,
+        snapshot({ auth: "authenticated" }),
+      );
+
+      assert.strictEqual(result.usageLimits, previous);
+    }),
+  );
+
+  it.effect("returns the probe untouched when it carries its own reading", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const lastKnown = yield* Ref.make<ServerProviderUsageLimits | undefined>(undefined);
+      const probed = snapshot({
+        auth: "authenticated",
+        usageLimits: usage("2026-08-06T11:59:00.000Z"),
+      });
+
+      const result = yield* retainSnapshotUsageLimits(lastKnown, probed);
+
+      assert.strictEqual(result, probed);
+      assert.strictEqual(yield* Ref.get(lastKnown), probed.usageLimits);
+    }),
+  );
+
+  // A signed-out account has no capacity; showing the old number would say
+  // the opposite of what the probe just found.
+  it.effect("clears the reading when the account signs out", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const lastKnown = yield* Ref.make<ServerProviderUsageLimits | undefined>(
+        usage("2026-08-06T11:59:00.000Z"),
+      );
+
+      const result = yield* retainSnapshotUsageLimits(
+        lastKnown,
+        snapshot({ auth: "unauthenticated", usageLimits: usage("2026-08-06T11:59:30.000Z") }),
+      );
+
+      assert.strictEqual(result.usageLimits, undefined);
+      assert.strictEqual(yield* Ref.get(lastKnown), undefined);
     }),
   );
 });

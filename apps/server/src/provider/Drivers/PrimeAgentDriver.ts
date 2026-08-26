@@ -25,6 +25,7 @@ import {
 } from "../Layers/PrimeAgentProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
+import { readPrimeAgentBackends } from "../primeAgentBackends.ts";
 import { makePrimeAgentDaemonAdapter } from "../prime/PrimeAgentDaemonAdapter.ts";
 import { negotiatePrimeAgentBackend } from "../prime/PrimeAgentBackendSelection.ts";
 import { makePrimeAgentDaemonManager } from "../prime/PrimeAgentDaemonManager.ts";
@@ -94,6 +95,8 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const httpClient = yield* HttpClient.HttpClient;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const serverSettings = yield* ServerSettingsService;
       const serverConfig = yield* ServerConfig;
       const eventLoggers = yield* ProviderEventLoggers;
@@ -194,14 +197,23 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         stampIdentity(stampBackendSnapshot(snapshot));
       const textGeneration = makePrimeAgentTextGeneration();
 
-      const checkProvider = checkPrimeAgentProviderStatus(effectiveConfig, processEnv).pipe(
+      // What Prime is signed in to, so the composer can show the capacity of
+      // the account Prime actually uses rather than assume it.
+      const readBackends = readPrimeAgentBackends(effectiveConfig).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(HttpClient.HttpClient, httpClient),
+      );
+      const checkProvider = checkPrimeAgentProviderStatus(effectiveConfig, processEnv, {
+        readBackends,
+      }).pipe(
         Effect.map(stampSnapshot),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       );
       const checkProviderWithPublishedModels = checkPrimeAgentProviderStatus(
         effectiveConfig,
         processEnv,
-        { discoverModels: false },
+        { discoverModels: false, readBackends },
       ).pipe(
         Effect.map(stampSnapshot),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

@@ -158,6 +158,58 @@ probes, respect the `enableProviderUpdateChecks` setting, and never fail a provi
 Codex and Claude drivers apply the classification to every snapshot with `applyModelManifest`;
 driver kinds absent from the manifest have no legacy concept.
 
+## Subscription capacity
+
+Each Codex and Claude snapshot may carry `usageLimits`: the account's rolling session and weekly
+windows as `usedPercent` plus a reset time. Three mechanisms keep that gauge present and current:
+
+- **Polled reading.** The driver's status probe reads it — Codex through the app-server's
+  `account/rateLimits/read`, Claude through Anthropic's OAuth usage endpoint
+  ([`claudeOAuthUsage.ts`][claude-usage]). The probe runs on the provider-health interval while a
+  client holds foreground provider-status demand, and again as soon as demand returns to a snapshot
+  older than that interval ([`makeManagedServerProvider.ts`][managed]). A failed read keeps the last
+  good reading for up to thirty minutes rather than blanking the gauge
+  ([`providerUsageRetention.ts`][retention]).
+- **Pushed updates.** A running session reports its windows mid-turn — Codex's
+  `account/rateLimits/updated`, Claude's `rate_limit_event` with `utilization` — as the
+  `account.rate-limits.updated` runtime event. Ingestion parses them
+  ([`providerRateLimitEvents.ts`][rate-limit-events]) and hands them to
+  `ProviderRegistry.mergeProviderUsageWindows`, which keeps them as a volatile overlay and re-applies
+  every push newer than the probe reading on top of each snapshot
+  ([`providerUsageLimits.ts`][usage-limits]). A probe that runs after a push supersedes it. The same
+  Claude event also carries the allowed/rejected verdict that drives account-drain routing
+  (`ServerProvider.rateLimit`); the two are parsed independently.
+- **Nothing persisted.** Both overlays are re-learned after a restart from the next probe or push;
+  the on-disk snapshot cache deliberately drops `usageLimits`.
+- **Request budget.** Both usage endpoints answer 429 when hammered, and one machine routinely
+  runs several servers against one account — the installed app plus worktree dev servers. A good
+  Claude reading is therefore shared machine-wide for five minutes
+  ([`sharedUsageReadCache.ts`][shared-usage]): it lives in the user's cache directory
+  (`~/Library/Caches/pylon-code/usage`, `%LOCALAPPDATA%\pylon-code\Cache\usage`,
+  `$XDG_CACHE_HOME/pylon-code/usage`; override with `PYLON_USAGE_CACHE_DIR`), deliberately outside
+  any runtime home, keyed by the account's config dir. Each server's in-memory cache holds a
+  reading only for the rest of the shared window, a lock file makes the endpoint read once when
+  several servers expire together, and a 429 is written as a shared deadline (its `Retry-After`,
+  bounded to 1–30 minutes, five by default) that every server honours. Codex reads inside its
+  status probe, which runs at most once per refresh interval per server. Pushed updates cost
+  nothing outbound, and a push that repeats the current number is folded in at most once a minute
+  so a busy turn cannot republish the provider list per tool call. Clients only offer a manual
+  refresh once a reading is older than the shared window. Codex's rate-limit read shares the same
+  file under its own key, so several servers on one Codex home also read it once per window.
+- **Agents that sign in on their own.** Prime Agent runs models on Anthropic or OpenAI Codex with
+  credentials of its own, so its snapshot carries `backends`
+  ([`primeAgentBackends.ts`][prime-backends]): for OpenAI Codex the ChatGPT account id, which a
+  configured Codex instance also reports as `auth.accountId`
+  ([`codexAccountIdentity.ts`][codex-identity]); for Anthropic a capacity reading taken with Prime's
+  own token while it is fresh, under Prime's own shared-cache key. Clients show a Prime thread the
+  capacity Prime is verified to use — its own Anthropic reading, or the Codex instance whose account
+  id matches — and fall back to the configured accounts labelled as assumed only when neither can be
+  read.
+
+Windows are matched by duration, never by label: anything under a day is the session window,
+anything of a week or more is a weekly, and the first weekly is the account-wide one. That is what
+lets one strip and one popover render Codex and Claude the same way.
+
 ## How provider work is requested
 
 Clients never call a provider directly. They dispatch orchestration commands over the RPC method
@@ -210,3 +262,11 @@ when a request opens (approval) or user input is requested, via
 [ingest]: ../../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
 [cmd]: ../../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
 [checkpoint]: ../../apps/server/src/orchestration/Layers/CheckpointReactor.ts
+[claude-usage]: ../../apps/server/src/provider/claudeOAuthUsage.ts
+[managed]: ../../apps/server/src/provider/makeManagedServerProvider.ts
+[retention]: ../../apps/server/src/provider/providerUsageRetention.ts
+[rate-limit-events]: ../../apps/server/src/provider/providerRateLimitEvents.ts
+[usage-limits]: ../../apps/server/src/provider/providerUsageLimits.ts
+[shared-usage]: ../../apps/server/src/provider/sharedUsageReadCache.ts
+[prime-backends]: ../../apps/server/src/provider/primeAgentBackends.ts
+[codex-identity]: ../../apps/server/src/provider/codexAccountIdentity.ts

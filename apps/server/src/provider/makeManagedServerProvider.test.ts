@@ -1,5 +1,6 @@
 import { describe, it, assert } from "@effect/vitest";
 import {
+  type BackgroundPolicySnapshot,
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -13,6 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
@@ -130,6 +132,51 @@ function makeBackgroundPolicyLayer(shouldRunScopeWork: boolean) {
   });
 }
 
+/**
+ * A policy whose provider-status demand the test flips at will, publishing a
+ * snapshot change each time the way the live policy does on every activity
+ * report. Queue-backed so a change published before the provider subscribes
+ * is delivered rather than lost.
+ */
+function makeControllableBackgroundPolicy() {
+  return Effect.gen(function* () {
+    const demand = yield* Ref.make(true);
+    const changes = yield* Queue.unbounded<BackgroundPolicySnapshot>();
+    const snapshot: BackgroundPolicySnapshot = {
+      hostPower: {
+        source: "unknown",
+        idle: "unknown",
+        idleSeconds: null,
+        locked: "unknown",
+        suspended: false,
+        onBattery: "unknown",
+        lowPowerMode: "unknown",
+        thermalState: "unknown",
+        stale: true,
+        updatedAt: TEST_EPOCH,
+      },
+      leases: [],
+      activeForegroundLeaseCount: 0,
+      activeScopeKeys: [],
+      shouldRunOpportunisticWork: true,
+      updatedAt: TEST_EPOCH,
+    };
+    const layer = Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+      reportClientActivity: () => Effect.void,
+      removeRpcClient: () => Effect.void,
+      reportHostPowerState: () => Effect.void,
+      snapshot: Effect.succeed(snapshot),
+      streamChanges: Stream.fromQueue(changes),
+      hasDemand: () => Ref.get(demand),
+      shouldRunScopeWork: () => Ref.get(demand),
+      shouldRunOpportunisticWork: Ref.get(demand),
+    });
+    const setDemand = (next: boolean) =>
+      Ref.set(demand, next).pipe(Effect.andThen(Queue.offer(changes, snapshot)));
+    return { layer, setDemand };
+  });
+}
+
 const BackgroundPolicyAlwaysRunLayer = makeBackgroundPolicyLayer(true);
 const BackgroundPolicyNeverRunLayer = makeBackgroundPolicyLayer(false);
 const ServerSettingsTestLayer = ServerSettingsService.layerTest();
@@ -221,6 +268,63 @@ describe("makeManagedServerProvider", () => {
         assert.strictEqual(yield* Ref.get(checkCalls), 1);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NeverRunTestLayer, TestClock.layer()))),
+  );
+
+  // A window that was in the background for a while comes back to a snapshot
+  // the periodic loop skipped. Waiting for the next tick can mean a whole
+  // interval of stale numbers, so returning demand refreshes on its own.
+  it.effect("refreshes as soon as demand returns to a snapshot older than the interval", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Pinned before any sleep is scheduled, so the fixture dates and the
+        // clock agree without the refresh loop spinning through the gap.
+        yield* TestClock.setTime(Date.parse("2026-04-10T00:00:01.000Z"));
+        const policy = yield* makeControllableBackgroundPolicy();
+        const checkCalls = yield* Ref.make(0);
+        const initialCheckDone = yield* Deferred.make<void>();
+        const secondCheckDone = yield* Deferred.make<void>();
+        yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          // Stamped with the clock so a fresh check reads as fresh.
+          checkProvider: Ref.updateAndGet(checkCalls, (count) => count + 1).pipe(
+            Effect.tap((count) =>
+              count === 1
+                ? Deferred.succeed(initialCheckDone, undefined).pipe(Effect.ignore)
+                : count === 2
+                  ? Deferred.succeed(secondCheckDone, undefined).pipe(Effect.ignore)
+                  : Effect.void,
+            ),
+            Effect.andThen(DateTime.now),
+            Effect.map((now) => ({ ...refreshedSnapshot, checkedAt: DateTime.formatIso(now) })),
+          ),
+          refreshInterval: "5 minutes",
+        }).pipe(Effect.provide(policy.layer));
+
+        yield* Deferred.await(initialCheckDone);
+        // Demand drops, then more than an interval passes: the loop wakes once
+        // at five minutes and, seeing no demand, skips.
+        yield* policy.setDemand(false);
+        yield* TestClock.adjust("6 minutes");
+        yield* Effect.yieldNow;
+        assert.strictEqual(yield* Ref.get(checkCalls), 1);
+
+        yield* policy.setDemand(true);
+        yield* Deferred.await(secondCheckDone);
+        assert.strictEqual(yield* Ref.get(checkCalls), 2);
+
+        // Demand returning to a snapshot younger than the interval is what the
+        // loop would have produced anyway; nothing to do.
+        yield* policy.setDemand(false);
+        yield* policy.setDemand(true);
+        yield* Effect.yieldNow;
+        yield* Effect.yieldNow;
+        assert.strictEqual(yield* Ref.get(checkCalls), 2);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(ServerSettingsTestLayer, TestClock.layer()))),
   );
 
   it.effect("disables periodic provider refreshes when the explicit interval is zero", () =>

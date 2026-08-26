@@ -281,6 +281,35 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     ),
   ).pipe(Effect.forkScoped);
 
+  // Demand comes and goes: the periodic loop skips its refreshes while no
+  // client is in the foreground, so a window that comes back after a long gap
+  // would otherwise wait up to a full interval for its first fresh snapshot.
+  // Refresh the moment demand returns if the snapshot has aged past the
+  // interval; a snapshot younger than that is what the loop would have
+  // produced anyway. Seeded with the current demand and skipping it, so only
+  // real transitions count and startup does not double-probe.
+  yield* Stream.concat(
+    Stream.fromEffect(hasProviderStatusDemand),
+    backgroundPolicy.streamChanges.pipe(Stream.mapEffect(() => hasProviderStatusDemand)),
+  ).pipe(
+    Stream.changes,
+    Stream.drop(1),
+    Stream.filter((demand) => demand),
+    Stream.runForEach(() =>
+      Effect.gen(function* () {
+        const refreshInterval = yield* getRefreshInterval;
+        const intervalMs = Duration.toMillis(Duration.fromInputUnsafe(refreshInterval));
+        if (intervalMs <= 0) return;
+        const checkedAtMs = Date.parse((yield* Ref.get(snapshotStateRef)).snapshot.checkedAt);
+        const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+        if (Number.isFinite(checkedAtMs) && nowMs - checkedAtMs < intervalMs) return;
+        yield* refreshSnapshot();
+      }),
+    ),
+    Effect.ignoreCause({ log: true }),
+    Effect.forkScoped,
+  );
+
   yield* applySnapshot(initialSettings, { forceRefresh: true }).pipe(
     Effect.ignoreCause({ log: true }),
     Effect.forkScoped,

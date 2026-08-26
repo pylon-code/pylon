@@ -3,6 +3,10 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   accessTokenFromKeychainValue,
   claudeConfigDirKeychainService,
+  OAUTH_USAGE_THROTTLE_DEFAULT_MS,
+  OAUTH_USAGE_THROTTLE_MAX_MS,
+  OAUTH_USAGE_THROTTLE_MIN_MS,
+  throttleDelayFromRetryAfter,
   usageLimitsFromClaudeOAuthResponse,
 } from "./claudeOAuthUsage.ts";
 
@@ -201,5 +205,42 @@ describe("accessTokenFromKeychainValue", () => {
     ["a blank token", '{"claudeAiOauth":{"accessToken":"   "}}'],
   ])("returns undefined when the value is %s", (_label, raw) => {
     expect(accessTokenFromKeychainValue(raw)).toBeUndefined();
+  });
+});
+
+describe("throttleDelayFromRetryAfter", () => {
+  const NOW = Date.parse("2026-08-06T12:00:00.000Z");
+
+  // The endpoint has asked for room; the whole point is to give it.
+  it("honours Retry-After in seconds", () => {
+    expect(throttleDelayFromRetryAfter("120", NOW)).toBe(120_000);
+  });
+
+  it("honours Retry-After as an HTTP date", () => {
+    expect(throttleDelayFromRetryAfter("Thu, 06 Aug 2026 12:03:00 GMT", NOW)).toBe(180_000);
+  });
+
+  // Never under a minute: a burst of retries would keep the limit tripped.
+  it("floors a short or past Retry-After to a minute", () => {
+    expect(throttleDelayFromRetryAfter("5", NOW)).toBe(OAUTH_USAGE_THROTTLE_MIN_MS);
+    expect(throttleDelayFromRetryAfter("Thu, 06 Aug 2026 11:00:00 GMT", NOW)).toBe(
+      OAUTH_USAGE_THROTTLE_MIN_MS,
+    );
+  });
+
+  // Never over half an hour: by then the retained reading has expired and a
+  // fresh attempt is worth more than obedience.
+  it("caps a long Retry-After", () => {
+    expect(throttleDelayFromRetryAfter("86400", NOW)).toBe(OAUTH_USAGE_THROTTLE_MAX_MS);
+  });
+
+  // Without the header a throttled account is retried no faster than a
+  // healthy one would be read.
+  it.each([
+    ["absent", undefined],
+    ["blank", "  "],
+    ["unparseable", "soon"],
+  ])("waits a full poll when Retry-After is %s", (_label, header) => {
+    expect(throttleDelayFromRetryAfter(header, NOW)).toBe(OAUTH_USAGE_THROTTLE_DEFAULT_MS);
   });
 });

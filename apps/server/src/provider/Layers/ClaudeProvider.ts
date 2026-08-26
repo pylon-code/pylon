@@ -45,7 +45,7 @@ import {
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { discoverClaudeSkills } from "../Drivers/ClaudeSkills.ts";
-import { fetchClaudeOAuthUsageLimits } from "../claudeOAuthUsage.ts";
+import { type ClaudeOAuthUsageRead, fetchClaudeOAuthUsage } from "../claudeOAuthUsage.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -581,7 +581,10 @@ function apiProviderAuthMetadata(
 // account info. The previous 8s budget expired mid-init, so the probe returned
 // `undefined` and left the provider unverified and unselectable in the picker.
 const CAPABILITIES_PROBE_TIMEOUT_MS = 25_000;
-const USAGE_PROBE_TIMEOUT_MS = 4_000;
+// The identity check spawns the CLI and the usage read walks the keychain and
+// the network; each is bounded on its own so one slow answer cannot take the
+// other down with it. Both run concurrently, so this is also the worst case.
+const USAGE_PROBE_TIMEOUT_MS = 10_000;
 
 /**
  * Keep workspace-scoped command discovery intact while isolating the periodic
@@ -847,6 +850,11 @@ function accountIdentityFromAuthStatus(result: CommandResult): string | undefine
  * machine's local sessions, so it disagrees with the account's real totals,
  * and a gauge that silently switches between two different numbers is worse
  * than one that is briefly absent.
+ *
+ * The two reads are independent. A slow or failing identity check yields an
+ * unknown identity, which the caller accepts, rather than discarding a usage
+ * reading that arrived fine — that is what used to blank the gauge whenever
+ * the CLI took a moment to start.
  */
 export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(function* (
   claudeSettings: ClaudeSettings,
@@ -856,6 +864,8 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
   | {
       readonly accountIdentity: string | undefined;
       readonly usageLimits: ServerProviderUsageLimits | undefined;
+      /** How long this answer stands before the endpoint should be consulted again. */
+      readonly cacheForMs?: number | undefined;
     }
   | undefined,
   never,
@@ -867,20 +877,31 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const runOptions = { closeStdin: true as const, ...(cwd ? { cwd } : {}) };
 
-  const probed = yield* Effect.all(
+  const [authResult, usageRead] = yield* Effect.all(
     [
-      runClaudeCommand(claudeSettings, ["auth", "status", "--json"], environment, runOptions),
-      fetchClaudeOAuthUsageLimits(claudeSettings, checkedAt),
+      runClaudeCommand(claudeSettings, ["auth", "status", "--json"], environment, runOptions).pipe(
+        Effect.map(Option.some),
+        Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
+        Effect.map(Option.flatten),
+        Effect.catchCause(() => Effect.succeed(Option.none<CommandResult>())),
+      ),
+      fetchClaudeOAuthUsage(claudeSettings, checkedAt).pipe(
+        Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
+        Effect.catchCause(() => Effect.succeed(Option.none<ClaudeOAuthUsageRead>())),
+        Effect.map(Option.getOrUndefined),
+      ),
     ],
     { concurrency: "unbounded" },
-  ).pipe(
-    Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
-    Effect.catchCause(() => Effect.succeed(Option.none())),
   );
-  if (Option.isNone(probed)) return undefined;
+  if (Option.isNone(authResult) && usageRead === undefined) return undefined;
 
-  const [authResult, usageLimits] = probed.value;
-  return { accountIdentity: accountIdentityFromAuthStatus(authResult), usageLimits };
+  return {
+    accountIdentity: Option.isSome(authResult)
+      ? accountIdentityFromAuthStatus(authResult.value)
+      : undefined,
+    usageLimits: usageRead?.usageLimits,
+    ...(usageRead?.cacheForMs !== undefined ? { cacheForMs: usageRead.cacheForMs } : {}),
+  };
 });
 
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (

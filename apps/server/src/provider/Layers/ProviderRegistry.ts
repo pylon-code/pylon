@@ -29,8 +29,10 @@ import {
   type ServerProvider,
   type ServerProviderRateLimit,
   type ServerProviderUpdateState,
+  type ServerProviderUsageWindow,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
@@ -42,6 +44,12 @@ import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
 
 import { ServerConfig } from "../../config.ts";
+import {
+  accumulatePushedUsageWindows,
+  applyPushedUsageWindows,
+  type PushedUsageWindow,
+} from "../providerUsageLimits.ts";
+import { USAGE_RETENTION_MAX_AGE } from "../providerUsageRetention.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry, type ProviderRegistryShape } from "../Services/ProviderRegistry.ts";
 import {
@@ -300,6 +308,15 @@ export const ProviderRegistryLive = Layer.effect(
     const rateLimitStatesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, ServerProviderRateLimit>
     >(new Map());
+    // Usage windows pushed by running sessions, keyed by instance. Volatile
+    // for the same reason: a probe rebuilds `usageLimits` from scratch, so
+    // every push newer than the probe is re-applied on top of its result.
+    const pushedUsageRef = yield* Ref.make<
+      ReadonlyMap<
+        ProviderInstanceId,
+        { readonly source: string; readonly windows: ReadonlyArray<PushedUsageWindow> }
+      >
+    >(new Map());
 
     // Live-source registry — the dynamic counterpart to the boot-time
     // `bootSources`. Keyed by `instanceId`; the stored `ProviderInstance`
@@ -370,6 +387,27 @@ export const ProviderRegistryLive = Layer.effect(
     });
 
     /**
+     * Unlike `rateLimit`, `usageLimits` is a legitimate probe field, so a
+     * missing overlay leaves the snapshot alone rather than stripping it.
+     * Pushes older than the probe, or older than the retention window, fall
+     * away inside `applyPushedUsageWindows`.
+     */
+    const applyProviderUsageLimits = Effect.fn("applyProviderUsageLimits")(function* (
+      provider: ServerProvider,
+    ) {
+      const pushed = (yield* Ref.get(pushedUsageRef)).get(provider.instanceId);
+      if (!pushed) return provider;
+      const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const usageLimits = applyPushedUsageWindows(provider.usageLimits, pushed.windows, {
+        nowMs,
+        maxAgeMs: Duration.toMillis(USAGE_RETENTION_MAX_AGE),
+        source: pushed.source,
+      });
+      if (usageLimits === undefined || usageLimits === provider.usageLimits) return provider;
+      return { ...provider, usageLimits };
+    });
+
+    /**
      * Project every volatile per-instance overlay onto a freshly probed
      * snapshot. Probes rebuild snapshots from scratch, so anything not stored
      * in a Ref has to be re-applied here or it silently disappears.
@@ -378,7 +416,8 @@ export const ProviderRegistryLive = Layer.effect(
       provider: ServerProvider,
     ) {
       const withUpdateState = yield* applyProviderUpdateState(provider);
-      return yield* applyProviderRateLimit(withUpdateState);
+      const withRateLimit = yield* applyProviderRateLimit(withUpdateState);
+      return yield* applyProviderUsageLimits(withRateLimit);
     });
 
     const upsertProviders = Effect.fn("upsertProviders")(function* (
@@ -506,6 +545,41 @@ export const ProviderRegistryLive = Layer.effect(
       );
       // Unknown instance is a no-op returning the current list, matching
       // `refreshInstance` so transport layers never special-case unknowns.
+      if (!matchingProvider) {
+        return existingProviders;
+      }
+
+      const nextProvider = yield* applyVolatileProviderState(matchingProvider);
+      return yield* upsertProviders([nextProvider], {
+        persist: false,
+      });
+    });
+
+    const mergeProviderUsageWindows = Effect.fn("mergeProviderUsageWindows")(function* (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly source: string;
+      readonly observedAt: string;
+      readonly windows: ReadonlyArray<ServerProviderUsageWindow>;
+    }) {
+      const pushed = input.windows.map(
+        (window): PushedUsageWindow => ({ window, observedAt: input.observedAt }),
+      );
+      yield* Ref.update(pushedUsageRef, (previous) => {
+        const next = new Map(previous);
+        next.set(input.instanceId, {
+          source: input.source,
+          windows: accumulatePushedUsageWindows(
+            previous.get(input.instanceId)?.windows ?? [],
+            pushed,
+          ),
+        });
+        return next;
+      });
+
+      const existingProviders = yield* Ref.get(providersRef);
+      const matchingProvider = existingProviders.find(
+        (candidate) => candidate.instanceId === input.instanceId,
+      );
       if (!matchingProvider) {
         return existingProviders;
       }
@@ -694,6 +768,15 @@ export const ProviderRegistryLive = Layer.effect(
           }
           return next;
         });
+        yield* Ref.update(pushedUsageRef, (previous) => {
+          const next = new Map(previous);
+          for (const instanceId of previous.keys()) {
+            if (!knownInstanceIds.has(instanceId)) {
+              next.delete(instanceId);
+            }
+          }
+          return next;
+        });
       }),
     );
     const syncLiveSourcesAndContinue = syncLiveSources.pipe(
@@ -780,6 +863,7 @@ export const ProviderRegistryLive = Layer.effect(
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
       setProviderRateLimitState,
+      mergeProviderUsageWindows,
       get streamChanges() {
         return Stream.fromPubSub(changesPubSub);
       },

@@ -193,6 +193,7 @@ function makeRegistry(
         Effect.succeed(lifecycleFor(provider)),
       setProviderMaintenanceActionState,
       setProviderRateLimitState: () => Ref.get(providersRef),
+      mergeProviderUsageWindows: () => Ref.get(providersRef),
       streamChanges: Stream.empty,
     };
 

@@ -91,8 +91,25 @@ const BackgroundPolicyAlwaysRunLayer = Layer.mock(BackgroundPolicy.BackgroundPol
   shouldRunOpportunisticWork: Effect.succeed(true),
 });
 
+/**
+ * A binary that does not exist, so no driver spawns a real CLI on the machine
+ * running this test. The chain under test is the registry and the wire
+ * shape, not the providers: with a real `prime-agent` on PATH the Prime driver
+ * would otherwise start a daemon during construction and wait on its
+ * readiness schedule — which never advances under the test clock.
+ */
+const MISSING_BINARY = "/definitely/not/installed/pylon-drain-e2e";
+
 /** Two Claude accounts, work first in drain order. */
 const TWO_ACCOUNT_OVERRIDES = {
+  providers: {
+    claudeAgent: { binaryPath: MISSING_BINARY },
+    codex: { enabled: false, binaryPath: MISSING_BINARY },
+    cursor: { enabled: false, binaryPath: MISSING_BINARY },
+    grok: { enabled: false, binaryPath: MISSING_BINARY },
+    opencode: { enabled: false, binaryPath: MISSING_BINARY },
+    primeAgent: { enabled: false, binaryPath: MISSING_BINARY },
+  },
   providerInstances: {
     [WORK]: { driver: CLAUDE, enabled: true, displayName: "Claude Work", priority: 0 },
     [PERSONAL]: {
@@ -100,7 +117,7 @@ const TWO_ACCOUNT_OVERRIDES = {
       enabled: true,
       displayName: "Claude Personal",
       priority: 1,
-      config: { homePath: "~/.claude_personal_home" },
+      config: { binaryPath: MISSING_BINARY, homePath: "~/.claude_personal_home" },
     },
   },
 } as never;

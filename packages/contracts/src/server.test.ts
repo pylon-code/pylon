@@ -164,6 +164,33 @@ describe("ServerProvider", () => {
     expect(parsed.usageLimits?.windows).toHaveLength(2);
   });
 
+  // An agent that signs in on its own reports each backend separately; a
+  // client matches the identity against a configured instance's own.
+  it("decodes backend sign-ins and an account identity", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      auth: { status: "authenticated", accountId: "acct_123" },
+      backends: [
+        { backend: "openai-codex", accountId: "acct_123" },
+        {
+          backend: "anthropic",
+          usageLimits: {
+            source: "primeAgentOAuth",
+            checkedAt: "2026-07-22T12:00:00.000Z",
+            windows: [{ label: "Session", usedPercent: 12, windowDurationMins: 300 }],
+          },
+        },
+      ],
+    });
+
+    expect(parsed.auth.accountId).toBe("acct_123");
+    expect(parsed.backends?.map((backend) => backend.backend)).toEqual([
+      "openai-codex",
+      "anthropic",
+    ]);
+    expect(parsed.backends?.[1]?.usageLimits?.windows).toHaveLength(1);
+  });
+
   it("decodes pushed rate-limit state", () => {
     const parsed = decodeServerProvider({
       ...baseProviderSnapshot,
