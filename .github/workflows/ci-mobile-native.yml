@@ -1,9 +1,9 @@
 name: CI Mobile Native
 
 # Split out of ci.yml so it can be path-filtered. The job needs a macOS runner
-# for swiftlint, and macOS is the most expensive tier we buy, but the check it
+# for swiftlint, and macOS runners are the slowest to provision, but the check it
 # runs only ever reads .swift/.kt/.kts under apps/mobile -- roughly four seconds
-# of actual linting behind about forty seconds of runner setup. Filtering on
+# of actual linting behind a runner boot many times longer. Filtering on
 # apps/mobile/** would still be wrong: only 3 of the last 40 merged PRs touched
 # native sources, while 18 touched something under apps/mobile, so the broad
 # filter would boot macOS six times more often than the check can do any work.
@@ -43,7 +43,7 @@ permissions:
 jobs:
   mobile_native_static_analysis:
     name: Mobile Native Static Analysis
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: macos-26
     timeout-minutes: 10
     steps:
       - name: Checkout

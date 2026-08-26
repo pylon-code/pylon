@@ -42,12 +42,11 @@ permissions:
   id-token: none
 
 jobs:
-  # Runner split: the four platform builds and the preflight suite stay on
-  # Blacksmith, where the compute is worth paying for. Everything else here is
-  # short and I/O-bound — API calls, artifact uploads, a git push, a curl — and
-  # those jobs repeatedly sat unassigned in Blacksmith's queue while heavier
-  # jobs in the same run picked up immediately. GitHub-hosted runners took them
-  # in seconds every time, so light orchestration runs there.
+  # Every job runs on GitHub-hosted standard runners, which are free on this
+  # public repository. Heavy jobs pin an OS version (`ubuntu-24.04`,
+  # `windows-2025`, `macos-26`) so a build cannot drift when `-latest` moves;
+  # the short I/O-bound orchestration jobs use `ubuntu-latest` because nothing
+  # in them is OS-sensitive.
   check_changes:
     name: Check for changes since last nightly
     if: github.event_name == 'schedule'
@@ -91,7 +90,7 @@ jobs:
     if: |
       !failure() && !cancelled() &&
       (github.event_name != 'schedule' || needs.check_changes.outputs.has_changes == 'true')
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     # Runs the whole repo's check, typecheck, and test suites.
     timeout-minutes: 30
     outputs:
@@ -188,7 +187,7 @@ jobs:
     name: Release quality checks
     needs: [preflight]
     if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -348,7 +347,7 @@ jobs:
     name: Build WSL node-pty (linux-x64)
     needs: [preflight]
     if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -419,32 +418,28 @@ jobs:
       matrix:
         include:
           - label: macOS arm64
-            runner: blacksmith-6vcpu-macos-26
+            runner: macos-26
             platform: mac
             target: dmg
             arch: arm64
             rust_target: aarch64-apple-darwin
             resource_key: darwin-arm64
           - label: macOS x64
-            runner: blacksmith-6vcpu-macos-26
+            runner: macos-26
             platform: mac
             target: dmg
             arch: x64
             rust_target: x86_64-apple-darwin
             resource_key: darwin-x64
           - label: Linux x64
-            # GitHub-hosted deliberately. Every stuck job so far has been on a
-            # blacksmith ubuntu runner, including this build sitting unassigned
-            # for 43 minutes while the macOS and Windows jobs queued after it
-            # ran and finished. Slower here, but it actually starts.
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             platform: linux
             target: AppImage
             arch: x64
             rust_target: x86_64-unknown-linux-gnu
             resource_key: linux-x64
           - label: Windows x64
-            runner: blacksmith-8vcpu-windows-2025
+            runner: windows-2025
             platform: win
             target: nsis
             arch: x64
@@ -821,7 +816,7 @@ jobs:
     # trusted publishing configured for it. Set the PUBLISH_CLI_TO_NPM
     # repository variable to "true" once both exist.
     if: ${{ !failure() && !cancelled() && vars.PUBLISH_CLI_TO_NPM == 'true' && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.quality.result == 'success' && needs.build.result == 'success' }}
-    runs-on: ubuntu-24.04 # blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
