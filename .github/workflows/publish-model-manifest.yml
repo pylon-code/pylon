@@ -1,0 +1,111 @@
+name: Publish model manifest
+
+on:
+  push:
+    branches:
+      - pylon
+    paths:
+      - apps/server/src/provider/model-manifest.json
+      - .github/workflows/publish-model-manifest.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-model-manifest
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish public manifest
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check releases repository credentials
+        shell: bash
+        env:
+          RELEASES_REPO_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASES_REPO_TOKEN:-}" ]]; then
+            echo "The RELEASES_REPO_TOKEN secret is required to publish the model manifest." >&2
+            exit 1
+          fi
+
+      - name: Checkout approved Pylon source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: pylon
+          path: source
+          sparse-checkout: apps/server/src/provider/model-manifest.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Validate source manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const sourcePath = "source/apps/server/src/provider/model-manifest.json";
+          const publicPath = "/tmp/pylon-model-manifest.json";
+          const maxBytes = 32 * 1024;
+          const maxModelsPerProvider = 256;
+          const maxSlugLength = 256;
+          const supportedDrivers = new Set(["codex", "claudeAgent"]);
+          const source = fs.readFileSync(sourcePath);
+          if (source.byteLength > maxBytes) {
+            throw new Error("Model manifest exceeds its public byte limit");
+          }
+          const manifest = JSON.parse(source.toString("utf8"));
+          const topLevelFields = Object.keys(manifest).sort();
+          if (JSON.stringify(topLevelFields) !== JSON.stringify(["currentModels", "version"])) {
+            throw new Error("Model manifest has unsupported top-level fields");
+          }
+          if (manifest.version !== 1 || typeof manifest.currentModels !== "object" || manifest.currentModels === null || Array.isArray(manifest.currentModels)) {
+            throw new Error("Unsupported model manifest schema");
+          }
+          const currentModels = Object.entries(manifest.currentModels);
+          if (currentModels.length > supportedDrivers.size || currentModels.some(([driver]) => !supportedDrivers.has(driver))) {
+            throw new Error("Model manifest has an unsupported driver kind");
+          }
+          for (const [driver, models] of currentModels) {
+            if (!Array.isArray(models) || models.length > maxModelsPerProvider || new Set(models).size !== models.length || models.some((model) => typeof model !== "string" || !model || model.length > maxSlugLength)) {
+              throw new Error(`Invalid model list for ${driver}`);
+            }
+          }
+          const publicManifest = {
+            version: manifest.version,
+            currentModels: Object.fromEntries(currentModels),
+          };
+          const serialized = `${JSON.stringify(publicManifest, null, 2)}\n`;
+          if (Buffer.byteLength(serialized) > maxBytes) {
+            throw new Error("Serialized public model manifest exceeds its byte limit");
+          }
+          fs.writeFileSync(publicPath, serialized);
+          NODE
+
+      - name: Checkout public releases repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: pylon-code/pylon-releases
+          ref: main
+          path: public
+          token: ${{ secrets.RELEASES_REPO_TOKEN }}
+          persist-credentials: true
+
+      - name: Publish manifest without private source metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/pylon-model-manifest.json public/model-manifest.json
+          cd public
+          if [[ -z "$(git status --porcelain -- model-manifest.json)" ]]; then
+            echo "The public manifest is already current."
+            exit 0
+          fi
+          git config user.name "pylon-release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          git add model-manifest.json
+          git commit -m "chore: update model manifest"
+          git push origin HEAD:main

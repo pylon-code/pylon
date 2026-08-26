@@ -39,6 +39,7 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
+import * as ModelManifest from "./ModelManifest.ts";
 import * as OpenCodeRuntime from "./opencodeRuntime.ts";
 import * as ProviderEventLoggers from "./Layers/ProviderEventLoggers.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./Layers/ProviderInstanceRegistryHydration.ts";
@@ -115,6 +116,7 @@ const registryLayer = ProviderRegistryLive.pipe(
       ProviderEventLoggers.NoOpProviderEventLoggers,
     ),
   ),
+  Layer.provideMerge(ModelManifest.layerTest),
   Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
   Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
 );
