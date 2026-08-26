@@ -94,11 +94,19 @@ export function isUsageReadingStale(input: {
 }
 
 /**
+ * How long the server holds a good reading before it will read the provider
+ * again (`USAGE_PROBE_SUCCESS_TTL` in `ClaudeDriver`). The usage endpoints
+ * are rate limited, so refreshes inside this window are served from cache.
+ */
+export const USAGE_READING_CACHE_MS = 5 * 60_000;
+
+/**
  * How old a reading may get before the popover and strip call it stale, given
- * how often the server polls. One minute past the interval leaves room for
- * the probe itself; three minutes is the floor so the fastest profile does
- * not flicker.
+ * how often the server polls. A minute past the longer of the poll interval
+ * and the server's own cache leaves room for the probe itself — and means
+ * "stale" is exactly when a refresh would reach the provider rather than the
+ * cache, which is what makes the Refresh affordance honest.
  */
 export function usageStaleAfterMs(refreshIntervalMs: number): number {
-  return Math.max(USAGE_STALE_AFTER_MS, refreshIntervalMs + 60_000);
+  return Math.max(refreshIntervalMs, USAGE_READING_CACHE_MS) + 60_000;
 }

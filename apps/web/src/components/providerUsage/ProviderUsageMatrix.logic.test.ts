@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildProviderUsageMatrix, isUsageReadingStale } from "./ProviderUsageMatrix.logic";
+import {
+  buildProviderUsageMatrix,
+  isUsageReadingStale,
+  usageStaleAfterMs,
+} from "./ProviderUsageMatrix.logic";
 import type { ProviderUsageAccount } from "./ProviderUsageAccounts";
 
 const CHECKED_AT = "2026-08-06T12:00:00.000Z";
@@ -105,5 +109,18 @@ describe("isUsageReadingStale", () => {
 
   it("does not claim staleness it cannot establish", () => {
     expect(isUsageReadingStale({ checkedAt: "nonsense", nowMs: NOW })).toBe(false);
+  });
+});
+
+describe("usageStaleAfterMs", () => {
+  // The bound must never sit inside the server's cache window, or "Refresh"
+  // would fetch a cached reading and change nothing.
+  it("follows the poll interval once it exceeds the server cache", () => {
+    expect(usageStaleAfterMs(15 * 60_000)).toBe(16 * 60_000);
+  });
+
+  it("never drops below the server cache plus a minute", () => {
+    expect(usageStaleAfterMs(60_000)).toBe(6 * 60_000);
+    expect(usageStaleAfterMs(5 * 60_000)).toBe(6 * 60_000);
   });
 });

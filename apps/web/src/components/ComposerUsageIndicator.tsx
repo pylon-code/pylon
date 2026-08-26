@@ -158,7 +158,10 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
           {/*
             The age lives here rather than in the strip: it matters only once
             you are deciding whether to trust the number, which is what opening
-            the popover means.
+            the popover means. Refresh is offered only once the reading is
+            stale — inside that bound the server serves its cached reading, so
+            the button would fetch nothing, and the usage endpoints are rate
+            limited enough that it must not invite hammering them anyway.
           */}
           <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground/70">
             <span>
@@ -168,14 +171,15 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
                   ? `Checked ${view.age} ago`
                   : "Checked just now"}
             </span>
-            <button
-              type="button"
-              onClick={refresh}
-              disabled={isRefreshing}
-              className="rounded px-1.5 py-0.5 text-foreground/80 hover:bg-muted/60 disabled:opacity-50"
-            >
-              Refresh
-            </button>
+            {view.stale && !isRefreshing ? (
+              <button
+                type="button"
+                onClick={refresh}
+                className="rounded px-1.5 py-0.5 text-foreground/80 hover:bg-muted/60"
+              >
+                Refresh
+              </button>
+            ) : null}
           </div>
         </div>
       </PopoverPopup>
