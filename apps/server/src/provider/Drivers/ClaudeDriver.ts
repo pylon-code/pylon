@@ -69,14 +69,15 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
-// The usage endpoint is rate limited and answers 429 under load, so a good
-// reading is held for the length of the default poll: every snapshot refresh
-// inside that window — the fastest refresh profile, a reconnect, a manual
-// refresh — is served from cache, and one instance costs the endpoint at most
-// one request per five minutes. Pushed updates from running sessions keep the
-// gauge moving in between without a request. A failed read backs off for a
-// minute, or for as long as a 429 asked.
-const USAGE_PROBE_SUCCESS_TTL = Duration.minutes(5);
+// The usage endpoint is rate limited and answers 429 under load. A good
+// reading is shared machine-wide for five minutes (`sharedUsageReadCache`),
+// and the probe reports how long its answer stands — the rest of that shared
+// window, the wait a 429 asked for, or a short retry while another server is
+// mid-read — so this in-memory cache never holds a private copy past the
+// shared one. Every snapshot refresh inside the window (the fastest refresh
+// profile, a reconnect, a manual refresh) is served without a request.
+// Pushed updates from running sessions keep the gauge moving in between. A
+// read that failed for any other reason backs off for a minute.
 const USAGE_PROBE_FAILURE_TTL = Duration.minutes(1);
 
 function isClaudeNativeCommandPath(commandPath: string): boolean {
@@ -201,11 +202,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           // still shows up promptly.
           timeToLive: Exit.match({
             onSuccess: (result) =>
-              result?.usageLimits
-                ? USAGE_PROBE_SUCCESS_TTL
-                : result?.throttledForMs !== undefined
-                  ? Duration.millis(result.throttledForMs)
-                  : USAGE_PROBE_FAILURE_TTL,
+              result?.cacheForMs !== undefined
+                ? Duration.millis(result.cacheForMs)
+                : USAGE_PROBE_FAILURE_TTL,
             onFailure: () => USAGE_PROBE_FAILURE_TTL,
           }),
         },

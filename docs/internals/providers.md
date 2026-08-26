@@ -177,14 +177,20 @@ windows as `usedPercent` plus a reset time. Three mechanisms keep that gauge pre
   (`ServerProvider.rateLimit`); the two are parsed independently.
 - **Nothing persisted.** Both overlays are re-learned after a restart from the next probe or push;
   the on-disk snapshot cache deliberately drops `usageLimits`.
-- **Request budget.** Both usage endpoints answer 429 when hammered, and several worktree servers
-  may share one account. A good Claude reading is cached for five minutes, so every snapshot
-  refresh inside that window — the fastest refresh profile, a reconnect, a manual refresh — is
-  served without a request; a 429 backs off for its `Retry-After` (bounded to 1–30 minutes, five
-  by default). Codex reads inside its status probe, which runs at most once per refresh interval.
-  Pushed updates cost nothing outbound, and a push that repeats the current number is folded in at
-  most once a minute so a busy turn cannot republish the provider list per tool call. Clients only
-  offer a manual refresh once a reading is older than that cache.
+- **Request budget.** Both usage endpoints answer 429 when hammered, and one machine routinely
+  runs several servers against one account — the installed app plus worktree dev servers. A good
+  Claude reading is therefore shared machine-wide for five minutes
+  ([`sharedUsageReadCache.ts`][shared-usage]): it lives in the user's cache directory
+  (`~/Library/Caches/pylon-code/usage`, `%LOCALAPPDATA%\pylon-code\Cache\usage`,
+  `$XDG_CACHE_HOME/pylon-code/usage`; override with `PYLON_USAGE_CACHE_DIR`), deliberately outside
+  any runtime home, keyed by the account's config dir. Each server's in-memory cache holds a
+  reading only for the rest of the shared window, a lock file makes the endpoint read once when
+  several servers expire together, and a 429 is written as a shared deadline (its `Retry-After`,
+  bounded to 1–30 minutes, five by default) that every server honours. Codex reads inside its
+  status probe, which runs at most once per refresh interval per server. Pushed updates cost
+  nothing outbound, and a push that repeats the current number is folded in at most once a minute
+  so a busy turn cannot republish the provider list per tool call. Clients only offer a manual
+  refresh once a reading is older than the shared window.
 
 Windows are matched by duration, never by label: anything under a day is the session window,
 anything of a week or more is a weekly, and the first weekly is the account-wide one. That is what
@@ -247,3 +253,4 @@ when a request opens (approval) or user input is requested, via
 [retention]: ../../apps/server/src/provider/providerUsageRetention.ts
 [rate-limit-events]: ../../apps/server/src/provider/providerRateLimitEvents.ts
 [usage-limits]: ../../apps/server/src/provider/providerUsageLimits.ts
+[shared-usage]: ../../apps/server/src/provider/sharedUsageReadCache.ts

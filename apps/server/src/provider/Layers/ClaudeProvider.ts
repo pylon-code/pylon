@@ -864,8 +864,8 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
   | {
       readonly accountIdentity: string | undefined;
       readonly usageLimits: ServerProviderUsageLimits | undefined;
-      /** Set when the usage endpoint answered 429: how long to stay away. */
-      readonly throttledForMs?: number | undefined;
+      /** How long this answer stands before the endpoint should be consulted again. */
+      readonly cacheForMs?: number | undefined;
     }
   | undefined,
   never,
@@ -900,9 +900,7 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
       ? accountIdentityFromAuthStatus(authResult.value)
       : undefined,
     usageLimits: usageRead?.usageLimits,
-    ...(usageRead?.throttledForMs !== undefined
-      ? { throttledForMs: usageRead.throttledForMs }
-      : {}),
+    ...(usageRead?.cacheForMs !== undefined ? { cacheForMs: usageRead.cacheForMs } : {}),
   };
 });
 
