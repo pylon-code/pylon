@@ -203,9 +203,10 @@ also mean the selected model has no registered price.
 ## Subscription Capacity
 
 Prime Agent runs each model on that backend's own subscription, so the capacity readout beside the
-composer follows the selected model: an Anthropic model shows your Claude accounts, an OpenAI Codex
-model shows your Codex account. Pylon assumes Prime Agent is signed in to the same subscription as
-the matching provider. See [the composer](composer.md#subscription-capacity).
+composer follows the selected model. Pylon reads Prime's sign-ins to show the right account: Prime's
+own Anthropic reading while Prime has used Anthropic recently, or the configured Codex account whose
+identity matches Prime's. Only when neither can be read does it fall back to your configured
+accounts, and it says so. See [the composer](composer.md#subscription-capacity).
 
 ## Execution Approvals
 

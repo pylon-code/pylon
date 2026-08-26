@@ -41,9 +41,13 @@ rate limited, so Pylon reads each account at most every few minutes — and ever
 machine shares that one reading, so running several does not multiply the requests. The readout
 dims and says how old it is once a reading has fallen behind, and only then offers **Refresh**.
 
-Prime Agent has no capacity of its own. A Prime thread shows the capacity of the backend the selected
-model runs on: your Claude accounts for an Anthropic model, your Codex account for an OpenAI Codex
-model. Pylon assumes Prime Agent is signed in to the same subscription. Prime's own default model,
-and backends Pylon has no provider for, show nothing.
+Prime Agent signs in to its backends on its own, so a Prime thread shows the capacity of the
+account Prime is actually using for the selected model. For an Anthropic model that is Prime's own
+reading whenever Prime has used that backend recently; for an OpenAI Codex model it is the configured
+Codex account whose identity matches Prime's sign-in. When neither can be read, Pylon shows your
+configured accounts for that backend and the popover says the match is assumed. If Prime is signed in
+to a Codex account that is not configured in Pylon, the readout says the capacity is unavailable
+rather than showing another account's numbers. Prime's own default model, and backends Pylon has no
+provider for, show nothing.
 
 Turn the readout off with **Subscription capacity in the composer** in **Settings → General**.

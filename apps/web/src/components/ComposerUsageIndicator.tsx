@@ -4,13 +4,34 @@ import { memo, useCallback, useState } from "react";
 
 import { cn } from "../lib/utils";
 import { useNowMinute } from "../hooks/useNowMinute";
-import type { ComposerUsage } from "../providerUsageAccounts";
+import type { ComposerUsage, ComposerUsageBackend } from "../providerUsageAccounts";
 import { serverEnvironment } from "../state/server";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { ProviderUsageAccounts } from "./providerUsage/ProviderUsageAccounts";
 import { usageEmphasisClassName } from "./providerUsage/usageEmphasis";
 import { getComposerUsageView } from "./ComposerUsageIndicator.logic";
+
+/**
+ * One line on whose capacity a Prime thread is showing, and how sure that is.
+ * Verified cases are stated as fact; the assumed case names the assumption so
+ * a user running Prime on a different account knows the number is not theirs.
+ */
+function describeBackend(backend: ComposerUsageBackend, accountCount: number): string {
+  const runs = `Prime Agent runs ${backend.model} on ${backend.label}.`;
+  switch (backend.verification) {
+    case "own":
+      return `${runs} This is Prime Agent's own ${backend.label} capacity, read from its sign-in.`;
+    case "matched":
+      return `${runs} Prime Agent is signed in to this ${backend.label} account.`;
+    case "mismatch":
+      return `${runs} Prime Agent is signed in to a different ${backend.label} account than any configured here, so its capacity cannot be shown.`;
+    case "assumed":
+      return `${runs} Its ${backend.label} sign-in could not be read; this assumes it is the same ${
+        accountCount === 1 ? "account" : "subscription"
+      } as ${backend.label} here.`;
+  }
+}
 
 /**
  * Subscription capacity for the account the composer will send to, at the
@@ -75,7 +96,9 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
     })();
   }, [accounts, environmentId, isRefreshing, refreshProviders]);
 
-  if (!view) return null;
+  // Prime is signed in to an account that is not configured here: there is
+  // no number to show, but silence would read as the gauge being broken.
+  if (!view && usage.backend?.verification !== "mismatch") return null;
 
   return (
     <Popover>
@@ -83,45 +106,55 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
         render={
           <button
             type="button"
-            aria-label={`Subscription capacity for ${view.accountName ?? "this account"}${
-              view.stale ? ", last checked " + (view.age ?? "a while") + " ago" : ""
-            }`}
+            aria-label={
+              view
+                ? `Subscription capacity for ${view.accountName ?? "this account"}${
+                    view.stale ? ", last checked " + (view.age ?? "a while") + " ago" : ""
+                  }`
+                : "Subscription capacity unavailable"
+            }
             className={cn(
               "inline-flex shrink-0 items-center gap-2 rounded-md px-1 py-0.5 text-sm tabular-nums",
               "hover:bg-muted/40",
               className,
             )}
           >
-            <span className="inline-flex min-w-0 items-center gap-1">
-              {view.accentColor ? (
-                <span
-                  aria-hidden="true"
-                  className="size-1.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: view.accentColor }}
-                />
-              ) : null}
-              {view.accountName ? (
-                <span className="max-w-24 truncate text-xs text-muted-foreground/50">
-                  {view.accountName}
+            {view ? (
+              <>
+                <span className="inline-flex min-w-0 items-center gap-1">
+                  {view.accentColor ? (
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: view.accentColor }}
+                    />
+                  ) : null}
+                  {view.accountName ? (
+                    <span className="max-w-24 truncate text-xs text-muted-foreground/50">
+                      {view.accountName}
+                    </span>
+                  ) : null}
                 </span>
-              ) : null}
-            </span>
-            {/*
-              Spacing separates the two windows rather than punctuation: with
-              the bars gone there is little enough here that a gap reads more
-              cleanly than another glyph.
-            */}
-            {view.entries.map((entry) => (
-              <span
-                key={entry.detail}
-                className={cn("inline-flex items-baseline gap-1", view.stale && "opacity-50")}
-              >
-                <span className={cn("font-medium", usageEmphasisClassName(entry.usedPercent))}>
-                  {entry.usedPercent}%
-                </span>
-                <span className="text-xs text-muted-foreground/45">{entry.label}</span>
-              </span>
-            ))}
+                {/*
+                  Spacing separates the two windows rather than punctuation:
+                  with the bars gone there is little enough here that a gap
+                  reads more cleanly than another glyph.
+                */}
+                {view.entries.map((entry) => (
+                  <span
+                    key={entry.detail}
+                    className={cn("inline-flex items-baseline gap-1", view.stale && "opacity-50")}
+                  >
+                    <span className={cn("font-medium", usageEmphasisClassName(entry.usedPercent))}>
+                      {entry.usedPercent}%
+                    </span>
+                    <span className="text-xs text-muted-foreground/45">{entry.label}</span>
+                  </span>
+                ))}
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground/50">Capacity unavailable</span>
+            )}
           </button>
         }
       />
@@ -136,11 +169,10 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
             Subscription capacity
           </div>
           {usage.backend ? (
-            // Prime has no capacity of its own; say whose is being shown and
-            // why, since the account names below will not be Prime's.
+            // Prime signs in on its own; say whose capacity this is and how
+            // sure that is, since the account names below may not be Prime's.
             <div className="text-xs text-muted-foreground">
-              Prime Agent runs {usage.backend.model} on {usage.backend.label}. This is your{" "}
-              {usage.backend.label} {accounts.length === 1 ? "account's" : "accounts'"} capacity.
+              {describeBackend(usage.backend, accounts.length)}
             </div>
           ) : null}
           {accounts.length > 0 ? (
@@ -163,24 +195,26 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
             the button would fetch nothing, and the usage endpoints are rate
             limited enough that it must not invite hammering them anyway.
           */}
-          <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground/70">
-            <span>
-              {isRefreshing
-                ? "Checking…"
-                : view.age
-                  ? `Checked ${view.age} ago`
-                  : "Checked just now"}
-            </span>
-            {view.stale && !isRefreshing ? (
-              <button
-                type="button"
-                onClick={refresh}
-                className="rounded px-1.5 py-0.5 text-foreground/80 hover:bg-muted/60"
-              >
-                Refresh
-              </button>
-            ) : null}
-          </div>
+          {view ? (
+            <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground/70">
+              <span>
+                {isRefreshing
+                  ? "Checking…"
+                  : view.age
+                    ? `Checked ${view.age} ago`
+                    : "Checked just now"}
+              </span>
+              {view.stale && !isRefreshing ? (
+                <button
+                  type="button"
+                  onClick={refresh}
+                  className="rounded px-1.5 py-0.5 text-foreground/80 hover:bg-muted/60"
+                >
+                  Refresh
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </PopoverPopup>
     </Popover>

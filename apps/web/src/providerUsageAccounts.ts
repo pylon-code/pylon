@@ -37,12 +37,23 @@ const PRIME_AGENT_BACKEND_DRIVERS: Readonly<Record<string, ProviderDriverKind>> 
   "openai-codex": ProviderDriverKind.make("codex"),
 };
 
+export type ComposerUsageVerification =
+  /** Prime's own reading for this backend, taken with its own sign-in. */
+  | "own"
+  /** A configured instance Prime is verified to share, by account identity. */
+  | "matched"
+  /** Nothing verifiable could be read; the configured accounts are the best guess. */
+  | "assumed"
+  /** Prime is signed in to a different account than any configured here. */
+  | "mismatch";
+
 export interface ComposerUsageBackend {
   readonly driver: ProviderDriverKind;
   /** Brand label for the driver, e.g. "Claude". */
   readonly label: string;
   /** Display name of the Prime model the capacity is being shown for. */
   readonly model: string;
+  readonly verification: ComposerUsageVerification;
 }
 
 export interface ComposerUsage {
@@ -90,6 +101,66 @@ function primeAgentBackend(
   return model && driver ? { driver, model } : null;
 }
 
+/**
+ * Whose capacity a Prime thread shows, and how sure that is.
+ *
+ * Prime signs in on its own, so the honest answer is whatever the server
+ * could verify about that sign-in: Prime's own reading for the backend,
+ * or the configured instance whose account identity matches. Only when
+ * neither is readable do the configured accounts stand in, and then the
+ * popover says so. A sign-in that provably belongs to some other account
+ * shows nothing rather than a number that is not Prime's.
+ */
+function primeAgentUsage(
+  providerStatuses: ReadonlyArray<ServerProvider>,
+  prime: ServerProvider,
+  backend: { readonly driver: ProviderDriverKind; readonly model: ServerProviderModel },
+): ComposerUsage {
+  const signIn = prime.backends?.find(
+    (candidate) => candidate.backend === backend.model.subProvider,
+  );
+  const describe = (verification: ComposerUsageVerification): ComposerUsageBackend => ({
+    driver: backend.driver,
+    label: PROVIDER_DISPLAY_NAMES[backend.driver] ?? backend.driver,
+    model: backend.model.shortName ?? backend.model.name,
+    verification,
+  });
+
+  if (signIn?.usageLimits) {
+    const own: ProviderUsageAccount = {
+      instanceId: prime.instanceId,
+      displayName: prime.displayName ?? formatProviderDisplayName(prime.instanceId),
+      accentColor: prime.accentColor,
+      usageLimits: signIn.usageLimits,
+      isActive: true,
+    };
+    return { accounts: [own], primary: own, backend: describe("own") };
+  }
+
+  const candidates = providerStatuses.filter((provider) => provider.driver === backend.driver);
+  if (signIn?.accountId) {
+    const matched = candidates.filter((provider) => provider.auth.accountId === signIn.accountId);
+    if (matched.length > 0) {
+      const accounts = matched.flatMap((provider) => {
+        const account = toUsageAccount(provider, true);
+        return account ? [account] : [];
+      });
+      return { accounts, primary: accounts[0] ?? null, backend: describe("matched") };
+    }
+    if (candidates.some((provider) => provider.auth.accountId !== undefined)) {
+      return { accounts: [], primary: null, backend: describe("mismatch") };
+    }
+  }
+
+  // No account is "this thread's": the default instance leads the strip
+  // because it is the one a user set up first.
+  const accounts = accountsForDriver(providerStatuses, backend.driver, null);
+  const defaultInstanceId = defaultInstanceIdForDriver(backend.driver);
+  const primary =
+    accounts.find((account) => account.instanceId === defaultInstanceId) ?? accounts[0] ?? null;
+  return { accounts, primary, backend: describe("assumed") };
+}
+
 export function deriveComposerUsage(input: {
   readonly providerStatuses: ReadonlyArray<ServerProvider>;
   /** The instance the composer resolved as its target. */
@@ -107,21 +178,7 @@ export function deriveComposerUsage(input: {
   if (selected.driver === PRIME_AGENT_DRIVER) {
     const backend = primeAgentBackend(selected, input.selectedModel);
     if (!backend) return EMPTY_COMPOSER_USAGE;
-    // No account is "this thread's": Prime signs in on its own. The default
-    // instance leads the strip because it is the one a user set up first.
-    const accounts = accountsForDriver(input.providerStatuses, backend.driver, null);
-    const defaultInstanceId = defaultInstanceIdForDriver(backend.driver);
-    const primary =
-      accounts.find((account) => account.instanceId === defaultInstanceId) ?? accounts[0] ?? null;
-    return {
-      accounts,
-      primary,
-      backend: {
-        driver: backend.driver,
-        label: PROVIDER_DISPLAY_NAMES[backend.driver] ?? backend.driver,
-        model: backend.model.shortName ?? backend.model.name,
-      },
-    };
+    return primeAgentUsage(input.providerStatuses, selected, backend);
   }
 
   const accounts = accountsForDriver(input.providerStatuses, selected.driver, selected.instanceId);
