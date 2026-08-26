@@ -12,6 +12,7 @@ import type {
   ServerProvider,
   ServerProviderRateLimit,
   ServerProviderUpdateState,
+  ServerProviderUsageWindow,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -83,6 +84,26 @@ export interface ProviderRegistryShape {
   readonly setProviderRateLimitState: (input: {
     readonly instanceId: ProviderInstanceId;
     readonly state: ServerProviderRateLimit | null;
+  }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+  /**
+   * Fold usage windows a running session pushed into one configured
+   * instance's `usageLimits`.
+   *
+   * The polled probe rebuilds `usageLimits` from scratch, so pushes are kept
+   * as a volatile overlay and re-applied to every probe result they are newer
+   * than; a probe that ran after a push supersedes it. Never persisted — a
+   * restart re-learns capacity from the next probe or push.
+   *
+   * An unknown instance id resolves with the current list rather than failing,
+   * matching `setProviderRateLimitState`.
+   */
+  readonly mergeProviderUsageWindows: (input: {
+    readonly instanceId: ProviderInstanceId;
+    /** Provenance stamped when a push seeds a gauge no probe has filled yet. */
+    readonly source: string;
+    readonly observedAt: string;
+    readonly windows: ReadonlyArray<ServerProviderUsageWindow>;
   }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
   /**

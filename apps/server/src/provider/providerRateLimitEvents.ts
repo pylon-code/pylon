@@ -1,6 +1,6 @@
 /**
  * Normalizes provider `account.rate-limits.updated` payloads into the shared
- * {@link ServerProviderRateLimit} shape.
+ * {@link ServerProviderRateLimit} verdict and the usage windows they carry.
  *
  * The runtime-event payload is `Schema.Unknown` at the contract layer by
  * design — drivers own their own wire shapes — so the provider-specific
@@ -8,16 +8,21 @@
  * `providerUsageLimits.ts` handles the polled gauge.
  *
  * Every parse fails closed. An unfamiliar or malformed payload yields
- * `undefined`, which leaves existing drain state untouched. Losing one signal
- * is recoverable — the next turn re-reports it — whereas throwing here would
+ * `undefined`, which leaves existing state untouched. Losing one signal is
+ * recoverable — the next turn re-reports it — whereas throwing here would
  * take down the ingestion worker for every thread.
  *
  * @module provider/providerRateLimitEvents
  */
-import type { ServerProviderRateLimit } from "@t3tools/contracts";
+import type { ServerProviderRateLimit, ServerProviderUsageWindow } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
+import { usageWindowsFromCodexRateLimitSnapshot } from "./providerUsageLimits.ts";
+
 const RATE_LIMIT_STATUSES = new Set(["allowed", "allowed_warning", "rejected"]);
+
+const SESSION_WINDOW_MINS = 5 * 60;
+const WEEKLY_WINDOW_MINS = 7 * 24 * 60;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -95,4 +100,112 @@ export function rateLimitFromRuntimeEventPayload(
   const envelope = asRecord(payload);
   if (!envelope) return undefined;
   return rateLimitFromClaudeEvent(envelope["rateLimits"], observedAt);
+}
+
+/** Usage windows a running session reported, with where they came from. */
+export interface PushedUsageWindows {
+  /** Provenance only, mirroring `ServerProviderUsageLimits.source`. */
+  readonly source: string;
+  readonly windows: ReadonlyArray<ServerProviderUsageWindow>;
+}
+
+/**
+ * Claude reports `utilization` for the window named by `rateLimitType`.
+ *
+ * The SDK does not document the scale. The unified rate-limit headers it is
+ * read from carry a fraction, so anything up to 1 is treated as one; a value
+ * past that up to 100 is taken as a percentage already. Anything else is not
+ * a reading this build can trust, and yields nothing.
+ */
+function claudeUtilizationPercent(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
+  if (value <= 1) return value * 100;
+  return value <= 100 ? value : undefined;
+}
+
+/**
+ * Only the two account-wide windows are mapped. `seven_day_opus` and
+ * `seven_day_sonnet` are model-scoped weeklies whose labels come from the
+ * usage endpoint's display names, which a push does not carry, and `overage`
+ * is credit, not capacity.
+ */
+function claudeWindowShape(
+  rateLimitType: string,
+): { readonly label: string; readonly windowDurationMins: number } | undefined {
+  switch (rateLimitType) {
+    case "five_hour":
+      return { label: "Session", windowDurationMins: SESSION_WINDOW_MINS };
+    case "seven_day":
+      return { label: "Weekly (all models)", windowDurationMins: WEEKLY_WINDOW_MINS };
+    default:
+      return undefined;
+  }
+}
+
+export function usageWindowsFromClaudeEvent(payload: unknown): PushedUsageWindows | undefined {
+  const message = asRecord(payload);
+  const info = asRecord(message?.["rate_limit_info"]);
+  if (!info) return undefined;
+
+  const rateLimitType = trimmedString(info["rateLimitType"]);
+  const shape = rateLimitType ? claudeWindowShape(rateLimitType) : undefined;
+  if (!shape) return undefined;
+  const usedPercent = claudeUtilizationPercent(info["utilization"]);
+  if (usedPercent === undefined) return undefined;
+  const resetsAt = isoFromUnixSeconds(info["resetsAt"]);
+
+  return {
+    source: "claudeRateLimitEvent",
+    windows: [{ ...shape, usedPercent, ...(resetsAt ? { resetsAt } : {}) }],
+  };
+}
+
+/**
+ * Codex's `account/rateLimits/updated` is a sparse rolling update carrying
+ * the same window shape as `account/rateLimits/read`, one level down under
+ * its own `rateLimits` key.
+ */
+export function usageWindowsFromCodexEvent(payload: unknown): PushedUsageWindows | undefined {
+  const notification = asRecord(payload);
+  const snapshot = asRecord(notification?.["rateLimits"]);
+  if (!snapshot) return undefined;
+
+  const readWindow = (value: unknown) => {
+    const window = asRecord(value);
+    if (!window) return undefined;
+    const usedPercent = window["usedPercent"];
+    if (typeof usedPercent !== "number") return undefined;
+    const windowDurationMins = window["windowDurationMins"];
+    const resetsAt = window["resetsAt"];
+    return {
+      usedPercent,
+      windowDurationMins: typeof windowDurationMins === "number" ? windowDurationMins : null,
+      resetsAt: typeof resetsAt === "number" ? resetsAt : null,
+    };
+  };
+  const windows = usageWindowsFromCodexRateLimitSnapshot({
+    primary: readWindow(snapshot["primary"]),
+    secondary: readWindow(snapshot["secondary"]),
+  });
+  return windows.length > 0 ? { source: "codexAppServerPush", windows } : undefined;
+}
+
+/**
+ * Read the usage windows an `account.rate-limits.updated` payload carries,
+ * from whichever provider emitted it.
+ *
+ * Distinct from {@link rateLimitFromRuntimeEventPayload}: that one answers
+ * "is this account refusing turns", this one answers "how much is left". A
+ * Claude event may carry both; a Codex event carries only the latter.
+ */
+export function usageWindowsFromRuntimeEventPayload(
+  payload: unknown,
+): PushedUsageWindows | undefined {
+  const envelope = asRecord(payload);
+  const message = asRecord(envelope?.["rateLimits"]);
+  if (!message) return undefined;
+  if (message["type"] === "rate_limit_event" || "rate_limit_info" in message) {
+    return usageWindowsFromClaudeEvent(message);
+  }
+  return usageWindowsFromCodexEvent(message);
 }

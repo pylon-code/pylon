@@ -69,6 +69,10 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
+// Short enough that the fastest refresh profile and a manual refresh both see
+// a current reading, long enough to coalesce the burst of snapshot reads a
+// settings change or reconnect produces against a rate-limited endpoint.
+const USAGE_PROBE_SUCCESS_TTL = Duration.minutes(1);
 const USAGE_PROBE_FAILURE_TTL = Duration.minutes(1);
 
 function isClaudeNativeCommandPath(commandPath: string): boolean {
@@ -193,9 +197,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           // still shows up promptly.
           timeToLive: Exit.match({
             onSuccess: (result) =>
-              result?.accountIdentity && result?.usageLimits
-                ? CAPABILITIES_PROBE_TTL
-                : USAGE_PROBE_FAILURE_TTL,
+              result?.usageLimits ? USAGE_PROBE_SUCCESS_TTL : USAGE_PROBE_FAILURE_TTL,
             onFailure: () => USAGE_PROBE_FAILURE_TTL,
           }),
         },

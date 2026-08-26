@@ -38,7 +38,10 @@ import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
-const CODEX_RATE_LIMITS_PROBE_TIMEOUT = "2 seconds" as const;
+// The rate-limit read goes to the network from inside the status probe, and
+// two seconds was tight enough that a slow answer regularly blanked the gauge.
+// The probe as a whole is still bounded by `AUTH_PROBE_TIMEOUT_MS`.
+const CODEX_RATE_LIMITS_PROBE_TIMEOUT = "5 seconds" as const;
 
 const CODEX_PRESENTATION = {
   displayName: "Codex",

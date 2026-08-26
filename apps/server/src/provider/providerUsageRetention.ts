@@ -1,4 +1,4 @@
-import type { ServerProviderUsageLimits } from "@t3tools/contracts";
+import type { ServerProviderAuth, ServerProviderUsageLimits } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import type * as Ref from "effect/Ref";
@@ -54,5 +54,35 @@ export function retainUsageLimits(
     if (isRetainedUsageFresh({ checkedAt: retained.checkedAt, nowMs })) return retained;
     yield* RefModule.set(lastKnown, undefined);
     return undefined;
+  });
+}
+
+/**
+ * Apply {@link retainUsageLimits} to a whole probed snapshot.
+ *
+ * A signed-out account has no capacity to retain, so its reading is cleared
+ * rather than carried; anything else keeps the last good reading through a
+ * failed or timed-out read. Codex reads its windows over the network inside
+ * the status probe, where one slow answer would otherwise blank the gauge
+ * until the next poll.
+ */
+export function retainSnapshotUsageLimits<
+  Snapshot extends {
+    readonly auth: ServerProviderAuth;
+    readonly usageLimits?: ServerProviderUsageLimits | undefined;
+  },
+>(
+  lastKnown: Ref.Ref<ServerProviderUsageLimits | undefined>,
+  snapshot: Snapshot,
+): Effect.Effect<Snapshot> {
+  return Effect.gen(function* () {
+    if (snapshot.auth.status === "unauthenticated") {
+      yield* RefModule.set(lastKnown, undefined);
+      const { usageLimits: _usageLimits, ...withoutUsage } = snapshot;
+      return withoutUsage as Snapshot;
+    }
+    const usageLimits = yield* retainUsageLimits(lastKnown, snapshot.usageLimits);
+    if (usageLimits === snapshot.usageLimits) return snapshot;
+    return usageLimits ? { ...snapshot, usageLimits } : snapshot;
   });
 }

@@ -10,6 +10,7 @@ import {
   ProviderSession,
   ProviderInstanceId,
   type ServerProviderRateLimit,
+  type ServerProviderUsageWindow,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -194,13 +195,20 @@ function createProviderServiceHarness() {
 
 /**
  * Records what ingestion pushes at the provider registry. Only
- * `setProviderRateLimitState` is exercised here; every other member is left to
- * `Layer.mock`, which dies loudly if ingestion ever reaches for one.
+ * `setProviderRateLimitState` and `mergeProviderUsageWindows` are exercised
+ * here; every other member is left to `Layer.mock`, which dies loudly if
+ * ingestion ever reaches for one.
  */
 function createProviderRegistryHarness() {
   const rateLimitCalls: Array<{
     readonly instanceId: ProviderInstanceId;
     readonly state: ServerProviderRateLimit | null;
+  }> = [];
+  const usageWindowCalls: Array<{
+    readonly instanceId: ProviderInstanceId;
+    readonly source: string;
+    readonly observedAt: string;
+    readonly windows: ReadonlyArray<ServerProviderUsageWindow>;
   }> = [];
 
   const layer = Layer.mock(ProviderRegistry)({
@@ -209,9 +217,14 @@ function createProviderRegistryHarness() {
         rateLimitCalls.push(input);
         return [];
       }),
+    mergeProviderUsageWindows: (input) =>
+      Effect.sync(() => {
+        usageWindowCalls.push(input);
+        return [];
+      }),
   });
 
-  return { layer, rateLimitCalls };
+  return { layer, rateLimitCalls, usageWindowCalls };
 }
 
 type ProviderRuntimeTestReadModel = OrchestrationReadModel;
@@ -494,6 +507,7 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       setProviderSession: provider.setSession,
       rateLimitCalls: providerRegistry.rateLimitCalls,
+      usageWindowCalls: providerRegistry.usageWindowCalls,
       runEffect,
       drain,
     };
@@ -550,6 +564,91 @@ describe("ProviderRuntimeIngestion", () => {
             resetsAt: "2026-08-04T01:50:00.000Z",
             observedAt: "2026-08-04T18:30:00.000Z",
           },
+        },
+      ]);
+    });
+
+    // A Claude verdict without utilization moves the drain state and nothing
+    // else: the gauge keeps whatever the probe last read.
+    it("leaves the gauge alone when the event carries no utilization", async () => {
+      const harness = await createHarness();
+
+      emitRateLimits(harness, {
+        eventId: "evt-rate-limit-no-utilization",
+        instanceId: claudeInstance,
+        payload: claudeRateLimits({ status: "allowed", rateLimitType: "five_hour" }),
+      });
+      await harness.drain();
+
+      expect(harness.usageWindowCalls).toEqual([]);
+    });
+
+    it("pushes Claude's utilization onto the gauge alongside the verdict", async () => {
+      const harness = await createHarness();
+
+      emitRateLimits(harness, {
+        eventId: "evt-rate-limit-utilization",
+        instanceId: claudeInstance,
+        payload: claudeRateLimits({
+          status: "allowed_warning",
+          rateLimitType: "five_hour",
+          utilization: 0.83,
+          resetsAt: 1785808200,
+        }),
+      });
+      await harness.drain();
+
+      expect(harness.rateLimitCalls.map((call) => call.state?.status)).toEqual(["allowed_warning"]);
+      expect(harness.usageWindowCalls).toEqual([
+        {
+          instanceId: claudeInstance,
+          source: "claudeRateLimitEvent",
+          observedAt: "2026-08-04T18:30:00.000Z",
+          windows: [
+            {
+              label: "Session",
+              usedPercent: 83,
+              windowDurationMins: 300,
+              resetsAt: "2026-08-04T01:50:00.000Z",
+            },
+          ],
+        },
+      ]);
+    });
+
+    // Codex carries windows and no verdict, so only the gauge moves.
+    it("pushes Codex's rolling windows onto the gauge without a verdict", async () => {
+      const harness = await createHarness();
+      const codexInstance = ProviderInstanceId.make("codex");
+
+      harness.emit({
+        type: "account.rate-limits.updated",
+        eventId: asEventId("evt-codex-rate-limits"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-08-04T18:31:00.000Z",
+        providerInstanceId: codexInstance,
+        payload: {
+          rateLimits: {
+            rateLimits: {
+              primary: { usedPercent: 12, windowDurationMins: 300 },
+              secondary: { usedPercent: 55, windowDurationMins: 10_080 },
+            },
+          },
+        },
+      });
+      await harness.drain();
+
+      expect(harness.rateLimitCalls).toEqual([]);
+      expect(harness.usageWindowCalls).toEqual([
+        {
+          instanceId: codexInstance,
+          source: "codexAppServerPush",
+          observedAt: "2026-08-04T18:31:00.000Z",
+          windows: [
+            { label: "Session", usedPercent: 12, windowDurationMins: 300 },
+            { label: "Weekly", usedPercent: 55, windowDurationMins: 10_080 },
+          ],
         },
       ]);
     });

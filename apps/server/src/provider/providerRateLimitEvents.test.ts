@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { rateLimitFromRuntimeEventPayload } from "./providerRateLimitEvents.ts";
+import {
+  rateLimitFromRuntimeEventPayload,
+  usageWindowsFromRuntimeEventPayload,
+} from "./providerRateLimitEvents.ts";
 
 const OBSERVED_AT = "2026-08-04T18:30:00.000Z";
 
@@ -104,5 +107,122 @@ describe("rateLimitFromRuntimeEventPayload", () => {
     );
 
     expect(parsed).toBeUndefined();
+  });
+});
+
+describe("usageWindowsFromRuntimeEventPayload", () => {
+  // Codex wraps its sparse rolling update under its own `rateLimits` key,
+  // inside the adapter envelope: `{ rateLimits: { rateLimits: {...} } }`.
+  it("reads Codex's pushed windows", () => {
+    const parsed = usageWindowsFromRuntimeEventPayload(
+      envelope({
+        rateLimits: {
+          primary: { usedPercent: 37, windowDurationMins: 300, resetsAt: 1_785_808_200 },
+          secondary: { usedPercent: 62, windowDurationMins: 10_080, resetsAt: null },
+          planType: "plus",
+        },
+      }),
+    );
+
+    expect(parsed).toEqual({
+      source: "codexAppServerPush",
+      windows: [
+        {
+          label: "Session",
+          usedPercent: 37,
+          windowDurationMins: 300,
+          resetsAt: "2026-08-04T01:50:00.000Z",
+        },
+        { label: "Weekly", usedPercent: 62, windowDurationMins: 10_080 },
+      ],
+    });
+  });
+
+  it("reads a Codex update that carries only one window", () => {
+    const parsed = usageWindowsFromRuntimeEventPayload(
+      envelope({ rateLimits: { secondary: { usedPercent: 70, windowDurationMins: 10_080 } } }),
+    );
+
+    expect(parsed?.windows.map((window) => window.label)).toEqual(["Weekly"]);
+  });
+
+  it("reads Claude's utilization for the window the event names", () => {
+    const parsed = usageWindowsFromRuntimeEventPayload(
+      envelope({
+        ...REAL_CLAUDE_EVENT,
+        rate_limit_info: { ...REAL_CLAUDE_EVENT.rate_limit_info, utilization: 0.42 },
+      }),
+    );
+
+    expect(parsed).toEqual({
+      source: "claudeRateLimitEvent",
+      windows: [
+        {
+          label: "Session",
+          usedPercent: 42,
+          windowDurationMins: 300,
+          resetsAt: "2026-08-04T01:50:00.000Z",
+        },
+      ],
+    });
+  });
+
+  it("labels Claude's weekly window like the usage endpoint does", () => {
+    const parsed = usageWindowsFromRuntimeEventPayload(
+      envelope({
+        rate_limit_info: { status: "allowed", rateLimitType: "seven_day", utilization: 0.8 },
+      }),
+    );
+
+    expect(parsed?.windows).toEqual([
+      { label: "Weekly (all models)", usedPercent: 80, windowDurationMins: 10_080 },
+    ]);
+  });
+
+  // The SDK leaves the scale undocumented; a value past 1 can only be a
+  // percentage, while a fraction must not be shown as "0%".
+  it.each([
+    ["a fraction", 0.155, 15.5],
+    ["exactly one", 1, 100],
+    ["a percentage", 42, 42],
+  ])("accepts utilization expressed as %s", (_label, utilization, expected) => {
+    const parsed = usageWindowsFromRuntimeEventPayload(
+      envelope({ rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization } }),
+    );
+
+    expect(parsed?.windows[0]?.usedPercent).toBe(expected);
+  });
+
+  // The verdict still lands (see `rateLimitFromRuntimeEventPayload`); only the
+  // gauge stays as it was.
+  it.each([
+    ["no utilization", REAL_CLAUDE_EVENT],
+    [
+      "an out-of-range utilization",
+      { rate_limit_info: { rateLimitType: "five_hour", utilization: 250 } },
+    ],
+    [
+      "a negative utilization",
+      { rate_limit_info: { rateLimitType: "five_hour", utilization: -1 } },
+    ],
+    [
+      "a model-scoped weekly",
+      { rate_limit_info: { rateLimitType: "seven_day_opus", utilization: 0.5 } },
+    ],
+    ["an overage window", { rate_limit_info: { rateLimitType: "overage", utilization: 0.5 } }],
+    ["no window kind", { rate_limit_info: { status: "allowed", utilization: 0.5 } }],
+    ["a Codex update with no windows", { rateLimits: { planType: "plus" } }],
+    ["an empty message", {}],
+  ])("returns undefined for a message with %s", (_label, rateLimits) => {
+    expect(usageWindowsFromRuntimeEventPayload(envelope(rateLimits))).toBeUndefined();
+  });
+
+  it.each([
+    ["null", null],
+    ["a string", "rate limited"],
+    ["an array", []],
+    ["a bare message with no envelope", REAL_CLAUDE_EVENT],
+  ])("returns undefined for a payload that is %s", (_label, payload) => {
+    expect(usageWindowsFromRuntimeEventPayload(payload)).toBeUndefined();
   });
 });

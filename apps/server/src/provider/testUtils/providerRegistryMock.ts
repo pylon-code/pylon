@@ -15,6 +15,7 @@ export const makeProviderRegistryMock = (
     Effect.succeed(makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null })),
   setProviderMaintenanceActionState: () => Effect.succeed(providers),
   setProviderRateLimitState: () => Effect.succeed(providers),
+  mergeProviderUsageWindows: () => Effect.succeed(providers),
   streamChanges: Stream.empty,
 });
 

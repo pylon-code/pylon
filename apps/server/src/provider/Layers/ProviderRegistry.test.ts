@@ -1022,6 +1022,160 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
+      it.effect("folds pushed usage windows onto the probe reading until a newer probe lands", () =>
+        Effect.gen(function* () {
+          const claudeDriver = ProviderDriverKind.make("claudeAgent");
+          const claudeInstanceId = ProviderInstanceId.make("claude_personal");
+          // Relative to whichever clock the registry reads, so the 30-minute
+          // retention window never trips on a fixed fixture date.
+          const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+          const at = (minutesAgo: number) =>
+            DateTime.formatIso(DateTime.makeUnsafe(nowMs - minutesAgo * 60_000));
+          const probedAt = at(10);
+          const initialProvider = {
+            instanceId: claudeInstanceId,
+            driver: claudeDriver,
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: probedAt,
+            version: "2.1.220",
+            models: [],
+            slashCommands: [],
+            skills: [],
+            usageLimits: {
+              source: "claudeOAuth",
+              checkedAt: probedAt,
+              windows: [
+                { label: "Session", usedPercent: 10, windowDurationMins: 300 },
+                { label: "Weekly (all models)", usedPercent: 40, windowDurationMins: 10_080 },
+              ],
+            },
+          } as const satisfies ServerProvider;
+          const changes = yield* PubSub.unbounded<ServerProvider>();
+          const instance = {
+            instanceId: claudeInstanceId,
+            driverKind: claudeDriver,
+            continuationIdentity: {
+              driverKind: claudeDriver,
+              continuationKey: "claude:instance:claude_personal",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                provider: claudeDriver,
+                packageName: null,
+              }),
+              getSnapshot: Effect.succeed(initialProvider),
+              refresh: Effect.never,
+              streamChanges: Stream.fromPubSub(changes),
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+          } satisfies ProviderInstance;
+          const instanceRegistryLayer = Layer.succeed(
+            ProviderInstanceRegistry.ProviderInstanceRegistry,
+            {
+              getInstance: (instanceId) =>
+                Effect.succeed(instanceId === claudeInstanceId ? instance : undefined),
+              listInstances: Effect.succeed([instance]),
+              listUnavailable: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+            },
+          );
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const runtimeServices = yield* Layer.build(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(instanceRegistryLayer),
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), {
+                  prefix: "t3-provider-registry-usage-push-",
+                }),
+              ),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ).pipe(Scope.provide(scope));
+
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry.ProviderRegistry;
+            const percents = (providers: ReadonlyArray<ServerProvider>) =>
+              providers[0]?.usageLimits?.windows.map((window) => window.usedPercent);
+
+            // A push newer than the probe moves only the window it names.
+            const pushed = yield* registry.mergeProviderUsageWindows({
+              instanceId: claudeInstanceId,
+              source: "claudeRateLimitEvent",
+              observedAt: at(9),
+              windows: [{ label: "Session", usedPercent: 35, windowDurationMins: 300 }],
+            });
+            assert.deepStrictEqual(percents(pushed), [35, 40]);
+            assert.strictEqual(pushed[0]?.usageLimits?.checkedAt, at(9));
+            assert.strictEqual(pushed[0]?.usageLimits?.source, "claudeOAuth");
+
+            // A push observed before the reading changes nothing.
+            const stale = yield* registry.mergeProviderUsageWindows({
+              instanceId: claudeInstanceId,
+              source: "claudeRateLimitEvent",
+              observedAt: at(11),
+              windows: [{ label: "Session", usedPercent: 99, windowDurationMins: 300 }],
+            });
+            assert.deepStrictEqual(percents(stale), [35, 40]);
+
+            // A probe that ran after the push is the better source: the push
+            // must not resurface on top of it.
+            const reprobedAt = at(8);
+            yield* PubSub.publish(changes, {
+              ...initialProvider,
+              checkedAt: reprobedAt,
+              usageLimits: {
+                ...initialProvider.usageLimits,
+                checkedAt: reprobedAt,
+                windows: [
+                  { label: "Session", usedPercent: 20, windowDurationMins: 300 },
+                  { label: "Weekly (all models)", usedPercent: 41, windowDurationMins: 10_080 },
+                ],
+              },
+            });
+            let providers = yield* registry.getProviders;
+            for (
+              let attempt = 0;
+              attempt < 50 && providers[0]?.usageLimits?.checkedAt !== reprobedAt;
+              attempt += 1
+            ) {
+              yield* Effect.yieldNow;
+              providers = yield* registry.getProviders;
+            }
+            assert.deepStrictEqual(percents(providers), [20, 41]);
+
+            // And a push after that probe applies on top of it again.
+            const pushedAgain = yield* registry.mergeProviderUsageWindows({
+              instanceId: claudeInstanceId,
+              source: "claudeRateLimitEvent",
+              observedAt: at(7),
+              windows: [
+                { label: "Weekly (all models)", usedPercent: 43, windowDurationMins: 10_080 },
+              ],
+            });
+            assert.deepStrictEqual(percents(pushedAgain), [20, 43]);
+
+            // An unknown instance resolves with the current list rather than
+            // failing, matching `setProviderRateLimitState`.
+            const unknown = yield* registry.mergeProviderUsageWindows({
+              instanceId: ProviderInstanceId.make("claude_missing"),
+              source: "claudeRateLimitEvent",
+              observedAt: at(6),
+              windows: [{ label: "Session", usedPercent: 1, windowDurationMins: 300 }],
+            });
+            assert.strictEqual(unknown.length, 1);
+            assert.deepStrictEqual(percents(unknown), [20, 43]);
+          }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
       it.effect("persists the merged snapshot when a live update has empty models", () =>
         Effect.gen(function* () {
           const cursorDriver = ProviderDriverKind.make("cursor");
@@ -2448,8 +2602,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             claudeCapabilities(),
           );
           assert.strictEqual(status.status, "ready");
+          // Only the CLI's own spawns: the usage read also walks the macOS
+          // keychain, which is not a Claude probe and carries no config dir.
           assert.deepStrictEqual(
-            recorded.commands.map((command) => command.env?.CLAUDE_CONFIG_DIR),
+            recorded.commands
+              .filter((command) => !command.args.includes("find-generic-password"))
+              .map((command) => command.env?.CLAUDE_CONFIG_DIR),
             [claudeConfigDir, claudeConfigDir],
           );
         }).pipe(Effect.provide(recorded.layer));

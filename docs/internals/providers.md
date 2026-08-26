@@ -154,6 +154,34 @@ probes, respect the `enableProviderUpdateChecks` setting, and never fail a provi
 Codex and Claude drivers apply the classification to every snapshot with `applyModelManifest`;
 driver kinds absent from the manifest have no legacy concept.
 
+## Subscription capacity
+
+Each Codex and Claude snapshot may carry `usageLimits`: the account's rolling session and weekly
+windows as `usedPercent` plus a reset time. Three mechanisms keep that gauge present and current:
+
+- **Polled reading.** The driver's status probe reads it — Codex through the app-server's
+  `account/rateLimits/read`, Claude through Anthropic's OAuth usage endpoint
+  ([`claudeOAuthUsage.ts`][claude-usage]). The probe runs on the provider-health interval while a
+  client holds foreground provider-status demand, and again as soon as demand returns to a snapshot
+  older than that interval ([`makeManagedServerProvider.ts`][managed]). A failed read keeps the last
+  good reading for up to thirty minutes rather than blanking the gauge
+  ([`providerUsageRetention.ts`][retention]).
+- **Pushed updates.** A running session reports its windows mid-turn — Codex's
+  `account/rateLimits/updated`, Claude's `rate_limit_event` with `utilization` — as the
+  `account.rate-limits.updated` runtime event. Ingestion parses them
+  ([`providerRateLimitEvents.ts`][rate-limit-events]) and hands them to
+  `ProviderRegistry.mergeProviderUsageWindows`, which keeps them as a volatile overlay and re-applies
+  every push newer than the probe reading on top of each snapshot
+  ([`providerUsageLimits.ts`][usage-limits]). A probe that runs after a push supersedes it. The same
+  Claude event also carries the allowed/rejected verdict that drives account-drain routing
+  (`ServerProvider.rateLimit`); the two are parsed independently.
+- **Nothing persisted.** Both overlays are re-learned after a restart from the next probe or push;
+  the on-disk snapshot cache deliberately drops `usageLimits`.
+
+Windows are matched by duration, never by label: anything under a day is the session window,
+anything of a week or more is a weekly, and the first weekly is the account-wide one. That is what
+lets one strip and one popover render Codex and Claude the same way.
+
 ## How provider work is requested
 
 Clients never call a provider directly. They dispatch orchestration commands over the RPC method
@@ -206,3 +234,8 @@ when a request opens (approval) or user input is requested, via
 [ingest]: ../../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
 [cmd]: ../../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
 [checkpoint]: ../../apps/server/src/orchestration/Layers/CheckpointReactor.ts
+[claude-usage]: ../../apps/server/src/provider/claudeOAuthUsage.ts
+[managed]: ../../apps/server/src/provider/makeManagedServerProvider.ts
+[retention]: ../../apps/server/src/provider/providerUsageRetention.ts
+[rate-limit-events]: ../../apps/server/src/provider/providerRateLimitEvents.ts
+[usage-limits]: ../../apps/server/src/provider/providerUsageLimits.ts
