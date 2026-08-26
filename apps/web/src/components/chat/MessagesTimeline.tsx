@@ -1347,16 +1347,9 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
   const { workingStepLabel } = use(TimelineRowActivityCtx);
   return (
-    // Extra bottom padding, not just py-0.5: live follow lags the growing
-    // content by a few dozen pixels while streaming, and this row is both the
-    // last one and taller than a text line, so without the gap its marker ends
-    // up behind the composer overlay.
-    <div className="pt-0.5 pb-5 pl-1.5">
-      {/* Themeable secondary-label token, but the marker stays a DotMatrix:
-          upstream's three staggered pulsing dots repaint every vsync. */}
-      <div className="flex min-w-0 items-center gap-2 pt-1 text-secondary-label text-[11px] tabular-nums">
-        <DotMatrix aria-hidden state="working" className="size-4" />
-        <span className="shrink-0">
+    <div>
+      <div className="border-b border-border/60 pb-2 pt-1">
+        <div className="px-1 text-sm leading-relaxed text-muted-foreground tabular-nums">
           {row.createdAt ? (
             <>
               Working for <WorkingTimer createdAt={row.createdAt} />
@@ -1367,7 +1360,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
           {workingStepLabel ? (
             <span className="ml-2 text-muted-foreground/55">· {workingStepLabel}</span>
           ) : null}
-        </span>
+        </div>
       </div>
       {row.showThinking ? (
         <div className="mt-1">

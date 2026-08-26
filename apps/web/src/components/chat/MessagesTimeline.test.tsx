@@ -1173,6 +1173,61 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("tool call failed");
   });
 
+  it("renders working state as the active-turn header", () => {
+    const turnId = TurnId.make("turn-active-header");
+    const userEntry = buildUserTimelineEntry("Start active turn");
+    const assistantEntry = buildAssistantTimelineEntry("Streaming response");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnInProgress
+        activeTurnStartedAt={MESSAGE_CREATED_AT}
+        latestTurn={{
+          turnId,
+          state: "running",
+          startedAt: MESSAGE_CREATED_AT,
+          completedAt: null,
+        }}
+        runningTurnId={turnId}
+        timelineEntries={[
+          {
+            ...userEntry,
+            id: "active-user-entry",
+            message: {
+              ...userEntry.message,
+              id: MessageId.make("active-user-message"),
+            },
+          },
+          {
+            ...assistantEntry,
+            id: "active-assistant-entry",
+            message: {
+              ...assistantEntry.message,
+              id: MessageId.make("active-assistant-message"),
+              turnId,
+              streaming: true,
+            },
+          },
+        ]}
+      />,
+    );
+
+    const userIndex = markup.indexOf('data-timeline-row-id="active-user-entry"');
+    const workingIndex = markup.indexOf('data-timeline-row-id="working-indicator-row"');
+    const assistantIndex = markup.indexOf('data-timeline-row-id="active-assistant-entry"');
+
+    expect(userIndex).toBeGreaterThanOrEqual(0);
+    expect(workingIndex).toBeGreaterThan(userIndex);
+    expect(assistantIndex).toBeGreaterThan(workingIndex);
+    expect(markup).toContain('class="border-b border-border/60 pb-2 pt-1"');
+    expect(markup).toContain(
+      'class="px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
+    );
+    expect(markup).not.toContain('class="pt-0.5 pb-5 pl-1.5"');
+    expect(markup).not.toContain('data-state="working"');
+  });
+
   it("aligns the iconless Thinking row with the working timer", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
