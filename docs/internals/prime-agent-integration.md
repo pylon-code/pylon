@@ -1,7 +1,7 @@
 # Prime Agent integration investigation
 
 > **Historical investigation:** This plan records the original Prime Agent 0.7.1 ACP spike.
-> The shipped direction is the daemon-first native parity plan and current 0.7.2 parity ledger.
+> The shipped direction is recorded in the current [Prime Agent 0.8.1 daemon parity ledger](prime-agent-daemon-parity.md).
 
 ## Conclusion
 

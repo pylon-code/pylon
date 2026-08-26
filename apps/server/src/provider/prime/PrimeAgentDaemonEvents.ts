@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
+
 import {
   PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
   PROVIDER_SESSION_GOAL_OBJECTIVE_MAX_CHARS,
@@ -527,6 +530,8 @@ const knownSessionEventTypes = new Set([
 
 const MAX_TEXT_LENGTH = 100_000;
 export const PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS = MAX_TEXT_LENGTH;
+export const primeAgentDaemonImageDigest = (data: string) =>
+  NodeCrypto.createHash("sha256").update(data).digest("hex");
 const MAX_PREVIEW_LENGTH = 4_000;
 const MAX_LIST_ITEMS = 100;
 export const PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES = MAX_LIST_ITEMS;
@@ -636,6 +641,8 @@ export type PrimeDaemonMessage =
       readonly timestamp: number;
       readonly text: string;
       readonly imageMimeTypes: ReadonlyArray<string>;
+      /** Ephemeral correlation only; never copied into provider runtime events. */
+      readonly imageDigests: ReadonlyArray<string>;
     }
   | {
       readonly role: "assistant";
@@ -957,6 +964,7 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
           timestamp: value.timestamp,
           text: bounded(value.content),
           imageMimeTypes: [],
+          imageDigests: [],
         };
       }
       return {
@@ -967,6 +975,10 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
           .filter((part): part is typeof imageContent.Type => part.type === "image")
           .slice(0, MAX_LIST_ITEMS)
           .map((part) => bounded(part.mimeType, MAX_PREVIEW_LENGTH)),
+        imageDigests: value.content
+          .filter((part): part is typeof imageContent.Type => part.type === "image")
+          .slice(0, MAX_LIST_ITEMS)
+          .map((part) => primeAgentDaemonImageDigest(part.data)),
       };
     }
     case "assistant":

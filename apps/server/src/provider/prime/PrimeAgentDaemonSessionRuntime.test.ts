@@ -2374,6 +2374,685 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect("adopts a pending recovered prompt from post-resync admission evidence", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () => {
+            reportPromptStarted?.();
+            return new Promise(() => {});
+          },
+        });
+        const runtime = yield* test.make();
+        const prompting = yield* runtime
+          .prompt({ text: "late recovered admission" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              state: { ...snapshot(5).state, messageCount: 0 },
+              messages: [],
+              replay: {
+                status: "complete",
+                toSequence: 5,
+                toCursor: { generation: "daemon-1", sequence: 5 },
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: { role: "user", content: "late recovered admission", timestamp: 1 },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Fiber.join(prompting);
+
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("adopts a rejected recovered prompt from post-resync admission evidence", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const prompting = yield* runtime
+          .prompt({ text: "late rejected admission" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        rejectPrompt(new Error("recovered request rejected"));
+        yield* Effect.yieldNow;
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              state: { ...snapshot(5).state, messageCount: 0 },
+              messages: [],
+              replay: {
+                status: "complete",
+                toSequence: 5,
+                toCursor: { generation: "daemon-1", sequence: 5 },
+              },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: { role: "user", content: "late rejected admission", timestamp: 1 },
+            },
+          }),
+        );
+        yield* Fiber.join(prompting);
+
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("rejects a reconnect snapshot mismatch despite a later matching user message", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const prompting = yield* runtime
+          .prompt({ text: "original reconnect input" })
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        rejectPrompt(new Error("recovered request rejected"));
+        yield* Effect.yieldNow;
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              state: { ...snapshot(5).state, messageCount: 1 },
+              messages: [{ role: "user", content: "another input", timestamp: 1 }],
+              replay: {
+                status: "complete",
+                toSequence: 5,
+                toCursor: { generation: "daemon-1", sequence: 5 },
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: { role: "user", content: "original reconnect input", timestamp: 2 },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        const error = yield* Fiber.join(prompting);
+
+        expect(error).toMatchObject({ operation: "prompt", reason: "request-failed" });
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("rejects reconnect adoption when cancellation follows snapshot proof", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const controller = new AbortController();
+        const prompting = yield* runtime
+          .prompt({ text: "cancel recovered input", signal: controller.signal })
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        rejectPrompt(new Error("recovered request rejected"));
+        yield* Effect.yieldNow;
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              state: { ...snapshot(5).state, messageCount: 1 },
+              messages: [{ role: "user", content: "cancel recovered input", timestamp: 1 }],
+              replay: {
+                status: "complete",
+                toSequence: 5,
+                toCursor: { generation: "daemon-1", sequence: 5 },
+              },
+            },
+          }),
+        );
+        controller.abort();
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        const error = yield* Fiber.join(prompting);
+
+        expect(error).toMatchObject({ operation: "prompt", reason: "request-failed" });
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("keeps an admitted run after its worker command client closes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const collecting = yield* collectEvents(runtime, 3).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const token = "turn-worker-client-close:1";
+        const prompting = yield* runtime
+          .prompt({
+            text: "keep the admitted native run",
+            images: [{ type: "image", data: "encoded-image", mimeType: "image/jpeg" }],
+            rlmQuiescenceToken: token,
+          })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: {
+                role: "user",
+                content: [
+                  { type: "text", text: "keep the admitted native run" },
+                  { type: "image", data: "encoded-image", mimeType: "image/jpeg" },
+                ],
+                timestamp: 1,
+              },
+            },
+          }),
+        );
+
+        rejectPrompt(new Error("Daemon worker client closed"));
+        yield* Fiber.join(prompting);
+        yield* runtime.waitForRlmQuiescence(token);
+        const events = yield* Fiber.join(collecting);
+
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "MessageCompleted",
+          "RlmQuiesced",
+        ]);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("waits for same-generation admission evidence after the close rejects", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const token = "turn-late-worker-proof:1";
+        const prompting = yield* runtime
+          .prompt({ text: "proof arrives after close", rlmQuiescenceToken: token })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+
+        rejectPrompt(new Error("Daemon worker client closed"));
+        yield* Effect.yieldNow;
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: {
+                role: "user",
+                content: "proof arrives after close",
+                timestamp: 1,
+              },
+            },
+          }),
+        );
+        yield* Fiber.join(prompting);
+        yield* runtime.waitForRlmQuiescence(token);
+
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("fails an unproven worker close after its bounded evidence grace", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const prompting = yield* runtime
+          .prompt({ text: "never admitted" })
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+
+        rejectPrompt(new Error("Daemon worker client closed"));
+        const error = yield* Fiber.join(prompting);
+
+        expect(error).toMatchObject({ operation: "prompt", reason: "request-failed" });
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("rejects later matching input after a different first user message", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const prompting = yield* runtime
+          .prompt({ text: "do not guess", rlmQuiescenceToken: "turn-unproved:1" })
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: { role: "user", content: "another input", timestamp: 1 },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: { role: "user", content: "do not guess", timestamp: 2 },
+            },
+          }),
+        );
+
+        rejectPrompt(new Error("Daemon worker client closed"));
+        const error = yield* Fiber.join(prompting);
+
+        expect(error).toMatchObject({
+          operation: "prompt",
+          reason: "request-failed",
+          detail: "The daemon operation failed.",
+        });
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("rejects a whitespace-plus-image proof even when image bytes match", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const prompting = yield* runtime
+          .prompt({
+            text: "  \n\t",
+            images: [{ type: "image", data: "encoded-image", mimeType: "image/png" }],
+            rlmQuiescenceToken: "turn-image-only:1",
+          })
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: {
+                role: "user",
+                content: [
+                  { type: "text", text: "  \n\t" },
+                  { type: "image", data: "encoded-image", mimeType: "image/png" },
+                ],
+                timestamp: 1,
+              },
+            },
+          }),
+        );
+
+        rejectPrompt(new Error("Daemon worker client closed"));
+        const error = yield* Fiber.join(prompting);
+
+        expect(error).toMatchObject({ operation: "prompt", reason: "request-failed" });
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("rejects matching text and MIME proof with different image bytes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const prompting = yield* runtime
+          .prompt({
+            text: "inspect this image",
+            images: [{ type: "image", data: "encoded-image", mimeType: "image/png" }],
+            rlmQuiescenceToken: "turn-image-mismatch:1",
+          })
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: {
+                role: "user",
+                content: [
+                  { type: "text", text: "inspect this image" },
+                  { type: "image", data: "different-image", mimeType: "image/png" },
+                ],
+                timestamp: 1,
+              },
+            },
+          }),
+        );
+
+        rejectPrompt(new Error("Daemon worker client closed"));
+        const error = yield* Fiber.join(prompting);
+
+        expect(error).toMatchObject({ operation: "prompt", reason: "request-failed" });
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("rejects worker-close adoption after prompt cancellation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const controller = new AbortController();
+        const prompting = yield* runtime
+          .prompt({
+            text: "cancel this admission",
+            rlmQuiescenceToken: "turn-cancelled-close:1",
+            signal: controller.signal,
+          })
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: {
+                role: "user",
+                content: "cancel this admission",
+                timestamp: 1,
+              },
+            },
+          }),
+        );
+
+        controller.abort();
+        rejectPrompt(new Error("Daemon worker client closed"));
+        const error = yield* Fiber.join(prompting);
+
+        expect(error).toMatchObject({ operation: "prompt", reason: "request-failed" });
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("rejects a genuine prompt error after native admission", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectPrompt!: (error: Error) => void;
+        let reportPromptStarted: (() => void) | undefined;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPrompt = reject;
+              reportPromptStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        const prompting = yield* runtime
+          .prompt({ text: "admitted but failed", rlmQuiescenceToken: "turn-failed:1" })
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: {
+              type: "message_end",
+              message: {
+                role: "user",
+                content: "admitted but failed",
+                timestamp: 1,
+              },
+            },
+          }),
+        );
+
+        rejectPrompt(new Error("provider rejected the prompt"));
+        const error = yield* Fiber.join(prompting);
+
+        expect(error).toMatchObject({
+          operation: "prompt",
+          reason: "request-failed",
+          detail: "The daemon operation failed.",
+        });
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(0);
+      }),
+    ),
+  );
+
   it.effect("reports the full cumulative usage delta at authoritative quiescence", () =>
     Effect.scoped(
       Effect.gen(function* () {
