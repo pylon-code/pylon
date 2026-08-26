@@ -26,3 +26,28 @@ On desktop, press `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux from
 start it in the background. Pylon opens another new thread and shows an **Open** action for the
 thread that started. The new thread keeps the selected workspace mode and base branch. If **New
 worktree** is selected, each background thread creates its own worktree.
+
+## Subscription capacity
+
+On web and desktop, the bar above the composer shows how much of the selected account's
+subscription is spent: the rolling session window and the weekly total, each with the time until it
+resets. The account is the one the composer will send to — pick a different account in the model
+picker and the readout follows.
+
+Click it to compare every configured account for that provider and see when each window resets.
+Pylon polls capacity on the provider-health interval, updates it as a running turn reports its
+limits, and keeps the last good reading through a failed check. The providers' usage endpoints are
+rate limited, so Pylon reads each account at most every few minutes — and every Pylon server on the
+machine shares that one reading, so running several does not multiply the requests. The readout
+dims and says how old it is once a reading has fallen behind, and only then offers **Refresh**.
+
+Prime Agent signs in to its backends on its own, so a Prime thread shows the capacity of the
+account Prime is actually using for the selected model. For an Anthropic model that is Prime's own
+reading whenever Prime has used that backend recently; for an OpenAI Codex model it is the configured
+Codex account whose identity matches Prime's sign-in. When neither can be read, Pylon shows your
+configured accounts for that backend and the popover says the match is assumed. If Prime is signed in
+to a Codex account that is not configured in Pylon, the readout says the capacity is unavailable
+rather than showing another account's numbers. Prime's own default model, and backends Pylon has no
+provider for, show nothing.
+
+Turn the readout off with **Subscription capacity in the composer** in **Settings → General**.

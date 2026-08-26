@@ -31,6 +31,7 @@ export function ProviderUsageAccounts(props: {
   readonly accounts: readonly ProviderUsageAccount[];
   readonly timestampFormat: TimestampFormat;
   readonly nowMs: number;
+  readonly staleAfterMs?: number | undefined;
 }) {
   if (props.accounts.length === 0) return null;
 
@@ -53,6 +54,7 @@ export function ProviderUsageAccounts(props: {
       accounts={props.accounts}
       timestampFormat={props.timestampFormat}
       nowMs={props.nowMs}
+      staleAfterMs={props.staleAfterMs}
     />
   );
 }

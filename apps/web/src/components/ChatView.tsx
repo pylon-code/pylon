@@ -91,6 +91,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
+import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
@@ -218,7 +219,9 @@ import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
   NO_PROVIDER_MODEL_SELECTION,
+  sortProviderInstanceEntries,
 } from "../providerInstances";
+import { resolveComposerInstanceSelection } from "../composerInstanceSelection";
 import {
   buildThreadHandoffSeed,
   getThreadContinuationLinks,
@@ -226,7 +229,9 @@ import {
   summarizeHandoffDiff,
 } from "./chat/ThreadHandoff.logic";
 import { ThreadContinuationBanner } from "./chat/ThreadContinuationBanner";
-import { deriveProviderUsageAccounts } from "../providerUsageAccounts";
+import { deriveComposerUsage } from "../providerUsageAccounts";
+import { usageStaleAfterMs } from "./providerUsage/ProviderUsageMatrix.logic";
+import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { useCheckpointDiff } from "../lib/checkpointDiffState";
 import {
   useClientSettings,
@@ -260,6 +265,7 @@ import {
   finalizePromotedDraftThreadByRef,
   markPromotedDraftThreadByRef,
   useComposerDraftStore,
+  useEffectiveComposerModelState,
   type DraftId,
 } from "../composerDraftStore";
 import {
@@ -4790,23 +4796,69 @@ function ChatViewContent(props: ChatViewProps) {
     [threadHandoffDiff.data?.diff],
   );
   const [isContinuingThreadOnAccount, setIsContinuingThreadOnAccount] = useState(false);
-  // Capacity for every account of this thread's driver, for the composer
-  // strip's popover. Deciding where the next thread goes needs the comparison,
-  // not just the account in front of you.
-  const activeProviderUsageAccounts = useMemo(
+  // Capacity for the account the composer will actually send to, resolved the
+  // same way the composer resolves it — picker choice, session binding, drain
+  // routing and all — so the strip never names one account while the send
+  // goes to another. For a Prime Agent thread the selected model decides
+  // whose capacity applies.
+  const composerInstanceEntries = useMemo(
+    () => sortProviderInstanceEntries(threadHandoffEntries),
+    [threadHandoffEntries],
+  );
+  const composerInstanceSelection = useMemo(
     () =>
-      deriveProviderUsageAccounts({
+      resolveComposerInstanceSelection({
+        entries: composerInstanceEntries,
+        draftActiveProvider: composerActiveProvider,
+        sessionInstanceId: activeThread?.session?.providerInstanceId,
+        threadInstanceId: activeThread?.modelSelection?.instanceId,
+        projectInstanceId: activeProject?.defaultModelSelection?.instanceId,
+        lockedProvider,
+        nowMs: Date.now(),
+      }),
+    [
+      activeProject?.defaultModelSelection?.instanceId,
+      activeThread?.modelSelection?.instanceId,
+      activeThread?.session?.providerInstanceId,
+      composerActiveProvider,
+      composerInstanceEntries,
+      lockedProvider,
+    ],
+  );
+  const { selectedModel: composerSelectedModel } = useEffectiveComposerModelState({
+    threadRef: composerDraftTarget,
+    providers: providerStatuses,
+    selectedProvider: composerInstanceSelection.driverKind,
+    selectedInstanceId: composerInstanceSelection.instanceId,
+    threadModelSelection: activeThread?.modelSelection,
+    projectModelSelection: activeProject?.defaultModelSelection,
+    settings,
+  });
+  const composerUsage = useMemo(
+    () =>
+      deriveComposerUsage({
         providerStatuses,
-        activeInstanceId:
-          activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection?.instanceId,
+        selectedInstanceId: composerInstanceSelection.instanceId,
+        selectedModel: composerSelectedModel,
         enabled: settings.showProviderUsageInContextPopover,
       }),
     [
-      activeThread?.modelSelection?.instanceId,
-      activeThread?.session?.providerInstanceId,
+      composerInstanceSelection.instanceId,
+      composerSelectedModel,
       providerStatuses,
       settings.showProviderUsageInContextPopover,
     ],
+  );
+  // The strip dims a reading the server should already have replaced, so the
+  // bound follows the server's own poll rather than a fixed number.
+  const composerUsageStaleAfterMs = useMemo(
+    () =>
+      usageStaleAfterMs(
+        Duration.toMillis(
+          resolveServerBackgroundActivitySettings(settings).providerHealthRefreshInterval,
+        ),
+      ),
+    [settings],
   );
   // Both ends of the seam, read from shells the client already holds. Keyed on
   // the two ids rather than the thread object so a streaming turn does not
@@ -8162,8 +8214,8 @@ function ChatViewContent(props: ChatViewProps) {
                                   ? { onCheckoutPullRequestRequest: openPullRequestDialog }
                                   : {})}
                                 {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
-                                providerStatus={activeProviderStatus}
-                                providerUsageAccounts={activeProviderUsageAccounts}
+                                composerUsage={composerUsage}
+                                usageStaleAfterMs={composerUsageStaleAfterMs}
                                 timestampFormat={settings.timestampFormat}
                                 availableEnvironments={logicalProjectEnvironments}
                               />

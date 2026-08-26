@@ -2166,13 +2166,13 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
-          title="Provider usage in chat"
-          description="Show the active provider's subscription limits in the context window popover."
+          title="Subscription capacity in the composer"
+          description="Show how much of the selected account's session and weekly limits is spent, beside the composer. Prime Agent threads show the capacity of the backend the selected model runs on."
           resetAction={
             settings.showProviderUsageInContextPopover !==
             DEFAULT_UNIFIED_SETTINGS.showProviderUsageInContextPopover ? (
               <SettingResetButton
-                label="provider usage in chat"
+                label="subscription capacity in the composer"
                 onClick={() =>
                   updateSettings({
                     showProviderUsageInContextPopover:
@@ -2188,7 +2188,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ showProviderUsageInContextPopover: Boolean(checked) })
               }
-              aria-label="Show provider usage in context window popover"
+              aria-label="Show subscription capacity in the composer"
             />
           }
         />

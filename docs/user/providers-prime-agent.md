@@ -215,6 +215,14 @@ model-pricing estimate for that turn as reported at completion, not an invoice o
 billing total. Very small estimates remain visible instead of rounding to zero; a reported zero can
 also mean the selected model has no registered price.
 
+## Subscription Capacity
+
+Prime Agent runs each model on that backend's own subscription, so the capacity readout beside the
+composer follows the selected model. Pylon reads Prime's sign-ins to show the right account: Prime's
+own Anthropic reading while Prime has used Anthropic recently, or the configured Codex account whose
+identity matches Prime's. Only when neither can be read does it fall back to your configured
+accounts, and it says so. See [the composer](composer.md#subscription-capacity).
+
 ## Execution Approvals
 
 Daemon-backed threads support **Supervised** and **Full access**. Supervised mode loads a

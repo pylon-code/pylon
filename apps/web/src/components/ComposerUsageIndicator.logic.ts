@@ -1,6 +1,6 @@
 /**
- * Picks the two usage windows the composer strip shows for the account bound
- * to the current thread.
+ * Picks the two usage windows the composer strip shows for the account that
+ * leads the composer's capacity readout.
  *
  * Only the rolling session window and the weekly total appear. Providers
  * report more than that — model-scoped weeklies, overage credits — but the
@@ -9,9 +9,11 @@
  *
  * @module components/ComposerUsageIndicator.logic
  */
-import type { ServerProvider, ServerProviderUsageWindow } from "@t3tools/contracts";
+import type { ServerProviderUsageWindow } from "@t3tools/contracts";
 
-import { formatTimeUntilReset } from "./providerUsage/usageTime";
+import type { ProviderUsageAccount } from "./providerUsage/ProviderUsageAccounts";
+import { isUsageReadingStale } from "./providerUsage/ProviderUsageMatrix.logic";
+import { formatTimeSinceChecked, formatTimeUntilReset } from "./providerUsage/usageTime";
 
 export { formatTimeUntilReset };
 
@@ -38,6 +40,14 @@ export interface ComposerUsageView {
   readonly accountName: string | undefined;
   readonly accentColor?: string | undefined;
   readonly entries: ReadonlyArray<ComposerUsageEntry>;
+  /**
+   * True once the reading is older than the server should have let it get.
+   * The strip dims rather than hides — a slightly old number still beats no
+   * number when deciding where to send work — and the popover says the age.
+   */
+  readonly stale: boolean;
+  /** How long ago the reading was taken ("4m"), once it is at least a minute old. */
+  readonly age: string | undefined;
 }
 
 /**
@@ -64,17 +74,18 @@ const entryFrom = (
 });
 
 /**
- * Build the strip's view for one provider snapshot, or `null` when it reports
+ * Build the strip's view for the leading account, or `null` when it reports
  * no usage — an unauthenticated account, a provider that has none, or a
  * reading that has not landed yet. The strip renders nothing rather than a
  * placeholder in that case.
  */
 export function getComposerUsageView(
-  provider: ServerProvider | null | undefined,
+  account: ProviderUsageAccount | null | undefined,
   nowMs: number,
+  staleAfterMs?: number,
 ): ComposerUsageView | null {
-  const windows = provider?.usageLimits?.windows;
-  if (!windows || windows.length === 0) return null;
+  const windows = account?.usageLimits.windows;
+  if (!account || !windows || windows.length === 0) return null;
 
   const entries: ComposerUsageEntry[] = [];
   const session = windows.find(isSessionWindow);
@@ -85,9 +96,12 @@ export function getComposerUsageView(
   if (weekly) entries.push(entryFrom(weekly, "7d", nowMs));
   if (entries.length === 0) return null;
 
+  const checkedAt = account.usageLimits.checkedAt;
   return {
-    accountName: provider?.displayName?.trim() || undefined,
-    ...(provider?.accentColor ? { accentColor: provider.accentColor } : {}),
+    accountName: account.displayName.trim() || undefined,
+    ...(account.accentColor ? { accentColor: account.accentColor } : {}),
     entries,
+    stale: isUsageReadingStale({ checkedAt, nowMs, staleAfterMs }),
+    age: formatTimeSinceChecked(checkedAt, nowMs),
   };
 }
