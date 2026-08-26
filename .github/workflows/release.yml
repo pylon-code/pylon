@@ -6,11 +6,12 @@ on:
       - "v*.*.*"
       - "!v*-nightly.*"
   schedule:
-    # Once a day, which is what "nightly" means. The inherited every-three-hours
-    # cadence suits a project with constant contributor traffic; here it just
-    # rebuilds four platforms up to eight times on any day with a push, and
-    # each rebuild is billable. Dispatch manually when a build is needed sooner.
-    - cron: "0 9 * * *"
+    # Every three hours. The check_changes job skips the run when pylon has not
+    # moved since the last nightly tag, so idle slots cost one short job, and
+    # active days rebuild at most eight times. Runner minutes are free on this
+    # public repository, which is why the once-a-day throttle from 61ba5899e
+    # is gone; dispatch manually when a build is needed sooner than three hours.
+    - cron: "0 */3 * * *"
   workflow_dispatch:
     inputs:
       channel:
