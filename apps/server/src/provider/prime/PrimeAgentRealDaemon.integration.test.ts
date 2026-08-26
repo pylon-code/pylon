@@ -284,7 +284,7 @@ it.live.skipIf(!configuredExecutable)(
             yield* Fiber.join(reconnectPrompt);
             const reconnectCompletion = yield* Deferred.await(reconnectCompleted);
             yield* Deferred.await(reconnectRunCompleted);
-            yield* reconnecting.waitForRlmQuiescence(reconnectToken);
+            yield* reconnecting.waitForRlmQuiescence(reconnectToken, new AbortController().signal);
             expect(reconnectCompletion.message.text.trim()).toBe("PYLON_TRANSPORT_RECONNECT_OK");
             yield* reconnecting.dispose;
             yield* Fiber.await(reconnectDrain);

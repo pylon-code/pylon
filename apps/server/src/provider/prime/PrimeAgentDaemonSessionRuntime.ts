@@ -67,6 +67,9 @@ export { PRIME_AGENT_DAEMON_RESUME_CURSOR } from "./PrimeAgentResumeCursor.ts";
 
 const COMMAND_TIMEOUT_MS = 30_000;
 const RLM_QUIESCENCE_STATS_TIMEOUT_MS = 2_000;
+const RLM_QUIESCENCE_CANCELLATION_MAX_RETRIES = 3;
+const isRlmQuiescenceWaitCancellation = (cause: unknown) =>
+  cause instanceof Error && cause.message === "RLM quiescence wait cancelled";
 const SIDE_QUESTION_TERMINAL_MAX_BYTES = 8_192;
 const SIDE_QUESTION_TERMINAL_MAX_CODEPOINTS = 8_192;
 const SIDE_QUESTION_MAX_UPDATES = 512;
@@ -934,6 +937,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly rlmQuiescenceAvailable: boolean;
   readonly waitForRlmQuiescence: (
     token: string,
+    signal: AbortSignal,
   ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly isRlmQuiescenceGenerationCurrent: (generation: number) => boolean;
   /** Resolves a reconnect generation after the adapter validates the public snapshot suffix. */
@@ -3072,33 +3076,95 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     });
 
     const waitForRlmQuiescence = Effect.fn("PrimeAgentDaemonSessionRuntime.waitForRlmQuiescence")(
-      function* (token: string) {
+      function* (token: string, signal: AbortSignal) {
+        const cancellationError = () =>
+          runtimeError(
+            "rlm-quiescence",
+            "request-failed",
+            "Prime Agent descendant quiescence wait was cancelled.",
+          );
         yield* rlmQuiescenceSemaphore.withPermit(
           Effect.gen(function* () {
             yield* ensureOpen("rlm-quiescence");
+            if (signal.aborted) {
+              return yield* cancellationError();
+            }
             if (!rlmQuiescenceAvailable) return;
-            yield* awaitReconnectResolution();
+            const waitGeneration = yield* awaitReconnectResolution();
+            if (signal.aborted) {
+              return yield* cancellationError();
+            }
             const waitForHeadlessCompletion = yield* requireMethod(
               "rlm-quiescence",
               connection!.waitForHeadlessCompletion,
             );
             // Prime's result is autonomous-provider state. Pylon needs only the
             // authoritative ordering boundary and never projects the native payload.
-            yield* Effect.tryPromise({
-              try: () =>
-                waitForHeadlessCompletion.call(connection, {
-                  waitForRlmQuiescence: true,
-                }),
-              catch: () =>
-                runtimeError(
+            let cancellationRetries = 0;
+            while (true) {
+              const waitResult = yield* Effect.promise(async () => {
+                try {
+                  await waitForHeadlessCompletion.call(connection, {
+                    waitForRlmQuiescence: true,
+                  });
+                  return "completed" as const;
+                } catch (cause) {
+                  return isRlmQuiescenceWaitCancellation(cause)
+                    ? ("cancelled" as const)
+                    : ("failed" as const);
+                }
+              });
+              if (signal.aborted) {
+                return yield* cancellationError();
+              }
+              if (waitResult === "completed") break;
+              if (
+                waitResult !== "cancelled" ||
+                cancellationRetries >= RLM_QUIESCENCE_CANCELLATION_MAX_RETRIES
+              ) {
+                return yield* runtimeError(
                   "rlm-quiescence",
                   "request-failed",
                   "Prime Agent could not confirm descendant quiescence.",
-                ),
-            });
-            yield* awaitReconnectResolution();
+                );
+              }
+              cancellationRetries += 1;
+              yield* ensureOpen("rlm-quiescence");
+              const retryGeneration = yield* awaitReconnectResolution();
+              if (signal.aborted) {
+                return yield* cancellationError();
+              }
+              if (retryGeneration !== waitGeneration) {
+                return yield* runtimeError(
+                  "rlm-quiescence",
+                  "request-failed",
+                  "Prime Agent reconnected before descendant quiescence could be confirmed.",
+                );
+              }
+            }
+            const quiescenceGeneration = yield* awaitReconnectResolution();
+            if (signal.aborted) {
+              return yield* cancellationError();
+            }
+            if (cancellationRetries > 0 && quiescenceGeneration !== waitGeneration) {
+              return yield* runtimeError(
+                "rlm-quiescence",
+                "request-failed",
+                "Prime Agent reconnected before descendant quiescence could be confirmed.",
+              );
+            }
             const currentUsage = yield* readRlmUsage();
             const completedConnectionGeneration = yield* awaitReconnectResolution();
+            if (signal.aborted) {
+              return yield* cancellationError();
+            }
+            if (cancellationRetries > 0 && completedConnectionGeneration !== waitGeneration) {
+              return yield* runtimeError(
+                "rlm-quiescence",
+                "request-failed",
+                "Prime Agent reconnected before descendant quiescence could be confirmed.",
+              );
+            }
             const usage = subtractCumulativeUsage(currentUsage, rlmTurnUsageBaseline);
             yield* Queue.offer(eventQueue, {
               _tag: "RlmQuiesced",

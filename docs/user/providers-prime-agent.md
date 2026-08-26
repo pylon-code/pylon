@@ -143,9 +143,12 @@ to clients. Supervised sessions keep discovered commands disabled. Observed Prim
 
 When a daemon-backed parent waits for asynchronous children, the Pylon turn stays **Working** until
 Prime reports descendant quiescence and finishes any parent continuation triggered by their replies.
-The continued parent answer appears in the same turn rather than as hidden background work. If the
-daemon reconnects during this boundary or cannot confirm it, Pylon fails the turn and closes that native
-session instead of reusing work whose ownership is uncertain.
+The continued parent answer appears in the same turn rather than as hidden background work. If deleting a
+child after its reply cancels Prime's in-flight descendant wait, Pylon retries that read-only boundary while
+the turn remains active, without resending your prompt. Cancelling the turn never retries the boundary.
+If cancellation repeats while the turn remains active, another error occurs, or a daemon reconnect cannot
+be reconciled, Pylon fails the turn and closes that native session instead of reusing work whose ownership
+is uncertain.
 
 In the main thread, each Prime tool call uses one activity row as it starts, updates, and completes. Pylon shows only a fixed friendly label such as **Code**, **Shell**, **Edit**, **Read**, **Search**, **Web search**, **Image**, or **Tool**, plus its coarse lifecycle state. Commands, code, paths, tool input, progress output, results, native titles and identifiers, and error text are not copied into thread activity.
 
