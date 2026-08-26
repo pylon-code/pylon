@@ -75,6 +75,14 @@ export function resolveAndPersistPreferredEditor(
   return resolved.editor;
 }
 
+export function resolvePreferredEditorTargetPath(
+  editor: EditorId,
+  targetPath: string,
+  fileManagerTargetPath: string = targetPath,
+): string {
+  return editor === "file-manager" ? fileManagerTargetPath : targetPath;
+}
+
 export function useOpenInPreferredEditor(
   environmentId: EnvironmentId | null,
   availableEditors: readonly EditorId[],
@@ -87,6 +95,7 @@ export function useOpenInPreferredEditor(
   return useCallback(
     async (
       targetPath: string,
+      fileManagerTargetPath: string = targetPath,
     ): Promise<
       AtomCommandResult<
         EditorId,
@@ -119,7 +128,7 @@ export function useOpenInPreferredEditor(
       const result = await openInEditor({
         environmentId,
         input: {
-          cwd: targetPath,
+          cwd: resolvePreferredEditorTargetPath(editor, targetPath, fileManagerTargetPath),
           editor,
         },
       });

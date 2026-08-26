@@ -70,6 +70,14 @@ class FakeElement {
     this.attributes.set(name, value);
   }
 
+  getAttribute(name: string) {
+    return this.attributes.get(name) ?? null;
+  }
+
+  click() {
+    this.dispatchEvent(new FakeDomEvent("click", { bubbles: true }));
+  }
+
   dispatchEvent(event: FakeDomEvent) {
     for (const listener of this.listeners.get(event.type) ?? []) {
       listener(event);
@@ -272,6 +280,23 @@ describe("showContextMenuFallback", () => {
     await expect(selectionPromise).resolves.toBe("delete");
   });
 
+  it("dismisses on Tab and restores the invoking element", async () => {
+    const fakeDocument = document as unknown as FakeDocument;
+    const invoker = fakeDocument.createElement("button");
+    fakeDocument.body.appendChild(invoker);
+    invoker.focus();
+    const selectionPromise = showContextMenuFallback([{ id: "rename", label: "Rename" }]);
+
+    expect(findButton("Rename")?.focused).toBe(true);
+    const tabEvent = new KeyboardEvent("keydown", { key: "Tab" });
+    fakeDocument.dispatchEvent(tabEvent);
+
+    expect(tabEvent.defaultPrevented).toBe(false);
+    expect(findButton("Rename")).toBeUndefined();
+    expect(invoker.focused).toBe(true);
+    await expect(selectionPromise).resolves.toBeNull();
+  });
+
   it("resolves a clicked flat menu item", async () => {
     const selectionPromise = showContextMenuFallback([
       { id: "rename", label: "Rename" },
@@ -323,6 +348,37 @@ describe("showContextMenuFallback", () => {
     childButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
     await expect(selectionPromise).resolves.toBe("rename:project-b");
+  });
+
+  it("navigates into and out of submenus with the keyboard", async () => {
+    const fakeDocument = document as unknown as FakeDocument;
+    const selectionPromise = showContextMenuFallback([
+      {
+        id: "copy:submenu",
+        label: "Copy",
+        children: [{ id: "copy:path", label: "Path" }],
+      },
+    ]);
+
+    const parentButton = findButton("Copy");
+    expect(parentButton?.focused).toBe(true);
+    fakeDocument.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+    expect(findButton("Path")?.focused).toBe(true);
+    expect(parentButton?.attributes.get("aria-expanded")).toBe("true");
+
+    fakeDocument.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(findButton("Path")).toBeUndefined();
+    expect(parentButton?.focused).toBe(true);
+    expect(parentButton?.attributes.get("aria-expanded")).toBe("false");
+
+    fakeDocument.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+    expect(findButton("Path")?.focused).toBe(true);
+    fakeDocument.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft" }));
+    expect(findButton("Path")).toBeUndefined();
+    expect(parentButton?.focused).toBe(true);
+
+    dismissContextMenu();
+    await expect(selectionPromise).resolves.toBeNull();
   });
 
   it("opens and focuses nested submenus when the parent is activated", async () => {

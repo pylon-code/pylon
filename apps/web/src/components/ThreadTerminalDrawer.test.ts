@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  resolveTerminalPathOpenTargets,
   resolveTerminalSelectionActionPosition,
   shouldHandleTerminalExit,
   shouldHandleTerminalSelectionMouseUp,
@@ -88,5 +89,14 @@ describe("resolveTerminalSelectionActionPosition", () => {
     expect(shouldHandleTerminalExit("exited", "running", false)).toBe(true);
     expect(shouldHandleTerminalExit("exited", "exited", false)).toBe(false);
     expect(shouldHandleTerminalExit("closed", "running", true)).toBe(false);
+  });
+});
+
+describe("resolveTerminalPathOpenTargets", () => {
+  it("keeps position metadata for editors and removes it for the file manager", () => {
+    expect(resolveTerminalPathOpenTargets("src/main.ts:42:7", "/work/repo")).toEqual({
+      targetPath: "/work/repo/src/main.ts:42:7",
+      fileManagerTargetPath: "/work/repo/src/main.ts",
+    });
   });
 });

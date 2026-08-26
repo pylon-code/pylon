@@ -237,8 +237,9 @@ export function showContextMenuFallback<T extends string>(
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
+      if (event.key === "Tab") {
+        // Let the browser continue its normal tab order from the restored
+        // invoker, but never leave an unfocused context menu mounted.
         cleanup(null);
         return;
       }
@@ -257,15 +258,42 @@ export function showContextMenuFallback<T extends string>(
           break;
         }
       }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (activeLevel > 0) {
+          const parentTrigger = submenuTriggerStack[activeLevel];
+          closeMenusFromLevel(activeLevel);
+          parentTrigger?.focus({ preventScroll: true });
+        } else {
+          cleanup(null);
+        }
+        return;
+      }
+
       if (activeLevel < 0) return;
       const activeMenu = menuStack[activeLevel];
       if (!activeMenu) return;
+      const activeButton = activeElement as HTMLButtonElement;
+
+      if (event.key === "ArrowRight" && activeButton.getAttribute("aria-haspopup") === "menu") {
+        event.preventDefault();
+        activeButton.click();
+        return;
+      }
+      if (event.key === "ArrowLeft" && activeLevel > 0) {
+        event.preventDefault();
+        const parentTrigger = submenuTriggerStack[activeLevel];
+        closeMenusFromLevel(activeLevel);
+        parentTrigger?.focus({ preventScroll: true });
+        return;
+      }
 
       const enabledItems = [...activeMenu.querySelectorAll<HTMLButtonElement>("button")].filter(
         (button) => !button.disabled,
       );
       if (enabledItems.length === 0) return;
-      const currentIndex = Math.max(0, enabledItems.indexOf(activeElement as HTMLButtonElement));
+      const currentIndex = Math.max(0, enabledItems.indexOf(activeButton));
       const focusAt = (index: number) => {
         event.preventDefault();
         enabledItems[index]?.focus({ preventScroll: true });
