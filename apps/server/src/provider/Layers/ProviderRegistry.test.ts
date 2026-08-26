@@ -41,13 +41,14 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./ProviderInstanceRegistryHydration.ts";
 import {
   haveProvidersChanged,
+  mergeProviderCapacityRefresh,
   mergeProviderSnapshot,
   ProviderRegistryLive,
 } from "./ProviderRegistry.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettingsModule from "../../serverSettings.ts";
 import { readProviderStatusCache, resolveProviderStatusCachePath } from "../providerStatusCache.ts";
-import type { ProviderInstance } from "../ProviderDriver.ts";
+import { providerBackendsFromCapacityRefresh, type ProviderInstance } from "../ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
@@ -339,6 +340,167 @@ function makeMutableServerSettingsService(
     } satisfies ServerSettingsModule.ServerSettingsService["Service"];
   });
 }
+
+describe("mergeProviderCapacityRefresh", () => {
+  const checkedAt = "2026-08-04T18:00:00.000Z";
+  const retentionIdentity = "openai-codex:fingerprint-a";
+  const usageAt = (at: string, usedPercent: number) => ({
+    source: "primeAgentCodex",
+    checkedAt: at,
+    windows: [{ label: "Weekly", usedPercent, windowDurationMins: 10_080 }],
+  });
+  const previousBackends = [
+    {
+      backend: {
+        backend: "openai-codex",
+        accountId: "acct_123",
+        usageLimits: usageAt(checkedAt, 41),
+      },
+      retentionIdentity,
+    },
+  ] as const;
+
+  it("retains a same-account reading through a transient failure", () => {
+    assert.deepStrictEqual(
+      mergeProviderCapacityRefresh({
+        previousBackends,
+        refresh: {
+          backends: [
+            {
+              backend: { backend: "openai-codex", accountId: "acct_123" },
+              didReadCapacity: false,
+              retentionIdentity,
+            },
+          ],
+        },
+        nowMs: Date.parse(checkedAt) + 29 * 60_000,
+      }),
+      previousBackends,
+    );
+  });
+
+  it("drops a failed reading after retention expires", () => {
+    assert.deepStrictEqual(
+      mergeProviderCapacityRefresh({
+        previousBackends,
+        refresh: {
+          backends: [
+            {
+              backend: { backend: "openai-codex", accountId: "acct_123" },
+              didReadCapacity: false,
+              retentionIdentity,
+            },
+          ],
+        },
+        nowMs: Date.parse(checkedAt) + 30 * 60_000 + 1,
+      }),
+      [
+        {
+          backend: { backend: "openai-codex", accountId: "acct_123" },
+          retentionIdentity,
+        },
+      ],
+    );
+  });
+
+  it("does not retain absent-account-id usage across Anthropic re-login", () => {
+    assert.deepStrictEqual(
+      mergeProviderCapacityRefresh({
+        previousBackends: [
+          {
+            backend: {
+              backend: "anthropic",
+              usageLimits: usageAt(checkedAt, 41),
+            },
+            retentionIdentity: "anthropic:fingerprint-a",
+          },
+        ],
+        refresh: {
+          backends: [
+            {
+              backend: { backend: "anthropic" },
+              didReadCapacity: false,
+              retentionIdentity: "anthropic:fingerprint-b",
+            },
+          ],
+        },
+        nowMs: Date.parse(checkedAt) + 60_000,
+      }),
+      [
+        {
+          backend: { backend: "anthropic" },
+          retentionIdentity: "anthropic:fingerprint-b",
+        },
+      ],
+    );
+  });
+
+  it("replaces the retained reading after a successful read", () => {
+    const next = {
+      backend: "openai-codex",
+      accountId: "acct_123",
+      usageLimits: usageAt("2026-08-04T18:01:00.000Z", 42),
+    } as const;
+    assert.deepStrictEqual(
+      mergeProviderCapacityRefresh({
+        previousBackends,
+        refresh: {
+          backends: [{ backend: next, didReadCapacity: true, retentionIdentity }],
+        },
+        nowMs: Date.parse(next.usageLimits.checkedAt),
+      }),
+      [{ backend: next, retentionIdentity }],
+    );
+  });
+
+  it("prefers newer in-memory usage over older shared usage", () => {
+    const nowMs = Date.parse("2026-08-04T18:25:00.000Z");
+    assert.strictEqual(
+      mergeProviderCapacityRefresh({
+        previousBackends,
+        refresh: {
+          backends: [
+            {
+              backend: {
+                backend: "openai-codex",
+                accountId: "acct_123",
+                usageLimits: usageAt("2026-08-04T17:55:00.000Z", 39),
+              },
+              didReadCapacity: true,
+              retentionIdentity,
+            },
+          ],
+        },
+        nowMs,
+      })[0]?.backend.usageLimits?.windows[0]?.usedPercent,
+      41,
+    );
+  });
+
+  it("ignores expired shared usage when in-memory usage is fresh", () => {
+    const nowMs = Date.parse(checkedAt) + 5 * 60_000;
+    assert.strictEqual(
+      mergeProviderCapacityRefresh({
+        previousBackends,
+        refresh: {
+          backends: [
+            {
+              backend: {
+                backend: "openai-codex",
+                accountId: "acct_123",
+                usageLimits: usageAt("2026-08-04T17:20:00.000Z", 30),
+              },
+              didReadCapacity: false,
+              retentionIdentity,
+            },
+          ],
+        },
+        nowMs,
+      })[0]?.backend.usageLimits?.windows[0]?.usedPercent,
+      41,
+    );
+  });
+});
 
 it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), TestHttpClientLive))(
   "ProviderRegistry",
@@ -1176,134 +1338,200 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
-      it.effect(
-        "re-reads an instance's own capacity after a turn, no more than once a minute",
-        () =>
-          Effect.gen(function* () {
-            const primeDriver = ProviderDriverKind.make("primeAgent");
-            const primeInstanceId = ProviderInstanceId.make("primeAgent");
-            const probedAt = "2026-08-04T18:00:00.000Z";
-            // The overlay only applies when it is newer than the probe.
-            yield* TestClock.setTime(Date.parse(probedAt) + 1_000);
-            const initialProvider = {
-              instanceId: primeInstanceId,
-              driver: primeDriver,
-              status: "ready",
-              enabled: true,
-              installed: true,
-              auth: { status: "authenticated" },
-              checkedAt: probedAt,
-              version: "0.8.0",
-              models: [],
-              slashCommands: [],
-              skills: [],
-              backends: [{ backend: "openai-codex", accountId: "acct_123" }],
-            } as const satisfies ServerProvider;
-            const reads = yield* Ref.make(0);
-            const instance = {
-              instanceId: primeInstanceId,
+      it.effect("keeps newer same-account capacity across an older periodic snapshot", () =>
+        Effect.gen(function* () {
+          const primeDriver = ProviderDriverKind.make("primeAgent");
+          const primeInstanceId = ProviderInstanceId.make("primeAgent");
+          const probedAt = "2026-08-04T18:00:00.000Z";
+          // The overlay only applies when it is newer than the probe.
+          yield* TestClock.setTime(Date.parse(probedAt) + 1_000);
+          const initialProvider = {
+            instanceId: primeInstanceId,
+            driver: primeDriver,
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: probedAt,
+            version: "0.8.0",
+            models: [],
+            slashCommands: [],
+            skills: [],
+            backends: [{ backend: "anthropic" }],
+          } as const satisfies ServerProvider;
+          const changes = yield* PubSub.unbounded<ServerProvider>();
+          const reads = yield* Ref.make(0);
+          const sameAccountIdentity = "anthropic:fingerprint-a";
+          const instance = {
+            instanceId: primeInstanceId,
+            driverKind: primeDriver,
+            continuationIdentity: {
               driverKind: primeDriver,
-              continuationIdentity: {
-                driverKind: primeDriver,
-                continuationKey: "prime:instance:primeAgent",
-              },
-              displayName: undefined,
-              enabled: true,
-              snapshot: {
-                maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
-                  provider: primeDriver,
-                  packageName: null,
-                }),
-                getSnapshot: Effect.succeed(initialProvider),
-                refresh: Effect.never,
-                streamChanges: Stream.empty,
-              },
-              adapter: {} as ProviderInstance["adapter"],
-              textGeneration: {} as ProviderInstance["textGeneration"],
-              capacity: {
-                refresh: Ref.updateAndGet(reads, (count) => count + 1).pipe(
-                  Effect.map((count) => [
-                    {
-                      backend: "openai-codex",
-                      accountId: "acct_123",
-                      usageLimits: {
-                        source: "primeAgentCodex",
-                        checkedAt: probedAt,
-                        windows: [
-                          { label: "Weekly", usedPercent: 40 + count, windowDurationMins: 10_080 },
-                        ],
-                      },
-                    },
-                  ]),
+              continuationKey: "prime:instance:primeAgent",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                provider: primeDriver,
+                packageName: null,
+              }),
+              getSnapshot: Effect.succeed(initialProvider),
+              refresh: Effect.never,
+              streamChanges: Stream.fromPubSub(changes),
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+            capacity: {
+              refresh: Ref.updateAndGet(reads, (count) => count + 1).pipe(
+                Effect.flatMap((count) =>
+                  Effect.clockWith((clock) => clock.currentTimeMillis).pipe(
+                    Effect.map((nowMs) => ({
+                      backends: [
+                        {
+                          backend: {
+                            backend: "anthropic",
+                            usageLimits: {
+                              source: "primeAgentOAuth",
+                              checkedAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+                              windows: [
+                                {
+                                  label: "Weekly",
+                                  usedPercent: 40 + count,
+                                  windowDurationMins: 10_080,
+                                },
+                              ],
+                            },
+                          },
+                          didReadCapacity: true,
+                          retentionIdentity: sameAccountIdentity,
+                        },
+                      ],
+                    })),
+                  ),
                 ),
-              },
-            } satisfies ProviderInstance;
-            const instanceRegistryLayer = Layer.succeed(
-              ProviderInstanceRegistry.ProviderInstanceRegistry,
-              {
-                getInstance: (instanceId) =>
-                  Effect.succeed(instanceId === primeInstanceId ? instance : undefined),
-                listInstances: Effect.succeed([instance]),
-                listUnavailable: Effect.succeed([]),
-                streamChanges: Stream.empty,
-                subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
-              },
-            );
-            const scope = yield* Scope.make();
-            yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
-            const runtimeServices = yield* Layer.build(
-              ProviderRegistryLive.pipe(
-                Layer.provideMerge(instanceRegistryLayer),
-                Layer.provideMerge(
-                  ServerConfig.layerTest(process.cwd(), {
-                    prefix: "t3-provider-registry-capacity-",
-                  }),
-                ),
-                Layer.provideMerge(NodeServices.layer),
               ),
-            ).pipe(Scope.provide(scope));
+            },
+          } satisfies ProviderInstance;
+          const instanceRegistryLayer = Layer.succeed(
+            ProviderInstanceRegistry.ProviderInstanceRegistry,
+            {
+              getInstance: (instanceId) =>
+                Effect.succeed(instanceId === primeInstanceId ? instance : undefined),
+              listInstances: Effect.succeed([instance]),
+              listUnavailable: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+            },
+          );
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const runtimeServices = yield* Layer.build(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(instanceRegistryLayer),
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), {
+                  prefix: "t3-provider-registry-capacity-",
+                }),
+              ),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ).pipe(Scope.provide(scope));
 
-            yield* Effect.gen(function* () {
-              const registry = yield* ProviderRegistry.ProviderRegistry;
-              const weekly = (providers: ReadonlyArray<ServerProvider>) =>
-                providers[0]?.backends?.[0]?.usageLimits?.windows[0]?.usedPercent;
-              const settled = (expected: number) =>
-                Effect.gen(function* () {
-                  let providers = yield* registry.getProviders;
-                  for (
-                    let attempt = 0;
-                    attempt < 50 && weekly(providers) !== expected;
-                    attempt += 1
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry.ProviderRegistry;
+            const weekly = (providers: ReadonlyArray<ServerProvider>) =>
+              providers[0]?.backends?.[0]?.usageLimits?.windows[0]?.usedPercent;
+            const settled = (expectedPercent: number, expectedCheckedAt?: string) =>
+              Effect.gen(function* () {
+                let providers = yield* registry.getProviders;
+                for (let attempt = 0; attempt < 50; attempt += 1) {
+                  if (
+                    weekly(providers) === expectedPercent &&
+                    (expectedCheckedAt === undefined ||
+                      providers[0]?.checkedAt === expectedCheckedAt)
                   ) {
-                    yield* Effect.yieldNow;
-                    providers = yield* registry.getProviders;
+                    return providers;
                   }
-                  return providers;
-                });
+                  yield* Effect.yieldNow;
+                  providers = yield* registry.getProviders;
+                }
+                return providers;
+              });
 
-              // Two turns back to back cost one read.
-              yield* registry.refreshProviderCapacity(primeInstanceId);
-              yield* registry.refreshProviderCapacity(primeInstanceId);
-              assert.strictEqual(weekly(yield* settled(41)), 41);
-              assert.strictEqual(yield* Ref.get(reads), 1);
+            // Two turns back to back cost one read.
+            yield* registry.refreshProviderCapacity(primeInstanceId);
+            yield* registry.refreshProviderCapacity(primeInstanceId);
+            assert.strictEqual(weekly(yield* settled(41)), 41);
+            assert.strictEqual(yield* Ref.get(reads), 1);
 
-              // Inside the floor a further turn still costs nothing.
-              yield* TestClock.adjust("30 seconds");
-              yield* registry.refreshProviderCapacity(primeInstanceId);
-              yield* Effect.yieldNow;
-              assert.strictEqual(yield* Ref.get(reads), 1);
+            // Inside the floor a further turn still costs nothing.
+            yield* TestClock.adjust("30 seconds");
+            yield* registry.refreshProviderCapacity(primeInstanceId);
+            yield* Effect.yieldNow;
+            assert.strictEqual(yield* Ref.get(reads), 1);
 
-              // Past it, the next turn reads again and the newer number lands.
-              yield* TestClock.adjust("31 seconds");
-              yield* registry.refreshProviderCapacity(primeInstanceId);
-              assert.strictEqual(weekly(yield* settled(42)), 42);
-              assert.strictEqual(yield* Ref.get(reads), 2);
+            // Past it, the next turn reads again and the newer number lands.
+            yield* TestClock.adjust("31 seconds");
+            yield* registry.refreshProviderCapacity(primeInstanceId);
+            assert.strictEqual(weekly(yield* settled(42)), 42);
+            assert.strictEqual(yield* Ref.get(reads), 2);
 
-              // An instance with nothing to read, or none at all, is a no-op.
-              yield* registry.refreshProviderCapacity(ProviderInstanceId.make("codex_missing"));
-              assert.strictEqual(yield* Ref.get(reads), 2);
-            }).pipe(Effect.provide(runtimeServices));
-          }),
+            const periodicCheckedAt = DateTime.formatIso(yield* DateTime.now);
+            const olderSharedBackends = providerBackendsFromCapacityRefresh({
+              backends: [
+                {
+                  backend: {
+                    backend: "anthropic",
+                    usageLimits: {
+                      source: "primeAgentOAuth",
+                      checkedAt: probedAt,
+                      windows: [{ label: "Weekly", usedPercent: 39, windowDurationMins: 10_080 }],
+                    },
+                  },
+                  didReadCapacity: true,
+                  retentionIdentity: sameAccountIdentity,
+                },
+              ],
+            });
+            yield* PubSub.publish(changes, {
+              ...initialProvider,
+              checkedAt: periodicCheckedAt,
+              backends: olderSharedBackends,
+            });
+            const afterPeriodic = yield* settled(42, periodicCheckedAt);
+            assert.strictEqual(weekly(afterPeriodic), 42);
+
+            // Anthropic has no account id on the wire. Its token fingerprint
+            // must still prevent an old account's overlay crossing a re-login.
+            const changedAccountBackends = providerBackendsFromCapacityRefresh({
+              backends: [
+                {
+                  backend: {
+                    backend: "anthropic",
+                    usageLimits: {
+                      source: "primeAgentOAuth",
+                      checkedAt: periodicCheckedAt,
+                      windows: [{ label: "Weekly", usedPercent: 7, windowDurationMins: 10_080 }],
+                    },
+                  },
+                  didReadCapacity: true,
+                  retentionIdentity: "anthropic:fingerprint-b",
+                },
+              ],
+            });
+            yield* PubSub.publish(changes, {
+              ...initialProvider,
+              checkedAt: periodicCheckedAt,
+              backends: changedAccountBackends,
+            });
+            assert.strictEqual(weekly(yield* settled(7)), 7);
+
+            // An instance with nothing to read, or none at all, is a no-op.
+            yield* registry.refreshProviderCapacity(ProviderInstanceId.make("codex_missing"));
+            assert.strictEqual(yield* Ref.get(reads), 2);
+          }).pipe(Effect.provide(runtimeServices));
+        }),
       );
 
       it.effect("persists the merged snapshot when a live update has empty models", () =>

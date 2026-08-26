@@ -29,6 +29,7 @@ import type {
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -43,10 +44,12 @@ import { spawnAndCollect } from "./providerSnapshot.ts";
 import {
   acquireSharedUsageLock,
   decideSharedUsageRead,
+  markSharedUsageReadFailed,
   readSharedUsageEntry,
   releaseSharedUsageLock,
   resolveSharedUsageCacheDir,
   SHARED_USAGE_BUSY_RETRY_MS,
+  SHARED_USAGE_FAILURE_BACKOFF_MS,
   SHARED_USAGE_READ_TTL_MS,
   sharedUsageReadKey,
   writeSharedUsageEntry,
@@ -318,9 +321,11 @@ export function throttleDelayFromRetryAfter(retryAfter: string | undefined, nowM
 export interface ClaudeOAuthUsageRead {
   readonly usageLimits: ServerProviderUsageLimits | undefined;
   readonly cacheForMs?: number | undefined;
+  /** True only when this or an earlier server completed a usable capacity read. */
+  readonly didRead: boolean;
 }
 
-const NOT_READ: ClaudeOAuthUsageRead = { usageLimits: undefined };
+const NOT_READ: ClaudeOAuthUsageRead = { usageLimits: undefined, didRead: false };
 
 /**
  * One read of the usage endpoint with a token the caller already holds,
@@ -347,6 +352,8 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
    * changed — a turn finished on this credential — passes a shorter bound.
    */
   readonly freshForMs?: number | undefined;
+  /** Share transient failures as well as successful readings and throttles. */
+  readonly shareFailures?: boolean | undefined;
 }): Effect.fn.Return<
   ClaudeOAuthUsageRead,
   never,
@@ -360,62 +367,91 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
     input.freshForMs,
   );
   if (shared.kind === "fresh") {
-    return { usageLimits: shared.usageLimits, cacheForMs: shared.cacheForMs };
+    return { usageLimits: shared.usageLimits, cacheForMs: shared.cacheForMs, didRead: true };
   }
   if (shared.kind === "throttled") {
-    return { usageLimits: undefined, cacheForMs: shared.cacheForMs };
+    return { usageLimits: undefined, cacheForMs: shared.cacheForMs, didRead: false };
+  }
+  if (shared.kind === "backoff") {
+    return {
+      usageLimits: shared.usageLimits,
+      cacheForMs: shared.cacheForMs,
+      didRead: false,
+    };
   }
 
-  if (!(yield* acquireSharedUsageLock(cacheDir, input.cacheKey, nowMs))) {
+  const acquiredLock = yield* acquireSharedUsageLock(cacheDir, input.cacheKey, nowMs);
+  if (!acquiredLock) {
     // Another server is reading this account right now; its answer lands in
     // the shared file shortly. Serve what is there and check back soon.
     const existing = yield* readSharedUsageEntry(cacheDir, input.cacheKey);
-    return { usageLimits: existing?.usageLimits, cacheForMs: SHARED_USAGE_BUSY_RETRY_MS };
+    return {
+      usageLimits: existing?.usageLimits,
+      cacheForMs: SHARED_USAGE_BUSY_RETRY_MS,
+      didRead: false,
+    };
   }
 
   return yield* Effect.gen(function* () {
+    const failedAt = DateTime.formatIso(DateTime.makeUnsafe(nowMs));
+    const failedRead = input.shareFailures
+      ? Effect.gen(function* () {
+          yield* markSharedUsageReadFailed(cacheDir, input.cacheKey, failedAt);
+          const retained = yield* readSharedUsageEntry(cacheDir, input.cacheKey);
+          return {
+            usageLimits: retained?.usageLimits,
+            cacheForMs: SHARED_USAGE_FAILURE_BACKOFF_MS,
+            didRead: false,
+          } satisfies ClaudeOAuthUsageRead;
+        })
+      : Effect.succeed(NOT_READ);
     const client = yield* HttpClient.HttpClient;
     const request = HttpClientRequest.get(OAUTH_USAGE_URL).pipe(
       HttpClientRequest.setHeader("authorization", `Bearer ${input.token}`),
       HttpClientRequest.setHeader("anthropic-beta", OAUTH_BETA_HEADER),
       HttpClientRequest.setHeader("accept", "application/json"),
     );
-    const response = yield* client.execute(request).pipe(
+    const attempt = yield* Effect.gen(function* () {
+      const response = yield* client.execute(request);
+      if (response.status === 429) {
+        return {
+          kind: "throttled" as const,
+          retryAfter: response.headers["retry-after"],
+        };
+      }
+      if (response.status < 200 || response.status >= 300) {
+        return { kind: "failed" as const };
+      }
+      return { kind: "success" as const, payload: yield* response.json };
+    }).pipe(
       Effect.timeoutOption(OAUTH_USAGE_TIMEOUT_MS),
-      Effect.catchCause(() => Effect.succeed(Option.none())),
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(Option.none()),
+      ),
     );
-    if (Option.isNone(response)) return NOT_READ;
-    if (response.value.status === 429) {
-      const throttledForMs = throttleDelayFromRetryAfter(
-        response.value.headers["retry-after"],
-        nowMs,
-      );
+    if (Option.isNone(attempt) || attempt.value.kind === "failed") return yield* failedRead;
+    if (attempt.value.kind === "throttled") {
+      const throttledForMs = throttleDelayFromRetryAfter(attempt.value.retryAfter, nowMs);
       yield* writeSharedUsageEntry(cacheDir, input.cacheKey, {
         version: 1,
         readAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
         throttledUntil: DateTime.formatIso(DateTime.makeUnsafe(nowMs + throttledForMs)),
       });
-      return { usageLimits: undefined, cacheForMs: throttledForMs };
+      return { usageLimits: undefined, cacheForMs: throttledForMs, didRead: false };
     }
-    if (response.value.status < 200 || response.value.status >= 300) return NOT_READ;
 
-    const payload = yield* response.value.json.pipe(
-      Effect.map(Option.some),
-      Effect.catchCause(() => Effect.succeed(Option.none<unknown>())),
-    );
-    if (Option.isNone(payload)) return NOT_READ;
     const usageLimits = usageLimitsFromClaudeOAuthResponse(
-      payload.value,
+      attempt.value.payload,
       input.checkedAt,
       input.source,
     );
-    if (!usageLimits) return NOT_READ;
+    if (!usageLimits) return yield* failedRead;
     yield* writeSharedUsageEntry(cacheDir, input.cacheKey, {
       version: 1,
       readAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
       usageLimits,
     });
-    return { usageLimits, cacheForMs: SHARED_USAGE_READ_TTL_MS };
+    return { usageLimits, cacheForMs: SHARED_USAGE_READ_TTL_MS, didRead: true };
   }).pipe(Effect.ensuring(releaseSharedUsageLock(cacheDir, input.cacheKey)));
 });
 
