@@ -317,12 +317,14 @@ describe("AcpRuntimeModel", () => {
           type: "text",
           text: "hello from acp",
         },
+        messageId: " message-1 ",
       },
     } satisfies EffectAcpSchema.SessionNotification);
 
     expect(contentResult.events).toEqual([
       {
         _tag: "ContentDelta",
+        messageId: "message-1",
         text: "hello from acp",
         rawPayload: {
           sessionId: "session-1",
@@ -356,6 +358,21 @@ describe("AcpRuntimeModel", () => {
 
     expect(assistant.events).toMatchObject([{ _tag: "ContentDelta", text: "answer" }]);
     expect(thought.events).toMatchObject([{ _tag: "ContentDelta", text: "reasoning" }]);
+  });
+
+  it("omits null and empty assistant message ids from content deltas", () => {
+    const parseMessageId = (messageId: string | null) =>
+      parseSessionUpdateEvent({
+        sessionId: "session-1",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "answer" },
+          messageId,
+        },
+      } satisfies EffectAcpSchema.SessionNotification).events[0];
+
+    expect(parseMessageId(null)).not.toHaveProperty("messageId");
+    expect(parseMessageId("   ")).not.toHaveProperty("messageId");
   });
 
   it("keeps permission request parsing compatible with loose extension payloads", () => {

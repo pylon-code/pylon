@@ -48,6 +48,9 @@ import {
   decodePrimeAgentDaemonChildren,
   decodePrimeAgentDaemonEvent,
   decodePrimeAgentDaemonSessionState,
+  primeAgentDaemonImageDigest,
+  PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS,
+  PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES,
   type PrimeDaemonEvent,
   type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
@@ -77,6 +80,7 @@ const SIDE_QUESTION_NATIVE_ID_PATTERN =
 export const PRIME_AGENT_LIVE_ACTIVITY_REFRESH_DELAY_MS = 500;
 const PRIME_AGENT_LIVE_ACTIVITY_PENDING_EVENT_MAX = 64;
 const PRIME_AGENT_LIVE_ACTIVITY_MESSAGE_CONTENT_MAX = 64;
+const PRIME_AGENT_PROMPT_ADMISSION_EVIDENCE_GRACE_MS = 1_000;
 const liveActivityTextEncoder = new TextEncoder();
 // Assistant text is mirrored for backward compatibility when tool rows are present.
 // Halving the remaining envelope budget keeps that additive wire snapshot bounded.
@@ -1216,12 +1220,22 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let observedCompletedMessageCount = 0;
     let activePromptRecovery:
       | {
+          readonly admissionGeneration: number;
           readonly baselineMessageCount: number;
+          readonly promptText: string;
+          readonly promptImageMimeTypes: ReadonlyArray<string>;
+          readonly promptImageDigests: ReadonlyArray<string>;
           readonly signal: AbortSignal | undefined;
           readonly promise: Promise<void>;
           readonly resolve: () => void;
+          readonly admissionEvidencePromise: Promise<boolean>;
+          readonly resolveAdmissionEvidence: (admitted: boolean) => void;
+          readonly cancellationPromise: Promise<void>;
+          readonly cleanupAdmissionEvidence: () => void;
           reconnectGeneration: number | undefined;
-          activityObserved: boolean;
+          firstUserMessageObserved: boolean;
+          promptAdmissionObserved: boolean;
+          admissionEvidenceSettled: boolean;
           snapshotProvesAdmission: boolean;
           settled: boolean;
         }
@@ -1236,6 +1250,27 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       | undefined;
     const rlmQuiescenceSemaphore = yield* Semaphore.make(1);
     const resumeAfterAbortSemaphore = yield* Semaphore.make(1);
+
+    const settlePromptAdmissionEvidence = (
+      prompt: NonNullable<typeof activePromptRecovery>,
+      admitted: boolean,
+    ) => {
+      if (prompt.admissionEvidenceSettled) return;
+      prompt.admissionEvidenceSettled = true;
+      prompt.resolveAdmissionEvidence(admitted);
+    };
+
+    // Worker command failures and session events arrive on independent callbacks.
+    // Allow already-in-flight proof to win without leaving an unproven prompt pending forever.
+    const awaitPromptAdmissionEvidence = (
+      prompt: NonNullable<typeof activePromptRecovery>,
+    ): Promise<boolean> => {
+      if (prompt.promptAdmissionObserved) return Promise.resolve(true);
+      return Effect.raceFirst(
+        Effect.promise(() => prompt.admissionEvidencePromise),
+        Effect.sleep(PRIME_AGENT_PROMPT_ADMISSION_EVIDENCE_GRACE_MS).pipe(Effect.as(false)),
+      ).pipe(Effect.runPromise);
+    };
 
     // A recovered transport can leave Prime's original prompt RPC unresolved even
     // after its worker accepted and completed the input. Release only from the same
@@ -1695,20 +1730,46 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
     };
 
-    const eventProvesPromptActivity = (event: PrimeDaemonEvent) =>
-      event._tag === "RunStarted" ||
-      event._tag === "RunCompleted" ||
-      event._tag === "TurnStarted" ||
-      event._tag === "TurnCompleted" ||
-      event._tag === "MessageStarted" ||
-      event._tag === "MessageCompleted" ||
-      event._tag === "AssistantStream" ||
-      event._tag === "ToolStarted" ||
-      event._tag === "ToolProgress" ||
-      event._tag === "ToolCompleted" ||
-      event._tag === "BashStarted" ||
-      event._tag === "BashOutput" ||
-      event._tag === "BashCompleted";
+    const messageMatchesPromptAdmission = (
+      prompt: NonNullable<typeof activePromptRecovery>,
+      message: Extract<PrimeDaemonEvent, { readonly _tag: "MessageCompleted" }>["message"],
+    ) =>
+      message.role === "user" &&
+      prompt.promptText.trim().length > 0 &&
+      prompt.promptText.length <= PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS &&
+      message.text === prompt.promptText &&
+      message.imageMimeTypes.length === prompt.promptImageMimeTypes.length &&
+      message.imageMimeTypes.every(
+        (mimeType, index) => mimeType === prompt.promptImageMimeTypes[index],
+      ) &&
+      message.imageDigests.length === prompt.promptImageDigests.length &&
+      message.imageDigests.every((digest, index) => digest === prompt.promptImageDigests[index]);
+
+    const snapshotPromptAdmissionEvidence = (
+      prompt: NonNullable<typeof activePromptRecovery>,
+      event: Extract<PrimeDaemonEvent, { readonly _tag: "SessionResynced" }>,
+    ): "matched" | "mismatched" | "insufficient" => {
+      if (prompt.firstUserMessageObserved) {
+        return prompt.promptAdmissionObserved ? "matched" : "mismatched";
+      }
+      const advancedMessageCount = event.state.messageCount - prompt.baselineMessageCount;
+      const expectedTailLength = Math.min(
+        event.state.messageCount,
+        PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES,
+      );
+      if (
+        advancedMessageCount <= 0 ||
+        advancedMessageCount > event.messages.length ||
+        event.messages.length !== expectedTailLength
+      ) {
+        return "insufficient";
+      }
+      const firstUserMessage = event.messages
+        .slice(-advancedMessageCount)
+        .find((message) => message.role === "user");
+      if (firstUserMessage === undefined) return "insufficient";
+      return messageMatchesPromptAdmission(prompt, firstUserMessage) ? "matched" : "mismatched";
+    };
 
     const offerDecoded = (raw: unknown) => {
       const decoded = safeEvent(decodePrimeAgentDaemonEvent(raw));
@@ -1722,6 +1783,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         reconnectSnapshot && decoded._tag === "SessionResynced"
           ? { ...decoded, connectionGeneration: eventConnectionGeneration }
           : decoded;
+      const prompt = activePromptRecovery;
       if (event._tag === "SessionResynced") {
         if (
           event.lastEventSequence !== undefined &&
@@ -1733,28 +1795,38 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         lastSnapshotSequence = event.lastEventSequence;
         lastSnapshotConnectionGeneration = eventConnectionGeneration;
-        const prompt = activePromptRecovery;
-        if (prompt !== undefined && event.connectionGeneration !== undefined) {
-          prompt.reconnectGeneration = event.connectionGeneration;
-          prompt.snapshotProvesAdmission =
-            prompt.activityObserved || event.state.messageCount > prompt.baselineMessageCount;
+        if (prompt !== undefined) {
+          const admissionEvidence = snapshotPromptAdmissionEvidence(prompt, event);
+          if (event.connectionGeneration !== undefined) {
+            prompt.reconnectGeneration = event.connectionGeneration;
+            prompt.snapshotProvesAdmission = admissionEvidence === "matched";
+          }
+          if (admissionEvidence !== "insufficient") {
+            prompt.firstUserMessageObserved = true;
+            prompt.promptAdmissionObserved = admissionEvidence === "matched";
+            settlePromptAdmissionEvidence(prompt, prompt.promptAdmissionObserved);
+          }
         }
         observedCompletedMessageCount = event.state.messageCount;
       } else if (event._tag === "MessageCompleted") {
-        observedCompletedMessageCount += 1;
-      }
-      const prompt = activePromptRecovery;
-      if (prompt !== undefined && eventProvesPromptActivity(event)) {
-        prompt.activityObserved = true;
         if (
-          prompt.reconnectGeneration === eventConnectionGeneration &&
-          reconnectResolution?.generation === eventConnectionGeneration &&
-          reconnectResolution.settled &&
-          rlmEventContinuityValid
+          prompt !== undefined &&
+          event.message.role === "user" &&
+          !prompt.firstUserMessageObserved
         ) {
-          prompt.snapshotProvesAdmission = true;
-          settlePromptRecoveryIfProven();
+          prompt.firstUserMessageObserved = true;
+          prompt.promptAdmissionObserved = messageMatchesPromptAdmission(prompt, event.message);
+          settlePromptAdmissionEvidence(prompt, prompt.promptAdmissionObserved);
+          if (
+            prompt.promptAdmissionObserved &&
+            prompt.reconnectGeneration === eventConnectionGeneration &&
+            reconnectResolution?.generation === eventConnectionGeneration
+          ) {
+            prompt.snapshotProvesAdmission = true;
+            settlePromptRecoveryIfProven();
+          }
         }
+        observedCompletedMessageCount += 1;
       }
       trackAgentRoster(event);
       return Queue.offer(eventQueue, event).pipe(Effect.asVoid);
@@ -1783,6 +1855,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         beginReconnectResolution();
       } else if (rawType === "closed") {
         settleReconnectResolution(connectionGeneration, false);
+        const prompt = activePromptRecovery;
+        if (prompt !== undefined) settlePromptAdmissionEvidence(prompt, false);
       }
       if (
         input.mcpServer === undefined ||
@@ -3137,16 +3211,42 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       const recoveryPromise = new Promise<void>((resolve) => {
         resolveRecovery = resolve;
       });
-      const recovery = {
+      let resolveAdmissionEvidence!: (admitted: boolean) => void;
+      const admissionEvidencePromise = new Promise<boolean>((resolve) => {
+        resolveAdmissionEvidence = resolve;
+      });
+      let resolveCancellation!: () => void;
+      const cancellationPromise = new Promise<void>((resolve) => {
+        resolveCancellation = resolve;
+      });
+      let recovery!: NonNullable<typeof activePromptRecovery>;
+      const onAdmissionAbort = () => {
+        settlePromptAdmissionEvidence(recovery, false);
+        resolveCancellation();
+      };
+      recovery = {
+        admissionGeneration: connectionGeneration,
         baselineMessageCount: observedCompletedMessageCount,
+        promptText: promptInput.text,
+        promptImageMimeTypes: images.map((image) => image.mimeType),
+        promptImageDigests: images.map((image) => primeAgentDaemonImageDigest(image.data)),
         signal: promptInput.signal,
         promise: recoveryPromise,
         resolve: resolveRecovery,
+        admissionEvidencePromise,
+        resolveAdmissionEvidence,
+        cancellationPromise,
+        cleanupAdmissionEvidence: () =>
+          promptInput.signal?.removeEventListener("abort", onAdmissionAbort),
         reconnectGeneration: undefined,
-        activityObserved: false,
+        firstUserMessageObserved: false,
+        promptAdmissionObserved: false,
+        admissionEvidenceSettled: false,
         snapshotProvesAdmission: false,
         settled: false,
       };
+      promptInput.signal?.addEventListener("abort", onAdmissionAbort, { once: true });
+      if (promptInput.signal?.aborted === true) onAdmissionAbort();
       activePromptRecovery = recovery;
       // Promise.race deliberately leaves Prime's request-recovery handler attached.
       // If its replayed result later rejects, the adopted native execution still owns
@@ -3159,19 +3259,37 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           ...(promptInput.signal === undefined ? {} : { signal: promptInput.signal }),
         });
         const requestWithRecovery = request.catch(async (error: unknown) => {
+          if (error instanceof Error && error.message === "Daemon worker client closed") {
+            const admissionProven = await awaitPromptAdmissionEvidence(recovery);
+            if (
+              admissionProven &&
+              recovery.admissionGeneration === connectionGeneration &&
+              recovery.signal?.aborted !== true &&
+              rlmEventContinuityValid
+            ) {
+              // The supervisor can lose its worker command client after admission
+              // while the native run continues. The exact same-generation user
+              // message proves ownership, so never resend the prompt; events and the
+              // correlated quiescence barrier remain authoritative.
+              return;
+            }
+          }
           const reconnect = reconnectResolution;
           const canAwaitReconnect =
             reconnect !== undefined &&
             (recovery.reconnectGeneration === reconnect.generation || !reconnect.settled);
           if (canAwaitReconnect) {
             const reconciled = await reconnect.promise;
-            if (
-              reconciled &&
-              recovery.reconnectGeneration === reconnect.generation &&
-              recovery.snapshotProvesAdmission
-            ) {
-              await recovery.promise;
-              return;
+            if (reconciled && recovery.reconnectGeneration === reconnect.generation) {
+              const admissionProven =
+                recovery.snapshotProvesAdmission || (await awaitPromptAdmissionEvidence(recovery));
+              if (admissionProven && recovery.signal?.aborted !== true) {
+                const recoveredBeforeCancellation = await Promise.race([
+                  recovery.promise.then(() => true),
+                  recovery.cancellationPromise.then(() => false),
+                ]);
+                if (recoveredBeforeCancellation) return;
+              }
             }
           }
           throw error;
@@ -3180,6 +3298,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
+            settlePromptAdmissionEvidence(recovery, false);
+            recovery.cleanupAdmissionEvidence();
             if (activePromptRecovery === recovery) activePromptRecovery = undefined;
           }),
         ),

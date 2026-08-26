@@ -22,7 +22,7 @@ Use the independently installed Prime Agent package and its public detached-daem
 - persist exact Prime session identity in a server-private thread sidecar while keeping the client-visible provider resume cursor opaque, then rehydrate after server restart;
 - keep ACP as an explicit compatibility fallback for installations without the supported daemon API and for Windows until Prime's named pipe has verifiable per-user access control or peer authentication.
 
-Prime Agent 0.7.2 exposes `prime-agent.daemon` protocol 7, schema revision 16. Pylon accepts protocol 7 or newer through the installed high-level client and negotiates server capabilities rather than pinning an internal wire schema.
+Prime Agent 0.8.1 exposes `prime-agent.daemon` protocol 7, schema revision 22. Pylon accepts protocol 7 or newer through the installed high-level client and negotiates server capabilities rather than pinning an internal wire schema. The shipped capability decisions now live in the [daemon parity ledger](prime-agent-daemon-parity.md); this document remains the original delivery plan.
 
 ## Upstream-resilient boundary
 
@@ -72,7 +72,7 @@ The main Pylon code must not learn Prime RPC command names or Prime-shaped paylo
 
 ## Known Prime API gaps
 
-These cannot be honestly synthesized from the Prime Agent 0.7.2 daemon connection and should become small upstream contributions:
+These cannot be honestly synthesized from the Prime Agent 0.8.1 daemon connection and should become small upstream contributions:
 
 - unified daemon auth and MCP CRUD/OAuth;
 - deterministic client-side RLM child spawn;

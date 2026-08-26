@@ -23,6 +23,7 @@ const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION ===
 const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG === "1";
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
 const emitPrivateThoughtChunk = process.env.T3_ACP_EMIT_PRIVATE_THOUGHT_CHUNK === "1";
+const assistantMessageIdMode = process.env.T3_ACP_ASSISTANT_MESSAGE_IDS;
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
 const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === "1";
 const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL === "1";
@@ -946,13 +947,47 @@ const program = Effect.gen(function* () {
         });
       }
 
-      yield* agent.client.sessionUpdate({
-        sessionId: requestedSessionId,
-        update: {
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: promptResponseText ?? "hello from mock" },
-        },
-      });
+      if (
+        assistantMessageIdMode === "distinct" ||
+        assistantMessageIdMode === "absent" ||
+        assistantMessageIdMode === "mixed"
+      ) {
+        const chunks = [
+          {
+            text: "first assistant message",
+            messageId: "11111111-1111-4111-8111-111111111111",
+          },
+          {
+            text: " continuing",
+            messageId: "11111111-1111-4111-8111-111111111111",
+          },
+          {
+            text: "second assistant message",
+            messageId: "22222222-2222-4222-8222-222222222222",
+          },
+        ];
+        for (const chunk of chunks) {
+          yield* agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: chunk.text },
+              ...(assistantMessageIdMode === "distinct" ||
+              (assistantMessageIdMode === "mixed" && chunk.text !== "first assistant message")
+                ? { messageId: chunk.messageId }
+                : {}),
+            },
+          });
+        }
+      } else {
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: promptResponseText ?? "hello from mock" },
+          },
+        });
+      }
 
       return { stopReason: "end_turn" };
     }),

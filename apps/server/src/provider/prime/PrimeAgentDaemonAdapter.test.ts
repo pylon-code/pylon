@@ -5454,6 +5454,7 @@ describe("PrimeAgentDaemonAdapter", () => {
               timestamp: index,
               text: `queued-${index}`,
               imageMimeTypes: [],
+              imageDigests: [],
             }) satisfies PrimeDaemonMessage,
         );
         for (const message of messages) {
@@ -5520,6 +5521,7 @@ describe("PrimeAgentDaemonAdapter", () => {
             timestamp: 0,
             text: "observed anchor",
             imageMimeTypes: [],
+            imageDigests: [],
           },
         });
         const disconnectedMessages = Array.from(
@@ -5530,6 +5532,7 @@ describe("PrimeAgentDaemonAdapter", () => {
               timestamp: index + 1,
               text: `disconnected-${index}`,
               imageMimeTypes: [],
+              imageDigests: [],
             }) satisfies PrimeDaemonMessage,
         );
         captures.rlmConnectionGeneration = 1;

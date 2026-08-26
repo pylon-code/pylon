@@ -11,7 +11,7 @@ Install Prime Agent on the environment host. Prime Agent requires Node.js 22.8 o
 curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 ```
 
-The Early Access integration is tested with Prime Agent 0.8.0. Start it once in a terminal and use `/login` to configure an underlying model provider:
+The Early Access integration is tested with Prime Agent 0.8.1. Start it once in a terminal and use `/login` to configure an underlying model provider:
 
 ```bash
 prime-agent
@@ -28,6 +28,14 @@ that built-in with a custom URL. Such an entry disables the built-in and is not 
 MCP runtime. Rename a custom endpoint to a distinct name, such as `linear-proxy`, then log in again if
 it uses OAuth. These are Prime Agent migrations and apply whether you start Prime Agent in Pylon or in
 a terminal.
+
+Prime Agent 0.8.1 makes standard ACP prompt completion wait for delegated descendants and resulting
+parent work, identifies separate assistant messages across autonomous ACP turns, and changes the fresh
+no-override subagent-depth default from 1 to 2. Pylon still validates Prime's correlated completion
+metadata. Explicit session, global, and `RLM_MAX_DEPTH` settings continue to override the new default.
+The 0.8.1 live catalog also removes Cloudflare AI Gateway's Workers AI mirror IDs and changes that
+provider's default to `claude-sonnet-4.5`; Pylon discovers the installed catalog rather than pinning those
+models.
 
 Pylon uses the existing Prime Agent login. Provider status reports **Authenticated** only when a
 healthy, current catalog contains at least one configured model provider. An empty catalog leaves
@@ -62,19 +70,22 @@ native order, so a final response appears after the work that preceded it instea
 to an older message higher in the thread. If Prime authoritatively finishes without public assistant
 text after its latest tool activity, Pylon shows **Prime Agent finished without sending a final
 response.** as a status row rather than inventing an assistant reply. Failures use the corresponding
-stopped status; cancellation remains cancellation. In ACP compatibility mode, Prime Agent 0.8.0 can
-finish its immediate response before delegated descendants settle. Pylon waits for Prime's correlated
-terminal-quiescence signal, so the turn does not finish early while descendant work or a resulting goal
-continuation is still active.
+stopped status; cancellation remains cancellation. Prime Agent 0.8.1 waits for delegated descendants
+and resulting parent work before its standard ACP prompt completes. Pylon still validates Prime's
+correlated terminal-quiescence signal, including for 0.8.0 installations whose immediate ACP response can
+finish earlier, so the turn does not finish while causally admitted work remains active.
 
 In native daemon mode, an active turn can continue through a temporary daemon transport reconnect when
-Prime supplies complete replay data or an exact completed-message snapshot. Root tool work, delegated
-children, and the parent response remain part of the original turn. If Pylon cannot prove that the
-reconnected stream is complete, it fails the turn once and closes that Prime session instead of retrying
-your prompt or guessing at missing output. Restarting the Pylon server is a separate boundary and does not
-yet adopt Prime work that is still running in another process.
+Prime supplies complete replay data or an exact completed-message snapshot. It also remains attached when
+Prime's supervisor loses only the worker command client after the exact submitted user message was
+admitted. Pylon never sends that prompt again; native events and the correlated descendant-quiescence
+barrier keep ownership of completion. Root tool work, delegated children, and the parent response remain
+part of the original turn. If Pylon cannot prove prompt admission or stream continuity, it fails the turn
+once and closes that Prime session instead of retrying your prompt or guessing at missing output.
+Restarting the Pylon server is a separate boundary and does not yet adopt Prime work that is still running
+in another process.
 
-On Windows, Pylon currently uses ACP compatibility mode because Prime Agent 0.8.0's public named-pipe daemon transport does not expose a verifiable per-user ACL or authenticated handshake. Native daemon mode remains fail-closed there until the transport can prevent another local OS user from impersonating or connecting to the daemon.
+On Windows, Pylon currently uses ACP compatibility mode because Prime Agent 0.8.1's public named-pipe daemon transport does not expose a verifiable per-user ACL or authenticated handshake. Native daemon mode remains fail-closed there until the transport can prevent another local OS user from impersonating or connecting to the daemon.
 
 Pylon uses a short-lived, prompt-free Prime Agent RPC process to bootstrap the configured-model
 catalog until a compatible daemon session publishes a usable list from Prime Agent's public model
@@ -138,11 +149,11 @@ session instead of reusing work whose ownership is uncertain.
 
 In the main thread, each Prime tool call uses one activity row as it starts, updates, and completes. Pylon shows only a fixed friendly label such as **Code**, **Shell**, **Edit**, **Read**, **Search**, **Web search**, **Image**, or **Tool**, plus its coarse lifecycle state. Commands, code, paths, tool input, progress output, results, native titles and identifiers, and error text are not copied into thread activity.
 
-For an active agent, **Live activity** opens an on-demand view on web, desktop, or mobile. It is a bounded replacement snapshot from Prime's public live-session watcher, not a durable transcript: Pylon does not persist it in the thread, share it with clients that did not open the view, or keep it after the panel closes. The panel shows assistant text plus a coarse tool timeline containing only a friendly label and **Started**, **Completed**, or **Failed**; IPython appears as **Code**. It also repeats the safe aggregate status already shown in the agent roster, such as token or tool counts. Child prompts, tool arguments, partial and final results, thinking, paths, timestamps, native identifiers and metadata, error text, attachments, and usage details are excluded. **No activity yet** means the agent may still be thinking; it does not mean the agent is inactive. The subscription closes when the view closes, the agent exits, the thread or provider changes, or the client disconnects. Pylon can build a bounded coarse skeleton from committed messages returned by the public watcher, but Prime Agent 0.8.0 cannot reopen an exited child, provide lossless historical child activity, or atomically expose activity that was already streaming when the view opened, so Pylon labels the view **Live only** rather than implying complete history.
+For an active agent, **Live activity** opens an on-demand view on web, desktop, or mobile. It is a bounded replacement snapshot from Prime's public live-session watcher, not a durable transcript: Pylon does not persist it in the thread, share it with clients that did not open the view, or keep it after the panel closes. The panel shows assistant text plus a coarse tool timeline containing only a friendly label and **Started**, **Completed**, or **Failed**; IPython appears as **Code**. It also repeats the safe aggregate status already shown in the agent roster, such as token or tool counts. Child prompts, tool arguments, partial and final results, thinking, paths, timestamps, native identifiers and metadata, error text, attachments, and usage details are excluded. **No activity yet** means the agent may still be thinking; it does not mean the agent is inactive. The subscription closes when the view closes, the agent exits, the thread or provider changes, or the client disconnects. Pylon can build a bounded coarse skeleton from committed messages returned by the public watcher, but Prime Agent 0.8.1 cannot reopen an exited child, provide lossless historical child activity, or atomically expose activity that was already streaming when the view opened, so Pylon labels the view **Live only** rather than implying complete history.
 
 Supervised daemon sessions also expose **Quick question** in the composer. It asks the selected session model one tool-free question against a snapshot of the current conversation, then returns one temporary answer. The question and answer are sent only to the requesting client: Pylon does not add them to the thread, checkpoint them, synchronize them to other clients, or retry them after a disconnect. Closing or cancelling the request makes one best-effort native abort, and a timeout or uncertain outcome stays explicit. Quick questions can still consume model tokens and incur provider charges.
 
-Quick question is intentionally unavailable in Full access. Prime Agent 0.8.0 gives a side question no model tools, but it still inherits provider hooks from discovered extensions; those hooks can run outside Pylon's normal turn and checkpoint ownership. Supervised sessions disable extension discovery and use only Pylon's verified approval gate, whose hooks do not run for a tool-free side answer. Restored sessions and ACP compatibility mode also fail closed.
+Quick question is intentionally unavailable in Full access. Prime Agent 0.8.1 gives a side question no model tools, but it still inherits provider hooks from discovered extensions; those hooks can run outside Pylon's normal turn and checkpoint ownership. Supervised sessions disable extension discovery and use only Pylon's verified approval gate, whose hooks do not run for a tool-free side answer. Restored sessions and ACP compatibility mode also fail closed.
 
 When the selected model explicitly
 exposes reasoning text, Pylon adds a bounded final **Reasoning** entry to the work log. Incremental
@@ -162,7 +173,7 @@ objective, provider-neutral status, token budget and usage, elapsed seconds, and
 Pylon does not send Prime's native goal ID, timestamps, stop reasons, or errors to clients. Pylon stores
 this safe projection, including the objective, in the thread so authenticated remote clients can see the
 same state; Prime retains the full native goal in its session. The composer cannot create, update, pause,
-resume, complete, or clear a goal because Prime Agent 0.8.0 does not expose daemon mutation methods for
+resume, complete, or clear a goal because Prime Agent 0.8.1 does not expose daemon mutation methods for
 them. Prime's goal skill can still make those changes inside the agent conversation. Switching provider
 instances, entering
 Supervised mode, using ACP compatibility mode, or receiving an unavailable snapshot removes the old
@@ -170,9 +181,10 @@ goal instead of leaving stale state visible.
 
 Daemon-backed sessions also expose **Subagent depth** under **Harness** on web and desktop and an
 **Agent spawn depth** control on mobile while the session is idle. Depth 0 disables recursive child-agent
-spawning; depths 1 through 4 bound how many nested levels Prime may create. The choice applies only to
-that native session and never changes Prime's global setting.
-Supervised sessions show the policy-fixed depth 0 and cannot change it.
+spawning; depths 1 through 4 bound how many nested levels Prime may create. On a fresh Prime Agent 0.8.1
+Full-access session with no session, global, or `RLM_MAX_DEPTH` override, the default is 2: the root may
+create a child and grandchild. A choice made in Pylon applies only to that native session and never changes
+Prime's global setting. Supervised sessions show the policy-fixed depth 0 and cannot change it.
 
 When Prime compacts a daemon-backed thread, Pylon shows one provider-neutral lifecycle row. Pylon
 stores only constant started, completed, skipped, or failed presentation state; Prime's compaction
@@ -231,16 +243,16 @@ access off withholds both the tools and their instructions; it does not affect b
 
 ## Current Limitations
 
-- Prime Agent 0.8.0 has no daemon-native or operating-system sandbox policy. Supervised mode gates
+- Prime Agent 0.8.1 has no daemon-native or operating-system sandbox policy. Supervised mode gates
   tool admission but does not restrict an approved tool.
 - Authentication is managed in Prime Agent, not Pylon.
 - Plan mode, provider-conversation rollback, and general per-item queue editing or reordering are
-  not supported yet. Pylon integrates Prime Agent 0.8.0's mutation API only for removing a lane's
+  not supported yet. Pylon integrates Prime Agent 0.8.1's mutation API only for removing a lane's
   sole item. With multiple count-only items, clients cannot identify a
   specific target safely without exposing queued text, and ambiguous mutations are never retried.
 - Pylon does not present live Prime reasoning streams, durable or historical child-session transcripts,
   cost breakdowns, goal mutations, heartbeats, saved-session history, or native package or MCP catalogs as first-class features. Active children have only the bounded **Live activity** view described above.
-- Heartbeat creation remains unavailable even though Prime Agent 0.8.0 exposes heartbeat methods. Prime does not identify a scheduled run in a way Pylon can safely match to a durable conversation turn and filesystem checkpoint. Clearing a heartbeat also does not return its underlying session to the normal lifecycle, so stopping or deleting the Pylon thread could otherwise leave invisible work behind. Pylon will not offer creation until recovery, clearing, stopping, and deletion can be made authoritative.
+- Heartbeat creation remains unavailable even though Prime Agent 0.8.1 exposes heartbeat methods. Prime does not identify a scheduled run in a way Pylon can safely match to a durable conversation turn and filesystem checkpoint. Clearing a heartbeat also does not return its underlying session to the normal lifecycle, so stopping or deleting the Pylon thread could otherwise leave invisible work behind. Pylon will not offer creation until recovery, clearing, stopping, and deletion can be made authoritative.
 - Prime's daemon-global pause/resume controls for inbound agent messages are intentionally not exposed;
   they can clear queued messages and reset limits across unrelated sessions.
 - Prime Agent is not used for Pylon's background text-generation helpers in Early Access.

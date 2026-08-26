@@ -106,6 +106,8 @@ export type AcpParsedSessionEvent =
   | {
       readonly _tag: "ContentDelta";
       readonly itemId?: string;
+      /** Upstream correlation only; adapters keep assigning Pylon-owned item ids. */
+      readonly messageId?: string;
       readonly text: string;
       readonly rawPayload: unknown;
     };
@@ -714,10 +716,15 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
     case "agent_message_chunk":
     case "agent_thought_chunk": {
       if (upd.content.type === "text" && upd.content.text.length > 0) {
+        const messageId = upd.messageId?.trim();
+        // Keep boundary correlation in memory only; every adapter logs rawPayload.
+        const rawUpdate = { ...upd };
+        delete rawUpdate.messageId;
         events.push({
           _tag: "ContentDelta",
+          ...(messageId ? { messageId } : {}),
           text: upd.content.text,
-          rawPayload: params,
+          rawPayload: { ...params, update: rawUpdate },
         });
       }
       break;

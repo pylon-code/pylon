@@ -116,6 +116,146 @@ describe("AcpSessionRuntime", () => {
     ),
   );
 
+  it.effect("rotates Pylon assistant items when ACP message ids change", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+      yield* runtime.prompt({ prompt: [{ type: "text", text: "hi" }] });
+
+      const notes = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 8)));
+      expect(notes.map((note) => note._tag)).toEqual([
+        "PlanUpdated",
+        "AssistantItemStarted",
+        "ContentDelta",
+        "ContentDelta",
+        "AssistantItemCompleted",
+        "AssistantItemStarted",
+        "ContentDelta",
+        "AssistantItemCompleted",
+      ]);
+      const starts = notes.filter((note) => note._tag === "AssistantItemStarted");
+      const deltas = notes.filter((note) => note._tag === "ContentDelta");
+      expect(starts).toHaveLength(2);
+      expect(deltas).toHaveLength(3);
+      expect(deltas.map((delta) => delta.messageId)).toEqual([
+        "11111111-1111-4111-8111-111111111111",
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+      ]);
+      for (const delta of deltas) {
+        const raw = delta.rawPayload as { readonly update?: Readonly<Record<string, unknown>> };
+        expect(raw.update).not.toHaveProperty("messageId");
+      }
+      expect(deltas[0]?.itemId).toBe(starts[0]?.itemId);
+      expect(deltas[1]?.itemId).toBe(starts[0]?.itemId);
+      expect(deltas[2]?.itemId).toBe(starts[1]?.itemId);
+      expect(starts[1]?.itemId).not.toBe(starts[0]?.itemId);
+      expect(starts[0]?.itemId).toMatch(/^assistant:mock-session-1:runtime:[^:]+:segment:0$/);
+      expect(starts[1]?.itemId).toMatch(/^assistant:mock-session-1:runtime:[^:]+:segment:1$/);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: { T3_ACP_ASSISTANT_MESSAGE_IDS: "distinct" },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
+  it.effect("adopts the first late ACP message id without a false segment boundary", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+      yield* runtime.prompt({ prompt: [{ type: "text", text: "hi" }] });
+
+      const notes = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 8)));
+      expect(notes.map((note) => note._tag)).toEqual([
+        "PlanUpdated",
+        "AssistantItemStarted",
+        "ContentDelta",
+        "ContentDelta",
+        "AssistantItemCompleted",
+        "AssistantItemStarted",
+        "ContentDelta",
+        "AssistantItemCompleted",
+      ]);
+      const starts = notes.filter((note) => note._tag === "AssistantItemStarted");
+      const deltas = notes.filter((note) => note._tag === "ContentDelta");
+      expect(starts).toHaveLength(2);
+      expect(deltas.map((delta) => delta.messageId)).toEqual([
+        undefined,
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+      ]);
+      expect(deltas[0]?.itemId).toBe(starts[0]?.itemId);
+      expect(deltas[1]?.itemId).toBe(starts[0]?.itemId);
+      expect(deltas[2]?.itemId).toBe(starts[1]?.itemId);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: { T3_ACP_ASSISTANT_MESSAGE_IDS: "mixed" },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
+  it.effect("keeps adjacent assistant chunks without message ids in one Pylon item", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+      yield* runtime.prompt({ prompt: [{ type: "text", text: "hi" }] });
+
+      const notes = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 6)));
+      expect(notes.map((note) => note._tag)).toEqual([
+        "PlanUpdated",
+        "AssistantItemStarted",
+        "ContentDelta",
+        "ContentDelta",
+        "ContentDelta",
+        "AssistantItemCompleted",
+      ]);
+      const starts = notes.filter((note) => note._tag === "AssistantItemStarted");
+      const deltas = notes.filter((note) => note._tag === "ContentDelta");
+      expect(starts).toHaveLength(1);
+      expect(deltas).toHaveLength(3);
+      expect(deltas[0]?.itemId).toBe(starts[0]?.itemId);
+      expect(deltas[1]?.itemId).toBe(starts[0]?.itemId);
+      expect(deltas[2]?.itemId).toBe(starts[0]?.itemId);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: { T3_ACP_ASSISTANT_MESSAGE_IDS: "absent" },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
   it.effect("keeps assistant item IDs unique when a provider session restarts", () => {
     const collectFirstAssistantItemId = Effect.gen(function* () {
       const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
