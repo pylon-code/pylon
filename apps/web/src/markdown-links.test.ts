@@ -242,6 +242,18 @@ describe("resolveMarkdownFileLinkTarget", () => {
     });
   });
 
+  it("keeps case-sensitive POSIX paths outside a differently cased workspace", () => {
+    expect(resolveMarkdownFileLinkMeta("/work/Repo/src/main.ts", "/work/repo")).toMatchObject({
+      workspaceRelativePath: null,
+    });
+  });
+
+  it("keeps Windows workspace containment case-insensitive", () => {
+    expect(resolveMarkdownFileLinkMeta("C:/WORK/REPO/src/main.ts", "c:/work/repo")).toMatchObject({
+      workspaceRelativePath: "src/main.ts",
+    });
+  });
+
   it("normalizes slash-prefixed windows drive paths before resolving", () => {
     expect(
       resolveMarkdownFileLinkTarget(

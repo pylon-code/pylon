@@ -401,12 +401,20 @@ function basenameOfPath(path: string): string {
 function workspaceRelativePath(path: string, workspaceRoot: string | undefined): string | null {
   if (!workspaceRoot) return null;
   const normalizedPath = normalizeWindowsDrivePath(path.replaceAll("\\", "/"));
-  const normalizedRoot = normalizeWindowsDrivePath(workspaceRoot.replaceAll("\\", "/")).replace(
-    /\/+$/,
-    "",
+  const normalizedRootWithTrailingSlash = normalizeWindowsDrivePath(
+    workspaceRoot.replaceAll("\\", "/"),
   );
-  const pathForCompare = normalizedPath.toLowerCase();
-  const rootForCompare = normalizedRoot.toLowerCase();
+  const normalizedRoot = normalizedRootWithTrailingSlash.replace(/\/+$/, "");
+  const useCaseInsensitiveComparison =
+    (WINDOWS_DRIVE_PATH_PATTERN.test(normalizedPath) &&
+      WINDOWS_DRIVE_PATH_PATTERN.test(normalizedRootWithTrailingSlash)) ||
+    (normalizedPath.startsWith("//") && normalizedRootWithTrailingSlash.startsWith("//"));
+  const pathForCompare = useCaseInsensitiveComparison
+    ? normalizedPath.toLowerCase()
+    : normalizedPath;
+  const rootForCompare = useCaseInsensitiveComparison
+    ? normalizedRoot.toLowerCase()
+    : normalizedRoot;
   if (!pathForCompare.startsWith(`${rootForCompare}/`)) return null;
   return normalizedPath.slice(normalizedRoot.length + 1);
 }

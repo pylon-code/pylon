@@ -43,7 +43,12 @@ import {
 } from "~/terminal/ghostty/surface";
 import { type GhosttyColor, type GhosttyTheme } from "~/terminal/ghostty/core";
 import { useOpenInPreferredEditor } from "../editorPreferences";
-import { isTerminalLinkActivation, isTerminalUrl, resolvePathLinkTarget } from "../terminal-links";
+import {
+  isTerminalLinkActivation,
+  isTerminalUrl,
+  resolvePathLinkTarget,
+  splitPathAndPosition,
+} from "../terminal-links";
 import {
   isDiffToggleShortcut,
   isTerminalClearShortcut,
@@ -329,6 +334,14 @@ interface TerminalViewportProps {
   keybindings: ResolvedKeybindingsConfig;
 }
 
+export function resolveTerminalPathOpenTargets(text: string, cwd: string) {
+  const targetPath = resolvePathLinkTarget(text, cwd);
+  return {
+    targetPath,
+    fileManagerTargetPath: splitPathAndPosition(targetPath).path,
+  };
+}
+
 interface TerminalLaunchLocation {
   readonly cwd: string;
   readonly worktreePath?: string | null;
@@ -360,7 +373,9 @@ export function TerminalViewport({
     environmentId,
     serverConfig?.availableEditors ?? [],
   );
-  const openTerminalPath = useEffectEvent((target: string) => openInPreferredEditor(target));
+  const openTerminalPath = useEffectEvent((targetPath: string, fileManagerTargetPath: string) =>
+    openInPreferredEditor(targetPath, fileManagerTargetPath),
+  );
   const openPreview = useAtomCommand(previewEnvironment.open, {
     reportFailure: false,
   });
@@ -773,9 +788,9 @@ export function TerminalViewport({
           });
           return;
         }
-        const target = resolvePathLinkTarget(text, cwd);
+        const { targetPath, fileManagerTargetPath } = resolveTerminalPathOpenTargets(text, cwd);
         void (async () => {
-          const result = await openTerminalPath(target);
+          const result = await openTerminalPath(targetPath, fileManagerTargetPath);
           if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
             return;
           }
