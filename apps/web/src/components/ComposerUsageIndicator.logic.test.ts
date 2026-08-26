@@ -1,41 +1,25 @@
-import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ServerProvider,
-  type ServerProviderUsageWindow,
-} from "@t3tools/contracts";
+import { ProviderInstanceId, type ServerProviderUsageWindow } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { formatTimeUntilReset, getComposerUsageView } from "./ComposerUsageIndicator.logic";
+import type { ProviderUsageAccount } from "./providerUsage/ProviderUsageAccounts";
 
-function provider(input: {
-  windows?: ReadonlyArray<ServerProviderUsageWindow>;
+function account(input: {
+  windows: ReadonlyArray<ServerProviderUsageWindow>;
   displayName?: string;
   accentColor?: string;
-}): ServerProvider {
+  checkedAt?: string;
+}): ProviderUsageAccount {
   return {
     instanceId: ProviderInstanceId.make("claudeAgent"),
-    driver: ProviderDriverKind.make("claudeAgent"),
-    ...(input.displayName ? { displayName: input.displayName } : {}),
+    displayName: input.displayName ?? "Claude",
     ...(input.accentColor ? { accentColor: input.accentColor } : {}),
-    ...(input.windows
-      ? {
-          usageLimits: {
-            source: "claudeOAuth",
-            checkedAt: "2026-08-04T21:00:00.000Z",
-            windows: input.windows,
-          },
-        }
-      : {}),
-    enabled: true,
-    installed: true,
-    version: null,
-    status: "ready" as const,
-    auth: { status: "authenticated" as const },
-    checkedAt: "2026-08-04T21:00:00.000Z",
-    models: [],
-    slashCommands: [],
-    skills: [],
+    usageLimits: {
+      source: "claudeOAuth",
+      checkedAt: input.checkedAt ?? "2026-08-06T11:59:00.000Z",
+      windows: input.windows,
+    },
+    isActive: true,
   };
 }
 
@@ -66,7 +50,7 @@ const NOW = Date.parse("2026-08-06T12:00:00.000Z");
 
 describe("getComposerUsageView", () => {
   it("shows the session and account-wide weekly only", () => {
-    const view = getComposerUsageView(provider({ windows: CLAUDE_WINDOWS }), NOW);
+    const view = getComposerUsageView(account({ windows: CLAUDE_WINDOWS }), NOW);
 
     expect(view?.entries).toEqual([
       {
@@ -88,7 +72,7 @@ describe("getComposerUsageView", () => {
 
   // The strip is a glance; the popover carries the model-scoped weeklies.
   it("leaves model-scoped weeklies out", () => {
-    const view = getComposerUsageView(provider({ windows: CLAUDE_WINDOWS }), NOW);
+    const view = getComposerUsageView(account({ windows: CLAUDE_WINDOWS }), NOW);
 
     expect(view?.entries.some((entry) => entry.detail === "Weekly (Fable)")).toBe(false);
   });
@@ -96,7 +80,7 @@ describe("getComposerUsageView", () => {
   // Windows are matched on duration, so Codex's differently-named ones work.
   it("reads Codex's window labels", () => {
     const view = getComposerUsageView(
-      provider({
+      account({
         windows: [
           { label: "Session", usedPercent: 25, windowDurationMins: 300 },
           { label: "Weekly", usedPercent: 82, windowDurationMins: 10_080 },
@@ -114,7 +98,7 @@ describe("getComposerUsageView", () => {
 
   it("rounds a fractional percentage", () => {
     const view = getComposerUsageView(
-      provider({ windows: [{ label: "Session", usedPercent: 14.6, windowDurationMins: 300 }] }),
+      account({ windows: [{ label: "Session", usedPercent: 14.6, windowDurationMins: 300 }] }),
       NOW,
     );
 
@@ -123,7 +107,7 @@ describe("getComposerUsageView", () => {
 
   it("carries the account name and accent for the tooltip and dot", () => {
     const view = getComposerUsageView(
-      provider({ windows: CLAUDE_WINDOWS, displayName: "Claude Work", accentColor: "#0088ff" }),
+      account({ windows: CLAUDE_WINDOWS, displayName: "Claude Work", accentColor: "#0088ff" }),
       NOW,
     );
 
@@ -133,7 +117,7 @@ describe("getComposerUsageView", () => {
 
   it("renders one entry when only a session window is reported", () => {
     const view = getComposerUsageView(
-      provider({ windows: [{ label: "Session", usedPercent: 5, windowDurationMins: 300 }] }),
+      account({ windows: [{ label: "Session", usedPercent: 5, windowDurationMins: 300 }] }),
       NOW,
     );
 
@@ -141,14 +125,33 @@ describe("getComposerUsageView", () => {
     expect(view?.entries[0]?.label).toBe("5h");
   });
 
+  // Dimming is the strip's whole way of admitting a number has fallen behind
+  // the server's own poll, so the bound must track that poll.
+  it("marks a reading stale only past the caller's bound", () => {
+    const aged = account({ windows: CLAUDE_WINDOWS, checkedAt: "2026-08-06T11:54:00.000Z" });
+
+    expect(getComposerUsageView(aged, NOW, 5 * 60_000)?.stale).toBe(true);
+    expect(getComposerUsageView(aged, NOW, 10 * 60_000)?.stale).toBe(false);
+    expect(getComposerUsageView(aged, NOW)?.age).toBe("6m");
+  });
+
+  it("has no age for a reading under a minute old", () => {
+    const view = getComposerUsageView(
+      account({ windows: CLAUDE_WINDOWS, checkedAt: "2026-08-06T11:59:30.000Z" }),
+      NOW,
+    );
+
+    expect(view?.age).toBeUndefined();
+    expect(view?.stale).toBe(false);
+  });
+
   // Nothing to say beats a placeholder in a strip this dense.
   it.each([
-    ["no provider", null],
-    ["a provider with no usage", provider({})],
-    ["a provider reporting zero windows", provider({ windows: [] })],
+    ["no account", null],
+    ["an account reporting zero windows", account({ windows: [] })],
     [
       "windows with no duration to classify",
-      provider({ windows: [{ label: "Mystery", usedPercent: 10 }] }),
+      account({ windows: [{ label: "Mystery", usedPercent: 10 }] }),
     ],
   ])("returns null for %s", (_label, input) => {
     expect(getComposerUsageView(input, NOW)).toBeNull();

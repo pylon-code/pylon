@@ -26,3 +26,22 @@ On desktop, press `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux from
 start it in the background. Pylon opens another new thread and shows an **Open** action for the
 thread that started. The new thread keeps the selected workspace mode and base branch. If **New
 worktree** is selected, each background thread creates its own worktree.
+
+## Subscription capacity
+
+On web and desktop, the bar above the composer shows how much of the selected account's
+subscription is spent: the rolling session window and the weekly total, each with the time until it
+resets. The account is the one the composer will send to — pick a different account in the model
+picker and the readout follows.
+
+Click it to compare every configured account for that provider, see when each window resets, and
+refresh the reading. Pylon polls capacity on the provider-health interval, updates it as a running
+turn reports its limits, and keeps the last good reading through a failed check; the readout dims
+and says how old it is when it has fallen behind.
+
+Prime Agent has no capacity of its own. A Prime thread shows the capacity of the backend the selected
+model runs on: your Claude accounts for an Anthropic model, your Codex account for an OpenAI Codex
+model. Pylon assumes Prime Agent is signed in to the same subscription. Prime's own default model,
+and backends Pylon has no provider for, show nothing.
+
+Turn the readout off with **Subscription capacity in the composer** in **Settings → General**.

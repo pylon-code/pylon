@@ -81,8 +81,24 @@ export function buildProviderUsageMatrix(
 export function isUsageReadingStale(input: {
   readonly checkedAt: string;
   readonly nowMs: number;
+  /**
+   * Overrides the default bound. Callers that know the server's refresh
+   * interval pass a bound just past it, so a healthy poll never reads as
+   * stale for the tail of every interval.
+   */
+  readonly staleAfterMs?: number | undefined;
 }): boolean {
   const checkedAtMs = Date.parse(input.checkedAt);
   if (!Number.isFinite(checkedAtMs)) return false;
-  return input.nowMs - checkedAtMs > USAGE_STALE_AFTER_MS;
+  return input.nowMs - checkedAtMs > (input.staleAfterMs ?? USAGE_STALE_AFTER_MS);
+}
+
+/**
+ * How old a reading may get before the popover and strip call it stale, given
+ * how often the server polls. One minute past the interval leaves room for
+ * the probe itself; three minutes is the floor so the fastest profile does
+ * not flicker.
+ */
+export function usageStaleAfterMs(refreshIntervalMs: number): number {
+  return Math.max(USAGE_STALE_AFTER_MS, refreshIntervalMs + 60_000);
 }

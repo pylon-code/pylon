@@ -1,17 +1,19 @@
-import type { ServerProvider } from "@t3tools/contracts";
+import { type EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
-import { memo } from "react";
+import { memo, useCallback, useState } from "react";
 
 import { cn } from "../lib/utils";
 import { useNowMinute } from "../hooks/useNowMinute";
+import type { ComposerUsage } from "../providerUsageAccounts";
+import { serverEnvironment } from "../state/server";
+import { useAtomCommand } from "../state/use-atom-command";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { ProviderUsageAccounts } from "./providerUsage/ProviderUsageAccounts";
-import type { ProviderUsageAccount } from "./providerUsage/ProviderUsageAccounts";
 import { usageEmphasisClassName } from "./providerUsage/usageEmphasis";
 import { getComposerUsageView } from "./ComposerUsageIndicator.logic";
 
 /**
- * Subscription capacity for the account the current thread runs on, at the
+ * Subscription capacity for the account the composer will send to, at the
  * right of the composer context strip.
  *
  * Carries only what a glance can act on: which account, how much of each
@@ -23,28 +25,57 @@ import { getComposerUsageView } from "./ComposerUsageIndicator.logic";
  * inferred. A coloured dot identifies an account only if you remember which
  * colour is which, and not at all if you cannot separate the colours.
  *
+ * A reading that has fallen behind the server's own poll dims rather than
+ * disappears: a slightly old number still beats no number when deciding
+ * where to send work, and the popover says exactly how old and offers a
+ * refresh.
+ *
  * Clicking opens the full per-account breakdown. That lives here rather than
  * in the context popover because capacity belongs to the account and context
  * belongs to the thread.
  */
 export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
-  provider,
-  usageAccounts,
+  environmentId,
+  usage,
   timestampFormat,
+  staleAfterMs,
   className,
 }: {
-  readonly provider: ServerProvider | null | undefined;
-  readonly usageAccounts?: readonly ProviderUsageAccount[] | undefined;
+  readonly environmentId: EnvironmentId;
+  readonly usage: ComposerUsage;
   readonly timestampFormat: TimestampFormat;
+  readonly staleAfterMs: number;
   readonly className?: string;
 }) {
   // Minute resolution keeps the countdown honest without repainting forever,
   // and reuses the app's one shared clock.
   const nowMs = Date.parse(`${useNowMinute()}:00.000Z`);
-  const view = getComposerUsageView(provider, nowMs);
-  if (!view) return null;
+  const view = getComposerUsageView(usage.primary, nowMs, staleAfterMs);
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const accounts = usage.accounts;
+  // One instance at a time: the command is single-flight per environment, so
+  // firing every account at once would refresh only the first.
+  const refresh = useCallback(() => {
+    if (isRefreshing || accounts.length === 0) return;
+    setIsRefreshing(true);
+    void (async () => {
+      try {
+        for (const account of accounts) {
+          await refreshProviders({
+            environmentId,
+            input: { instanceId: ProviderInstanceId.make(account.instanceId) },
+          });
+        }
+      } finally {
+        setIsRefreshing(false);
+      }
+    })();
+  }, [accounts, environmentId, isRefreshing, refreshProviders]);
 
-  const accounts = usageAccounts ?? [];
+  if (!view) return null;
 
   return (
     <Popover>
@@ -52,7 +83,9 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
         render={
           <button
             type="button"
-            aria-label={`Subscription capacity for ${view.accountName ?? "this account"}`}
+            aria-label={`Subscription capacity for ${view.accountName ?? "this account"}${
+              view.stale ? ", last checked " + (view.age ?? "a while") + " ago" : ""
+            }`}
             className={cn(
               "inline-flex shrink-0 items-center gap-2 rounded-md px-1 py-0.5 text-sm tabular-nums",
               "hover:bg-muted/40",
@@ -79,7 +112,10 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
               cleanly than another glyph.
             */}
             {view.entries.map((entry) => (
-              <span key={entry.detail} className="inline-flex items-baseline gap-1">
+              <span
+                key={entry.detail}
+                className={cn("inline-flex items-baseline gap-1", view.stale && "opacity-50")}
+              >
                 <span className={cn("font-medium", usageEmphasisClassName(entry.usedPercent))}>
                   {entry.usedPercent}%
                 </span>
@@ -99,17 +135,48 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
           <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
             Subscription capacity
           </div>
+          {usage.backend ? (
+            // Prime has no capacity of its own; say whose is being shown and
+            // why, since the account names below will not be Prime's.
+            <div className="text-xs text-muted-foreground">
+              Prime Agent runs {usage.backend.model} on {usage.backend.label}. This is your{" "}
+              {usage.backend.label} {accounts.length === 1 ? "account's" : "accounts'"} capacity.
+            </div>
+          ) : null}
           {accounts.length > 0 ? (
             <ProviderUsageAccounts
               accounts={accounts}
               timestampFormat={timestampFormat}
               nowMs={nowMs}
+              staleAfterMs={staleAfterMs}
             />
           ) : (
             <div className="text-xs text-muted-foreground">
               No capacity reported for this provider.
             </div>
           )}
+          {/*
+            The age lives here rather than in the strip: it matters only once
+            you are deciding whether to trust the number, which is what opening
+            the popover means.
+          */}
+          <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground/70">
+            <span>
+              {isRefreshing
+                ? "Checking…"
+                : view.age
+                  ? `Checked ${view.age} ago`
+                  : "Checked just now"}
+            </span>
+            <button
+              type="button"
+              onClick={refresh}
+              disabled={isRefreshing}
+              className="rounded px-1.5 py-0.5 text-foreground/80 hover:bg-muted/60 disabled:opacity-50"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
       </PopoverPopup>
     </Popover>

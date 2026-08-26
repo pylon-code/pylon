@@ -1,5 +1,5 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ServerProvider, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
   CloudIcon,
@@ -15,7 +15,7 @@ import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useProject, useThread, useThreadShellsForProjectRefs } from "../state/entities";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { ComposerUsageIndicator } from "./ComposerUsageIndicator";
-import type { ProviderUsageAccount } from "./providerUsage/ProviderUsageAccounts";
+import type { ComposerUsage } from "../providerUsageAccounts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   type EnvMode,
@@ -60,10 +60,10 @@ interface BranchToolbarProps {
   onComposerFocusRequest?: () => void;
   availableEnvironments?: readonly EnvironmentOption[];
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
-  /** Snapshot for the account this thread runs on; drives the usage readout. */
-  providerStatus?: ServerProvider | null;
-  /** All accounts for the thread's driver, for the capacity popover. */
-  providerUsageAccounts?: readonly ProviderUsageAccount[] | undefined;
+  /** Capacity for the account the composer will send to, and its siblings. */
+  composerUsage: ComposerUsage;
+  /** How old a capacity reading may get before the readout dims. */
+  usageStaleAfterMs: number;
   timestampFormat: TimestampFormat;
 }
 
@@ -397,8 +397,8 @@ export const BranchToolbar = memo(function BranchToolbar({
   onComposerFocusRequest,
   availableEnvironments,
   onEnvironmentChange,
-  providerStatus,
-  providerUsageAccounts,
+  composerUsage,
+  usageStaleAfterMs,
   timestampFormat,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
@@ -561,8 +561,9 @@ export const BranchToolbar = memo(function BranchToolbar({
 
       <ComposerUsageIndicator
         className="ml-auto"
-        provider={providerStatus}
-        usageAccounts={providerUsageAccounts}
+        environmentId={environmentId}
+        usage={composerUsage}
+        staleAfterMs={usageStaleAfterMs}
         timestampFormat={timestampFormat}
       />
     </div>

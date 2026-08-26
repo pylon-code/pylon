@@ -345,13 +345,10 @@ import {
   SESSION_HARNESS_REFINEMENT_CONFIRMATION,
 } from "../../sessionHarnessRefinement";
 import { getProviderInteractionModeToggle } from "../../providerModels";
+import { resolveComposerInstanceSelection } from "../../composerInstanceSelection";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
-  isProviderInstanceDrained,
-  NO_PROVIDER_MODEL_SELECTION,
-  resolveProviderDriverKindForInstanceSelection,
-  resolveSelectableProviderInstanceEntry,
   sortProviderInstanceEntries,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
@@ -362,10 +359,8 @@ import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import type { PendingApproval, PendingUserInput } from "../../session-logic";
 import {
   deriveLatestContextWindowSnapshot,
-  formatProviderDisplayName,
   type ContextWindowSnapshot,
 } from "../../lib/contextWindow";
-import type { ProviderUsageAccount } from "../providerUsage/ProviderUsageAccounts";
 // #7150 moved this helper into client-runtime; Pylon's local module is gone.
 import {
   formatProviderSkillDisplayName,
@@ -547,7 +542,6 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   compact: boolean;
   activeContextWindow: ContextWindowSnapshot | null;
   activeThreadModelDisplayName: string | null;
-  activeProviderUsageAccounts: readonly ProviderUsageAccount[];
   timestampFormat: UnifiedSettings["timestampFormat"];
   contextCompaction: import("./ContextWindowMeter").ContextCompactionControlProps | null;
   harnessRefinement: import("./ContextWindowMeter").HarnessRefinementControlProps | null;
@@ -995,130 +989,44 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ),
     [providerStatuses, settings],
   );
-  const selectedProviderByThreadId = composerDraft.activeProvider ?? null;
-  const threadProvider =
-    activeThread?.session?.providerInstanceId ??
-    activeThreadModelSelection?.instanceId ??
-    activeProjectDefaultModelSelection?.instanceId ??
-    null;
-  const explicitSelectedInstanceId = selectedProviderByThreadId ?? threadProvider;
-
-  const unlockedSelectedProvider =
-    resolveProviderDriverKindForInstanceSelection(
-      providerInstanceEntries,
-      providerStatuses,
-      explicitSelectedInstanceId,
-    ) ??
-    providerInstanceEntries[0]?.driverKind ??
-    ProviderDriverKind.make("unconfigured");
-  const requestedDriverKind: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
-  const lockedContinuationGroupKey = useMemo((): string | null => {
-    if (!lockedProvider || !activeThread) return null;
-    const lockedInstanceId =
-      activeThread.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId;
-    if (!lockedInstanceId) return null;
-    return (
-      providerInstanceEntries.find((entry) => entry.instanceId === lockedInstanceId)
-        ?.continuationGroupKey ?? null
-    );
-  }, [
-    activeThread,
-    activeThreadModelSelection?.instanceId,
-    lockedProvider,
-    providerInstanceEntries,
-  ]);
-
-  // Resolve which configured instance the composer is currently targeting.
-  // Priority:
-  //   1. The composer draft's `activeProvider` — the user's unsaved pick
-  //      from the model picker (must win, otherwise the UI appears to
-  //      ignore picker selections).
-  //   2. Thread's persisted instance id (server-side saved selection).
-  //   3. Project default's instance id.
-  //   4. First enabled entry matching the current driver kind.
-  //   5. First enabled entry overall / default instance for the kind.
-  //
-  // Candidates 1 and 2 are pinned: an explicit picker choice and a thread's
-  // live session binding are honored even when that account is spent, so an
-  // existing thread never migrates off the account it started on. Everything
-  // below them has not bound to a session yet and is free to route around a
-  // drained account, in configured priority order.
+  // Which configured instance the composer is targeting. Shared with the
+  // capacity strip beside the composer, which must name the same account.
   //
   // `Date.now()` is read without a ticking dependency on purpose. Drain
   // windows run for hours, the memo already recomputes on every provider
   // snapshot and thread change, and a per-minute recompute of a hot component
   // buys nothing at that timescale.
-  const selectedInstanceId = useMemo<ProviderInstanceId>(() => {
-    const nowMs = Date.now();
-    const candidates: Array<{
-      readonly instanceId: string | null | undefined;
-      readonly pinned: boolean;
-    }> = [
-      { instanceId: composerDraft.activeProvider, pinned: true },
-      { instanceId: activeThread?.session?.providerInstanceId, pinned: true },
-      { instanceId: activeThreadModelSelection?.instanceId, pinned: false },
-      { instanceId: activeProjectDefaultModelSelection?.instanceId, pinned: false },
-    ];
-    for (const candidate of candidates) {
-      if (!candidate.instanceId) continue;
-      const match = providerInstanceEntries.find(
-        (entry) => entry.instanceId === candidate.instanceId && entry.enabled && entry.isAvailable,
-      );
-      if (match) {
-        // When locked to a specific driver kind, ignore persisted instance
-        // ids from a different kind or continuation group.
-        if (lockedProvider && match.driverKind !== lockedProvider) continue;
-        if (
-          lockedContinuationGroupKey &&
-          match.continuationGroupKey !== lockedContinuationGroupKey
-        ) {
-          continue;
-        }
-        // Drained and unpinned: defer to the ordered fallback below, which
-        // prefers a healthy instance and lands back here only when every
-        // instance is drained.
-        if (!candidate.pinned && isProviderInstanceDrained(match, nowMs)) continue;
-        return match.instanceId;
-      }
-    }
-    const compatibleEntries = providerInstanceEntries.filter(
-      (entry) =>
-        (!lockedProvider || entry.driverKind === lockedProvider) &&
-        (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey),
-    );
-    const requestedDriverEntries = compatibleEntries.filter(
-      (entry) => entry.driverKind === requestedDriverKind,
-    );
-    return (
-      resolveSelectableProviderInstanceEntry(requestedDriverEntries, undefined, nowMs)
-        ?.instanceId ??
-      resolveSelectableProviderInstanceEntry(compatibleEntries, undefined, nowMs)?.instanceId ??
-      NO_PROVIDER_MODEL_SELECTION.instanceId
-    );
-  }, [
-    activeProjectDefaultModelSelection?.instanceId,
-    activeThread?.session?.providerInstanceId,
-    activeThreadModelSelection?.instanceId,
-    composerDraft.activeProvider,
-    lockedContinuationGroupKey,
-    lockedProvider,
-    providerInstanceEntries,
-    requestedDriverKind,
-  ]);
-
-  // Resolve the active instance's snapshot by `instanceId` so a custom
-  // instance gets its own slash commands, skills, and model list — not
-  // the first snapshot for the same driver kind.
-  const selectedProviderEntry = useMemo(
-    () => providerInstanceEntries.find((entry) => entry.instanceId === selectedInstanceId),
-    [providerInstanceEntries, selectedInstanceId],
+  const composerSelection = useMemo(
+    () =>
+      resolveComposerInstanceSelection({
+        entries: providerInstanceEntries,
+        draftActiveProvider: composerDraft.activeProvider,
+        sessionInstanceId: activeThread?.session?.providerInstanceId,
+        threadInstanceId: activeThreadModelSelection?.instanceId,
+        projectInstanceId: activeProjectDefaultModelSelection?.instanceId,
+        lockedProvider,
+        nowMs: Date.now(),
+      }),
+    [
+      activeProjectDefaultModelSelection?.instanceId,
+      activeThread?.session?.providerInstanceId,
+      activeThreadModelSelection?.instanceId,
+      composerDraft.activeProvider,
+      lockedProvider,
+      providerInstanceEntries,
+    ],
   );
+  const selectedInstanceId = composerSelection.instanceId;
+  const lockedContinuationGroupKey = composerSelection.lockedContinuationGroupKey;
+  // The resolved instance's own snapshot, so a custom instance gets its own
+  // slash commands, skills, and model list — not the first snapshot for the
+  // same driver kind.
+  const selectedProviderEntry = composerSelection.entry;
   const noProviderAvailable = selectedProviderEntry === undefined;
   // The driver kind follows the instance that will actually run the turn,
   // which can differ from the persisted selection when that selection is
   // disabled.
-  const selectedProvider: ProviderDriverKind =
-    selectedProviderEntry?.driverKind ?? requestedDriverKind;
+  const selectedProvider: ProviderDriverKind = composerSelection.driverKind;
 
   const { modelOptions: composerModelOptions, selectedModel } = useEffectiveComposerModelState({
     threadRef: composerDraftTarget,
@@ -1758,36 +1666,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // The running session's instance is the source of truth for the popover's usage
   // limits, so the accounts listed can never describe a different provider. The
   // meter's own label names the selected model rather than the provider.
-  const activeThreadProviderInstanceId =
-    activeThread?.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId;
   const activeThreadModelDisplayName = useMemo(
     () => resolveContextWindowModelDisplayName(activeThreadModelSelection, modelOptionsByInstance),
     [activeThreadModelSelection, modelOptionsByInstance],
   );
-  // Every configured account for the active thread's driver, not just the one
-  // the thread is bound to: Pylon routes threads across several accounts of the
-  // same provider, so remaining capacity is a question about all of them.
-  const activeProviderUsageAccounts = useMemo((): readonly ProviderUsageAccount[] => {
-    if (!settings.showProviderUsageInContextPopover) return [];
-    const activeProvider = providerStatuses.find(
-      (provider) => provider.instanceId === activeThreadProviderInstanceId,
-    );
-    if (!activeProvider) return [];
-    return providerStatuses
-      .filter((provider) => provider.driver === activeProvider.driver && provider.usageLimits)
-      .map((provider) => ({
-        instanceId: provider.instanceId,
-        displayName: provider.displayName ?? formatProviderDisplayName(provider.instanceId),
-        accentColor: provider.accentColor,
-        // Narrowed by the `provider.usageLimits` filter above.
-        usageLimits: provider.usageLimits as NonNullable<typeof provider.usageLimits>,
-        isActive: provider.instanceId === activeThreadProviderInstanceId,
-      }));
-  }, [
-    settings.showProviderUsageInContextPopover,
-    providerStatuses,
-    activeThreadProviderInstanceId,
-  ]);
 
   // ------------------------------------------------------------------
   // Composer-local state
@@ -4441,7 +4323,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       compact={isComposerPrimaryActionsCompact}
                       activeContextWindow={activeContextWindow}
                       activeThreadModelDisplayName={activeThreadModelDisplayName}
-                      activeProviderUsageAccounts={activeProviderUsageAccounts}
                       timestampFormat={settings.timestampFormat}
                       contextCompaction={contextCompactionControl}
                       harnessRefinement={sessionHarnessRefinementControl}

@@ -128,10 +128,13 @@ export function ProviderUsageMatrix({
   accounts,
   timestampFormat,
   nowMs,
+  staleAfterMs,
 }: {
   readonly accounts: ReadonlyArray<ProviderUsageAccount>;
   readonly timestampFormat: TimestampFormat;
   readonly nowMs: number;
+  /** How old a reading may get before its column says so; see `isUsageReadingStale`. */
+  readonly staleAfterMs?: number | undefined;
 }) {
   const matrix = buildProviderUsageMatrix(accounts);
   if (matrix.rows.length === 0) return null;
@@ -146,8 +149,11 @@ export function ProviderUsageMatrix({
           {matrix.accounts.map((account) => {
             const age = formatTimeSinceChecked(account.usageLimits.checkedAt, nowMs);
             const stale =
-              isUsageReadingStale({ checkedAt: account.usageLimits.checkedAt, nowMs }) &&
-              age !== undefined;
+              isUsageReadingStale({
+                checkedAt: account.usageLimits.checkedAt,
+                nowMs,
+                staleAfterMs,
+              }) && age !== undefined;
             return (
               // Top-aligned, so every account name shares a baseline whether or
               // not the account below it carries a status line.
