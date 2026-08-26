@@ -48,6 +48,7 @@ const goal = {
   timeUsedSeconds: 0,
   continuationsUsed: 0,
 };
+const activeSignal = () => new AbortController().signal;
 
 function snapshot(sequence = 4) {
   return {
@@ -2035,7 +2036,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
 
         const token = "turn-1:1";
         yield* runtime.prompt({ text: "wait for descendants", rlmQuiescenceToken: token });
-        yield* runtime.waitForRlmQuiescence(token);
+        yield* runtime.waitForRlmQuiescence(token, activeSignal());
         const events = yield* Fiber.join(collecting);
 
         expect(runtime.rlmQuiescenceAvailable).toBe(true);
@@ -2093,11 +2094,11 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         const runtime = yield* test.make();
         yield* runtime.prompt({ text: "start descendants", rlmQuiescenceToken: "turn-1:1" });
         const first = yield* runtime
-          .waitForRlmQuiescence("turn-1:1")
+          .waitForRlmQuiescence("turn-1:1", activeSignal())
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Effect.promise(() => firstStarted);
         const second = yield* runtime
-          .waitForRlmQuiescence("turn-1:2")
+          .waitForRlmQuiescence("turn-1:2", activeSignal())
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Effect.yieldNow;
 
@@ -2158,7 +2159,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         const token = "turn-reconnect:1";
         yield* runtime.prompt({ text: "wait through reconnect", rlmQuiescenceToken: token });
         const waiting = yield* runtime
-          .waitForRlmQuiescence(token)
+          .waitForRlmQuiescence(token, activeSignal())
           .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
         yield* Effect.promise(() => barrierStarted);
 
@@ -2216,7 +2217,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           }),
         );
         expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
-        yield* runtime.waitForRlmQuiescence(token);
+        yield* runtime.waitForRlmQuiescence(token, activeSignal());
         const events = yield* Fiber.join(collecting);
 
         expect(events.map((event) => event._tag)).toEqual([
@@ -2658,7 +2659,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
 
         rejectPrompt(new Error("Daemon worker client closed"));
         yield* Fiber.join(prompting);
-        yield* runtime.waitForRlmQuiescence(token);
+        yield* runtime.waitForRlmQuiescence(token, activeSignal());
         const events = yield* Fiber.join(collecting);
 
         expect(events.map((event) => event._tag)).toEqual([
@@ -2716,7 +2717,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           }),
         );
         yield* Fiber.join(prompting);
-        yield* runtime.waitForRlmQuiescence(token);
+        yield* runtime.waitForRlmQuiescence(token, activeSignal());
 
         expect(
           test.captures.connectionCalls.filter((call) => call.method === "prompt"),
@@ -3053,6 +3054,233 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect("retries a quiescence wait cancelled by final-child deletion", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let attempts = 0;
+        const test = fixture({
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            return attempts === 1
+              ? Promise.reject(new Error("RLM quiescence wait cancelled"))
+              : Promise.resolve({ result: "completed" });
+          },
+        });
+        const runtime = yield* test.make();
+        const collecting = yield* collectEvents(runtime, 2).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const token = "turn-child-delete:1";
+
+        yield* runtime.prompt({ text: "finish after child deletion", rlmQuiescenceToken: token });
+        yield* runtime.waitForRlmQuiescence(token, activeSignal());
+        const events = yield* Fiber.join(collecting);
+
+        expect(attempts).toBe(2);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(2);
+        expect(events.at(-1)).toMatchObject({
+          _tag: "RlmQuiesced",
+          token,
+          connectionGeneration: 0,
+        });
+      }),
+    ),
+  );
+
+  it.effect("does not retry quiescence cancellation after the turn signal aborts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let attempts = 0;
+        let rejectWait!: (error: Error) => void;
+        let reportWaitStarted: (() => void) | undefined;
+        const waitStarted = new Promise<void>((resolve) => {
+          reportWaitStarted = resolve;
+        });
+        const test = fixture({
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            if (attempts > 1) return Promise.resolve({ result: "completed" });
+            return new Promise((_resolve, reject) => {
+              rejectWait = reject;
+              reportWaitStarted?.();
+            });
+          },
+        });
+        const runtime = yield* test.make();
+        const controller = new AbortController();
+        const token = "turn-user-abort:1";
+        yield* runtime.prompt({ text: "cancel this turn", rlmQuiescenceToken: token });
+        const waiting = yield* runtime
+          .waitForRlmQuiescence(token, controller.signal)
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => waitStarted);
+
+        controller.abort();
+        rejectWait(new Error("RLM quiescence wait cancelled"));
+        const error = yield* Fiber.join(waiting);
+
+        expect(attempts).toBe(1);
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent descendant quiescence wait was cancelled.",
+        });
+      }),
+    ),
+  );
+
+  it.effect("bounds repeated quiescence cancellation retries", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let attempts = 0;
+        const test = fixture({
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            return Promise.reject(new Error("RLM quiescence wait cancelled"));
+          },
+        });
+        const runtime = yield* test.make();
+
+        yield* runtime.prompt({ text: "do not wait forever", rlmQuiescenceToken: "turn-loop:1" });
+        const error = yield* runtime
+          .waitForRlmQuiescence("turn-loop:1", activeSignal())
+          .pipe(Effect.flip);
+
+        expect(attempts).toBe(4);
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent could not confirm descendant quiescence.",
+        });
+      }),
+    ),
+  );
+
+  it.effect("does not retry quiescence cancellation across a connection generation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let rejectWait!: (error: Error) => void;
+        let reportWaitStarted: (() => void) | undefined;
+        const waitStarted = new Promise<void>((resolve) => {
+          reportWaitStarted = resolve;
+        });
+        const test = fixture({
+          waitForHeadlessCompletionImpl: () =>
+            new Promise((_resolve, reject) => {
+              rejectWait = reject;
+              reportWaitStarted?.();
+            }),
+        });
+        const runtime = yield* test.make();
+        yield* runtime.prompt({ text: "keep the generation", rlmQuiescenceToken: "turn-gen:1" });
+        const waiting = yield* runtime
+          .waitForRlmQuiescence("turn-gen:1", activeSignal())
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => waitStarted);
+
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(1),
+              replay: {
+                status: "complete",
+                fromSequence: 1,
+                toSequence: 1,
+                fromCursor: { generation: "daemon-1", sequence: 1 },
+                toCursor: { generation: "daemon-1", sequence: 1 },
+              },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        rejectWait(new Error("RLM quiescence wait cancelled"));
+        const error = yield* Fiber.join(waiting);
+
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent reconnected before descendant quiescence could be confirmed.",
+        });
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("rejects a successful retry that crosses a connection generation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let attempts = 0;
+        let resolveRetry!: (value: unknown) => void;
+        let reportRetryStarted: (() => void) | undefined;
+        const retryStarted = new Promise<void>((resolve) => {
+          reportRetryStarted = resolve;
+        });
+        const test = fixture({
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            if (attempts === 1) {
+              return Promise.reject(new Error("RLM quiescence wait cancelled"));
+            }
+            return new Promise((resolve) => {
+              resolveRetry = resolve;
+              reportRetryStarted?.();
+            });
+          },
+        });
+        const runtime = yield* test.make();
+        yield* runtime.prompt({ text: "keep retry ownership", rlmQuiescenceToken: "turn-retry:1" });
+        const waiting = yield* runtime
+          .waitForRlmQuiescence("turn-retry:1", activeSignal())
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => retryStarted);
+
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(1),
+              replay: {
+                status: "complete",
+                fromSequence: 1,
+                toSequence: 1,
+                fromCursor: { generation: "daemon-1", sequence: 1 },
+                toCursor: { generation: "daemon-1", sequence: 1 },
+              },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        resolveRetry({ result: "completed" });
+        const error = yield* Fiber.join(waiting);
+
+        expect(attempts).toBe(2);
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent reconnected before descendant quiescence could be confirmed.",
+        });
+      }),
+    ),
+  );
+
   it.effect("reports the full cumulative usage delta at authoritative quiescence", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -3076,7 +3304,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         const token = "turn-usage:1";
 
         yield* runtime.prompt({ text: "include child usage", rlmQuiescenceToken: token });
-        yield* runtime.waitForRlmQuiescence(token);
+        yield* runtime.waitForRlmQuiescence(token, activeSignal());
 
         expect((yield* Fiber.join(collecting)).at(-1)).toMatchObject({
           _tag: "RlmQuiesced",
@@ -3097,14 +3325,16 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
   it.effect("fails a prompt safely when the advertised RLM barrier cannot complete", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { make } = fixture({
+        const { captures, make } = fixture({
           waitForHeadlessCompletionImpl: () =>
             Promise.reject(new Error("private daemon failure at /secret/path")),
         });
         const runtime = yield* make();
 
         yield* runtime.prompt({ text: "wait safely", rlmQuiescenceToken: "turn-1:1" });
-        const error = yield* runtime.waitForRlmQuiescence("turn-1:1").pipe(Effect.flip);
+        const error = yield* runtime
+          .waitForRlmQuiescence("turn-1:1", activeSignal())
+          .pipe(Effect.flip);
 
         expect(error).toMatchObject({
           operation: "rlm-quiescence",
@@ -3112,6 +3342,9 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           detail: "Prime Agent could not confirm descendant quiescence.",
         });
         expect(error.detail).not.toContain("/secret/path");
+        expect(
+          captures.connectionCalls.filter((call) => call.method === "waitForHeadlessCompletion"),
+        ).toHaveLength(1);
       }),
     ),
   );
@@ -3244,7 +3477,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           signal,
           rlmQuiescenceToken: "turn-typed:1",
         });
-        yield* runtime.waitForRlmQuiescence("turn-typed:1");
+        yield* runtime.waitForRlmQuiescence("turn-typed:1", activeSignal());
         yield* runtime.steer({ text: "steer", images });
         yield* runtime.followUp({ text: "follow", images });
         yield* runtime.abort;

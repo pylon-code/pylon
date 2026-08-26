@@ -42,7 +42,11 @@ identifiers. After an ordinary daemon prompt reaches its first response boundary
 Agent 0.8.1's public RLM-quiescence barrier. Its server-owned FIFO marker carries the Pylon turn and input
 generation, so a late marker cannot settle later steering, follow-up, or a different turn. Every admitted
 input rearms the barrier. Native barrier calls are serialized so re-arming cannot duplicate autonomous
-continuation checks. A daemon connection-generation change pauses that boundary until the replacement
+continuation checks. Prime can cancel an in-flight recursive wait when the parent explicitly deletes its
+final child after receiving that child's reply. Pylon retries only that exact cancellation while the owning
+Pylon turn remains active and on the same connection generation, at most three times; the read-only
+barrier is reissued but the prompt is not. User cancellation suppresses the retry. Any other error or
+repeated cancellation while the turn remains active still fails closed. A daemon connection-generation change pauses that boundary until the replacement
 connection publishes its generation-scoped resync. Complete replay metadata proves event continuity. If
 replay is unavailable, Pylon accepts only a public snapshot whose bounded completed-message tail and
 absolute message count are an exact continuation of the adapter's observed tail and which contains no

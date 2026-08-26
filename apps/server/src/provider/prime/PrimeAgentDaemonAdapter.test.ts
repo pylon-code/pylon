@@ -279,6 +279,7 @@ interface FakeCaptures {
   rlmQuiescenceAvailable: boolean;
   rlmQuiescenceRelease: Deferred.Deferred<void> | undefined;
   readonly rlmQuiescenceCalls: Array<string>;
+  readonly rlmQuiescenceSignals: Array<AbortSignal>;
   rlmQuiescenceObserved: Queue.Queue<string> | undefined;
   rlmQuiescenceFailure: boolean;
   rlmConnectionGeneration: number;
@@ -401,6 +402,7 @@ function makeCaptures(): FakeCaptures {
     rlmQuiescenceAvailable: false,
     rlmQuiescenceRelease: undefined,
     rlmQuiescenceCalls: [],
+    rlmQuiescenceSignals: [],
     rlmQuiescenceObserved: undefined,
     rlmQuiescenceFailure: false,
     rlmConnectionGeneration: 0,
@@ -720,9 +722,10 @@ function fakeRuntimeFactory(
           }),
         events: Stream.fromQueue(queue),
         rlmQuiescenceAvailable: captures.rlmQuiescenceAvailable,
-        waitForRlmQuiescence: (token) =>
+        waitForRlmQuiescence: (token, signal) =>
           Effect.gen(function* () {
             captures.rlmQuiescenceCalls.push(token);
+            captures.rlmQuiescenceSignals.push(signal);
             if (captures.rlmQuiescenceObserved !== undefined) {
               yield* Queue.offer(captures.rlmQuiescenceObserved, token);
             }
@@ -4873,6 +4876,9 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(steered.turnId).toBe(started.turnId);
         const currentToken = yield* Queue.take(captures.rlmQuiescenceObserved);
         expect(currentToken).not.toBe(initialToken);
+        expect(captures.rlmQuiescenceSignals).toHaveLength(2);
+        expect(captures.rlmQuiescenceSignals[0]).toBe(captures.prompts[0]?.signal);
+        expect(captures.rlmQuiescenceSignals[1]).toBe(captures.prompts[0]?.signal);
 
         yield* offer(captures, {
           _tag: "RlmQuiesced",

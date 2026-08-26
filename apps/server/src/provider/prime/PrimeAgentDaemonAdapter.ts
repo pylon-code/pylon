@@ -2594,9 +2594,13 @@ export function makePrimeAgentDaemonAdapter(
         }
       });
 
-    const awaitRlmQuiescence = (context: PrimeAgentDaemonSessionContext, token: string) =>
+    const awaitRlmQuiescence = (
+      context: PrimeAgentDaemonSessionContext,
+      turn: PrimeAgentDaemonActiveTurn,
+      token: string,
+    ) =>
       context.runtime
-        .waitForRlmQuiescence(token)
+        .waitForRlmQuiescence(token, turn.controller.signal)
         .pipe(
           Effect.mapError((error) =>
             runtimeOperationError(context.threadId, "session/rlm-quiescence", error),
@@ -2642,7 +2646,7 @@ export function makePrimeAgentDaemonAdapter(
         const token = rlmQuiescenceToken(turn.id, turn.terminalQuiescenceGeneration);
         turn.terminalQuiescenceToken = token;
         yield* Effect.forkDetach(
-          awaitRlmQuiescence(context, token).pipe(
+          awaitRlmQuiescence(context, turn, token).pipe(
             Effect.catch(() => stopAfterRlmQuiescenceFailure(context, turn, token)),
           ),
         );
@@ -3416,7 +3420,7 @@ export function makePrimeAgentDaemonAdapter(
                 ),
               );
             if (initialRlmQuiescenceToken !== undefined) {
-              yield* awaitRlmQuiescence(context, initialRlmQuiescenceToken).pipe(
+              yield* awaitRlmQuiescence(context, turn, initialRlmQuiescenceToken).pipe(
                 Effect.catch((error) =>
                   withThreadMutationLock(
                     context.threadId,
