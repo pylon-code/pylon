@@ -23,7 +23,7 @@ T3-named environment variables may still be passed to the bundled compatibility 
 
 Pylon is a long-lived independent product, not a temporary reskin or a patch queue intended to collapse back into T3 Code. Build in Pylon's direction while preserving the upstream qualities described below.
 
-- The canonical repository is the private `pylon-code/pylon` repository. Its writable remote is `origin`, and its default product branch is `pylon`. It moved from `rynfar/pylon` to the `pylon-code` organization; GitHub redirects the old path, but use the organization path.
+- The canonical repository is the public `pylon-code/pylon` repository. Its writable remote is `origin`, and its default product branch is `pylon`. It moved from `rynfar/pylon` to the `pylon-code` organization; GitHub redirects the old path, but use the organization path.
 - Base Pylon work on `pylon` or a task branch created from it. Do not treat the inherited `main` branch as Pylon's product branch.
 - `t3code-upstream` (`pingdotgg/t3code`) and `t3code-fork` (`rynfar/t3code`) are reference remotes. They are intentionally fetch-only. Never push to them or re-enable their push URLs.
 - Upstream changes are opt-in. Fetch and inspect upstream commits, then cherry-pick or selectively merge only changes that benefit Pylon. Do not hard-reset, wholesale rebase, or replace Pylon with an upstream branch.

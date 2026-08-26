@@ -72,21 +72,20 @@ Release App installation.
 
 ## Runners
 
-Every job runs on Blacksmith runners, which requires the Blacksmith app installed on the
-`pylon-code` organization — Blacksmith does not support personal accounts.
+Every job runs on GitHub-hosted standard runners: `ubuntu-24.04`, `windows-2025`, and `macos-26`
+(Apple Silicon; the x64 desktop leg cross-builds on it). Standard runners are free on public
+repositories, which is the reason this repository is public. Larger tiers (`-large`, `-xlarge`) and
+third-party runner providers are billed regardless of visibility, so do not move a job onto one
+without accepting the cost. The workflows ran on Blacksmith until August 2026; switching providers
+is a pure `runs-on` label swap with no other change required.
 
-Tiers are deliberately conservative: `blacksmith-8vcpu-ubuntu-2404`, `blacksmith-8vcpu-windows-2025`,
-and `blacksmith-6vcpu-macos-26`. Blacksmith's documentation only evidences these sizes, and **an
-unavailable tier does not fail the job — it queues until GitHub's 24-hour limit kills it.** That
-silent hang is the single most confusing failure this workflow can produce, so raise a tier only
-after confirming the plan grants it, and watch the first run after any change.
+**An unknown or unavailable label does not fail the job — it queues until GitHub's 24-hour limit
+kills it.** That silent hang is the single most confusing failure this workflow can produce, so
+watch the first run after any label change.
 
 Job timeouts are generous for the same reason a ceiling is cheap: preflight runs the whole
 repository's check, typecheck, and test suites, and the build matrix packages Electron plus a Rust
 target with the macOS legs cross-building a second architecture.
-
-Switching back to GitHub-hosted runners is a pure label swap — `ubuntu-24.04`, `windows-2025`,
-`macos-26` — with no other change required.
 
 ## Pylon Connect relay deployment
 
