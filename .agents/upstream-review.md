@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "e67074f80933a27bd3cdc4e24f486358407690fb"
-reviewed-through-date: "2026-08-25"
+reviewed-through: "860caaa6023a3aaf616a5899816c74c195ca8de2"
+reviewed-through-date: "2026-08-26"
 ---
 
 # T3 upstream review log
@@ -12,6 +12,30 @@ This ledger is the durable handoff between upstream-review sessions. The `review
 Deferred decisions remain listed after the cursor advances so later sessions can revisit them without rediscovering the entire upstream range.
 
 ## Review batches
+
+## 2026-08-26 — `e67074f80933a27bd3cdc4e24f486358407690fb..860caaa6023a3aaf616a5899816c74c195ca8de2`
+
+Five upstream commits formed five change sets. The developer approved the recommended U1–U4 adoptions and U5 skip. `git cherry` found none already present. The deferred register was empty going in and remains empty.
+
+| ID  | Upstream              | Decision                | Pylon reference    | Notes                                                                                                                                                                                                                                                                                                                    |
+| --- | --------------------- | ----------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| U1  | `082e6ea52` / `#7140` | adopted with adaptation | `4f3c6d67c`, `#92` | File chips reveal through Finder, File Explorer, or Linux Files and route through the explicit owning environment. Pylon hides native actions remotely, bounds and force-kills Linux handler probes, avoids per-message storage listeners, adds keyboard-accessible hosted menus, and preserves Windows separator style. |
+| U2  | `994372ba4` / `#8228` | adopted                 | `bd6953d80`, `#88` | Feature-branch pushes now target the branch itself instead of writing its commits into the tracked base branch.                                                                                                                                                                                                          |
+| U3  | `504177797` / `#8240` | adopted                 | `bf6dae2ae`, `#89` | `@clerk/electron` 0.0.37 prevents destructive virtual-router navigation during multi-step desktop authentication. Shared web/mobile Clerk compatibility remained green.                                                                                                                                                  |
+| U4  | `badae6a5c` / `#8227` | adopted with adaptation | `aa67226fc`, `#93` | Codex and Claude legacy classification refreshes from the Pylon-owned public `pylon-code/pylon-releases` manifest, never from T3. The bounded, strict publisher exposes no private source metadata; offline fallback, atomic cache retention, update-check opt-out, and Pylon Claude usage probes are preserved.         |
+| U5  | `860caaa60`           | skipped                 | —                  | T3 v0.0.34 release metadata crosses product release boundaries and is superseded by Pylon's release workflow.                                                                                                                                                                                                            |
+
+Pylon-first reconciliation was required for U1 and U4. U1 kept Pylon's environment contracts and remote policy while adding explicit-environment routing across chat and pull-request markdown. Its independent server and web reviews found and fixed a Linux probe that could outlive its timeout, unbounded probe output, false editor affordances, per-message storage subscriptions, fallback-menu keyboard access, and mixed Windows separators. The integrated web client showed the new **Reveal in Finder** item and invoked it through the real websocket route without an error.
+
+U4 keeps the public control plane outside the private source repository. Public seed PR `pylon-code/pylon-releases#1` is merged, the raw endpoint serves the bundled version 1 data, and public `main` rejects force pushes and deletion including for administrators. Independent core and publication reviews found and fixed a settings opt-out fail-open, unbounded remote data, non-atomic cache replacement, potential metadata leakage, mutable write-capable action tags, branch-selectable dispatch, and normalized-size mismatch. The publisher uses a generic public commit message and constructs an allowlisted object rather than copying private source fields.
+
+Validation:
+
+- U1: 160 focused launcher/websocket tests and 58 focused markdown/menu/path tests pass, with one platform skip; server, web, contracts, client-runtime, and mobile typechecks pass; production web build and `vp check` over 27 files pass.
+- U2: all 57 focused source-control tests, server typecheck, formatting, and lint pass.
+- U3: 30 focused authentication tests, desktop/web/mobile typechecks, frozen install, production web build, and formatting pass.
+- U4: 75 manifest/Codex/Claude/provider-registry tests pass; server typecheck, actionlint, and `vp check` over 18 files pass. The real public endpoint decodes to the bundled JSON. Local workflow probes accept the source, reject extra metadata, and reject a compact input whose normalized public output would exceed the runtime byte cap.
+- Required CI completed green on U2 and U3 before merge and on U1 before merge. U4 CI is recorded on `#93`.
 
 ## 2026-08-25 — `bd9ed2b4bbda3dd6e468df1cb06233e29c4a9f5c..e67074f80933a27bd3cdc4e24f486358407690fb`
 
