@@ -21,7 +21,51 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check source revision is current
+        id: source_revision
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          curl \
+            --proto '=https' \
+            --tlsv1.2 \
+            --fail \
+            --silent \
+            --show-error \
+            --connect-timeout 10 \
+            --max-time 30 \
+            --max-filesize 32768 \
+            --retry 2 \
+            --retry-all-errors \
+            --retry-delay 1 \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output /tmp/pylon-current-branch.json \
+            "${GITHUB_API_URL}/repos/${SOURCE_REPOSITORY}/branches/pylon"
+          current_sha="$(
+            node <<'NODE'
+          const branch = JSON.parse(require("node:fs").readFileSync("/tmp/pylon-current-branch.json", "utf8"));
+          const sha = branch?.commit?.sha;
+          if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
+            throw new Error("Pylon branch response did not contain a commit SHA");
+          }
+          process.stdout.write(sha);
+          NODE
+          )"
+          if [[ "${current_sha}" != "${SOURCE_SHA}" ]]; then
+            echo "Skipping superseded source revision ${SOURCE_SHA}; pylon is now ${current_sha}."
+            echo "should_publish=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "should_publish=true" >> "${GITHUB_OUTPUT}"
+
       - name: Check releases repository credentials
+        if: steps.source_revision.outputs.should_publish == 'true'
         shell: bash
         env:
           RELEASES_REPO_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
@@ -32,22 +76,42 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout approved Pylon source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: pylon
-          path: source
-          sparse-checkout: apps/server/src/provider/model-manifest.json
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
+      - name: Fetch exact approved Pylon manifest
+        if: steps.source_revision.outputs.should_publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          curl \
+            --proto '=https' \
+            --tlsv1.2 \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --connect-timeout 10 \
+            --max-time 30 \
+            --max-filesize 32768 \
+            --retry 2 \
+            --retry-all-errors \
+            --retry-delay 1 \
+            --header "Accept: application/vnd.github.raw+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output /tmp/pylon-source-model-manifest.json \
+            "${GITHUB_API_URL}/repos/${SOURCE_REPOSITORY}/contents/apps/server/src/provider/model-manifest.json?ref=${SOURCE_SHA}"
 
       - name: Validate source manifest
+        if: steps.source_revision.outputs.should_publish == 'true'
         shell: bash
         run: |
           set -euo pipefail
           node <<'NODE'
           const fs = require("node:fs");
-          const sourcePath = "source/apps/server/src/provider/model-manifest.json";
+          const sourcePath = "/tmp/pylon-source-model-manifest.json";
           const publicPath = "/tmp/pylon-model-manifest.json";
           const maxBytes = 32 * 1024;
           const maxModelsPerProvider = 256;
@@ -86,6 +150,7 @@ jobs:
           NODE
 
       - name: Checkout public releases repository
+        if: steps.source_revision.outputs.should_publish == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: pylon-code/pylon-releases
@@ -95,6 +160,7 @@ jobs:
           persist-credentials: true
 
       - name: Publish manifest without private source metadata
+        if: steps.source_revision.outputs.should_publish == 'true'
         shell: bash
         run: |
           set -euo pipefail
