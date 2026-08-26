@@ -240,6 +240,45 @@ export function showContextMenuFallback<T extends string>(
       if (event.key === "Escape") {
         event.preventDefault();
         cleanup(null);
+        return;
+      }
+
+      const activeElement = document.activeElement;
+      let activeLevel = -1;
+      for (let level = menuStack.length - 1; level >= 0; level -= 1) {
+        const candidateMenu = menuStack[level];
+        if (
+          candidateMenu &&
+          [...candidateMenu.querySelectorAll<HTMLButtonElement>("button")].includes(
+            activeElement as HTMLButtonElement,
+          )
+        ) {
+          activeLevel = level;
+          break;
+        }
+      }
+      if (activeLevel < 0) return;
+      const activeMenu = menuStack[activeLevel];
+      if (!activeMenu) return;
+
+      const enabledItems = [...activeMenu.querySelectorAll<HTMLButtonElement>("button")].filter(
+        (button) => !button.disabled,
+      );
+      if (enabledItems.length === 0) return;
+      const currentIndex = Math.max(0, enabledItems.indexOf(activeElement as HTMLButtonElement));
+      const focusAt = (index: number) => {
+        event.preventDefault();
+        enabledItems[index]?.focus({ preventScroll: true });
+      };
+
+      if (event.key === "ArrowDown") {
+        focusAt((currentIndex + 1) % enabledItems.length);
+      } else if (event.key === "ArrowUp") {
+        focusAt((currentIndex - 1 + enabledItems.length) % enabledItems.length);
+      } else if (event.key === "Home") {
+        focusAt(0);
+      } else if (event.key === "End") {
+        focusAt(enabledItems.length - 1);
       }
     };
 
@@ -282,6 +321,8 @@ export function showContextMenuFallback<T extends string>(
       menu.style.left = `${preferredLeft}px`;
       menu.style.top = `${preferredTop}px`;
       menu.dataset.level = String(level);
+      menu.setAttribute("role", "menu");
+      menu.setAttribute("aria-orientation", "vertical");
 
       const inner = document.createElement("div");
       inner.className =
@@ -314,6 +355,8 @@ export function showContextMenuFallback<T extends string>(
 
         const button = document.createElement("button");
         button.type = "button";
+        button.tabIndex = -1;
+        button.setAttribute("role", "menuitem");
         const isDisabled = item.disabled === true;
         button.disabled = isDisabled;
         const rowBase =
@@ -451,6 +494,11 @@ export function showContextMenuFallback<T extends string>(
 
       requestAnimationFrame(() => {
         clampMenuPosition(menu, preferredLeft, preferredTop);
+        if (level === 0) {
+          [...menu.querySelectorAll<HTMLButtonElement>("button")]
+            .find((button) => !button.disabled)
+            ?.focus({ preventScroll: true });
+        }
       });
     };
 

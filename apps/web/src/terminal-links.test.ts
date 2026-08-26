@@ -210,6 +210,15 @@ describe("resolvePathLinkTarget", () => {
     ).toBe("/Users/julius/project/src/main.ts:12");
   });
 
+  it("preserves the Windows cwd separator style for relative paths", () => {
+    expect(resolvePathLinkTarget("src/main.ts", "C:/Users/julius/project")).toBe(
+      "C:/Users/julius/project/src/main.ts",
+    );
+    expect(resolvePathLinkTarget("src/main.ts", String.raw`C:\Users\julius\project`)).toBe(
+      String.raw`C:\Users\julius\project\src\main.ts`,
+    );
+  });
+
   it("keeps Windows absolute paths with forward slashes unchanged", () => {
     expect(
       resolvePathLinkTarget("C:/Users/julius/project/src/main.ts:12", "C:\\Users\\julius\\project"),

@@ -35,7 +35,8 @@ class FakeElement {
   constructor(readonly tagName: string) {}
 
   get isConnected() {
-    let current: FakeElement | null = this;
+    if (this.tagName === "body") return true;
+    let current = this.parent;
     while (current?.parent) {
       current = current.parent;
     }
@@ -163,6 +164,12 @@ class FakeDocument {
     this.listeners.set(type, existing);
   }
 
+  dispatchEvent(event: FakeDomEvent) {
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      listener(event);
+    }
+  }
+
   removeEventListener(type: string, listener: FakeListener) {
     const existing = this.listeners.get(type);
     if (!existing) {
@@ -232,6 +239,37 @@ describe("showContextMenuFallback", () => {
     expect(separators[0]?.attributes.get("role")).toBe("separator");
     dismissContextMenu();
     await expect(selectionPromise).resolves.toBeNull();
+  });
+
+  it("uses menu roles and roving keyboard focus", async () => {
+    const selectionPromise = showContextMenuFallback([
+      { id: "rename", label: "Rename" },
+      { id: "archive", label: "Archive" },
+      { id: "delete", label: "Delete" },
+    ]);
+    const fakeDocument = document as unknown as FakeDocument;
+    const menu = fakeDocument
+      .querySelectorAll("div")
+      .find((element) => element.attributes.get("role") === "menu");
+    const renameButton = findButton("Rename");
+    const archiveButton = findButton("Archive");
+    const deleteButton = findButton("Delete");
+
+    expect(menu?.attributes.get("aria-orientation")).toBe("vertical");
+    expect(renameButton?.attributes.get("role")).toBe("menuitem");
+    expect(renameButton?.focused).toBe(true);
+
+    fakeDocument.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }));
+    expect(archiveButton?.focused).toBe(true);
+    fakeDocument.dispatchEvent(new KeyboardEvent("keydown", { key: "End" }));
+    expect(deleteButton?.focused).toBe(true);
+    fakeDocument.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
+    expect(renameButton?.focused).toBe(true);
+    fakeDocument.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp" }));
+    expect(deleteButton?.focused).toBe(true);
+
+    deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await expect(selectionPromise).resolves.toBe("delete");
   });
 
   it("resolves a clicked flat menu item", async () => {
