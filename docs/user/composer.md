@@ -37,8 +37,9 @@ picker and the readout follows.
 Click it to compare every configured account for that provider and see when each window resets.
 Pylon polls capacity on the provider-health interval, updates it as a running turn reports its
 limits, and keeps the last good reading through a failed check. The providers' usage endpoints are
-rate limited, so Pylon reads each account at most every few minutes; the readout dims and says how
-old it is once a reading has fallen behind, and only then offers **Refresh**.
+rate limited, so Pylon reads each account at most every few minutes — and every Pylon server on the
+machine shares that one reading, so running several does not multiply the requests. The readout
+dims and says how old it is once a reading has fallen behind, and only then offers **Refresh**.
 
 Prime Agent has no capacity of its own. A Prime thread shows the capacity of the backend the selected
 model runs on: your Claude accounts for an Anthropic model, your Codex account for an OpenAI Codex
