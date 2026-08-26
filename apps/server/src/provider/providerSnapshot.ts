@@ -6,6 +6,7 @@ import type {
   ServerProviderSkill,
   ServerProviderSlashCommand,
   ServerProviderModel,
+  ServerProviderBackend,
   ServerProviderState,
   ServerProviderUsageLimits,
 } from "@t3tools/contracts";
@@ -52,6 +53,8 @@ export interface ProviderProbeResult {
   readonly auth: ServerProviderAuth;
   readonly message?: string;
   readonly usageLimits?: ServerProviderUsageLimits;
+  /** Backends an agent provider signs in to on its own; see `ServerProviderBackend`. */
+  readonly backends?: ReadonlyArray<ServerProviderBackend>;
 }
 
 export interface ServerProviderPresentation {
@@ -266,6 +269,9 @@ export function buildServerProvider(input: {
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],
     ...(input.probe.usageLimits ? { usageLimits: input.probe.usageLimits } : {}),
+    ...(input.probe.backends && input.probe.backends.length > 0
+      ? { backends: [...input.probe.backends] }
+      : {}),
     ...(versionAdvisory ? { versionAdvisory } : {}),
   };
 }

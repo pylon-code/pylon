@@ -3,6 +3,7 @@ import {
   type PrimeAgentSettings,
   type ServerProvider,
   type ServerProviderModel,
+  type ServerProviderBackend,
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -353,10 +354,22 @@ export function reconcilePrimeAgentDaemonCatalogSnapshot(snapshot: ServerProvide
   };
 }
 
+/** Bounds the backend sign-in read; it may reach the usage endpoint once. */
+const BACKENDS_READ_TIMEOUT_MS = 10_000;
+
 export const checkPrimeAgentProviderStatus = Effect.fn("checkPrimeAgentProviderStatus")(function* (
   settings: PrimeAgentSettings,
   environment: NodeJS.ProcessEnv = process.env,
-  options?: { readonly discoverModels?: boolean },
+  options?: {
+    readonly discoverModels?: boolean;
+    /**
+     * What Prime is signed in to per backend, supplied by the driver with its
+     * filesystem and HTTP services already provided. Absent in tests and
+     * wherever the sign-in is not worth reading; the snapshot then carries no
+     * `backends` and clients treat capacity as assumed rather than verified.
+     */
+    readonly readBackends?: Effect.Effect<ReadonlyArray<ServerProviderBackend>>;
+  },
 ): Effect.fn.Return<ServerProviderDraft, never, ChildProcessSpawner.ChildProcessSpawner> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const models = primeAgentModelsFromSettings(settings.customModels);
@@ -480,6 +493,14 @@ ${versionOutput.stderr}`);
     }
   }
 
+  const backends = options?.readBackends
+    ? yield* options.readBackends.pipe(
+        Effect.timeoutOption(BACKENDS_READ_TIMEOUT_MS),
+        Effect.map(Option.getOrElse((): ReadonlyArray<ServerProviderBackend> => [])),
+        Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<ServerProviderBackend>)),
+      )
+    : [];
+
   return buildServerProvider({
     presentation: PRIME_AGENT_PRESENTATION,
     enabled: true,
@@ -499,6 +520,7 @@ ${versionOutput.stderr}`);
             : "unknown",
       },
       ...(discoveryMessage ? { message: discoveryMessage } : {}),
+      backends,
     },
   });
 });

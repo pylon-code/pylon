@@ -60,6 +60,13 @@ export const ServerProviderAuth = Schema.Struct({
   type: Schema.optional(TrimmedNonEmptyString),
   label: Schema.optional(TrimmedNonEmptyString),
   email: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * The provider's own account identity when one is readable — Codex's
+   * ChatGPT account id. Opaque; it exists so a client can tell whether two
+   * sign-ins share a subscription, such as a configured Codex instance and
+   * the Codex backend an agent brings its own credentials for.
+   */
+  accountId: Schema.optional(TrimmedNonEmptyString),
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 
@@ -125,6 +132,26 @@ export const ServerProviderUsageLimits = Schema.Struct({
   windows: Schema.Array(ServerProviderUsageWindow),
 });
 export type ServerProviderUsageLimits = typeof ServerProviderUsageLimits.Type;
+
+/**
+ * A backend an agent provider brings its own sign-in for.
+ *
+ * Prime Agent runs models on Anthropic or OpenAI Codex with credentials of its
+ * own rather than through a configured Pylon instance. Each entry records what
+ * the server could read about that sign-in: an account identity to match
+ * against a configured instance's `auth.accountId`, and a capacity reading
+ * taken with the backend's own credential when it was fresh enough to ask.
+ * Either may be absent; clients say "verified" only when one of them is not.
+ *
+ * `backend` is the agent's own name for the backend (`anthropic`,
+ * `openai-codex`), an open string for the same reason `usageLimits.source` is.
+ */
+export const ServerProviderBackend = Schema.Struct({
+  backend: TrimmedNonEmptyString,
+  accountId: Schema.optional(TrimmedNonEmptyString),
+  usageLimits: Schema.optional(ServerProviderUsageLimits),
+});
+export type ServerProviderBackend = typeof ServerProviderBackend.Type;
 
 /**
  * Availability of a configured provider instance from the runtime's POV.
@@ -259,6 +286,7 @@ export const ServerProvider = Schema.Struct({
   ),
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   usageLimits: Schema.optional(ServerProviderUsageLimits),
+  backends: Schema.optional(Schema.Array(ServerProviderBackend)),
   rateLimit: Schema.optional(ServerProviderRateLimit),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),

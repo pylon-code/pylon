@@ -247,6 +247,7 @@ function scopedWeeklyLabel(limit: Record<string, unknown>): string | undefined {
 export function usageLimitsFromClaudeOAuthResponse(
   payload: unknown,
   checkedAt: string,
+  source: string = "claudeOAuth",
 ): ServerProviderUsageLimits | undefined {
   const raw = asRecord(payload);
   if (!raw) return undefined;
@@ -278,7 +279,7 @@ export function usageLimitsFromClaudeOAuthResponse(
     }
   }
 
-  return windows.length > 0 ? { source: "claudeOAuth", checkedAt, windows } : undefined;
+  return windows.length > 0 ? { source, checkedAt, windows } : undefined;
 }
 
 /**
@@ -322,10 +323,98 @@ export interface ClaudeOAuthUsageRead {
 const NOT_READ: ClaudeOAuthUsageRead = { usageLimits: undefined };
 
 /**
- * Fetch usage for one configured instance, going through the machine-wide
- * shared reading first so several servers on one account read the endpoint
- * once per window between them. Every failure is a caller's cue to fall back
- * to the last retained reading rather than an error to propagate.
+ * One read of the usage endpoint with a token the caller already holds,
+ * going through the machine-wide shared reading first so several servers on
+ * one account read the endpoint once per window between them. Every failure
+ * is a caller's cue to fall back to the last retained reading rather than an
+ * error to propagate.
+ *
+ * Shared with the Prime Agent probe, which reads the same endpoint with the
+ * token Prime signed in with — a different credential, so a different
+ * `cacheKey`, but the same rules.
+ */
+export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(function* (input: {
+  readonly token: string;
+  /** Identifies the credential behind the token; see `sharedUsageReadKey`. */
+  readonly cacheKey: string;
+  readonly checkedAt: string;
+  /** Provenance stamped on a fresh reading. */
+  readonly source: string;
+  readonly sharedCacheDir?: string | undefined;
+}): Effect.fn.Return<
+  ClaudeOAuthUsageRead,
+  never,
+  FileSystem.FileSystem | HttpClient.HttpClient | Path.Path
+> {
+  const cacheDir = input.sharedCacheDir ?? (yield* resolveSharedUsageCacheDir);
+  const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+  const shared = decideSharedUsageRead(
+    yield* readSharedUsageEntry(cacheDir, input.cacheKey),
+    nowMs,
+  );
+  if (shared.kind === "fresh") {
+    return { usageLimits: shared.usageLimits, cacheForMs: shared.cacheForMs };
+  }
+  if (shared.kind === "throttled") {
+    return { usageLimits: undefined, cacheForMs: shared.cacheForMs };
+  }
+
+  if (!(yield* acquireSharedUsageLock(cacheDir, input.cacheKey, nowMs))) {
+    // Another server is reading this account right now; its answer lands in
+    // the shared file shortly. Serve what is there and check back soon.
+    const existing = yield* readSharedUsageEntry(cacheDir, input.cacheKey);
+    return { usageLimits: existing?.usageLimits, cacheForMs: SHARED_USAGE_BUSY_RETRY_MS };
+  }
+
+  return yield* Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const request = HttpClientRequest.get(OAUTH_USAGE_URL).pipe(
+      HttpClientRequest.setHeader("authorization", `Bearer ${input.token}`),
+      HttpClientRequest.setHeader("anthropic-beta", OAUTH_BETA_HEADER),
+      HttpClientRequest.setHeader("accept", "application/json"),
+    );
+    const response = yield* client.execute(request).pipe(
+      Effect.timeoutOption(OAUTH_USAGE_TIMEOUT_MS),
+      Effect.catchCause(() => Effect.succeed(Option.none())),
+    );
+    if (Option.isNone(response)) return NOT_READ;
+    if (response.value.status === 429) {
+      const throttledForMs = throttleDelayFromRetryAfter(
+        response.value.headers["retry-after"],
+        nowMs,
+      );
+      yield* writeSharedUsageEntry(cacheDir, input.cacheKey, {
+        version: 1,
+        readAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+        throttledUntil: DateTime.formatIso(DateTime.makeUnsafe(nowMs + throttledForMs)),
+      });
+      return { usageLimits: undefined, cacheForMs: throttledForMs };
+    }
+    if (response.value.status < 200 || response.value.status >= 300) return NOT_READ;
+
+    const payload = yield* response.value.json.pipe(
+      Effect.map(Option.some),
+      Effect.catchCause(() => Effect.succeed(Option.none<unknown>())),
+    );
+    if (Option.isNone(payload)) return NOT_READ;
+    const usageLimits = usageLimitsFromClaudeOAuthResponse(
+      payload.value,
+      input.checkedAt,
+      input.source,
+    );
+    if (!usageLimits) return NOT_READ;
+    yield* writeSharedUsageEntry(cacheDir, input.cacheKey, {
+      version: 1,
+      readAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+      usageLimits,
+    });
+    return { usageLimits, cacheForMs: SHARED_USAGE_READ_TTL_MS };
+  }).pipe(Effect.ensuring(releaseSharedUsageLock(cacheDir, input.cacheKey)));
+});
+
+/**
+ * Fetch usage for one configured Claude instance with the token Claude Code
+ * signed in with.
  */
 export const fetchClaudeOAuthUsage = Effect.fn("fetchClaudeOAuthUsage")(function* (
   config: Pick<ClaudeSettings, "homePath">,
@@ -341,64 +430,12 @@ export const fetchClaudeOAuthUsage = Effect.fn("fetchClaudeOAuthUsage")(function
 > {
   const token = yield* readClaudeAccessToken(config);
   if (!token) return NOT_READ;
-
   const { configDir } = yield* resolveClaudeCredentialConfigDir(config);
-  const cacheDir = options?.sharedCacheDir ?? (yield* resolveSharedUsageCacheDir);
-  const cacheKey = sharedUsageReadKey(["claude", configDir]);
-  const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-  const shared = decideSharedUsageRead(yield* readSharedUsageEntry(cacheDir, cacheKey), nowMs);
-  if (shared.kind === "fresh") {
-    return { usageLimits: shared.usageLimits, cacheForMs: shared.cacheForMs };
-  }
-  if (shared.kind === "throttled") {
-    return { usageLimits: undefined, cacheForMs: shared.cacheForMs };
-  }
-
-  if (!(yield* acquireSharedUsageLock(cacheDir, cacheKey, nowMs))) {
-    // Another server is reading this account right now; its answer lands in
-    // the shared file shortly. Serve what is there and check back soon.
-    const existing = yield* readSharedUsageEntry(cacheDir, cacheKey);
-    return { usageLimits: existing?.usageLimits, cacheForMs: SHARED_USAGE_BUSY_RETRY_MS };
-  }
-
-  return yield* Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient;
-    const request = HttpClientRequest.get(OAUTH_USAGE_URL).pipe(
-      HttpClientRequest.setHeader("authorization", `Bearer ${token}`),
-      HttpClientRequest.setHeader("anthropic-beta", OAUTH_BETA_HEADER),
-      HttpClientRequest.setHeader("accept", "application/json"),
-    );
-    const response = yield* client.execute(request).pipe(
-      Effect.timeoutOption(OAUTH_USAGE_TIMEOUT_MS),
-      Effect.catchCause(() => Effect.succeed(Option.none())),
-    );
-    if (Option.isNone(response)) return NOT_READ;
-    if (response.value.status === 429) {
-      const throttledForMs = throttleDelayFromRetryAfter(
-        response.value.headers["retry-after"],
-        nowMs,
-      );
-      yield* writeSharedUsageEntry(cacheDir, cacheKey, {
-        version: 1,
-        readAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
-        throttledUntil: DateTime.formatIso(DateTime.makeUnsafe(nowMs + throttledForMs)),
-      });
-      return { usageLimits: undefined, cacheForMs: throttledForMs };
-    }
-    if (response.value.status < 200 || response.value.status >= 300) return NOT_READ;
-
-    const payload = yield* response.value.json.pipe(
-      Effect.map(Option.some),
-      Effect.catchCause(() => Effect.succeed(Option.none<unknown>())),
-    );
-    if (Option.isNone(payload)) return NOT_READ;
-    const usageLimits = usageLimitsFromClaudeOAuthResponse(payload.value, checkedAt);
-    if (!usageLimits) return NOT_READ;
-    yield* writeSharedUsageEntry(cacheDir, cacheKey, {
-      version: 1,
-      readAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
-      usageLimits,
-    });
-    return { usageLimits, cacheForMs: SHARED_USAGE_READ_TTL_MS };
-  }).pipe(Effect.ensuring(releaseSharedUsageLock(cacheDir, cacheKey)));
+  return yield* fetchOAuthUsageWithToken({
+    token,
+    cacheKey: sharedUsageReadKey(["claude", configDir]),
+    checkedAt,
+    source: "claudeOAuth",
+    sharedCacheDir: options?.sharedCacheDir,
+  });
 });

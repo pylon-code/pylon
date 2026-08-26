@@ -33,7 +33,8 @@ const PRIVATE_ENTRY_NAMES = new Set(["auth.json", "models_cache.json"]);
 const SHADOW_LOCAL_ENTRY_NAMES = new Set(["log", "memories", "tmp"]);
 const REPLACEABLE_SHARED_RUNTIME_DIRECTORIES = new Set(["mcp-oauth-locks"]);
 
-function resolveHomePath(path: Path.Path, value: string | undefined): string {
+/** The Codex home a configured `homePath` denotes, or the CLI's own default. */
+export function resolveCodexSharedHomePath(path: Path.Path, value: string | undefined): string {
   return value && value.trim().length > 0
     ? resolveProviderHomePath(value)
     : path.resolve(path.join(NodeOS.homedir(), ".codex"));
@@ -43,7 +44,7 @@ export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(functi
   config: CodexSettings,
 ): Effect.fn.Return<CodexHomeLayout, never, Path.Path> {
   const path = yield* Path.Path;
-  const sharedHomePath = resolveHomePath(path, config.homePath);
+  const sharedHomePath = resolveCodexSharedHomePath(path, config.homePath);
   const shadowHomePath = config.shadowHomePath.trim();
   if (shadowHomePath.length === 0) {
     return {

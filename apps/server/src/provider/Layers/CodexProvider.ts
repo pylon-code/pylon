@@ -1,8 +1,10 @@
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -21,6 +23,7 @@ import type {
   ProviderOptionDescriptor,
   ServerProviderModel,
   ServerProviderSkill,
+  ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/contracts";
 
@@ -33,7 +36,18 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { resolveProviderHomePath } from "../../pathExpansion.ts";
+import { readCodexAccountId } from "../codexAccountIdentity.ts";
+import { resolveCodexSharedHomePath } from "../Drivers/CodexHomeLayout.ts";
 import { usageLimitsFromCodexRateLimits } from "../providerUsageLimits.ts";
+import {
+  acquireSharedUsageLock,
+  decideSharedUsageRead,
+  readSharedUsageEntry,
+  releaseSharedUsageLock,
+  resolveSharedUsageCacheDir,
+  sharedUsageReadKey,
+  writeSharedUsageEntry,
+} from "../sharedUsageReadCache.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
@@ -50,7 +64,12 @@ const CODEX_PRESENTATION = {
 
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
+  /** Windows read live from the app-server this probe. */
   readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
+  /** Windows served from the machine-wide shared reading instead of a live read. */
+  readonly sharedUsageLimits?: ServerProviderUsageLimits;
+  /** The ChatGPT account id from the home's `auth.json`, when readable. */
+  readonly accountId?: string;
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
@@ -319,6 +338,43 @@ export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
   };
 }
 
+/**
+ * Read Codex's rate-limit windows through the machine-wide shared reading,
+ * so several servers on one Codex home read the app-server — and through it
+ * OpenAI — once per window between them. The live read is only issued when
+ * no server has a fresh reading and this one wins the lock; a loser serves
+ * what is there. Mirrors `fetchOAuthUsageWithToken` for Claude.
+ */
+const readCodexRateLimitsShared = Effect.fn("readCodexRateLimitsShared")(function* (input: {
+  readonly sharedHomePath: string;
+  readonly read: Effect.Effect<CodexSchema.V2GetAccountRateLimitsResponse | undefined>;
+}): Effect.fn.Return<
+  Pick<CodexAppServerProviderSnapshot, "rateLimits" | "sharedUsageLimits">,
+  never,
+  FileSystem.FileSystem | Path.Path
+> {
+  const cacheDir = yield* resolveSharedUsageCacheDir;
+  const cacheKey = sharedUsageReadKey(["codex", input.sharedHomePath]);
+  const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+  const shared = decideSharedUsageRead(yield* readSharedUsageEntry(cacheDir, cacheKey), nowMs);
+  if (shared.kind === "fresh") return { sharedUsageLimits: shared.usageLimits };
+  if (shared.kind === "throttled") return {};
+  if (!(yield* acquireSharedUsageLock(cacheDir, cacheKey, nowMs))) {
+    const existing = yield* readSharedUsageEntry(cacheDir, cacheKey);
+    return existing?.usageLimits ? { sharedUsageLimits: existing.usageLimits } : {};
+  }
+  return yield* Effect.gen(function* () {
+    const rateLimits = yield* input.read;
+    if (!rateLimits) return {};
+    const readAt = DateTime.formatIso(DateTime.makeUnsafe(nowMs));
+    const usageLimits = usageLimitsFromCodexRateLimits(rateLimits, readAt);
+    if (usageLimits) {
+      yield* writeSharedUsageEntry(cacheDir, cacheKey, { version: 1, readAt, usageLimits });
+    }
+    return { rateLimits };
+  }).pipe(Effect.ensuring(releaseSharedUsageLock(cacheDir, cacheKey)));
+});
+
 const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(function* (input: {
   readonly binaryPath: string;
   readonly homePath?: string;
@@ -332,6 +388,10 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   // "CODEX_HOME points to '~/.codex_work', but that path does not exist".
   // Expand here for parity with `CodexTextGeneration`/`CodexSessionRuntime`.
   const resolvedHomePath = input.homePath ? resolveProviderHomePath(input.homePath) : undefined;
+  const path = yield* Path.Path;
+  // The home the CLI actually signs in from, for the account id and for the
+  // reading shared with every other server on this home.
+  const sharedHomePath = resolveCodexSharedHomePath(path, input.homePath);
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const environment = {
     ...input.environment,
@@ -395,31 +455,40 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models, rateLimits] = yield* Effect.all(
+  // The account id is read alongside the app-server requests rather than
+  // before the spawn: the probe's timeout is measured from its start, and a
+  // filesystem read ahead of the spawn would let it expire with nothing to
+  // close.
+  const [skillsResponse, models, rateLimitsRead, accountId] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
       accountResponse.account?.type === "chatgpt"
-        ? client
-            .request("account/rateLimits/read", undefined)
-            .pipe(
-              Effect.option,
-              Effect.timeoutOption(CODEX_RATE_LIMITS_PROBE_TIMEOUT),
-              Effect.map(Option.flatten),
-              Effect.map(Option.getOrUndefined),
-            )
-        : Effect.void.pipe(
-            Effect.as(undefined as CodexSchema.V2GetAccountRateLimitsResponse | undefined),
+        ? readCodexRateLimitsShared({
+            sharedHomePath,
+            read: client
+              .request("account/rateLimits/read", undefined)
+              .pipe(
+                Effect.option,
+                Effect.timeoutOption(CODEX_RATE_LIMITS_PROBE_TIMEOUT),
+                Effect.map(Option.flatten),
+                Effect.map(Option.getOrUndefined),
+              ),
+          })
+        : Effect.succeed<Pick<CodexAppServerProviderSnapshot, "rateLimits" | "sharedUsageLimits">>(
+            {},
           ),
+      readCodexAccountId(sharedHomePath),
     ],
     { concurrency: "unbounded" },
   );
 
   return {
     account: accountResponse,
-    ...(rateLimits ? { rateLimits } : {}),
+    ...rateLimitsRead,
+    ...(accountId ? { accountId } : {}),
     version,
     models: applyPreferredCodexDefaultModel(
       appendCustomCodexModels(models, input.customModels ?? []),
@@ -484,7 +553,10 @@ const makePendingCodexProvider = (
     });
   });
 
-function accountProbeStatus(account: CodexAppServerProviderSnapshot["account"]): {
+function accountProbeStatus(
+  account: CodexAppServerProviderSnapshot["account"],
+  accountId: string | undefined,
+): {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProvider["auth"];
   readonly message?: string;
@@ -496,6 +568,7 @@ function accountProbeStatus(account: CodexAppServerProviderSnapshot["account"]):
     ...(account.account?.type ? { type: account.account?.type } : {}),
     ...(authLabel ? { label: authLabel } : {}),
     ...(authEmail ? { email: authEmail } : {}),
+    ...(account.account && accountId ? { accountId } : {}),
   } satisfies ServerProvider["auth"];
 
   if (account.account) {
@@ -525,13 +598,13 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   }) => Effect.Effect<
     CodexAppServerProviderSnapshot,
     CodexErrors.CodexAppServerError,
-    ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+    ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path | Scope.Scope
   > = probeCodexAppServerProvider,
   environment?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<
   ServerProviderDraft,
   ServerSettingsError,
-  ChildProcessSpawner.ChildProcessSpawner
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
 > {
   const resolvedEnvironment = environment ?? process.env;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
@@ -606,10 +679,10 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   }
 
   const snapshot = probeResult.success.value;
-  const accountStatus = accountProbeStatus(snapshot.account);
+  const accountStatus = accountProbeStatus(snapshot.account, snapshot.accountId);
   const usageLimits = snapshot.rateLimits
     ? usageLimitsFromCodexRateLimits(snapshot.rateLimits, checkedAt)
-    : undefined;
+    : snapshot.sharedUsageLimits;
 
   return buildServerProvider({
     presentation: CODEX_PRESENTATION,

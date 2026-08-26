@@ -190,7 +190,17 @@ windows as `usedPercent` plus a reset time. Three mechanisms keep that gauge pre
   status probe, which runs at most once per refresh interval per server. Pushed updates cost
   nothing outbound, and a push that repeats the current number is folded in at most once a minute
   so a busy turn cannot republish the provider list per tool call. Clients only offer a manual
-  refresh once a reading is older than the shared window.
+  refresh once a reading is older than the shared window. Codex's rate-limit read shares the same
+  file under its own key, so several servers on one Codex home also read it once per window.
+- **Agents that sign in on their own.** Prime Agent runs models on Anthropic or OpenAI Codex with
+  credentials of its own, so its snapshot carries `backends`
+  ([`primeAgentBackends.ts`][prime-backends]): for OpenAI Codex the ChatGPT account id, which a
+  configured Codex instance also reports as `auth.accountId`
+  ([`codexAccountIdentity.ts`][codex-identity]); for Anthropic a capacity reading taken with Prime's
+  own token while it is fresh, under Prime's own shared-cache key. Clients show a Prime thread the
+  capacity Prime is verified to use — its own Anthropic reading, or the Codex instance whose account
+  id matches — and fall back to the configured accounts labelled as assumed only when neither can be
+  read.
 
 Windows are matched by duration, never by label: anything under a day is the session window,
 anything of a week or more is a weekly, and the first weekly is the account-wide one. That is what
@@ -254,3 +264,5 @@ when a request opens (approval) or user input is requested, via
 [rate-limit-events]: ../../apps/server/src/provider/providerRateLimitEvents.ts
 [usage-limits]: ../../apps/server/src/provider/providerUsageLimits.ts
 [shared-usage]: ../../apps/server/src/provider/sharedUsageReadCache.ts
+[prime-backends]: ../../apps/server/src/provider/primeAgentBackends.ts
+[codex-identity]: ../../apps/server/src/provider/codexAccountIdentity.ts
