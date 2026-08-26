@@ -260,7 +260,13 @@ export const ApiLive = Api.make(
         ),
     );
 
-    yield* Cloudflare.Workers.cron("*/5 * * * *", () =>
+    // Hourly, not every five minutes: Neon's Free plan suspends the compute
+    // after five idle minutes, so a five-minute sweep kept it awake around the
+    // clock (~180 CU-hours/month against a 100 CU-hour allowance). Nothing
+    // reads these rows on a schedule — DPoP replay is an insert conflict and
+    // terminal Live Activity rows stop rendering after
+    // TERMINAL_AGENT_ACTIVITY_DISPLAY_TTL_MS — so the sweep only reclaims space.
+    yield* Cloudflare.Workers.cron("0 * * * *", () =>
       DpopProofs.DpopProofReplay.pipe(
         Effect.flatMap((dpopProofs) => dpopProofs.pruneExpired),
         // Terminal thread rows are kept briefly so finished agents show as
