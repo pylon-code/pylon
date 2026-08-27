@@ -6,6 +6,7 @@ The Pylon fork keeps its logo sources as vectors:
 - `dev/app-icon.icon/Assets/text.svg`, `nightly/app-icon.icon/Assets/text.svg`, and `prod/app-icon.icon/Assets/text.svg` contain the monochrome Pylon mark.
 - The development and preview `background.svg` files preserve their channel-specific artwork behind the Pylon mark.
 - `apps/mobile/assets/widget/T3Mark.svg` is the template-rendered widget mark. Its legacy filename is retained because the native widget asset pipeline already references it.
+  It is also the source for the two generated Android renditions: `android-icon-mark.png`, which fills its canvas for the monochrome themed icon, and `android-icon-foreground.png`, which is inset into Android’s adaptive safe zone so the launcher mask cannot clip the mark.
 
 Run `vp run icons:export` from the repository root to regenerate the tracked mobile, desktop, web, and marketing assets. Run `vp run icons:check` to verify that those generated files match their sources without changing files.
 

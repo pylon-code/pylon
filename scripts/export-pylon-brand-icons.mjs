@@ -100,6 +100,30 @@ async function renderMacIcon(master) {
     .toBuffer();
 }
 
+// Android composites the adaptive foreground under a launcher mask, so on the
+// 432px (108dp @ 4x) canvas only the centred 66dp — a circle of radius 132px —
+// is guaranteed to survive. Rendering the rounded-hexagon mark at 368px puts
+// its farthest opaque pixel just inside that circle; raising this clips the
+// corners on circular launchers.
+const ANDROID_ADAPTIVE_CANVAS = 432;
+const ANDROID_ADAPTIVE_MARK = 368;
+
+async function renderAndroidAdaptiveForeground(mark) {
+  const body = await renderPng(mark, ANDROID_ADAPTIVE_MARK);
+  const inset = Math.round((ANDROID_ADAPTIVE_CANVAS - ANDROID_ADAPTIVE_MARK) / 2);
+  return sharp({
+    create: {
+      width: ANDROID_ADAPTIVE_CANVAS,
+      height: ANDROID_ADAPTIVE_CANVAS,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .composite([{ input: body, left: inset, top: inset }])
+    .png()
+    .toBuffer();
+}
+
 async function renderIco(master) {
   const renditions = await Promise.all(
     WINDOWS_ICON_SIZES.map(async (size) => ({ size, contents: await renderPng(master, size) })),
@@ -142,6 +166,13 @@ const androidMarkSvg = NodeFS.readFileSync(
 const androidMark = await sharp(Buffer.from(androidMarkSvg), { density: 300 }).png().toBuffer();
 outputs.set("apps/mobile/assets/android-icon-mark.png", await renderPng(androidMark, 432));
 outputs.set("apps/mobile/assets/android-notification-icon.png", await renderPng(androidMark, 96));
+// `android-icon-mark.png` fills its canvas, which is right for the monochrome
+// themed icon and wrong for the adaptive foreground: the launcher mask would
+// clip it. The adaptive foreground gets its own inset rendition.
+outputs.set(
+  "apps/mobile/assets/android-icon-foreground.png",
+  await renderAndroidAdaptiveForeground(androidMark),
+);
 
 outputs.set("apps/marketing/public/icon.png", productionMaster);
 outputs.set(
