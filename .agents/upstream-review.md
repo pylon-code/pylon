@@ -89,6 +89,60 @@ Validation:
   unprovable until the `preview:mac` label exists.
 - CI results are recorded on `#108`–`#111`.
 
+Adversarial review before merge:
+
+The developer asked for an adversarial pass on all four before anything landed.
+It found nine issues across three change sets; seven were fixed on their
+branches, two were examined and consciously declined. None of the confirmed
+defects were introduced by the Pylon adaptation — U3's and U4's came from
+upstream, and U2's were gaps in the seams the renumber created.
+
+- **U3 `8d1739684`.** Upstream's concurrency group collapses every tag push and
+  manual stable dispatch into one shared `release-stable` lane. Upstream had no
+  concurrency block at all before `#8250`, so for them that was serialization
+  from zero; Pylon has keyed stable runs off `run_id` since `8dd0d6e06` so they
+  never interact. With `cancel-in-progress: false`, the shared lane would queue
+  a P0 hotfix tag behind an in-flight release for its whole build matrix. Pylon
+  keeps `run_id` for stable and the shared group for nightlies only, which
+  preserves both properties. `check_changes` was also the only job in the file
+  without `timeout-minutes`; harmless while a fresh nightly cancelled a wedged
+  predecessor, not once nightlies queue. Declined: `relay_public_config` and
+  `build_wsl_node_pty` no longer skip on a failed preflight, which costs a
+  doomed run up to 30 minutes. That is the price of the parallelism and upstream
+  accepted it; `production` has `protection_rules: []`, so there is no approval
+  gate or secret exposure.
+- **U4 `9d112329e`.** Four ways to leave a wrong final state behind a green
+  check, all from one root cause: `set -e` does not fire for a command
+  substitution inside `[[ ]]`, so `preview_eligible` read a transient 502 as "PR
+  closed". Publish then silently skipped a 25-minute build, or deleted the asset
+  it had just uploaded while the PR was open and labeled; cleanup fell the other
+  way and deleted a live download. Cleanup also set `removed=true` before
+  touching the release, could not tell a missing release from a broken API, and
+  swallowed delete errors — a 502 left a public DMG downloadable forever while
+  the comment claimed it was gone, the one-way door `AGENTS.md` calls a bug.
+  Publish deleted before uploading despite sitting in the cancellable build
+  group. Unlabel-then-close could cancel the queued cleanup and leave a `closed`
+  run whose `if` required the label that had just been removed, stranding the
+  DMG. The PR-controlled DMG name is now pinned to a plain filename, which also
+  closes a Markdown link escape in the bot comment.
+- **U2 `7f80f5961`.** `047` was the only migration in the 042-046 run without a
+  sibling test, which is the guard this repo uses for exactly the failure a
+  hand-applied renumber creates: a colliding id makes `Migrator` skip the file,
+  the column never lands, and every thread read throws `no such column:
+unsettled_at`. `mergeEnvironmentThread` takes the shell as authoritative for
+  thread lifecycle but was not given `unsettledAt` alongside the six fields it
+  already copies, so a cached detail merged with a fresher shell produced an
+  active override with no stamp. Declined: a client-auto-settled thread that
+  wakes on activity still gets no stamp (upstream's documented limit, and
+  `docs/user/thread-sidebar.md` does not overstate it), and wake-from-snooze
+  orders differently from un-settle (a real asymmetry, but a snooze product
+  decision rather than part of this port).
+
+U1 was reviewed inline and is clean, with one residual risk recorded rather
+than fixed: `@clerk/electron` is exact-pinned in the catalog, but `@clerk/ui` is
+not a dependency at all — it is fetched from Clerk's CDN as `@clerk/ui@1`, so
+desktop now floats across every future 1.x with no lockfile entry to bisect.
+
 The deferred register was empty at the start of this review, so Phase 2.5 had
 nothing to re-evaluate. This batch opened no new entries and it remains empty.
 
