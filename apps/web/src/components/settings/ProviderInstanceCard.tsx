@@ -763,7 +763,7 @@ export function ProviderInstanceCard({
               <span className="truncate">{summary.headline}</span>
             </span>
             {enabled && liveProvider?.usageLimits ? (
-              <span className="mt-0.5 block">
+              <span className="mt-0.5 block min-w-0">
                 <ProviderUsageSummary usageLimits={liveProvider.usageLimits} />
               </span>
             ) : null}
