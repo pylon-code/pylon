@@ -366,6 +366,22 @@ interface PrimeAgentDaemonSessionContext {
   exitEmitted: boolean;
 }
 
+function observeNativeRunStarted(
+  context: PrimeAgentDaemonSessionContext,
+  turn: PrimeAgentDaemonActiveTurn | undefined,
+): void {
+  context.nativeRunActive = true;
+  context.inputQueueClearPending = false;
+  if (turn?.pendingRunCompletionHandoff !== undefined) {
+    turn.completedRunMessages.push(...turn.pendingRunCompletionHandoff.event.messages);
+    turn.pendingRunCompletionHandoff = undefined;
+  }
+  if (turn?.awaitingQueuedRun === true) {
+    turn.awaitingQueuedRun = false;
+    turn.queuedActionObserved = false;
+  }
+}
+
 interface PrimeAgentDaemonActiveSideQuestion {
   readonly requestId: ProviderSessionSideQuestionRequestId;
   readonly nativeId: string;
@@ -1737,6 +1753,12 @@ export function makePrimeAgentDaemonAdapter(
                     activeTurn !== undefined &&
                     pendingRunCompletionBefore === undefined &&
                     activeTurn.pendingRunCompletionHandoff !== undefined;
+                  if (
+                    !reconciled &&
+                    context.runtime.retryWorkerRecoverySnapshot(reconnectGeneration)
+                  ) {
+                    return;
+                  }
                   context.runtime.resolveReconnectSnapshot(
                     reconnectGeneration,
                     reconciled,
@@ -1807,6 +1829,11 @@ export function makePrimeAgentDaemonAdapter(
                 if (turn !== undefined) {
                   turn.queuedInputCount =
                     event.state.inputQueue.steeringCount + event.state.inputQueue.followUpCount;
+                  if (event.state.isStreaming) {
+                    // The continuation may have started while disconnected. Apply every
+                    // RunStarted invariant from this authoritative snapshot too.
+                    observeNativeRunStarted(context, turn);
+                  }
                   const authoritativeIdle =
                     turn.queuedInputCount === 0 &&
                     !event.state.inputQueue.activeAction &&
@@ -1827,13 +1854,6 @@ export function makePrimeAgentDaemonAdapter(
                         });
                         if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
                       }
-                    } else if (event.state.isStreaming) {
-                      // The continuation may have started while disconnected,
-                      // so the resync snapshot is an authoritative RunStarted.
-                      turn.completedRunMessages.push(
-                        ...turn.pendingRunCompletionHandoff.event.messages,
-                      );
-                      turn.pendingRunCompletionHandoff = undefined;
                     } else if (compactionWasActive && !event.state.isCompacting) {
                       // The compaction terminal event may have been lost while
                       // disconnected. Replace its consumed grace from the snapshot.
@@ -2437,11 +2457,7 @@ export function makePrimeAgentDaemonAdapter(
               context.managedPlanProjectionEnabled = false;
             }
             if (event._tag === "RunStarted") {
-              context.nativeRunActive = true;
-              if (turn?.pendingRunCompletionHandoff !== undefined) {
-                turn.completedRunMessages.push(...turn.pendingRunCompletionHandoff.event.messages);
-                turn.pendingRunCompletionHandoff = undefined;
-              }
+              observeNativeRunStarted(context, turn);
             } else if (event._tag === "MessageCompleted") {
               context.nativeTranscriptMessageCount += appendTranscriptMessages(
                 context.nativeTranscript,
@@ -2514,13 +2530,6 @@ export function makePrimeAgentDaemonAdapter(
               context.currentThinkingLevel = event.level;
             } else if (event._tag === "ServiceTierChanged") {
               context.currentServiceTier = event.serviceTier;
-            }
-            if (event._tag === "RunStarted") {
-              context.inputQueueClearPending = false;
-              if (turn?.awaitingQueuedRun === true) {
-                turn.awaitingQueuedRun = false;
-                turn.queuedActionObserved = false;
-              }
             }
             if (event._tag === "QueueChanged") {
               const queue = {
