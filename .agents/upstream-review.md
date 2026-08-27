@@ -20,12 +20,12 @@ overriding a recommended partial adoption on U3 (see below). `git cherry` found
 none already present. The deferred register was empty going in and remains
 empty.
 
-| ID  | Upstream              | Decision                | Pylon reference     | Notes                                                                                                                                                                                  |
-| --- | --------------------- | ----------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| U1  | `b0a028126` / `#8248` | adopted                 | `edd644865`, `#108` | Drops the pinned Clerk UI canary so desktop sign-in tracks stable `@clerk/ui@1` and receives the 1.30.7 OAuth transfer fixes. Clean cherry-pick.                                       |
-| U2  | `3b86ef941` / `#8231` | adopted with adaptation | `489fcdf99`, `#109` | `unsettledAt` re-entry stamp re-anchors the active-list sort, so an un-settled thread returns to the top. Upstream's migration `043` lands as Pylon's **`047`**.                       |
-| U3  | `a3a8cbd60` / `#8250` | adopted with adaptation | `5d8128446`, `#110` | Release CI: drops a duplicate web build, starts two jobs alongside preflight, moves the nightly cron off minute zero, and flips nightly concurrency from cancel to queue. Manual port. |
-| U4  | `33b650a5b` / `#8243` | adopted with adaptation | `6b1f96215`, `#111` | macOS preview DMGs publish to a rolling `desktop-preview` prerelease so headless machines can download without signing in. Runner labels adapted to GitHub-hosted.                     |
+| ID  | Upstream              | Decision                | Pylon reference                         | Notes                                                                                                                                                                                       |
+| --- | --------------------- | ----------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| U1  | `b0a028126` / `#8248` | adopted                 | `edd644865`, `#108`                     | Drops the pinned Clerk UI canary so desktop sign-in tracks stable `@clerk/ui@1` and receives the 1.30.7 OAuth transfer fixes. Clean cherry-pick.                                            |
+| U2  | `3b86ef941` / `#8231` | adopted with adaptation | `489fcdf99`, `#109`                     | `unsettledAt` re-entry stamp re-anchors the active-list sort, so an un-settled thread returns to the top. Upstream's migration `043` lands as Pylon's **`047`**.                            |
+| U3  | `a3a8cbd60` / `#8250` | adopted with adaptation | `5d8128446`, `#110`                     | Release CI: drops a duplicate web build, starts two jobs alongside preflight, moves the nightly cron off minute zero, and flips nightly concurrency from cancel to queue. Manual port.      |
+| U4  | `33b650a5b` / `#8243` | adopted, then reverted  | `6b1f96215`, `#111`; reverted by `#113` | macOS preview DMGs publish to a rolling `desktop-preview` prerelease so headless machines can download without signing in. Reverted the same day on cost/benefit, not on defect. See DEF-7. |
 
 **U2 renumbered its migration.** Pylon retired id 36 and renumbered 037–040, and
 already holds `043_ProjectionThreadSessionLifecycle` through
@@ -56,7 +56,24 @@ incident history and the runner migration stay recorded. Stable releases now
 serialize instead of running in parallel; `queue: max` keeps the 100 FIFO
 pending slots that make the original "never drop a real release" concern safe.
 
-**U4 is inert until a label exists.** `pylon-code/pylon` has no `preview:mac`
+**U4 was reverted the same day (`#113`).** The `preview:mac` label was created,
+and then the feature was weighed properly and undone. Nothing was wrong with the
+port; the premise does not hold for Pylon. Fork PRs are excluded by
+`head.repo.full_name == github.repository` on both the build and cleanup jobs,
+so external contributors — the people a login-free download most helps — cannot
+trigger it at all. `gh run download <run-id>` already retrieves artifacts
+headlessly with an authenticated CLI, which covers upstream's stated motivation,
+and Pylon Nightly already publishes builds every three hours for anything
+merged. That leaves one beneficiary: a maintainer testing an unmerged same-repo
+branch on a machine where a browser login is inconvenient. Against that sat 210
+lines of concurrency-sensitive YAML in which the pre-merge review found four
+silent-failure paths, a new `contents: write` token on a PR-triggered workflow,
+an unsigned binary hosted publicly under the org's name, and a Releases widget
+advertising it as the repository's only release. Unexercised machinery carrying
+a write token rots, so it was removed rather than left inert. Recorded as DEF-7
+rather than skipped outright, because the premise could change.
+
+**U4's original adoption note, kept for context.** `pylon-code/pylon` had no `preview:mac`
 label, so every run of this workflow to date has been `skipped` — before and
 after this change. The auto-updater is unaffected: Pylon publishes desktop
 releases and the update feed to `pylon-code/pylon-releases`, while the rolling
@@ -144,7 +161,7 @@ not a dependency at all — it is fetched from Clerk's CDN as `@clerk/ui@1`, so
 desktop now floats across every future 1.x with no lockfile entry to bisect.
 
 The deferred register was empty at the start of this review, so Phase 2.5 had
-nothing to re-evaluate. This batch opened no new entries and it remains empty.
+nothing to re-evaluate. This batch opened one entry, DEF-7, for the reverted U4.
 
 ## 2026-08-26 — `e67074f80933a27bd3cdc4e24f486358407690fb..860caaa6023a3aaf616a5899816c74c195ca8de2`
 
@@ -2696,13 +2713,13 @@ not granted.
 
 ## Deferred register
 
-_The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
+_DEF-1 and DEF-2 were adopted on 2026-08-11
 (see the sixth batch above). DEF-3 and DEF-4 were opened and closed on
 2026-08-18: the 2026-08-18 batch review found them, the batch shipped without
 them so the adoption stayed faithful, and `fix/pull-request-quota-followups`
 fixed both the same day. DEF-6 was opened 2026-08-21 and adopted the same
-day, once `#7725` reconciled the tests it was blocked on. The 2026-08-24 and
-2026-08-27 batches opened no new entries either. The 2026-08-23 batch
+day, once `#7725` reconciled the tests it was blocked on. The 2026-08-24 batch
+opened no new entries either; 2026-08-27 opened DEF-7. The 2026-08-23 batch
 opened no new entries and left it empty; it did retire the dead `U-4326`
 revisit condition recorded in the 2026-08-04 table, since that pull request
 closed unmerged. Entries are removed once adopted, skipped, or fixed._
@@ -2716,5 +2733,6 @@ Every review must read this register before reporting new candidates,
 re-evaluate each `Revisit when` against the current upstream head, and report
 the outcome. See Phase 2.5 of the `review-t3-upstream` skill.
 
-| ID  | Upstream | Deferred on | Revisit when | Why deferred |
-| --- | -------- | ----------- | ------------ | ------------ |
+| ID    | Upstream                                                      | Deferred on | Revisit when                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Why deferred                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----- | ------------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DEF-7 | `33b650a5b` / `#8243` — anonymous macOS preview DMG downloads | 2026-08-27  | Either premise changes. (a) Pylon decides to distribute unsigned preview builds publicly — an external tester programme, or a contributor who cannot use `gh run download`. (b) Upstream lifts the same-repo restriction or drops the `contents: write` publish job: check with `git log --oneline <cursor>..t3code-upstream/main -- .github/workflows/desktop-macos-preview.yml` and read any hit touching the `if:` guards or job permissions. Not before 2026-11-01 — neither premise moves on a weekly timescale, and this should not be re-litigated every review. | Adopted as `#111`, then reverted by `#113` the same day. The port was sound and its four review findings were fixed; the feature does not earn its cost here. Fork PRs cannot trigger it, `gh run download` covers the headless case, and Pylon Nightly covers merged builds — leaving one maintainer-only use against 210 lines of race-prone YAML, a `contents: write` token on a PR-triggered workflow, a publicly hosted unsigned binary, and a Releases widget on a repository that otherwise has none. If revived, start from `#111` plus the fixes in `9d112329e`, not from upstream. |
