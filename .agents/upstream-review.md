@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "33b650a5b3b27382b35d2182dec6b22438c3da56"
+reviewed-through: "f6f2be32d8bc072e87753e41ad77c7c67e8b0b95"
 reviewed-through-date: "2026-08-27"
 ---
 
@@ -12,6 +12,111 @@ This ledger is the durable handoff between upstream-review sessions. The `review
 Deferred decisions remain listed after the cursor advances so later sessions can revisit them without rediscovering the entire upstream range.
 
 ## Review batches
+
+## 2026-08-27 (second batch) — `33b650a5b3b27382b35d2182dec6b22438c3da56..f6f2be32d8bc072e87753e41ad77c7c67e8b0b95`
+
+Eight upstream commits formed eight change sets. The developer approved every
+recommendation as briefed: five adoptions and three skips. `git cherry` found
+none already present. DEF-7 was the only open register entry and stayed open;
+this batch opened none.
+
+| ID  | Upstream              | Decision                | Pylon reference     | Notes                                                                                                                                                                                               |
+| --- | --------------------- | ----------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| U1  | `f925d6394` / `#8346` | adopted                 | `280e9b57e`, `#117` | Schema generator pins `CollabAgentTool`, `CollabAgentToolCallStatus`, and `SubAgentActivityKind` so generated Codex namespaces accept Codex 0.150 multi-agent events. Clean cherry-pick.            |
+| U2  | `d3c24a14b`           | skipped                 | —                   | T3 v0.0.35 release metadata crosses product release boundaries and is superseded by Pylon's release workflow. Same rationale as the 2026-08-26 batch's U5.                                          |
+| U3  | `ead4ce52a` / `#8358` | adopted with adaptation | `bbd1267f3`, `#118` | Grok gains skill discovery, a reasoning control, plan mode, a turn liveness watchdog, and usage limits. Four conflicts resolved Pylon-first; Pylon's `acceptAlways` decision re-grafted. See below. |
+| U4  | `230c5d4a5` / `#5195` | adopted                 | `801082e38`, `#117` | Stale Codex approval callbacks are normalized instead of failing the turn. Fixed a live Pylon defect — see below.                                                                                   |
+| U5  | `64ca3b650` / `#8252` | adopted                 | `c0679cab4`, `#117` | Removes a `GitVcsDriverCore` test that a later case in the same file strictly subsumes. Duplication verified against Pylon rather than taken on upstream's word.                                    |
+| U6  | `a6797b3b9` / `#7538` | adopted                 | `faaf1758f`, `#117` | Projection bootstrap replays the whole un-applied backlog instead of one page. Fixed the most serious live Pylon defect in the batch — see below.                                                   |
+| U7  | `73f8cfc02` / `#8397` | skipped                 | —                   | Bot-authored deletion of eight test files. A fork keeps inherited tests as insurance; see below.                                                                                                    |
+| U8  | `f6f2be32d` / `#8400` | skipped                 | —                   | Bot-authored deletion of seven more test files plus three export narrowings. Same reasoning as U7.                                                                                                  |
+
+**U6 was a live Pylon defect, not a forward port.** `ProjectionPipeline.ts`
+called `eventStore.readFromSequence(from)` with no limit, and the implementation
+defaults `limit` to `DEFAULT_READ_FROM_SEQUENCE_LIMIT = 1_000`
+(`OrchestrationEventStore.ts`). Every projector therefore replayed at most 1,000
+un-applied events at startup and then stopped silently — no error, just a read
+model that comes up incomplete and stays wrong until new events arrive. Any
+environment with a backlog past 1,000 events for one projector hits it: a
+projector introduced by migration, a long-running install, a restore. The fix
+passes `Number.MAX_SAFE_INTEGER`, which is what `readAll` in the same file
+already did. Upstream's new test was confirmed to be real coverage: reverting the
+one-line change turns it red.
+
+**U4 was also live.** `CodexSessionRuntime.ts` emits
+`Unknown pending Codex approval request: …`, a string
+`isUnknownPendingApprovalRequestError` did not match. Its fallback branch was
+worse — it compared lowercase needles against un-lowercased `Cause.pretty(cause)`
+and so could never match any capitalized detail. A stale Codex approval surfaced
+as a hard turn failure rather than being normalized.
+
+**U3 would have silently reverted a Pylon decision.** Pylon's
+`ProviderApprovalDecision` union carries `acceptAlways` on top of upstream's four
+literals, added when `7c6163c67` landed, and every Pylon adapter treats it as at
+least session-wide (`acpPermissionOutcome`). Upstream rewrote
+`selectPermissionOptionId` into `selectGrokPermissionOptionId` knowing only the
+upstream literals, so two of its new paths skipped `acceptAlways`: the
+`allow_once` fallback for Grok builds that omit `allow_always`, and registration
+in `sessionApprovedOperations`. The first mattered most — returning `undefined`
+reaches the permission handler as outcome `"cancelled"`, so **Always allow**
+would have rejected the very call the user approved. Both were re-grafted in a
+separate commit so the port itself stays diffable against upstream, with a
+focused test.
+
+**U3's blast radius exceeds Grok.** `decideToolCallUpdateEmission` and the tool
+output bounding in `AcpRuntimeModel.ts` are shared by Cursor, Grok, and Pylon's
+own Prime Agent. Emission now also fires on status change and measures
+`content`/`rawOutput` length rather than only `detail`, trading somewhat more
+websocket traffic per in-progress tool call for live command output that
+previously stalled until the call completed. Cursor and Prime Agent suites were
+run for that reason. Pylon's own divergence in `AcpSessionRuntime.ts` — the
+`extendEnv`, optional `authMethodId`, `shouldDiscardSessionUpdate`, and
+`observeSessionUpdate` hooks that Prime Agent needs — sits in different regions
+of the file and auto-merged.
+
+**U3's branding conflicts.** `UsageService.ts`,
+`packages/contracts/src/usage.ts`, and `docs/user/install.md` each took
+upstream's substance (Grok transcript paths, the new Reasoning paragraph) in
+Pylon voice. `docs/user/permission-modes.md` auto-merged with Pylon's Prime Agent
+section intact. Seven further T3 references in comments and test names were
+rewritten. The `t3-*` ACP `clientInfo` identifiers were deliberately left alone:
+they are Pylon's established compatibility names across Cursor, Grok, and text
+generation, and AGENTS.md keeps compatibility identifiers out of branding work.
+
+**U7 and U8 are skipped because a fork cannot prune tests as freely as upstream
+can.** All fifteen files exist in Pylon byte-identical, so both would have picked
+cleanly; the question was judgment, not mechanics. Upstream owns both sides of
+every contract it tests and can drop a thin test knowing it will notice the
+breakage elsewhere. Pylon's inherited suite is precisely what tells a
+Pylon-side change that it broke a shared invariant. Three deletions land on
+ground Pylon owns deliberately: `mobileBranding.test.ts` pins the
+`development→Dev`, `preview→Nightly`, `production→Alpha` stage labels that mirror
+the `Pylon (Alpha)` / `Pylon (Nightly)` desktop identity; `themePreview.test.ts`
+asserts desktop preview geometry is stable _across clients_; and
+`threadSidebarWidth.test.ts` would go away whole — along with the
+`THREAD_SIDEBAR_DEFAULT_WIDTH` export — even though five of its six cases are
+real clamp and viewport logic rather than trivia. The cost of keeping all fifteen
+is roughly 350 lines and negligible runtime. A narrower subset of eight genuinely
+thin files was offered and not taken.
+
+`#117` merged as `e336f7e59` and `#118` as `78e58e848`. U3's Pylon-only
+`acceptAlways` graft is the separate commit `f8cd01e15` on `#118`.
+
+Validation:
+
+- U1/U4/U5/U6 (`#117`): 74 focused tests across `ProjectionPipeline`,
+  `ProviderCommandReactor`, and the generated Codex schema; 56 `GitVcsDriverCore`
+  tests after U5's deletion; `t3` and `effect-codex-app-server` typechecks pass
+  with 2/2 tasks actually run. U6's coverage was verified by reverting the fix and
+  watching the new test fail.
+- U3 (`#118`): 86 Grok/skills/ACP-support/xAI tests pass with 5 opt-in real-CLI
+  skips; 104 shared-ACP, Cursor-probe, and usage tests pass with 3 skips; 250
+  Prime Agent daemon and Cursor adapter tests pass; typechecks pass for `t3`,
+  `@t3tools/web`, `@t3tools/contracts`, `@t3tools/shared` (4/4 tasks run) and
+  `@t3tools/mobile` (0 errors); lint clean across all 31 changed files.
+- Not run: upstream's opt-in real-Grok CLI verification, which needs xAI
+  credentials. U3's turn watchdog and rate-limit mapping rest on tests and the
+  mock ACP agent, not a live Grok session.
 
 ## 2026-08-27 — `860caaa6023a3aaf616a5899816c74c195ca8de2..33b650a5b3b27382b35d2182dec6b22438c3da56`
 
@@ -2719,7 +2824,8 @@ _DEF-1 and DEF-2 were adopted on 2026-08-11
 them so the adoption stayed faithful, and `fix/pull-request-quota-followups`
 fixed both the same day. DEF-6 was opened 2026-08-21 and adopted the same
 day, once `#7725` reconciled the tests it was blocked on. The 2026-08-24 batch
-opened no new entries either; 2026-08-27 opened DEF-7. The 2026-08-23 batch
+opened no new entries either; 2026-08-27 opened DEF-7, which the second 2026-08-27 batch re-checked and left
+open. The 2026-08-23 batch
 opened no new entries and left it empty; it did retire the dead `U-4326`
 revisit condition recorded in the 2026-08-04 table, since that pull request
 closed unmerged. Entries are removed once adopted, skipped, or fixed._
