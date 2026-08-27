@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -1442,27 +1443,28 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             const registry = yield* ProviderRegistry.ProviderRegistry;
             const weekly = (providers: ReadonlyArray<ServerProvider>) =>
               providers[0]?.backends?.[0]?.usageLimits?.windows[0]?.usedPercent;
-            const settled = (expectedPercent: number, expectedCheckedAt?: string) =>
+            const nextMatchingChange = (expectedPercent: number, expectedCheckedAt?: string) =>
               Effect.gen(function* () {
-                let providers = yield* registry.getProviders;
-                for (let attempt = 0; attempt < 50; attempt += 1) {
-                  if (
-                    weekly(providers) === expectedPercent &&
-                    (expectedCheckedAt === undefined ||
-                      providers[0]?.checkedAt === expectedCheckedAt)
-                  ) {
-                    return providers;
-                  }
-                  yield* Effect.yieldNow;
-                  providers = yield* registry.getProviders;
-                }
-                return providers;
+                const next = yield* registry.streamChanges.pipe(
+                  Stream.filter(
+                    (providers) =>
+                      weekly(providers) === expectedPercent &&
+                      (expectedCheckedAt === undefined ||
+                        providers[0]?.checkedAt === expectedCheckedAt),
+                  ),
+                  Stream.runHead,
+                  Effect.map(Option.getOrThrow),
+                  Effect.forkChild,
+                );
+                yield* Effect.yieldNow;
+                return next;
               });
 
             // Two turns back to back cost one read.
+            const firstCapacity = yield* nextMatchingChange(41);
             yield* registry.refreshProviderCapacity(primeInstanceId);
             yield* registry.refreshProviderCapacity(primeInstanceId);
-            assert.strictEqual(weekly(yield* settled(41)), 41);
+            assert.strictEqual(weekly(yield* Fiber.join(firstCapacity)), 41);
             assert.strictEqual(yield* Ref.get(reads), 1);
 
             // Inside the floor a further turn still costs nothing.
@@ -1473,8 +1475,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
 
             // Past it, the next turn reads again and the newer number lands.
             yield* TestClock.adjust("31 seconds");
+            const secondCapacity = yield* nextMatchingChange(42);
             yield* registry.refreshProviderCapacity(primeInstanceId);
-            assert.strictEqual(weekly(yield* settled(42)), 42);
+            assert.strictEqual(weekly(yield* Fiber.join(secondCapacity)), 42);
             assert.strictEqual(yield* Ref.get(reads), 2);
 
             const periodicCheckedAt = DateTime.formatIso(yield* DateTime.now);
@@ -1494,12 +1497,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 },
               ],
             });
+            const periodicChange = yield* nextMatchingChange(42, periodicCheckedAt);
             yield* PubSub.publish(changes, {
               ...initialProvider,
               checkedAt: periodicCheckedAt,
               backends: olderSharedBackends,
             });
-            const afterPeriodic = yield* settled(42, periodicCheckedAt);
+            const afterPeriodic = yield* Fiber.join(periodicChange);
             assert.strictEqual(weekly(afterPeriodic), 42);
 
             // Anthropic has no account id on the wire. Its token fingerprint
@@ -1520,12 +1524,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 },
               ],
             });
+            const changedAccount = yield* nextMatchingChange(7);
             yield* PubSub.publish(changes, {
               ...initialProvider,
               checkedAt: periodicCheckedAt,
               backends: changedAccountBackends,
             });
-            assert.strictEqual(weekly(yield* settled(7)), 7);
+            assert.strictEqual(weekly(yield* Fiber.join(changedAccount)), 7);
 
             // An instance with nothing to read, or none at all, is a no-op.
             yield* registry.refreshProviderCapacity(ProviderInstanceId.make("codex_missing"));
