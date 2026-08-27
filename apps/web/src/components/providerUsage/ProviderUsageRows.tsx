@@ -110,8 +110,10 @@ export function ProviderUsageSummary(props: { readonly usageLimits: ServerProvid
     label: window.label,
     usedPercent: Math.max(0, Math.min(100, Math.round(window.usedPercent))),
   }));
+  // A span, not a paragraph: the provider list renders this inside the row's
+  // select button, and a <p> there is invalid DOM nesting.
   return (
-    <p className="min-w-0 text-[11px] text-muted-foreground/80">
+    <span className="block min-w-0 text-[11px] text-muted-foreground/80">
       {summaryItems.map((item, index) => (
         <span key={item.key} className="whitespace-nowrap">
           {index > 0 ? <span className="mx-1.5 text-muted-foreground/40">·</span> : null}
@@ -120,6 +122,6 @@ export function ProviderUsageSummary(props: { readonly usageLimits: ServerProvid
         </span>
       ))}
       <span className="text-muted-foreground/60"> used</span>
-    </p>
+    </span>
   );
 }
