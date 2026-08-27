@@ -11,7 +11,9 @@ on:
     # active days rebuild at most eight times. Runner minutes are free on this
     # public repository, which is why the once-a-day throttle from 61ba5899e
     # is gone; dispatch manually when a build is needed sooner than three hours.
-    - cron: "0 */3 * * *"
+    # Minute 7 rather than 0: GitHub delays scheduled runs most at the top of
+    # the hour, where upstream measured a 13-minute median start delay.
+    - cron: "7 */3 * * *"
   workflow_dispatch:
     inputs:
       channel:
@@ -27,16 +29,25 @@ on:
         required: false
         type: string
 
-# A self-hosted capacity outage does not cancel queued jobs; GitHub kills them
-# at its own 24h queue cap. With no group here, the nightlies from 2026-08-03
-# to 08-06 stacked up 23 deep and sat ~480 VM-hours waiting for runners that
-# never arrived. Nightlies now share one group so a fresh run supersedes a
-# stuck predecessor. Tag releases and manual dispatches key off run_id, so they
-# are always unique and never cancel one another: losing a real release to a
-# scheduling race is far worse than paying for a duplicate build.
+# Nightlies (scheduled and manually dispatched) share one group so overlapping
+# runs cannot build the same commit twice or publish out of order. Stable tag
+# releases get their own group, so a nightly never blocks a real release.
+#
+# Nothing is cancelled mid-flight. `publish_cli` pushes to npm before `release`
+# creates the GitHub release, and a cancel in that window strands a published
+# CLI version with no matching desktop build — and npm will not take that
+# version number again. `queue: max` keeps every pending run instead of the
+# default newest-wins single slot, so a queued stable tag can never be silently
+# dropped; queued nightlies with no new commits skip via check_changes.
+#
+# This supersedes the cancel-on-schedule policy from 8dd0d6e06, which existed
+# because a Blacksmith capacity outage let 23 nightlies stack up ~480 VM-hours
+# deep waiting for runners that never arrived. 124630c3f moved every workflow
+# onto GitHub-hosted runners, so that queue no longer forms.
 concurrency:
-  group: release-${{ github.event_name == 'schedule' && 'nightly' || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'schedule' }}
+  group: release-${{ (github.event_name == 'schedule' || inputs.channel == 'nightly') && 'nightly' || 'stable' }}
+  cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
@@ -227,8 +238,14 @@ jobs:
 
   relay_public_config:
     name: Resolve T3 Connect public config
-    needs: preflight
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
+    # Consumes only the commit SHA, never preflight's resolved version, so it
+    # runs alongside preflight instead of waiting on it. The condition mirrors
+    # preflight's own: check_changes is skipped on non-schedule events, and a
+    # skipped job is neither failure nor success, so success() would be wrong.
+    needs: [check_changes]
+    if: |
+      !failure() && !cancelled() &&
+      (github.event_name != 'schedule' || needs.check_changes.outputs.has_changes == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment:
@@ -250,7 +267,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.preflight.outputs.ref }}
+          ref: ${{ github.sha }}
           sparse-checkout: |
             /*
             !/.repos/
@@ -352,15 +369,19 @@ jobs:
   # machine. node-pty is N-API, so one binary works across all WSL Node versions.
   build_wsl_node_pty:
     name: Build WSL node-pty (linux-x64)
-    needs: [preflight]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
+    # Same gating as relay_public_config: only the commit SHA is needed here,
+    # so this runs alongside preflight. See the condition comment there.
+    needs: [check_changes]
+    if: |
+      !failure() && !cancelled() &&
+      (github.event_name != 'schedule' || needs.check_changes.outputs.has_changes == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.preflight.outputs.ref }}
+          ref: ${{ github.sha }}
           sparse-checkout: |
             /*
             !/.repos/
@@ -888,9 +909,8 @@ jobs:
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
-      - name: Build web package
-        run: vp run --filter @t3tools/web build
-
+      # The t3 build task depends on @t3tools/web#build, so the web client is
+      # built (once) as part of this step.
       - name: Build CLI package
         run: vp run --filter t3 build
 
