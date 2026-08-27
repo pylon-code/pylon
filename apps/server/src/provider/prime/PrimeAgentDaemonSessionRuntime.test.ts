@@ -3123,6 +3123,616 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect("recovers a raw worker close and retries one rejected explicit snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let snapshotReads = 0;
+        const acceptedTerminalMessage = terminalAssistantMessage("accepted worker response", 2);
+        let reportPromptStarted!: () => void;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        let reportFirstRecoverySnapshot!: () => void;
+        const firstRecoverySnapshot = new Promise<void>((resolve) => {
+          reportFirstRecoverySnapshot = resolve;
+        });
+        let reportSecondRecoverySnapshot!: () => void;
+        const secondRecoverySnapshot = new Promise<void>((resolve) => {
+          reportSecondRecoverySnapshot = resolve;
+        });
+        const test = fixture({
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            if (snapshotReads === 1) return snapshot(5);
+            if (snapshotReads === 2) reportFirstRecoverySnapshot();
+            if (snapshotReads === 3) reportSecondRecoverySnapshot();
+            const sequence = snapshotReads === 2 ? 10 : 6;
+            const accepted = snapshotReads === 3;
+            return {
+              ...snapshot(sequence),
+              state: {
+                ...snapshot(sequence).state,
+                activeSessionId: "active-secret-1",
+                isStreaming: !accepted,
+                messageCount: accepted ? 1 : 0,
+              },
+              messages: accepted ? [acceptedTerminalMessage] : [],
+            };
+          },
+          promptAndWaitImpl: () =>
+            new Promise<void>(() => {
+              reportPromptStarted();
+            }),
+          listResponses: [
+            workerListResponse("recovering"),
+            workerListResponse("ready"),
+            workerListResponse("ready"),
+          ],
+        });
+        const mcpServer = {
+          ownerId: "pylon:provider-session-worker-recovery",
+          server: {
+            name: "t3-code",
+            type: "http" as const,
+            url: "http://127.0.0.1:4321/mcp/provider-session-worker-recovery",
+            headers: { Authorization: "Bearer scoped-secret" },
+          },
+        };
+        const runtime = yield* test.make(undefined, undefined, undefined, undefined, mcpServer);
+        const collecting = yield* collectEvents(runtime, 4).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        const closing = yield* Effect.promise(() =>
+          test.emit({ type: "closed", error: "Daemon worker client closed" }),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+
+        yield* TestClock.adjust(250);
+        yield* Effect.promise(() => firstRecoverySnapshot);
+        let retryRequested = false;
+        for (let attempt = 0; attempt < 10 && !retryRequested; attempt += 1) {
+          yield* Effect.yieldNow;
+          retryRequested = runtime.retryWorkerRecoverySnapshot(0);
+        }
+        expect(retryRequested).toBe(true);
+
+        yield* TestClock.adjust(100);
+        yield* Effect.promise(() => secondRecoverySnapshot);
+        const events = yield* Fiber.join(collecting);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            event: { type: "message_end", message: acceptedTerminalMessage },
+          }),
+        );
+        let snapshotResolved = false;
+        for (let attempt = 0; attempt < 10 && !snapshotResolved; attempt += 1) {
+          yield* Effect.yieldNow;
+          snapshotResolved = runtime.resolveReconnectSnapshot(0, true, true);
+        }
+        expect(snapshotResolved).toBe(true);
+        yield* Fiber.join(closing);
+
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "RunStarted",
+          "SessionResynced",
+          "SessionResynced",
+        ]);
+        expect(events.some((event) => event._tag === "SessionClosed")).toBe(false);
+        expect(test.captures.order.filter((entry) => entry === "snapshot")).toHaveLength(3);
+        expect(test.captures.commands.filter((command) => command.type === "list")).toHaveLength(3);
+
+        yield* runtime.waitForRlmQuiescence("turn-worker-overlap:1", activeSignal());
+        const prompting = yield* runtime
+          .prompt({ text: "prompt after overlapping callback" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(7),
+              state: { ...snapshot(7).state, messageCount: 2 },
+              messages: [
+                acceptedTerminalMessage,
+                { role: "user", content: "prompt after overlapping callback", timestamp: 3 },
+              ],
+              replay: {
+                status: "complete",
+                toSequence: 7,
+                toCursor: { generation: "daemon-1", sequence: 7 },
+              },
+            },
+          }),
+        );
+        let reconnectResolved = false;
+        for (let attempt = 0; attempt < 10 && !reconnectResolved; attempt += 1) {
+          yield* Effect.yieldNow;
+          reconnectResolved = runtime.resolveReconnectSnapshot(1, true);
+        }
+        expect(reconnectResolved).toBe(true);
+        yield* Fiber.join(prompting);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "replaceAcpMcpServers"),
+        ).toHaveLength(3);
+      }),
+    ),
+  );
+
+  it.effect("emits one terminal close when raw worker MCP recovery fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let snapshotReads = 0;
+        let mcpReplacements = 0;
+        const test = fixture({
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            if (snapshotReads === 1) return snapshot(5);
+            return {
+              ...snapshot(6),
+              state: {
+                ...snapshot(6).state,
+                activeSessionId: "active-secret-1",
+                isStreaming: true,
+              },
+            };
+          },
+          replaceMcpImpl: () => {
+            mcpReplacements += 1;
+            return mcpReplacements === 1
+              ? Promise.resolve(undefined)
+              : Promise.reject(new Error("replacement MCP failed"));
+          },
+          listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+        });
+        const mcpServer = {
+          ownerId: "pylon:provider-session-worker-recovery-failure",
+          server: {
+            name: "t3-code",
+            type: "http" as const,
+            url: "http://127.0.0.1:4321/mcp/provider-session-worker-recovery-failure",
+            headers: { Authorization: "Bearer scoped-secret" },
+          },
+        };
+        const runtime = yield* test.make(undefined, undefined, undefined, undefined, mcpServer);
+        const collecting = yield* collectEvents(runtime, 3).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        const closing = yield* Effect.promise(() =>
+          test.emit({ type: "closed", error: "Daemon worker client closed" }),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+
+        yield* TestClock.adjust(250);
+        yield* Fiber.join(closing);
+        const events = yield* Fiber.join(collecting);
+
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "RunStarted",
+          "SessionClosed",
+        ]);
+        expect(events[2]).toMatchObject({
+          _tag: "SessionClosed",
+          error:
+            "Pylon browser tools could not be restored after the Prime Agent daemon reconnected.",
+        });
+        expect(mcpReplacements).toBe(2);
+      }),
+    ),
+  );
+
+  it.effect("emits one terminal close when raw worker managed recovery fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const expected = {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        };
+        const resources = {
+          extensions: [{ path: expected.path }],
+          diagnostics: { extensions: [] },
+        };
+        let snapshotReads = 0;
+        let reportFirstList!: () => void;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        const test = fixture({
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            return snapshotReads === 1
+              ? { ...snapshot(5), children: [] }
+              : { ...snapshot(6), children: [] };
+          },
+          resourceSnapshot: resources,
+          listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+          listRequestObserved: () => reportFirstList(),
+        });
+        const runtime = yield* test.make(undefined, [expected.path], expected);
+        const collecting = yield* collectEvents(runtime, 4).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        const closing = yield* Effect.promise(() =>
+          test.emit({ type: "closed", error: "Daemon worker client closed" }),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+
+        yield* Effect.promise(() => firstList);
+        resources.extensions = [];
+        yield* TestClock.adjust(250);
+        yield* Fiber.join(closing);
+        const events = yield* Fiber.join(collecting);
+
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "RunStarted",
+          "ConnectionStatus",
+          "SessionClosed",
+        ]);
+        expect(events.filter((event) => event._tag === "SessionClosed")).toHaveLength(1);
+        expect(events[3]).toMatchObject({
+          _tag: "SessionClosed",
+          error:
+            "Pylon's managed provider extension could not be verified after Prime Agent reconnected.",
+        });
+      }),
+    ),
+  );
+
+  it.effect("commits prompt admission only from the accepted worker snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let reportPromptStarted!: () => void;
+        const promptStarted = new Promise<void>((resolve) => {
+          reportPromptStarted = resolve;
+        });
+        let snapshotReads = 0;
+        let reportFirstRecoverySnapshot!: () => void;
+        const firstRecoverySnapshot = new Promise<void>((resolve) => {
+          reportFirstRecoverySnapshot = resolve;
+        });
+        let reportSecondRecoverySnapshot!: () => void;
+        const secondRecoverySnapshot = new Promise<void>((resolve) => {
+          reportSecondRecoverySnapshot = resolve;
+        });
+        const recoveredPromptSnapshot = (sequence: number, text: string) => ({
+          ...snapshot(sequence),
+          state: {
+            ...snapshot(sequence).state,
+            activeSessionId: "active-secret-1",
+            isStreaming: true,
+            messageCount: 1,
+          },
+          messages: [{ role: "user", content: text, timestamp: 1 }],
+        });
+        const test = fixture({
+          promptAndWaitImpl: () =>
+            new Promise<void>(() => {
+              reportPromptStarted();
+            }),
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            if (snapshotReads === 1) return snapshot(5);
+            if (snapshotReads === 2) {
+              reportFirstRecoverySnapshot();
+              return recoveredPromptSnapshot(10, "different rejected prompt");
+            }
+            reportSecondRecoverySnapshot();
+            return recoveredPromptSnapshot(6, "accepted recovered prompt");
+          },
+          listResponses: [
+            workerListResponse("recovering"),
+            workerListResponse("ready"),
+            workerListResponse("ready"),
+          ],
+        });
+        const runtime = yield* test.make();
+        const prompting = yield* runtime
+          .prompt({ text: "accepted recovered prompt" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => promptStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        const closing = yield* Effect.promise(() =>
+          test.emit({ type: "closed", error: "Daemon worker client closed" }),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+
+        yield* TestClock.adjust(250);
+        yield* Effect.promise(() => firstRecoverySnapshot);
+        let retryRequested = false;
+        for (let attempt = 0; attempt < 10 && !retryRequested; attempt += 1) {
+          yield* Effect.yieldNow;
+          retryRequested = runtime.retryWorkerRecoverySnapshot(0);
+        }
+        expect(retryRequested).toBe(true);
+
+        yield* TestClock.adjust(100);
+        yield* Effect.promise(() => secondRecoverySnapshot);
+        let snapshotResolved = false;
+        for (let attempt = 0; attempt < 10 && !snapshotResolved; attempt += 1) {
+          yield* Effect.yieldNow;
+          snapshotResolved = runtime.resolveReconnectSnapshot(0, true);
+        }
+        expect(snapshotResolved).toBe(true);
+        yield* Fiber.join(closing);
+        yield* Fiber.join(prompting);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("requires recovered terminal proof when an in-flight barrier completes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let reportWaitStarted!: () => void;
+        const waitStarted = new Promise<void>((resolve) => {
+          reportWaitStarted = resolve;
+        });
+        let releaseWait!: () => void;
+        const heldWait = new Promise<unknown>((resolve) => {
+          releaseWait = () => resolve({ result: "completed" });
+        });
+        let snapshotReads = 0;
+        let reportRecoverySnapshot!: () => void;
+        const recoverySnapshot = new Promise<void>((resolve) => {
+          reportRecoverySnapshot = resolve;
+        });
+        const test = fixture({
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            if (snapshotReads === 1) return snapshot(5);
+            reportRecoverySnapshot();
+            return {
+              ...snapshot(6),
+              state: {
+                ...snapshot(6).state,
+                activeSessionId: "active-secret-1",
+              },
+            };
+          },
+          listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+          waitForHeadlessCompletionImpl: () => {
+            reportWaitStarted();
+            return heldWait;
+          },
+        });
+        const runtime = yield* test.make();
+        const collecting = yield* collectEvents(runtime, 5).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_end", messages: [] } }),
+        );
+        const waiting = yield* runtime
+          .waitForRlmQuiescence("turn-worker-close-completed-race:1", activeSignal())
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => waitStarted);
+        const closing = yield* Effect.promise(() =>
+          test.emit({ type: "closed", error: "Daemon worker client closed" }),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+
+        yield* TestClock.adjust(250);
+        yield* Effect.promise(() => recoverySnapshot);
+        let snapshotResolved = false;
+        for (let attempt = 0; attempt < 10 && !snapshotResolved; attempt += 1) {
+          yield* Effect.yieldNow;
+          snapshotResolved = runtime.resolveReconnectSnapshot(0, true, false);
+        }
+        expect(snapshotResolved).toBe(true);
+        releaseWait();
+        yield* Fiber.join(closing);
+        const error = yield* Fiber.join(waiting);
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent could not confirm descendant quiescence.",
+        });
+
+        yield* Effect.promise(() =>
+          test.emit({ type: "closed", error: "later genuine terminal close" }),
+        );
+        const events = yield* Fiber.join(collecting);
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "RunStarted",
+          "RunCompleted",
+          "SessionResynced",
+          "SessionClosed",
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("singleflights a raw close with concurrent barrier recovery", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let releaseFirstList!: () => void;
+        const heldFirstList = new Promise<unknown>((resolve) => {
+          releaseFirstList = () => resolve(workerListResponse("recovering"));
+        });
+        let listReads = 0;
+        let reportFirstList!: () => void;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        let reportSecondList!: () => void;
+        const secondList = new Promise<void>((resolve) => {
+          reportSecondList = resolve;
+        });
+        let waitAttempts = 0;
+        let reportFirstWait!: () => void;
+        const firstWait = new Promise<void>((resolve) => {
+          reportFirstWait = resolve;
+        });
+        let snapshotReads = 0;
+        let reportRecoverySnapshot!: () => void;
+        const recoverySnapshot = new Promise<void>((resolve) => {
+          reportRecoverySnapshot = resolve;
+        });
+        const test = fixture({
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            if (snapshotReads === 1) return snapshot(5);
+            reportRecoverySnapshot();
+            return {
+              ...snapshot(6),
+              state: {
+                ...snapshot(6).state,
+                activeSessionId: "active-secret-1",
+                messageCount: 1,
+              },
+              messages: [terminalAssistantMessage()],
+            };
+          },
+          listResponses: [
+            heldFirstList,
+            workerListResponse("recovering"),
+            workerListResponse("ready"),
+          ],
+          listRequestObserved: () => {
+            listReads += 1;
+            if (listReads === 1) reportFirstList();
+            if (listReads === 2) reportSecondList();
+          },
+          waitForHeadlessCompletionImpl: () => {
+            waitAttempts += 1;
+            reportFirstWait();
+            return waitAttempts === 1
+              ? Promise.reject(new Error("Session worker is recovering"))
+              : Promise.resolve({ result: "completed" });
+          },
+        });
+        const runtime = yield* test.make();
+        const collecting = yield* collectEvents(runtime, 6).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_end", messages: [] } }),
+        );
+        const closing = yield* Effect.promise(() =>
+          test.emit({ type: "closed", error: "Daemon worker client closed" }),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstList);
+        const duplicateClosing = yield* Effect.promise(() =>
+          test.emit({ type: "closed", error: "duplicate worker close" }),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+        const waiting = yield* runtime
+          .waitForRlmQuiescence("turn-worker-close-singleflight:1", activeSignal())
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstWait);
+        yield* Effect.promise(() => secondList);
+        releaseFirstList();
+
+        yield* TestClock.adjust(250);
+        yield* Effect.promise(() => recoverySnapshot);
+        let snapshotResolved = false;
+        for (let attempt = 0; attempt < 10 && !snapshotResolved; attempt += 1) {
+          yield* Effect.yieldNow;
+          snapshotResolved = runtime.resolveReconnectSnapshot(0, true, true);
+        }
+        expect(snapshotResolved).toBe(true);
+        yield* Fiber.join(closing);
+        yield* Fiber.join(duplicateClosing);
+        yield* Fiber.join(waiting);
+        yield* Effect.promise(() =>
+          test.emit({ type: "closed", error: "later genuine terminal close" }),
+        );
+        const events = yield* Fiber.join(collecting);
+
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "RunStarted",
+          "RunCompleted",
+          "SessionResynced",
+          "RlmQuiesced",
+          "SessionClosed",
+        ]);
+        expect(test.captures.commands.filter((command) => command.type === "list")).toHaveLength(3);
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "waitForHeadlessCompletion",
+          ),
+        ).toHaveLength(2);
+      }),
+    ),
+  );
+
+  it.effect("preserves a terminal close when the supervisor does not report recovery", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const test = fixture({ listResponses: [workerListResponse("ready")] });
+        const runtime = yield* test.make();
+        const collecting = yield* collectEvents(runtime, 3).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        yield* Effect.promise(() => test.emit({ type: "closed", error: "genuine terminal close" }));
+        const events = yield* Fiber.join(collecting);
+
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "RunStarted",
+          "SessionClosed",
+        ]);
+        expect(test.captures.commands.filter((command) => command.type === "list")).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("does not adopt a different session's recovering worker", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const test = fixture({
+          listResponses: [
+            workerListResponse("recovering", 101, {
+              activeSessionId: "different-active-session",
+            }),
+          ],
+        });
+        const runtime = yield* test.make();
+        const collecting = yield* collectEvents(runtime, 3).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "closed", error: "different session worker closed" }),
+        );
+        const events = yield* Fiber.join(collecting);
+
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "RunStarted",
+          "SessionClosed",
+        ]);
+        expect(test.captures.order.filter((entry) => entry === "snapshot")).toHaveLength(1);
+      }),
+    ),
+  );
+
   it.effect("fails closed when a recovered worker loses the supervised managed extension", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -3767,7 +4377,12 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
             reportFirstAttempt?.();
             return Promise.reject(new Error("Session worker is recovering"));
           },
-          listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+          listResponses: [
+            workerListResponse("recovering"),
+            workerListResponse("ready"),
+            workerListResponse("ready"),
+            workerListResponse("ready"),
+          ],
           listRequestObserved: () => reportFirstList?.(),
         });
         const runtime = yield* test.make();
@@ -3780,6 +4395,10 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
         yield* Effect.promise(() => firstAttempt);
         yield* Effect.promise(() => firstList);
+        yield* TestClock.adjust(250);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(100);
+        yield* Effect.yieldNow;
         yield* TestClock.adjust(250);
         const error = yield* Fiber.join(waiting);
 
