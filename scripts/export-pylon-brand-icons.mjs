@@ -100,18 +100,43 @@ async function renderMacIcon(master) {
     .toBuffer();
 }
 
-// Android composites the adaptive foreground under a launcher mask, so on the
-// 432px (108dp @ 4x) canvas only the centred 66dp — a circle of radius 132px —
-// is guaranteed to survive. Rendering the rounded-hexagon mark at 368px puts
-// its farthest opaque pixel just inside that circle; raising this clips the
-// corners on circular launchers.
+// Android scales an adaptive layer to the full 108dp canvas and then lets the
+// launcher mask show only the centred 72dp of it, of which just the inner 66dp
+// — a circle of radius 132px on this 432px (108dp @ 4x) canvas — is guaranteed
+// to survive. A full-bleed 1024px channel icon used as a layer is therefore
+// zoomed and edge-cropped; an inset rendition is not.
 const ANDROID_ADAPTIVE_CANVAS = 432;
-const ANDROID_ADAPTIVE_MARK = 368;
+const ANDROID_ADAPTIVE_SAFE_RADIUS = 132;
+const ANDROID_ADAPTIVE_MARK = 352;
 
-async function renderAndroidAdaptiveForeground(mark) {
+/**
+ * Largest distance from the canvas centre at which the image is not fully
+ * transparent. This is the number Android's mask cares about.
+ */
+async function maxOpaqueRadius(png) {
+  const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const centreX = (info.width - 1) / 2;
+  const centreY = (info.height - 1) / 2;
+  let maxRadius = 0;
+  for (let y = 0; y < info.height; y += 1) {
+    for (let x = 0; x < info.width; x += 1) {
+      if (data[(y * info.width + x) * info.channels + 3] === 0) continue;
+      const radius = Math.hypot(x - centreX, y - centreY);
+      if (radius > maxRadius) maxRadius = radius;
+    }
+  }
+  return maxRadius;
+}
+
+/**
+ * The mark centred on a transparent 108dp canvas, small enough that the whole
+ * of it survives a circular launcher mask. Serves both the adaptive foreground
+ * and the Android 13+ monochrome themed layer, which is masked identically.
+ */
+async function renderAndroidAdaptiveLayer(mark) {
   const body = await renderPng(mark, ANDROID_ADAPTIVE_MARK);
   const inset = Math.round((ANDROID_ADAPTIVE_CANVAS - ANDROID_ADAPTIVE_MARK) / 2);
-  return sharp({
+  const layer = await sharp({
     create: {
       width: ANDROID_ADAPTIVE_CANVAS,
       height: ANDROID_ADAPTIVE_CANVAS,
@@ -122,6 +147,17 @@ async function renderAndroidAdaptiveForeground(mark) {
     .composite([{ input: body, left: inset, top: inset }])
     .png()
     .toBuffer();
+
+  // Enforced rather than documented: editing T3Mark.svg to use more of its
+  // artboard would otherwise regenerate a layer the launcher clips, and
+  // `icons:check` only proves the output matches the vector.
+  const radius = await maxOpaqueRadius(layer);
+  if (radius > ANDROID_ADAPTIVE_SAFE_RADIUS) {
+    throw new Error(
+      `Android adaptive layer reaches ${radius.toFixed(1)}px from centre, outside the ${ANDROID_ADAPTIVE_SAFE_RADIUS}px safe circle. Lower ANDROID_ADAPTIVE_MARK (currently ${ANDROID_ADAPTIVE_MARK}) or reduce the mark's extent in T3Mark.svg.`,
+    );
+  }
+  return layer;
 }
 
 async function renderIco(master) {
@@ -164,14 +200,17 @@ const androidMarkSvg = NodeFS.readFileSync(
   "utf8",
 ).replace('fill="black" mask=', 'fill="white" mask=');
 const androidMark = await sharp(Buffer.from(androidMarkSvg), { density: 300 }).png().toBuffer();
-outputs.set("apps/mobile/assets/android-icon-mark.png", await renderPng(androidMark, 432));
+// `android-icon-mark.png` reaches close to its canvas edges, which suits the
+// notification icon (drawn unmasked at 24dp) and no Android layer that the
+// launcher masks. Those get the inset rendition below instead.
+outputs.set(
+  "apps/mobile/assets/android-icon-mark.png",
+  await renderPng(androidMark, ANDROID_ADAPTIVE_CANVAS),
+);
 outputs.set("apps/mobile/assets/android-notification-icon.png", await renderPng(androidMark, 96));
-// `android-icon-mark.png` fills its canvas, which is right for the monochrome
-// themed icon and wrong for the adaptive foreground: the launcher mask would
-// clip it. The adaptive foreground gets its own inset rendition.
 outputs.set(
   "apps/mobile/assets/android-icon-foreground.png",
-  await renderAndroidAdaptiveForeground(androidMark),
+  await renderAndroidAdaptiveLayer(androidMark),
 );
 
 outputs.set("apps/marketing/public/icon.png", productionMaster);
