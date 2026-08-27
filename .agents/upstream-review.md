@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "860caaa6023a3aaf616a5899816c74c195ca8de2"
-reviewed-through-date: "2026-08-26"
+reviewed-through: "33b650a5b3b27382b35d2182dec6b22438c3da56"
+reviewed-through-date: "2026-08-27"
 ---
 
 # T3 upstream review log
@@ -12,6 +12,139 @@ This ledger is the durable handoff between upstream-review sessions. The `review
 Deferred decisions remain listed after the cursor advances so later sessions can revisit them without rediscovering the entire upstream range.
 
 ## Review batches
+
+## 2026-08-27 — `860caaa6023a3aaf616a5899816c74c195ca8de2..33b650a5b3b27382b35d2182dec6b22438c3da56`
+
+Four upstream commits formed four change sets. The developer approved all four,
+overriding a recommended partial adoption on U3 (see below). `git cherry` found
+none already present. The deferred register was empty going in and remains
+empty.
+
+| ID  | Upstream              | Decision                | Pylon reference     | Notes                                                                                                                                                                                  |
+| --- | --------------------- | ----------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| U1  | `b0a028126` / `#8248` | adopted                 | `edd644865`, `#108` | Drops the pinned Clerk UI canary so desktop sign-in tracks stable `@clerk/ui@1` and receives the 1.30.7 OAuth transfer fixes. Clean cherry-pick.                                       |
+| U2  | `3b86ef941` / `#8231` | adopted with adaptation | `489fcdf99`, `#109` | `unsettledAt` re-entry stamp re-anchors the active-list sort, so an un-settled thread returns to the top. Upstream's migration `043` lands as Pylon's **`047`**.                       |
+| U3  | `a3a8cbd60` / `#8250` | adopted with adaptation | `5d8128446`, `#110` | Release CI: drops a duplicate web build, starts two jobs alongside preflight, moves the nightly cron off minute zero, and flips nightly concurrency from cancel to queue. Manual port. |
+| U4  | `33b650a5b` / `#8243` | adopted with adaptation | `6b1f96215`, `#111` | macOS preview DMGs publish to a rolling `desktop-preview` prerelease so headless machines can download without signing in. Runner labels adapted to GitHub-hosted.                     |
+
+**U2 renumbered its migration.** Pylon retired id 36 and renumbered 037–040, and
+already holds `043_ProjectionThreadSessionLifecycle` through
+`046_ProjectionThreadLinkedPullRequest`, so upstream's
+`043_ProjectionThreadsUnsettledAt` became `047`. Reusing 43 would let
+environments that already recorded the session-lifecycle migration silently skip
+the `unsettled_at` column. `Migrations.ts` was the only conflict in the whole
+change set. U2 also inherits upstream's known limit: threads that settle
+_automatically_ — inactivity window, merged pull request — still return to their
+old position, because auto-settle is derived on the client and the server has no
+event to stamp.
+
+**U3's concurrency half was first recommended for skip, then adopted.** The
+initial brief proposed taking three of the four pieces and leaving Pylon's
+`cancel-in-progress: ${{ github.event_name == 'schedule' }}` alone, on the
+grounds that `8dd0d6e06` set it deliberately after a Blacksmith capacity outage
+let 23 nightlies stack ~480 VM-hours deep. The developer questioned the carve-out
+and was right to: `124630c3f` moved every workflow onto GitHub-hosted runners on
+2026-08-26, so that queue can no longer form, and the concurrency block and its
+comment were never revisited. Cancelling is now the more dangerous half —
+`publish_cli` pushes to npm before `release` creates the GitHub release, so a
+cancel in that window strands a published CLI version with no matching desktop
+build, and npm will not reissue that version number. The block now uses
+upstream's `cancel-in-progress: false` plus `queue: max`, which are not
+separable (the combination with `cancel-in-progress: true` is a workflow
+validation error). The comment was rewritten rather than transplanted so Pylon's
+incident history and the runner migration stay recorded. Stable releases now
+serialize instead of running in parallel; `queue: max` keeps the 100 FIFO
+pending slots that make the original "never drop a real release" concern safe.
+
+**U4 is inert until a label exists.** `pylon-code/pylon` has no `preview:mac`
+label, so every run of this workflow to date has been `skipped` — before and
+after this change. The auto-updater is unaffected: Pylon publishes desktop
+releases and the update feed to `pylon-code/pylon-releases`, while the rolling
+`desktop-preview` prerelease lands on `pylon-code/pylon`, which has zero
+releases, so the nightly channel's `allowPrerelease: true` never sees it.
+`release.yml` matches only `v*.*.*`, so the tag does not collide.
+
+Validation:
+
+- U1: `@t3tools/web` typecheck, lint and format on the changed file, 30 focused
+  Clerk/passkey/redirect tests. The version resolution was checked against the
+  installed `@clerk/shared` 4.30.1 resolver rather than assumed: with the pin
+  removed it requests `@clerk/ui@1`, with the old pin
+  `@clerk/ui@1.30.5-canary.v20260819050620`. Packaged desktop sign-in is **not**
+  covered — upstream merged it untested too.
+- U2: 74 focused server tests (projector, decider, projection pipeline, snapshot
+  query, projection repositories) and 155 focused client tests (`Sidebar.logic`,
+  mobile `threadListV2`). Typecheck passes for server, contracts,
+  client-runtime, web, and mobile. Migration manifest verified: 46 entries, no
+  duplicate ids, strictly increasing, ending at `47_ProjectionThreadsUnsettledAt`.
+  The repository test exercises the real column, since `SqlitePersistenceMemory`
+  runs `runMigrations()`. No browser pass; computer use was not requested.
+- U3: the duplicate-build removal was verified by running it —
+  `vp run --filter t3 build` runs exactly two tasks (web, then server) and still
+  produces `dist/bin.mjs`, `dist/service-launcher.mjs`, and
+  `dist/client/index.html`. `actionlint` 1.7.12 reports 4 findings on `pylon` and
+  5 on the branch; the one new finding is `unexpected key "queue"`, whose schema
+  predates GitHub's May 2026 feature. No Pylon workflow runs `actionlint` in CI.
+- U4: `actionlint` clean on both `pylon` and the branch. End-to-end behavior is
+  unprovable until the `preview:mac` label exists.
+- CI results are recorded on `#108`–`#111`.
+
+Adversarial review before merge:
+
+The developer asked for an adversarial pass on all four before anything landed.
+It found nine issues across three change sets; seven were fixed on their
+branches, two were examined and consciously declined. None of the confirmed
+defects were introduced by the Pylon adaptation — U3's and U4's came from
+upstream, and U2's were gaps in the seams the renumber created.
+
+- **U3 `8d1739684`.** Upstream's concurrency group collapses every tag push and
+  manual stable dispatch into one shared `release-stable` lane. Upstream had no
+  concurrency block at all before `#8250`, so for them that was serialization
+  from zero; Pylon has keyed stable runs off `run_id` since `8dd0d6e06` so they
+  never interact. With `cancel-in-progress: false`, the shared lane would queue
+  a P0 hotfix tag behind an in-flight release for its whole build matrix. Pylon
+  keeps `run_id` for stable and the shared group for nightlies only, which
+  preserves both properties. `check_changes` was also the only job in the file
+  without `timeout-minutes`; harmless while a fresh nightly cancelled a wedged
+  predecessor, not once nightlies queue. Declined: `relay_public_config` and
+  `build_wsl_node_pty` no longer skip on a failed preflight, which costs a
+  doomed run up to 30 minutes. That is the price of the parallelism and upstream
+  accepted it; `production` has `protection_rules: []`, so there is no approval
+  gate or secret exposure.
+- **U4 `9d112329e`.** Four ways to leave a wrong final state behind a green
+  check, all from one root cause: `set -e` does not fire for a command
+  substitution inside `[[ ]]`, so `preview_eligible` read a transient 502 as "PR
+  closed". Publish then silently skipped a 25-minute build, or deleted the asset
+  it had just uploaded while the PR was open and labeled; cleanup fell the other
+  way and deleted a live download. Cleanup also set `removed=true` before
+  touching the release, could not tell a missing release from a broken API, and
+  swallowed delete errors — a 502 left a public DMG downloadable forever while
+  the comment claimed it was gone, the one-way door `AGENTS.md` calls a bug.
+  Publish deleted before uploading despite sitting in the cancellable build
+  group. Unlabel-then-close could cancel the queued cleanup and leave a `closed`
+  run whose `if` required the label that had just been removed, stranding the
+  DMG. The PR-controlled DMG name is now pinned to a plain filename, which also
+  closes a Markdown link escape in the bot comment.
+- **U2 `7f80f5961`.** `047` was the only migration in the 042-046 run without a
+  sibling test, which is the guard this repo uses for exactly the failure a
+  hand-applied renumber creates: a colliding id makes `Migrator` skip the file,
+  the column never lands, and every thread read throws `no such column:
+unsettled_at`. `mergeEnvironmentThread` takes the shell as authoritative for
+  thread lifecycle but was not given `unsettledAt` alongside the six fields it
+  already copies, so a cached detail merged with a fresher shell produced an
+  active override with no stamp. Declined: a client-auto-settled thread that
+  wakes on activity still gets no stamp (upstream's documented limit, and
+  `docs/user/thread-sidebar.md` does not overstate it), and wake-from-snooze
+  orders differently from un-settle (a real asymmetry, but a snooze product
+  decision rather than part of this port).
+
+U1 was reviewed inline and is clean, with one residual risk recorded rather
+than fixed: `@clerk/electron` is exact-pinned in the catalog, but `@clerk/ui` is
+not a dependency at all — it is fetched from Clerk's CDN as `@clerk/ui@1`, so
+desktop now floats across every future 1.x with no lockfile entry to bisect.
+
+The deferred register was empty at the start of this review, so Phase 2.5 had
+nothing to re-evaluate. This batch opened no new entries and it remains empty.
 
 ## 2026-08-26 — `e67074f80933a27bd3cdc4e24f486358407690fb..860caaa6023a3aaf616a5899816c74c195ca8de2`
 
@@ -2568,8 +2701,8 @@ _The register is currently empty. DEF-1 and DEF-2 were adopted on 2026-08-11
 2026-08-18: the 2026-08-18 batch review found them, the batch shipped without
 them so the adoption stayed faithful, and `fix/pull-request-quota-followups`
 fixed both the same day. DEF-6 was opened 2026-08-21 and adopted the same
-day, once `#7725` reconciled the tests it was blocked on. The 2026-08-24 batch
-opened no new entries either. The 2026-08-23 batch
+day, once `#7725` reconciled the tests it was blocked on. The 2026-08-24 and
+2026-08-27 batches opened no new entries either. The 2026-08-23 batch
 opened no new entries and left it empty; it did retire the dead `U-4326`
 revisit condition recorded in the 2026-08-04 table, since that pull request
 closed unmerged. Entries are removed once adopted, skipped, or fixed._
