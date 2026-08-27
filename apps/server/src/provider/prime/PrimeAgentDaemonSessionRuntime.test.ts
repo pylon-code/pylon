@@ -85,6 +85,50 @@ function snapshot(sequence = 4) {
   };
 }
 
+function terminalAssistantMessage(text = "recovered final response", timestamp = 2) {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "openai-responses",
+    provider: "openai",
+    model: "gpt-test",
+    usage: {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp,
+  };
+}
+
+function workerListResponse(
+  workerState: "recovering" | "ready" | "failed" | "stopping",
+  workerPid = 101,
+  overrides: Readonly<Record<string, unknown>> = {},
+) {
+  return {
+    type: "response",
+    command: "list",
+    success: true,
+    data: {
+      sessions: [
+        {
+          activeSessionId: "active-secret-1",
+          sessionId: "session-1",
+          sessionFile: "/state/provider-sessions/thread-safe/session.jsonl",
+          workerState,
+          workerPid,
+          ...overrides,
+        },
+      ],
+    },
+  };
+}
+
 interface Captures {
   readonly order: string[];
   readonly commands: Array<Readonly<Record<string, unknown>>>;
@@ -174,6 +218,8 @@ function fixture(options?: {
   ) => Promise<unknown>;
   readonly resumeQueueResponses?: ReadonlyArray<unknown>;
   readonly listedActiveSessionId?: string;
+  readonly listResponses?: ReadonlyArray<unknown>;
+  readonly listRequestObserved?: () => void;
   readonly waitForHeadlessCompletionImpl?: (options: {
     readonly waitForRlmQuiescence?: boolean;
   }) => Promise<unknown>;
@@ -202,6 +248,7 @@ function fixture(options?: {
   let watcherListener: ((event: unknown) => void | Promise<void>) | undefined;
   let queuedInputSuspended = false;
   let resumeQueueRequestCount = 0;
+  let listRequestCount = 0;
 
   class FakeClient implements PrimeAgentDaemonClient {
     isConnected = true;
@@ -240,20 +287,25 @@ function fixture(options?: {
         }));
       }
       if (command.type === "list") {
-        return Promise.resolve({
-          type: "response",
-          command: "list",
-          success: true,
-          data: {
-            sessions: [
-              {
-                activeSessionId: options?.listedActiveSessionId ?? "active-secret-1",
-                sessionId: "session-1",
-                sessionFile: "/state/provider-sessions/thread-safe/session.jsonl",
-              },
-            ],
+        options?.listRequestObserved?.();
+        const configuredResponse = options?.listResponses?.[listRequestCount];
+        listRequestCount += 1;
+        return Promise.resolve(
+          configuredResponse ?? {
+            type: "response",
+            command: "list",
+            success: true,
+            data: {
+              sessions: [
+                {
+                  activeSessionId: options?.listedActiveSessionId ?? "active-secret-1",
+                  sessionId: "session-1",
+                  sessionFile: "/state/provider-sessions/thread-safe/session.jsonl",
+                },
+              ],
+            },
           },
-        });
+        );
       }
       if (command.type === "resume_queue") {
         captures.connectionCalls.push({ method: "resumeQueue", args: [] });
@@ -2612,7 +2664,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
-  it.effect("keeps an admitted run after its worker command client closes", () =>
+  it.effect("keeps an admitted run through worker recovery after its client closes", () =>
     Effect.scoped(
       Effect.gen(function* () {
         let rejectPrompt!: (error: Error) => void;
@@ -2620,15 +2672,62 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         const promptStarted = new Promise<void>((resolve) => {
           reportPromptStarted = resolve;
         });
+        let waitAttempts = 0;
+        let reportFirstWait: (() => void) | undefined;
+        const firstWait = new Promise<void>((resolve) => {
+          reportFirstWait = resolve;
+        });
+        let reportFirstList: (() => void) | undefined;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        let reportRecoverySnapshot: (() => void) | undefined;
+        const recoverySnapshotRead = new Promise<void>((resolve) => {
+          reportRecoverySnapshot = resolve;
+        });
+        let snapshotReads = 0;
         const test = fixture({
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            if (snapshotReads === 1) return snapshot(5);
+            reportRecoverySnapshot?.();
+            return {
+              ...snapshot(5),
+              state: {
+                ...snapshot(5).state,
+                activeSessionId: "active-secret-1",
+                messageCount: 2,
+              },
+              messages: [
+                {
+                  role: "user",
+                  content: [
+                    { type: "text", text: "keep the admitted native run" },
+                    { type: "image", data: "encoded-image", mimeType: "image/jpeg" },
+                  ],
+                  timestamp: 1,
+                },
+                terminalAssistantMessage(),
+              ],
+            };
+          },
           promptAndWaitImpl: () =>
             new Promise<void>((_resolve, reject) => {
               rejectPrompt = reject;
               reportPromptStarted?.();
             }),
+          waitForHeadlessCompletionImpl: () => {
+            waitAttempts += 1;
+            reportFirstWait?.();
+            return waitAttempts === 1
+              ? Promise.reject(new Error("Session worker is recovering"))
+              : Promise.resolve({ result: "completed" });
+          },
+          listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+          listRequestObserved: () => reportFirstList?.(),
         });
         const runtime = yield* test.make();
-        const collecting = yield* collectEvents(runtime, 3).pipe(
+        const collecting = yield* collectEvents(runtime, 4).pipe(
           Effect.forkChild({ startImmediately: true }),
         );
         const token = "turn-worker-client-close:1";
@@ -2659,14 +2758,40 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
 
         rejectPrompt(new Error("Daemon worker client closed"));
         yield* Fiber.join(prompting);
-        yield* runtime.waitForRlmQuiescence(token, activeSignal());
+        const waiting = yield* runtime
+          .waitForRlmQuiescence(token, activeSignal())
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstWait);
+        yield* Effect.promise(() => firstList);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              state: {
+                ...snapshot(5).state,
+                sessionId: "different-session",
+                activeSessionId: "different-active-session",
+              },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(0, true, true)).toBe(false);
+        runtime.noteWorkerRecoveryTerminalResponse();
+        yield* TestClock.adjust(250);
+        yield* Effect.promise(() => recoverySnapshotRead);
+        yield* Effect.yieldNow;
+        expect(runtime.resolveReconnectSnapshot(0, true, true)).toBe(true);
+        yield* Fiber.join(waiting);
         const events = yield* Fiber.join(collecting);
 
         expect(events.map((event) => event._tag)).toEqual([
           "SessionResynced",
           "MessageCompleted",
+          "SessionResynced",
           "RlmQuiesced",
         ]);
+        expect(test.captures.order.filter((entry) => entry === "snapshot")).toHaveLength(2);
         expect(
           test.captures.connectionCalls.filter((call) => call.method === "prompt"),
         ).toHaveLength(1);
@@ -2674,7 +2799,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           test.captures.connectionCalls.filter(
             (call) => call.method === "waitForHeadlessCompletion",
           ),
-        ).toHaveLength(1);
+        ).toHaveLength(2);
       }),
     ),
   );
@@ -3089,6 +3214,341 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           _tag: "RlmQuiesced",
           token,
           connectionGeneration: 0,
+        });
+      }),
+    ),
+  );
+
+  it.effect("fails closed when worker recovery changes process incarnation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let attempts = 0;
+        let reportFirstAttempt: (() => void) | undefined;
+        const firstAttempt = new Promise<void>((resolve) => {
+          reportFirstAttempt = resolve;
+        });
+        let reportFirstList: (() => void) | undefined;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        const test = fixture({
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            reportFirstAttempt?.();
+            return attempts === 1
+              ? Promise.reject(new Error("Session worker is recovering"))
+              : Promise.resolve({ result: "completed" });
+          },
+          listResponses: [workerListResponse("recovering", 101), workerListResponse("ready", 202)],
+          listRequestObserved: () => reportFirstList?.(),
+        });
+        const runtime = yield* test.make();
+        const token = "turn-worker-replacement:1";
+        yield* runtime.prompt({ text: "do not adopt replacement", rlmQuiescenceToken: token });
+        const waiting = yield* runtime
+          .waitForRlmQuiescence(token, activeSignal())
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstAttempt);
+        yield* Effect.promise(() => firstList);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              state: {
+                ...snapshot(5).state,
+                activeSessionId: "active-secret-1",
+                messageCount: 1,
+              },
+              messages: [terminalAssistantMessage()],
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(0, true, true)).toBe(false);
+
+        yield* TestClock.adjust(250);
+        const error = yield* Fiber.join(waiting);
+
+        expect(attempts).toBe(1);
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent could not confirm descendant quiescence.",
+        });
+      }),
+    ),
+  );
+
+  it.effect("rejects a worker recovery interruption marker", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let attempts = 0;
+        let reportFirstAttempt: (() => void) | undefined;
+        const firstAttempt = new Promise<void>((resolve) => {
+          reportFirstAttempt = resolve;
+        });
+        let reportFirstList: (() => void) | undefined;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        let snapshotReads = 0;
+        const workerRecoveryMarkerSnapshot = {
+          ...snapshot(5),
+          state: {
+            ...snapshot(5).state,
+            activeSessionId: "active-secret-1",
+            messageCount: 1,
+          },
+          messages: [
+            {
+              role: "custom",
+              customType: "prime-agent.worker_recovery",
+              content: [{ type: "text", text: "private recovery marker" }],
+              display: false,
+              timestamp: 2,
+            },
+          ],
+        };
+        const test = fixture({
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            return snapshotReads === 1 ? snapshot(5) : workerRecoveryMarkerSnapshot;
+          },
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            reportFirstAttempt?.();
+            return Promise.reject(new Error("Session worker is recovering"));
+          },
+          listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+          listRequestObserved: () => reportFirstList?.(),
+        });
+        const runtime = yield* test.make();
+        yield* runtime.prompt({
+          text: "reject interrupted work",
+          rlmQuiescenceToken: "turn-marker:1",
+        });
+        const waiting = yield* runtime
+          .waitForRlmQuiescence("turn-marker:1", activeSignal())
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstAttempt);
+        yield* Effect.promise(() => firstList);
+        yield* TestClock.adjust(250);
+        const error = yield* Fiber.join(waiting);
+
+        expect(attempts).toBe(1);
+        expect(runtime.resolveReconnectSnapshot(0, true, true)).toBe(false);
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent could not confirm descendant quiescence.",
+        });
+      }),
+    ),
+  );
+
+  it.effect("requires a recovered terminal response before publishing quiescence", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let attempts = 0;
+        let reportFirstAttempt: (() => void) | undefined;
+        const firstAttempt = new Promise<void>((resolve) => {
+          reportFirstAttempt = resolve;
+        });
+        let reportFirstList: (() => void) | undefined;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        let reportRecoverySnapshot: (() => void) | undefined;
+        const recoverySnapshotRead = new Promise<void>((resolve) => {
+          reportRecoverySnapshot = resolve;
+        });
+        let snapshotReads = 0;
+        const test = fixture({
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            if (snapshotReads > 1) reportRecoverySnapshot?.();
+            return {
+              ...snapshot(5),
+              state: { ...snapshot(5).state, activeSessionId: "active-secret-1" },
+            };
+          },
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            reportFirstAttempt?.();
+            return attempts === 1
+              ? Promise.reject(new Error("Session worker is recovering"))
+              : Promise.resolve({ result: "completed" });
+          },
+          listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+          listRequestObserved: () => reportFirstList?.(),
+        });
+        const runtime = yield* test.make();
+        yield* runtime.prompt({
+          text: "require final output",
+          rlmQuiescenceToken: "turn-output:1",
+        });
+        const waiting = yield* runtime
+          .waitForRlmQuiescence("turn-output:1", activeSignal())
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstAttempt);
+        yield* Effect.promise(() => firstList);
+        runtime.noteWorkerRecoveryTerminalResponse();
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              state: { ...snapshot(5).state, activeSessionId: "active-secret-1" },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(0, true, false)).toBe(false);
+        yield* TestClock.adjust(250);
+        yield* Effect.promise(() => recoverySnapshotRead);
+        yield* Effect.yieldNow;
+        expect(runtime.resolveReconnectSnapshot(0, true, false)).toBe(true);
+        const error = yield* Fiber.join(waiting);
+
+        expect(attempts).toBe(2);
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent could not confirm descendant quiescence.",
+        });
+      }),
+    ),
+  );
+
+  it.effect("bounds worker recovery without resubmitting the barrier", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let attempts = 0;
+        let reportFirstAttempt: (() => void) | undefined;
+        const firstAttempt = new Promise<void>((resolve) => {
+          reportFirstAttempt = resolve;
+        });
+        let reportFirstList: (() => void) | undefined;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        const test = fixture({
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            reportFirstAttempt?.();
+            return Promise.reject(new Error("Session worker is recovering"));
+          },
+          listResponses: Array.from({ length: 16 }, () => workerListResponse("recovering")),
+          listRequestObserved: () => reportFirstList?.(),
+        });
+        const runtime = yield* test.make();
+        yield* runtime.prompt({ text: "bound recovery", rlmQuiescenceToken: "turn-recovery:1" });
+        const waiting = yield* runtime
+          .waitForRlmQuiescence("turn-recovery:1", activeSignal())
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstAttempt);
+        yield* Effect.promise(() => firstList);
+
+        yield* TestClock.adjust("1 minute");
+        const error = yield* Fiber.join(waiting);
+
+        expect(attempts).toBe(1);
+        expect(test.captures.commands.filter((command) => command.type === "list")).toHaveLength(
+          16,
+        );
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent could not confirm descendant quiescence.",
+        });
+      }),
+    ),
+  );
+
+  it.effect("does not retry worker recovery after the turn signal aborts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let attempts = 0;
+        let reportFirstAttempt: (() => void) | undefined;
+        const firstAttempt = new Promise<void>((resolve) => {
+          reportFirstAttempt = resolve;
+        });
+        let reportFirstList: (() => void) | undefined;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        const test = fixture({
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            reportFirstAttempt?.();
+            return Promise.reject(new Error("Session worker is recovering"));
+          },
+          listResponses: [workerListResponse("recovering")],
+          listRequestObserved: () => reportFirstList?.(),
+        });
+        const runtime = yield* test.make();
+        const controller = new AbortController();
+        const token = "turn-recovery-abort:1";
+        yield* runtime.prompt({ text: "cancel recovery", rlmQuiescenceToken: token });
+        const waiting = yield* runtime
+          .waitForRlmQuiescence(token, controller.signal)
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstAttempt);
+        yield* Effect.promise(() => firstList);
+
+        controller.abort();
+        const error = yield* Fiber.join(waiting);
+
+        expect(attempts).toBe(1);
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent descendant quiescence wait was cancelled.",
+        });
+      }),
+    ),
+  );
+
+  it.effect("does not retry worker recovery across a connection generation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let attempts = 0;
+        let reportFirstAttempt: (() => void) | undefined;
+        const firstAttempt = new Promise<void>((resolve) => {
+          reportFirstAttempt = resolve;
+        });
+        let reportFirstList: (() => void) | undefined;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        const test = fixture({
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            reportFirstAttempt?.();
+            return Promise.reject(new Error("Session worker is recovering"));
+          },
+          listResponses: [workerListResponse("recovering")],
+          listRequestObserved: () => reportFirstList?.(),
+        });
+        const runtime = yield* test.make();
+        const token = "turn-recovery-generation:1";
+        yield* runtime.prompt({ text: "keep recovery ownership", rlmQuiescenceToken: token });
+        const waiting = yield* runtime
+          .waitForRlmQuiescence(token, activeSignal())
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstAttempt);
+        yield* Effect.promise(() => firstList);
+
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* TestClock.adjust(250);
+        const error = yield* Fiber.join(waiting);
+
+        expect(attempts).toBe(1);
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+          detail: "Prime Agent reconnected before descendant quiescence could be confirmed.",
         });
       }),
     ),

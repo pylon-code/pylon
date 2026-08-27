@@ -100,6 +100,15 @@ export const isSessionCompactionInProgress = (
   snapshot?.status === "compacting" ||
   snapshot?.status === "abort-requested";
 
+export const isSessionCompactionSubmissionBlocked = (input: {
+  readonly current: Pick<SessionCompactionSnapshot, "status"> | null | undefined;
+  readonly activity: Pick<SessionCompactionSnapshot, "status"> | null | undefined;
+  readonly compactPending: boolean;
+}): boolean =>
+  input.compactPending ||
+  isSessionCompactionInProgress(input.activity) ||
+  isSessionCompactionInProgress(input.current);
+
 export const canStartSessionCompaction = (
   provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
   snapshot:

@@ -1086,6 +1086,9 @@ export function makePrimeAgentDaemonAdapter(
             event.message.text.trim().length > 0 &&
             event.message.stopReason !== "toolUse" &&
             event.message.toolCalls.length === 0;
+          if (turn.lastAssistantHadRenderableText) {
+            context.runtime.noteWorkerRecoveryTerminalResponse();
+          }
           turn.activeAssistantItemId = undefined;
           turn.assistantTextEmitted = "";
           turn.assistantTextRecoveryComparable = true;
@@ -1658,7 +1661,11 @@ export function makePrimeAgentDaemonAdapter(
                     activeTurn !== undefined &&
                     pendingRunCompletionBefore === undefined &&
                     activeTurn.pendingRunCompletionHandoff !== undefined;
-                  context.runtime.resolveReconnectSnapshot(reconnectGeneration, reconciled);
+                  context.runtime.resolveReconnectSnapshot(
+                    reconnectGeneration,
+                    reconciled,
+                    activeTurn?.lastAssistantHadRenderableText === true,
+                  );
                   if (!reconciled) {
                     if (activeTurn !== undefined) {
                       yield* settleActiveTurnLocked(context, activeTurn, {

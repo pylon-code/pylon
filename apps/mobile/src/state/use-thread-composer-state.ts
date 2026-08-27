@@ -29,6 +29,8 @@ import {
   deriveLatestSessionCompaction,
   isAcceptedSessionCompactionMutationResult,
   isCurrentSessionCompactionRequest,
+  isSessionCompactionInProgress,
+  isSessionCompactionSubmissionBlocked,
   sessionCompactionScopeKey,
   supportsSessionCompaction,
   type SessionCompactionControlSnapshot,
@@ -312,11 +314,25 @@ export function useThreadComposerState() {
   const sessionCompactionRequestIdRef = useRef(0);
   const activitySupersededCompactionMutationsRef = useRef<Set<number>>(new Set());
   const lastCompactionActivityRef = useRef<{ scopeKey: string; updatedAt: string } | null>(null);
-  const selectedThreadCompaction =
-    sessionCompactionScope &&
-    authoritativeSessionCompaction?.scopeKey === sessionCompactionScope.key
+  const selectedThreadCompaction = isSessionCompactionInProgress(activitySessionCompaction)
+    ? activitySessionCompaction
+    : sessionCompactionScope &&
+        authoritativeSessionCompaction?.scopeKey === sessionCompactionScope.key
       ? authoritativeSessionCompaction.snapshot
       : activitySessionCompaction;
+  const sessionCompactionPendingAction = sessionCompactionMutation
+    ? sessionCompactionMutation.action
+    : null;
+  const sessionCompactionPendingScopeKey = sessionCompactionMutation
+    ? sessionCompactionMutation.scopeKey
+    : null;
+  const sessionCompactionBlocksSubmission = isSessionCompactionSubmissionBlocked({
+    current: selectedThreadCompaction,
+    activity: activitySessionCompaction,
+    compactPending:
+      sessionCompactionPendingAction === "compact" &&
+      sessionCompactionPendingScopeKey === (sessionCompactionScope?.key ?? null),
+  });
 
   useEffect(() => {
     const scope = sessionCompactionScope;
@@ -489,7 +505,7 @@ export function useThreadComposerState() {
     (selectedThread.session?.status === "running" || selectedThread.session?.status === "starting");
 
   const onSendMessage = useCallback(async () => {
-    if (!selectedThreadShell) {
+    if (!selectedThreadShell || sessionCompactionBlocksSubmission) {
       return null;
     }
 
@@ -613,6 +629,7 @@ export function useThreadComposerState() {
   }, [
     selectedEnvironmentRuntime?.serverConfig?.providers,
     selectedThreadDetail,
+    sessionCompactionBlocksSubmission,
     selectedThreadServerConfig,
     selectedThreadShell,
     uploadThreadFeedback,
@@ -621,6 +638,7 @@ export function useThreadComposerState() {
   const onQueueFollowUp = useCallback(async () => {
     if (
       !selectedThreadShell ||
+      sessionCompactionBlocksSubmission ||
       selectedThreadDetail?.session?.status !== "running" ||
       selectedThreadDetail.session.activeTurnId == null
     ) {
@@ -666,6 +684,7 @@ export function useThreadComposerState() {
     selectedThreadDetail?.session?.activeTurnId,
     selectedThreadDetail?.session?.status,
     selectedThreadShell,
+    sessionCompactionBlocksSubmission,
   ]);
 
   const onMessageSessionAgent = useCallback(
@@ -1036,8 +1055,8 @@ export function useThreadComposerState() {
     selectedThreadCompaction,
     sessionCompactionScopeKey: sessionCompactionScope?.key ?? null,
     sessionCompactionPendingAction:
-      sessionCompactionScope && sessionCompactionMutation?.scopeKey === sessionCompactionScope.key
-        ? sessionCompactionMutation.action
+      sessionCompactionScope && sessionCompactionPendingScopeKey === sessionCompactionScope.key
+        ? sessionCompactionPendingAction
         : null,
     selectedThreadQueueCount,
     activeWorkStartedAt,

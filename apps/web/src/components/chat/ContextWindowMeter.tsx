@@ -75,13 +75,17 @@ export function ContextCompactionControls(props: {
   const { control } = props;
   if (!control.snapshot.available) return null;
   const compactionStatus =
-    control.snapshot.status === "starting"
+    control.pendingAction === "compact"
       ? "Starting…"
-      : control.snapshot.status === "compacting"
-        ? "Compacting…"
-        : control.snapshot.status === "abort-requested"
-          ? "Stopping…"
-          : "Ready";
+      : control.pendingAction === "abort"
+        ? "Stopping…"
+        : control.snapshot.status === "starting"
+          ? "Starting…"
+          : control.snapshot.status === "compacting"
+            ? "Compacting…"
+            : control.snapshot.status === "abort-requested"
+              ? "Stopping…"
+              : "Ready";
   return (
     <div className="mt-1 grid gap-2 border-border/70 border-t pt-2">
       <div className="flex items-center justify-between gap-3 text-xs">

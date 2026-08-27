@@ -15,6 +15,8 @@ import {
   deriveLatestSessionCompaction,
   isAcceptedSessionCompactionMutationResult,
   isCurrentSessionCompactionRequest,
+  isSessionCompactionInProgress,
+  isSessionCompactionSubmissionBlocked,
   sessionCompactionScopeKey,
   supportsSessionAbortCompaction,
   supportsSessionAutoCompaction,
@@ -127,6 +129,36 @@ describe("session compaction state", () => {
     ).toBe(false);
     expect(
       canStartSessionCompaction(provider, idle && { ...idle, manualCompactionSettable: false }),
+    ).toBe(false);
+  });
+
+  it("blocks composer submission for every active compaction status", () => {
+    expect(isSessionCompactionInProgress({ status: "starting" })).toBe(true);
+    expect(isSessionCompactionInProgress({ status: "compacting" })).toBe(true);
+    expect(isSessionCompactionInProgress({ status: "abort-requested" })).toBe(true);
+    expect(isSessionCompactionInProgress({ status: "idle" })).toBe(false);
+    expect(isSessionCompactionInProgress(null)).toBe(false);
+
+    expect(
+      isSessionCompactionSubmissionBlocked({
+        current: { status: "idle" },
+        activity: { status: "starting" },
+        compactPending: false,
+      }),
+    ).toBe(true);
+    expect(
+      isSessionCompactionSubmissionBlocked({
+        current: { status: "idle" },
+        activity: { status: "idle" },
+        compactPending: true,
+      }),
+    ).toBe(true);
+    expect(
+      isSessionCompactionSubmissionBlocked({
+        current: { status: "idle" },
+        activity: { status: "idle" },
+        compactPending: false,
+      }),
     ).toBe(false);
   });
 

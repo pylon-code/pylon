@@ -79,9 +79,15 @@ In native daemon mode, an active turn can continue through a temporary daemon tr
 Prime supplies complete replay data or an exact completed-message snapshot. It also remains attached when
 Prime's supervisor loses only the worker command client after the exact submitted user message was
 admitted. Pylon never sends that prompt again; native events and the correlated descendant-quiescence
-barrier keep ownership of completion. Root tool work, delegated children, and the parent response remain
-part of the original turn. If Pylon cannot prove prompt admission or stream continuity, it fails the turn
-once and closes that Prime session instead of retrying your prompt or guessing at missing output.
+barrier keep ownership of completion. If Prime reports that same worker is still recovering, Pylon waits up
+to 60 seconds without resending either your prompt or the completion check. This can occur when automatic
+compaction and a worker snapshot transfer overlap. Pylon retries the completion check once only after the
+same worker process is ready, Prime supplies an exact transcript snapshot, and that snapshot reconciles
+with the turn already shown. The turn still needs a public final response before recovery can finish. When
+those checks succeed, root tool work, delegated children, and the parent response remain part of the
+original turn. Cancelling the turn stops this wait. If recovery exceeds the bound or Pylon cannot prove
+prompt admission, worker continuity, or stream continuity, it fails the turn once and closes that Prime session
+instead of retrying your prompt or guessing at missing output.
 Restarting the Pylon server is a separate boundary and does not yet adopt Prime work that is still running
 in another process.
 
@@ -144,7 +150,7 @@ to clients. Supervised sessions keep discovered commands disabled. Observed Prim
 When a daemon-backed parent waits for asynchronous children, the Pylon turn stays **Working** until
 Prime reports descendant quiescence and finishes any parent continuation triggered by their replies.
 The continued parent answer appears in the same turn rather than as hidden background work. If deleting a
-child after its reply cancels Prime's in-flight descendant wait, Pylon retries that read-only boundary while
+child after its reply cancels Prime's in-flight descendant wait, Pylon retries that completion boundary while
 the turn remains active, without resending your prompt. Cancelling the turn never retries the boundary.
 If cancellation repeats while the turn remains active, another error occurs, or a daemon reconnect cannot
 be reconciled, Pylon fails the turn and closes that native session instead of reusing work whose ownership
@@ -167,7 +173,7 @@ the composer. The meter is separate from per-turn token totals and hides when Pr
 post-compaction context as unknown; it returns after the next successful model response. Pylon uses
 the session's native automatic-compaction setting rather than assuming compaction is enabled.
 
-Full-access daemon sessions expose context controls beside the context-window meter. **Compact now** is admitted only after Pylon confirms the native session is idle; it never accepts custom instructions. While compaction is active, **Abort compaction** requests Prime's native cancellation, but the control stays active until Prime reports a terminal outcome. **Automatic compaction** changes the current session and Prime's provider-wide default, which the control states explicitly. These mutations are serialized with other session controls and are never retried automatically. If a response is ambiguous and authoritative state cannot be restored, Pylon closes the native session instead of guessing. Supervised and ACP sessions do not offer these controls.
+Full-access daemon sessions expose context controls beside the context-window meter. **Compact now** starts immediately without a confirmation dialog when the authoritative native session state is idle; it never accepts custom instructions. While compaction is active, **Abort compaction** requests Prime's native cancellation, but the control stays active until Prime reports a terminal outcome. Web, desktop, and mobile keep your draft but disable sending and queueing until that terminal update, so a message cannot collide with Prime's compaction boundary. **Automatic compaction** changes the current session and Prime's provider-wide default, which the control states explicitly. These mutations are serialized with other session controls and are never retried automatically. If a response is ambiguous and authoritative state cannot be restored, Pylon closes the native session instead of guessing. Supervised and ACP sessions do not offer these controls.
 
 Full-access daemon sessions with goal observation expose an agent-managed **Goal** status in the web,
 desktop, and mobile composers. **No goal** means no persistent objective is active; ask Prime Agent to
