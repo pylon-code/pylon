@@ -61,6 +61,7 @@ import {
 import {
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
+  providerReleaseBadgeLabel,
   providerSectionIsCollapsed,
 } from "./thread-settings-sheet-state";
 
@@ -154,10 +155,16 @@ function ProviderHeader(props: {
   readonly onToggle: () => void;
 }) {
   const iconSubtle = useThemeColor("--color-icon-subtle");
+  const badgeLabel = providerReleaseBadgeLabel(props.driver);
   const content = (
     <>
       <ProviderIcon provider={props.driver} size={15} />
       <Text className="text-sm font-t3-medium text-foreground-muted">{props.label}</Text>
+      {badgeLabel ? (
+        <View className="rounded-md bg-subtle-strong px-1.5 py-0.5">
+          <Text className="text-3xs font-t3-bold text-foreground-muted">{badgeLabel}</Text>
+        </View>
+      ) : null}
       {props.collapsible ? (
         <>
           <View className="flex-1" />
@@ -180,7 +187,7 @@ function ProviderHeader(props: {
   if (props.collapsible) {
     return (
       <Pressable
-        accessibilityLabel={`${props.label}, ${props.modelCount} models`}
+        accessibilityLabel={`${props.label}${badgeLabel ? `, ${badgeLabel}` : ""}, ${props.modelCount} models`}
         accessibilityRole="button"
         accessibilityState={{ expanded: !props.collapsed }}
         className="mx-4 mt-1 min-h-11 flex-row items-center gap-2 rounded-xl px-1 pt-2 active:opacity-60"

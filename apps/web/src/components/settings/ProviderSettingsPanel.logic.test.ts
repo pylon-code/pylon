@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildProviderEnvironmentOptions,
   classifyProviderEnvironmentAccess,
+  isProtectedLegacyProviderSlot,
   resolvePrimaryOperateAccess,
   resolveRemoteOperateAccess,
   resolveSelectedProviderEnvironmentId,
@@ -256,5 +257,15 @@ describe("remote operate access", () => {
         hasError: false,
       }),
     ).toBe("granted");
+  });
+});
+
+describe("provider instance slot ownership", () => {
+  it("keeps an explicit omp id deletable because Oh My Pi has no legacy slot", () => {
+    expect(isProtectedLegacyProviderSlot(undefined)).toBe(false);
+  });
+
+  it("protects a slot only when a legacy provider config owns it", () => {
+    expect(isProtectedLegacyProviderSlot({ binaryPath: "codex" })).toBe(true);
   });
 });

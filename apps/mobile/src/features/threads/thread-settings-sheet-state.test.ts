@@ -3,7 +3,11 @@ import { describe, expect, it } from "vite-plus/test";
 import { ProviderInstanceId, type ProviderOptionSelection } from "@t3tools/contracts";
 
 import type { ModelOption } from "../../lib/modelOptions";
-import { modelMatchesCatalogQuery, pendingModelAfterPress } from "./thread-settings-sheet-state";
+import {
+  modelMatchesCatalogQuery,
+  pendingModelAfterPress,
+  providerReleaseBadgeLabel,
+} from "./thread-settings-sheet-state";
 
 function modelOption(
   model: string,
@@ -80,5 +84,12 @@ describe("thread settings sheet state", () => {
         pressedIsApplied: false,
       }),
     ).toBe(pressed);
+  });
+});
+
+describe("provider release badges", () => {
+  it("marks Oh My Pi as Early Access", () => {
+    expect(providerReleaseBadgeLabel("omp")).toBe("Early Access");
+    expect(providerReleaseBadgeLabel("codex")).toBeNull();
   });
 });

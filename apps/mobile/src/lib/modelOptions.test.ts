@@ -42,6 +42,59 @@ describe("mobile model options", () => {
     ]);
   });
 
+  it("keeps Oh My Pi profiles separate and shows searchable sub-provider labels", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "omp_work",
+          driver: "omp",
+          displayName: "Oh My Pi Work",
+          enabled: true,
+          installed: true,
+          auth: { status: "unknown" },
+          models: [
+            {
+              slug: "anthropic/claude-sonnet-4-6",
+              name: "Claude Sonnet 4.6",
+              subProvider: "Anthropic",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        },
+        {
+          instanceId: "omp_personal",
+          driver: "omp",
+          enabled: true,
+          installed: true,
+          auth: { status: "unknown" },
+          models: [
+            {
+              slug: "openai/gpt-5.4",
+              name: "GPT-5.4",
+              subProvider: "OpenAI",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    expect(groupByProvider(buildModelOptions(config, null))).toMatchObject([
+      {
+        providerKey: "omp_work",
+        providerLabel: "Oh My Pi Work",
+        models: [{ subtitle: "Oh My Pi Work · Anthropic" }],
+      },
+      {
+        providerKey: "omp_personal",
+        providerLabel: "Oh My Pi",
+        models: [{ subtitle: "Oh My Pi · OpenAI" }],
+      },
+    ]);
+  });
+
   it("honors provider runtime and interaction presentation capabilities", () => {
     const config = {
       providers: [

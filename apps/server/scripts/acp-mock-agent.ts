@@ -2,6 +2,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -19,6 +20,9 @@ const emitInterleavedAssistantToolCalls =
 const omitInterleavedFinalText = process.env.T3_ACP_OMIT_INTERLEAVED_FINAL_TEXT === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
+const emitElicitation = process.env.T3_ACP_EMIT_ELICITATION === "1";
+const emitUnsupportedElicitation = process.env.T3_ACP_EMIT_UNSUPPORTED_ELICITATION === "1";
+const extraModelId = process.env.T3_ACP_EXTRA_MODEL_ID?.trim();
 const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION === "1";
 const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG === "1";
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
@@ -57,6 +61,7 @@ if (process.env.T3_ACP_ASSERT_TOP_LEVEL_ENV === "1") {
   }
 }
 
+const expectedPermissionOptionId = process.env.T3_ACP_EXPECT_PERMISSION_OPTION_ID?.trim();
 const permissionOptionIds = {
   allowOnce: process.env.T3_ACP_ALLOW_ONCE_OPTION_ID ?? "allow-once",
   allowAlways: process.env.T3_ACP_ALLOW_ALWAYS_OPTION_ID ?? "allow-always",
@@ -236,6 +241,7 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
         { value: "composer-2", name: "Composer 2" },
         { value: "composer-2[fast=true]", name: "Composer 2 Fast" },
         { value: "gpt-5.3-codex[reasoning=medium,fast=false]", name: "Codex 5.3" },
+        ...(extraModelId ? [{ value: extraModelId, name: extraModelId }] : []),
       ],
     },
   ];
@@ -312,6 +318,7 @@ function modelState(): AcpSchema.SessionModelState {
 
 const program = Effect.gen(function* () {
   const agent = yield* EffectAcpAgent.AcpAgent;
+  const promptCancellationSignals = new Map<string, Deferred.Deferred<void>>();
 
   yield* agent.handleInitialize((request) =>
     Effect.sync(() => {
@@ -454,6 +461,10 @@ const program = Effect.gen(function* () {
     Effect.gen(function* () {
       const cancelledSessionId = String(sessionId ?? "mock-session-1");
       cancelledSessions.add(cancelledSessionId);
+      const cancellationSignal = promptCancellationSignals.get(cancelledSessionId);
+      if (cancellationSignal) {
+        yield* Deferred.succeed(cancellationSignal, undefined).pipe(Effect.ignore);
+      }
       if (emitLateUpdateAfterCancel) {
         yield* Effect.sleep("50 millis");
         yield* Effect.sync(() => {
@@ -589,7 +600,20 @@ const program = Effect.gen(function* () {
       }
 
       if (hangPromptForever || (hangFirstPromptForever && promptCount === 1)) {
-        return yield* Effect.never;
+        if (cancelledSessions.delete(requestedSessionId)) {
+          return { stopReason: "cancelled" };
+        }
+        const cancellationSignal = yield* Deferred.make<void>();
+        promptCancellationSignals.set(requestedSessionId, cancellationSignal);
+        yield* Deferred.await(cancellationSignal).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              promptCancellationSignals.delete(requestedSessionId);
+              cancelledSessions.delete(requestedSessionId);
+            }),
+          ),
+        );
+        return { stopReason: "cancelled" };
       }
 
       if (emitXAiPromptCompleteThenHang) {
@@ -756,6 +780,13 @@ const program = Effect.gen(function* () {
           ],
         });
 
+        if (
+          expectedPermissionOptionId &&
+          (permission.outcome.outcome !== "selected" ||
+            permission.outcome.optionId !== expectedPermissionOptionId)
+        ) {
+          throw new Error(`Expected permission option ${expectedPermissionOptionId}`);
+        }
         const cancelled =
           cancelledSessions.delete(requestedSessionId) ||
           permission.outcome.outcome === "cancelled";
@@ -842,6 +873,45 @@ const program = Effect.gen(function* () {
           ],
         });
 
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitElicitation) {
+        yield* agent.client.elicit({
+          mode: "form",
+          sessionId: requestedSessionId,
+          message: "Choose an Oh My Pi strategy",
+          requestedSchema: {
+            type: "object",
+            required: ["strategy"],
+            properties: {
+              strategy: {
+                type: "string",
+                title: "Strategy",
+                enum: ["safe", "fast"],
+              },
+            },
+          },
+        });
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitUnsupportedElicitation) {
+        yield* agent.client.elicit({
+          mode: "form",
+          sessionId: requestedSessionId,
+          message: "Describe the requested change",
+          requestedSchema: {
+            type: "object",
+            required: ["description"],
+            properties: {
+              description: {
+                type: "string",
+                title: "Description",
+              },
+            },
+          },
+        });
         return { stopReason: "end_turn" };
       }
 

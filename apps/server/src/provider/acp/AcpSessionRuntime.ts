@@ -375,6 +375,15 @@ export const make = (
         ),
       );
 
+    // ACP uses stdout for protocol frames, but providers can write diagnostics
+    // to stderr for the lifetime of the process. Drain and discard that stream
+    // so pipe backpressure cannot deadlock the agent; raw stderr is never sent
+    // to clients or included in provider errors.
+    yield* Stream.runDrain(child.stderr).pipe(
+      Effect.catchCause(() => Effect.void),
+      Effect.forkIn(runtimeScope),
+    );
+
     const acpContext = yield* Layer.build(
       EffectAcpClient.layerChildProcess(child, {
         ...(options.protocolLogging?.logIncoming !== undefined

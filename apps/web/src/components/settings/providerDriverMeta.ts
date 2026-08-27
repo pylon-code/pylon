@@ -4,6 +4,7 @@ import {
   CursorSettings,
   GrokSettings,
   OpenCodeSettings,
+  OmpSettings,
   PrimeAgentSettings,
   ProviderDriverKind,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ import {
   type Icon,
   OpenAI,
   OpenCodeIcon,
+  OmpIcon,
   PrimeAgentIcon,
 } from "../Icons";
 
@@ -75,6 +77,13 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "OpenCode",
     icon: OpenCodeIcon,
     settingsSchema: OpenCodeSettings,
+  },
+  {
+    value: ProviderDriverKind.make("omp"),
+    label: "Oh My Pi",
+    icon: OmpIcon,
+    badgeLabel: "Early Access",
+    settingsSchema: OmpSettings,
   },
   {
     value: ProviderDriverKind.make("primeAgent"),
