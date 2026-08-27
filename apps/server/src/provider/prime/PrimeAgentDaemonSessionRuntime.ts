@@ -2711,6 +2711,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         );
       }
       const method = yield* requireMethod("compact", connection!.compact);
+      // Prime compaction aborts the active run before summarizing, which suspends queued
+      // session input even when compaction is declined. Resume that native queue before
+      // the next prompt; keep the flag if the response is lost because the abort may have run.
+      needsResumeAfterAbort = true;
       yield* Effect.tryPromise({
         // Never pass custom instructions. The entire native CompactionResult is private.
         try: async () => {
