@@ -3730,12 +3730,24 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           });
         }).pipe(
           Effect.ensuring(
-            Effect.sync(() => {
+            Effect.gen(function* () {
               const resolution = workerRecoveryResolution;
               if (resolution === undefined) return;
-              if (!resolution.settled) settleReconnectResolution(resolution.generation, false);
+              const workerRecoveryWasUnsettled = !resolution.settled;
+              if (workerRecoveryWasUnsettled) {
+                settleReconnectResolution(resolution.generation, false);
+              }
               if (activeWorkerRecovery?.resolution === resolution) {
                 activeWorkerRecovery = undefined;
+              }
+              if (workerRecoveryWasUnsettled && expectedExtension !== undefined) {
+                managedRecoveryFailed = true;
+                settleManagedRecovery(managedRecoveryResolution, false);
+                yield* routeRawEvent({
+                  type: "closed",
+                  error:
+                    "Prime Agent replacement-worker recovery ended before Pylon could verify it.",
+                });
               }
             }),
           ),

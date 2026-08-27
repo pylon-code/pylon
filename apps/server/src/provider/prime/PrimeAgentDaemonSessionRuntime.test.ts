@@ -3190,6 +3190,68 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect("closes the managed session when worker recovery is interrupted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const expected = {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        };
+        let reportFirstList!: () => void;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        const test = fixture({
+          rawSnapshot: { ...snapshot(5), children: [] },
+          waitForHeadlessCompletionImpl: () =>
+            Promise.reject(new Error("Session worker is recovering")),
+          listResponses: [workerListResponse("recovering")],
+          listRequestObserved: () => reportFirstList(),
+        });
+        const runtime = yield* test.make(
+          undefined,
+          [expected.path],
+          undefined,
+          undefined,
+          undefined,
+          expected,
+        );
+        const collecting = yield* collectEvents(runtime, 3).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const controller = new AbortController();
+        const waiting = yield* runtime
+          .waitForRlmQuiescence("turn-worker-managed-abort:1", controller.signal)
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+
+        yield* Effect.promise(() => firstList);
+        controller.abort();
+        const error = yield* Fiber.join(waiting);
+        const nextPromptError = yield* runtime
+          .prompt({ text: "must not enter a replacement worker" })
+          .pipe(Effect.flip);
+        const events = yield* Fiber.join(collecting);
+
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+        });
+        expect(nextPromptError).toMatchObject({
+          operation: "verify-extension",
+          reason: "request-failed",
+        });
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "ConnectionStatus",
+          "SessionClosed",
+        ]);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(0);
+      }),
+    ),
+  );
+
   it.effect("waits for same-generation admission evidence after the close rejects", () =>
     Effect.scoped(
       Effect.gen(function* () {
