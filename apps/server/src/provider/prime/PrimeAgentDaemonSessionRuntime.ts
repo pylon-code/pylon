@@ -76,6 +76,11 @@ const RLM_WORKER_RECOVERY_TIMEOUT_MS = 60_000;
 const RLM_WORKER_RECOVERY_LIST_TIMEOUT_MS = 5_000;
 const RLM_WORKER_RECOVERY_SNAPSHOT_MAX_ATTEMPTS = 3;
 const RLM_WORKER_RECOVERY_SNAPSHOT_RETRY_DELAYS_MS = [100, 250] as const;
+// Prime Agent keeps disconnected client-owned workers for a 30-second grace period.
+// A restarted Pylon waits beyond that boundary, but never steals a session from a live owner.
+const OWNED_SESSION_RELEASE_RETRY_DELAYS_MS = [
+  250, 500, 1_000, 2_000, 4_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000,
+] as const;
 const RLM_WORKER_RECOVERY_LIST_DELAYS_MS = [
   250, 500, 1_000, 2_000, 4_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000,
   5_000,
@@ -427,6 +432,17 @@ const createFailureSchema = Schema.Struct({
   success: Schema.Literal(false),
   error: Schema.String,
 });
+const createSessionAlreadyActiveFailureSchema = Schema.Struct({
+  type: Schema.Literal("response"),
+  command: Schema.Literal("create"),
+  success: Schema.Literal(false),
+  error: Schema.String,
+  errorInfo: Schema.Struct({
+    code: Schema.Literal("session_already_active"),
+    sessionPath: Schema.String,
+    activeSessionId: Schema.optional(Schema.String),
+  }),
+});
 const resumeQueueSuccessSchema = Schema.Struct({
   type: Schema.Literal("response"),
   command: Schema.Literal("resume_queue"),
@@ -584,6 +600,9 @@ const decodeImage = Schema.decodeUnknownOption(imageSchema);
 const decodeExtensionUiResponse = Schema.decodeUnknownOption(extensionUiResponseSchema);
 const decodeCreateSuccess = Schema.decodeUnknownOption(createSuccessSchema);
 const decodeCreateFailure = Schema.decodeUnknownOption(createFailureSchema);
+const decodeCreateSessionAlreadyActiveFailure = Schema.decodeUnknownOption(
+  createSessionAlreadyActiveFailureSchema,
+);
 const decodeResumeQueueSuccess = Schema.decodeUnknownOption(resumeQueueSuccessSchema);
 const decodeResumeQueueEmpty = Schema.decodeUnknownOption(resumeQueueEmptySchema);
 const decodeSessionListSuccess = Schema.decodeUnknownOption(sessionListSuccessSchema);
@@ -801,6 +820,7 @@ const runtimeErrorReason = Schema.Literals([
   "request-failed",
   "request-timed-out",
   "invalid-response",
+  "session-already-active",
   "agent-not-active",
   "disposed",
 ]);
@@ -1502,7 +1522,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return pending;
     };
 
+    let clientClosed = false;
     const closeClient = Effect.sync(() => {
+      if (clientClosed) return;
+      clientClosed = true;
       client.close();
     });
 
@@ -1573,19 +1596,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       ...(configuredModel && configuredModel !== "default" ? { model: configuredModel } : {}),
       ...(input.thinkingLevel === undefined ? {} : { thinking: input.thinkingLevel }),
     };
-    const createResponse = yield* Effect.tryPromise({
-      try: () =>
-        client.request(
-          {
-            type: "create",
-            lifecycle: "client_owned",
-            ...(resumeSessionId === undefined
-              ? { continueRecent: shouldContinue }
-              : { sessionPath: resumeSessionId, continueRecent: false }),
-            config: sessionRuntimeConfig,
-          },
-          COMMAND_TIMEOUT_MS,
-        ),
+    const createCommand = {
+      type: "create",
+      lifecycle: "client_owned",
+      ...(resumeSessionId === undefined
+        ? { continueRecent: shouldContinue }
+        : { sessionPath: resumeSessionId, continueRecent: false }),
+      config: sessionRuntimeConfig,
+    } as const;
+    const requestCreate = Effect.tryPromise({
+      try: () => client.request(createCommand, COMMAND_TIMEOUT_MS),
       catch: () =>
         runtimeError(
           "create-session",
@@ -1593,13 +1613,32 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "The daemon did not complete the create command.",
         ),
     }).pipe(Effect.onError(() => closeClient));
+    const createResponse = yield* Effect.gen(function* () {
+      let response = yield* requestCreate;
+      for (const delay of OWNED_SESSION_RELEASE_RETRY_DELAYS_MS) {
+        if (!shouldContinue || Option.isNone(decodeCreateSessionAlreadyActiveFailure(response)))
+          break;
+        yield* Effect.sleep(delay);
+        response = yield* requestCreate;
+      }
+      return response;
+    }).pipe(Effect.onInterrupt(() => closeClient));
     const created = decodeCreateSuccess(createResponse);
     if (Option.isNone(created)) {
-      client.close();
+      yield* closeClient;
+      const alreadyActive = decodeCreateSessionAlreadyActiveFailure(createResponse);
+      if (Option.isSome(alreadyActive)) {
+        return yield* runtimeError(
+          "create-session",
+          "session-already-active",
+          "SessionAlreadyActiveError: Prime Agent session is already active in another client.",
+        );
+      }
+      const failed = decodeCreateFailure(createResponse);
       return yield* runtimeError(
         "create-session",
-        Option.isSome(decodeCreateFailure(createResponse)) ? "request-failed" : "invalid-response",
-        Option.isSome(decodeCreateFailure(createResponse))
+        Option.isSome(failed) ? "request-failed" : "invalid-response",
+        Option.isSome(failed)
           ? "The daemon rejected the create command."
           : "The daemon returned an invalid create response.",
       );

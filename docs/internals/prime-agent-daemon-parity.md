@@ -100,8 +100,11 @@ ledger's daemon support.
 
 Any transcript mismatch, incomplete streaming snapshot, MCP reattachment failure, or unvalidated barrier
 fails the canonical turn once and disposes the uncertain native session. This recovery is in-memory only;
-a Pylon server restart does not yet adopt native execution that outlives the server process. When both
-bounded stats reads succeed, the usage delta includes child billing that Prime attributes after the original message event. The native autonomous-status result is
+a Pylon server restart does not adopt native execution that outlives the server process. Instead, a
+replacement waits beyond Prime's bounded client-owned disconnect grace for the daemon to release the old
+worker, then recreates the exact saved session. It never steals ownership from a live client; if ownership
+remains active after that bounded wait, Pylon preserves the structured `SessionAlreadyActiveError`. When
+both bounded stats reads succeed, the usage delta includes child billing that Prime attributes after the original message event. The native autonomous-status result is
 discarded at the provider boundary. Older connections without the barrier retain response-boundary
 behavior. An error- or tool-terminated native run completion without a
 final public response is also held for a bounded three-second reconnect handoff; a following native run

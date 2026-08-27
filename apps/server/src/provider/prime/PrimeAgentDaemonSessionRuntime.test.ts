@@ -106,6 +106,21 @@ function terminalAssistantMessage(text = "recovered final response", timestamp =
   };
 }
 
+function sessionAlreadyActiveCreateResponse(activeSessionId = "active-secret-existing") {
+  const sessionPath = "/state/provider-sessions/thread-safe/session.jsonl";
+  return {
+    type: "response",
+    command: "create",
+    success: false,
+    error: `Session is already active in ${activeSessionId}: ${sessionPath}`,
+    errorInfo: {
+      code: "session_already_active",
+      sessionPath,
+      activeSessionId,
+    },
+  };
+}
+
 function workerListResponse(
   workerState: "recovering" | "ready" | "failed" | "stopping",
   workerPid = 101,
@@ -162,6 +177,8 @@ function fixture(options?: {
   readonly rawSnapshotImpl?: () => unknown;
   readonly authoritativeRlmChildren?: unknown;
   readonly createResponse?: unknown;
+  readonly createResponses?: ReadonlyArray<unknown>;
+  readonly createRequestObserved?: (attempt: number) => void;
   readonly duringSnapshot?: ReadonlyArray<unknown>;
   readonly duringResourceSnapshot?: ReadonlyArray<unknown>;
   readonly afterSnapshotEvent?: unknown;
@@ -252,6 +269,7 @@ function fixture(options?: {
   let queuedInputSuspended = false;
   let resumeQueueRequestCount = 0;
   let listRequestCount = 0;
+  let createRequestCount = 0;
 
   class FakeClient implements PrimeAgentDaemonClient {
     isConnected = true;
@@ -324,17 +342,21 @@ function fixture(options?: {
           },
         );
       }
+      const configuredCreateResponse = options?.createResponses?.[createRequestCount];
+      createRequestCount += 1;
+      options?.createRequestObserved?.(createRequestCount);
       return Promise.resolve(
-        options?.createResponse ?? {
-          type: "response",
-          command: "create",
-          success: true,
-          data: {
-            activeSessionId: "active-secret-1",
-            sessionId: "session-1",
-            sessionFile: "/state/provider-sessions/thread-safe/session.jsonl",
+        configuredCreateResponse ??
+          options?.createResponse ?? {
+            type: "response",
+            command: "create",
+            success: true,
+            data: {
+              activeSessionId: "active-secret-1",
+              sessionId: "session-1",
+              sessionFile: "/state/provider-sessions/thread-safe/session.jsonl",
+            },
           },
-        },
       );
     }
     enableRequestRecovery(): void {
@@ -2139,6 +2161,139 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         activeSessionId: "active-secret-1",
       });
       expect(mismatch.captures.attachOptions).toEqual([]);
+    }),
+  );
+
+  it.effect("waits for a disconnected client-owned session to be released after restart", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({
+          createResponses: [
+            ...Array.from({ length: 12 }, () => sessionAlreadyActiveCreateResponse()),
+            {
+              type: "response",
+              command: "create",
+              success: true,
+              data: {
+                activeSessionId: "active-secret-1",
+                sessionId: "session-1",
+                sessionFile: "/state/provider-sessions/thread-safe/session.jsonl",
+              },
+            },
+          ],
+        });
+        const runtimeFiber = yield* make(
+          PRIME_AGENT_DAEMON_RESUME_CURSOR,
+          undefined,
+          undefined,
+          "session-1",
+        ).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        for (const delay of [
+          "250 millis",
+          "500 millis",
+          "1 second",
+          "2 seconds",
+          "4 seconds",
+          "5 seconds",
+          "5 seconds",
+          "5 seconds",
+          "5 seconds",
+          "5 seconds",
+          "5 seconds",
+          "5 seconds",
+        ] as const) {
+          yield* TestClock.adjust(delay);
+          yield* Effect.yieldNow;
+        }
+        const runtime = yield* Fiber.join(runtimeFiber);
+
+        expect(runtime.sessionId).toBe("session-1");
+        const createCommands = captures.commands.filter((command) => command.type === "create");
+        expect(createCommands).toHaveLength(13);
+        expect(createCommands).toEqual(Array.from({ length: 13 }, () => captures.commands[0]));
+        expect(captures.closeCount).toBe(0);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("does not wait or steal ownership for a fresh conflicting session", () =>
+    Effect.gen(function* () {
+      const { captures, make } = fixture({
+        createResponse: sessionAlreadyActiveCreateResponse(),
+      });
+      const error = yield* Effect.scoped(make().pipe(Effect.flip));
+
+      expect(error).toMatchObject({
+        operation: "create-session",
+        reason: "session-already-active",
+        detail:
+          "SessionAlreadyActiveError: Prime Agent session is already active in another client.",
+      });
+      expect(captures.commands.filter((command) => command.type === "create")).toHaveLength(1);
+      expect(captures.closeCount).toBe(1);
+    }),
+  );
+
+  it.effect("preserves SessionAlreadyActiveError after bounded restart recovery", () =>
+    Effect.gen(function* () {
+      const { captures, make } = fixture({
+        createResponse: sessionAlreadyActiveCreateResponse(),
+      });
+      const runtimeFiber = yield* Effect.scoped(
+        make(PRIME_AGENT_DAEMON_RESUME_CURSOR, undefined, undefined, "session-1"),
+      ).pipe(Effect.flip, Effect.forkChild);
+      yield* Effect.yieldNow;
+      for (const delay of [
+        "250 millis",
+        "500 millis",
+        "1 second",
+        "2 seconds",
+        "4 seconds",
+        "5 seconds",
+        "5 seconds",
+        "5 seconds",
+        "5 seconds",
+        "5 seconds",
+        "5 seconds",
+        "5 seconds",
+      ] as const) {
+        yield* TestClock.adjust(delay);
+        yield* Effect.yieldNow;
+      }
+      const error = yield* Fiber.join(runtimeFiber);
+
+      expect(error).toMatchObject({
+        operation: "create-session",
+        reason: "session-already-active",
+        detail:
+          "SessionAlreadyActiveError: Prime Agent session is already active in another client.",
+      });
+      expect(error.detail).not.toContain("active-secret-existing");
+      expect(error.detail).not.toContain("/state/");
+      expect(captures.commands.filter((command) => command.type === "create")).toHaveLength(13);
+      expect(captures.closeCount).toBe(1);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("closes the daemon client when restart ownership recovery is interrupted", () =>
+    Effect.gen(function* () {
+      let reportCreate!: () => void;
+      const createObserved = new Promise<void>((resolve) => {
+        reportCreate = resolve;
+      });
+      const { captures, make } = fixture({
+        createResponse: sessionAlreadyActiveCreateResponse(),
+        createRequestObserved: () => reportCreate(),
+      });
+      const runtimeFiber = yield* Effect.scoped(
+        make(PRIME_AGENT_DAEMON_RESUME_CURSOR, undefined, undefined, "session-1"),
+      ).pipe(Effect.forkChild);
+      yield* Effect.promise(() => createObserved);
+      yield* Fiber.interrupt(runtimeFiber);
+
+      expect(captures.commands.filter((command) => command.type === "create")).toHaveLength(1);
+      expect(captures.closeCount).toBe(1);
     }),
   );
 
@@ -5701,6 +5856,44 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(
           test.captures.commands.filter((command) => command.type === "resume_queue"),
         ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("retries post-compaction input resume before admitting a prompt", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const test = fixture({
+          resumeQueueResponses: [
+            {
+              type: "response",
+              command: "resume_queue",
+              success: false,
+              error: "private native resume failure",
+            },
+            {
+              type: "response",
+              command: "resume_queue",
+              success: true,
+              data: { resumed: true },
+            },
+          ],
+        });
+        const runtime = yield* test.make();
+
+        yield* runtime.compact;
+        expect(yield* runtime.prompt({ text: "blocked prompt" }).pipe(Effect.flip)).toMatchObject({
+          operation: "resume-after-abort",
+          reason: "invalid-response",
+        });
+        yield* runtime.prompt({ text: "retry after compaction" });
+
+        expect(
+          test.captures.commands.filter((command) => command.type === "resume_queue"),
+        ).toHaveLength(2);
         expect(
           test.captures.connectionCalls.filter((call) => call.method === "prompt"),
         ).toHaveLength(1);

@@ -291,6 +291,15 @@ interface FakeCaptures {
   }>;
   retryWorkerRecoverySnapshots: boolean;
   retryWorkerRecoverySnapshotCalls: Array<number>;
+  retryWorkerRecoverySnapshotObserved: ((generation: number) => void) | undefined;
+  reconnectSnapshotResolutionObserved:
+    | ((resolution: {
+        readonly generation: number;
+        readonly reconciled: boolean;
+        readonly terminalResponseObserved: boolean;
+      }) => void)
+    | undefined;
+  workerRecoveryTerminalResponseObserved: (() => void) | undefined;
   rlmQuiescenceUsage: typeof usage | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
   startupEvents: Array<PrimeDaemonEvent>;
@@ -417,6 +426,9 @@ function makeCaptures(): FakeCaptures {
     reconnectResolutions: [],
     retryWorkerRecoverySnapshots: false,
     retryWorkerRecoverySnapshotCalls: [],
+    retryWorkerRecoverySnapshotObserved: undefined,
+    reconnectSnapshotResolutionObserved: undefined,
+    workerRecoveryTerminalResponseObserved: undefined,
     rlmQuiescenceUsage: undefined,
     queue: undefined,
     startupEvents: [],
@@ -761,20 +773,21 @@ function fakeRuntimeFactory(
         isRlmQuiescenceGenerationCurrent: (generation) =>
           captures.rlmContinuityValid && generation === captures.rlmConnectionGeneration,
         resolveReconnectSnapshot: (generation, reconciled, terminalResponseObserved = false) => {
-          captures.reconnectResolutions.push({
-            generation,
-            reconciled,
-            terminalResponseObserved,
-          });
+          const resolution = { generation, reconciled, terminalResponseObserved };
+          captures.reconnectResolutions.push(resolution);
+          captures.reconnectSnapshotResolutionObserved?.(resolution);
           if (generation !== captures.rlmConnectionGeneration) return false;
           captures.rlmContinuityValid = reconciled;
           return true;
         },
         retryWorkerRecoverySnapshot: (generation) => {
           captures.retryWorkerRecoverySnapshotCalls.push(generation);
+          captures.retryWorkerRecoverySnapshotObserved?.(generation);
           return captures.retryWorkerRecoverySnapshots;
         },
-        noteWorkerRecoveryTerminalResponse: () => undefined,
+        noteWorkerRecoveryTerminalResponse: () => {
+          captures.workerRecoveryTerminalResponseObserved?.();
+        },
         isConnectionGenerationCurrent: (generation) =>
           generation === captures.rlmConnectionGeneration,
         prompt: (prompt) =>
@@ -5915,6 +5928,25 @@ describe("PrimeAgentDaemonAdapter", () => {
         captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
         captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
         captures.retryWorkerRecoverySnapshots = true;
+        let reportSnapshotRetry!: (generation: number) => void;
+        const snapshotRetryObserved = new Promise<number>((resolve) => {
+          reportSnapshotRetry = resolve;
+        });
+        captures.retryWorkerRecoverySnapshotObserved = reportSnapshotRetry;
+        let reportSnapshotResolution!: (
+          resolution: FakeCaptures["reconnectResolutions"][number],
+        ) => void;
+        const snapshotResolutionObserved = new Promise<
+          FakeCaptures["reconnectResolutions"][number]
+        >((resolve) => {
+          reportSnapshotResolution = resolve;
+        });
+        captures.reconnectSnapshotResolutionObserved = reportSnapshotResolution;
+        let reportTerminalResponse!: () => void;
+        const terminalResponseObserved = new Promise<void>((resolve) => {
+          reportTerminalResponse = resolve;
+        });
+        captures.workerRecoveryTerminalResponseObserved = reportTerminalResponse;
         const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
           instanceId,
           runtimeFactory: fakeRuntimeFactory(captures),
@@ -5941,13 +5973,7 @@ describe("PrimeAgentDaemonAdapter", () => {
           connectionGeneration: 1,
         });
 
-        for (
-          let attempt = 0;
-          attempt < 10 && captures.retryWorkerRecoverySnapshotCalls.length === 0;
-          attempt += 1
-        ) {
-          yield* Effect.yieldNow;
-        }
+        expect(yield* Effect.promise(() => snapshotRetryObserved)).toBe(1);
         expect(captures.retryWorkerRecoverySnapshotCalls).toEqual([1]);
         expect(captures.reconnectResolutions).toHaveLength(0);
         expect(captures.disposeCount).toBe(0);
@@ -5965,12 +5991,15 @@ describe("PrimeAgentDaemonAdapter", () => {
           replayContinuity: "unavailable",
           connectionGeneration: 1,
         });
-        for (let attempt = 0; attempt < 10 && !captures.rlmContinuityValid; attempt += 1) {
-          yield* Effect.yieldNow;
-        }
+        expect(yield* Effect.promise(() => snapshotResolutionObserved)).toEqual({
+          generation: 1,
+          reconciled: true,
+          terminalResponseObserved: false,
+        });
         expect(captures.rlmContinuityValid).toBe(true);
         const finalMessage = assistantMessage("fresh snapshot recovery completed");
         yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        yield* Effect.promise(() => terminalResponseObserved);
         yield* offer(captures, { _tag: "RunCompleted", messages: [finalMessage] });
         yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
         yield* Fiber.join(running);
