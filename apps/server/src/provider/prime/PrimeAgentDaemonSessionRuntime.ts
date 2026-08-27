@@ -55,6 +55,10 @@ import {
   type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import {
+  PRIME_AGENT_PLAN_TOOL_DEFINITION,
+  PRIME_AGENT_PLAN_TOOL_NAME,
+} from "./PrimeAgentManagedExtension.ts";
 import { PRIME_AGENT_EVENT_BUFFER_CAPACITY } from "./PrimeAgentEventBuffer.ts";
 import { primeAgentSessionFileName } from "./PrimeAgentSessionIdentity.ts";
 import {
@@ -532,6 +536,13 @@ const commandsSchema = Schema.Array(
     }),
   }),
 );
+const managedPlanToolDefinitionSchema = Schema.Struct({
+  name: Schema.String,
+  label: Schema.String,
+  description: Schema.String,
+  promptGuidelines: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(32))),
+  parameters: Schema.Unknown,
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
 const nonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const nonNegativeFinite = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
 const sessionStatsSchema = Schema.Struct({
@@ -579,10 +590,24 @@ const decodeAvailableModels = Schema.decodeUnknownOption(availableModelsSchema);
 const decodeModelCatalog = Schema.decodeUnknownOption(modelCatalogSchema);
 const decodeResourceSnapshot = Schema.decodeUnknownOption(resourceSnapshotSchema);
 const decodeCommands = Schema.decodeUnknownOption(commandsSchema);
+const decodeManagedPlanToolDefinition = Schema.decodeUnknownOption(managedPlanToolDefinitionSchema);
 const decodeSessionStats = Schema.decodeUnknownOption(sessionStatsSchema);
 const decodeRlmMaxDepthStatus = Schema.decodeUnknownOption(rlmMaxDepthStatusSchema);
 const decodeAgentMessageReceipt = Schema.decodeUnknownOption(agentMessageReceiptSchema);
 const decodeRefinementResult = Schema.decodeUnknownOption(refinementResultSchema);
+
+function managedPlanToolDefinitionMatches(value: unknown): boolean {
+  const decoded = decodeManagedPlanToolDefinition(value);
+  if (Option.isNone(decoded)) return false;
+  const expected = PRIME_AGENT_PLAN_TOOL_DEFINITION;
+  return (
+    decoded.value.name === expected.name &&
+    decoded.value.label === expected.label &&
+    decoded.value.description === expected.description &&
+    JSON.stringify(decoded.value.promptGuidelines) === JSON.stringify(expected.promptGuidelines) &&
+    JSON.stringify(decoded.value.parameters) === JSON.stringify(expected.parameters)
+  );
+}
 
 function subtractCumulativeUsage(
   current: PrimeDaemonUsage | undefined,
@@ -804,6 +829,14 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
   readonly disableExtensionDiscovery?: boolean;
   /** Supervised sessions fail closed on transport loss and are re-created after verification. */
   readonly disableAutoReconnect?: boolean;
+  /** Explicit Pylon-owned extension that must load without errors or collisions. */
+  readonly expectedExtension?: {
+    readonly path: string;
+    readonly markerCommand: string;
+    /** Rechecks Pylon's generated source without returning its contents. */
+    readonly verifySource: () => Promise<boolean>;
+  };
+  /** Supervised mode additionally requires an exclusive extension inventory and zero agent depth. */
   readonly requiredExtension?: {
     readonly path: string;
     readonly markerCommand: string;
@@ -1446,8 +1479,22 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       .map((value) => value.trim())
       .filter(Boolean);
     if (
+      input.expectedExtension !== undefined &&
+      (configuredExtensions.filter((path) => path === input.expectedExtension!.path).length !== 1 ||
+        !Predicate.isFunction(input.expectedExtension.verifySource))
+    ) {
+      client.close();
+      return yield* runtimeError(
+        "verify-extension",
+        "invalid-input",
+        "Managed provider verification requires its explicit extension path exactly once.",
+      );
+    }
+    if (
       input.requiredExtension !== undefined &&
-      (input.disableExtensionDiscovery !== true ||
+      (input.expectedExtension?.path !== input.requiredExtension.path ||
+        input.expectedExtension?.markerCommand !== input.requiredExtension.markerCommand ||
+        input.disableExtensionDiscovery !== true ||
         configuredExtensions.length !== 1 ||
         configuredExtensions[0] !== input.requiredExtension.path)
     ) {
@@ -1617,68 +1664,89 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let verifiedInventory:
       | readonly [typeof resourceSnapshotSchema.Type, typeof commandsSchema.Type]
       | undefined;
+    let verifiedInventoryCommandsDisabled = false;
     let verifiedAgentDepth: PrimeAgentDaemonAgentDepth | undefined;
-    if (input.requiredExtension !== undefined) {
+    const expectedExtension = input.expectedExtension;
+    if (expectedExtension !== undefined) {
       if (
-        !Predicate.isFunction(connection?.setRlmMaxDepth) ||
-        !Predicate.isFunction(connection?.getRlmMaxDepthStatus)
+        !Predicate.isFunction(connection?.getToolDefinition) ||
+        (input.requiredExtension !== undefined &&
+          (!Predicate.isFunction(connection?.setRlmMaxDepth) ||
+            !Predicate.isFunction(connection?.getRlmMaxDepthStatus)))
       ) {
         yield* closeAttachedSession;
         return yield* runtimeError(
           "verify-extension",
           "incompatible-api",
-          "The installed daemon cannot verify the managed execution policy extension.",
+          "The installed daemon cannot verify the managed provider extension.",
         );
       }
       yield* Effect.tryPromise({
         try: async () => {
-          const rawSetDepth = await connection!.setRlmMaxDepth!(0);
-          const [rawResources, rawCommands, rawDepth] = await Promise.all([
-            connection!.getResourceSnapshot!(),
-            connection!.getCommands!(),
-            connection!.getRlmMaxDepthStatus!(),
-          ]);
+          const rawSetDepth =
+            input.requiredExtension === undefined
+              ? undefined
+              : await connection!.setRlmMaxDepth!(0);
+          const [rawResources, rawCommands, rawToolDefinition, sourceVerified, rawDepth] =
+            await Promise.all([
+              connection!.getResourceSnapshot!(),
+              connection!.getCommands!(),
+              connection!.getToolDefinition!(PRIME_AGENT_PLAN_TOOL_NAME),
+              expectedExtension.verifySource(),
+              input.requiredExtension === undefined
+                ? Promise.resolve(undefined)
+                : connection!.getRlmMaxDepthStatus!(),
+            ]);
           const resources = decodeResourceSnapshot(rawResources);
           const commands = decodeCommands(rawCommands);
-          const setDepth = decodeRlmMaxDepthStatus(rawSetDepth);
-          const depth = decodeRlmMaxDepthStatus(rawDepth);
-          if (
-            Option.isNone(resources) ||
-            Option.isNone(commands) ||
-            Option.isNone(setDepth) ||
-            Option.isNone(depth)
-          ) {
+          if (Option.isNone(resources) || Option.isNone(commands)) {
             throw new Error("invalid managed extension inventory");
           }
-          const extensionLoaded =
-            resources.value.extensions.length === 1 &&
-            resources.value.extensions[0]?.path === input.requiredExtension!.path;
-          const markerLoaded = commands.value.some(
+          const extensionMatches = resources.value.extensions.filter(
+            (extension) => extension.path === expectedExtension.path,
+          );
+          const markerMatches = commands.value.filter(
             (command) =>
-              command.name === input.requiredExtension!.markerCommand &&
+              command.name === expectedExtension.markerCommand &&
               command.source === "extension" &&
-              command.sourceInfo.path === input.requiredExtension!.path,
+              command.sourceInfo.path === expectedExtension.path,
           );
-          const extensionFailed = resources.value.diagnostics.extensions.some(
-            (diagnostic) => diagnostic.type !== "warning",
+          const extensionFailed = resources.value.diagnostics.extensions.some((diagnostic) =>
+            input.requiredExtension === undefined
+              ? diagnostic.type !== "warning" && diagnostic.path === expectedExtension.path
+              : diagnostic.type !== "warning",
           );
-          verifiedInventory = [resources.value, commands.value];
-          verifiedAgentDepth = safeAgentDepth(depth.value, false);
           if (
-            !extensionLoaded ||
-            !markerLoaded ||
+            extensionMatches.length !== 1 ||
+            sourceVerified !== true ||
+            (input.requiredExtension !== undefined && resources.value.extensions.length !== 1) ||
+            markerMatches.length !== 1 ||
             extensionFailed ||
-            setDepth.value.maxDepth !== 0 ||
-            depth.value.maxDepth !== 0
+            !managedPlanToolDefinitionMatches(rawToolDefinition)
           ) {
             throw new Error("managed extension did not load");
+          }
+          verifiedInventory = [resources.value, commands.value];
+          verifiedInventoryCommandsDisabled = input.requiredExtension !== undefined;
+          if (input.requiredExtension !== undefined) {
+            const setDepth = decodeRlmMaxDepthStatus(rawSetDepth);
+            const depth = decodeRlmMaxDepthStatus(rawDepth);
+            if (
+              Option.isNone(setDepth) ||
+              Option.isNone(depth) ||
+              setDepth.value.maxDepth !== 0 ||
+              depth.value.maxDepth !== 0
+            ) {
+              throw new Error("managed extension agent depth was not disabled");
+            }
+            verifiedAgentDepth = safeAgentDepth(depth.value, false);
           }
         },
         catch: () =>
           runtimeError(
             "verify-extension",
             "invalid-response",
-            "Prime Agent did not load the required managed execution policy extension.",
+            "Prime Agent did not load the required managed provider extension.",
           ),
       }).pipe(Effect.onError(() => closeAttachedSession));
     }
@@ -2038,6 +2106,214 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       mcpRecoveryTail = delivery.catch(() => undefined);
       return delivery;
     };
+    const verifyManagedExtensionAfterReconnect = Effect.tryPromise({
+      try: async () => {
+        if (expectedExtension === undefined) return true;
+        const [rawResources, rawCommands, rawToolDefinition, sourceVerified, rawDepth] =
+          await Promise.all([
+            connection!.getResourceSnapshot(),
+            connection!.getCommands(),
+            connection!.getToolDefinition!(PRIME_AGENT_PLAN_TOOL_NAME),
+            expectedExtension.verifySource(),
+            input.requiredExtension === undefined
+              ? Promise.resolve(undefined)
+              : connection!.getRlmMaxDepthStatus!(),
+          ]);
+        const resources = decodeResourceSnapshot(rawResources);
+        const commands = decodeCommands(rawCommands);
+        if (Option.isNone(resources) || Option.isNone(commands)) return false;
+        const depth =
+          input.requiredExtension === undefined ? undefined : decodeRlmMaxDepthStatus(rawDepth);
+        return (
+          sourceVerified === true &&
+          (depth === undefined || (Option.isSome(depth) && depth.value.maxDepth === 0)) &&
+          resources.value.extensions.filter(
+            (extension) => extension.path === expectedExtension.path,
+          ).length === 1 &&
+          (input.requiredExtension === undefined || resources.value.extensions.length === 1) &&
+          commands.value.filter(
+            (command) =>
+              command.name === expectedExtension.markerCommand &&
+              command.source === "extension" &&
+              command.sourceInfo.path === expectedExtension.path,
+          ).length === 1 &&
+          !resources.value.diagnostics.extensions.some((diagnostic) =>
+            input.requiredExtension === undefined
+              ? diagnostic.type !== "warning" && diagnostic.path === expectedExtension.path
+              : diagnostic.type !== "warning",
+          ) &&
+          managedPlanToolDefinitionMatches(rawToolDefinition)
+        );
+      },
+      catch: () => false,
+    });
+    type ManagedRecoveryResolution = {
+      readonly promise: Promise<boolean>;
+      readonly resolve: (verified: boolean) => void;
+      settled: boolean;
+      verified?: boolean;
+    };
+    let managedRecoveryTail = Promise.resolve();
+    let managedRecoveryResolution: ManagedRecoveryResolution | undefined;
+    let managedRecoveryFailed = false;
+    const beginManagedRecovery = (): ManagedRecoveryResolution => {
+      const previous = managedRecoveryResolution;
+      if (previous !== undefined && !previous.settled) {
+        previous.settled = true;
+        previous.verified = false;
+        previous.resolve(false);
+      }
+      let resolve!: (verified: boolean) => void;
+      const promise = new Promise<boolean>((complete) => {
+        resolve = complete;
+      });
+      const recovery = { promise, resolve, settled: false };
+      managedRecoveryResolution = recovery;
+      return recovery;
+    };
+    const settleManagedRecovery = (
+      recovery: ManagedRecoveryResolution | undefined,
+      verified: boolean,
+    ): boolean => {
+      if (recovery === undefined || recovery !== managedRecoveryResolution || recovery.settled) {
+        return false;
+      }
+      recovery.settled = true;
+      recovery.verified = verified;
+      recovery.resolve(verified);
+      if (!verified) managedRecoveryFailed = true;
+      return true;
+    };
+    const managedRecoveryPending = () =>
+      managedRecoveryResolution !== undefined && !managedRecoveryResolution.settled;
+    const routeManagedAwareRawEvent = (raw: unknown): Promise<void> => {
+      const rawType =
+        typeof raw === "object" && raw !== null && "type" in raw && typeof raw.type === "string"
+          ? raw.type
+          : undefined;
+      const connectionStatus =
+        rawType === "connection_status" &&
+        "status" in (raw as object) &&
+        typeof (raw as { readonly status?: unknown }).status === "string"
+          ? (raw as { readonly status: string }).status
+          : undefined;
+      if (connectionStatus === "reconnecting" && expectedExtension !== undefined) {
+        beginManagedRecovery();
+      }
+      const recovery = managedRecoveryResolution;
+      const workerRecoveryRequiresExplicitSnapshot =
+        activeWorkerRecovery !== undefined &&
+        activeWorkerRecovery.resolution === reconnectResolution;
+      if (
+        rawType === "session_resynced" &&
+        workerRecoveryRequiresExplicitSnapshot &&
+        activeWorkerRecovery?.explicitSnapshotRaw !== raw
+      ) {
+        return Promise.resolve();
+      }
+      if (
+        expectedExtension === undefined ||
+        (!managedRecoveryPending() &&
+          !managedRecoveryFailed &&
+          rawType !== "session_resynced" &&
+          rawType !== "connection_status" &&
+          rawType !== "closed")
+      ) {
+        return routeMcpAwareRawEvent(raw);
+      }
+      const delivery = managedRecoveryTail.then(() =>
+        runPromise(
+          Effect.gen(function* () {
+            if (
+              rawType === "session_resynced" &&
+              (recovery === undefined || recovery !== managedRecoveryResolution || recovery.settled)
+            ) {
+              return;
+            }
+            if (connectionStatus === "connected" && managedRecoveryPending()) {
+              settleManagedRecovery(recovery, false);
+              settleReconnectResolution(connectionGeneration, false);
+              yield* routeRawEvent({
+                type: "closed",
+                error:
+                  "Prime Agent reconnected without restoring Pylon's managed provider extension.",
+              });
+              return;
+            }
+            if (rawType === "session_resynced" && recovery !== undefined && !recovery.settled) {
+              const restored = yield* verifyManagedExtensionAfterReconnect;
+              if (!restored) {
+                settleManagedRecovery(recovery, false);
+                settleReconnectResolution(connectionGeneration, false);
+                yield* routeRawEvent({
+                  type: "closed",
+                  error:
+                    "Pylon's managed provider extension could not be verified after Prime Agent reconnected.",
+                });
+                return;
+              }
+            }
+            if (rawType === "closed") {
+              settleManagedRecovery(recovery, false);
+              managedRecoveryFailed = true;
+            }
+            if (!managedRecoveryFailed || rawType === "closed") {
+              yield* Effect.promise(() => routeMcpAwareRawEvent(raw));
+              if (rawType === "session_resynced") {
+                settleManagedRecovery(recovery, true);
+              }
+            }
+          }),
+        ),
+      );
+      const guarded = delivery.catch((cause) => {
+        settleManagedRecovery(recovery, false);
+        throw cause;
+      });
+      managedRecoveryTail = guarded.catch(() => undefined);
+      return guarded;
+    };
+    const beginManagedWorkerRecovery = (): Promise<void> => {
+      if (expectedExtension === undefined) return Promise.resolve();
+      const recovery = beginManagedRecovery();
+      const delivery = managedRecoveryTail
+        .then(() =>
+          runPromise(routeRawEvent({ type: "connection_status", status: "reconnecting" })),
+        )
+        .catch((cause) => {
+          settleManagedRecovery(recovery, false);
+          throw cause;
+        });
+      managedRecoveryTail = delivery.catch(() => undefined);
+      return delivery;
+    };
+    const awaitManagedRecovery = Effect.suspend(() => {
+      if (expectedExtension === undefined) return Effect.void;
+      const recovery = managedRecoveryResolution;
+      return Effect.tryPromise({
+        try: async () => {
+          await managedRecoveryTail;
+          if (recovery === undefined) return true;
+          return recovery.settled ? recovery.verified === true : recovery.promise;
+        },
+        catch: () =>
+          runtimeError(
+            "verify-extension",
+            "request-failed",
+            "Could not verify Pylon's managed provider extension after reconnecting.",
+          ),
+      }).pipe(
+        Effect.flatMap((verified) =>
+          verified && !managedRecoveryFailed
+            ? Effect.void
+            : runtimeError(
+                "verify-extension",
+                "request-failed",
+                "Pylon's managed provider extension is unavailable after reconnecting.",
+              ),
+        ),
+      );
+    });
     const awaitMcpRecovery = Effect.suspend(() =>
       input.mcpServer === undefined
         ? Effect.void
@@ -2063,6 +2339,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             ),
           ),
     );
+    const awaitProviderRecovery = Effect.all([awaitManagedRecovery, awaitMcpRecovery]).pipe(
+      Effect.asVoid,
+    );
 
     // The initial snapshot reserves one queue slot. Admission is cumulative for
     // the whole initialization phase: draining a batch never reopens capacity.
@@ -2077,7 +2356,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         bufferedEvents.push(event);
         return;
       }
-      return routeMcpAwareRawEvent(event);
+      return routeManagedAwareRawEvent(event);
     });
 
     const rawSnapshot = yield* Effect.tryPromise({
@@ -2145,7 +2424,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
 
     const initialResources =
       verifiedInventory !== undefined
-        ? safeSessionResources(verifiedInventory[0], verifiedInventory[1], true)
+        ? safeSessionResources(
+            verifiedInventory[0],
+            verifiedInventory[1],
+            verifiedInventoryCommandsDisabled,
+          )
         : yield* Effect.tryPromise({
             try: () => Promise.all([connection!.getResourceSnapshot(), connection!.getCommands()]),
             catch: () => undefined,
@@ -3251,6 +3534,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         activeWorkerRecovery?.resolution === resolution;
       const gate = Effect.gen(function* () {
         if (!ownsRecovery()) return false;
+        yield* Effect.promise(() => beginManagedWorkerRecovery());
         const first = yield* readWorkerRecoverySummary();
         if (!ownsRecovery() || first?.state !== "recovering") return false;
         const workerPid = first.pid;
@@ -3282,7 +3566,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         if (recovery?.resolution !== resolution) return false;
         const explicitSnapshot = { type: "session_resynced", snapshot: snapshot.value } as const;
         recovery.explicitSnapshotRaw = explicitSnapshot;
-        yield* Effect.promise(() => routeMcpAwareRawEvent(explicitSnapshot));
+        yield* Effect.promise(() => routeManagedAwareRawEvent(explicitSnapshot));
         const reconciled = yield* Effect.promise(() => resolution.promise);
         return reconciled && ownsRecovery();
       });
@@ -3446,12 +3730,24 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           });
         }).pipe(
           Effect.ensuring(
-            Effect.sync(() => {
+            Effect.gen(function* () {
               const resolution = workerRecoveryResolution;
               if (resolution === undefined) return;
-              if (!resolution.settled) settleReconnectResolution(resolution.generation, false);
+              const workerRecoveryWasUnsettled = !resolution.settled;
+              if (workerRecoveryWasUnsettled) {
+                settleReconnectResolution(resolution.generation, false);
+              }
               if (activeWorkerRecovery?.resolution === resolution) {
                 activeWorkerRecovery = undefined;
+              }
+              if (workerRecoveryWasUnsettled && expectedExtension !== undefined) {
+                managedRecoveryFailed = true;
+                settleManagedRecovery(managedRecoveryResolution, false);
+                yield* routeRawEvent({
+                  type: "closed",
+                  error:
+                    "Prime Agent replacement-worker recovery ended before Pylon could verify it.",
+                });
               }
             }),
           ),
@@ -3557,7 +3853,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
       yield* ensureOpen("prompt");
-      yield* awaitMcpRecovery;
+      yield* awaitProviderRecovery;
       const resumedAfterAbort = yield* resumeAfterAbort();
       const images = yield* validateImages("prompt", promptInput.images);
       yield* validatePromptContent("prompt", promptInput.text, images);
@@ -3671,7 +3967,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
       yield* ensureOpen("steer");
-      yield* awaitMcpRecovery;
+      yield* awaitProviderRecovery;
       const images = yield* validateImages("steer", promptInput.images);
       yield* validatePromptContent("steer", promptInput.text, images);
       const method = yield* requireMethod("steer", connection!.steer);
@@ -3682,7 +3978,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
       yield* ensureOpen("follow-up");
-      yield* awaitMcpRecovery;
+      yield* awaitProviderRecovery;
       const images = yield* validateImages("follow-up", promptInput.images);
       yield* validatePromptContent("follow-up", promptInput.text, images);
       const method = yield* requireMethod("follow-up", connection!.followUp);
@@ -4053,6 +4349,12 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             connection!.getResourceSnapshot(),
             connection!.getCommands(),
             getDepth.call(connection),
+            expectedExtension === undefined
+              ? Promise.resolve(undefined)
+              : connection!.getToolDefinition!(PRIME_AGENT_PLAN_TOOL_NAME),
+            expectedExtension === undefined
+              ? Promise.resolve(true)
+              : expectedExtension.verifySource(),
           ]),
         catch: () =>
           runtimeError(
@@ -4069,6 +4371,32 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "reload-resources",
           "invalid-response",
           "The daemon returned invalid session state after reload.",
+        );
+      }
+      if (
+        expectedExtension !== undefined &&
+        (rawState[4] !== true ||
+          resources.value.extensions.filter(
+            (extension) => extension.path === expectedExtension.path,
+          ).length !== 1 ||
+          (input.requiredExtension !== undefined && resources.value.extensions.length !== 1) ||
+          commands.value.filter(
+            (command) =>
+              command.name === expectedExtension.markerCommand &&
+              command.source === "extension" &&
+              command.sourceInfo.path === expectedExtension.path,
+          ).length !== 1 ||
+          resources.value.diagnostics.extensions.some((diagnostic) =>
+            input.requiredExtension === undefined
+              ? diagnostic.type !== "warning" && diagnostic.path === expectedExtension.path
+              : diagnostic.type !== "warning",
+          ) ||
+          !managedPlanToolDefinitionMatches(rawState[3]))
+      ) {
+        return yield* runtimeError(
+          "reload-resources",
+          "invalid-response",
+          "Prime Agent did not preserve the required managed provider extension after reload.",
         );
       }
       return {

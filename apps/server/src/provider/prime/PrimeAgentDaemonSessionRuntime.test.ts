@@ -24,6 +24,7 @@ import {
   type PrimeAgentDaemonThinkingLevel,
 } from "./PrimeAgentDaemonBridge.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import { PRIME_AGENT_PLAN_TOOL_DEFINITION } from "./PrimeAgentManagedExtension.ts";
 import { PRIME_AGENT_EVENT_BUFFER_CAPACITY } from "./PrimeAgentEventBuffer.ts";
 import {
   makePrimeAgentDaemonSessionRuntime,
@@ -171,6 +172,7 @@ function fixture(options?: {
   readonly releaseMcpImpl?: () => Promise<unknown>;
   readonly resourceSnapshot?: unknown;
   readonly commands?: unknown;
+  readonly toolDefinition?: unknown;
   readonly modelCatalog?: unknown;
   readonly availableModels?: unknown;
   readonly getModelCatalogImpl?: () => Promise<unknown>;
@@ -224,6 +226,7 @@ function fixture(options?: {
     readonly waitForRlmQuiescence?: boolean;
   }) => Promise<unknown>;
   readonly omitRlmQuiescence?: boolean;
+  readonly verifyManagedSourceImpl?: () => Promise<boolean>;
 }) {
   const captures: Captures = {
     order: [],
@@ -597,6 +600,10 @@ function fixture(options?: {
         ],
       );
     }
+    getToolDefinition(name: string): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getToolDefinition", args: [name] });
+      return Promise.resolve(options?.toolDefinition ?? PRIME_AGENT_PLAN_TOOL_DEFINITION);
+    }
     async getResourceSnapshot(): Promise<unknown> {
       captures.connectionCalls.push({ method: "getResourceSnapshot", args: [] });
       for (const event of options?.duringResourceSnapshot ?? []) await listener?.(event);
@@ -751,6 +758,7 @@ function fixture(options?: {
     requiredExtension?: { readonly path: string; readonly markerCommand: string },
     resumeSessionId?: string,
     mcpServer?: PrimeAgentDaemonSessionRuntimeInput["mcpServer"],
+    expectedExtension?: { readonly path: string; readonly markerCommand: string },
   ) =>
     makePrimeAgentDaemonSessionRuntime({
       manager,
@@ -760,9 +768,21 @@ function fixture(options?: {
       model: "openai/gpt-5.3-codex",
       thinkingLevel: "high",
       ...(extensions === undefined ? {} : { extensions }),
+      ...(expectedExtension === undefined && requiredExtension === undefined
+        ? {}
+        : {
+            expectedExtension: {
+              ...(expectedExtension ?? requiredExtension!),
+              verifySource: options?.verifyManagedSourceImpl ?? (() => Promise.resolve(true)),
+            },
+          }),
       ...(requiredExtension === undefined
         ? {}
-        : { disableExtensionDiscovery: true, disableAutoReconnect: true, requiredExtension }),
+        : {
+            disableExtensionDiscovery: true,
+            disableAutoReconnect: true,
+            requiredExtension,
+          }),
       ...(resumeCursor === undefined ? {} : { resumeCursor }),
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
       ...(mcpServer === undefined ? {} : { mcpServer }),
@@ -1206,6 +1226,43 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           settable: true,
           maxSettableDepth: 4,
         });
+      }),
+    ),
+  );
+
+  it.effect("rejects reload when the generated managed source changes afterward", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const expected = {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        };
+        let verificationCalls = 0;
+        const { captures, make } = fixture({
+          rawSnapshot: { ...snapshot(), children: [] },
+          verifyManagedSourceImpl: () => {
+            verificationCalls += 1;
+            return Promise.resolve(verificationCalls === 1);
+          },
+        });
+        const runtime = yield* make(
+          undefined,
+          [expected.path],
+          undefined,
+          undefined,
+          undefined,
+          expected,
+        );
+        captures.connectionCalls.splice(0);
+
+        const error = yield* runtime.reloadResources.pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          operation: "reload-resources",
+          reason: "invalid-response",
+        });
+        expect(verificationCalls).toBe(2);
+        expect(captures.connectionCalls.map((call) => call.method)).toContain("reload");
       }),
     ),
   );
@@ -1680,10 +1737,239 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           { method: "setRlmMaxDepth", args: [0] },
           { method: "getResourceSnapshot", args: [] },
           { method: "getCommands", args: [] },
+          { method: "getToolDefinition", args: ["pylon_update_plan"] },
           { method: "getRlmMaxDepthStatus", args: [] },
         ]);
       }),
     ),
+  );
+
+  it.effect("keeps discovery in full access while verifying the exact managed plan tool", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const expected = {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        };
+        const { captures, make } = fixture({
+          rawSnapshot: { ...snapshot(), children: [] },
+          resourceSnapshot: {
+            extensions: [{ path: expected.path }, { path: "/state/user/unrelated.mjs" }],
+            diagnostics: {
+              extensions: [{ type: "error", path: "/state/user/unrelated.mjs" }],
+            },
+          },
+        });
+        const runtime = yield* make(
+          undefined,
+          [expected.path],
+          undefined,
+          undefined,
+          undefined,
+          expected,
+        );
+        expect(captures.commands[0]).toMatchObject({
+          config: { extensions: [expected.path], noExtensions: false },
+        });
+        expect(runtime.initialResources.available).toBe(true);
+        expect(captures.connectionCalls).toContainEqual({
+          method: "getToolDefinition",
+          args: ["pylon_update_plan"],
+        });
+      }),
+    ),
+  );
+
+  it.effect("fails closed on a managed plan tool definition mismatch in full access", () =>
+    Effect.gen(function* () {
+      const expected = {
+        path: "/state/pylon/permission.mjs",
+        markerCommand: "pylon-permission-gate-v1",
+      };
+      for (const toolDefinition of [
+        {
+          ...PRIME_AGENT_PLAN_TOOL_DEFINITION,
+          description: "A colliding tool definition",
+        },
+        {
+          ...PRIME_AGENT_PLAN_TOOL_DEFINITION,
+          promptSnippet: "unexpected extra definition field",
+        },
+      ]) {
+        const { captures, make } = fixture({
+          rawSnapshot: { ...snapshot(), children: [] },
+          toolDefinition,
+        });
+        const error = yield* Effect.scoped(
+          make(undefined, [expected.path], undefined, undefined, undefined, expected).pipe(
+            Effect.flip,
+          ),
+        );
+        expect(error).toMatchObject({
+          operation: "verify-extension",
+          reason: "invalid-response",
+        });
+        expect(captures.disposeCount).toBe(1);
+        expect(captures.closeCount).toBe(1);
+      }
+    }),
+  );
+
+  it.effect("preserves reconnect ordering around a managed plan result and verified resync", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const expected = {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        };
+        let verificationCalls = 0;
+        let reportReconnectVerification!: () => void;
+        const reconnectVerificationStarted = new Promise<void>((resolve) => {
+          reportReconnectVerification = resolve;
+        });
+        let releaseReconnectVerification!: (verified: boolean) => void;
+        const reconnectVerification = new Promise<boolean>((resolve) => {
+          releaseReconnectVerification = resolve;
+        });
+        const test = fixture({
+          rawSnapshot: { ...snapshot(), children: [] },
+          verifyManagedSourceImpl: () => {
+            verificationCalls += 1;
+            if (verificationCalls === 1) return Promise.resolve(true);
+            reportReconnectVerification();
+            return reconnectVerification;
+          },
+        });
+        const runtime = yield* test.make(
+          undefined,
+          [expected.path],
+          undefined,
+          undefined,
+          undefined,
+          expected,
+        );
+        const eventsFiber = yield* collectEvents(runtime, 5).pipe(Effect.forkChild);
+        const planMessage = {
+          role: "toolResult",
+          toolCallId: "managed-plan-call",
+          toolName: "pylon_update_plan",
+          content: [{ type: "text", text: "Plan updated (1 steps)." }],
+          details: {
+            protocol: "pylon-plan-v1",
+            plan: [{ step: "Verify reconnect", status: "inProgress" }],
+          },
+          isError: false,
+          timestamp: 2,
+        };
+
+        const reconnecting = test.emit({ type: "connection_status", status: "reconnecting" });
+        const plan = test.emit({
+          type: "session_event",
+          event: { type: "message_end", message: planMessage },
+        });
+        const resync = test.emit({
+          type: "session_resynced",
+          snapshot: {
+            ...snapshot(9),
+            state: { ...snapshot(9).state, messageCount: 1 },
+            messages: [planMessage],
+          },
+        });
+        yield* Effect.promise(() => reconnectVerificationStarted);
+        const afterResync = test.emit({
+          type: "session_event",
+          event: { type: "message_end", message: terminalAssistantMessage() },
+        });
+        const steering = yield* runtime
+          .steer({ text: "wait for managed verification" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        expect(eventsFiber.pollUnsafe()).toBeUndefined();
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "steer"),
+        ).toHaveLength(0);
+
+        releaseReconnectVerification(true);
+        yield* Effect.promise(() =>
+          Promise.all([reconnecting, plan, resync, afterResync]).then(() => undefined),
+        );
+        yield* Fiber.join(steering);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "steer"),
+        ).toHaveLength(1);
+
+        const events = yield* Fiber.join(eventsFiber);
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "ConnectionStatus",
+          "MessageCompleted",
+          "SessionResynced",
+          "MessageCompleted",
+        ]);
+        expect(events[2]).toMatchObject({
+          _tag: "MessageCompleted",
+          message: {
+            role: "toolResult",
+            planUpdate: {
+              plan: [{ step: "Verify reconnect", status: "inProgress" }],
+            },
+          },
+        });
+      }),
+    ),
+  );
+
+  it.effect(
+    "rejects a reconnect snapshot before publishing it when managed verification fails",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const expected = {
+            path: "/state/pylon/permission.mjs",
+            markerCommand: "pylon-permission-gate-v1",
+          };
+          const resources = {
+            extensions: [{ path: expected.path }],
+            diagnostics: { extensions: [] },
+          };
+          const test = fixture({
+            rawSnapshot: { ...snapshot(), children: [] },
+            resourceSnapshot: resources,
+          });
+          const runtime = yield* test.make(
+            undefined,
+            [expected.path],
+            undefined,
+            undefined,
+            undefined,
+            expected,
+          );
+          const eventsFiber = yield* collectEvents(runtime, 3).pipe(Effect.forkChild);
+
+          yield* Effect.promise(() =>
+            test.emit({ type: "connection_status", status: "reconnecting" }),
+          );
+          resources.extensions = [];
+          yield* Effect.promise(() =>
+            test.emit({ type: "session_resynced", snapshot: snapshot(9) }),
+          );
+
+          const events = yield* Fiber.join(eventsFiber);
+          expect(events.map((event) => event._tag)).toEqual([
+            "SessionResynced",
+            "ConnectionStatus",
+            "SessionClosed",
+          ]);
+          expect(events[2]).toMatchObject({
+            _tag: "SessionClosed",
+            error:
+              "Pylon's managed provider extension could not be verified after Prime Agent reconnected.",
+          });
+          expect(
+            test.captures.connectionCalls.filter((call) => call.method === "getToolDefinition"),
+          ).toHaveLength(2);
+        }),
+      ),
   );
 
   it.effect("fails closed when the managed extension inventory or RLM depth is not verified", () =>
@@ -1717,6 +2003,20 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
                   type: "error",
                   path: "/state/pylon/permission.mjs",
                   message: "load failed",
+                },
+              ],
+            },
+          },
+        },
+        {
+          resourceSnapshot: {
+            extensions: [{ path: "/state/pylon/permission.mjs" }],
+            diagnostics: {
+              extensions: [
+                {
+                  type: "error",
+                  path: "/state/user/unrelated.mjs",
+                  message: "unexpected discovered extension failure",
                 },
               ],
             },
@@ -2726,8 +3026,19 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
           listRequestObserved: () => reportFirstList?.(),
         });
-        const runtime = yield* test.make();
-        const collecting = yield* collectEvents(runtime, 4).pipe(
+        const expected = {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        };
+        const runtime = yield* test.make(
+          undefined,
+          [expected.path],
+          undefined,
+          undefined,
+          undefined,
+          expected,
+        );
+        const collecting = yield* collectEvents(runtime, 5).pipe(
           Effect.forkChild({ startImmediately: true }),
         );
         const token = "turn-worker-client-close:1";
@@ -2780,18 +3091,26 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         runtime.noteWorkerRecoveryTerminalResponse();
         yield* TestClock.adjust(250);
         yield* Effect.promise(() => recoverySnapshotRead);
-        yield* Effect.yieldNow;
-        expect(runtime.resolveReconnectSnapshot(0, true, true)).toBe(true);
+        let snapshotResolved = false;
+        for (let attempt = 0; attempt < 10 && !snapshotResolved; attempt += 1) {
+          yield* Effect.yieldNow;
+          snapshotResolved = runtime.resolveReconnectSnapshot(0, true, true);
+        }
+        expect(snapshotResolved).toBe(true);
         yield* Fiber.join(waiting);
         const events = yield* Fiber.join(collecting);
 
         expect(events.map((event) => event._tag)).toEqual([
           "SessionResynced",
           "MessageCompleted",
+          "ConnectionStatus",
           "SessionResynced",
           "RlmQuiesced",
         ]);
         expect(test.captures.order.filter((entry) => entry === "snapshot")).toHaveLength(2);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "getToolDefinition"),
+        ).toHaveLength(2);
         expect(
           test.captures.connectionCalls.filter((call) => call.method === "prompt"),
         ).toHaveLength(1);
@@ -2800,6 +3119,135 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
             (call) => call.method === "waitForHeadlessCompletion",
           ),
         ).toHaveLength(2);
+      }),
+    ),
+  );
+
+  it.effect("fails closed when a recovered worker loses the supervised managed extension", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const expected = {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        };
+        const resources = {
+          extensions: [{ path: expected.path }],
+          diagnostics: { extensions: [] },
+        };
+        let reportFirstList!: () => void;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        let reportRecoverySnapshot!: () => void;
+        const recoverySnapshotRead = new Promise<void>((resolve) => {
+          reportRecoverySnapshot = resolve;
+        });
+        let snapshotReads = 0;
+        const test = fixture({
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            if (snapshotReads === 1) return { ...snapshot(5), children: [] };
+            reportRecoverySnapshot();
+            return { ...snapshot(6), children: [] };
+          },
+          resourceSnapshot: resources,
+          waitForHeadlessCompletionImpl: () =>
+            Promise.reject(new Error("Session worker is recovering")),
+          listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+          listRequestObserved: () => reportFirstList(),
+        });
+        const runtime = yield* test.make(undefined, [expected.path], expected);
+        const collecting = yield* collectEvents(runtime, 3).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const waiting = yield* runtime
+          .waitForRlmQuiescence("turn-worker-managed-failure:1", activeSignal())
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+
+        yield* Effect.promise(() => firstList);
+        resources.extensions = [];
+        yield* TestClock.adjust(250);
+        yield* Effect.promise(() => recoverySnapshotRead);
+        const error = yield* Fiber.join(waiting);
+        const events = yield* Fiber.join(collecting);
+
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+        });
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "ConnectionStatus",
+          "SessionClosed",
+        ]);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "getToolDefinition"),
+        ).toHaveLength(2);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "getRlmMaxDepthStatus"),
+        ).toHaveLength(2);
+      }),
+    ),
+  );
+
+  it.effect("closes the managed session when worker recovery is interrupted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const expected = {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        };
+        let reportFirstList!: () => void;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        const test = fixture({
+          rawSnapshot: { ...snapshot(5), children: [] },
+          waitForHeadlessCompletionImpl: () =>
+            Promise.reject(new Error("Session worker is recovering")),
+          listResponses: [workerListResponse("recovering")],
+          listRequestObserved: () => reportFirstList(),
+        });
+        const runtime = yield* test.make(
+          undefined,
+          [expected.path],
+          undefined,
+          undefined,
+          undefined,
+          expected,
+        );
+        const collecting = yield* collectEvents(runtime, 3).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const controller = new AbortController();
+        const waiting = yield* runtime
+          .waitForRlmQuiescence("turn-worker-managed-abort:1", controller.signal)
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+
+        yield* Effect.promise(() => firstList);
+        controller.abort();
+        const error = yield* Fiber.join(waiting);
+        const nextPromptError = yield* runtime
+          .prompt({ text: "must not enter a replacement worker" })
+          .pipe(Effect.flip);
+        const events = yield* Fiber.join(collecting);
+
+        expect(error).toMatchObject({
+          operation: "rlm-quiescence",
+          reason: "request-failed",
+        });
+        expect(nextPromptError).toMatchObject({
+          operation: "verify-extension",
+          reason: "request-failed",
+        });
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "ConnectionStatus",
+          "SessionClosed",
+        ]);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(0);
       }),
     ),
   );

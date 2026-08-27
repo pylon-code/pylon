@@ -244,6 +244,125 @@ describe("PrimeAgentDaemonEvents", () => {
     });
   });
 
+  it("allowlist-decodes only successful finalized Pylon plan result messages", () => {
+    const planResult = {
+      role: "toolResult",
+      toolCallId: "plan-call-1",
+      toolName: "pylon_update_plan",
+      content: [{ type: "text", text: "Plan updated (2 steps)." }],
+      details: {
+        protocol: "pylon-plan-v1",
+        explanation: "  Safe task parity  ",
+        plan: [
+          { step: "  Inspect behavior  ", status: "completed" },
+          { step: "Project plan", status: "inProgress" },
+        ],
+      },
+      isError: false,
+      timestamp: 12,
+    };
+    expect(
+      decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_end", message: planResult })),
+    ).toMatchObject({
+      _tag: "MessageCompleted",
+      message: {
+        role: "toolResult",
+        planUpdate: {
+          toolCallId: "plan-call-1",
+          explanation: "Safe task parity",
+          plan: [
+            { step: "Inspect behavior", status: "completed" },
+            { step: "Project plan", status: "inProgress" },
+          ],
+        },
+      },
+    });
+
+    expect(
+      decodePrimeAgentDaemonEvent(
+        sessionEvent({
+          type: "tool_execution_end",
+          toolCallId: "plan-call-1",
+          toolName: "pylon_update_plan",
+          result: { content: planResult.content, details: planResult.details },
+          isError: false,
+        }),
+      ),
+    ).toEqual({
+      _tag: "ToolCompleted",
+      toolCallId: "plan-call-1",
+      toolName: "pylon_update_plan",
+      text: "Plan updated (2 steps).",
+      isError: false,
+    });
+  });
+
+  it("keeps arbitrary and malformed Prime tool details private", () => {
+    const invalidResults = [
+      {
+        toolName: "another_tool",
+        isError: false,
+        details: { protocol: "pylon-plan-v1", plan: [] },
+      },
+      {
+        toolName: "pylon_update_plan",
+        isError: true,
+        details: { protocol: "pylon-plan-v1", plan: [] },
+      },
+      {
+        toolName: "pylon_update_plan",
+        isError: false,
+        details: { protocol: "pylon-plan-v2", plan: [] },
+      },
+      {
+        toolName: "pylon_update_plan",
+        isError: false,
+        details: { protocol: "pylon-plan-v1", plan: [], extra: "not allowed" },
+      },
+      {
+        toolName: "pylon_update_plan",
+        isError: false,
+        details: {
+          protocol: "pylon-plan-v1",
+          plan: [{ step: "x".repeat(501), status: "pending" }],
+        },
+      },
+      {
+        toolName: "pylon_update_plan",
+        isError: false,
+        details: {
+          protocol: "pylon-plan-v1",
+          plan: [{ step: "   ", status: "pending" }],
+        },
+      },
+    ];
+    for (const [index, input] of invalidResults.entries()) {
+      const decoded = decodePrimeAgentDaemonEvent(
+        sessionEvent({
+          type: "message_end",
+          message: {
+            role: "toolResult",
+            toolCallId: `invalid-${index}`,
+            toolName: input.toolName,
+            content: [{ type: "text", text: "private generic result" }],
+            details: input.details,
+            isError: input.isError,
+            timestamp: 13,
+          },
+        }),
+      );
+      expect(decoded).toMatchObject({
+        _tag: "MessageCompleted",
+        message: { role: "toolResult", text: "private generic result" },
+      });
+      if (decoded._tag !== "MessageCompleted" || decoded.message.role !== "toolResult") {
+        throw new Error("expected tool result");
+      }
+      expect(decoded.message).not.toHaveProperty("planUpdate");
+      expect(decoded.message).not.toHaveProperty("details");
+    }
+  });
+
   it("maps tool execution start, accumulated progress, and completion", () => {
     expect(
       decodePrimeAgentDaemonEvent(
