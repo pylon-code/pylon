@@ -737,6 +737,23 @@ describe("resolveSidebarThreadStatus", () => {
     ).toBe("working");
   });
 
+  it("distinguishes background delegation from root work", () => {
+    expect(
+      resolveSidebarThreadStatus({
+        ...idle,
+        backgroundLiveness: "working",
+        session: { ...session, status: "ready" as const },
+      }),
+    ).toBe("delegating");
+    expect(
+      resolveSidebarThreadStatus({
+        ...idle,
+        backgroundLiveness: "monitoring",
+        session: { ...session, status: "ready" as const },
+      }),
+    ).toBe("monitoring");
+  });
+
   it("reports failed only while the session status is error", () => {
     expect(
       resolveSidebarThreadStatus({
@@ -1130,7 +1147,7 @@ describe("resolveThreadStatusPill", () => {
           hasPendingUserInput: true,
         },
       }),
-    ).toMatchObject({ label: "Pending Approval", matrix: "approval" });
+    ).toMatchObject({ label: "Pending Approval", matrix: "warning" });
   });
 
   it("shows awaiting input when plan mode is blocked on user answers", () => {
@@ -1141,7 +1158,7 @@ describe("resolveThreadStatusPill", () => {
           hasPendingUserInput: true,
         },
       }),
-    ).toMatchObject({ label: "Awaiting Input", matrix: "input" });
+    ).toMatchObject({ label: "Awaiting Input", matrix: "waiting" });
   });
 
   it("falls back to working when the thread is actively running without blockers", () => {
@@ -1149,9 +1166,8 @@ describe("resolveThreadStatusPill", () => {
       resolveThreadStatusPill({
         thread: baseThread,
       }),
-      // The sidebar row uses the ring spinner, not the row-sweep: the sweep
-      // is reserved for the chat stream's own working row.
-    ).toMatchObject({ label: "Working", matrix: "spinner" });
+      // A root turn uses neutral loading; the ring is reserved for delegation.
+    ).toMatchObject({ label: "Working", matrix: "loading" });
   });
 
   it("shows connecting while the session is starting", () => {
@@ -1176,7 +1192,23 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Plan Ready", matrix: "plan" });
+    ).toMatchObject({ label: "Plan Ready", matrix: "info" });
+  });
+
+  it("uses the orchestration ring only for settled-turn background agents", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          backgroundLiveness: "working",
+          session: { ...baseThread.session, status: "ready", activeTurnId: null },
+        },
+      }),
+    ).toMatchObject({
+      label: "Working",
+      matrix: "orchestrating",
+      colorClass: "text-foreground",
+    });
   });
 
   it("does not manufacture completed state without a client visit marker", () => {
@@ -1210,7 +1242,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Completed", matrix: "done" });
+    ).toMatchObject({ label: "Completed", matrix: "success" });
   });
 });
 
@@ -1247,20 +1279,20 @@ describe("resolveProjectStatusIndicator", () => {
         {
           label: "Completed",
           colorClass: "text-emerald-600",
-          matrix: "done",
+          matrix: "success",
         },
         {
           label: "Pending Approval",
           colorClass: "text-amber-600",
-          matrix: "approval",
+          matrix: "warning",
         },
         {
           label: "Working",
           colorClass: "text-sky-600",
-          matrix: "working",
+          matrix: "loading",
         },
       ]),
-    ).toMatchObject({ label: "Pending Approval", matrix: "approval" });
+    ).toMatchObject({ label: "Pending Approval", matrix: "warning" });
   });
 
   it("prefers plan-ready over completed when no stronger action is needed", () => {
@@ -1269,15 +1301,15 @@ describe("resolveProjectStatusIndicator", () => {
         {
           label: "Completed",
           colorClass: "text-emerald-600",
-          matrix: "done",
+          matrix: "success",
         },
         {
           label: "Plan Ready",
           colorClass: "text-violet-600",
-          matrix: "plan",
+          matrix: "info",
         },
       ]),
-    ).toMatchObject({ label: "Plan Ready", matrix: "plan" });
+    ).toMatchObject({ label: "Plan Ready", matrix: "info" });
   });
 });
 

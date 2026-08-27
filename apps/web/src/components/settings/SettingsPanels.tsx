@@ -108,6 +108,7 @@ import {
   TYPOGRAPHY_ADVANCED_STORAGE_KEY,
 } from "../../appearanceFonts";
 import { CodeFontPreview, PromptFontPreview, TerminalFontPreview } from "./SettingsFontPreviews";
+import { DotMatrixSettings } from "./DotMatrixSettings";
 import { discoverInstalledFonts, FontFamilyPicker, useFontEnumeration } from "./FontFamilyPicker";
 import {
   NumberField,
@@ -1175,6 +1176,7 @@ export function AppearanceSettingsPanel() {
         ) : null}
       </SettingsSection>
 
+      <DotMatrixSettings />
       <TypographySection />
     </SettingsPageContainer>
   );

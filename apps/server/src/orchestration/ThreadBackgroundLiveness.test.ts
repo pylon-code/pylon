@@ -28,6 +28,27 @@ describe("ThreadBackgroundLiveness", () => {
     expect(liveness.getThreadBackgroundLiveness("thread")).toBeNull();
   });
 
+  it("does not present a waiting task as active work", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    const input = {
+      threadId: "thread",
+      taskId: "task",
+      taskType: undefined,
+    } as const;
+    liveness.recordTaskLiveness({ ...input, status: "running", kind: "started" });
+    expect(liveness.getThreadBackgroundLiveness("thread")).toBe("working");
+
+    liveness.recordTaskLiveness({ ...input, status: "waiting", kind: "updated" });
+    expect(liveness.getThreadBackgroundLiveness("thread")).toBeNull();
+
+    // A description-only tick cannot falsely restart it.
+    liveness.recordTaskLiveness({ ...input, status: undefined, kind: "progress" });
+    expect(liveness.getThreadBackgroundLiveness("thread")).toBeNull();
+
+    liveness.recordTaskLiveness({ ...input, status: "running", kind: "progress" });
+    expect(liveness.getThreadBackgroundLiveness("thread")).toBe("working");
+  });
+
   it("agents present as working; monitors as monitoring; agents win", () => {
     const liveness = ThreadBackgroundLiveness.make();
     const threadId = "t-live-1";

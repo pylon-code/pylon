@@ -5085,7 +5085,7 @@ function ChatViewContent(props: ChatViewProps) {
       icon: (
         <DotMatrix
           aria-hidden
-          state={working ? "spinner" : "live"}
+          state={working ? "orchestrating" : "listening"}
           className="size-3.5 text-foreground"
         />
       ),

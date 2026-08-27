@@ -4,26 +4,6 @@ import { cn } from "~/lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { DotMatrix, type DotMatrixState } from "~/components/ui/dot-matrix";
 
-/** Canonical connection-phase → dot color mapping shared by every status dot. */
-export function connectionPhaseDotClassName(phase: EnvironmentConnectionPhase): string {
-  switch (phase) {
-    case "connected":
-      return "bg-success";
-    case "connecting":
-    case "reconnecting":
-      return "bg-warning";
-    case "error":
-      return "bg-destructive";
-    default:
-      return "bg-muted-foreground/40";
-  }
-}
-
-/** Ping halo for transitional phases; null renders no ping. */
-export function connectionPhasePingClassName(phase: EnvironmentConnectionPhase): string | null {
-  return phase === "connecting" || phase === "reconnecting" ? "bg-warning/60 duration-2000" : null;
-}
-
 /**
  * Connection phase as a DotMatrix state. The dot carries hue and motion
  * together, so callers pass a phase rather than assembling colors themselves.
@@ -33,20 +13,23 @@ export function connectionPhaseDotMatrixState(
 ): ConnectionStatusDotProps["state"] {
   switch (phase) {
     case "connected":
-      return "live";
+      return "success";
     case "connecting":
     case "reconnecting":
       return "connecting";
     case "error":
       return "error";
     default:
-      return "idle";
+      return "offline";
   }
 }
 
 type ConnectionStatusDotProps = {
   tooltipText?: string | null;
-  state: Extract<DotMatrixState, "live" | "connecting" | "error" | "idle">;
+  state: Extract<
+    DotMatrixState,
+    "success" | "connecting" | "waiting" | "queued" | "error" | "offline"
+  >;
   /** Only needed when a caller wants a hue other than the state's canonical
    * tone (see dot-matrix.tsx's TONE map). */
   colorClassName?: string | undefined;

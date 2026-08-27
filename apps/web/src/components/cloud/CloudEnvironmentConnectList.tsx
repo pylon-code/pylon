@@ -180,19 +180,19 @@ export function CloudEnvironmentConnectRows({
     // default primary: here it means "not yet available", not "in motion".
     const connectionDot = savedConnection
       ? savedConnection.tone === "connected"
-        ? { state: "live" as const, colorClassName: undefined }
+        ? { state: "success" as const, colorClassName: undefined }
         : savedConnection.tone === "connecting"
           ? { state: "connecting" as const, colorClassName: "text-warning" }
           : savedConnection.tone === "error"
             ? { state: "error" as const, colorClassName: undefined }
-            : { state: "idle" as const, colorClassName: "text-muted-foreground/35" }
+            : { state: "offline" as const, colorClassName: "text-muted-foreground/35" }
       : availability === "online"
-        ? { state: "live" as const, colorClassName: undefined }
+        ? { state: "success" as const, colorClassName: undefined }
         : availability === "error"
           ? { state: "error" as const, colorClassName: undefined }
           : availability === "checking"
             ? { state: "connecting" as const, colorClassName: "text-warning" }
-            : { state: "idle" as const, colorClassName: "text-muted-foreground/35" };
+            : { state: "offline" as const, colorClassName: "text-muted-foreground/35" };
     const statusText = savedConnection
       ? savedConnection.statusText
       : availability === "online"

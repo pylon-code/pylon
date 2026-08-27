@@ -838,58 +838,66 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // working threads aren't your problem yet) — only the colored status label
   // stands out.
   const isInFlight =
-    status === "working" || status === "monitoring" || status === "approval" || status === "input";
+    status === "working" ||
+    status === "delegating" ||
+    status === "monitoring" ||
+    status === "approval" ||
+    status === "input";
   const shouldRecede =
     (status === "ready" || isInFlight) && !isUnread && !isWoke && !props.isActive && !isSelected;
-  // Status hues follow the shared five-color system (see dot-matrix.tsx's
-  // TONE map) so a thread reads the same color everywhere it surfaces.
+  // Neutral activity follows adaptive foreground; only semantic outcomes
+  // force color. Distinct glyphs keep root work, delegation, and monitoring
+  // truthful even when their user-facing labels are similar.
   const topStatus =
     status === "working"
       ? {
           label: "Working",
           icon: "working" as const,
-          className: "text-primary",
+          className: "text-foreground",
         }
-      : status === "monitoring"
+      : status === "delegating"
         ? {
-            // The calm sibling of Working: same hue, because the thread does
-            // have live activity, but the steady `live` glyph instead of the
-            // spinner, because a watch loop is presence rather than progress.
-            label: "Monitoring",
-            icon: "monitoring" as const,
-            className: "text-primary",
+            label: "Working",
+            icon: "delegating" as const,
+            className: "text-foreground",
           }
-        : status === "approval"
+        : status === "monitoring"
           ? {
-              label: "Approval",
-              icon: "approval" as const,
-              className: "text-warning",
+              label: "Monitoring",
+              icon: "monitoring" as const,
+              className: "text-foreground",
             }
-          : status === "input"
+          : status === "approval"
             ? {
-                label: "Input",
-                icon: "input" as const,
+                label: "Approval",
+                icon: "approval" as const,
                 className: "text-warning",
               }
-            : status === "failed"
+            : status === "input"
               ? {
-                  label: "Failed",
-                  icon: "failed" as const,
-                  className: "text-destructive",
+                  label: "Input",
+                  icon: "input" as const,
+                  className: "text-warning",
                 }
-              : isWoke
+              : status === "failed"
                 ? {
-                    label: "Woke",
-                    icon: "woke" as const,
-                    className: "text-warning",
+                    label: "Failed",
+                    icon: "failed" as const,
+                    className: "text-destructive",
                   }
-                : isUnread
+                : isWoke
                   ? {
-                      label: "Done",
-                      icon: "done" as const,
-                      className: "text-success",
+                      label: "Woke",
+                      icon: "woke" as const,
+                      className: "text-warning",
                     }
-                  : null;
+                  : isUnread
+                    ? {
+                        label: "Done",
+                        icon: "done" as const,
+                        className: "text-success",
+                      }
+                    : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -1194,7 +1202,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       data-testid={`sidebar-terminal-status-${thread.id}`}
       className={cn("inline-flex shrink-0 items-center justify-center", terminalStatus.colorClass)}
     >
-      <DotMatrix aria-hidden state="terminal" className="size-3" />
+      <DotMatrix aria-hidden state="terminal-active" className="size-3" />
     </span>
   ) : null;
   const pinIndicator = props.isPinned ? (
@@ -1473,23 +1481,25 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                         )}
                       >
                         {topStatus.icon === "working" ? (
-                          <DotMatrix aria-hidden state="spinner" className="size-3" />
+                          <DotMatrix aria-hidden state="loading" className="size-3" />
+                        ) : topStatus.icon === "delegating" ? (
+                          <DotMatrix aria-hidden state="orchestrating" className="size-3" />
                         ) : topStatus.icon === "monitoring" ? (
-                          <DotMatrix aria-hidden state="live" className="size-3" />
+                          <DotMatrix aria-hidden state="listening" className="size-3" />
                         ) : topStatus.icon === "approval" ? (
-                          <DotMatrix aria-hidden state="approval" className="size-3" />
+                          <DotMatrix aria-hidden state="warning" className="size-3" />
                         ) : topStatus.icon === "input" ? (
-                          <DotMatrix aria-hidden state="input" className="size-3" />
+                          <DotMatrix aria-hidden state="waiting" className="size-3" />
                         ) : topStatus.icon === "failed" ? (
                           <DotMatrix aria-hidden state="error" className="size-3" />
                         ) : topStatus.icon === "done" ? (
-                          <DotMatrix aria-hidden state="done" className="size-3" />
+                          <DotMatrix aria-hidden state="success" className="size-3" />
                         ) : null}
                         {/* The label alone is the live region: a role="status"
                             wrapper around the ticking duration would make
                             screen readers announce every second. */}
                         <span role="status">{topStatus.label}</span>
-                        {status === "working" ? (
+                        {status === "working" || status === "delegating" ? (
                           <span aria-hidden>
                             <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
                           </span>

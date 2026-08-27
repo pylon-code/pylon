@@ -71,24 +71,20 @@ import { DotMatrix, type DotMatrixState } from "./ui/dot-matrix";
 import { AgentLiveActivity } from "./AgentLiveActivity";
 
 /**
- * In-flight states all present as Working (one steady state, per the
- * monitoring-pill design: detail belongs in the activity sub-line, and a
- * stalled/waiting/queued subagent is still the fleet doing its job, not a
- * user problem). Only settled states differentiate.
+ * Agent status is a truth-bearing visual contract: the orbit is reserved for
+ * running subagents, while queued and waiting agents use their own patterns.
+ * Settled outcomes stay static except for attention states such as failure.
  */
 const STATUS_VISUALS: Record<RuntimeSubagent["status"], { matrix: DotMatrixState; label: string }> =
   {
-    pending: { matrix: "spinner", label: "Working" },
-    running: { matrix: "spinner", label: "Working" },
-    waiting: { matrix: "spinner", label: "Working" },
-    // Idle reads as settled (muted, not primary): a resting Codex child looks
-    // done unless resumed — live-test: sky idle dots read as stuck in-progress.
-    idle: { matrix: "idle", label: "Idle · resumable" },
-    completed: { matrix: "done", label: "Completed" },
+    pending: { matrix: "queued", label: "Queued" },
+    running: { matrix: "orchestrating", label: "Working" },
+    waiting: { matrix: "waiting", label: "Waiting" },
+    idle: { matrix: "paused", label: "Idle · resumable" },
+    completed: { matrix: "success", label: "Completed" },
     failed: { matrix: "error", label: "Failed" },
-    // Stopped is settled-but-not-finished: inert dots, no success or error hue.
-    cancelled: { matrix: "idle", label: "Stopped" },
-    interrupted: { matrix: "idle", label: "Stopped" },
+    cancelled: { matrix: "stopped", label: "Stopped" },
+    interrupted: { matrix: "stopped", label: "Stopped" },
   };
 
 function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {

@@ -70,6 +70,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/appearance",
   },
   {
+    id: "dot-matrix-motion",
+    title: "Status motion",
+    to: "/settings/appearance",
+  },
+  {
+    id: "dot-matrix-catalog",
+    title: "Status catalog",
+    to: "/settings/appearance",
+  },
+  {
     id: "environment-identification",
     title: "Environment identification",
     to: "/settings/appearance",

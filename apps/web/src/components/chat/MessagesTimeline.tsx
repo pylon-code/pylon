@@ -34,7 +34,6 @@ import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { FileDiff } from "@pierre/diffs/react";
 import {
   deriveTimelineEntries,
-  workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
   workLogEntryIsMissingResponse,
@@ -61,7 +60,6 @@ import {
   PaintbrushIcon,
   SearchIcon,
   SquarePenIcon,
-  TerminalIcon,
   Undo2Icon,
   WrenchIcon,
   ZapIcon,
@@ -1307,18 +1305,17 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
         <div className="mt-0.5 space-y-px pl-6">
           {steps.map((step) => (
             <div key={step.step} className="flex items-start gap-2 text-[12px] leading-5">
-              {/* Step status reads through the shared DotMatrix language, the
-                  same done/spinner/idle mapping the plan sidebar used before
-                  plans folded into the transcript. The marker carries its own
-                  canonical tone, so only the step text is toned here. */}
+              {/* Plan progress uses the same semantic DotMatrix states as the
+                  rest of the app: thinking while active, success when done,
+                  and idle before work starts. */}
               <span className="flex h-5 shrink-0 items-center">
                 <DotMatrix
                   aria-hidden
                   state={
                     step.status === "completed"
-                      ? "done"
+                      ? "success"
                       : step.status === "inProgress"
-                        ? "spinner"
+                        ? "thinking"
                         : "idle"
                   }
                   className="size-3.5"
@@ -1349,17 +1346,24 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   return (
     <div>
       <div className="border-b border-border/60 pb-2 pt-1">
-        <div className="px-1 text-sm leading-relaxed text-muted-foreground tabular-nums">
-          {row.createdAt ? (
-            <>
-              Working for <WorkingTimer createdAt={row.createdAt} />
-            </>
-          ) : (
-            "Working..."
-          )}
-          {workingStepLabel ? (
-            <span className="ml-2 text-muted-foreground/55">· {workingStepLabel}</span>
-          ) : null}
+        <div className="flex items-center gap-2 px-1 text-sm leading-relaxed text-muted-foreground tabular-nums">
+          <DotMatrix
+            aria-hidden
+            state={row.showThinking ? "thinking" : "loading"}
+            className="size-3.5"
+          />
+          <span>
+            {row.createdAt ? (
+              <>
+                Working for <WorkingTimer createdAt={row.createdAt} />
+              </>
+            ) : (
+              "Working..."
+            )}
+            {workingStepLabel ? (
+              <span className="ml-2 text-muted-foreground/55">· {workingStepLabel}</span>
+            ) : null}
+          </span>
         </div>
       </div>
       {row.showThinking ? (
@@ -1465,23 +1469,29 @@ function LiveActivityRow({
   failed?: boolean;
 }) {
   return (
-    <div className="relative min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed">
-      <LiveActivityContent
-        label={label}
-        iconName={iconName}
-        failed={failed}
-        announceFailure={failed}
-      />
-      <div
-        aria-hidden
-        className="live-activity-focus pointer-events-none absolute inset-y-0 select-none"
-      >
-        <div className="live-activity-focus-counter">
-          <div className="live-activity-focus-aligned">
-            <LiveActivityContent label={label} iconName={iconName} failed={failed} highlighted />
+    <div className="flex min-w-0 max-w-full items-center gap-1.5">
+      <div className="relative min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed">
+        <LiveActivityContent label={label} iconName={iconName} />
+        <div
+          aria-hidden
+          className="live-activity-focus pointer-events-none absolute inset-y-0 select-none"
+        >
+          <div className="live-activity-focus-counter">
+            <div className="live-activity-focus-aligned">
+              <LiveActivityContent label={label} iconName={iconName} highlighted />
+            </div>
           </div>
         </div>
       </div>
+      {failed ? (
+        <span
+          className="flex size-4 shrink-0 items-center justify-center"
+          role="img"
+          aria-label="Tool call failed"
+        >
+          <DotMatrix aria-hidden state="error" className="size-3.5" />
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -1493,37 +1503,29 @@ function ThinkingActivityRow() {
 function LiveActivityContent({
   label,
   iconName,
-  failed = false,
-  announceFailure = false,
   highlighted = false,
 }: {
   label: string;
   iconName: WorkEntryIconName | undefined;
-  failed?: boolean;
-  announceFailure?: boolean;
   highlighted?: boolean;
 }) {
-  const resolvedIconName = failed ? "x" : iconName;
-
   return (
     <div
       className={cn(
         "flex min-h-6 min-w-0 items-center gap-1.5 py-0.5",
-        resolvedIconName ? "px-0.5" : "px-1",
+        iconName ? "px-0.5" : "px-1",
         highlighted ? "text-foreground" : "text-secondary-label",
       )}
     >
-      {resolvedIconName ? (
+      {iconName ? (
         <span
           className={cn(
             "flex size-6 shrink-0 items-center justify-center",
-            failed ? "text-destructive" : highlighted ? "text-foreground" : "text-icon-muted",
+            highlighted ? "text-foreground" : "text-icon-muted",
           )}
-          role={announceFailure ? "img" : undefined}
-          aria-label={announceFailure ? "Tool call failed" : undefined}
         >
           <WorkEntryIconSvg
-            name={resolvedIconName}
+            name={iconName}
             className={cn("block size-4 shrink-0 stroke-[1.8]", !highlighted && "opacity-70")}
           />
         </span>
@@ -1594,20 +1596,22 @@ function WorkGroupToggleTimelineRow({
         aria-expanded={row.expanded}
         onClick={() => ctx.onToggleWorkGroup(row.groupId, row.id)}
       >
-        <span
-          className={cn(
-            "flex size-6 shrink-0 items-center justify-center",
-            row.hasFailure ? "text-destructive" : "text-icon-muted",
-          )}
-          role={row.hasFailure ? "img" : undefined}
-          aria-label={row.hasFailure ? "Tool call failed" : undefined}
-        >
+        <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
           <WorkEntryIconSvg
-            name={row.hasFailure ? "x" : toolGroupSummaryIconName(row.summaryKind)}
+            name={toolGroupSummaryIconName(row.summaryKind)}
             className="size-4 shrink-0 stroke-[1.8] opacity-70"
           />
         </span>
         <span className="min-w-0 flex-1 truncate text-secondary-label">{row.summary}</span>
+        {row.hasFailure ? (
+          <span
+            className="flex size-4 shrink-0 items-center justify-center"
+            role="img"
+            aria-label="Tool call failed"
+          >
+            <DotMatrix aria-hidden state="error" className="size-3.5" />
+          </span>
+        ) : null}
       </button>
     );
   }
@@ -2199,7 +2203,7 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
     case "bot":
       return <BotIcon className={className} aria-hidden />;
     case "check":
-      return <DotMatrix aria-hidden state="done" className={cn(className)} />;
+      return <DotMatrix aria-hidden state="success" className={cn(className)} />;
     case "circle-alert":
       return <CircleAlertIcon className={className} aria-hidden />;
     case "eye":
@@ -2215,7 +2219,10 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
     case "square-pen":
       return <SquarePenIcon className={className} aria-hidden />;
     case "terminal":
-      return <TerminalIcon className={className} aria-hidden />;
+      // Live rows duplicate this icon inside their moving foreground mask.
+      // Inherit the row tone so the matrix brightens with the label instead of
+      // remaining pinned to its standalone muted terminal color.
+      return <DotMatrix aria-hidden state="terminal" className={cn(className, "text-inherit")} />;
     case "wrench":
       return <WrenchIcon className={className} aria-hidden />;
     case "x":
@@ -2543,8 +2550,8 @@ const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation(
  * A1 spawn CTA: one anchored row per workflow run (or per-turn direct-spawn
  * batch). Live status is derived from the shared agent panel model at render
  * time — the row itself never re-renders a roster; the Agents panel is the
- * only roster. Freezes to past tense when every member settles. Static dot,
- * no animation.
+ * only roster. Freezes to past tense when every member settles. The circular
+ * orbit is reserved for active orchestration; queued/waiting work uses ellipsis.
  */
 const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: TimelineWorkEntry }) {
   const { workEntry } = props;
@@ -2566,9 +2573,8 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
     Math.max(memberIds.size - (spawn.workflowId ? 1 : 0), 0),
   );
 
-  const running = agents.filter(
-    (agent) => agent.status === "running" || agent.status === "pending",
-  ).length;
+  const pending = agents.filter((agent) => agent.status === "pending").length;
+  const running = agents.filter((agent) => agent.status === "running").length;
   const waiting = agents.filter((agent) => agent.status === "waiting").length;
   const failed = agents.filter((agent) => agent.status === "failed").length;
   // The coordinator's own status is authoritative for workflows: dynamic
@@ -2581,7 +2587,7 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
     coordinatorStatus === "failed" ||
     coordinatorStatus === "cancelled" ||
     coordinatorStatus === "interrupted";
-  const live = workflowGroup !== undefined ? !coordinatorSettled : running + waiting > 0;
+  const live = workflowGroup !== undefined ? !coordinatorSettled : pending + running + waiting > 0;
   // Same rule as the panel footer: providers may aggregate member usage into
   // the coordinator, so count the coordinator only when no members exist.
   const totalTokens = agents.reduce(
@@ -2593,19 +2599,32 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
   const workflowName =
     workflowGroup?.workflow.workflowName ?? workflowGroup?.workflow.title ?? null;
 
-  // One steady in-flight presentation (monitoring-pill rule): waiting and
-  // stalled agents read as working; only settled states differentiate.
-  const working = running + waiting;
-  const matrix: DotMatrixState = live ? "spinner" : failed > 0 ? "error" : "done";
+  const coordinatorWorking = coordinatorStatus === "running";
+  const hasActiveWork = livePhase !== undefined || running > 0 || coordinatorWorking;
+  const matrix: DotMatrixState = live
+    ? hasActiveWork
+      ? "orchestrating"
+      : pending > 0 || coordinatorStatus === "pending"
+        ? "queued"
+        : "waiting"
+    : failed > 0
+      ? "error"
+      : "success";
   const lead = live
     ? `Kicked off ${agentCount} subagent${agentCount === 1 ? "" : "s"}`
     : `Ran ${agentCount} subagent${agentCount === 1 ? "" : "s"}`;
   const status = live
     ? livePhase
       ? `${livePhase.title} · ${livePhase.activeCount} working`
-      : working > 0
-        ? `${working} working`
-        : "working"
+      : running > 0
+        ? `${running} working`
+        : pending > 0
+          ? `${pending} queued`
+          : waiting > 0
+            ? `${waiting} waiting`
+            : coordinatorWorking
+              ? "working"
+              : "waiting"
     : failed > 0
       ? `${failed} failed`
       : "✓ completed";
@@ -2666,8 +2685,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
   const showFailedIndicator = workEntryDisplayIndicatesToolFailure(workEntry);
-  const entryIconName =
-    showWarningIndicator || showFailedIndicator ? "x" : workEntryIconName(workEntry);
+  const entryIconName = showWarningIndicator ? "circle-alert" : workEntryIconName(workEntry);
   const displayText = workEntryPreview(workEntry, workspaceRoot) ?? toolWorkEntryHeading(workEntry);
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
   const canExpand = expandedBody !== null;
@@ -2682,13 +2700,11 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
     (workEntry.sourceActivityKind === "runtime.error" || !workLogEntryIsToolLike(workEntry));
   const iconWrapperClass = cn(
     "flex size-6 shrink-0 items-center justify-center",
-    showWarningIndicator || showFailedIndicator
+    showWarningIndicator || showDestructiveRowStyle
       ? "text-destructive"
-      : showDestructiveRowStyle
-        ? "text-destructive"
-        : workEntry.tone === "tool" || showFailedIndicator
-          ? "text-icon-muted"
-          : iconConfig.className,
+      : workLogEntryIsToolLike(workEntry)
+        ? "text-icon-muted"
+        : iconConfig.className,
   );
   const headingClass = showWarningIndicator
     ? "font-medium text-warning"
@@ -2728,12 +2744,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
       {...rowToggleProps}
     >
       <div className="flex select-none items-center gap-1.5 transition-[opacity,translate] duration-200">
-        <span
-          className={cn(iconWrapperClass, !showEntryIcon && "invisible")}
-          role={showFailedIndicator ? "img" : undefined}
-          aria-label={showFailedIndicator ? "Tool call failed" : undefined}
-          aria-hidden={!showEntryIcon}
-        >
+        <span className={cn(iconWrapperClass, !showEntryIcon && "invisible")} aria-hidden>
           <WorkEntryIconSvg
             name={entryIconName}
             className="block size-4 shrink-0 stroke-[1.8] opacity-70"
@@ -2760,15 +2771,22 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
                 />
               ) : null}
             </span>
-            <span className="flex size-4 shrink-0 items-center justify-center">
+            <span
+              className="flex size-4 shrink-0 items-center justify-center"
+              role={showFailedIndicator ? "img" : undefined}
+              aria-label={
+                showFailedIndicator
+                  ? missingResponse
+                    ? "Final response missing"
+                    : "Tool call failed"
+                  : undefined
+              }
+            >
               {showFailedIndicator ? (
                 <Tooltip>
                   <TooltipTrigger
                     render={
-                      <span
-                        className="flex size-4 items-center justify-center"
-                        aria-label={missingResponse ? "Final response missing" : "Tool call failed"}
-                      />
+                      <span className="flex size-4 items-center justify-center" aria-hidden />
                     }
                   >
                     <DotMatrix aria-hidden state="error" className="size-3.5" />
@@ -2780,7 +2798,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
                   <TooltipTrigger
                     render={<span className="flex size-4 items-center justify-center" />}
                   >
-                    <DotMatrix aria-hidden state="done" className="size-3.5" />
+                    <DotMatrix aria-hidden state="success" className="size-3.5" />
                   </TooltipTrigger>
                   <TooltipPopup>Completed</TooltipPopup>
                 </Tooltip>
