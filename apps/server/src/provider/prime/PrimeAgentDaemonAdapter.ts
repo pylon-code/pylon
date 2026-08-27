@@ -98,12 +98,12 @@ import {
   primeAgentMissingFinalResponseDetail,
 } from "./PrimeAgentTerminalResponse.ts";
 import {
-  PRIME_AGENT_PERMISSION_EXTENSION_FILENAME,
-  PRIME_AGENT_PERMISSION_EXTENSION_MARKER_COMMAND,
-  makePrimeAgentPermissionExtensionSource,
+  PRIME_AGENT_MANAGED_EXTENSION_FILENAME,
+  PRIME_AGENT_MANAGED_EXTENSION_MARKER_COMMAND,
+  makePrimeAgentManagedExtensionSource,
   projectPrimeAgentManagedPermissionRequest,
   type PrimeAgentManagedPermissionRequestType,
-} from "./PrimeAgentPermissionExtension.ts";
+} from "./PrimeAgentManagedExtension.ts";
 import {
   makePrimeAgentDaemonSessionRuntime,
   type PrimeAgentDaemonCatalogModel,
@@ -183,6 +183,7 @@ interface PrimeAgentDaemonActiveTurn {
   readonly nativeTranscriptBaselineMessageCount: number;
   readonly observedToolStarts: Set<string>;
   readonly observedToolCompletions: Set<string>;
+  readonly projectedPlanToolCallIds: Set<string>;
   readonly command?: "compact" | undefined;
 }
 
@@ -304,6 +305,9 @@ interface PrimeAgentDaemonSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly runtime: PrimeAgentDaemonSessionRuntime;
+  readonly managedExtensionPath: string;
+  readonly managedExtensionSource: string;
+  managedPlanProjectionEnabled: boolean;
   readonly defaultThinkingLevel: PrimeAgentDaemonThinkingLevel;
   readonly defaultServiceTier: PrimeAgentDaemonServiceTier;
   currentThinkingLevel: PrimeAgentDaemonThinkingLevel;
@@ -1042,6 +1046,10 @@ export function makePrimeAgentDaemonAdapter(
             payload: { itemType: "assistant_message", status: "inProgress" },
           });
         }
+        const planUpdate =
+          event._tag === "MessageCompleted" && event.message.role === "toolResult"
+            ? event.message.planUpdate
+            : undefined;
         const drafts = mapPrimeAgentDaemonRuntimeEventDrafts({
           event,
           provider: PROVIDER,
@@ -1056,7 +1064,19 @@ export function makePrimeAgentDaemonAdapter(
               }),
         });
         for (const draft of drafts) {
+          if (
+            draft.type === "turn.plan.updated" &&
+            (!context.managedPlanProjectionEnabled ||
+              turn === undefined ||
+              planUpdate === undefined ||
+              turn.projectedPlanToolCallIds.has(planUpdate.toolCallId))
+          ) {
+            continue;
+          }
           yield* offerRuntimeEvent({ ...draft, ...(yield* makeEventStamp()) });
+          if (draft.type === "turn.plan.updated" && planUpdate !== undefined) {
+            turn?.projectedPlanToolCallIds.add(planUpdate.toolCallId);
+          }
         }
         if (
           turn !== undefined &&
@@ -1212,6 +1232,9 @@ export function makePrimeAgentDaemonAdapter(
                 },
                 turn,
               );
+            }
+            if (message.planUpdate !== undefined) {
+              yield* publishDrafts(context, { _tag: "MessageCompleted", message }, turn);
             }
             turn.lastAssistantHadRenderableText = false;
           }
@@ -1640,12 +1663,33 @@ export function makePrimeAgentDaemonAdapter(
       Effect.gen(function* () {
         yield* logNativeKind(context.threadId, event);
         if (event._tag === "SessionResynced") {
+          const managedSourceVerified = yield* fileSystem
+            .readFileString(context.managedExtensionPath)
+            .pipe(
+              Effect.map((source) => source === context.managedExtensionSource),
+              Effect.orElseSucceed(() => false),
+            );
           let reconnectRecoveryFailed = false;
           let recoveredSnapshotRunCompletion = false;
           yield* withThreadLock(
             context.threadId,
             Effect.gen(function* () {
               if (sessions.get(context.threadId) === context && !context.stopped) {
+                if (!managedSourceVerified) {
+                  const activeTurn = context.activeTurn;
+                  if (activeTurn !== undefined) {
+                    yield* settleActiveTurnLocked(context, activeTurn, {
+                      state: "failed",
+                      errorMessage:
+                        "Prime Agent's managed provider extension could not be verified after reconnecting.",
+                      runtimeErrorMessage:
+                        "Prime Agent's managed provider extension could not be verified after reconnecting.",
+                    });
+                  }
+                  context.stopRequested = true;
+                  reconnectRecoveryFailed = true;
+                  return;
+                }
                 const reconnectGeneration = event.connectionGeneration;
                 if (
                   reconnectGeneration !== undefined &&
@@ -1653,6 +1697,7 @@ export function makePrimeAgentDaemonAdapter(
                 ) {
                   return;
                 }
+                context.managedPlanProjectionEnabled = true;
                 if (reconnectGeneration !== undefined) {
                   const activeTurn = context.activeTurn;
                   const pendingRunCompletionBefore = activeTurn?.pendingRunCompletionHandoff;
@@ -2357,6 +2402,9 @@ export function makePrimeAgentDaemonAdapter(
             if (sessions.get(context.threadId) !== context || context.stopped) return;
             const turn = context.activeTurn;
             let publishEvent = true;
+            if (event._tag === "ConnectionStatus" && event.status === "reconnecting") {
+              context.managedPlanProjectionEnabled = false;
+            }
             if (event._tag === "RunStarted") {
               context.nativeRunActive = true;
               if (turn?.pendingRunCompletionHandoff !== undefined) {
@@ -2795,31 +2843,27 @@ export function makePrimeAgentDaemonAdapter(
             }
           }
 
-          const permissionExtensionPath = path.join(
+          const managedExtensionPath = path.join(
             sessionDir,
-            PRIME_AGENT_PERMISSION_EXTENSION_FILENAME,
+            PRIME_AGENT_MANAGED_EXTENSION_FILENAME,
           );
           const permissionToken = approvalRequired ? yield* randomUUIDv4 : undefined;
-          const permissionExtensionSource =
-            permissionToken === undefined
-              ? undefined
-              : makePrimeAgentPermissionExtensionSource(permissionToken);
-          if (permissionExtensionSource !== undefined) {
-            yield* fileSystem
-              .writeFileString(permissionExtensionPath, permissionExtensionSource)
-              .pipe(
-                Effect.andThen(fileSystem.chmod(permissionExtensionPath, 0o600)),
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderAdapterProcessError({
-                      provider: PROVIDER,
-                      threadId: input.threadId,
-                      detail: "Failed to prepare the Prime Agent execution policy extension.",
-                      cause,
-                    }),
-                ),
-              );
-          }
+          const managedExtensionSource = makePrimeAgentManagedExtensionSource({
+            rootSessionDir: sessionDir,
+            ...(permissionToken === undefined ? {} : { permissionToken }),
+          });
+          yield* fileSystem.writeFileString(managedExtensionPath, managedExtensionSource).pipe(
+            Effect.andThen(fileSystem.chmod(managedExtensionPath, 0o600)),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: "Failed to prepare the Prime Agent managed provider extension.",
+                  cause,
+                }),
+            ),
+          );
 
           const sessionScope = yield* Scope.make("sequential");
           let scopeTransferred = false;
@@ -2847,14 +2891,18 @@ export function makePrimeAgentDaemonAdapter(
                 }),
             ...(agentDir.length === 0 ? {} : { agentDir: resolveProviderHomePath(agentDir) }),
             ...(model === "default" ? {} : { model }),
+            extensions: [managedExtensionPath],
+            expectedExtension: {
+              path: managedExtensionPath,
+              markerCommand: PRIME_AGENT_MANAGED_EXTENSION_MARKER_COMMAND,
+            },
             ...(approvalRequired
               ? {
-                  extensions: [permissionExtensionPath],
                   disableExtensionDiscovery: true,
                   disableAutoReconnect: true,
                   requiredExtension: {
-                    path: permissionExtensionPath,
-                    markerCommand: PRIME_AGENT_PERMISSION_EXTENSION_MARKER_COMMAND,
+                    path: managedExtensionPath,
+                    markerCommand: PRIME_AGENT_MANAGED_EXTENSION_MARKER_COMMAND,
                   },
                 }
               : {}),
@@ -2865,28 +2913,24 @@ export function makePrimeAgentDaemonAdapter(
             Effect.mapError((error) => runtimeStartError(input.threadId, error)),
           );
 
-          if (permissionExtensionSource !== undefined) {
-            const loadedExtensionSource = yield* fileSystem
-              .readFileString(permissionExtensionPath)
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderAdapterProcessError({
-                      provider: PROVIDER,
-                      threadId: input.threadId,
-                      detail: "Failed to verify the Prime Agent execution policy extension.",
-                      cause,
-                    }),
-                ),
-              );
-            if (loadedExtensionSource !== permissionExtensionSource) {
-              return yield* new ProviderAdapterProcessError({
-                provider: PROVIDER,
-                threadId: input.threadId,
-                detail:
-                  "Prime Agent loaded an execution policy extension whose source integrity could not be verified.",
-              });
-            }
+          const loadedExtensionSource = yield* fileSystem.readFileString(managedExtensionPath).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: "Failed to verify the Prime Agent managed provider extension.",
+                  cause,
+                }),
+            ),
+          );
+          if (loadedExtensionSource !== managedExtensionSource) {
+            return yield* new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+              detail:
+                "Prime Agent loaded a managed provider extension whose source integrity could not be verified.",
+            });
           }
 
           if (
@@ -3009,6 +3053,9 @@ export function makePrimeAgentDaemonAdapter(
             session,
             scope: sessionScope,
             runtime,
+            managedExtensionPath,
+            managedExtensionSource,
+            managedPlanProjectionEnabled: true,
             defaultThinkingLevel: runtime.initialSnapshot.state.thinkingLevel,
             defaultServiceTier: runtime.initialSnapshot.state.serviceTier,
             currentThinkingLevel: runtime.initialSnapshot.state.thinkingLevel,
@@ -3371,6 +3418,7 @@ export function makePrimeAgentDaemonAdapter(
                 nativeTranscriptBaselineMessageCount: context.nativeTranscriptMessageCount,
                 observedToolStarts: new Set(),
                 observedToolCompletions: new Set(),
+                projectedPlanToolCallIds: new Set(),
                 ...(/^\/compact(?:\s|$)/.test(text) ? { command: "compact" as const } : {}),
               };
               context.activeTurn = turn;
@@ -5204,12 +5252,32 @@ export function makePrimeAgentDaemonAdapter(
           );
 
           return yield* Effect.gen(function* () {
-            const outcome = yield* context.runtime.reloadResources.pipe(
-              Effect.mapError((error) =>
-                runtimeOperationError(threadId, "session/reload-resources", error),
-              ),
-              Effect.exit,
-            );
+            const outcome = yield* Effect.gen(function* () {
+              const source = yield* fileSystem.readFileString(context.managedExtensionPath).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId,
+                      detail:
+                        "Failed to verify the Prime Agent managed provider extension before reload.",
+                      cause,
+                    }),
+                ),
+              );
+              if (source !== context.managedExtensionSource) {
+                return yield* new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId,
+                  detail: "Prime Agent's managed provider extension source changed before reload.",
+                });
+              }
+              return yield* context.runtime.reloadResources.pipe(
+                Effect.mapError((error) =>
+                  runtimeOperationError(threadId, "session/reload-resources", error),
+                ),
+              );
+            }).pipe(Effect.exit);
             return yield* withThreadLock(
               threadId,
               Effect.gen(function* () {

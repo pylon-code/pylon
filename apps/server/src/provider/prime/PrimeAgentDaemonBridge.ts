@@ -168,6 +168,7 @@ export interface PrimeAgentDaemonAgentConnection {
   ) => Promise<unknown>;
   readonly getCommands: () => Promise<unknown>;
   readonly getResourceSnapshot: () => Promise<unknown>;
+  readonly getToolDefinition?: (name: string) => Promise<unknown>;
   readonly supportsAcpMcpServers?: () => boolean;
   readonly replaceAcpMcpServers?: (
     servers: ReadonlyArray<PrimeAgentDaemonAcpMcpServer>,

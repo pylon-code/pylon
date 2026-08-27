@@ -1064,7 +1064,7 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(error).toMatchObject({
           _tag: "ProviderAdapterProcessError",
           detail:
-            "Prime Agent loaded an execution policy extension whose source integrity could not be verified.",
+            "Prime Agent loaded a managed provider extension whose source integrity could not be verified.",
         });
       }),
     ).pipe(Effect.provide(testLayer)),
@@ -3654,6 +3654,30 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("rejects reload when the managed extension source changed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* Effect.promise(() =>
+          NodeFSP.writeFile(captures.runtimeInputs[0]!.extensions![0]!, "tampered"),
+        );
+
+        const error = yield* adapter.reloadSessionResources!(threadId).pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterProcessError",
+          detail: "Prime Agent's managed provider extension source changed before reload.",
+        });
+        expect(captures.reloadCount).toBe(0);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("waits for resource reload completion before mutating agent depth", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -4276,7 +4300,7 @@ describe("PrimeAgentDaemonAdapter", () => {
           disableExtensionDiscovery: true,
           disableAutoReconnect: true,
           requiredExtension: {
-            markerCommand: "pylon-permission-gate-v1",
+            markerCommand: "pylon-managed-bridge-v1",
           },
         });
         expect(captures.runtimeInputs[0]!.extensions).toHaveLength(1);
@@ -5344,6 +5368,172 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
         expect(encodeUnknownJson(turnEvents)).toContain("current generation final");
         expect(encodeUnknownJson(turnEvents)).not.toContain("stale snapshot must not project");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("projects each finalized managed plan once on the exact active turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "implement task parity" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        const planMessage = {
+          role: "toolResult",
+          timestamp: 2,
+          toolCallId: "private-plan-call",
+          toolName: "pylon_update_plan",
+          text: "Plan updated (2 steps).",
+          imageMimeTypes: [],
+          isError: false,
+          planUpdate: {
+            toolCallId: "private-plan-call",
+            explanation: "Prime tasks",
+            plan: [
+              { step: "Inspect", status: "completed" as const },
+              { step: "Implement", status: "inProgress" as const },
+            ],
+          },
+        } satisfies PrimeDaemonMessage;
+
+        yield* offer(captures, {
+          _tag: "ToolCompleted",
+          toolCallId: "private-plan-call",
+          toolName: "pylon_update_plan",
+          text: planMessage.text,
+          isError: false,
+        });
+        yield* offer(captures, { _tag: "MessageCompleted", message: planMessage });
+        yield* offer(captures, { _tag: "MessageCompleted", message: planMessage });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "plan committed" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+
+        const planEvents = subscription.events.filter(
+          (event) => event.type === "turn.plan.updated",
+        );
+        expect(planEvents).toHaveLength(1);
+        expect(planEvents[0]).toMatchObject({
+          turnId: started.turnId,
+          payload: {
+            explanation: "Prime tasks",
+            plan: [
+              { step: "Inspect", status: "completed" },
+              { step: "Implement", status: "inProgress" },
+            ],
+          },
+        });
+        expect(encodeUnknownJson(planEvents)).not.toContain("private-plan-call");
+
+        const finalMessage = assistantMessage("task parity complete");
+        yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [planMessage, finalMessage] });
+        yield* Fiber.join(running);
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: { ...planMessage, toolCallId: "late-plan-call" },
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "late plan dropped" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(
+          subscription.events.filter((event) => event.type === "turn.plan.updated"),
+        ).toHaveLength(1);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("holds managed plans across reconnect until verified snapshot recovery", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "recover a plan update" })
+          .pipe(Effect.forkChild);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.promptObserved!);
+        const planMessage = {
+          role: "toolResult",
+          timestamp: 2,
+          toolCallId: "recovered-plan-call",
+          toolName: "pylon_update_plan",
+          text: "Plan updated (1 steps).",
+          imageMimeTypes: [],
+          isError: false,
+          planUpdate: {
+            toolCallId: "recovered-plan-call",
+            plan: [{ step: "Recover safely", status: "inProgress" as const }],
+          },
+        } satisfies PrimeDaemonMessage;
+        const clearedPlanMessage = {
+          ...planMessage,
+          timestamp: 3,
+          toolCallId: "recovered-plan-call-2",
+          text: "Plan updated (0 steps).",
+          planUpdate: {
+            toolCallId: "recovered-plan-call-2",
+            explanation: "Work completed",
+            plan: [],
+          },
+        } satisfies PrimeDaemonMessage;
+
+        yield* offer(captures, { _tag: "ConnectionStatus", status: "reconnecting" });
+        yield* offer(captures, { _tag: "MessageCompleted", message: planMessage });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "before plan verification" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(subscription.events.some((event) => event.type === "turn.plan.updated")).toBe(false);
+
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: {
+            ...initialSnapshot().state,
+            isStreaming: true,
+            messageCount: 2,
+          },
+          messages: [planMessage, clearedPlanMessage],
+          replayContinuity: "complete",
+          connectionGeneration: 1,
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "plan verified" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        const plans = subscription.events.filter((event) => event.type === "turn.plan.updated");
+        expect(plans).toHaveLength(2);
+        expect(plans[0]).toMatchObject({
+          turnId: started.turnId,
+          payload: { plan: [{ step: "Recover safely", status: "inProgress" }] },
+        });
+        expect(plans[1]).toMatchObject({
+          turnId: started.turnId,
+          payload: { explanation: "Work completed", plan: [] },
+        });
+
+        const finalMessage = assistantMessage("recovery complete");
+        yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        yield* offer(captures, {
+          _tag: "RunCompleted",
+          messages: [planMessage, clearedPlanMessage, finalMessage],
+        });
+        yield* Fiber.join(running);
         yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),

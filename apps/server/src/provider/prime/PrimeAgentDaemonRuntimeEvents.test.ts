@@ -221,6 +221,67 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     expect(long[0]?.payload).toMatchObject({ detail: "x".repeat(4_000) });
   });
 
+  it("maps only finalized managed plan result messages owned by an active turn", () => {
+    const message = {
+      role: "toolResult" as const,
+      timestamp: 4,
+      toolCallId: "native-plan-call",
+      toolName: "pylon_update_plan",
+      text: "Plan updated (2 steps).",
+      imageMimeTypes: [],
+      isError: false,
+      planUpdate: {
+        toolCallId: "native-plan-call",
+        explanation: "Prime tasks",
+        plan: [
+          { step: "Inspect", status: "completed" as const },
+          { step: "Implement", status: "inProgress" as const },
+        ],
+      },
+    };
+    expect(
+      mapPrimeAgentDaemonRuntimeEventDrafts({
+        ...context,
+        event: { _tag: "MessageCompleted", message },
+      }),
+    ).toEqual([
+      {
+        provider,
+        providerInstanceId,
+        threadId,
+        turnId,
+        type: "turn.plan.updated",
+        payload: {
+          explanation: "Prime tasks",
+          plan: [
+            { step: "Inspect", status: "completed" },
+            { step: "Implement", status: "inProgress" },
+          ],
+        },
+      },
+    ]);
+    expect(
+      mapPrimeAgentDaemonRuntimeEventDrafts({
+        provider,
+        providerInstanceId,
+        threadId,
+        event: { _tag: "MessageCompleted", message },
+      }),
+    ).toEqual([]);
+    expect(
+      mapPrimeAgentDaemonRuntimeEventDrafts({
+        ...context,
+        event: {
+          _tag: "ToolCompleted",
+          toolCallId: "native-plan-call",
+          toolName: "pylon_update_plan",
+          text: "Plan updated (2 steps).",
+          isError: false,
+        },
+      }).map((event) => event.type),
+    ).toEqual(["item.completed"]);
+  });
+
   it("maps a tool call to one opaque lifecycle without native content", () => {
     const nativeItemId = "native-tool-call-secret-/private/worktree";
     const secrets = {

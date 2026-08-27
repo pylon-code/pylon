@@ -12,6 +12,14 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
+import {
+  PRIME_AGENT_PLAN_MAX_EXPLANATION_CHARS,
+  PRIME_AGENT_PLAN_MAX_STEP_CHARS,
+  PRIME_AGENT_PLAN_MAX_STEPS,
+  PRIME_AGENT_PLAN_PROTOCOL,
+  PRIME_AGENT_PLAN_TOOL_NAME,
+} from "./PrimeAgentManagedExtension.ts";
+
 const thinkingLevel = Schema.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const serviceTier = Schema.NullOr(
   Schema.Literals(["auto", "default", "flex", "scale", "priority"]),
@@ -92,6 +100,19 @@ export const PrimeAgentDaemonMessage = Schema.Union([
   PrimeAgentDaemonToolResultMessage,
 ]);
 export type PrimeAgentDaemonMessage = typeof PrimeAgentDaemonMessage.Type;
+
+const managedPlanStepDetails = Schema.Struct({
+  step: Schema.String.check(Schema.isMaxLength(PRIME_AGENT_PLAN_MAX_STEP_CHARS)),
+  status: Schema.Literals(["pending", "inProgress", "completed"]),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const managedPlanDetails = Schema.Struct({
+  protocol: Schema.Literal(PRIME_AGENT_PLAN_PROTOCOL),
+  explanation: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(PRIME_AGENT_PLAN_MAX_EXPLANATION_CHARS)),
+  ),
+  plan: Schema.Array(managedPlanStepDetails).check(Schema.isMaxLength(PRIME_AGENT_PLAN_MAX_STEPS)),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const decodeManagedPlanDetails = Schema.decodeUnknownOption(managedPlanDetails);
 
 const assistantStreamEvent = Schema.Union([
   Schema.Struct({
@@ -635,6 +656,16 @@ export interface PrimeDaemonToolCall {
   readonly input?: Readonly<Record<string, PrimeDaemonScalar>> | undefined;
 }
 
+/** Exact, versioned output from Pylon's own managed Prime extension. */
+export interface PrimeDaemonPlanUpdate {
+  readonly toolCallId: string;
+  readonly explanation?: string | undefined;
+  readonly plan: ReadonlyArray<{
+    readonly step: string;
+    readonly status: "pending" | "inProgress" | "completed";
+  }>;
+}
+
 export type PrimeDaemonMessage =
   | {
       readonly role: "user";
@@ -665,6 +696,7 @@ export type PrimeDaemonMessage =
       readonly text: string;
       readonly imageMimeTypes: ReadonlyArray<string>;
       readonly isError: boolean;
+      readonly planUpdate?: PrimeDaemonPlanUpdate | undefined;
     };
 
 export interface PrimeDaemonSessionState {
@@ -948,6 +980,30 @@ function safeToolResultText(text: string): string {
 type PrimeDaemonAssistantMessage = Extract<PrimeDaemonMessage, { readonly role: "assistant" }>;
 type PrimeDaemonToolResultMessage = Extract<PrimeDaemonMessage, { readonly role: "toolResult" }>;
 
+export function projectPrimeAgentManagedPlanUpdate(input: {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly details: unknown;
+  readonly isError: boolean;
+}): PrimeDaemonPlanUpdate | undefined {
+  if (input.toolName !== PRIME_AGENT_PLAN_TOOL_NAME || input.isError) return undefined;
+  const toolCallId = input.toolCallId.trim();
+  if (toolCallId.length === 0 || toolCallId.length > MAX_PREVIEW_LENGTH) return undefined;
+  const decoded = decodeManagedPlanDetails(input.details);
+  if (Option.isNone(decoded)) return undefined;
+  const plan = decoded.value.plan.map((item) => ({
+    step: item.step.trim(),
+    status: item.status,
+  }));
+  if (plan.some((item) => item.step.length === 0)) return undefined;
+  const explanation = decoded.value.explanation?.trim();
+  return {
+    toolCallId,
+    ...(explanation === undefined || explanation.length === 0 ? {} : { explanation }),
+    plan,
+  };
+}
+
 function mapMessage(
   value: typeof PrimeAgentDaemonAssistantMessage.Type,
 ): PrimeDaemonAssistantMessage;
@@ -1008,7 +1064,13 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
         stopReason: value.stopReason,
         errorMessage: optionalBounded(value.errorMessage),
       };
-    case "toolResult":
+    case "toolResult": {
+      const planUpdate = projectPrimeAgentManagedPlanUpdate({
+        toolCallId: value.toolCallId,
+        toolName: value.toolName,
+        details: value.details,
+        isError: value.isError,
+      });
       return {
         role: "toolResult",
         timestamp: value.timestamp,
@@ -1020,7 +1082,9 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
           .slice(0, MAX_LIST_ITEMS)
           .map((part) => bounded(part.mimeType, MAX_PREVIEW_LENGTH)),
         isError: value.isError,
+        ...(planUpdate === undefined ? {} : { planUpdate }),
       };
+    }
   }
 }
 

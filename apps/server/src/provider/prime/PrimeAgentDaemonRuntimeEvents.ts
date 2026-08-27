@@ -15,6 +15,7 @@ import {
 import type {
   PrimeDaemonEvent,
   PrimeDaemonMessage,
+  PrimeDaemonPlanUpdate,
   PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonSessionStats } from "./PrimeAgentDaemonSessionRuntime.ts";
@@ -193,6 +194,21 @@ function toolLifecycleDraft(
             : "completed"
           : "inProgress",
       title,
+    },
+  };
+}
+
+function planUpdateDraft(
+  input: RuntimeEventContext,
+  update: PrimeDaemonPlanUpdate | undefined,
+): PrimeAgentRuntimeEventDraft | undefined {
+  if (input.turnId === undefined || update === undefined) return undefined;
+  return {
+    ...runtimeBase(input),
+    type: "turn.plan.updated",
+    payload: {
+      ...(update.explanation === undefined ? {} : { explanation: update.explanation }),
+      plan: update.plan,
     },
   };
 }
@@ -440,6 +456,10 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
           ];
     }
     case "MessageCompleted": {
+      if (event.message.role === "toolResult") {
+        const draft = planUpdateDraft(context, event.message.planUpdate);
+        return draft === undefined ? [] : [draft];
+      }
       const itemId = event.message.role === "assistant" ? assistantItemId(context) : undefined;
       if (itemId === undefined || event.message.role !== "assistant") return [];
       const failed =
