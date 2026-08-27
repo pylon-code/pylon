@@ -30,22 +30,26 @@ on:
         type: string
 
 # Nightlies (scheduled and manually dispatched) share one group so overlapping
-# runs cannot build the same commit twice or publish out of order. Stable tag
-# releases get their own group, so a nightly never blocks a real release.
+# runs cannot build the same commit twice or publish out of order. Every stable
+# release keys off run_id instead, so it is always unique: a nightly never
+# blocks a real release, and a hotfix tag never queues behind the stable release
+# already in flight. Upstream collapses all stable runs into one shared lane,
+# which would have delayed a P0 tag by the better part of a build matrix.
 #
 # Nothing is cancelled mid-flight. `publish_cli` pushes to npm before `release`
 # creates the GitHub release, and a cancel in that window strands a published
 # CLI version with no matching desktop build — and npm will not take that
-# version number again. `queue: max` keeps every pending run instead of the
-# default newest-wins single slot, so a queued stable tag can never be silently
-# dropped; queued nightlies with no new commits skip via check_changes.
+# version number again. `queue: max` gives the nightly group 100 FIFO pending
+# slots instead of the default newest-wins single slot, so a nightly waiting on
+# its predecessor is never silently dropped; the ones with no new commits then
+# skip via check_changes when their turn comes.
 #
 # This supersedes the cancel-on-schedule policy from 8dd0d6e06, which existed
 # because a Blacksmith capacity outage let 23 nightlies stack up ~480 VM-hours
 # deep waiting for runners that never arrived. 124630c3f moved every workflow
 # onto GitHub-hosted runners, so that queue no longer forms.
 concurrency:
-  group: release-${{ (github.event_name == 'schedule' || inputs.channel == 'nightly') && 'nightly' || 'stable' }}
+  group: release-${{ (github.event_name == 'schedule' || inputs.channel == 'nightly') && 'nightly' || github.run_id }}
   cancel-in-progress: false
   queue: max
 
@@ -63,6 +67,10 @@ jobs:
     name: Check for changes since last nightly
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    # Nothing cancels a wedged predecessor now that nightlies queue, and this
+    # was the only job in the file relying on GitHub's 360-minute default. A
+    # stuck checkout here would hold release-nightly across two cron slots.
+    timeout-minutes: 5
     outputs:
       has_changes: ${{ steps.check.outputs.has_changes }}
     steps:
