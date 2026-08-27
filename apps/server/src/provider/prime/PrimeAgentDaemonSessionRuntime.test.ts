@@ -519,6 +519,7 @@ function fixture(options?: {
     }
     compact(): Promise<unknown> {
       captures.connectionCalls.push({ method: "compact", args: [] });
+      queuedInputSuspended = true;
       return (
         options?.compactImpl?.() ??
         Promise.resolve({
@@ -4978,6 +4979,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           detail: "The daemon returned an invalid session input resume response.",
         });
         expect(error.detail).not.toContain("/secret/path");
+        expect(captures.connectionCalls.filter((call) => call.method === "prompt")).toHaveLength(0);
 
         yield* runtime.prompt({ text: "retry after failed resume" });
         expect(captures.commands.filter((command) => command.type === "resume_queue")).toHaveLength(
@@ -5654,6 +5656,54 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           method: "setAutoCompactionEnabled",
           args: [false],
         });
+      }),
+    ),
+  );
+
+  it.effect("resumes input once before prompts continue after compaction", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const test = fixture();
+        const runtime = yield* test.make();
+
+        yield* runtime.compact;
+        yield* runtime.prompt({ text: "first prompt after compaction" });
+        yield* runtime.prompt({ text: "second prompt after compaction" });
+
+        expect(
+          test.captures.commands.filter((command) => command.type === "resume_queue"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.findIndex((call) => call.method === "resumeQueue"),
+        ).toBeLessThan(test.captures.connectionCalls.findIndex((call) => call.method === "prompt"));
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(2);
+      }),
+    ),
+  );
+
+  it.effect("resumes input before the next prompt when compaction is declined", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const test = fixture({
+          compactImpl: () => Promise.reject(new Error("private native compaction failure")),
+        });
+        const runtime = yield* test.make();
+
+        expect(yield* runtime.compact.pipe(Effect.flip)).toMatchObject({
+          operation: "compact",
+          reason: "request-failed",
+          detail: expect.not.stringContaining("private"),
+        });
+        yield* runtime.prompt({ text: "continue after declined compaction" });
+
+        expect(
+          test.captures.commands.filter((command) => command.type === "resume_queue"),
+        ).toHaveLength(1);
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "prompt"),
+        ).toHaveLength(1);
       }),
     ),
   );
