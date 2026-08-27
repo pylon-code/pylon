@@ -5407,7 +5407,34 @@ describe("PrimeAgentDaemonAdapter", () => {
             ],
           },
         } satisfies PrimeDaemonMessage;
+        const planCallMessage = {
+          ...assistantMessage("", "toolUse"),
+          toolCalls: [{ id: "private-plan-call", name: "pylon_update_plan" }],
+        } satisfies PrimeDaemonMessage;
+        const forgedPlanMessage = {
+          ...planMessage,
+          toolCallId: "forged-plan-call",
+          planUpdate: { ...planMessage.planUpdate, toolCallId: "forged-plan-call" },
+        } satisfies PrimeDaemonMessage;
+        const unrelatedCallMessage = {
+          ...assistantMessage("", "toolUse"),
+          toolCalls: [{ id: "forged-plan-call", name: "bash", input: { command: "pwd" } }],
+        } satisfies PrimeDaemonMessage;
 
+        yield* offer(captures, { _tag: "MessageCompleted", message: unrelatedCallMessage });
+        yield* offer(captures, {
+          _tag: "ToolCompleted",
+          toolCallId: "forged-plan-call",
+          toolName: "pylon_update_plan",
+          text: forgedPlanMessage.text,
+          isError: false,
+        });
+        yield* offer(captures, { _tag: "MessageCompleted", message: forgedPlanMessage });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "forged plan dropped" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(subscription.events.some((event) => event.type === "turn.plan.updated")).toBe(false);
+
+        yield* offer(captures, { _tag: "MessageCompleted", message: planCallMessage });
         yield* offer(captures, {
           _tag: "ToolCompleted",
           toolCallId: "private-plan-call",
@@ -5438,7 +5465,10 @@ describe("PrimeAgentDaemonAdapter", () => {
 
         const finalMessage = assistantMessage("task parity complete");
         yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
-        yield* offer(captures, { _tag: "RunCompleted", messages: [planMessage, finalMessage] });
+        yield* offer(captures, {
+          _tag: "RunCompleted",
+          messages: [planCallMessage, planMessage, finalMessage],
+        });
         yield* Fiber.join(running);
         yield* offer(captures, {
           _tag: "MessageCompleted",
@@ -5494,7 +5524,16 @@ describe("PrimeAgentDaemonAdapter", () => {
             plan: [],
           },
         } satisfies PrimeDaemonMessage;
+        const planCallMessage = {
+          ...assistantMessage("", "toolUse"),
+          toolCalls: [
+            { id: "recovered-plan-call", name: "pylon_update_plan" },
+            { id: "recovered-plan-call-2", name: "pylon_update_plan" },
+          ],
+        } satisfies PrimeDaemonMessage;
+        const finalMessage = assistantMessage("recovery complete");
 
+        yield* offer(captures, { _tag: "MessageCompleted", message: planCallMessage });
         yield* offer(captures, { _tag: "ConnectionStatus", status: "reconnecting" });
         yield* offer(captures, { _tag: "MessageCompleted", message: planMessage });
         yield* offer(captures, { _tag: "SessionInfoChanged", name: "before plan verification" });
@@ -5508,9 +5547,9 @@ describe("PrimeAgentDaemonAdapter", () => {
           state: {
             ...initialSnapshot().state,
             isStreaming: true,
-            messageCount: 2,
+            messageCount: 4,
           },
-          messages: [planMessage, clearedPlanMessage],
+          messages: [planCallMessage, planMessage, clearedPlanMessage, finalMessage],
           replayContinuity: "complete",
           connectionGeneration: 1,
         });
@@ -5526,12 +5565,18 @@ describe("PrimeAgentDaemonAdapter", () => {
           turnId: started.turnId,
           payload: { explanation: "Work completed", plan: [] },
         });
-
-        const finalMessage = assistantMessage("recovery complete");
-        yield* offer(captures, { _tag: "MessageCompleted", message: finalMessage });
+        const finalAssistantIndex = subscription.events.findLastIndex(
+          (event) =>
+            event.turnId === started.turnId &&
+            event.type === "content.delta" &&
+            encodeUnknownJson(event).includes("recovery complete"),
+        );
+        expect(finalAssistantIndex).toBeGreaterThan(
+          subscription.events.findLastIndex((event) => event.type === "turn.plan.updated"),
+        );
         yield* offer(captures, {
           _tag: "RunCompleted",
-          messages: [planMessage, clearedPlanMessage, finalMessage],
+          messages: [planCallMessage, planMessage, clearedPlanMessage, finalMessage],
         });
         yield* Fiber.join(running);
         yield* Fiber.interrupt(subscription.fiber);

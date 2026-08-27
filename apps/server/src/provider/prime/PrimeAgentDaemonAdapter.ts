@@ -100,6 +100,7 @@ import {
 import {
   PRIME_AGENT_MANAGED_EXTENSION_FILENAME,
   PRIME_AGENT_MANAGED_EXTENSION_MARKER_COMMAND,
+  PRIME_AGENT_PLAN_TOOL_NAME,
   makePrimeAgentManagedExtensionSource,
   projectPrimeAgentManagedPermissionRequest,
   type PrimeAgentManagedPermissionRequestType,
@@ -183,6 +184,10 @@ interface PrimeAgentDaemonActiveTurn {
   readonly nativeTranscriptBaselineMessageCount: number;
   readonly observedToolStarts: Set<string>;
   readonly observedToolCompletions: Set<string>;
+  /** Durable assistant tool-call messages, retained only for in-memory correlation. */
+  readonly durableToolCallNames: Map<string, string>;
+  /** Finalized tool-result messages, retained only for in-memory correlation. */
+  readonly completedToolCallNames: Map<string, string>;
   readonly projectedPlanToolCallIds: Set<string>;
   readonly command?: "compact" | undefined;
 }
@@ -532,6 +537,19 @@ function appendTranscriptMessages(
   return appendedCount;
 }
 
+function recordCorrelatedToolName(
+  names: Map<string, string>,
+  toolCallId: string,
+  toolName: string,
+): void {
+  const previous = names.get(toolCallId);
+  if (previous === undefined) {
+    names.set(toolCallId, toolName);
+  } else if (previous !== toolName) {
+    names.set(toolCallId, "");
+  }
+}
+
 function runtimeOperationError(
   threadId: ThreadId,
   method: string,
@@ -586,6 +604,8 @@ export function makePrimeAgentDaemonAdapter(
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
     const crypto = yield* Crypto.Crypto;
+    const runtimeContext = yield* Effect.context<never>();
+    const runPromise = Effect.runPromiseWith(runtimeContext);
     const runtimeFactory = options?.runtimeFactory ?? makePrimeAgentDaemonSessionRuntime;
     const nativeEventLogger =
       options?.nativeEventLogger ??
@@ -1069,6 +1089,9 @@ export function makePrimeAgentDaemonAdapter(
             (!context.managedPlanProjectionEnabled ||
               turn === undefined ||
               planUpdate === undefined ||
+              turn.durableToolCallNames.get(planUpdate.toolCallId) !== PRIME_AGENT_PLAN_TOOL_NAME ||
+              turn.completedToolCallNames.get(planUpdate.toolCallId) !==
+                PRIME_AGENT_PLAN_TOOL_NAME ||
               turn.projectedPlanToolCallIds.has(planUpdate.toolCallId))
           ) {
             continue;
@@ -1165,32 +1188,35 @@ export function makePrimeAgentDaemonAdapter(
         const currentTurnMessages = event.messages.slice(
           Math.max(0, turn.nativeTranscriptBaselineMessageCount - snapshotStartMessageCount),
         );
-        for (const message of missingMessages) {
-          if (message.role !== "assistant") continue;
-          const recoveredPrefix =
-            turn.activeAssistantItemId === undefined ? "" : turn.assistantTextEmitted;
-          if (turn.activeAssistantItemId === undefined) {
-            yield* publishDrafts(context, { _tag: "MessageStarted", message }, turn);
-          }
-          turn.assistantTextStreamed = false;
-          yield* publishDrafts(
-            context,
-            {
-              _tag: "MessageCompleted",
-              message: { ...message, text: message.text.slice(recoveredPrefix.length) },
-            },
-            turn,
-          );
-          turn.lastAssistantHadRenderableText =
-            message.text.trim().length > 0 &&
-            message.stopReason !== "toolUse" &&
-            message.toolCalls.length === 0;
-        }
+        const missingMessageSet = new Set(missingMessages);
 
-        // Completed messages prove missing tool lifecycle without republishing
-        // assistant prose that the adapter already observed before disconnect.
+        // Walk the authoritative transcript once. This keeps recovered assistant,
+        // tool, and managed-plan events in the same durable message order.
         for (const message of currentTurnMessages) {
           if (message.role === "assistant") {
+            for (const toolCall of message.toolCalls) {
+              recordCorrelatedToolName(turn.durableToolCallNames, toolCall.id, toolCall.name);
+            }
+            if (missingMessageSet.has(message)) {
+              const recoveredPrefix =
+                turn.activeAssistantItemId === undefined ? "" : turn.assistantTextEmitted;
+              if (turn.activeAssistantItemId === undefined) {
+                yield* publishDrafts(context, { _tag: "MessageStarted", message }, turn);
+              }
+              turn.assistantTextStreamed = false;
+              yield* publishDrafts(
+                context,
+                {
+                  _tag: "MessageCompleted",
+                  message: { ...message, text: message.text.slice(recoveredPrefix.length) },
+                },
+                turn,
+              );
+              turn.lastAssistantHadRenderableText =
+                message.text.trim().length > 0 &&
+                message.stopReason !== "toolUse" &&
+                message.toolCalls.length === 0;
+            }
             for (const toolCall of message.toolCalls) {
               if (turn.observedToolStarts.has(toolCall.id)) continue;
               turn.observedToolStarts.add(toolCall.id);
@@ -1207,6 +1233,11 @@ export function makePrimeAgentDaemonAdapter(
               );
             }
           } else if (message.role === "toolResult") {
+            recordCorrelatedToolName(
+              turn.completedToolCallNames,
+              message.toolCallId,
+              message.toolName,
+            );
             if (!turn.observedToolStarts.has(message.toolCallId)) {
               turn.observedToolStarts.add(message.toolCallId);
               yield* publishDrafts(
@@ -2417,6 +2448,19 @@ export function makePrimeAgentDaemonAdapter(
                 context.nativeTranscriptFingerprints,
                 [event.message],
               );
+              if (turn !== undefined) {
+                if (event.message.role === "assistant") {
+                  for (const toolCall of event.message.toolCalls) {
+                    recordCorrelatedToolName(turn.durableToolCallNames, toolCall.id, toolCall.name);
+                  }
+                } else if (event.message.role === "toolResult") {
+                  recordCorrelatedToolName(
+                    turn.completedToolCallNames,
+                    event.message.toolCallId,
+                    event.message.toolName,
+                  );
+                }
+              }
             } else if (
               event._tag === "ToolStarted" ||
               event._tag === "ToolProgress" ||
@@ -2895,6 +2939,13 @@ export function makePrimeAgentDaemonAdapter(
             expectedExtension: {
               path: managedExtensionPath,
               markerCommand: PRIME_AGENT_MANAGED_EXTENSION_MARKER_COMMAND,
+              verifySource: () =>
+                runPromise(
+                  fileSystem.readFileString(managedExtensionPath).pipe(
+                    Effect.map((source) => source === managedExtensionSource),
+                    Effect.orElseSucceed(() => false),
+                  ),
+                ),
             },
             ...(approvalRequired
               ? {
@@ -3418,6 +3469,8 @@ export function makePrimeAgentDaemonAdapter(
                 nativeTranscriptBaselineMessageCount: context.nativeTranscriptMessageCount,
                 observedToolStarts: new Set(),
                 observedToolCompletions: new Set(),
+                durableToolCallNames: new Map(),
+                completedToolCallNames: new Map(),
                 projectedPlanToolCallIds: new Set(),
                 ...(/^\/compact(?:\s|$)/.test(text) ? { command: "compact" as const } : {}),
               };

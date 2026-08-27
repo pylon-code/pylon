@@ -833,6 +833,8 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
   readonly expectedExtension?: {
     readonly path: string;
     readonly markerCommand: string;
+    /** Rechecks Pylon's generated source without returning its contents. */
+    readonly verifySource: () => Promise<boolean>;
   };
   /** Supervised mode additionally requires an exclusive extension inventory and zero agent depth. */
   readonly requiredExtension?: {
@@ -1478,7 +1480,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       .filter(Boolean);
     if (
       input.expectedExtension !== undefined &&
-      configuredExtensions.filter((path) => path === input.expectedExtension!.path).length !== 1
+      (configuredExtensions.filter((path) => path === input.expectedExtension!.path).length !== 1 ||
+        !Predicate.isFunction(input.expectedExtension.verifySource))
     ) {
       client.close();
       return yield* runtimeError(
@@ -1684,14 +1687,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             input.requiredExtension === undefined
               ? undefined
               : await connection!.setRlmMaxDepth!(0);
-          const [rawResources, rawCommands, rawToolDefinition, rawDepth] = await Promise.all([
-            connection!.getResourceSnapshot!(),
-            connection!.getCommands!(),
-            connection!.getToolDefinition!(PRIME_AGENT_PLAN_TOOL_NAME),
-            input.requiredExtension === undefined
-              ? Promise.resolve(undefined)
-              : connection!.getRlmMaxDepthStatus!(),
-          ]);
+          const [rawResources, rawCommands, rawToolDefinition, sourceVerified, rawDepth] =
+            await Promise.all([
+              connection!.getResourceSnapshot!(),
+              connection!.getCommands!(),
+              connection!.getToolDefinition!(PRIME_AGENT_PLAN_TOOL_NAME),
+              expectedExtension.verifySource(),
+              input.requiredExtension === undefined
+                ? Promise.resolve(undefined)
+                : connection!.getRlmMaxDepthStatus!(),
+            ]);
           const resources = decodeResourceSnapshot(rawResources);
           const commands = decodeCommands(rawCommands);
           if (Option.isNone(resources) || Option.isNone(commands)) {
@@ -1713,6 +1718,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           );
           if (
             extensionMatches.length !== 1 ||
+            sourceVerified !== true ||
             (input.requiredExtension !== undefined && resources.value.extensions.length !== 1) ||
             markerMatches.length !== 1 ||
             extensionFailed ||
@@ -2103,15 +2109,24 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     const verifyManagedExtensionAfterReconnect = Effect.tryPromise({
       try: async () => {
         if (expectedExtension === undefined) return true;
-        const [rawResources, rawCommands, rawToolDefinition] = await Promise.all([
-          connection!.getResourceSnapshot(),
-          connection!.getCommands(),
-          connection!.getToolDefinition!(PRIME_AGENT_PLAN_TOOL_NAME),
-        ]);
+        const [rawResources, rawCommands, rawToolDefinition, sourceVerified, rawDepth] =
+          await Promise.all([
+            connection!.getResourceSnapshot(),
+            connection!.getCommands(),
+            connection!.getToolDefinition!(PRIME_AGENT_PLAN_TOOL_NAME),
+            expectedExtension.verifySource(),
+            input.requiredExtension === undefined
+              ? Promise.resolve(undefined)
+              : connection!.getRlmMaxDepthStatus!(),
+          ]);
         const resources = decodeResourceSnapshot(rawResources);
         const commands = decodeCommands(rawCommands);
         if (Option.isNone(resources) || Option.isNone(commands)) return false;
+        const depth =
+          input.requiredExtension === undefined ? undefined : decodeRlmMaxDepthStatus(rawDepth);
         return (
+          sourceVerified === true &&
+          (depth === undefined || (Option.isSome(depth) && depth.value.maxDepth === 0)) &&
           resources.value.extensions.filter(
             (extension) => extension.path === expectedExtension.path,
           ).length === 1 &&
@@ -2132,9 +2147,45 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       },
       catch: () => false,
     });
+    type ManagedRecoveryResolution = {
+      readonly promise: Promise<boolean>;
+      readonly resolve: (verified: boolean) => void;
+      settled: boolean;
+      verified?: boolean;
+    };
     let managedRecoveryTail = Promise.resolve();
-    let managedRecoveryPending = false;
+    let managedRecoveryResolution: ManagedRecoveryResolution | undefined;
     let managedRecoveryFailed = false;
+    const beginManagedRecovery = (): ManagedRecoveryResolution => {
+      const previous = managedRecoveryResolution;
+      if (previous !== undefined && !previous.settled) {
+        previous.settled = true;
+        previous.verified = false;
+        previous.resolve(false);
+      }
+      let resolve!: (verified: boolean) => void;
+      const promise = new Promise<boolean>((complete) => {
+        resolve = complete;
+      });
+      const recovery = { promise, resolve, settled: false };
+      managedRecoveryResolution = recovery;
+      return recovery;
+    };
+    const settleManagedRecovery = (
+      recovery: ManagedRecoveryResolution | undefined,
+      verified: boolean,
+    ): boolean => {
+      if (recovery === undefined || recovery !== managedRecoveryResolution || recovery.settled) {
+        return false;
+      }
+      recovery.settled = true;
+      recovery.verified = verified;
+      recovery.resolve(verified);
+      if (!verified) managedRecoveryFailed = true;
+      return true;
+    };
+    const managedRecoveryPending = () =>
+      managedRecoveryResolution !== undefined && !managedRecoveryResolution.settled;
     const routeManagedAwareRawEvent = (raw: unknown): Promise<void> => {
       const rawType =
         typeof raw === "object" && raw !== null && "type" in raw && typeof raw.type === "string"
@@ -2147,11 +2198,22 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           ? (raw as { readonly status: string }).status
           : undefined;
       if (connectionStatus === "reconnecting" && expectedExtension !== undefined) {
-        managedRecoveryPending = true;
+        beginManagedRecovery();
+      }
+      const recovery = managedRecoveryResolution;
+      const workerRecoveryRequiresExplicitSnapshot =
+        activeWorkerRecovery !== undefined &&
+        activeWorkerRecovery.resolution === reconnectResolution;
+      if (
+        rawType === "session_resynced" &&
+        workerRecoveryRequiresExplicitSnapshot &&
+        activeWorkerRecovery?.explicitSnapshotRaw !== raw
+      ) {
+        return Promise.resolve();
       }
       if (
         expectedExtension === undefined ||
-        (!managedRecoveryPending &&
+        (!managedRecoveryPending() &&
           !managedRecoveryFailed &&
           rawType !== "session_resynced" &&
           rawType !== "connection_status" &&
@@ -2162,9 +2224,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       const delivery = managedRecoveryTail.then(() =>
         runPromise(
           Effect.gen(function* () {
-            if (connectionStatus === "connected" && managedRecoveryPending) {
-              managedRecoveryPending = false;
-              managedRecoveryFailed = true;
+            if (
+              rawType === "session_resynced" &&
+              (recovery === undefined || recovery !== managedRecoveryResolution || recovery.settled)
+            ) {
+              return;
+            }
+            if (connectionStatus === "connected" && managedRecoveryPending()) {
+              settleManagedRecovery(recovery, false);
+              settleReconnectResolution(connectionGeneration, false);
               yield* routeRawEvent({
                 type: "closed",
                 error:
@@ -2172,11 +2240,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               });
               return;
             }
-            if (rawType === "session_resynced" && managedRecoveryPending) {
+            if (rawType === "session_resynced" && recovery !== undefined && !recovery.settled) {
               const restored = yield* verifyManagedExtensionAfterReconnect;
-              managedRecoveryPending = false;
               if (!restored) {
-                managedRecoveryFailed = true;
+                settleManagedRecovery(recovery, false);
+                settleReconnectResolution(connectionGeneration, false);
                 yield* routeRawEvent({
                   type: "closed",
                   error:
@@ -2186,43 +2254,66 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               }
             }
             if (rawType === "closed") {
-              managedRecoveryPending = false;
+              settleManagedRecovery(recovery, false);
               managedRecoveryFailed = true;
             }
             if (!managedRecoveryFailed || rawType === "closed") {
               yield* Effect.promise(() => routeMcpAwareRawEvent(raw));
+              if (rawType === "session_resynced") {
+                settleManagedRecovery(recovery, true);
+              }
             }
           }),
         ),
       );
+      const guarded = delivery.catch((cause) => {
+        settleManagedRecovery(recovery, false);
+        throw cause;
+      });
+      managedRecoveryTail = guarded.catch(() => undefined);
+      return guarded;
+    };
+    const beginManagedWorkerRecovery = (): Promise<void> => {
+      if (expectedExtension === undefined) return Promise.resolve();
+      const recovery = beginManagedRecovery();
+      const delivery = managedRecoveryTail
+        .then(() =>
+          runPromise(routeRawEvent({ type: "connection_status", status: "reconnecting" })),
+        )
+        .catch((cause) => {
+          settleManagedRecovery(recovery, false);
+          throw cause;
+        });
       managedRecoveryTail = delivery.catch(() => undefined);
       return delivery;
     };
-    const awaitManagedRecovery = Effect.suspend(() =>
-      expectedExtension === undefined
-        ? Effect.void
-        : Effect.tryPromise({
-            try: () => managedRecoveryTail,
-            catch: () =>
-              runtimeError(
+    const awaitManagedRecovery = Effect.suspend(() => {
+      if (expectedExtension === undefined) return Effect.void;
+      const recovery = managedRecoveryResolution;
+      return Effect.tryPromise({
+        try: async () => {
+          await managedRecoveryTail;
+          if (recovery === undefined) return true;
+          return recovery.settled ? recovery.verified === true : recovery.promise;
+        },
+        catch: () =>
+          runtimeError(
+            "verify-extension",
+            "request-failed",
+            "Could not verify Pylon's managed provider extension after reconnecting.",
+          ),
+      }).pipe(
+        Effect.flatMap((verified) =>
+          verified && !managedRecoveryFailed
+            ? Effect.void
+            : runtimeError(
                 "verify-extension",
                 "request-failed",
-                "Could not verify Pylon's managed provider extension after reconnecting.",
+                "Pylon's managed provider extension is unavailable after reconnecting.",
               ),
-          }).pipe(
-            Effect.andThen(
-              Effect.suspend(() =>
-                managedRecoveryFailed
-                  ? runtimeError(
-                      "verify-extension",
-                      "request-failed",
-                      "Pylon's managed provider extension is unavailable after reconnecting.",
-                    )
-                  : Effect.void,
-              ),
-            ),
-          ),
-    );
+        ),
+      );
+    });
     const awaitMcpRecovery = Effect.suspend(() =>
       input.mcpServer === undefined
         ? Effect.void
@@ -3443,6 +3534,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         activeWorkerRecovery?.resolution === resolution;
       const gate = Effect.gen(function* () {
         if (!ownsRecovery()) return false;
+        yield* Effect.promise(() => beginManagedWorkerRecovery());
         const first = yield* readWorkerRecoverySummary();
         if (!ownsRecovery() || first?.state !== "recovering") return false;
         const workerPid = first.pid;
@@ -3474,7 +3566,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         if (recovery?.resolution !== resolution) return false;
         const explicitSnapshot = { type: "session_resynced", snapshot: snapshot.value } as const;
         recovery.explicitSnapshotRaw = explicitSnapshot;
-        yield* Effect.promise(() => routeMcpAwareRawEvent(explicitSnapshot));
+        yield* Effect.promise(() => routeManagedAwareRawEvent(explicitSnapshot));
         const reconciled = yield* Effect.promise(() => resolution.promise);
         return reconciled && ownsRecovery();
       });
@@ -4248,6 +4340,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             expectedExtension === undefined
               ? Promise.resolve(undefined)
               : connection!.getToolDefinition!(PRIME_AGENT_PLAN_TOOL_NAME),
+            expectedExtension === undefined
+              ? Promise.resolve(true)
+              : expectedExtension.verifySource(),
           ]),
         catch: () =>
           runtimeError(
@@ -4268,8 +4363,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
       if (
         expectedExtension !== undefined &&
-        (resources.value.extensions.filter((extension) => extension.path === expectedExtension.path)
-          .length !== 1 ||
+        (rawState[4] !== true ||
+          resources.value.extensions.filter(
+            (extension) => extension.path === expectedExtension.path,
+          ).length !== 1 ||
           (input.requiredExtension !== undefined && resources.value.extensions.length !== 1) ||
           commands.value.filter(
             (command) =>

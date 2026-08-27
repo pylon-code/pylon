@@ -79,13 +79,14 @@ snapshots are ignored.
 Daemon task parity uses one generated, Pylon-owned extension for `pylon_update_plan` and the
 optional supervised execution gate. The root-only tool accepts a bounded full plan snapshot; an empty
 snapshot clears the visible plan. Pylon decodes only the exact successful `pylon-plan-v1` details from a
-finalized root `message_end` tool result. Generic tool arguments, result text, structured details, and
-Prime tool-call identifiers remain private. The adapter binds the update to the exact active canonical
-turn and deduplicates the private identifier in memory. Reconnect recovery disables plan projection
-before native events can pass, verifies the managed extension path, marker, exact plan-tool definition,
-and generated source again, then reconciles every missing finalized result in bounded transcript order.
-Reload performs the same provider checks and rejects changed generated source before asking Prime to
-reload. Full-access sessions retain normal user extension discovery and scope unrelated diagnostics out
+finalized root `message_end` tool result whose private call id and exact name match a preceding durable
+assistant tool call in the same canonical turn. Generic tool arguments, result text, structured details,
+and Prime tool-call identifiers remain private. The adapter binds the update to the exact active turn and
+deduplicates the private identifier in memory. Reconnect and replacement-worker recovery disable plan
+projection before native events can pass, fence further native input, verify the managed extension path,
+marker, exact plan-tool definition, generated source, and supervised depth again, then reconcile every
+missing finalized result in one bounded transcript-order pass. Reload performs the same provider checks
+and rejects changed generated source both before and after asking Prime to reload. Full-access sessions retain normal user extension discovery and scope unrelated diagnostics out
 of Pylon's managed-path check. Approval-required sessions retain the stronger fail-closed policy: one
 explicit extension, discovery and automatic reconnect disabled, zero RLM child depth, and no non-warning
 extension diagnostic from any path.
