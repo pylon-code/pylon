@@ -1171,6 +1171,9 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Running pnpm");
     expect(markup).toContain("tool call failed");
+    expect(markup).toContain('data-state="terminal"');
+    expect(markup).toContain("text-inherit");
+    expect(markup).toContain('data-state="error"');
   });
 
   it("renders working state as the active-turn header", () => {
@@ -1222,10 +1225,10 @@ describe("MessagesTimeline", () => {
     expect(assistantIndex).toBeGreaterThan(workingIndex);
     expect(markup).toContain('class="border-b border-border/60 pb-2 pt-1"');
     expect(markup).toContain(
-      'class="px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
+      'class="flex items-center gap-2 px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
     );
     expect(markup).not.toContain('class="pt-0.5 pb-5 pl-1.5"');
-    expect(markup).not.toContain('data-state="working"');
+    expect(markup).toContain('data-state="loading"');
   });
 
   it("aligns the iconless Thinking row with the working timer", () => {
@@ -1240,6 +1243,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Working for");
     expect(markup).toContain("Thinking");
+    expect(markup).toContain('data-state="thinking"');
     expect(markup).toContain("gap-1.5 py-0.5 px-1");
   });
 

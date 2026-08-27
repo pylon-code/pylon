@@ -688,8 +688,8 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
           <div className="flex min-h-5 items-center gap-1.5">
             <ConnectionStatusDot
               tooltipText={`Link created at ${formatAccessTimestamp(pairingLink.createdAt)}`}
-              state="idle"
-              colorClassName="text-amber-400"
+              state="queued"
+              colorClassName="text-warning"
             />
             <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
           </div>
@@ -938,7 +938,7 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
           <div className="flex min-h-5 items-center gap-1.5">
             <ConnectionStatusDot
               tooltipText={statusTooltip}
-              state={isLive ? "live" : "idle"}
+              state={isLive ? "success" : "offline"}
               colorClassName={isLive ? undefined : "text-muted-foreground/40"}
             />
             <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
@@ -1368,7 +1368,7 @@ function SavedBackendListRow({
   const isConnecting = connectionState === "connecting" || connectionState === "reconnecting";
   const connectionDot =
     connectionState === "connected"
-      ? { state: "live" as const, colorClassName: undefined }
+      ? { state: "success" as const, colorClassName: undefined }
       : connectionState === "connecting" || connectionState === "reconnecting"
         ? // Deliberate override: connecting here means "not yet available",
           // not "in motion", so it borrows the warning tone rather than the
@@ -1376,7 +1376,7 @@ function SavedBackendListRow({
           { state: "connecting" as const, colorClassName: "text-warning" }
         : connectionState === "error"
           ? { state: "error" as const, colorClassName: undefined }
-          : { state: "idle" as const, colorClassName: "text-muted-foreground/40" };
+          : { state: "offline" as const, colorClassName: "text-muted-foreground/40" };
   const statusTooltip = connectionStatusText(environment.connection);
   const errorTraceId = environment.connection.traceId;
   const { copyToClipboard: copyTraceIdToClipboard } = useCopyToClipboard<{ traceId: string }>({

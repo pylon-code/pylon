@@ -48,6 +48,25 @@ const INFO = glyph([
   [3, 2],
   [4, 2],
 ]);
+const PAUSE = glyph([
+  [1, 1],
+  [2, 1],
+  [3, 1],
+  [1, 3],
+  [2, 3],
+  [3, 3],
+]);
+const STOP = glyph([
+  [1, 1],
+  [1, 2],
+  [1, 3],
+  [2, 1],
+  [2, 2],
+  [2, 3],
+  [3, 1],
+  [3, 2],
+  [3, 3],
+]);
 const ELLIPSIS = glyph([
   [2, 0],
   [2, 2],
@@ -60,18 +79,18 @@ const RECORD = glyph([
   [2, 3],
   [3, 2],
 ]);
-/* ">_" shell prompt: a full-height chevron plus a cursor underscore. */
+/* Pylon extension: a full-height chevron plus a cursor underscore. */
 const PROMPT = glyph([
   [0, 0],
   [1, 1],
   [2, 2],
   [3, 1],
   [4, 0],
+  [4, 2],
   [4, 3],
   [4, 4],
 ]);
-/* The 12-dot perimeter of the 5x5 grid, corners excluded, so it reads as a
-   circle rather than a square. */
+/* Pylon extension: a circular fleet/orchestration indicator. */
 const RING = glyph([
   [0, 1],
   [0, 2],
@@ -98,30 +117,25 @@ type StateConfig = {
   dim?: number;
   /** Blink parameters per on dot, keyed by index and grid position. */
   blink?: (i: number, row: number, col: number) => Blink;
-  /** Use the narrow-duty-cycle chase keyframe instead of the 50/50 blink, so a
-   * single dot travels around the glyph rather than half of it lighting at once. */
+  /** Use Pylon's fading-tail orbit instead of the shared blink keyframe. */
   chase?: boolean;
 };
 
+/**
+ * Pylon's status language follows assistant-ui's standalone Dot Matrix states.
+ * Neutral activity inherits the adaptive foreground tone; color is reserved for
+ * semantic outcomes. Static states do not receive an animation timeline.
+ */
 const STATES = {
-  /** Row sweep with per-column jitter — the agent is actively producing work. */
-  working: {
-    blink: (_i: number, row: number, col: number) => ({
-      duration: 0.9,
-      delay: -(row * 0.12 + hash(col, 3, 900)),
+  idle: { base: 0.3 },
+  loading: {
+    blink: (i: number) => ({
+      duration: 0.9 + hash(i, 2, 700),
+      delay: -hash(i, 1, 1200),
       lo: 0.15,
     }),
   },
-  /** Center-out ripple — a connection is being established. */
-  connecting: {
-    blink: (_i: number, row: number, col: number) => ({
-      duration: 1.4,
-      delay: -Math.max(Math.abs(row - CENTER), Math.abs(col - CENTER)) * 0.18,
-      lo: 0.15,
-    }),
-  },
-  /** A single dot chasing around a ring — the agent is actively producing work. */
-  spinner: {
+  orchestrating: {
     glyph: RING,
     dim: 0.06,
     chase: true,
@@ -130,8 +144,42 @@ const STATES = {
       return { duration: 1.1, delay: -(1 - turn) * 1.1, lo: 0.12 };
     },
   },
-  approval: { glyph: BANG, blink: () => ({ duration: 1.6, delay: 0, lo: 0.45 }) },
-  input: {
+  queued: { glyph: ELLIPSIS },
+  thinking: {
+    blink: (_i: number, row: number, col: number) => ({
+      duration: 1.2,
+      delay: -(row + col) * 0.09,
+      lo: 0.2,
+    }),
+  },
+  streaming: {
+    blink: (_i: number, row: number, col: number) => ({
+      duration: 0.9,
+      delay: -(row * 0.12 + hash(col, 3, 900)),
+      lo: 0.15,
+    }),
+  },
+  searching: {
+    blink: (_i: number, _row: number, col: number) => ({
+      duration: 1.1,
+      delay: -col * 0.12,
+      lo: 0.2,
+    }),
+  },
+  syncing: {
+    blink: (_i: number, row: number, col: number) => {
+      const turn = (Math.atan2(row - CENTER, col - CENTER) + Math.PI) / (2 * Math.PI);
+      return { duration: 1.3, delay: -turn * 1.3, lo: 0.2 };
+    },
+  },
+  connecting: {
+    blink: (_i: number, row: number, col: number) => ({
+      duration: 1.4,
+      delay: -Math.max(Math.abs(row - CENTER), Math.abs(col - CENTER)) * 0.18,
+      lo: 0.15,
+    }),
+  },
+  waiting: {
     glyph: ELLIPSIS,
     blink: (_i: number, _row: number, col: number) => ({
       duration: 1.2,
@@ -139,57 +187,104 @@ const STATES = {
       lo: 0.2,
     }),
   },
-  plan: { glyph: INFO },
-  done: { glyph: CHECK },
+  uploading: {
+    blink: (_i: number, row: number) => ({
+      duration: 1,
+      delay: -(GRID - 1 - row) * 0.12,
+      lo: 0.2,
+    }),
+  },
+  downloading: {
+    blink: (_i: number, row: number) => ({
+      duration: 1,
+      delay: -row * 0.12,
+      lo: 0.2,
+    }),
+  },
+  listening: {
+    blink: (_i: number, _row: number, col: number) => ({
+      duration: 0.7 + hash(col, 4, 500),
+      delay: -hash(col, 5, 900),
+      lo: 0.25,
+    }),
+  },
+  speaking: {
+    blink: (_i: number, _row: number, col: number) => ({
+      duration: 0.4 + hash(col, 6, 350),
+      delay: -hash(col, 7, 700),
+      lo: 0.2,
+    }),
+  },
+  recording: {
+    glyph: RECORD,
+    dim: 0.12,
+    blink: () => ({ duration: 1.4, delay: 0, lo: 0.3 }),
+  },
+  success: { glyph: CHECK },
   error: { glyph: CROSS, blink: () => ({ duration: 1.1, delay: 0, lo: 0.4 }) },
-  idle: { base: 0.3 },
-  terminal: { glyph: PROMPT, blink: () => ({ duration: 1.6, delay: 0, lo: 0.5 }) },
-  recording: { glyph: RECORD, dim: 0.12, blink: () => ({ duration: 1.4, delay: 0, lo: 0.3 }) },
-  live: { glyph: RECORD, dim: 0.12, blink: () => ({ duration: 2, delay: 0, lo: 0.55 }) },
+  warning: { glyph: BANG, blink: () => ({ duration: 1.6, delay: 0, lo: 0.45 }) },
+  info: { glyph: INFO },
+  paused: { glyph: PAUSE },
+  stopped: { glyph: STOP },
+  offline: { base: 0.15 },
+  terminal: { glyph: PROMPT },
+  "terminal-active": {
+    glyph: PROMPT,
+    blink: () => ({ duration: 1.7, delay: 0, lo: 0.35 }),
+  },
 } satisfies Record<string, StateConfig>;
 
 export type DotMatrixState = keyof typeof STATES;
+
+export const dotMatrixStates = Object.keys(STATES) as ReadonlyArray<DotMatrixState>;
+export const dotMatrixAnimatedStates = dotMatrixStates.filter((state) => "blink" in STATES[state]);
 
 export type DotMatrixProps = Omit<React.ComponentProps<"span">, "children"> & {
   state: DotMatrixState;
   label?: string;
 };
 
-/** Each state's canonical hue — the five-color status language shared across
- * every DotMatrix call site. `working`/`connecting`/`spinner` are "in
- * motion", `done`/`live` are "settled well", `error`/`recording` are
- * "needs attention now", `approval`/`input` are "needs a decision", and
- * `idle`/`terminal`/`plan` are unlabeled resting states. */
 const TONE: Record<DotMatrixState, string> = {
-  working: "text-primary",
-  connecting: "text-primary",
-  spinner: "text-primary",
-  done: "text-success",
-  live: "text-success",
-  error: "text-destructive",
-  recording: "text-destructive",
-  approval: "text-warning",
-  input: "text-warning",
   idle: "text-muted-foreground",
+  loading: "text-foreground",
+  orchestrating: "text-foreground",
+  queued: "text-muted-foreground",
+  thinking: "text-foreground",
+  streaming: "text-foreground",
+  searching: "text-foreground",
+  syncing: "text-foreground",
+  connecting: "text-foreground",
+  waiting: "text-foreground",
+  uploading: "text-foreground",
+  downloading: "text-foreground",
+  listening: "text-foreground",
+  speaking: "text-foreground",
+  recording: "text-destructive",
+  success: "text-success",
+  error: "text-destructive",
+  warning: "text-warning",
+  info: "text-primary",
+  paused: "text-muted-foreground",
+  stopped: "text-muted-foreground",
+  offline: "text-muted-foreground",
   terminal: "text-muted-foreground",
-  plan: "text-muted-foreground",
+  "terminal-active": "text-foreground",
 };
 
 /**
- * 5×5 dot-matrix status indicator — Pylon's shared status language. Each
- * state carries a canonical tone from `TONE` (dots render in `currentColor`,
- * so the tone class sets it); callers may override with a `className` text
- * color when a surface genuinely needs to differ. Size stays a caller
- * concern — pick a size class (14px+ keeps dots legible). Animated states
- * blink per-dot with stepped timing; static glyph states carry no animation
- * timeline, so a wall of settled threads costs the compositor nothing.
+ * A 5×5 status indicator adapted from assistant-ui's standalone Dot Matrix.
+ * Each state combines a stable pattern, motion, and semantic tone. Active
+ * neutral states use `text-foreground`, which reads white on dark themes and
+ * dark on light themes. Callers own size and may override tone with className.
  */
 function DotMatrix({ className, state, label, ...props }: DotMatrixProps) {
   const config: StateConfig = STATES[state];
   return (
     <span
-      role="status"
-      aria-label={label ?? state}
+      role={label ? "img" : undefined}
+      aria-label={label}
+      aria-hidden={label ? undefined : true}
+      data-slot="dot-matrix"
       data-state={state}
       className={cn("inline-flex shrink-0", TONE[state], className)}
       {...props}
@@ -205,7 +300,7 @@ function DotMatrix({ className, state, label, ...props }: DotMatrixProps) {
           const row = Math.floor(i / GRID);
           const col = i % GRID;
           const on = !config.glyph || config.glyph.has(i);
-          const rest = on ? (config.base ?? 1) : (config.dim ?? 0.15);
+          const hi = on ? (config.base ?? 1) : (config.dim ?? 0.15);
           const blink = on ? config.blink?.(i, row, col) : undefined;
           return (
             <circle
@@ -213,16 +308,17 @@ function DotMatrix({ className, state, label, ...props }: DotMatrixProps) {
               className="dot-matrix-dot"
               cx={2 + col * 4}
               cy={2 + row * 4}
-              r={1.4}
+              r={1.3}
               data-animated={blink ? (config.chase ? "chase" : "true") : undefined}
               style={
                 {
-                  fillOpacity: rest,
+                  opacity: hi,
+                  "--dot-matrix-hi": hi,
+                  "--dot-matrix-lo": blink?.lo ?? hi,
                   ...(blink
                     ? {
                         animationDuration: `${blink.duration}s`,
                         animationDelay: `${blink.delay}s`,
-                        "--dot-matrix-blink-lo": rest > 0 ? blink.lo / rest : 1,
                       }
                     : {}),
                 } as CSSProperties

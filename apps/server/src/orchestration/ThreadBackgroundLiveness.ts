@@ -119,13 +119,15 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
         return;
       }
 
-      // Idle counts as not-live: a resting (resumable) Codex child isn't
-      // doing anything, and an all-idle fleet must not pin Working.
-      const terminal =
+      // Idle and waiting count as not-live: neither state is actively doing
+      // work, so an all-resting fleet must not pin Working. A later explicit
+      // running transition adds the task back.
+      const inactive =
         input.kind === "completed" ||
         input.status === "idle" ||
+        input.status === "waiting" ||
         (input.status !== undefined && TERMINAL_STATUSES.has(input.status));
-      if (terminal) {
+      if (inactive) {
         drop(input.threadId, input.taskId);
         return;
       }

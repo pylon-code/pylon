@@ -98,6 +98,21 @@ describe("ClientSettings appearance contrast", () => {
   });
 });
 
+describe("ClientSettings Dot Matrix motion", () => {
+  it("defaults to smooth motion", () => {
+    expect(decodeClientSettings({}).dotMatrixMotion).toBe("smooth");
+  });
+
+  it.each(["smooth", "efficient"] as const)("accepts %s motion", (value) => {
+    expect(decodeClientSettingsPatch({ dotMatrixMotion: value }).dotMatrixMotion).toBe(value);
+  });
+
+  it("rejects unsupported motion styles", () => {
+    expect(() => decodeClientSettings({ dotMatrixMotion: "off" })).toThrow();
+    expect(() => decodeClientSettingsPatch({ dotMatrixMotion: "off" })).toThrow();
+  });
+});
+
 describe("ClientSettings environment identification", () => {
   it("defaults to artwork and accepts each presentation mode", () => {
     expect(decodeClientSettings({}).environmentIdentificationMode).toBe("artwork");

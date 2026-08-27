@@ -255,68 +255,75 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
-/* Dot-matrix status indicator. Per-dot duration/delay arrive inline from the
-   DotMatrix component; steps() holds keep many concurrent indicators cheap for
-   the compositor (same duty-cycle discipline as status-ping above). The blink
-   animates element opacity while resting brightness lives in fill-opacity, so
-   state changes cross-fade independently of the blink. */
+/* Dot Matrix is adapted from assistant-ui's standalone state language. The
+   registered amplitude bounds cross-fade when a state changes. Only live states
+   receive an animation timeline. Smooth motion is the polished default; the
+   client-local Efficient preference switches those timelines to stepped frames. */
+@property --dot-matrix-hi {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+@property --dot-matrix-lo {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0.15;
+}
 @keyframes dot-matrix-blink {
   0%,
-  40% {
-    opacity: 1;
-    animation-timing-function: steps(4);
-  }
-  50%,
-  90% {
-    opacity: var(--dot-matrix-blink-lo, 1);
-    animation-timing-function: steps(4);
-  }
   100% {
-    opacity: 1;
+    opacity: var(--dot-matrix-hi, 1);
+  }
+  50% {
+    opacity: var(--dot-matrix-lo, 0.15);
   }
 }
-/* A head with a fading tail for "chase" states — multiple dots light at
-   decreasing brightness to create a trailing effect around the glyph. */
+/* Pylon's orchestrating state keeps the existing circular head and fading tail
+   so subagent and workflow activity has a distinct identity. */
 @keyframes dot-matrix-chase {
   0% {
-    opacity: 1;
-    animation-timing-function: steps(2);
+    opacity: var(--dot-matrix-hi, 1);
   }
   12% {
     opacity: 0.78;
-    animation-timing-function: steps(2);
   }
   24% {
     opacity: 0.56;
-    animation-timing-function: steps(2);
   }
   36% {
     opacity: 0.38;
-    animation-timing-function: steps(2);
   }
   48% {
     opacity: 0.22;
-    animation-timing-function: steps(2);
   }
   60%,
   100% {
-    opacity: var(--dot-matrix-blink-lo, 1);
+    opacity: var(--dot-matrix-lo, 0.15);
   }
 }
 .dot-matrix-dot {
-  transition: fill-opacity 0.3s;
+  transition:
+    opacity 0.3s,
+    --dot-matrix-hi 0.3s,
+    --dot-matrix-lo 0.3s;
 }
 .dot-matrix-dot[data-animated="true"],
 .dot-matrix-dot[data-animated="chase"] {
-  animation: dot-matrix-blink 1s infinite;
+  animation: dot-matrix-blink 1s infinite ease-in-out;
 }
 .dot-matrix-dot[data-animated="chase"] {
   animation-name: dot-matrix-chase;
 }
+html[data-dot-matrix-motion="efficient"] .dot-matrix-dot[data-animated="true"] {
+  animation-timing-function: steps(4);
+}
+html[data-dot-matrix-motion="efficient"] .dot-matrix-dot[data-animated="chase"] {
+  animation-timing-function: steps(2);
+}
 @media (prefers-reduced-motion: reduce) {
   .dot-matrix-dot[data-animated="true"],
   .dot-matrix-dot[data-animated="chase"] {
-    animation: none;
+    animation: none !important;
   }
 }
 

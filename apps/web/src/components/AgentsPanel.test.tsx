@@ -86,6 +86,33 @@ describe("AgentsPanel agent cancellation", () => {
     expect(markup).toContain("Working");
   });
 
+  it("keeps queued, running, waiting, and settled agent states distinct", () => {
+    const statuses: RuntimeSubagent["status"][] = [
+      "pending",
+      "running",
+      "waiting",
+      "idle",
+      "completed",
+      "failed",
+      "cancelled",
+    ];
+    const statusModel = {
+      ...model,
+      directAgents: statuses.map((status) => agent(`agent-${status}`, status, status)),
+    };
+    const markup = renderToStaticMarkup(<AgentsPanel model={statusModel} />);
+
+    expect(markup).toContain('data-state="orchestrating"');
+    expect(markup).toContain('data-state="queued"');
+    expect(markup).toContain('data-state="waiting"');
+    expect(markup).toContain('data-state="paused"');
+    expect(markup).toContain('data-state="success"');
+    expect(markup).toContain('data-state="error"');
+    expect(markup).toContain('data-state="stopped"');
+    expect(markup).toContain("Queued");
+    expect(markup).toContain("Waiting");
+  });
+
   it("keeps every agent row read-only without an advertised capability", () => {
     const markup = renderToStaticMarkup(<AgentsPanel model={model} />);
     expect(markup).not.toContain('aria-label="Stop ');

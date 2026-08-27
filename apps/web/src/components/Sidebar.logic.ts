@@ -471,6 +471,7 @@ export type SidebarThreadStatus =
   | "approval"
   | "input"
   | "working"
+  | "delegating"
   | "monitoring"
   | "failed"
   | "ready";
@@ -498,7 +499,7 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   // Background work outlives the turn: fleets read as working; monitoring
   // only when watch loops are the sole live work.
   if (thread.backgroundLiveness === "working") {
-    return "working";
+    return "delegating";
   }
   if (thread.backgroundLiveness === "monitoring") {
     return "monitoring";
@@ -659,7 +660,7 @@ export function resolveThreadStatusPill(input: {
     return {
       label: "Pending Approval",
       colorClass: "text-warning",
-      matrix: "approval",
+      matrix: "warning",
     };
   }
 
@@ -667,22 +668,22 @@ export function resolveThreadStatusPill(input: {
     return {
       label: "Awaiting Input",
       colorClass: "text-warning",
-      matrix: "input",
+      matrix: "waiting",
     };
   }
 
   if (thread.session?.status === "running") {
     return {
       label: "Working",
-      colorClass: "text-primary",
-      matrix: "spinner",
+      colorClass: "text-foreground",
+      matrix: "loading",
     };
   }
 
   if (thread.session?.status === "starting") {
     return {
       label: "Connecting",
-      colorClass: "text-primary",
+      colorClass: "text-foreground",
       matrix: "connecting",
     };
   }
@@ -698,7 +699,7 @@ export function resolveThreadStatusPill(input: {
     return {
       label: "Plan Ready",
       colorClass: "text-muted-foreground",
-      matrix: "plan",
+      matrix: "info",
     };
   }
 
@@ -709,16 +710,16 @@ export function resolveThreadStatusPill(input: {
   if (thread.backgroundLiveness === "working") {
     return {
       label: "Working",
-      colorClass: "text-primary",
-      matrix: "spinner",
+      colorClass: "text-foreground",
+      matrix: "orchestrating",
     };
   }
 
   if (thread.backgroundLiveness === "monitoring") {
     return {
       label: "Monitoring",
-      colorClass: "text-primary",
-      matrix: "live",
+      colorClass: "text-foreground",
+      matrix: "listening",
     };
   }
 
@@ -726,7 +727,7 @@ export function resolveThreadStatusPill(input: {
     return {
       label: "Completed",
       colorClass: "text-success",
-      matrix: "done",
+      matrix: "success",
     };
   }
 

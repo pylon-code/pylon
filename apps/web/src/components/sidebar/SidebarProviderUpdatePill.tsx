@@ -176,7 +176,7 @@ export function SidebarProviderUpdatePill() {
               {displayedView.tone === "loading" ? (
                 <LoaderIcon className="size-3.5 animate-spin" />
               ) : displayedView.tone === "success" ? (
-                <DotMatrix aria-hidden state="done" className="size-3.5" />
+                <DotMatrix aria-hidden state="success" className="size-3.5" />
               ) : displayedView.tone === "error" ? (
                 <TriangleAlertIcon className="size-3.5" />
               ) : (

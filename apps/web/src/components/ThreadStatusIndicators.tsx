@@ -617,7 +617,7 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
               />
             }
           >
-            <DotMatrix aria-hidden state="terminal" className="size-3" />
+            <DotMatrix aria-hidden state="terminal-active" className="size-3" />
           </TooltipTrigger>
           <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
         </Tooltip>

@@ -57,7 +57,11 @@ export function ServerUpdateProgress({
   }
   return (
     <div className="mt-1 flex items-center gap-2 text-xs font-medium text-foreground">
-      <DotMatrix aria-hidden state="spinner" className="size-3.5 shrink-0" />
+      <DotMatrix
+        aria-hidden
+        state={state.stage === "resuming" ? "syncing" : "downloading"}
+        className="size-3.5 shrink-0"
+      />
       <span>{serverUpdateStageLabel(state.stage)}</span>
     </div>
   );

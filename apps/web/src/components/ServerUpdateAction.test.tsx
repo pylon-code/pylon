@@ -114,16 +114,14 @@ describe("ServerUpdateProgress", () => {
     );
 
     expect(markup).toContain("Restarting…");
-    // One row, no versions and no step rail. The wait carries the shared
-    // DotMatrix "spinner" marker (blue, from its canonical tone) rather than
-    // a bespoke breathing dot, so there is nothing green to read as "done"
-    // and no second pulse animation to own.
+    // One row, no versions and no step rail. Restarting uses the shared
+    // neutral syncing pattern; only a completed outcome may turn green.
     expect(markup).not.toContain("0.0.30");
     expect(markup).not.toContain("Resum");
     expect(markup).not.toContain("text-success");
-    expect(markup).toContain("text-primary");
-    expect(markup).toContain('data-state="spinner"');
-    expect(markup).not.toContain('data-state="done"');
+    expect(markup).toContain("text-foreground");
+    expect(markup).toContain('data-state="syncing"');
+    expect(markup).not.toContain('data-state="success"');
     expect(markup).not.toContain("animate-status-pulse");
     expect(markup).not.toContain("animate-spin");
   });
@@ -142,6 +140,7 @@ describe("ServerUpdateProgress", () => {
 
     expect(markup).toContain("Downloading…");
     expect(markup).not.toContain("Install");
+    expect(markup).toContain('data-state="downloading"');
   });
 
   it("keeps the failure visible with its retryable error", () => {
@@ -160,6 +159,7 @@ describe("ServerUpdateProgress", () => {
     expect(markup).toContain('role="alert"');
     expect(markup).toContain("The package could not be verified.");
     expect(markup).not.toContain("animate-status-pulse");
-    expect(markup).not.toContain('data-state="spinner"');
+    expect(markup).not.toContain('data-state="syncing"');
+    expect(markup).not.toContain('data-state="downloading"');
   });
 });
