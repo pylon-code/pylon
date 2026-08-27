@@ -1,6 +1,6 @@
 # Pylon Connect
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using Pylon? See [docs/user](../user/).
 
 Pylon Connect uses one Clerk application for web, desktop, and mobile authentication. The relay verifies
 two kinds of bearer credential: template JWTs generated from the `t3-relay` template with the shared
