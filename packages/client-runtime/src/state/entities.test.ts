@@ -229,6 +229,40 @@ describe("environment entity projections", () => {
     expect(merged?.messages).toBe(messages);
   });
 
+  it("takes the shell's whole thread lifecycle, not just part of it", () => {
+    // The shell is authoritative for lifecycle state, so a field added to that
+    // set has to be added here too. unsettledAt was missed once already: the
+    // merge kept a cached detail's absent stamp alongside the shell's freshly
+    // active settledOverride, which is a state the server cannot produce.
+    const detail = {
+      ...THREAD_SHELL,
+      environmentId: ENVIRONMENT_ID,
+      settledOverride: "settled",
+      settledAt: "2026-08-20T00:00:00.000Z",
+      unsettledAt: null,
+      deletedAt: null,
+      messages: [] as OrchestrationThread["messages"],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    } satisfies OrchestrationThread & { readonly environmentId: EnvironmentId };
+    const shell = {
+      ...THREAD_SHELL,
+      environmentId: ENVIRONMENT_ID,
+      settledOverride: "active",
+      settledAt: null,
+      unsettledAt: "2026-08-26T10:00:00.000Z",
+    } as const;
+
+    const merged = mergeEnvironmentThread(detail, shell);
+
+    expect(merged).toMatchObject({
+      settledOverride: "active",
+      settledAt: null,
+      unsettledAt: "2026-08-26T10:00:00.000Z",
+    });
+  });
+
   it("preserves untouched project and thread identities across unrelated shell updates", () => {
     const harness = makeHarness();
     const projectRefsAtom = harness.projects.environmentProjectRefsAtom(ENVIRONMENT_ID);

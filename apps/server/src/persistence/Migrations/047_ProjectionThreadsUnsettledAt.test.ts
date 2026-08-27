@@ -1,0 +1,52 @@
+import { assert, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import { runMigrations } from "../Migrations.ts";
+import * as NodeSqliteClient from "../NodeSqliteClient.ts";
+
+const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+
+layer("047_ProjectionThreadsUnsettledAt", (it) => {
+  // Upstream shipped this as 043 (pingdotgg/t3code#8231) and Pylon renumbered it.
+  // A renumber that collides with an id a database already recorded fails
+  // silently: the Migrator skips the file, the column never lands, and every
+  // thread read then throws `no such column: unsettled_at` because the snapshot
+  // queries select it unconditionally. Stepping 46 -> 47 pins that it applies.
+  it.effect("adds the unsettled_at column on top of migration 46", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* runMigrations({ toMigrationInclusive: 46 });
+
+      const before = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(projection_threads)
+      `;
+      assert.ok(!before.some((column) => column.name === "unsettled_at"));
+
+      yield* runMigrations({ toMigrationInclusive: 47 });
+
+      const after = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(projection_threads)
+      `;
+      assert.ok(after.some((column) => column.name === "unsettled_at"));
+    }),
+  );
+
+  // The migration guards its ALTER TABLE on a PRAGMA check, so re-running the
+  // whole ladder over an already-migrated database must not error.
+  it.effect("is idempotent when the column already exists", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* runMigrations({ toMigrationInclusive: 47 });
+      yield* runMigrations({ toMigrationInclusive: 47 });
+
+      const columns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(projection_threads)
+      `;
+      assert.strictEqual(columns.filter((column) => column.name === "unsettled_at").length, 1);
+    }),
+  );
+});

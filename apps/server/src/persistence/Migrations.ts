@@ -58,6 +58,7 @@ import Migration0043 from "./Migrations/043_ProjectionThreadSessionLifecycle.ts"
 import Migration0044 from "./Migrations/044_RepairProjectsDefaultThreadEnvMode.ts";
 import Migration0045 from "./Migrations/045_AuthSessionClientConnection.ts";
 import Migration0046 from "./Migrations/046_ProjectionThreadLinkedPullRequest.ts";
+import Migration0047 from "./Migrations/047_ProjectionThreadsUnsettledAt.ts";
 /**
  * Migration loader with all migrations defined inline.
  *
@@ -134,6 +135,11 @@ export const migrationEntries = [
   // through 45, so it lands here instead. Reusing 42 would let environments that
   // already recorded the favicon migration silently skip the linked PR column.
   [46, "ProjectionThreadLinkedPullRequest", Migration0046],
+  // Upstream shipped this as 43 (pingdotgg/t3code#8231). Pylon already holds 43
+  // through 46, so it lands here instead. Reusing 43 would let environments that
+  // already recorded the session lifecycle migration silently skip the
+  // `unsettled_at` column.
+  [47, "ProjectionThreadsUnsettledAt", Migration0047],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
