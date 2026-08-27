@@ -192,14 +192,23 @@ function ProviderEnvironmentSection(props: {
 
   useEffect(() => {
     const previousEnvironment = previousEnvironmentRef.current;
-    const lastPublishedEnvironment = lastPublishedEnvironmentRef.current;
     previousEnvironmentRef.current = props.environment;
-    lastPublishedEnvironmentRef.current = undefined;
+    // The caller passes `instance.environment ?? []`, so an instance with no
+    // variables allocates a new array every render and this effect runs every
+    // render. Return before touching the echo guard: clearing it here would
+    // spend a pending publish's one-shot suppression on a render that changed
+    // nothing, and the real echo would then read as an external edit.
     if (
       previousEnvironment === props.environment ||
-      providerEnvironmentsEqual(previousEnvironment, props.environment) ||
-      (lastPublishedEnvironment !== undefined &&
-        providerEnvironmentsEqual(lastPublishedEnvironment, props.environment))
+      providerEnvironmentsEqual(previousEnvironment, props.environment)
+    ) {
+      return;
+    }
+    const lastPublishedEnvironment = lastPublishedEnvironmentRef.current;
+    lastPublishedEnvironmentRef.current = undefined;
+    if (
+      lastPublishedEnvironment !== undefined &&
+      providerEnvironmentsEqual(lastPublishedEnvironment, props.environment)
     ) {
       return;
     }
@@ -472,7 +481,12 @@ export function ProviderInstanceCard({
     : "disabled";
   const statusStyle = PROVIDER_STATUS_STYLES[statusKey];
   const rawSummary = getProviderSummary(liveProvider);
-  const summary = enabled ? rawSummary : { headline: "Disabled", detail: null };
+  // Locally disabled wins over a server status that has not caught up yet, but
+  // the server's reason for the provider still belongs in the detail slot —
+  // `getProviderSummary` keys off `provider.enabled`, which lags the switch.
+  const summary = enabled
+    ? rawSummary
+    : { headline: "Disabled", detail: liveProvider?.message ?? null };
   const authEmail = liveProvider?.auth.email;
   const hasAuthenticatedEmail =
     liveProvider?.auth.status === "authenticated" && Boolean(authEmail?.trim());
@@ -487,13 +501,17 @@ export function ProviderInstanceCard({
     enabled &&
     liveProvider?.auth.status === "unauthenticated" &&
     instance.driver === "claudeAgent";
-  // The editor header is the only place that identifies which account this is,
-  // which matters because a driver can hold several. So it shows for anything
-  // worth reading there, not just for the warning and error states upstream
-  // gates on: the account email, and the sign-in that replaces it when absent.
+  // Upstream hides this line unless something is wrong, because for a healthy
+  // account it only repeats the list row. Everything else belongs here: the
+  // account email that tells two accounts of one driver apart, a sign-in to
+  // offer, and a disabled account's reason — deciding which of two disabled
+  // accounts to re-enable is exactly when you need to read its email.
   const showEditorStatus =
-    enabled &&
-    (statusKey === "warning" || statusKey === "error" || Boolean(authEmail?.trim()) || canSignIn);
+    !enabled ||
+    statusKey === "warning" ||
+    statusKey === "error" ||
+    Boolean(authEmail?.trim()) ||
+    canSignIn;
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
@@ -734,6 +752,22 @@ export function ProviderInstanceCard({
     <code className="text-xs text-muted-foreground">{versionLabel}</code>
   ) : null;
 
+  // The editor holds the advisory popover, but only for the selected account,
+  // so the list needs its own marker or an outdated provider stays invisible
+  // until you happen to click it. Not a button: the whole row is one already.
+  const listUpdateMarkerNode = versionAdvisory ? (
+    <span className="inline-flex shrink-0 items-center">
+      <ArrowUpCircleIcon
+        aria-hidden
+        className={cn(
+          "size-3.5 [animation:bounce_2.4s_ease-in-out_infinite] motion-reduce:animate-none",
+          versionAdvisory.emphasis === "strong" ? "text-warning" : "text-update-foreground",
+        )}
+      />
+      <span className="sr-only">Update available</span>
+    </span>
+  ) : null;
+
   if (mode === "list") {
     return (
       <div
@@ -757,6 +791,7 @@ export function ProviderInstanceCard({
             <span className="flex min-w-0 items-center gap-2">
               <span className="truncate text-sm font-medium text-foreground">{displayName}</span>
               {versionCodeNode}
+              {listUpdateMarkerNode}
             </span>
             <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
               <span className={cn("size-1.5 shrink-0 rounded-full", statusStyle.dot)} />

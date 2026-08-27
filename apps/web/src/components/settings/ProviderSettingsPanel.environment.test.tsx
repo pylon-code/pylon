@@ -233,6 +233,7 @@ describe("EnvironmentProviderSettings routing", () => {
       panel,
       (element) => element.props.title === "Providers" && "headerAction" in element.props,
     );
+    expect(providersSection).not.toBeNull();
     expect(providersSection?.props.headerAction).not.toBeNull();
   });
 
@@ -286,7 +287,49 @@ describe("EnvironmentProviderSettings routing", () => {
       panel,
       (element) => element.props.instanceId === codexId && element.props.mode === "editor",
     );
+    expect(readOnlyEditor).not.toBeNull();
     expect(readOnlyEditor?.props.drainOrder).toBeUndefined();
+  });
+
+  it("keeps the editor on the account being reordered", () => {
+    const instances = {
+      [codexId]: { driver: ProviderDriverKind.make("codex"), enabled: true, priority: 0 },
+      [customId]: { driver: ProviderDriverKind.make("codex"), enabled: true, priority: 1 },
+    };
+    settingsState.value = { ...DEFAULT_UNIFIED_SETTINGS, providerInstances: instances };
+    atoms.providers = [provider()];
+
+    // Nothing has been clicked, so the editor is showing `rows[0]`.
+    let panel = renderPanel();
+    const editor = visitElements(
+      panel,
+      (element) => element.props.mode === "editor" && element.props.instanceId === codexId,
+    );
+    expect(editor).not.toBeNull();
+
+    const drainOrder = editor?.props.drainOrder as
+      | { readonly onMoveDown?: (() => void) | undefined }
+      | undefined;
+    drainOrder?.onMoveDown?.();
+
+    // Apply the reorder the way the settings store would, then re-render: the
+    // sort key has flipped, so `rows[0]` is now the other account.
+    const patch = settingsState.updateSettings.mock.calls[0]?.[0] as {
+      readonly providerInstances: typeof instances;
+    };
+    settingsState.value = { ...DEFAULT_UNIFIED_SETTINGS, ...patch };
+    panel = renderPanel();
+
+    const stillCodex = visitElements(
+      panel,
+      (element) => element.props.mode === "editor" && element.props.instanceId === codexId,
+    );
+    expect(stillCodex).not.toBeNull();
+    const swappedEditor = visitElements(
+      panel,
+      (element) => element.props.mode === "editor" && element.props.instanceId === customId,
+    );
+    expect(swappedEditor).toBeNull();
   });
 
   it("deletes and resets provider configuration without erasing shared preferences", () => {

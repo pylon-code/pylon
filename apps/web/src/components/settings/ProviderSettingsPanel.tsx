@@ -670,7 +670,13 @@ export function EnvironmentProviderSettings({
       instanceId: row.instanceId,
       direction,
     });
-    if (patch) updateSettings(patch);
+    if (!patch) return;
+    // Pin the selection before reordering. The editor falls back to `rows[0]`
+    // while nothing has been clicked, and a move rewrites the priorities that
+    // `rows` is sorted by — so without this, moving the first account swaps the
+    // editor onto whichever account took its place, remounting it mid-edit.
+    setSelectedInstanceId(row.instanceId);
+    updateSettings(patch);
   };
 
   const deleteProviderInstance = (id: ProviderInstanceId) => {
