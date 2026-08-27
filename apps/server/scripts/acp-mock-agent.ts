@@ -18,6 +18,12 @@ const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const omitInterleavedFinalText = process.env.T3_ACP_OMIT_INTERLEAVED_FINAL_TEXT === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
+// Streams a long-running command's stdout the way a real terminal tool does: one
+// `tool_call_update` per chunk, cumulative text on `rawOutput.stdout`, and a `title`
+// that never changes. Coalescing that keys only off `detail`/`title` sees no growth
+// here and holds every chunk until completion.
+const streamCommandChunks = Number(process.env.T3_ACP_STREAM_COMMAND_CHUNKS ?? "0");
+const streamCommandChunkChars = Number(process.env.T3_ACP_STREAM_COMMAND_CHUNK_CHARS ?? "64");
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION === "1";
 const emitXAiExitPlanMode = process.env.T3_ACP_EMIT_XAI_EXIT_PLAN_MODE === "1";
@@ -781,6 +787,70 @@ const program = Effect.gen(function* () {
             },
           });
         }
+
+        return { stopReason: "end_turn" };
+      }
+
+      if (streamCommandChunks > 0) {
+        const toolCallId = "tool-call-stream-1";
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "Terminal",
+            kind: "execute",
+            status: "pending",
+            rawInput: { command: ["pnpm", "build"] },
+          },
+        });
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            status: "in_progress",
+          },
+        });
+
+        let stdout = "";
+        for (let chunk = 0; chunk < streamCommandChunks; chunk++) {
+          stdout += `${String(chunk).padStart(4, "0")} `.padEnd(streamCommandChunkChars, "x");
+          yield* agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId,
+              // Title stays constant, exactly as a real terminal tool does.
+              title: "Terminal",
+              kind: "execute",
+              status: "in_progress",
+              rawOutput: { stdout },
+            },
+          });
+        }
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            title: "Terminal",
+            kind: "execute",
+            status: "completed",
+            rawOutput: { exitCode: 0, stdout, stderr: "" },
+          },
+        });
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "build finished" },
+          },
+        });
 
         return { stopReason: "end_turn" };
       }
