@@ -23,23 +23,42 @@ editor header rather than dropping it as upstream did. `git cherry` found neithe
 already present. DEF-7 was the only open register entry and stayed open; this
 batch opened none.
 
+Both adoptions are recorded against open pull requests, not merged commits: the
+Pylon references below are branch commits on `#124` and `#125`. The cursor
+advances because every candidate received a decision, which is what the cursor
+tracks — but if either pull request is closed unmerged, reopen its change set
+here explicitly, because an advanced cursor will not surface the upstream commit
+again. Update this batch with the merge commits once they land.
+
 | ID  | Upstream              | Decision                | Pylon reference     | Notes                                                                                                                                                                                                |
 | --- | --------------------- | ----------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | U1  | `348367dcc` / `#4332` | adopted with adaptation | `eef9d3531`, `#124` | Android adaptive launcher icon. The bug was live in Pylon on all three channels; upstream's asset is a T3 wordmark, so the fix was ported through Pylon's own exporter instead. See below.           |
 | U2  | `e2d4d12a8` / `#8380` | adopted with adaptation | `c5e0f2da1`, `#125` | Provider settings split into a list and an editor, plus an environment-variable resync fix and a muted disabled dot. Nine conflicts resolved Pylon-first; five Pylon features re-grafted. See below. |
 
-**U1 was a live Pylon defect on every channel.** `apps/mobile/app.config.ts`
-pointed `androidAdaptiveForeground` at `developmentUniversalIconPng` and
-`nightlyLinuxIconPng` — full-bleed icons carrying their own rounded-square
-silhouette, so Android composited an icon shape inside the launcher mask — and
-production pointed at `android-icon-mark.png`, whose alpha spans 77–354 × 61–369
-on a 432px canvas against a 132px safe radius, measured at 154.7px. The same
-asset feeds the `expo-quick-actions` shortcut icon, so both were wrong. Upstream
-hand-commits a T3 wordmark PNG plus an `rsvg-convert` recipe; Pylon instead
-generates `android-icon-foreground.png` from `T3Mark.svg` in
-`scripts/export-pylon-brand-icons.mjs` at 368px centred on 432px, farthest pixel
-131.9px, so `icons:check` keeps it from drifting. One shared foreground across
-channels, as with the monochrome mark; the background colour differentiates.
+**U1 was a live Pylon defect on every channel.** Android scales an adaptive
+layer to the full 108dp canvas and shows only its centred 72dp through the
+launcher mask, so `apps/mobile/app.config.ts` pointing
+`androidAdaptiveForeground` at `developmentUniversalIconPng` and
+`nightlyLinuxIconPng` meant full-bleed 1024px channel artwork was zoomed and
+edge-cropped; production pointed at `android-icon-mark.png`, whose opaque extent
+reaches 154.7px from centre on a 432px canvas against a 132px safe radius. The
+same asset feeds the `expo-quick-actions` shortcut icon, so both surfaces were
+wrong. Upstream hand-commits a T3 wordmark PNG plus an `rsvg-convert` recipe;
+Pylon instead generates `android-icon-foreground.png` from `T3Mark.svg` in
+`scripts/export-pylon-brand-icons.mjs`, and the exporter now measures the
+composited layer and throws above 132px, so the invariant is enforced rather
+than described — `icons:check` only proves the output matches the vector, and it
+is not wired into CI. One shared layer across channels, as with the monochrome
+mark; the background colour differentiates.
+
+Review of the first commit corrected two things worth recording. The layer sat
+_on_ the safe circle rather than inside it (368px → 133.7px counting every
+non-transparent pixel, 131.9px only if the antialiased fringe is ignored); it
+renders at 352px now, reaching 128.0px. And `androidMonochromeIcon` still
+pointed at `android-icon-mark.png`, which Android masks with the same path as
+the foreground, so Android 13+ themed icons kept the identical clipping one line
+below the fix. Both masked layers use the inset rendition;
+`android-icon-mark.png` remains the source for the unmasked notification icon.
 
 **U2 would not have compiled, and would have silently dropped a Pylon feature.**
 The new device tab bar calls `connectionPhaseDotClassName` and
