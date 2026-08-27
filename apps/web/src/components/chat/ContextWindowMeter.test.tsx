@@ -66,6 +66,25 @@ describe("ContextWindowMeter compaction controls", () => {
     expect(controls).toContain("provider&#x27;s default");
   });
 
+  it("shows progress as soon as a compaction mutation is pending", () => {
+    const html = renderToStaticMarkup(
+      <ContextCompactionControls
+        control={{
+          snapshot,
+          pendingAction: "compact",
+          canCompact: false,
+          canAbort: false,
+          canSetAuto: false,
+          ...handlers,
+        }}
+      />,
+    );
+
+    expect(html).toContain("Starting…");
+    expect(html).not.toContain("Ready");
+    expect(html).toContain("disabled");
+  });
+
   it("renders the reverse action only while native compaction is active", () => {
     const html = renderToStaticMarkup(
       <ContextCompactionControls

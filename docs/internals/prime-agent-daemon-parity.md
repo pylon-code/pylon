@@ -44,10 +44,23 @@ generation, so a late marker cannot settle later steering, follow-up, or a diffe
 input rearms the barrier. Native barrier calls are serialized so re-arming cannot duplicate autonomous
 continuation checks. Prime can cancel an in-flight recursive wait when the parent explicitly deletes its
 final child after receiving that child's reply. Pylon retries only that exact cancellation while the owning
-Pylon turn remains active and on the same connection generation, at most three times; the read-only
-barrier is reissued but the prompt is not. User cancellation suppresses the retry. Any other error or
-repeated cancellation while the turn remains active still fails closed. A daemon connection-generation change pauses that boundary until the replacement
-connection publishes its generation-scoped resync. Complete replay metadata proves event continuity. If
+Pylon turn remains active and on the same connection generation, at most three times; the completion
+boundary is reissued but the prompt is not. Pylon-managed sessions disable Prime's autonomous gates, so
+that boundary cannot admit an autonomous continuation. User cancellation suppresses the retry. After an
+admitted prompt, the supervisor can also report `Session worker is recovering` while it reconnects a live
+worker, including when automatic compaction overlaps a worker snapshot transfer. Pylon then opens one
+bounded 60-second recovery gate instead of resubmitting the boundary. At most 16 read-only session-list
+probes must observe the exact stable, file, and active session identities change from `recovering` to `ready`
+on the same diagnostic worker PID. Once ready, Pylon explicitly reads and routes a post-gate public snapshot;
+it must reconcile exactly through the adapter instead of relying on a spontaneous resync event.
+A changed PID, Prime's private worker-interruption marker, an incomplete bounded snapshot tail, user abort,
+disposal, or daemon connection-generation change fails closed. Only after both worker and transcript proof
+succeed does Pylon retry the completion boundary once, and it still requires a recovered public terminal
+root response before publishing quiescence. It never resends the prompt. Any other worker state, boundary
+error, second recovery response, or exhausted bound fails closed. This is containment for Prime's still-open snapshot identity race
+([Prime discussion #1662](https://github.com/PrimeIntellect-ai/prime-agent/discussions/1662)), not a
+replacement for fixing snapshot capture in Prime. A daemon connection-generation change pauses that
+boundary until the replacement connection publishes its generation-scoped resync. Complete replay metadata proves event continuity. If
 replay is unavailable, Pylon accepts only a public snapshot whose bounded completed-message tail and
 absolute message count are an exact continuation of the adapter's observed tail and which contains no
 unreplayable streaming message. It

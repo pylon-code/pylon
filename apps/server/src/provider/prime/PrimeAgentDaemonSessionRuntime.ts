@@ -68,8 +68,38 @@ export { PRIME_AGENT_DAEMON_RESUME_CURSOR } from "./PrimeAgentResumeCursor.ts";
 const COMMAND_TIMEOUT_MS = 30_000;
 const RLM_QUIESCENCE_STATS_TIMEOUT_MS = 2_000;
 const RLM_QUIESCENCE_CANCELLATION_MAX_RETRIES = 3;
+const RLM_WORKER_RECOVERY_TIMEOUT_MS = 60_000;
+const RLM_WORKER_RECOVERY_LIST_TIMEOUT_MS = 5_000;
+const RLM_WORKER_RECOVERY_LIST_DELAYS_MS = [
+  250, 500, 1_000, 2_000, 4_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000, 5_000,
+  5_000,
+] as const;
+const PRIME_AGENT_WORKER_RECOVERY_CUSTOM_TYPE = "prime-agent.worker_recovery";
 const isRlmQuiescenceWaitCancellation = (cause: unknown) =>
   cause instanceof Error && cause.message === "RLM quiescence wait cancelled";
+const isPrimeAgentWorkerRecovering = (cause: unknown) =>
+  cause instanceof Error && cause.message === "Session worker is recovering";
+
+function workerRecoverySnapshotIsUnsafe(
+  raw: unknown,
+  baselineMessageCount: number,
+  messageCount: number,
+): boolean {
+  if (!Predicate.isObject(raw) || !Predicate.isObject(raw.snapshot)) return true;
+  const messages = raw.snapshot.messages;
+  if (!Array.isArray(messages)) return true;
+  const advancedMessageCount = messageCount - baselineMessageCount;
+  if (advancedMessageCount < 0 || advancedMessageCount > messages.length) return true;
+  if (advancedMessageCount === 0) return false;
+  return messages
+    .slice(-advancedMessageCount)
+    .some(
+      (message) =>
+        Predicate.isObject(message) &&
+        message.role === "custom" &&
+        message.customType === PRIME_AGENT_WORKER_RECOVERY_CUSTOM_TYPE,
+    );
+}
 const SIDE_QUESTION_TERMINAL_MAX_BYTES = 8_192;
 const SIDE_QUESTION_TERMINAL_MAX_CODEPOINTS = 8_192;
 const SIDE_QUESTION_MAX_UPDATES = 512;
@@ -412,6 +442,8 @@ const sessionListSuccessSchema = Schema.Struct({
         activeSessionId: Schema.optional(Schema.String),
         sessionId: Schema.String,
         sessionFile: Schema.optional(Schema.String),
+        workerState: Schema.optional(Schema.String),
+        workerPid: Schema.optional(Schema.Int),
       }),
     ),
   }),
@@ -941,7 +973,12 @@ export interface PrimeAgentDaemonSessionRuntime {
   ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly isRlmQuiescenceGenerationCurrent: (generation: number) => boolean;
   /** Resolves a reconnect generation after the adapter validates the public snapshot suffix. */
-  readonly resolveReconnectSnapshot: (generation: number, reconciled: boolean) => boolean;
+  readonly resolveReconnectSnapshot: (
+    generation: number,
+    reconciled: boolean,
+    terminalResponseObserved?: boolean,
+  ) => boolean;
+  readonly noteWorkerRecoveryTerminalResponse: () => void;
   readonly isConnectionGenerationCurrent: (generation: number) => boolean;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
@@ -1244,12 +1281,20 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           settled: boolean;
         }
       | undefined;
-    let reconnectResolution:
+    type ReconnectResolution = {
+      readonly generation: number;
+      readonly promise: Promise<boolean>;
+      readonly resolve: (reconciled: boolean) => void;
+      settled: boolean;
+    };
+    let reconnectResolution: ReconnectResolution | undefined;
+    let activeWorkerRecovery:
       | {
-          readonly generation: number;
-          readonly promise: Promise<boolean>;
-          readonly resolve: (reconciled: boolean) => void;
-          settled: boolean;
+          readonly resolution: ReconnectResolution;
+          readonly baselineMessageCount: number;
+          terminalResponseObserved: boolean;
+          explicitSnapshotRaw?: object;
+          explicitSnapshotOffered: boolean;
         }
       | undefined;
     const rlmQuiescenceSemaphore = yield* Semaphore.make(1);
@@ -1310,6 +1355,45 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return true;
     };
 
+    const resolveReconnectSnapshot = (
+      generation: number,
+      reconciled: boolean,
+      terminalResponseObserved = false,
+    ) => {
+      const recovery = activeWorkerRecovery;
+      if (
+        recovery !== undefined &&
+        recovery.resolution.generation === generation &&
+        !recovery.explicitSnapshotOffered
+      ) {
+        return false;
+      }
+      const settled = settleReconnectResolution(generation, reconciled);
+      if (
+        settled &&
+        reconciled &&
+        recovery !== undefined &&
+        recovery.resolution.generation === generation
+      ) {
+        // Snapshot reconciliation makes the adapter's current terminal state authoritative.
+        recovery.terminalResponseObserved = terminalResponseObserved;
+      }
+      return settled;
+    };
+
+    const noteWorkerRecoveryTerminalResponse = () => {
+      const recovery = activeWorkerRecovery;
+      if (
+        recovery !== undefined &&
+        recovery.resolution.generation === connectionGeneration &&
+        (!recovery.resolution.settled || rlmEventContinuityValid)
+      ) {
+        // The adapter can observe the terminal response before the catch-up snapshot.
+        // Keep early proof provisional; the gate still requires that snapshot to reconcile.
+        recovery.terminalResponseObserved = true;
+      }
+    };
+
     const beginReconnectResolution = () => {
       if (reconnectResolution !== undefined && !reconnectResolution.settled) {
         reconnectResolution.settled = true;
@@ -1319,12 +1403,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       const promise = new Promise<boolean>((complete) => {
         resolve = complete;
       });
-      reconnectResolution = {
+      const pending: ReconnectResolution = {
         generation: connectionGeneration,
         promise,
         resolve,
         settled: false,
       };
+      reconnectResolution = pending;
+      return pending;
     };
 
     const closeClient = Effect.sync(() => {
@@ -1778,18 +1864,53 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     const offerDecoded = (raw: unknown) => {
       const decoded = safeEvent(decodePrimeAgentDaemonEvent(raw));
       const eventConnectionGeneration = connectionGeneration;
+      const workerRecovery = activeWorkerRecovery;
+      const workerRecoveryRequiresExplicitSnapshot =
+        workerRecovery !== undefined && workerRecovery.resolution === reconnectResolution;
+      if (
+        decoded._tag === "SessionResynced" &&
+        workerRecoveryRequiresExplicitSnapshot &&
+        workerRecovery?.explicitSnapshotRaw !== raw
+      ) {
+        // Quarantine supervisor snapshots until the post-ready read supplies the exact proof object.
+        return Effect.void;
+      }
       const reconnectSnapshot =
         decoded._tag === "SessionResynced" &&
         reconnectResolution !== undefined &&
         reconnectResolution.generation === eventConnectionGeneration &&
-        !reconnectResolution.settled;
+        !reconnectResolution.settled &&
+        (!workerRecoveryRequiresExplicitSnapshot || workerRecovery?.explicitSnapshotRaw === raw);
+      const workerRecoverySnapshot = reconnectSnapshot && workerRecoveryRequiresExplicitSnapshot;
+      if (workerRecoverySnapshot && workerRecovery !== undefined) {
+        workerRecovery.explicitSnapshotOffered = true;
+      }
+      const unsafeWorkerRecoverySnapshot =
+        workerRecoverySnapshot &&
+        decoded._tag === "SessionResynced" &&
+        (decoded.state.sessionId !== sessionId ||
+          decoded.state.activeSessionId !== activeSessionId ||
+          workerRecoverySnapshotIsUnsafe(
+            raw,
+            workerRecovery?.baselineMessageCount ?? Number.MAX_SAFE_INTEGER,
+            decoded.state.messageCount,
+          ) ||
+          (decoded.lastEventSequence !== undefined &&
+            lastSnapshotSequence !== undefined &&
+            lastSnapshotConnectionGeneration === eventConnectionGeneration &&
+            decoded.lastEventSequence < lastSnapshotSequence));
+      if (unsafeWorkerRecoverySnapshot) {
+        settleReconnectResolution(eventConnectionGeneration, false);
+      }
+      const reconciledSnapshot = reconnectSnapshot && !unsafeWorkerRecoverySnapshot;
       const event =
-        reconnectSnapshot && decoded._tag === "SessionResynced"
+        reconciledSnapshot && decoded._tag === "SessionResynced"
           ? { ...decoded, connectionGeneration: eventConnectionGeneration }
           : decoded;
       const prompt = activePromptRecovery;
       if (event._tag === "SessionResynced") {
         if (
+          !workerRecoverySnapshot &&
           event.lastEventSequence !== undefined &&
           lastSnapshotSequence !== undefined &&
           lastSnapshotConnectionGeneration === eventConnectionGeneration &&
@@ -3075,6 +3196,104 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return generation;
     });
 
+    const readWorkerRecoverySummary = Effect.fn(
+      "PrimeAgentDaemonSessionRuntime.readWorkerRecoverySummary",
+    )(function* () {
+      const output = yield* Effect.promise(async () => {
+        try {
+          return await client.request(
+            { type: "list", includeClientOwned: true },
+            RLM_WORKER_RECOVERY_LIST_TIMEOUT_MS,
+          );
+        } catch {
+          return undefined;
+        }
+      });
+      const listed = decodeSessionListSuccess(output);
+      if (Option.isNone(listed)) return undefined;
+      const candidates = listed.value.data.sessions.filter(
+        (candidate) => candidate.activeSessionId?.trim() === activeSessionId,
+      );
+      if (candidates.length !== 1) return undefined;
+      const candidate = candidates[0];
+      if (
+        candidate === undefined ||
+        candidate.sessionId.trim() !== sessionId ||
+        candidate.sessionFile?.trim() !== sessionFile ||
+        candidate.workerPid === undefined ||
+        candidate.workerPid <= 0 ||
+        (candidate.workerState !== "recovering" && candidate.workerState !== "ready")
+      ) {
+        return undefined;
+      }
+      return { state: candidate.workerState, pid: candidate.workerPid } as const;
+    });
+
+    const awaitAbortSignal = (signal: AbortSignal) =>
+      Effect.callback<void>((resume) => {
+        if (signal.aborted) {
+          resume(Effect.void);
+          return;
+        }
+        const onAbort = () => resume(Effect.void);
+        signal.addEventListener("abort", onAbort, { once: true });
+        return Effect.sync(() => signal.removeEventListener("abort", onAbort));
+      });
+
+    const awaitWorkerRecoveryGate = Effect.fn(
+      "PrimeAgentDaemonSessionRuntime.awaitWorkerRecoveryGate",
+    )(function* (resolution: ReconnectResolution, expectedGeneration: number, signal: AbortSignal) {
+      const ownsRecovery = () =>
+        !disposed &&
+        !disposeStarted &&
+        !signal.aborted &&
+        connectionGeneration === expectedGeneration &&
+        activeWorkerRecovery?.resolution === resolution;
+      const gate = Effect.gen(function* () {
+        if (!ownsRecovery()) return false;
+        const first = yield* readWorkerRecoverySummary();
+        if (!ownsRecovery() || first?.state !== "recovering") return false;
+        const workerPid = first.pid;
+        let ready = false;
+        for (const delay of RLM_WORKER_RECOVERY_LIST_DELAYS_MS) {
+          yield* Effect.sleep(delay);
+          if (!ownsRecovery()) return false;
+          const current = yield* readWorkerRecoverySummary();
+          if (!ownsRecovery() || current === undefined || current.pid !== workerPid) return false;
+          if (current.state === "ready") {
+            ready = true;
+            break;
+          }
+        }
+        if (!ready || !ownsRecovery() || resolution.settled) return false;
+        const snapshot = yield* Effect.tryPromise({
+          try: () => connection!.getInitialSnapshot(),
+          catch: () => undefined,
+        }).pipe(Effect.timeoutOption(RLM_WORKER_RECOVERY_LIST_TIMEOUT_MS));
+        if (
+          Option.isNone(snapshot) ||
+          snapshot.value === undefined ||
+          !ownsRecovery() ||
+          resolution.settled
+        ) {
+          return false;
+        }
+        const recovery = activeWorkerRecovery;
+        if (recovery?.resolution !== resolution) return false;
+        const explicitSnapshot = { type: "session_resynced", snapshot: snapshot.value } as const;
+        recovery.explicitSnapshotRaw = explicitSnapshot;
+        yield* Effect.promise(() => routeMcpAwareRawEvent(explicitSnapshot));
+        const reconciled = yield* Effect.promise(() => resolution.promise);
+        return reconciled && ownsRecovery();
+      });
+      const outcome = yield* Effect.raceFirst(
+        gate.pipe(Effect.map((recovered) => ({ kind: "gate" as const, recovered }))),
+        awaitAbortSignal(signal).pipe(Effect.as({ kind: "aborted" as const })),
+      ).pipe(Effect.timeoutOption(RLM_WORKER_RECOVERY_TIMEOUT_MS));
+      if (Option.isNone(outcome)) return { kind: "timed-out" as const };
+      return outcome.value;
+    });
+
     const waitForRlmQuiescence = Effect.fn("PrimeAgentDaemonSessionRuntime.waitForRlmQuiescence")(
       function* (token: string, signal: AbortSignal) {
         const cancellationError = () =>
@@ -3083,97 +3302,173 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             "request-failed",
             "Prime Agent descendant quiescence wait was cancelled.",
           );
-        yield* rlmQuiescenceSemaphore.withPermit(
-          Effect.gen(function* () {
-            yield* ensureOpen("rlm-quiescence");
-            if (signal.aborted) {
-              return yield* cancellationError();
-            }
-            if (!rlmQuiescenceAvailable) return;
-            const waitGeneration = yield* awaitReconnectResolution();
-            if (signal.aborted) {
-              return yield* cancellationError();
-            }
-            const waitForHeadlessCompletion = yield* requireMethod(
-              "rlm-quiescence",
-              connection!.waitForHeadlessCompletion,
-            );
-            // Prime's result is autonomous-provider state. Pylon needs only the
-            // authoritative ordering boundary and never projects the native payload.
-            let cancellationRetries = 0;
-            while (true) {
-              const waitResult = yield* Effect.promise(async () => {
-                try {
-                  await waitForHeadlessCompletion.call(connection, {
-                    waitForRlmQuiescence: true,
-                  });
-                  return "completed" as const;
-                } catch (cause) {
-                  return isRlmQuiescenceWaitCancellation(cause)
-                    ? ("cancelled" as const)
-                    : ("failed" as const);
-                }
-              });
-              if (signal.aborted) {
-                return yield* cancellationError();
+        let workerRecoveryResolution: ReconnectResolution | undefined;
+        const wait = Effect.gen(function* () {
+          yield* ensureOpen("rlm-quiescence");
+          if (signal.aborted) {
+            return yield* cancellationError();
+          }
+          if (!rlmQuiescenceAvailable) return;
+          const waitGeneration = yield* awaitReconnectResolution();
+          if (signal.aborted) {
+            return yield* cancellationError();
+          }
+          const waitForHeadlessCompletion = yield* requireMethod(
+            "rlm-quiescence",
+            connection!.waitForHeadlessCompletion,
+          );
+          // Pylon-managed sessions disable Prime autonomous gates. The native method therefore
+          // supplies only the authoritative descendant ordering boundary; its payload stays private.
+          let cancellationRetries = 0;
+          let workerRecoveryAttempted = false;
+          let barrierRetried = false;
+          while (true) {
+            const waitResult = yield* Effect.promise(async () => {
+              try {
+                await waitForHeadlessCompletion.call(connection, {
+                  waitForRlmQuiescence: true,
+                });
+                return "completed" as const;
+              } catch (cause) {
+                if (isRlmQuiescenceWaitCancellation(cause)) return "cancelled" as const;
+                if (isPrimeAgentWorkerRecovering(cause)) return "worker-recovering" as const;
+                return "failed" as const;
               }
-              if (waitResult === "completed") break;
-              if (
-                waitResult !== "cancelled" ||
-                cancellationRetries >= RLM_QUIESCENCE_CANCELLATION_MAX_RETRIES
-              ) {
+            });
+            if (signal.aborted) {
+              return yield* cancellationError();
+            }
+            if (waitResult === "completed") break;
+            if (waitResult === "worker-recovering") {
+              if (workerRecoveryAttempted) {
                 return yield* runtimeError(
                   "rlm-quiescence",
                   "request-failed",
                   "Prime Agent could not confirm descendant quiescence.",
                 );
               }
-              cancellationRetries += 1;
-              yield* ensureOpen("rlm-quiescence");
-              const retryGeneration = yield* awaitReconnectResolution();
-              if (signal.aborted) {
+              workerRecoveryAttempted = true;
+              rlmEventContinuityValid = false;
+              const resolution = beginReconnectResolution();
+              workerRecoveryResolution = resolution;
+              activeWorkerRecovery = {
+                resolution,
+                baselineMessageCount: observedCompletedMessageCount,
+                terminalResponseObserved: false,
+                explicitSnapshotOffered: false,
+              };
+              const recovery = yield* awaitWorkerRecoveryGate(resolution, waitGeneration, signal);
+              if (signal.aborted || recovery.kind === "aborted") {
                 return yield* cancellationError();
               }
-              if (retryGeneration !== waitGeneration) {
+              if (
+                recovery.kind !== "gate" ||
+                !recovery.recovered ||
+                connectionGeneration !== waitGeneration
+              ) {
                 return yield* runtimeError(
                   "rlm-quiescence",
                   "request-failed",
-                  "Prime Agent reconnected before descendant quiescence could be confirmed.",
+                  connectionGeneration === waitGeneration
+                    ? "Prime Agent could not confirm descendant quiescence."
+                    : "Prime Agent reconnected before descendant quiescence could be confirmed.",
                 );
               }
+              barrierRetried = true;
+              continue;
             }
-            const quiescenceGeneration = yield* awaitReconnectResolution();
+            if (
+              waitResult !== "cancelled" ||
+              cancellationRetries >= RLM_QUIESCENCE_CANCELLATION_MAX_RETRIES
+            ) {
+              return yield* runtimeError(
+                "rlm-quiescence",
+                "request-failed",
+                "Prime Agent could not confirm descendant quiescence.",
+              );
+            }
+            cancellationRetries += 1;
+            barrierRetried = true;
+            yield* ensureOpen("rlm-quiescence");
+            const retryGeneration = yield* awaitReconnectResolution();
             if (signal.aborted) {
               return yield* cancellationError();
             }
-            if (cancellationRetries > 0 && quiescenceGeneration !== waitGeneration) {
+            if (retryGeneration !== waitGeneration) {
               return yield* runtimeError(
                 "rlm-quiescence",
                 "request-failed",
                 "Prime Agent reconnected before descendant quiescence could be confirmed.",
               );
             }
-            const currentUsage = yield* readRlmUsage();
-            const completedConnectionGeneration = yield* awaitReconnectResolution();
-            if (signal.aborted) {
-              return yield* cancellationError();
-            }
-            if (cancellationRetries > 0 && completedConnectionGeneration !== waitGeneration) {
-              return yield* runtimeError(
-                "rlm-quiescence",
-                "request-failed",
-                "Prime Agent reconnected before descendant quiescence could be confirmed.",
-              );
-            }
-            const usage = subtractCumulativeUsage(currentUsage, rlmTurnUsageBaseline);
-            yield* Queue.offer(eventQueue, {
-              _tag: "RlmQuiesced",
-              token,
-              connectionGeneration: completedConnectionGeneration,
-              ...(usage === undefined ? {} : { usage }),
-            });
-          }),
+          }
+          const recovery = activeWorkerRecovery;
+          if (
+            workerRecoveryResolution !== undefined &&
+            (recovery?.resolution !== workerRecoveryResolution ||
+              !recovery.terminalResponseObserved)
+          ) {
+            return yield* runtimeError(
+              "rlm-quiescence",
+              "request-failed",
+              "Prime Agent could not confirm descendant quiescence.",
+            );
+          }
+          const quiescenceGeneration = yield* awaitReconnectResolution();
+          if (signal.aborted) {
+            return yield* cancellationError();
+          }
+          if (barrierRetried && quiescenceGeneration !== waitGeneration) {
+            return yield* runtimeError(
+              "rlm-quiescence",
+              "request-failed",
+              "Prime Agent reconnected before descendant quiescence could be confirmed.",
+            );
+          }
+          const currentUsage = yield* readRlmUsage();
+          const completedConnectionGeneration = yield* awaitReconnectResolution();
+          if (signal.aborted) {
+            return yield* cancellationError();
+          }
+          if (barrierRetried && completedConnectionGeneration !== waitGeneration) {
+            return yield* runtimeError(
+              "rlm-quiescence",
+              "request-failed",
+              "Prime Agent reconnected before descendant quiescence could be confirmed.",
+            );
+          }
+          const usage = subtractCumulativeUsage(currentUsage, rlmTurnUsageBaseline);
+          yield* Queue.offer(eventQueue, {
+            _tag: "RlmQuiesced",
+            token,
+            connectionGeneration: completedConnectionGeneration,
+            ...(usage === undefined ? {} : { usage }),
+          });
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              const resolution = workerRecoveryResolution;
+              if (resolution === undefined) return;
+              if (!resolution.settled) settleReconnectResolution(resolution.generation, false);
+              if (activeWorkerRecovery?.resolution === resolution) {
+                activeWorkerRecovery = undefined;
+              }
+            }),
+          ),
         );
+        yield* rlmQuiescenceSemaphore
+          .withPermit(wait)
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                error ??
+                runtimeError(
+                  "rlm-quiescence",
+                  "request-failed",
+                  "Prime Agent could not confirm descendant quiescence.",
+                ),
+            ),
+          );
       },
     );
 
@@ -4133,7 +4428,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       waitForRlmQuiescence,
       isRlmQuiescenceGenerationCurrent: (generation) =>
         rlmEventContinuityValid && generation === connectionGeneration,
-      resolveReconnectSnapshot: settleReconnectResolution,
+      resolveReconnectSnapshot,
+      noteWorkerRecoveryTerminalResponse,
       isConnectionGenerationCurrent: (generation) => generation === connectionGeneration,
       prompt,
       steer,

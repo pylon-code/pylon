@@ -460,7 +460,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   // Opening and presentation count as active so the composer stays expanded
   // while focus moves between its native editor and the settings picker.
   const isExpanded = isFocused || settingsSheetPresentation.isActive;
-  const canSend = hasContent;
+  const canSend =
+    hasContent &&
+    props.sessionCompactionPendingAction !== "compact" &&
+    !isSessionCompactionInProgress(props.sessionCompaction);
 
   // Notify the parent from the derived value, not focus events: the parent
   // sizes the feed inset from this, and blur-during-sheet would otherwise
@@ -1198,22 +1201,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ) {
         return;
       }
-      const expectedScopeKey = current.scopeKey;
-      if (action === "compact") {
-        Alert.alert(
-          "Compact context now?",
-          "This reduces the current provider session's context. The agent may briefly pause.",
-          [
-            { text: "Not now", style: "cancel" },
-            {
-              text: "Compact",
-              onPress: () => runSessionCompactionAction(action, expectedScopeKey),
-            },
-          ],
-        );
-        return;
-      }
-      runSessionCompactionAction(action, expectedScopeKey);
+      runSessionCompactionAction(action, current.scopeKey);
     },
     [runSessionCompactionAction],
   );
@@ -1448,6 +1436,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const { onChangeDraftMessage, onUpdateInteractionMode, draftMessage, onSendMessage } = props;
 
   const handleSend = useCallback(async () => {
+    if (!canSend) return;
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
@@ -1469,6 +1458,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       inFlightThreadIdsRef.current.delete(threadKey);
     }
   }, [
+    canSend,
     onSendMessage,
     props.environmentId,
     props.environmentLabel,
@@ -1476,6 +1466,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.title,
   ]);
   const handleQueueFollowUp = useCallback(async () => {
+    if (!canSend) return;
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey) || isMutatingSessionInputQueue) return;
     inFlightThreadIdsRef.current.add(threadKey);
@@ -1488,6 +1479,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       inFlightThreadIdsRef.current.delete(threadKey);
     }
   }, [
+    canSend,
     isMutatingSessionInputQueue,
     props.environmentId,
     props.onQueueFollowUp,

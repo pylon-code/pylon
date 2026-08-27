@@ -284,6 +284,11 @@ interface FakeCaptures {
   rlmQuiescenceFailure: boolean;
   rlmConnectionGeneration: number;
   rlmContinuityValid: boolean;
+  readonly reconnectResolutions: Array<{
+    readonly generation: number;
+    readonly reconciled: boolean;
+    readonly terminalResponseObserved: boolean;
+  }>;
   rlmQuiescenceUsage: typeof usage | undefined;
   queue: Queue.Queue<PrimeDaemonEvent> | undefined;
   startupEvents: Array<PrimeDaemonEvent>;
@@ -407,6 +412,7 @@ function makeCaptures(): FakeCaptures {
     rlmQuiescenceFailure: false,
     rlmConnectionGeneration: 0,
     rlmContinuityValid: true,
+    reconnectResolutions: [],
     rlmQuiescenceUsage: undefined,
     queue: undefined,
     startupEvents: [],
@@ -750,11 +756,17 @@ function fakeRuntimeFactory(
           }),
         isRlmQuiescenceGenerationCurrent: (generation) =>
           captures.rlmContinuityValid && generation === captures.rlmConnectionGeneration,
-        resolveReconnectSnapshot: (generation, reconciled) => {
+        resolveReconnectSnapshot: (generation, reconciled, terminalResponseObserved = false) => {
+          captures.reconnectResolutions.push({
+            generation,
+            reconciled,
+            terminalResponseObserved,
+          });
           if (generation !== captures.rlmConnectionGeneration) return false;
           captures.rlmContinuityValid = reconciled;
           return true;
         },
+        noteWorkerRecoveryTerminalResponse: () => undefined,
         isConnectionGenerationCurrent: (generation) =>
           generation === captures.rlmConnectionGeneration,
         prompt: (prompt) =>
@@ -5128,6 +5140,11 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* offer(captures, { _tag: "SessionInfoChanged", name: "snapshot applied" });
         yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
         expect(captures.rlmContinuityValid).toBe(true);
+        expect(captures.reconnectResolutions.at(-1)).toEqual({
+          generation: 1,
+          reconciled: true,
+          terminalResponseObserved: true,
+        });
 
         yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
         const result = yield* Fiber.join(running);
@@ -5136,6 +5153,57 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(turnEvents.filter((event) => event.type === "turn.started")).toHaveLength(1);
         expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
         expect(encodeUnknownJson(turnEvents)).toContain("recovered final response");
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps a current terminal response observed before reconnect reconciliation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const running = yield* adapter
+          .sendTurn({ threadId, input: "observe the final response before resync" })
+          .pipe(Effect.forkChild);
+        yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Queue.take(captures.rlmQuiescenceObserved);
+        const terminal = assistantMessage("already observed final response");
+        yield* offer(captures, { _tag: "MessageCompleted", message: terminal });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [terminal] });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "terminal observed" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, isStreaming: false, messageCount: 1 },
+          messages: [terminal],
+          lastEventSequence: 12,
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+        });
+        yield* offer(captures, { _tag: "SessionInfoChanged", name: "snapshot applied" });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(captures.reconnectResolutions.at(-1)).toEqual({
+          generation: 1,
+          reconciled: true,
+          terminalResponseObserved: true,
+        });
+
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.join(running);
         yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),

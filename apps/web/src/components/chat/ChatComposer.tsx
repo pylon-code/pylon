@@ -32,6 +32,8 @@ import {
   canStartSessionCompaction,
   deriveLatestSessionCompaction,
   isCurrentSessionCompactionRequest,
+  isSessionCompactionInProgress,
+  isSessionCompactionSubmissionBlocked,
   sessionCompactionScopeKey as makeSessionCompactionScopeKey,
   supportsSessionCompaction,
 } from "@t3tools/client-runtime/state/context-compaction";
@@ -924,9 +926,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         environmentId,
       })
     : null;
-  const sendDisabledReason =
+  const baseSendDisabledReason =
     externalSendDisabledReason ?? (activePendingProgress ? null : attachmentBlockReason);
-  const isSendDisabled = sendDisabledReason !== null;
 
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
@@ -1247,7 +1248,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
 
   const sessionCompactionScopeKey =
-    activeThreadId && activeSessionInstanceId
+    activeThreadId &&
+    activeSessionInstanceId &&
+    supportsSessionCompaction(activeSessionProviderStatus) &&
+    (activeThread?.session?.status === "ready" || activeThread?.session?.status === "running")
       ? makeSessionCompactionScopeKey({
           environmentId,
           threadId: activeThreadId,
@@ -1275,25 +1279,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const sessionCompactionMutationRef = useRef(sessionCompactionMutation);
   sessionCompactionMutationRef.current = sessionCompactionMutation;
   const sessionCompactionRequestIdRef = useRef(0);
+  const sessionCompactionEffectScopeRef = useRef<string | null>(null);
   const lastCompactionActivityRef = useRef<{ scopeKey: string; updatedAt: string } | null>(null);
-  const sessionCompaction =
-    sessionCompactionScopeKey &&
-    authoritativeSessionCompaction?.scopeKey === sessionCompactionScopeKey
+  const sessionCompaction = isSessionCompactionInProgress(activitySessionCompaction)
+    ? activitySessionCompaction
+    : sessionCompactionScopeKey &&
+        authoritativeSessionCompaction?.scopeKey === sessionCompactionScopeKey
       ? authoritativeSessionCompaction.snapshot
       : activitySessionCompaction;
-  const showSessionCompaction =
-    sessionCompactionScopeKey !== null && supportsSessionCompaction(activeSessionProviderStatus);
+  const sessionCompactionBlocksSubmission = isSessionCompactionSubmissionBlocked({
+    current: sessionCompaction,
+    activity: activitySessionCompaction,
+    compactPending:
+      sessionCompactionMutation?.scopeKey === sessionCompactionScopeKey &&
+      sessionCompactionMutation.action === "compact",
+  });
+  const sendDisabledReason =
+    baseSendDisabledReason ??
+    (sessionCompactionBlocksSubmission ? "Context compaction in progress" : null);
+  const isSendDisabled = sendDisabledReason !== null;
+  const showSessionCompaction = sessionCompactionScopeKey !== null;
 
   useEffect(() => {
     const scopeKey = sessionCompactionScopeKey;
+    if (sessionCompactionEffectScopeRef.current === scopeKey) return;
+    sessionCompactionEffectScopeRef.current = scopeKey;
     const requestId = ++sessionCompactionRequestIdRef.current;
     sessionCompactionMutationRef.current = null;
     setSessionCompactionMutation(null);
-    if (
-      !scopeKey ||
-      !supportsSessionCompaction(activeSessionProviderStatus) ||
-      (activeThread?.session?.status !== "ready" && activeThread?.session?.status !== "running")
-    ) {
+    if (!scopeKey) {
       setAuthoritativeSessionCompaction(null);
       return;
     }
@@ -1320,12 +1334,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         setAuthoritativeSessionCompaction({ scopeKey, snapshot });
       }
     });
-  }, [
-    activeSessionProviderStatus,
-    activeThread?.session?.status,
-    onGetSessionCompaction,
-    sessionCompactionScopeKey,
-  ]);
+  }, [activitySessionCompaction, onGetSessionCompaction, sessionCompactionScopeKey]);
 
   useEffect(() => {
     const scopeKey = sessionCompactionScopeKey;
@@ -1396,8 +1405,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           onCompact: () => {
             if (
               !contextCompactionConnected ||
-              !canStartSessionCompaction(activeSessionProviderStatus, sessionCompaction) ||
-              !globalThis.confirm("Compact the current provider session's context now?")
+              !canStartSessionCompaction(activeSessionProviderStatus, sessionCompaction)
             ) {
               return;
             }
