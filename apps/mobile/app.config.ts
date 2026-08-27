@@ -51,7 +51,11 @@ const PREVIEW_ASSETS = {
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
   androidAdaptiveForeground: ANDROID_ADAPTIVE_LAYER,
-  androidAdaptiveBackgroundColor: "#111533",
+  // The channels share one mark, so the background is the only thing telling
+  // them apart on a launcher — and preview's old #111533 read as the same
+  // near-black tile as production's #000000 at icon size. This is the nightly
+  // accent already used for `androidNotificationColor` below, not a new colour.
+  androidAdaptiveBackgroundColor: "#7565C7",
   androidMonochromeIcon: ANDROID_ADAPTIVE_LAYER,
   androidNotificationIcon: "./assets/android-notification-icon.png",
   androidNotificationColor: "#7565C7",
