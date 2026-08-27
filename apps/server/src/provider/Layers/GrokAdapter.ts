@@ -287,8 +287,10 @@ export function selectGrokPermissionOptionId(
   if (preferredId) {
     return preferredId;
   }
-  // Grok 4.6 often omits allow_always. Pylon still offers "Always allow this session".
-  if (decision === "acceptForSession") {
+  // Grok 4.6 often omits allow_always. Pylon still offers "Always allow this session",
+  // and its own `acceptAlways` decision maps to the same kind, so both fall back here.
+  // Returning undefined would reach the caller as outcome "cancelled" and reject the call.
+  if (decision === "acceptForSession" || decision === "acceptAlways") {
     const once = request.options.find((entry) => entry.kind === "allow_once");
     const onceId = once?.optionId.trim();
     if (onceId) {
@@ -1198,7 +1200,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       ? undefined
                       : selectGrokPermissionOptionId(params, resolved);
                   if (
-                    resolved === "acceptForSession" &&
+                    (resolved === "acceptForSession" || resolved === "acceptAlways") &&
                     selectedOptionId &&
                     approvalKey !== undefined
                   ) {

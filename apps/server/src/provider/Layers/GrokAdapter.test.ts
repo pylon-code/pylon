@@ -179,6 +179,24 @@ it("prefers allow_always when Grok offers it", () => {
   assert.equal(selectGrokPermissionOptionId(request, "accept"), "allow-once");
 });
 
+// Pylon's approval union carries `acceptAlways` in addition to upstream's decisions, and
+// both map to allow_always. Without the same fallback, an undefined option id reaches the
+// permission handler as outcome "cancelled" and rejects the call the user just approved.
+it("maps Pylon's acceptAlways decision like acceptForSession", () => {
+  const withAlways = grokPermissionRequest([
+    { optionId: "allow-once", kind: "allow_once" },
+    { optionId: "allow-always", kind: "allow_always" },
+    { optionId: "reject-once", kind: "reject_once" },
+  ]);
+  const withoutAlways = grokPermissionRequest([
+    { optionId: "allow-once", kind: "allow_once" },
+    { optionId: "reject-once", kind: "reject_once" },
+  ]);
+
+  assert.equal(selectGrokPermissionOptionId(withAlways, "acceptAlways"), "allow-always");
+  assert.equal(selectGrokPermissionOptionId(withoutAlways, "acceptAlways"), "allow-once");
+});
+
 it("requires a settlement to match the live Grok turn", () => {
   const staleTurnId = TurnId.make("stale-turn");
   const replacementTurnId = TurnId.make("replacement-turn");
