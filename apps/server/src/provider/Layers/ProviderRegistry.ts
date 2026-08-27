@@ -51,7 +51,7 @@ import {
   applyPushedUsageWindows,
   type PushedUsageWindow,
 } from "../providerUsageLimits.ts";
-import { USAGE_RETENTION_MAX_AGE } from "../providerUsageRetention.ts";
+import { isRetainedUsageFresh, USAGE_RETENTION_MAX_AGE } from "../providerUsageRetention.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry, type ProviderRegistryShape } from "../Services/ProviderRegistry.ts";
 import {
@@ -62,7 +62,11 @@ import {
   resolveProviderStatusCachePath,
   writeProviderStatusCache,
 } from "../providerStatusCache.ts";
-import type { ProviderInstance } from "../ProviderDriver.ts";
+import {
+  capacityRefreshFromProviderBackends,
+  type ProviderCapacityRefresh,
+  type ProviderInstance,
+} from "../ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
 
@@ -162,6 +166,56 @@ export const mergeProviderSnapshots = (
 
   return orderProviderSnapshots([...mergedProviders.values()]);
 };
+
+export interface ProviderCapacityOverlayBackend {
+  readonly backend: ServerProviderBackend;
+  readonly retentionIdentity?: string | undefined;
+}
+
+function newestRetainedUsage(
+  candidates: ReadonlyArray<ServerProviderBackend["usageLimits"]>,
+  nowMs: number,
+): ServerProviderBackend["usageLimits"] {
+  let newest: ServerProviderBackend["usageLimits"];
+  let newestMs = Number.NEGATIVE_INFINITY;
+  for (const candidate of candidates) {
+    if (!candidate || !isRetainedUsageFresh({ checkedAt: candidate.checkedAt, nowMs })) continue;
+    const checkedAtMs = Date.parse(candidate.checkedAt);
+    if (checkedAtMs > newestMs) {
+      newest = candidate;
+      newestMs = checkedAtMs;
+    }
+  }
+  return newest;
+}
+
+/** Keep only the newest same-account capacity across turn and periodic reads. */
+export function mergeProviderCapacityRefresh(input: {
+  readonly previousBackends: ReadonlyArray<ProviderCapacityOverlayBackend>;
+  readonly refresh: ProviderCapacityRefresh;
+  readonly nowMs: number;
+}): ReadonlyArray<ProviderCapacityOverlayBackend> {
+  return input.refresh.backends.map((read) => {
+    const overlay = {
+      backend: read.backend,
+      ...(read.retentionIdentity ? { retentionIdentity: read.retentionIdentity } : {}),
+    } satisfies ProviderCapacityOverlayBackend;
+    const { usageLimits: sharedUsage, ...withoutUsage } = read.backend;
+    if (!read.retentionIdentity) {
+      return read.didReadCapacity ? overlay : { ...overlay, backend: withoutUsage };
+    }
+    const previous = input.previousBackends.find(
+      (candidate) =>
+        candidate.backend.backend === read.backend.backend &&
+        candidate.retentionIdentity === read.retentionIdentity,
+    );
+    const retained = newestRetainedUsage([sharedUsage, previous?.backend.usageLimits], input.nowMs);
+    return {
+      ...overlay,
+      backend: retained ? { ...withoutUsage, usageLimits: retained } : withoutUsage,
+    };
+  });
+}
 
 export const selectProvidersByKind = (
   providers: ReadonlyArray<ServerProvider>,
@@ -325,7 +379,10 @@ export const ProviderRegistryLive = Layer.effect(
     const capacityOverlayRef = yield* Ref.make<
       ReadonlyMap<
         ProviderInstanceId,
-        { readonly backends: ReadonlyArray<ServerProviderBackend>; readonly observedAt: string }
+        {
+          readonly backends: ReadonlyArray<ProviderCapacityOverlayBackend>;
+          readonly observedAt: string;
+        }
       >
     >(new Map());
     // One capacity read in flight per instance, and no more than one a minute:
@@ -437,8 +494,18 @@ export const ProviderRegistryLive = Layer.effect(
       const overlayMs = Date.parse(overlay.observedAt);
       const probedMs = Date.parse(provider.checkedAt);
       if (!Number.isFinite(overlayMs)) return provider;
-      if (Number.isFinite(probedMs) && overlayMs <= probedMs) return provider;
-      return { ...provider, backends: overlay.backends };
+      if (Number.isFinite(probedMs) && overlayMs <= probedMs) {
+        const periodicRefresh = capacityRefreshFromProviderBackends(provider.backends);
+        if (!periodicRefresh) return provider;
+        const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+        const backends = mergeProviderCapacityRefresh({
+          previousBackends: overlay.backends,
+          refresh: periodicRefresh,
+          nowMs,
+        });
+        return { ...provider, backends: backends.map((read) => read.backend) };
+      }
+      return { ...provider, backends: overlay.backends.map((read) => read.backend) };
     });
 
     const applyVolatileProviderState = Effect.fn("applyVolatileProviderState")(function* (
@@ -650,25 +717,33 @@ export const ProviderRegistryLive = Layer.effect(
         return next;
       });
       yield* capacity.refresh.pipe(
-        Effect.flatMap((backends) =>
-          Effect.gen(function* () {
-            const observedAtMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-            yield* Ref.update(capacityOverlayRef, (previous) => {
-              const next = new Map(previous);
-              next.set(instanceId, {
-                backends,
-                observedAt: DateTime.formatIso(DateTime.makeUnsafe(observedAtMs)),
-              });
-              return next;
-            });
-            const existingProviders = yield* Ref.get(providersRef);
-            const matchingProvider = existingProviders.find(
-              (candidate) => candidate.instanceId === instanceId,
-            );
-            if (!matchingProvider) return;
-            const nextProvider = yield* applyVolatileProviderState(matchingProvider);
-            yield* upsertProviders([nextProvider], { persist: false });
-          }),
+        Effect.flatMap((refresh) =>
+          refresh === undefined
+            ? Effect.void
+            : Effect.gen(function* () {
+                const observedAtMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+                const existingProviders = yield* Ref.get(providersRef);
+                const matchingProvider = existingProviders.find(
+                  (candidate) => candidate.instanceId === instanceId,
+                );
+                const currentOverlay = (yield* Ref.get(capacityOverlayRef)).get(instanceId);
+                const backends = mergeProviderCapacityRefresh({
+                  previousBackends: currentOverlay?.backends ?? [],
+                  refresh,
+                  nowMs: observedAtMs,
+                });
+                yield* Ref.update(capacityOverlayRef, (previous) => {
+                  const next = new Map(previous);
+                  next.set(instanceId, {
+                    backends,
+                    observedAt: DateTime.formatIso(DateTime.makeUnsafe(observedAtMs)),
+                  });
+                  return next;
+                });
+                if (!matchingProvider) return;
+                const nextProvider = yield* applyVolatileProviderState(matchingProvider);
+                yield* upsertProviders([nextProvider], { persist: false });
+              }),
         ),
         Effect.ensuring(settle),
         Effect.ignoreCause({ log: true }),

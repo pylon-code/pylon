@@ -220,8 +220,12 @@ also mean the selected model has no registered price.
 Prime Agent runs each model on that backend's own subscription, so the capacity readout beside the
 composer follows the selected model. Pylon reads Prime's sign-ins to show the right account: Prime's
 own Anthropic or ChatGPT reading while Prime has used that backend recently — re-read after every
-Prime turn — or the configured Codex account whose identity matches Prime's. Only when neither can be
-read does it fall back to your configured accounts, and it says so. See [the composer](composer.md#subscription-capacity).
+Prime turn — or the configured Codex account whose identity matches Prime's. A failed refresh keeps
+its last good same-account reading for up to thirty minutes. Reading Prime's own ChatGPT capacity
+requires the Codex CLI to be installed on the environment host as `codex` on the Pylon server
+process's `PATH`; a custom Codex binary configured for another provider instance does not satisfy
+this prerequisite. Only when neither reading can be used does Pylon fall back to your configured
+accounts, and it says so. See [the composer](composer.md#subscription-capacity).
 
 ## Execution Approvals
 

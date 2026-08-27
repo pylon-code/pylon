@@ -18,11 +18,13 @@
  *    reading comes and goes with use; an expired token is not sent at all.
  *
  * Read-only, like every other credential read here: Pylon never refreshes
- * or rewrites Prime's sign-in. Every failure yields an empty list, which the
- * client renders as "assumed" rather than "verified".
+ * or rewrites Prime's sign-in. Failed capacity reads retain the last good
+ * value briefly; failures never turn an assumption into a verified reading.
+ * ChatGPT reads require a supported `codex` executable on the server PATH.
  *
  * @module provider/primeAgentBackends
  */
+import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 
 import type {
@@ -30,6 +32,7 @@ import type {
   ServerProviderBackend,
   ServerProviderUsageLimits,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -45,13 +48,20 @@ import type * as CodexSchema from "effect-codex-app-server/schema";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { resolveProviderHomePath } from "../pathExpansion.ts";
+import {
+  providerBackendsFromCapacityRefresh,
+  type ProviderBackendCapacityRead,
+  type ProviderCapacityRefresh,
+} from "./ProviderDriver.ts";
 import { fetchOAuthUsageWithToken } from "./claudeOAuthUsage.ts";
 import { codexAppServerArgs } from "./Layers/codexLaunchArgs.ts";
 import { buildCodexInitializeParams } from "./Layers/CodexProvider.ts";
 import { usageLimitsFromCodexRateLimits } from "./providerUsageLimits.ts";
+import { isRetainedUsageFresh } from "./providerUsageRetention.ts";
 import {
   acquireSharedUsageLock,
   decideSharedUsageRead,
+  markSharedUsageReadFailed,
   readSharedUsageEntry,
   releaseSharedUsageLock,
   resolveSharedUsageCacheDir,
@@ -68,8 +78,15 @@ export const PRIME_AGENT_CODEX_BACKEND = "openai-codex";
  */
 const TOKEN_FRESHNESS_MARGIN_MS = 60_000;
 
-/** Bounds the throwaway app-server used to read Prime's ChatGPT capacity. */
-const CODEX_CAPACITY_READ_TIMEOUT_MS = 15_000;
+/**
+ * Leaves the periodic provider's ten-second outer budget enough room for the
+ * established two-second force-kill escalation and the shared failure write.
+ */
+const CODEX_CAPACITY_READ_TIMEOUT_MS = 5_000;
+/** Matches the established Codex status-probe escalation policy. */
+const CODEX_CAPACITY_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
+const CODEX_CAPACITY_PREREQUISITE =
+  "Prime Agent ChatGPT capacity requires the Codex CLI (`codex`) on the Pylon server PATH.";
 
 const PrimeAuthEntry = Schema.Struct({
   type: Schema.optional(Schema.String),
@@ -88,6 +105,14 @@ export interface PrimeAgentBackendSignIn {
   /** Present only while the access token is fresh enough to use. */
   readonly accessToken?: string | undefined;
 }
+
+/** One-way identity for cache and retention keys; never sent or logged. */
+export function primeAgentCredentialFingerprint(credential: string): string {
+  return NodeCrypto.createHash("sha256").update(credential).digest("hex").slice(0, 24);
+}
+
+const capacityRetentionIdentity = (backend: string, credentialIdentity: string) =>
+  `${backend}:${primeAgentCredentialFingerprint(credentialIdentity)}`;
 
 function freshAccessToken(
   entry: {
@@ -165,7 +190,7 @@ export const readPrimeAgentCodexWindows = Effect.fn("readPrimeAgentCodexWindows"
     never,
     ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
   > {
-    return yield* Effect.gen(function* () {
+    const outcome = yield* Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "pylon-prime-codex-" });
@@ -178,6 +203,7 @@ export const readPrimeAgentCodexWindows = Effect.fn("readPrimeAgentCodexWindows"
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           env: environment,
           extendEnv: true,
+          forceKillAfter: CODEX_CAPACITY_PROBE_FORCE_KILL_AFTER,
           shell: spawnCommand.shell,
         }),
       );
@@ -196,11 +222,22 @@ export const readPrimeAgentCodexWindows = Effect.fn("readPrimeAgentCodexWindows"
     }).pipe(
       Effect.scoped,
       Effect.timeoutOption(CODEX_CAPACITY_READ_TIMEOUT_MS),
-      Effect.map(Option.getOrUndefined),
-      Effect.catchCause(() =>
-        Effect.succeed(undefined as CodexSchema.V2GetAccountRateLimitsResponse | undefined),
+      Effect.map(
+        Option.match({
+          onNone: () => ({ kind: "timeout" as const }),
+          onSome: (response) => ({ kind: "success" as const, response }),
+        }),
+      ),
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed({ kind: "failed" as const }),
       ),
     );
+    if (outcome.kind === "success") return outcome.response;
+    yield* Effect.logWarning(CODEX_CAPACITY_PREREQUISITE, {
+      reason: outcome.kind,
+      ...(outcome.kind === "timeout" ? { timeoutMs: CODEX_CAPACITY_READ_TIMEOUT_MS } : {}),
+    });
+    return undefined;
   },
 );
 
@@ -209,6 +246,26 @@ export const readPrimeAgentCodexWindows = Effect.fn("readPrimeAgentCodexWindows"
  * key that names Prime's account: a re-login to another account never shows
  * the old one's numbers.
  */
+interface PrimeAgentCapacityRead {
+  readonly usageLimits?: ServerProviderUsageLimits | undefined;
+  readonly didReadCapacity: boolean;
+}
+
+function enforceFailedCapacityRetention(
+  read: ProviderBackendCapacityRead,
+  nowMs: number,
+): ProviderBackendCapacityRead {
+  if (read.didReadCapacity || !read.backend.usageLimits) return read;
+  if (
+    read.retentionIdentity &&
+    isRetainedUsageFresh({ checkedAt: read.backend.usageLimits.checkedAt, nowMs })
+  ) {
+    return read;
+  }
+  const { usageLimits: _usageLimits, ...backend } = read.backend;
+  return { ...read, backend };
+}
+
 const readPrimeAgentCodexCapacity = Effect.fn("readPrimeAgentCodexCapacity")(function* (input: {
   readonly signIn: { readonly accessToken: string; readonly accountId: string };
   readonly homePath: string;
@@ -219,11 +276,7 @@ const readPrimeAgentCodexCapacity = Effect.fn("readPrimeAgentCodexCapacity")(fun
     readonly accessToken: string;
     readonly accountId: string;
   }) => Effect.Effect<CodexSchema.V2GetAccountRateLimitsResponse | undefined>;
-}): Effect.fn.Return<
-  ServerProviderUsageLimits | undefined,
-  never,
-  FileSystem.FileSystem | Path.Path
-> {
+}): Effect.fn.Return<PrimeAgentCapacityRead, never, FileSystem.FileSystem | Path.Path> {
   const cacheDir = input.sharedCacheDir ?? (yield* resolveSharedUsageCacheDir);
   const cacheKey = sharedUsageReadKey(["prime-codex", input.homePath, input.signIn.accountId]);
   const shared = decideSharedUsageRead(
@@ -231,20 +284,46 @@ const readPrimeAgentCodexCapacity = Effect.fn("readPrimeAgentCodexCapacity")(fun
     input.nowMs,
     input.freshForMs,
   );
-  if (shared.kind === "fresh") return shared.usageLimits;
-  if (shared.kind === "throttled") return undefined;
-  if (!(yield* acquireSharedUsageLock(cacheDir, cacheKey, input.nowMs))) {
-    return (yield* readSharedUsageEntry(cacheDir, cacheKey))?.usageLimits;
+  if (shared.kind === "fresh") {
+    return { usageLimits: shared.usageLimits, didReadCapacity: true };
+  }
+  if (shared.kind === "backoff") {
+    return {
+      ...(shared.usageLimits ? { usageLimits: shared.usageLimits } : {}),
+      didReadCapacity: false,
+    };
+  }
+  if (shared.kind === "throttled") {
+    const retained = yield* readSharedUsageEntry(cacheDir, cacheKey);
+    return {
+      ...(retained?.usageLimits ? { usageLimits: retained.usageLimits } : {}),
+      didReadCapacity: false,
+    };
+  }
+  const acquiredLock = yield* acquireSharedUsageLock(cacheDir, cacheKey, input.nowMs);
+  if (!acquiredLock) {
+    const retained = yield* readSharedUsageEntry(cacheDir, cacheKey);
+    return {
+      ...(retained?.usageLimits ? { usageLimits: retained.usageLimits } : {}),
+      didReadCapacity: false,
+    };
   }
   return yield* Effect.gen(function* () {
     const response = yield* input.readWindows(input.signIn);
-    if (!response) return undefined;
     const readAt = DateTime.formatIso(DateTime.makeUnsafe(input.nowMs));
-    const usageLimits = usageLimitsFromCodexRateLimits(response, readAt, "primeAgentCodex");
+    const usageLimits = response
+      ? usageLimitsFromCodexRateLimits(response, readAt, "primeAgentCodex")
+      : undefined;
     if (usageLimits) {
       yield* writeSharedUsageEntry(cacheDir, cacheKey, { version: 1, readAt, usageLimits });
+      return { usageLimits, didReadCapacity: true };
     }
-    return usageLimits;
+    yield* markSharedUsageReadFailed(cacheDir, cacheKey, readAt);
+    const retained = yield* readSharedUsageEntry(cacheDir, cacheKey);
+    return {
+      ...(retained?.usageLimits ? { usageLimits: retained.usageLimits } : {}),
+      didReadCapacity: false,
+    };
   }).pipe(Effect.ensuring(releaseSharedUsageLock(cacheDir, cacheKey)));
 });
 
@@ -266,16 +345,17 @@ export interface ReadPrimeAgentBackendsOptions {
 }
 
 /**
- * Read Prime's backend sign-ins and, where its credential is fresh, its own
- * capacity: Anthropic through the usage endpoint, ChatGPT through a
- * throwaway app-server. Both go through the machine-wide shared cache under
- * Prime's own keys, so several servers cost each backend one read per window.
+ * Read Prime's backend sign-ins and distinguish usable capacity from a read
+ * that did not complete. An unreadable auth file returns `undefined`, so a
+ * turn-end refresh cannot erase the previous overlay on a transient file
+ * failure. A decoded file, including an empty one after logout, is
+ * authoritative for backend identities.
  */
-export const readPrimeAgentBackends = Effect.fn("readPrimeAgentBackends")(function* (
+export const readPrimeAgentCapacity = Effect.fn("readPrimeAgentCapacity")(function* (
   settings: Pick<PrimeAgentSettings, "agentHomePath">,
   options?: ReadPrimeAgentBackendsOptions,
 ): Effect.fn.Return<
-  ReadonlyArray<ServerProviderBackend>,
+  ProviderCapacityRefresh | undefined,
   never,
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
@@ -289,7 +369,7 @@ export const readPrimeAgentBackends = Effect.fn("readPrimeAgentBackends")(functi
     Effect.map(Option.some),
     Effect.catchCause(() => Effect.succeed(Option.none<string>())),
   );
-  if (Option.isNone(raw)) return [];
+  if (Option.isNone(raw) || Option.isNone(decodePrimeAuthFile(raw.value))) return undefined;
 
   const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -300,43 +380,85 @@ export const readPrimeAgentBackends = Effect.fn("readPrimeAgentBackends")(functi
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       ));
-  const backends: ServerProviderBackend[] = [];
-  for (const signIn of primeAgentSignInsFromAuthFile(raw.value, nowMs)) {
-    if (signIn.backend === PRIME_AGENT_ANTHROPIC_BACKEND && signIn.accessToken) {
-      const read = yield* fetchOAuthUsageWithToken({
-        token: signIn.accessToken,
-        cacheKey: sharedUsageReadKey(["prime-anthropic", homePath]),
-        checkedAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
-        source: "primeAgentOAuth",
-        sharedCacheDir: options?.sharedCacheDir,
-        freshForMs: options?.freshForMs,
-      });
-      backends.push({
-        backend: signIn.backend,
-        ...(read.usageLimits ? { usageLimits: read.usageLimits } : {}),
-      });
-      continue;
-    }
-    if (signIn.backend === PRIME_AGENT_CODEX_BACKEND && signIn.accountId && signIn.accessToken) {
-      const usageLimits = yield* readPrimeAgentCodexCapacity({
-        signIn: { accessToken: signIn.accessToken, accountId: signIn.accountId },
-        homePath,
-        nowMs,
-        freshForMs: options?.freshForMs,
-        sharedCacheDir: options?.sharedCacheDir,
-        readWindows,
-      });
-      backends.push({
-        backend: signIn.backend,
-        accountId: signIn.accountId,
-        ...(usageLimits ? { usageLimits } : {}),
-      });
-      continue;
-    }
-    backends.push({
-      backend: signIn.backend,
-      ...(signIn.accountId ? { accountId: signIn.accountId } : {}),
-    });
-  }
-  return backends;
+  const backends = yield* Effect.forEach(
+    primeAgentSignInsFromAuthFile(raw.value, nowMs),
+    (signIn) =>
+      Effect.gen(function* () {
+        if (signIn.backend === PRIME_AGENT_ANTHROPIC_BACKEND && signIn.accessToken) {
+          const credentialFingerprint = primeAgentCredentialFingerprint(signIn.accessToken);
+          const retentionIdentity = capacityRetentionIdentity(signIn.backend, signIn.accessToken);
+          const read = yield* fetchOAuthUsageWithToken({
+            token: signIn.accessToken,
+            cacheKey: sharedUsageReadKey(["prime-anthropic", homePath, credentialFingerprint]),
+            checkedAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+            source: "primeAgentOAuth",
+            sharedCacheDir: options?.sharedCacheDir,
+            freshForMs: options?.freshForMs,
+            shareFailures: true,
+          });
+          return {
+            backend: {
+              backend: signIn.backend,
+              ...(read.usageLimits ? { usageLimits: read.usageLimits } : {}),
+            },
+            didReadCapacity: read.didRead,
+            retentionIdentity,
+          } satisfies ProviderBackendCapacityRead;
+        }
+        if (
+          signIn.backend === PRIME_AGENT_CODEX_BACKEND &&
+          signIn.accountId &&
+          signIn.accessToken
+        ) {
+          const read = yield* readPrimeAgentCodexCapacity({
+            signIn: { accessToken: signIn.accessToken, accountId: signIn.accountId },
+            homePath,
+            nowMs,
+            freshForMs: options?.freshForMs,
+            sharedCacheDir: options?.sharedCacheDir,
+            readWindows,
+          });
+          return {
+            backend: {
+              backend: signIn.backend,
+              accountId: signIn.accountId,
+              ...(read.usageLimits ? { usageLimits: read.usageLimits } : {}),
+            },
+            didReadCapacity: read.didReadCapacity,
+            retentionIdentity: capacityRetentionIdentity(signIn.backend, signIn.accountId),
+          } satisfies ProviderBackendCapacityRead;
+        }
+        return {
+          backend: {
+            backend: signIn.backend,
+            ...(signIn.accountId ? { accountId: signIn.accountId } : {}),
+          },
+          didReadCapacity: false,
+          ...(signIn.accountId
+            ? { retentionIdentity: capacityRetentionIdentity(signIn.backend, signIn.accountId) }
+            : {}),
+        } satisfies ProviderBackendCapacityRead;
+      }),
+    { concurrency: "unbounded" },
+  );
+  return { backends: backends.map((read) => enforceFailedCapacityRetention(read, nowMs)) };
+});
+
+/**
+ * Snapshot-facing view of {@link readPrimeAgentCapacity}. Provider snapshots
+ * still use the existing wire shape; read status stays inside the server.
+ */
+export const readPrimeAgentBackends = Effect.fn("readPrimeAgentBackends")(function* (
+  settings: Pick<PrimeAgentSettings, "agentHomePath">,
+  options?: ReadPrimeAgentBackendsOptions,
+): Effect.fn.Return<
+  ReadonlyArray<ServerProviderBackend>,
+  never,
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
+> {
+  const refresh = yield* readPrimeAgentCapacity(settings, options);
+  return refresh ? providerBackendsFromCapacityRefresh(refresh) : [];
 });

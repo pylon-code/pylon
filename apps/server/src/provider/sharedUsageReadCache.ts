@@ -18,9 +18,12 @@
  *    for a full window on top.
  *  - A 429 is shared too: the process that was told to wait writes the
  *    deadline, and every other process honours it without asking.
- *  - A lock file makes the endpoint read once when several servers expire
- *    together. A process that loses the race serves what is there and checks
- *    back shortly rather than queueing behind the winner.
+ *  - A failed read leaves a short backoff marker. Other servers retain any
+ *    last good reading instead of immediately repeating the same failure.
+ *  - A best-effort lock file normally makes the endpoint read once when
+ *    several servers expire together. A process that loses the race serves
+ *    what is there and checks back shortly rather than queueing behind the
+ *    winner.
  *
  * Every filesystem failure degrades to "no shared reading": the caller falls
  * through to its own read, which is exactly what happened before this existed.
@@ -42,6 +45,8 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 export const SHARED_USAGE_READ_TTL_MS = 5 * 60_000;
 /** A process that loses the read race checks back after this long. */
 export const SHARED_USAGE_BUSY_RETRY_MS = 30_000;
+/** How long every server stays off an account after one shared read fails. */
+export const SHARED_USAGE_FAILURE_BACKOFF_MS = 30_000;
 /** A lock older than this belongs to a process that died mid-read. */
 export const SHARED_USAGE_LOCK_STALE_MS = 30_000;
 /** Overrides the machine cache directory; mainly for isolated test environments. */
@@ -54,6 +59,8 @@ export const SharedUsageReadEntry = Schema.Struct({
   usageLimits: Schema.optional(ServerProviderUsageLimits),
   /** Set by whichever process was told to back off; honoured by all. */
   throttledUntil: Schema.optional(Schema.String),
+  /** Last failed attempt. It suppresses duplicate failures for a short window. */
+  failedAt: Schema.optional(Schema.String),
 });
 export type SharedUsageReadEntry = typeof SharedUsageReadEntry.Type;
 
@@ -73,6 +80,11 @@ export type SharedUsageReadDecision =
       readonly cacheForMs: number;
     }
   | { readonly kind: "throttled"; readonly cacheForMs: number }
+  | {
+      readonly kind: "backoff";
+      readonly usageLimits?: ServerProviderUsageLimits | undefined;
+      readonly cacheForMs: number;
+    }
   | { readonly kind: "read" };
 
 function parseMs(value: string | undefined): number | undefined {
@@ -84,7 +96,9 @@ function parseMs(value: string | undefined): number | undefined {
 /**
  * What a shared entry means right now. A throttle in force wins over a
  * reading: the endpoint has asked for room, and a number that is still fresh
- * is served by the caller's retained reading anyway.
+ * is served by the caller's retained reading anyway. A normal fresh reading
+ * wins over a failure marker written by a caller with a shorter freshness
+ * window. Otherwise the marker keeps every server from repeating the failure.
  */
 export function decideSharedUsageRead(
   entry: SharedUsageReadEntry | undefined,
@@ -104,6 +118,17 @@ export function decideSharedUsageRead(
         kind: "fresh",
         usageLimits: entry.usageLimits,
         cacheForMs: Math.max(SHARED_USAGE_BUSY_RETRY_MS, ttlMs - age),
+      };
+    }
+  }
+  const failedAtMs = parseMs(entry.failedAt);
+  if (failedAtMs !== undefined) {
+    const failureAge = nowMs - failedAtMs;
+    if (failureAge >= 0 && failureAge < SHARED_USAGE_FAILURE_BACKOFF_MS) {
+      return {
+        kind: "backoff",
+        ...(entry.usageLimits ? { usageLimits: entry.usageLimits } : {}),
+        cacheForMs: SHARED_USAGE_FAILURE_BACKOFF_MS - failureAge,
       };
     }
   }
@@ -200,6 +225,25 @@ export const writeSharedUsageEntry = Effect.fn("writeSharedUsageEntry")(function
 });
 
 /**
+ * Record a failed attempt without erasing the last good reading. Callers use
+ * the per-key lock, so ordinary probes do not interleave this read-modify-write.
+ */
+export const markSharedUsageReadFailed = Effect.fn("markSharedUsageReadFailed")(function* (
+  dir: string,
+  key: string,
+  failedAt: string,
+): Effect.fn.Return<void, never, FileSystem.FileSystem | Path.Path> {
+  const existing = yield* readSharedUsageEntry(dir, key);
+  yield* writeSharedUsageEntry(dir, key, {
+    version: 1,
+    readAt: existing?.readAt ?? failedAt,
+    ...(existing?.usageLimits ? { usageLimits: existing.usageLimits } : {}),
+    ...(existing?.throttledUntil ? { throttledUntil: existing.throttledUntil } : {}),
+    failedAt,
+  });
+});
+
+/**
  * Claim the right to read the endpoint for this account. `true` means this
  * process should read and then release; `false` means another process is
  * reading right now and its result will land in the shared file shortly.
@@ -207,6 +251,8 @@ export const writeSharedUsageEntry = Effect.fn("writeSharedUsageEntry")(function
  * The lock is a file created exclusively, carrying the holder's clock. One
  * left behind by a process that died mid-read is broken once it is older
  * than `SHARED_USAGE_LOCK_STALE_MS`; an unreadable lock counts as dead.
+ * Stale takeover is deliberately best effort: remove-then-create is not an
+ * atomic cross-process replacement on every supported platform.
  */
 export const acquireSharedUsageLock = Effect.fn("acquireSharedUsageLock")(function* (
   dir: string,

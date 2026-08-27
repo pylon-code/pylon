@@ -25,7 +25,7 @@ import {
 } from "../Layers/PrimeAgentProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
-import { readPrimeAgentBackends } from "../primeAgentBackends.ts";
+import { readPrimeAgentBackends, readPrimeAgentCapacity } from "../primeAgentBackends.ts";
 
 /** A reading under this age is served from the shared cache even after a turn. */
 const PRIME_AGENT_TURN_END_CAPACITY_FRESH_MS = 60_000;
@@ -224,7 +224,7 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
       // just changed: read again unless a reading under a minute old exists.
       const capacity = {
         refresh: provideBackendServices(
-          readPrimeAgentBackends(effectiveConfig, {
+          readPrimeAgentCapacity(effectiveConfig, {
             freshForMs: PRIME_AGENT_TURN_END_CAPACITY_FRESH_MS,
           }),
         ),

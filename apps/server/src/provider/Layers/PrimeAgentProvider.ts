@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -497,7 +498,11 @@ ${versionOutput.stderr}`);
     ? yield* options.readBackends.pipe(
         Effect.timeoutOption(BACKENDS_READ_TIMEOUT_MS),
         Effect.map(Option.getOrElse((): ReadonlyArray<ServerProviderBackend> => [])),
-        Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<ServerProviderBackend>)),
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.succeed([] as ReadonlyArray<ServerProviderBackend>),
+        ),
       )
     : [];
 

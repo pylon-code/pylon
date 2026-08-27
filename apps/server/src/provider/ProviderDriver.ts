@@ -83,7 +83,52 @@ export interface ProviderInstance {
 }
 
 export interface ProviderCapacitySource {
-  readonly refresh: Effect.Effect<ReadonlyArray<ServerProviderBackend>>;
+  /**
+   * `undefined` means the source itself could not be observed, so the registry
+   * leaves its previous overlay alone. A present refresh is authoritative for
+   * backend identities; each backend says whether capacity was actually read.
+   */
+  readonly refresh: Effect.Effect<ProviderCapacityRefresh | undefined>;
+}
+
+export interface ProviderCapacityRefresh {
+  readonly backends: ReadonlyArray<ProviderBackendCapacityRead>;
+}
+
+export interface ProviderBackendCapacityRead {
+  readonly backend: ServerProviderBackend;
+  readonly didReadCapacity: boolean;
+  /** Secret-safe identity used only to retain a failed read for the same account. */
+  readonly retentionIdentity?: string | undefined;
+}
+
+const capacityReadByBackend = new WeakMap<ServerProviderBackend, ProviderBackendCapacityRead>();
+
+/**
+ * Attach process-local capacity identity to the exact backend objects used by
+ * a provider snapshot. The metadata never enters the wire or persisted cache.
+ */
+export function providerBackendsFromCapacityRefresh(
+  refresh: ProviderCapacityRefresh,
+): ReadonlyArray<ServerProviderBackend> {
+  return refresh.backends.map((read) => {
+    capacityReadByBackend.set(read.backend, read);
+    return read.backend;
+  });
+}
+
+/** Recover process-local identity from a live provider snapshot, if present. */
+export function capacityRefreshFromProviderBackends(
+  backends: ReadonlyArray<ServerProviderBackend> | undefined,
+): ProviderCapacityRefresh | undefined {
+  if (!backends || backends.length === 0) return undefined;
+  const reads: ProviderBackendCapacityRead[] = [];
+  for (const backend of backends) {
+    const read = capacityReadByBackend.get(backend);
+    if (!read) return undefined;
+    reads.push(read);
+  }
+  return { backends: reads };
 }
 
 export interface ProviderContinuationIdentity {

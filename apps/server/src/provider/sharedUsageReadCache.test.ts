@@ -10,9 +10,11 @@ import {
   acquireSharedUsageLock,
   decideSharedUsageRead,
   defaultSharedUsageCacheDir,
+  markSharedUsageReadFailed,
   readSharedUsageEntry,
   releaseSharedUsageLock,
   SHARED_USAGE_BUSY_RETRY_MS,
+  SHARED_USAGE_FAILURE_BACKOFF_MS,
   SHARED_USAGE_LOCK_STALE_MS,
   sharedUsageReadKey,
   writeSharedUsageEntry,
@@ -84,6 +86,48 @@ describe("decideSharedUsageRead", () => {
       decideSharedUsageRead({ version: 1, readAt: at(-10 * 60_000), throttledUntil: at(-1) }, NOW)
         .kind,
       "read",
+    );
+  });
+
+  it("shares a short failure backoff while retaining the last good reading", () => {
+    const retained = usage(at(-10 * 60_000));
+    assert.deepStrictEqual(
+      decideSharedUsageRead(
+        {
+          version: 1,
+          readAt: at(-10 * 60_000),
+          usageLimits: retained,
+          failedAt: at(-10_000),
+        },
+        NOW,
+      ),
+      {
+        kind: "backoff",
+        usageLimits: retained,
+        cacheForMs: SHARED_USAGE_FAILURE_BACKOFF_MS - 10_000,
+      },
+    );
+    assert.strictEqual(
+      decideSharedUsageRead(
+        { version: 1, readAt: at(-10 * 60_000), failedAt: at(-SHARED_USAGE_FAILURE_BACKOFF_MS) },
+        NOW,
+      ).kind,
+      "read",
+    );
+  });
+
+  it("serves a normally fresh reading despite a failure in a shorter request window", () => {
+    assert.strictEqual(
+      decideSharedUsageRead(
+        {
+          version: 1,
+          readAt: at(-2 * 60_000),
+          usageLimits: usage(at(-2 * 60_000)),
+          failedAt: at(-10_000),
+        },
+        NOW,
+      ).kind,
+      "fresh",
     );
   });
 
@@ -163,6 +207,12 @@ it.layer(NodeServices.layer)("shared usage read cache", (it) => {
       assert.strictEqual(yield* readSharedUsageEntry(dir, key), undefined);
       yield* writeSharedUsageEntry(dir, key, entry);
       assert.deepStrictEqual(yield* readSharedUsageEntry(dir, key), entry);
+
+      yield* markSharedUsageReadFailed(dir, key, at(1000));
+      assert.deepStrictEqual(yield* readSharedUsageEntry(dir, key), {
+        ...entry,
+        failedAt: at(1000),
+      });
 
       yield* fs.writeFileString(path.join(dir, `${key}.json`), "{not json");
       assert.strictEqual(yield* readSharedUsageEntry(dir, key), undefined);

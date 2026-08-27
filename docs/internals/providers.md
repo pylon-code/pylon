@@ -203,7 +203,17 @@ windows as `usedPercent` plus a reset time. Three mechanisms keep that gauge pre
   ([`codexAccountIdentity.ts`][codex-identity]), plus — while Prime's token is fresh — Prime's own
   reading: Anthropic through the usage endpoint, ChatGPT through a throwaway Codex app-server in an
   empty scoped home, signed in with `chatgptAuthTokens` (access token and account id only, never the
-  refresh token). Both go through the shared cache under Prime's own keys. Prime only refreshes a
+  refresh token). The throwaway process has the same two-second force-kill escalation as the Codex
+  status probe and a five-second whole-read timeout, leaving three seconds inside the periodic
+  provider's outer budget after worst-case process escalation. It deliberately stays inside the Prime
+  boundary rather than reaching into another provider instance's configuration, so `codex` must be
+  available on the server process's `PATH`; failures emit only a prerequisite/reason diagnostic,
+  never credentials or native process output. Both backends go through the shared cache under
+  Prime's own keys; Anthropic keys and retention overlays include only a one-way access-token
+  fingerprint, so a re-login cannot inherit another credential's reading and no fingerprint crosses
+  the wire. A failed Prime-owned read adds a thirty-second shared marker while preserving the newest
+  same-identity entry for at most thirty minutes, so other server processes do not immediately repeat
+  it. Prime only refreshes a
   backend's token while running a turn on it, so `ProviderInstance.capacity` re-reads the backends
   when a turn completes on the instance (`ProviderRegistry.refreshProviderCapacity`, floored to one
   read per instance per minute, off the ingestion path); the periodic probe covers the rest. Clients

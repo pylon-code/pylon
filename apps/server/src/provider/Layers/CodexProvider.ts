@@ -359,7 +359,11 @@ const readCodexRateLimitsShared = Effect.fn("readCodexRateLimitsShared")(functio
   const shared = decideSharedUsageRead(yield* readSharedUsageEntry(cacheDir, cacheKey), nowMs);
   if (shared.kind === "fresh") return { sharedUsageLimits: shared.usageLimits };
   if (shared.kind === "throttled") return {};
-  if (!(yield* acquireSharedUsageLock(cacheDir, cacheKey, nowMs))) {
+  if (shared.kind === "backoff") {
+    return shared.usageLimits ? { sharedUsageLimits: shared.usageLimits } : {};
+  }
+  const acquiredLock = yield* acquireSharedUsageLock(cacheDir, cacheKey, nowMs);
+  if (!acquiredLock) {
     const existing = yield* readSharedUsageEntry(cacheDir, cacheKey);
     return existing?.usageLimits ? { sharedUsageLimits: existing.usageLimits } : {};
   }
