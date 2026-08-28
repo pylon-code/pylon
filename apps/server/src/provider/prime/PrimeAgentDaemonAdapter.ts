@@ -3334,6 +3334,13 @@ export function makePrimeAgentDaemonAdapter(
               }
               const images = [];
               for (const attachment of input.attachments ?? []) {
+                // Prime Agent runs models on Anthropic and OpenAI Codex, so it
+                // ingests images only, like those providers' own adapters.
+                // Generic files reach the agent through the path line
+                // ProviderService puts in the prompt.
+                if (attachment.type !== "image") {
+                  continue;
+                }
                 const attachmentPath = resolveAttachmentPath({
                   attachmentsDir: serverConfig.attachmentsDir,
                   attachment,
@@ -4480,6 +4487,13 @@ export function makePrimeAgentDaemonAdapter(
             }
             const images = [];
             for (const attachment of input.attachments ?? []) {
+              // Prime Agent runs models on Anthropic and OpenAI Codex, so it
+              // ingests images only, like those providers' own adapters.
+              // Generic files reach the agent through the path line
+              // ProviderService puts in the prompt.
+              if (attachment.type !== "image") {
+                continue;
+              }
               const attachmentPath = resolveAttachmentPath({
                 attachmentsDir: serverConfig.attachmentsDir,
                 attachment,
