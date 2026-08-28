@@ -54,12 +54,14 @@ const color = (family: TailwindColorFamily, shade?: TailwindColorShade, opacity 
 // neither literally `light` nor `dark`, so appearance-sensitive values must also be
 // represented as semantic variables for custom themes.
 const ADAPTIVE_COLORS = {
+  "--color-adaptive-amber-100-500-a18": [color("amber", 100), color("amber", 500, 0.18)],
   "--color-adaptive-amber-50-950-a40": [color("amber", 50), color("amber", 950, 0.4)],
   "--color-adaptive-amber-200-900-a60": [color("amber", 200), color("amber", 900, 0.6)],
   "--color-adaptive-amber-500-a12-a16": [color("amber", 500, 0.12), color("amber", 500, 0.16)],
   "--color-adaptive-amber-700-300": [color("amber", 700), color("amber", 300)],
   "--color-adaptive-amber-700-400": [color("amber", 700), color("amber", 400)],
   "--color-adaptive-amber-800-200": [color("amber", 800), color("amber", 200)],
+  "--color-adaptive-amber-900-200": [color("amber", 900), color("amber", 200)],
   "--color-adaptive-blue-50-blue-400-a14": [color("blue", 50), color("blue", 400, 0.14)],
   "--color-adaptive-blue-300-a50-blue-400-a28": [color("blue", 300, 0.5), color("blue", 400, 0.28)],
   "--color-adaptive-blue-500-a20-blue-400-a15": [color("blue", 500, 0.2), color("blue", 400, 0.15)],
@@ -83,6 +85,10 @@ const ADAPTIVE_COLORS = {
   "--color-adaptive-indigo-600-300": [color("indigo", 600), color("indigo", 300)],
   "--color-adaptive-indigo-700-300": [color("indigo", 700), color("indigo", 300)],
   "--color-adaptive-neutral-100-900": [color("neutral", 100), color("neutral", 900)],
+  "--color-adaptive-neutral-100-a95-900-a95": [
+    color("neutral", 100, 0.95),
+    color("neutral", 900, 0.95),
+  ],
   "--color-adaptive-neutral-200-700-a60": [color("neutral", 200), color("neutral", 700, 0.6)],
   "--color-adaptive-neutral-200-800": [color("neutral", 200), color("neutral", 800)],
   "--color-adaptive-neutral-200-a70-white-a8": [
@@ -113,6 +119,7 @@ const ADAPTIVE_COLORS = {
   "--color-adaptive-neutral-500-500": [color("neutral", 500), color("neutral", 500)],
   "--color-adaptive-neutral-600-300": [color("neutral", 600), color("neutral", 300)],
   "--color-adaptive-neutral-600-400": [color("neutral", 600), color("neutral", 400)],
+  "--color-adaptive-neutral-800-200": [color("neutral", 800), color("neutral", 200)],
   "--color-adaptive-neutral-950-50": [color("neutral", 950), color("neutral", 50)],
   "--color-adaptive-red-50-950-a80": [color("red", 50), color("red", 950, 0.8)],
   "--color-adaptive-red-200-800": [color("red", 200), color("red", 800)],
@@ -125,9 +132,12 @@ const ADAPTIVE_COLORS = {
   "--color-adaptive-rose-500-400": [color("rose", 500), color("rose", 400)],
   "--color-adaptive-rose-600-400": [color("rose", 600), color("rose", 400)],
   "--color-adaptive-rose-700-300": [color("rose", 700), color("rose", 300)],
+  "--color-adaptive-rose-800-200": [color("rose", 800), color("rose", 200)],
+  "--color-adaptive-sky-100-500-a18": [color("sky", 100), color("sky", 500, 0.18)],
   "--color-adaptive-sky-500-a12-a16": [color("sky", 500, 0.12), color("sky", 500, 0.16)],
   "--color-adaptive-sky-600-400": [color("sky", 600), color("sky", 400)],
   "--color-adaptive-sky-700-300": [color("sky", 700), color("sky", 300)],
+  "--color-adaptive-sky-800-200": [color("sky", 800), color("sky", 200)],
   "--color-adaptive-violet-500-a12-a16": [color("violet", 500, 0.12), color("violet", 500, 0.16)],
   "--color-adaptive-violet-600-400": [color("violet", 600), color("violet", 400)],
   "--color-adaptive-violet-700-300": [color("violet", 700), color("violet", 300)],

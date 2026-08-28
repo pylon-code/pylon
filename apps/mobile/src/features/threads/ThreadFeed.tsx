@@ -1163,7 +1163,7 @@ function renderFeedEntry(
             {entry.reportedCostLabel ? (
               <Text
                 accessibilityLabel={entry.reportedCostLabel}
-                className="font-t3-medium text-xs tabular-nums text-neutral-600 dark:text-neutral-400"
+                className="font-t3-medium text-xs tabular-nums text-adaptive-neutral-600-400"
               >
                 {entry.reportedCostLabel}
               </Text>
