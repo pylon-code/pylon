@@ -178,21 +178,45 @@ describe("EnvironmentProviderSettings routing", () => {
     });
   });
 
-  it("renders the provider layout inert with a limited-permissions notice when read only", () => {
+  it("keeps provider selection available while write controls are read only", () => {
+    settingsState.value = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {
+        [customId]: {
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+        },
+      },
+    };
     atoms.providers = [provider()];
-    const panel = renderPanel({ readOnly: true });
+    let panel = renderPanel({ readOnly: true });
 
     const inertWrapper = visitElements(panel, (element) => element.props.inert === true);
     expect(inertWrapper).not.toBeNull();
-    const providerCard = visitElements(panel, (element) => element.props.instanceId === codexId);
-    expect(providerCard).not.toBeNull();
+
+    const customRow = visitElements(
+      panel,
+      (element) => element.props.instanceId === customId && element.props.mode === "list",
+    );
+    expect(customRow?.props.readOnly).toBe(true);
+    expect(customRow?.props.onSelect).toBeTypeOf("function");
+    (customRow?.props.onSelect as (() => void) | undefined)?.();
+
+    panel = renderPanel({ readOnly: true });
+    const customEditor = visitElements(
+      panel,
+      (element) => element.props.instanceId === customId && element.props.mode === "editor",
+    );
+    expect(customEditor).not.toBeNull();
 
     const notice = visitElements(panel, (element) => element.props.title === "Limited permissions");
     expect(notice).not.toBeNull();
 
-    expect(
-      visitElements(panel, (element) => element.props["aria-label"] === "Add provider instance"),
-    ).toBeNull();
+    const providersSection = visitElements(
+      panel,
+      (element) => element.props.title === "Providers" && "headerAction" in element.props,
+    );
+    expect(providersSection?.props.headerAction).toBeNull();
     expect(
       visitElements(panel, (element) => element.props["aria-label"] === "Refresh provider status"),
     ).toBeNull();
@@ -205,6 +229,107 @@ describe("EnvironmentProviderSettings routing", () => {
     expect(
       visitElements(panel, (element) => element.props.title === "Limited permissions"),
     ).toBeNull();
+    const providersSection = visitElements(
+      panel,
+      (element) => element.props.title === "Providers" && "headerAction" in element.props,
+    );
+    expect(providersSection).not.toBeNull();
+    expect(providersSection?.props.headerAction).not.toBeNull();
+  });
+
+  it("keeps drain-order controls on the editor for a driver with several accounts", () => {
+    settingsState.value = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {
+        [codexId]: { driver: ProviderDriverKind.make("codex"), enabled: true, priority: 0 },
+        [customId]: { driver: ProviderDriverKind.make("codex"), enabled: true, priority: 1 },
+      },
+    };
+    atoms.providers = [provider()];
+
+    let panel = renderPanel();
+    const listRow = visitElements(
+      panel,
+      (element) => element.props.instanceId === codexId && element.props.mode === "list",
+    );
+    // Order is legible from the list; the controls that change it live with the
+    // account's other per-account actions in the editor.
+    expect(listRow?.props.drainOrder).toBeUndefined();
+    expect(listRow?.props.environmentId).toBe(environmentId);
+    expect(listRow?.props.timestampFormat).toBe(DEFAULT_UNIFIED_SETTINGS.timestampFormat);
+
+    const editor = visitElements(
+      panel,
+      (element) => element.props.instanceId === codexId && element.props.mode === "editor",
+    );
+    const drainOrder = editor?.props.drainOrder as
+      | {
+          readonly position: number;
+          readonly total: number;
+          readonly onMoveUp?: (() => void) | undefined;
+          readonly onMoveDown?: (() => void) | undefined;
+        }
+      | undefined;
+    expect(drainOrder).toMatchObject({ position: 0, total: 2 });
+    expect(drainOrder?.onMoveUp).toBeUndefined();
+
+    drainOrder?.onMoveDown?.();
+    expect(settingsState.updateSettings).toHaveBeenCalledTimes(1);
+    const patch = settingsState.updateSettings.mock.calls[0]?.[0] as {
+      readonly providerInstances?: Record<string, { readonly priority?: number }>;
+    };
+    expect(patch.providerInstances?.[customId]?.priority).toBe(0);
+    expect(patch.providerInstances?.[codexId]?.priority).toBe(1);
+
+    settingsState.updateSettings.mockClear();
+    panel = renderPanel({ readOnly: true });
+    const readOnlyEditor = visitElements(
+      panel,
+      (element) => element.props.instanceId === codexId && element.props.mode === "editor",
+    );
+    expect(readOnlyEditor).not.toBeNull();
+    expect(readOnlyEditor?.props.drainOrder).toBeUndefined();
+  });
+
+  it("keeps the editor on the account being reordered", () => {
+    const instances = {
+      [codexId]: { driver: ProviderDriverKind.make("codex"), enabled: true, priority: 0 },
+      [customId]: { driver: ProviderDriverKind.make("codex"), enabled: true, priority: 1 },
+    };
+    settingsState.value = { ...DEFAULT_UNIFIED_SETTINGS, providerInstances: instances };
+    atoms.providers = [provider()];
+
+    // Nothing has been clicked, so the editor is showing `rows[0]`.
+    let panel = renderPanel();
+    const editor = visitElements(
+      panel,
+      (element) => element.props.mode === "editor" && element.props.instanceId === codexId,
+    );
+    expect(editor).not.toBeNull();
+
+    const drainOrder = editor?.props.drainOrder as
+      | { readonly onMoveDown?: (() => void) | undefined }
+      | undefined;
+    drainOrder?.onMoveDown?.();
+
+    // Apply the reorder the way the settings store would, then re-render: the
+    // sort key has flipped, so `rows[0]` is now the other account.
+    const patch = settingsState.updateSettings.mock.calls[0]?.[0] as {
+      readonly providerInstances: typeof instances;
+    };
+    settingsState.value = { ...DEFAULT_UNIFIED_SETTINGS, ...patch };
+    panel = renderPanel();
+
+    const stillCodex = visitElements(
+      panel,
+      (element) => element.props.mode === "editor" && element.props.instanceId === codexId,
+    );
+    expect(stillCodex).not.toBeNull();
+    const swappedEditor = visitElements(
+      panel,
+      (element) => element.props.mode === "editor" && element.props.instanceId === customId,
+    );
+    expect(swappedEditor).toBeNull();
   });
 
   it("deletes and resets provider configuration without erasing shared preferences", () => {
@@ -225,8 +350,17 @@ describe("EnvironmentProviderSettings routing", () => {
       },
       favorites: [{ provider: customId, model: "favorite" }],
     };
-    const panel = renderPanel();
-    const customCard = visitElements(panel, (element) => element.props.instanceId === customId);
+    let panel = renderPanel();
+    const customRow = visitElements(
+      panel,
+      (element) => element.props.instanceId === customId && element.props.mode === "list",
+    );
+    (customRow?.props.onSelect as (() => void) | undefined)?.();
+    panel = renderPanel();
+    const customCard = visitElements(
+      panel,
+      (element) => element.props.instanceId === customId && element.props.mode === "editor",
+    );
     expect(customCard).not.toBeNull();
     (customCard?.props.onDelete as (() => void) | undefined)?.();
 
@@ -237,7 +371,16 @@ describe("EnvironmentProviderSettings routing", () => {
     });
 
     settingsState.updateSettings.mockClear();
-    const defaultCard = visitElements(panel, (element) => element.props.instanceId === codexId);
+    const defaultRow = visitElements(
+      panel,
+      (element) => element.props.instanceId === codexId && element.props.mode === "list",
+    );
+    (defaultRow?.props.onSelect as (() => void) | undefined)?.();
+    panel = renderPanel();
+    const defaultCard = visitElements(
+      panel,
+      (element) => element.props.instanceId === codexId && element.props.mode === "editor",
+    );
     const resetAction = defaultCard?.props.headerAction;
     const resetButton = visitElements(
       resetAction,

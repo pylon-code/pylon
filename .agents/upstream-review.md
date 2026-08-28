@@ -1,7 +1,7 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "f6f2be32d8bc072e87753e41ad77c7c67e8b0b95"
+reviewed-through: "e2d4d12a81516b55abbecdc64794971f781cacd8"
 reviewed-through-date: "2026-08-27"
 ---
 
@@ -12,6 +12,71 @@ This ledger is the durable handoff between upstream-review sessions. The `review
 Deferred decisions remain listed after the cursor advances so later sessions can revisit them without rediscovering the entire upstream range.
 
 ## Review batches
+
+## 2026-08-27 (third batch) — `f6f2be32d8bc072e87753e41ad77c7c67e8b0b95..e2d4d12a81516b55abbecdc64794971f781cacd8`
+
+Two upstream commits formed two change sets. The developer approved both
+recommendations as briefed: the Android launcher icon fix as a manual port, and
+`#8380` in full — the environment-variable resync fix, the muted disabled dot,
+and the master-detail redesign — after choosing to keep the account email in the
+editor header rather than dropping it as upstream did. `git cherry` found neither
+already present. DEF-7 was the only open register entry and stayed open; this
+batch opened none.
+
+Both adoptions are recorded against open pull requests, not merged commits: the
+Pylon references below are branch commits on `#124` and `#125`. The cursor
+advances because every candidate received a decision, which is what the cursor
+tracks — but if either pull request is closed unmerged, reopen its change set
+here explicitly, because an advanced cursor will not surface the upstream commit
+again. Update this batch with the merge commits once they land.
+
+| ID  | Upstream              | Decision                | Pylon reference     | Notes                                                                                                                                                                                                |
+| --- | --------------------- | ----------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| U1  | `348367dcc` / `#4332` | adopted with adaptation | `eef9d3531`, `#124` | Android adaptive launcher icon. The bug was live in Pylon on all three channels; upstream's asset is a T3 wordmark, so the fix was ported through Pylon's own exporter instead. See below.           |
+| U2  | `e2d4d12a8` / `#8380` | adopted with adaptation | `c5e0f2da1`, `#125` | Provider settings split into a list and an editor, plus an environment-variable resync fix and a muted disabled dot. Nine conflicts resolved Pylon-first; five Pylon features re-grafted. See below. |
+
+**U1 was a live Pylon defect on every channel.** Android scales an adaptive
+layer to the full 108dp canvas and shows only its centred 72dp through the
+launcher mask, so `apps/mobile/app.config.ts` pointing
+`androidAdaptiveForeground` at `developmentUniversalIconPng` and
+`nightlyLinuxIconPng` meant full-bleed 1024px channel artwork was zoomed and
+edge-cropped; production pointed at `android-icon-mark.png`, whose opaque extent
+reaches 154.7px from centre on a 432px canvas against a 132px safe radius. The
+same asset feeds the `expo-quick-actions` shortcut icon, so both surfaces were
+wrong. Upstream hand-commits a T3 wordmark PNG plus an `rsvg-convert` recipe;
+Pylon instead generates `android-icon-foreground.png` from `T3Mark.svg` in
+`scripts/export-pylon-brand-icons.mjs`, and the exporter now measures the
+composited layer and throws above 132px, so the invariant is enforced rather
+than described — `icons:check` only proves the output matches the vector, and it
+is not wired into CI. One shared layer across channels, as with the monochrome
+mark; the background colour differentiates.
+
+Review of the first commit corrected two things worth recording. The layer sat
+_on_ the safe circle rather than inside it (368px → 133.7px counting every
+non-transparent pixel, 131.9px only if the antialiased fringe is ignored); it
+renders at 352px now, reaching 128.0px. And `androidMonochromeIcon` still
+pointed at `android-icon-mark.png`, which Android masks with the same path as
+the foreground, so Android 13+ themed icons kept the identical clipping one line
+below the fix. Both masked layers use the inset rendition;
+`android-icon-mark.png` remains the source for the unmasked notification icon.
+
+**U2 would not have compiled, and would have silently dropped a Pylon feature.**
+The new device tab bar calls `connectionPhaseDotClassName` and
+`connectionPhasePingClassName`, neither of which exists in Pylon — it replaced
+`ConnectionStatusDot` with a DotMatrix-backed component taking a `state`. Beyond
+that, upstream deletes `ProviderAuthEmail` and leaves the account email nowhere
+on the page, which is free for upstream's one-account-per-driver model and not
+for Pylon's several-with-a-drain-order. The developer chose to keep it in the
+editor header; `showEditorStatus` was widened from warning/error to any account
+with an email or a sign-in to offer. Four more Pylon features were re-grafted
+into the new layout: drain-order controls and the account reset into the editor
+header beside delete, the usage summary onto every list row rather than only the
+selected account, the detailed usage rows to the top of the Configuration tab,
+and the sign-in dialog as a sibling of the editor. `ProviderUsageSummary`'s root
+became a block `span`, because a `<p>` inside the list row's select button is
+invalid DOM. A focused test now pins the drain-order wiring, mutation-checked
+both ways. The environment resync fix ships untested: `apps/web` has no DOM test
+environment, so the effect it lives in cannot be exercised.
 
 ## 2026-08-27 (second batch) — `33b650a5b3b27382b35d2182dec6b22438c3da56..f6f2be32d8bc072e87753e41ad77c7c67e8b0b95`
 
@@ -2824,8 +2889,8 @@ _DEF-1 and DEF-2 were adopted on 2026-08-11
 them so the adoption stayed faithful, and `fix/pull-request-quota-followups`
 fixed both the same day. DEF-6 was opened 2026-08-21 and adopted the same
 day, once `#7725` reconciled the tests it was blocked on. The 2026-08-24 batch
-opened no new entries either; 2026-08-27 opened DEF-7, which the second 2026-08-27 batch re-checked and left
-open. The 2026-08-23 batch
+opened no new entries either; 2026-08-27 opened DEF-7, which the second and third 2026-08-27 batches
+re-checked and left open. The 2026-08-23 batch
 opened no new entries and left it empty; it did retire the dead `U-4326`
 revisit condition recorded in the 2026-08-04 table, since that pull request
 closed unmerged. Entries are removed once adopted, skipped, or fixed._
