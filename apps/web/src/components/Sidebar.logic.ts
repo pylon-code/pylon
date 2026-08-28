@@ -461,10 +461,10 @@ export function resolveThreadRowClassName(input: {
 }
 
 // ── Sidebar thread status model ─────────────────────────────────────
-// Five visual states, three colors: color is reserved for "act now"
-// (approval), "in motion" (working), and "broken" (failed). Ready is the
-// unlabeled resting state — the agent stopped and is waiting on the user,
-// whether it finished, asked a question, or proposed a plan.
+// Thread lifecycle color follows semantic theme roles: active work, actionable
+// warning states, completion, information, and failure remain distinct. Ready
+// is the unlabeled resting state after the agent stops without an actionable
+// approval, input request, or proposed plan.
 // Unread completion is tracked separately: it describes whether a ready
 // thread needs attention, not what the thread is currently doing.
 export type SidebarThreadStatus =
@@ -473,12 +473,19 @@ export type SidebarThreadStatus =
   | "working"
   | "delegating"
   | "monitoring"
+  | "plan-ready"
   | "failed"
   | "ready";
 
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
-  "hasPendingApprovals" | "hasPendingUserInput" | "session" | "backgroundLiveness"
+  | "backgroundLiveness"
+  | "hasActionableProposedPlan"
+  | "hasPendingApprovals"
+  | "hasPendingUserInput"
+  | "interactionMode"
+  | "latestTurn"
+  | "session"
 >;
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
@@ -495,6 +502,13 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   // see the failure, not a stale Working (review finding).
   if (thread.session?.status === "error") {
     return "failed";
+  }
+  if (
+    thread.interactionMode === "plan" &&
+    thread.hasActionableProposedPlan &&
+    isLatestTurnSettled(thread.latestTurn, thread.session)
+  ) {
+    return "plan-ready";
   }
   // Background work outlives the turn: fleets read as working; monitoring
   // only when watch loops are the sole live work.
@@ -668,14 +682,14 @@ export function resolveThreadStatusPill(input: {
     return {
       label: "Awaiting Input",
       colorClass: "text-warning",
-      matrix: "waiting",
+      matrix: "warning",
     };
   }
 
   if (thread.session?.status === "running") {
     return {
       label: "Working",
-      colorClass: "text-foreground",
+      colorClass: "text-status-active",
       matrix: "loading",
     };
   }
@@ -683,7 +697,7 @@ export function resolveThreadStatusPill(input: {
   if (thread.session?.status === "starting") {
     return {
       label: "Connecting",
-      colorClass: "text-foreground",
+      colorClass: "text-status-active",
       matrix: "connecting",
     };
   }
@@ -698,7 +712,7 @@ export function resolveThreadStatusPill(input: {
   if (hasPlanReadyPrompt) {
     return {
       label: "Plan Ready",
-      colorClass: "text-muted-foreground",
+      colorClass: "text-status-info",
       matrix: "info",
     };
   }
@@ -710,7 +724,7 @@ export function resolveThreadStatusPill(input: {
   if (thread.backgroundLiveness === "working") {
     return {
       label: "Working",
-      colorClass: "text-foreground",
+      colorClass: "text-status-active",
       matrix: "orchestrating",
     };
   }
@@ -718,7 +732,7 @@ export function resolveThreadStatusPill(input: {
   if (thread.backgroundLiveness === "monitoring") {
     return {
       label: "Monitoring",
-      colorClass: "text-foreground",
+      colorClass: "text-status-active",
       matrix: "listening",
     };
   }

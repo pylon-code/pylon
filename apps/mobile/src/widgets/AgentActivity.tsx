@@ -65,12 +65,11 @@ export function AgentActivity(
   const primaryForeground = "primary";
   const secondaryForeground = "secondary";
 
-  // Status tints mirror the web sidebar's pills
-  // (apps/web/src/components/Sidebar.logic.ts resolveThreadStatusPill): amber
-  // for approval, indigo for input, sky for working, emerald for completed.
-  // On iPhone the LA sits on a dark material, but macOS (iPhone Mirroring /
-  // Mac notification center) renders it on a light one — so pick the web
-  // palette's light (-600) or dark (-300) variant off the color scheme.
+  // Status tints mirror the semantic web and mobile roles: warning foreground
+  // for user attention, sky for working, and emerald for completed. On iPhone
+  // the LA sits on a dark material, but macOS (iPhone Mirroring / Mac
+  // notification center) renders it on a light one, so each tint must remain
+  // readable on the corresponding system material.
   const isLightScheme = environment.colorScheme === "light";
   const phaseTint = (phase: AgentActivityPhase | undefined): string => {
     if (environment.isLuminanceReduced) {
@@ -78,9 +77,9 @@ export function AgentActivity(
     }
     switch (phase) {
       case "waiting_for_approval":
-        return isLightScheme ? "#d97706" : "#fcd34d"; // amber-600 / amber-300
+        return isLightScheme ? "#bb4d00" : "#ffb900";
       case "waiting_for_input":
-        return isLightScheme ? "#4f46e5" : "#a5b4fc"; // indigo-600 / indigo-300
+        return isLightScheme ? "#bb4d00" : "#ffb900";
       case "failed":
         return isLightScheme ? "#dc2626" : "#fca5a5"; // red-600 / red-300
       case "completed":
@@ -162,7 +161,7 @@ export function AgentActivity(
       case "waiting_for_approval":
         return "exclamationmark.circle.fill";
       case "waiting_for_input":
-        return "questionmark.circle.fill";
+        return "exclamationmark.circle.fill";
       case "failed":
         return "xmark.octagon.fill";
       case "completed":

@@ -453,6 +453,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const pressedBackgroundColor = useThemeColor("--color-subtle");
   const selectedBackgroundColor = useThemeColor("--color-user-bubble");
   const selectedForegroundColor = useThemeColor("--color-user-bubble-foreground");
+  const warningForegroundColor = useThemeColor("--color-warning-foreground");
 
   const { thread, onSelectThread, onArchiveThread, onDeleteThread, onRegenerateThreadTitle } =
     props;
@@ -470,8 +471,10 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const effectivePressedBackground = selected
     ? themeColorWithAlpha(String(selectedForegroundColor), 0.16)
     : pressedBackgroundColor;
+  const usesWarningTreatment =
+    status?.kind === "pending-approval" || status?.kind === "awaiting-input";
   const effectiveStatus =
-    selected && status
+    selected && status && !usesWarningTreatment
       ? {
           ...status,
           pillClassName: "bg-user-bubble-foreground/20",
@@ -515,7 +518,17 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   );
 
   const statusPill = effectiveStatus ? (
-    <View className={`${effectiveStatus.pillClassName} rounded-full px-1.5 py-0.5`}>
+    <View
+      className={`${effectiveStatus.pillClassName} flex-row items-center gap-0.5 rounded-full px-1.5 py-0.5`}
+    >
+      {effectiveStatus.kind === "awaiting-input" ? (
+        <SymbolView
+          name="exclamationmark.triangle"
+          size={9}
+          tintColor={warningForegroundColor}
+          type="monochrome"
+        />
+      ) : null}
       <Text className={`text-3xs font-t3-bold ${effectiveStatus.textClassName}`}>
         {effectiveStatus.label}
       </Text>

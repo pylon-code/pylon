@@ -2,7 +2,12 @@ import { DEFAULT_DOT_MATRIX_MOTION, type DotMatrixMotion } from "@t3tools/contra
 import { useState } from "react";
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
-import { DotMatrix, dotMatrixAnimatedStates, type DotMatrixState } from "../ui/dot-matrix";
+import {
+  DotMatrix,
+  dotMatrixAnimatedStates,
+  type DotMatrixSizeRole,
+  type DotMatrixState,
+} from "../ui/dot-matrix";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import {
@@ -26,7 +31,7 @@ function TerminalRowContent({ highlighted = false }: { highlighted?: boolean }) 
           : "flex min-h-7 items-center gap-2 px-1 py-0.5 text-secondary-label"
       }
     >
-      <DotMatrix aria-hidden state="terminal" className="size-[22px] text-inherit" />
+      <DotMatrix sizeRole="inline" aria-hidden state="terminal" className="text-inherit" />
       <span className="text-sm font-medium">IPython</span>
     </div>
   );
@@ -59,7 +64,7 @@ function StatusCard({ state, motionPaused }: { state: DotMatrixState; motionPaus
   const motionLabel = animated ? (motionPaused ? "Paused" : "Animated") : "Static";
   return (
     <div className="grid min-h-20 grid-cols-[2rem_minmax(0,1fr)] items-center gap-3 rounded-xl border border-border/70 bg-card/55 p-3">
-      <DotMatrix aria-hidden state={state} className="size-6" />
+      <DotMatrix sizeRole="compact" aria-hidden state={state} />
       <div className="min-w-0">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <code className="text-xs font-semibold text-foreground">{state}</code>
@@ -70,6 +75,66 @@ function StatusCard({ state, motionPaused }: { state: DotMatrixState; motionPaus
         <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
           {DOT_MATRIX_STATUS_DESCRIPTIONS[state]}
         </p>
+      </div>
+    </div>
+  );
+}
+
+const DOT_MATRIX_SIZE_PREVIEWS: ReadonlyArray<{
+  role: DotMatrixSizeRole;
+  label: string;
+  detail: string;
+  surfaceClassName: string;
+  toneClassName?: string;
+  labelToneClassName: string;
+}> = [
+  {
+    role: "compact",
+    label: "Compact",
+    detail: "Sidebar and list · max(12px, 0.85em)",
+    surfaceClassName: "bg-sidebar text-sm text-sidebar-foreground",
+    toneClassName: "text-status-active-sidebar",
+    labelToneClassName: "text-status-active-foreground-sidebar",
+  },
+  {
+    role: "inline",
+    label: "Inline",
+    detail: "Text rows · 1em",
+    surfaceClassName: "bg-card/55 text-sm text-foreground",
+    labelToneClassName: "text-status-active-foreground",
+  },
+  {
+    role: "prominent",
+    label: "Prominent",
+    detail: "Transcript activity · max(16px, 1.1em)",
+    surfaceClassName: "bg-background/45 text-base text-foreground",
+    labelToneClassName: "text-status-active-foreground",
+  },
+];
+
+function DotMatrixSizePreview() {
+  return (
+    <div>
+      <h4 className="mb-2 text-[10px] font-semibold tracking-[0.1em] text-muted-foreground uppercase">
+        Surface-aware sizing
+      </h4>
+      <div className="grid gap-2 sm:grid-cols-3">
+        {DOT_MATRIX_SIZE_PREVIEWS.map(
+          ({ role, label, detail, surfaceClassName, toneClassName, labelToneClassName }) => (
+            <div
+              key={role}
+              className={`rounded-xl border border-border/70 px-3 py-3 ${surfaceClassName}`}
+            >
+              <div className="flex items-center gap-2.5">
+                <DotMatrix aria-hidden state="loading" sizeRole={role} className={toneClassName} />
+                <span className={`font-medium ${labelToneClassName}`}>Working</span>
+              </div>
+              <p className="mt-2 text-[10px] text-muted-foreground">
+                <span className="font-semibold text-foreground">{label}</span> · {detail}
+              </p>
+            </div>
+          ),
+        )}
       </div>
     </div>
   );
@@ -152,6 +217,8 @@ export function DotMatrixSettings() {
               still.
             </p>
           </div>
+
+          <DotMatrixSizePreview />
 
           {DOT_MATRIX_STATUS_GROUPS.map((group) => (
             <div key={group.title}>

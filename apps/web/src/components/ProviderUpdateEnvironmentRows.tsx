@@ -121,7 +121,7 @@ function EnvironmentUpdateRow({
       trailing = <Spinner className="size-4 text-muted-foreground" />;
       break;
     case "success":
-      trailing = <DotMatrix aria-hidden state="success" className="size-3.5" />;
+      trailing = <DotMatrix sizeRole="compact" aria-hidden state="success" />;
       break;
     case "failed":
     case "unchanged":

@@ -46,8 +46,12 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain('aria-label="Dismiss tasks for this turn"');
     expect(markup).toContain("lucide-x");
     expect(markup).not.toContain("lucide-chevron");
+    expect(markup).toContain('data-task-progress-segments="true"');
+    expect(markup).toContain('data-task-status="completed"');
+    expect(markup).toContain('data-task-status="inProgress"');
+    expect(markup).toContain('data-task-status="pending"');
     expect(markup).toContain("bg-success");
-    expect(markup).toContain("bg-primary");
+    expect(markup).toContain("bg-status-active");
     expect(markup).toContain("bg-muted-foreground/25");
   });
 
@@ -83,6 +87,7 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("1/3");
     expect(markup).not.toContain("chat-composer-shoulder-tab");
     expect(markup).not.toContain("rounded-t-xl");
+    expect(markup).toContain("w-10");
   });
 
   it("expands into a read-only attached task list", () => {
@@ -109,9 +114,17 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("lucide-list-todo");
     expect(markup).toContain('aria-label="Dismiss tasks for this turn"');
     expect(markup).not.toContain("lucide-chevron");
-    expect(markup).not.toContain("bg-success");
-    expect(markup).not.toContain("bg-primary");
-    expect(markup).not.toContain("bg-muted-foreground/25");
+    expect(markup).not.toContain('data-task-progress-segments="true"');
+    expect(markup).toContain('data-state="success"');
+    expect(markup).toContain('data-state="loading"');
+    expect(markup).toContain('data-state="idle"');
+    expect(markup.match(/<circle/g)).toHaveLength(75);
+    expect(markup).toContain('data-slot="dot-matrix"');
+    expect(markup).toContain('data-size-role="compact"');
+    expect(markup).toContain("size-[max(12px,0.85em)]");
+    expect(markup).toContain("Completed:");
+    expect(markup).toContain("In progress:");
+    expect(markup).toContain("Pending:");
   });
 
   it("does not render an empty task count", () => {

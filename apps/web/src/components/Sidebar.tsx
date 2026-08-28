@@ -830,74 +830,71 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       autoSettleOnMerge: props.autoSettleOnMerge,
       thread,
     });
-  // In-flight rows (working, or waiting on approval/input) fade as a whole:
-  // there is nothing for the user to do yet, so prominence is reserved for
-  // rows that need a human — done (unread), read-but-unsettled, failed, and
-  // freshly woken. The status label keeps its hue, so waiting rows stay
-  // findable. In-flight rows recede the same as read-ready ones (inbox-zero:
-  // working threads aren't your problem yet) — only the colored status label
-  // stands out.
-  const isInFlight =
-    status === "working" ||
-    status === "delegating" ||
-    status === "monitoring" ||
-    status === "approval" ||
-    status === "input";
+  // In-flight work fades as a whole because it does not need the user yet.
+  // Approval and Input are attention states, so they stay prominent even when
+  // the row is not active. Ready rows recede after their completion is read.
+  const isInFlight = status === "working" || status === "delegating" || status === "monitoring";
   const shouldRecede =
     (status === "ready" || isInFlight) && !isUnread && !isWoke && !props.isActive && !isSelected;
-  // Neutral activity follows adaptive foreground; only semantic outcomes
-  // force color. Distinct glyphs keep root work, delegation, and monitoring
-  // truthful even when their user-facing labels are similar.
+  // Status hues follow lifecycle semantics. Active work uses the theme accent,
+  // Plan Ready uses Info, and user-blocking Input and Approval use warning.
+  // Distinct glyphs keep root work, delegation, and monitoring truthful.
   const topStatus =
     status === "working"
       ? {
           label: "Working",
           icon: "working" as const,
-          className: "text-foreground",
+          className: "text-status-active-foreground-sidebar",
         }
       : status === "delegating"
         ? {
             label: "Working",
             icon: "delegating" as const,
-            className: "text-foreground",
+            className: "text-status-active-foreground-sidebar",
           }
         : status === "monitoring"
           ? {
               label: "Monitoring",
               icon: "monitoring" as const,
-              className: "text-foreground",
+              className: "text-status-active-foreground-sidebar",
             }
-          : status === "approval"
+          : status === "plan-ready"
             ? {
-                label: "Approval",
-                icon: "approval" as const,
-                className: "text-warning",
+                label: "Plan Ready",
+                icon: "info" as const,
+                className: "text-status-info-sidebar",
               }
-            : status === "input"
+            : status === "approval"
               ? {
-                  label: "Input",
-                  icon: "input" as const,
+                  label: "Approval",
+                  icon: "approval" as const,
                   className: "text-warning",
                 }
-              : status === "failed"
+              : status === "input"
                 ? {
-                    label: "Failed",
-                    icon: "failed" as const,
-                    className: "text-destructive",
+                    label: "Input",
+                    icon: "input" as const,
+                    className: "text-warning",
                   }
-                : isWoke
+                : status === "failed"
                   ? {
-                      label: "Woke",
-                      icon: "woke" as const,
-                      className: "text-warning",
+                      label: "Failed",
+                      icon: "failed" as const,
+                      className: "text-destructive",
                     }
-                  : isUnread
+                  : isWoke
                     ? {
-                        label: "Done",
-                        icon: "done" as const,
-                        className: "text-success",
+                        label: "Woke",
+                        icon: "woke" as const,
+                        className: "text-warning",
                       }
-                    : null;
+                    : isUnread
+                      ? {
+                          label: "Done",
+                          icon: "done" as const,
+                          className: "text-success",
+                        }
+                      : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -1202,7 +1199,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       data-testid={`sidebar-terminal-status-${thread.id}`}
       className={cn("inline-flex shrink-0 items-center justify-center", terminalStatus.colorClass)}
     >
-      <DotMatrix aria-hidden state="terminal-active" className="size-3" />
+      <DotMatrix sizeRole="compact" aria-hidden state="terminal-active" />
     </span>
   ) : null;
   const pinIndicator = props.isPinned ? (
@@ -1481,19 +1478,41 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                         )}
                       >
                         {topStatus.icon === "working" ? (
-                          <DotMatrix aria-hidden state="loading" className="size-3" />
+                          <DotMatrix
+                            sizeRole="compact"
+                            aria-hidden
+                            state="loading"
+                            className="text-status-active-sidebar"
+                          />
                         ) : topStatus.icon === "delegating" ? (
-                          <DotMatrix aria-hidden state="orchestrating" className="size-3" />
+                          <DotMatrix
+                            sizeRole="compact"
+                            aria-hidden
+                            state="orchestrating"
+                            className="text-status-active-sidebar"
+                          />
                         ) : topStatus.icon === "monitoring" ? (
-                          <DotMatrix aria-hidden state="listening" className="size-3" />
+                          <DotMatrix
+                            sizeRole="compact"
+                            aria-hidden
+                            state="listening"
+                            className="text-status-active-sidebar"
+                          />
                         ) : topStatus.icon === "approval" ? (
-                          <DotMatrix aria-hidden state="warning" className="size-3" />
+                          <DotMatrix sizeRole="compact" aria-hidden state="warning" />
                         ) : topStatus.icon === "input" ? (
-                          <DotMatrix aria-hidden state="waiting" className="size-3" />
+                          <DotMatrix sizeRole="compact" aria-hidden state="warning" />
+                        ) : topStatus.icon === "info" ? (
+                          <DotMatrix
+                            sizeRole="compact"
+                            aria-hidden
+                            state="info"
+                            className="text-status-info-sidebar"
+                          />
                         ) : topStatus.icon === "failed" ? (
-                          <DotMatrix aria-hidden state="error" className="size-3" />
+                          <DotMatrix sizeRole="compact" aria-hidden state="error" />
                         ) : topStatus.icon === "done" ? (
-                          <DotMatrix aria-hidden state="success" className="size-3" />
+                          <DotMatrix sizeRole="compact" aria-hidden state="success" />
                         ) : null}
                         {/* The label alone is the live region: a role="status"
                             wrapper around the ticking duration would make
