@@ -145,8 +145,10 @@ const ManualSchemas: Record<string, Schema.Json> = {
   },
 };
 
-// Codex 0.150 added these multi-agent values before our next full protocol
-// refresh. Keep every generated response namespace compatible with them.
+// Enum values Codex 0.150 added before our next full protocol refresh, across
+// both the multi-agent and account surfaces. Each entry replaces the upstream
+// definition wholesale, so keep it a superset of the pinned ref and keep every
+// generated response namespace compatible with it.
 const Codex0150DefinitionSchemas: Record<string, Schema.Json> = {
   CollabAgentTool: {
     type: "string",

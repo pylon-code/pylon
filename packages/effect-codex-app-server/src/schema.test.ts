@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import * as CodexSchema from "./schema.ts";
 
 const isGetAccountResponse = Schema.is(CodexSchema.V2GetAccountResponse);
+const isAccountPlanType = Schema.is(CodexSchema.V2GetAccountResponse__PlanType);
 
 it("accepts Codex 0.150 multi-agent values", () => {
   const schemas = [
@@ -83,7 +84,23 @@ it("accepts Codex 0.150 account plan values", () => {
     "edu_pro",
   ];
 
+  // Every generated namespace that carries a plan, not just the one the account
+  // probe reads: `account/rateLimits/read` decodes through
+  // `V2GetAccountRateLimitsResponse`, and a namespace missed by a hand-edit to
+  // the generated schema would otherwise ship green.
+  const planTypeSchemas = [
+    CodexSchema.ServerNotification__PlanType,
+    CodexSchema.V2AccountRateLimitsUpdatedNotification__PlanType,
+    CodexSchema.V2AccountUpdatedNotification__PlanType,
+    CodexSchema.V2GetAccountRateLimitsResponse__PlanType,
+    CodexSchema.V2GetAccountResponse__PlanType,
+  ];
+
   for (const planType of planTypes) {
+    for (const schema of planTypeSchemas) {
+      assert.equal(Schema.is(schema)(planType), true);
+    }
+
     const accountResponse = {
       account: {
         email: "user@example.com",
@@ -95,4 +112,13 @@ it("accepts Codex 0.150 account plan values", () => {
 
     assert.equal(isGetAccountResponse(accountResponse), true);
   }
+});
+
+it("rejects account plans Codex has not published yet", () => {
+  // Documents today's behaviour rather than endorsing it. `planType` is a closed
+  // literal on a required field and `account/read` is a bare `yield*`, so an
+  // unrecognized plan fails the whole Codex probe instead of degrading one
+  // label. Widening the decode is a separate decision; this test will fail
+  // loudly when that decision is made.
+  assert.equal(isAccountPlanType("plan_from_the_future"), false);
 });
