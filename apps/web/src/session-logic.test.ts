@@ -24,6 +24,7 @@ import {
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
+  workEntrySignalsSevereFailure,
 } from "./session-logic";
 
 let nextActivityId = 0;
@@ -857,6 +858,41 @@ describe("hasActionableProposedPlan", () => {
         updatedAt: "2026-02-23T00:00:02.000Z",
       }),
     ).toBe(false);
+  });
+});
+
+describe("workEntrySignalsSevereFailure", () => {
+  const base = {
+    id: "w1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    label: "Something",
+    tone: "error" as const,
+  };
+
+  it("is true for runtime errors and orchestration *.failed kinds", () => {
+    for (const kind of [
+      "runtime.error",
+      "provider.turn.start.failed",
+      "checkpoint.capture.failed",
+    ]) {
+      expect(workEntrySignalsSevereFailure({ ...base, sourceActivityKind: kind })).toBe(true);
+    }
+  });
+
+  it("is false for ordinary tool failures and for kinds that merely mention failure", () => {
+    // The gate is a suffix match on a free-form kind string, so pin what must
+    // stay out of the red treatment: a failed tool lifecycle carries no
+    // `.failed` activity kind, and a `*.failed_over` style kind must not match.
+    expect(workEntrySignalsSevereFailure({ ...base, sourceActivityKind: "tool.completed" })).toBe(
+      false,
+    );
+    expect(
+      workEntrySignalsSevereFailure({ ...base, sourceActivityKind: "provider.failed_over" }),
+    ).toBe(false);
+    expect(workEntrySignalsSevereFailure({ ...base, sourceActivityKind: "runtime.warning" })).toBe(
+      false,
+    );
+    expect(workEntrySignalsSevereFailure(base)).toBe(false);
   });
 });
 

@@ -154,7 +154,11 @@ export function ThreadWorkLog(props: {
           const canExpand = row.canExpand;
           const fullDetail = expanded ? row.getFullDetail() : null;
           const displayText = row.detail ? `${row.summary} ${row.detail}` : row.summary;
-          const iconIsDestructive = row.icon === "alert" || row.icon === "warning";
+          // Warnings are not errors. Web reserves destructive red for
+          // runtime.error and orchestration *.failed rows and paints warnings
+          // amber; mobile matches that split rather than colouring both rose.
+          const iconIsDestructive = row.icon === "alert";
+          const iconIsWarning = row.icon === "warning";
 
           return (
             <Animated.View
@@ -189,7 +193,13 @@ export function ThreadWorkLog(props: {
                       name={workRowSymbolName(row.icon)}
                       size={13}
                       weight="medium"
-                      tintColor={iconIsDestructive ? "#e11d48" : props.iconSubtleColor}
+                      tintColor={
+                        iconIsDestructive
+                          ? "#e11d48"
+                          : iconIsWarning
+                            ? "#d97706"
+                            : props.iconSubtleColor
+                      }
                       type="monochrome"
                     />
                   </View>
@@ -199,6 +209,7 @@ export function ThreadWorkLog(props: {
                       className={cn(
                         "font-t3-medium text-foreground",
                         iconIsDestructive && "text-rose-600 dark:text-rose-400",
+                        iconIsWarning && "text-amber-600 dark:text-amber-400",
                       )}
                     >
                       {row.summary}

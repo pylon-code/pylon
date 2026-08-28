@@ -2213,7 +2213,6 @@ type WorkEntryIconName =
   | "square-pen"
   | "terminal"
   | "wrench"
-  | "x"
   | "zap";
 
 function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; className: string }) {
@@ -2251,8 +2250,6 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
       );
     case "wrench":
       return <WrenchIcon className={fixedIconClassName} aria-hidden />;
-    case "x":
-      return <DotMatrix sizeRole="inline" aria-hidden state="error" className={className} />;
     case "zap":
       return <ZapIcon className={fixedIconClassName} aria-hidden />;
   }
