@@ -244,6 +244,7 @@ function fixture(options?: {
   }) => Promise<unknown>;
   readonly omitRlmQuiescence?: boolean;
   readonly verifyManagedSourceImpl?: () => Promise<boolean>;
+  readonly disposeImpl?: () => Promise<unknown>;
 }) {
   const captures: Captures = {
     order: [],
@@ -747,7 +748,7 @@ function fixture(options?: {
     dispose(): Promise<unknown> {
       captures.order.push("dispose");
       captures.disposeCount += 1;
-      return Promise.resolve(undefined);
+      return options?.disposeImpl?.() ?? Promise.resolve(undefined);
     }
   }
 
@@ -1903,10 +1904,8 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           type: "session_event",
           event: { type: "message_end", message: terminalAssistantMessage() },
         });
-        const steering = yield* runtime
-          .steer({ text: "wait for managed verification" })
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Effect.yieldNow;
+        const steering = yield* runtime.steer({ text: "wait for managed verification" });
+        expect(steering).toBe("recovering");
         expect(eventsFiber.pollUnsafe()).toBeUndefined();
         expect(
           test.captures.connectionCalls.filter((call) => call.method === "steer"),
@@ -1916,10 +1915,9 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         yield* Effect.promise(() =>
           Promise.all([reconnecting, plan, resync, afterResync]).then(() => undefined),
         );
-        yield* Fiber.join(steering);
         expect(
           test.captures.connectionCalls.filter((call) => call.method === "steer"),
-        ).toHaveLength(1);
+        ).toHaveLength(0);
 
         const events = yield* Fiber.join(eventsFiber);
         expect(events.map((event) => event._tag)).toEqual([
@@ -3421,11 +3419,131 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
-  it.effect("emits one terminal close when raw worker MCP recovery fails", () =>
+  it.effect("reclaims scoped MCP ownership after same-worker quiescence", () =>
     Effect.scoped(
       Effect.gen(function* () {
+        const expected = {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        };
+        const resources = {
+          extensions: [{ path: expected.path }],
+          diagnostics: { extensions: [] },
+        };
+        let attempts = 0;
         let snapshotReads = 0;
         let mcpReplacements = 0;
+        let authoritativeIdle = false;
+        let reportFirstList: (() => void) | undefined;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
+        const test = fixture({
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            if (snapshotReads === 1) return { ...snapshot(5), children: [] };
+            return {
+              ...snapshot(6),
+              state: {
+                ...snapshot(6).state,
+                activeSessionId: "active-secret-1",
+                isStreaming: true,
+                messageCount: 1,
+              },
+              messages: [terminalAssistantMessage()],
+            };
+          },
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            if (attempts === 1) {
+              return Promise.reject(new Error("Session worker is recovering"));
+            }
+            authoritativeIdle = true;
+            return Promise.resolve({ result: "completed" });
+          },
+          resourceSnapshot: resources,
+          listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+          listRequestObserved: () => reportFirstList?.(),
+          replaceMcpImpl: () => {
+            mcpReplacements += 1;
+            return mcpReplacements === 1 || authoritativeIdle
+              ? Promise.resolve(undefined)
+              : Promise.reject(
+                  new Error("Cannot replace ACP MCP servers while the agent is running"),
+                );
+          },
+        });
+        const mcpServer = {
+          ownerId: "pylon:provider-session-worker-recovery",
+          server: {
+            name: "t3-code",
+            type: "http" as const,
+            url: "http://127.0.0.1:4321/mcp/provider-session-worker-recovery",
+            headers: { Authorization: "Bearer scoped-secret" },
+          },
+        };
+        const runtime = yield* test.make(
+          undefined,
+          [expected.path],
+          expected,
+          undefined,
+          mcpServer,
+        );
+        const recoveryEvents = yield* collectEvents(runtime, 4).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const token = "turn-worker-mcp:1";
+        yield* runtime.prompt({
+          text: "preserve recovered browser tools",
+          rlmQuiescenceToken: token,
+        });
+        yield* Effect.promise(() =>
+          test.emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        const waiting = yield* runtime
+          .waitForRlmQuiescence(token, activeSignal())
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstList);
+        const concurrentInput = yield* runtime.followUp({ text: "do not admit before recovery" });
+        expect(concurrentInput).toBe("recovering");
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "followUp"),
+        ).toHaveLength(0);
+
+        yield* TestClock.adjust(250);
+        const events = yield* Fiber.join(recoveryEvents);
+        expect(events.map((event) => event._tag)).toEqual([
+          "SessionResynced",
+          "RunStarted",
+          "ConnectionStatus",
+          "SessionResynced",
+        ]);
+        expect(runtime.resolveReconnectSnapshot(0, true, true)).toBe(true);
+        yield* Fiber.join(waiting);
+        const [quiesced] = yield* collectEvents(runtime, 1);
+
+        expect(attempts).toBe(2);
+        expect(authoritativeIdle).toBe(true);
+        expect(mcpReplacements).toBe(2);
+        expect(quiesced).toMatchObject({
+          _tag: "RlmQuiesced",
+          token,
+          connectionGeneration: 0,
+        });
+      }),
+    ),
+  );
+
+  it.effect("fails closed when scoped MCP ownership cannot be reclaimed after quiescence", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let attempts = 0;
+        let snapshotReads = 0;
+        let replacements = 0;
+        let reportFirstList: (() => void) | undefined;
+        const firstList = new Promise<void>((resolve) => {
+          reportFirstList = resolve;
+        });
         const test = fixture({
           rawSnapshotImpl: () => {
             snapshotReads += 1;
@@ -3436,52 +3554,57 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
                 ...snapshot(6).state,
                 activeSessionId: "active-secret-1",
                 isStreaming: true,
+                messageCount: 1,
               },
+              messages: [terminalAssistantMessage()],
             };
           },
-          replaceMcpImpl: () => {
-            mcpReplacements += 1;
-            return mcpReplacements === 1
-              ? Promise.resolve(undefined)
-              : Promise.reject(new Error("replacement MCP failed"));
+          waitForHeadlessCompletionImpl: () => {
+            attempts += 1;
+            return attempts === 1
+              ? Promise.reject(new Error("Session worker is recovering"))
+              : Promise.resolve({ result: "completed" });
           },
           listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+          listRequestObserved: () => reportFirstList?.(),
+          replaceMcpImpl: () => {
+            replacements += 1;
+            return replacements === 1
+              ? Promise.resolve(undefined)
+              : Promise.reject(new Error("replacement ownership rejected"));
+          },
         });
-        const mcpServer = {
-          ownerId: "pylon:provider-session-worker-recovery-failure",
+        const runtime = yield* test.make(undefined, undefined, undefined, undefined, {
+          ownerId: "pylon:provider-session-worker-reclaim-failure",
           server: {
             name: "t3-code",
-            type: "http" as const,
-            url: "http://127.0.0.1:4321/mcp/provider-session-worker-recovery-failure",
+            type: "http",
+            url: "http://127.0.0.1:4321/mcp/provider-session-worker-reclaim-failure",
             headers: { Authorization: "Bearer scoped-secret" },
           },
-        };
-        const runtime = yield* test.make(undefined, undefined, undefined, undefined, mcpServer);
-        const collecting = yield* collectEvents(runtime, 3).pipe(
+        });
+        const recoveryEvents = yield* collectEvents(runtime, 2).pipe(
           Effect.forkChild({ startImmediately: true }),
         );
-        yield* Effect.promise(() =>
-          test.emit({ type: "session_event", event: { type: "agent_start" } }),
-        );
-        const closing = yield* Effect.promise(() =>
-          test.emit({ type: "closed", error: "Daemon worker client closed" }),
-        ).pipe(Effect.forkChild({ startImmediately: true }));
+        const token = "turn-worker-mcp-rejected:1";
+        yield* runtime.prompt({ text: "fail without scoped tools", rlmQuiescenceToken: token });
+        const waiting = yield* runtime
+          .waitForRlmQuiescence(token, activeSignal())
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => firstList);
 
         yield* TestClock.adjust(250);
-        yield* Fiber.join(closing);
-        const events = yield* Fiber.join(collecting);
+        yield* Fiber.join(recoveryEvents);
+        expect(runtime.resolveReconnectSnapshot(0, true, true)).toBe(true);
+        const error = yield* Fiber.join(waiting);
 
-        expect(events.map((event) => event._tag)).toEqual([
-          "SessionResynced",
-          "RunStarted",
-          "SessionClosed",
-        ]);
-        expect(events[2]).toMatchObject({
-          _tag: "SessionClosed",
-          error:
-            "Pylon browser tools could not be restored after the Prime Agent daemon reconnected.",
+        expect(attempts).toBe(2);
+        expect(replacements).toBe(2);
+        expect(error).toMatchObject({
+          operation: "configure-mcp",
+          reason: "request-failed",
+          detail: "Pylon browser tools could not be reclaimed after worker recovery.",
         });
-        expect(mcpReplacements).toBe(2);
       }),
     ),
   );
@@ -7134,6 +7257,43 @@ describe("Prime Agent live activity privacy boundary", () => {
         yield* Fiber.join(interruptFiber);
         expect(yield* Deferred.isDone(interrupted)).toBe(true);
         expect(side.captures.sideQuestionAborts).toEqual([nativeId]);
+      }),
+    ),
+  );
+
+  it.effect("bounds daemon session disposal during a lost connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let reportDisposeStarted: (() => void) | undefined;
+        const disposeStarted = new Promise<void>((resolve) => {
+          reportDisposeStarted = resolve;
+        });
+        const side = fixture({
+          disposeImpl: () => {
+            reportDisposeStarted?.();
+            return new Promise<unknown>(() => undefined);
+          },
+        });
+        const runtime = yield* side.make();
+        const disposing = yield* runtime.dispose.pipe(
+          Effect.flip,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() => disposeStarted);
+
+        yield* TestClock.adjust(29_999);
+        expect(side.captures.closeCount).toBe(0);
+        yield* TestClock.adjust(1);
+        const error = yield* Fiber.join(disposing);
+
+        expect(error).toMatchObject({
+          operation: "dispose",
+          reason: "request-timed-out",
+          detail: "Timed out while disposing the daemon session.",
+        });
+        expect(side.captures.disposeCount).toBe(1);
+        expect(side.captures.unsubscribeCount).toBe(1);
+        expect(side.captures.closeCount).toBe(1);
       }),
     ),
   );
