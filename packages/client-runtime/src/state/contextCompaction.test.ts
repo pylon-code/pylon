@@ -133,21 +133,23 @@ describe("session compaction state", () => {
   });
 
   it("blocks composer submission for every active compaction status", () => {
-    expect(isSessionCompactionInProgress({ status: "starting" })).toBe(true);
-    expect(isSessionCompactionInProgress({ status: "compacting" })).toBe(true);
-    expect(isSessionCompactionInProgress({ status: "abort-requested" })).toBe(true);
+    for (const status of ["starting", "compacting", "abort-requested"] as const) {
+      expect(isSessionCompactionInProgress({ status })).toBe(true);
+      expect(
+        isSessionCompactionSubmissionBlocked({
+          hasActiveScope: true,
+          current: { status: "idle" },
+          activity: { status },
+          compactPending: false,
+        }),
+      ).toBe(true);
+    }
     expect(isSessionCompactionInProgress({ status: "idle" })).toBe(false);
     expect(isSessionCompactionInProgress(null)).toBe(false);
 
     expect(
       isSessionCompactionSubmissionBlocked({
-        current: { status: "idle" },
-        activity: { status: "starting" },
-        compactPending: false,
-      }),
-    ).toBe(true);
-    expect(
-      isSessionCompactionSubmissionBlocked({
+        hasActiveScope: true,
         current: { status: "idle" },
         activity: { status: "idle" },
         compactPending: true,
@@ -155,11 +157,25 @@ describe("session compaction state", () => {
     ).toBe(true);
     expect(
       isSessionCompactionSubmissionBlocked({
+        hasActiveScope: true,
         current: { status: "idle" },
         activity: { status: "idle" },
         compactPending: false,
       }),
     ).toBe(false);
+  });
+
+  it("ignores stale compaction state after the session stops", () => {
+    for (const compactPending of [false, true]) {
+      expect(
+        isSessionCompactionSubmissionBlocked({
+          hasActiveScope: false,
+          current: { status: "compacting" },
+          activity: { status: "compacting" },
+          compactPending,
+        }),
+      ).toBe(false);
+    }
   });
 
   it("accepts only successful mutations superseded by authoritative activity", () => {

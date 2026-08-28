@@ -1288,6 +1288,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ? authoritativeSessionCompaction.snapshot
       : activitySessionCompaction;
   const sessionCompactionBlocksSubmission = isSessionCompactionSubmissionBlocked({
+    hasActiveScope: sessionCompactionScopeKey !== null,
     current: sessionCompaction,
     activity: activitySessionCompaction,
     compactPending:
