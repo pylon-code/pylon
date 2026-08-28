@@ -16,6 +16,15 @@ const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
 
 const fromRepoRoot = (relativePath: string) => `../../${relativePath}`;
 
+// Android scales an adaptive layer to the full 108dp canvas and then shows only
+// its centred 72dp through the launcher's mask. A full-bleed channel icon used
+// as a layer is therefore zoomed and edge-cropped, and `android-icon-mark.png`
+// reaches too close to its own edges to survive either. Both masked layers —
+// the foreground and the Android 13+ monochrome themed layer, which is masked
+// identically — use this inset rendition instead. The unmasked notification
+// icon still comes from `android-icon-mark.png`.
+const ANDROID_ADAPTIVE_LAYER = "./assets/android-icon-foreground.png";
+
 if (
   isIosPersonalTeamBuild &&
   (!personalTeamBundleIdentifier ||
@@ -30,9 +39,9 @@ const DEVELOPMENT_ASSETS = {
   appIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIosIconPng),
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIosIconPng),
-  androidAdaptiveForeground: fromRepoRoot(BRAND_ASSET_PATHS.developmentUniversalIconPng),
+  androidAdaptiveForeground: ANDROID_ADAPTIVE_LAYER,
   androidAdaptiveBackgroundColor: "#00639B",
-  androidMonochromeIcon: "./assets/android-icon-mark.png",
+  androidMonochromeIcon: ANDROID_ADAPTIVE_LAYER,
   androidNotificationIcon: "./assets/android-notification-icon.png",
   androidNotificationColor: "#00639B",
 } as const;
@@ -41,9 +50,13 @@ const PREVIEW_ASSETS = {
   appIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
-  androidAdaptiveForeground: fromRepoRoot(BRAND_ASSET_PATHS.nightlyLinuxIconPng),
-  androidAdaptiveBackgroundColor: "#111533",
-  androidMonochromeIcon: "./assets/android-icon-mark.png",
+  androidAdaptiveForeground: ANDROID_ADAPTIVE_LAYER,
+  // The channels share one mark, so the background is the only thing telling
+  // them apart on a launcher — and preview's old #111533 read as the same
+  // near-black tile as production's #000000 at icon size. This is the nightly
+  // accent already used for `androidNotificationColor` below, not a new colour.
+  androidAdaptiveBackgroundColor: "#7565C7",
+  androidMonochromeIcon: ANDROID_ADAPTIVE_LAYER,
   androidNotificationIcon: "./assets/android-notification-icon.png",
   androidNotificationColor: "#7565C7",
 } as const;
@@ -52,9 +65,9 @@ const RELEASE_ASSETS = {
   appIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
-  androidAdaptiveForeground: "./assets/android-icon-mark.png",
+  androidAdaptiveForeground: ANDROID_ADAPTIVE_LAYER,
   androidAdaptiveBackgroundColor: "#000000",
-  androidMonochromeIcon: "./assets/android-icon-mark.png",
+  androidMonochromeIcon: ANDROID_ADAPTIVE_LAYER,
   androidNotificationIcon: "./assets/android-notification-icon.png",
   androidNotificationColor: "#FFFFFF",
 } as const;
