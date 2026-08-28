@@ -3400,13 +3400,22 @@ export function makePrimeAgentDaemonAdapter(
                     issue: "Prime Agent cannot change model controls while a run is active.",
                   });
                 }
-                yield* context.runtime
+                const admission = yield* context.runtime
                   .steer({ text, ...(images.length === 0 ? {} : { images }) })
                   .pipe(
                     Effect.mapError((error) =>
                       runtimeOperationError(input.threadId, "session/steer", error),
                     ),
                   );
+                if (admission === "recovering") {
+                  return yield* new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "sendTurn",
+                    reason: "busy",
+                    issue:
+                      "Prime Agent is recovering. Try steering again after recovery completes.",
+                  });
+                }
                 activeTurn.queuedInputCount += 1;
                 promotePendingRunCompletionToQueuedRun(activeTurn);
                 yield* rearmRlmQuiescenceLocked(context, activeTurn);
@@ -4515,6 +4524,15 @@ export function makePrimeAgentDaemonAdapter(
               ),
               Effect.exit,
             );
+            if (Exit.isSuccess(admission) && admission.value === "recovering") {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "followUp",
+                reason: "busy",
+                issue:
+                  "Prime Agent is recovering. Try the follow-up again after recovery completes.",
+              });
+            }
             const reconciled = yield* context.runtime.getInputQueue.pipe(
               Effect.mapError((error) =>
                 runtimeOperationError(input.threadId, "session/get-input-queue", error),

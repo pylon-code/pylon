@@ -144,6 +144,7 @@ interface FakeCaptures {
   }>;
   readonly followUps: Array<{ readonly text: string; readonly imageCount: number }>;
   followUpFailure: boolean;
+  inputRecoveryPending: boolean;
   readonly steers: Array<{
     readonly text: string;
     readonly images: ReadonlyArray<{
@@ -311,6 +312,7 @@ function makeCaptures(): FakeCaptures {
     prompts: [],
     followUps: [],
     followUpFailure: false,
+    inputRecoveryPending: false,
     steers: [],
     models: [],
     thinkingLevels: [],
@@ -802,29 +804,35 @@ function fakeRuntimeFactory(
             yield* Queue.offer(promptObserved, undefined);
           }),
         steer: (steer) =>
-          Effect.sync(() => {
-            captures.order.push("steer");
-            captures.steers.push({ text: steer.text, images: steer.images ?? [] });
-          }),
-        followUp: (followUp) =>
-          captures.followUpFailure
-            ? Effect.fail(
-                new PrimeAgentDaemonSessionRuntimeError({
-                  operation: "follow-up",
-                  reason: "request-failed",
-                  detail: "follow-up failed",
-                }),
-              )
+          captures.inputRecoveryPending
+            ? Effect.succeed("recovering" as const)
             : Effect.sync(() => {
-                captures.followUps.push({
-                  text: followUp.text,
-                  imageCount: followUp.images?.length ?? 0,
-                });
-                captures.inputQueue = {
-                  ...captures.inputQueue,
-                  followUpCount: captures.inputQueue.followUpCount + 1,
-                };
+                captures.order.push("steer");
+                captures.steers.push({ text: steer.text, images: steer.images ?? [] });
+                return "accepted" as const;
               }),
+        followUp: (followUp) =>
+          captures.inputRecoveryPending
+            ? Effect.succeed("recovering" as const)
+            : captures.followUpFailure
+              ? Effect.fail(
+                  new PrimeAgentDaemonSessionRuntimeError({
+                    operation: "follow-up",
+                    reason: "request-failed",
+                    detail: "follow-up failed",
+                  }),
+                )
+              : Effect.sync(() => {
+                  captures.followUps.push({
+                    text: followUp.text,
+                    imageCount: followUp.images?.length ?? 0,
+                  });
+                  captures.inputQueue = {
+                    ...captures.inputQueue,
+                    followUpCount: captures.inputQueue.followUpCount + 1,
+                  };
+                  return "accepted" as const;
+                }),
         getInputQueue: Effect.sync(() => captures.inputQueue),
         getInputQueueStatus: Effect.suspend(() =>
           captures.inputQueueStatusFailure
@@ -2324,6 +2332,34 @@ describe("PrimeAgentDaemonAdapter", () => {
         ).toMatchObject({ _tag: "ProviderAdapterRequestError" });
         expect(captures.disposeCount).toBe(1);
         expect(yield* adapter.listSessions()).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("returns busy without stopping when recovery blocks a concurrent follow-up", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* adapter.sendTurn({ threadId, input: "base run" }).pipe(Effect.forkChild);
+        yield* Queue.take(captures.promptObserved!);
+        captures.inputRecoveryPending = true;
+
+        const error = yield* adapter.followUp!({ threadId, input: "wait for safe recovery" }).pipe(
+          Effect.flip,
+        );
+
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          reason: "busy",
+        });
+        expect(captures.followUps).toEqual([]);
+        expect(captures.disposeCount).toBe(0);
+        expect(yield* adapter.listSessions()).toHaveLength(1);
       }),
     ).pipe(Effect.provide(testLayer)),
   );
