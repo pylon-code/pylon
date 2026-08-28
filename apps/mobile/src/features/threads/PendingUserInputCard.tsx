@@ -293,7 +293,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                             "font-t3-bold text-sm",
                             selected
                               ? "text-adaptive-sky-700-300"
-                              : "text-adaptive-neutral-600-300",
+                              : "text-adaptive-neutral-700-200",
                           )}
                         >
                           {option.label}

@@ -183,6 +183,17 @@ describe("mobile themes", () => {
       }
     }
 
+    // The default palette is the one most users see, and it is not reachable
+    // through getMobileThemeVariables: MOBILE_DEFAULT_THEME_ID is absent from
+    // BUILT_IN_THEMES, so that helper silently falls back to BUILT_IN_THEMES[0]
+    // and would check t3-chat twice. Read the generated defaults instead.
+    for (const appearance of ["light", "dark"] as const) {
+      const variables = readDefaultMobileThemeVariables(appearance);
+      expect(
+        contrastRatio(variables["--color-placeholder"], variables["--color-input"]),
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+
     for (const themeId of BUILT_IN_THEME_IDS) {
       for (const appearance of ["light", "dark"] as const) {
         const variables = getMobileThemeVariables(themeId, appearance);

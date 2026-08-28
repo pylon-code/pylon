@@ -41,6 +41,7 @@
       --color-adaptive-neutral-600-300: oklch(43.9% 0 0);
       --color-adaptive-neutral-600-400: oklch(43.9% 0 0);
       --color-adaptive-neutral-800-200: oklch(26.9% 0 0);
+      --color-adaptive-neutral-700-200: oklch(37.1% 0 0);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
@@ -108,6 +109,7 @@
       --color-adaptive-neutral-600-300: oklch(87% 0 0);
       --color-adaptive-neutral-600-400: oklch(70.8% 0 0);
       --color-adaptive-neutral-800-200: oklch(92.2% 0 0);
+      --color-adaptive-neutral-700-200: oklch(92.2% 0 0);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);
@@ -240,6 +242,7 @@
       --color-adaptive-neutral-600-300: oklch(43.9% 0 0);
       --color-adaptive-neutral-600-400: oklch(43.9% 0 0);
       --color-adaptive-neutral-800-200: oklch(26.9% 0 0);
+      --color-adaptive-neutral-700-200: oklch(37.1% 0 0);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
@@ -372,6 +375,7 @@
       --color-adaptive-neutral-600-300: oklch(87% 0 0);
       --color-adaptive-neutral-600-400: oklch(70.8% 0 0);
       --color-adaptive-neutral-800-200: oklch(92.2% 0 0);
+      --color-adaptive-neutral-700-200: oklch(92.2% 0 0);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);
@@ -504,6 +508,7 @@
       --color-adaptive-neutral-600-300: oklch(43.9% 0 0);
       --color-adaptive-neutral-600-400: oklch(43.9% 0 0);
       --color-adaptive-neutral-800-200: oklch(26.9% 0 0);
+      --color-adaptive-neutral-700-200: oklch(37.1% 0 0);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
@@ -636,6 +641,7 @@
       --color-adaptive-neutral-600-300: oklch(87% 0 0);
       --color-adaptive-neutral-600-400: oklch(70.8% 0 0);
       --color-adaptive-neutral-800-200: oklch(92.2% 0 0);
+      --color-adaptive-neutral-700-200: oklch(92.2% 0 0);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);
@@ -768,6 +774,7 @@
       --color-adaptive-neutral-600-300: oklch(43.9% 0 0);
       --color-adaptive-neutral-600-400: oklch(43.9% 0 0);
       --color-adaptive-neutral-800-200: oklch(26.9% 0 0);
+      --color-adaptive-neutral-700-200: oklch(37.1% 0 0);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
@@ -900,6 +907,7 @@
       --color-adaptive-neutral-600-300: oklch(87% 0 0);
       --color-adaptive-neutral-600-400: oklch(70.8% 0 0);
       --color-adaptive-neutral-800-200: oklch(92.2% 0 0);
+      --color-adaptive-neutral-700-200: oklch(92.2% 0 0);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);
@@ -1032,6 +1040,7 @@
       --color-adaptive-neutral-600-300: oklch(43.9% 0 0);
       --color-adaptive-neutral-600-400: oklch(43.9% 0 0);
       --color-adaptive-neutral-800-200: oklch(26.9% 0 0);
+      --color-adaptive-neutral-700-200: oklch(37.1% 0 0);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
@@ -1164,6 +1173,7 @@
       --color-adaptive-neutral-600-300: oklch(87% 0 0);
       --color-adaptive-neutral-600-400: oklch(70.8% 0 0);
       --color-adaptive-neutral-800-200: oklch(92.2% 0 0);
+      --color-adaptive-neutral-700-200: oklch(92.2% 0 0);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);
@@ -1296,6 +1306,7 @@
       --color-adaptive-neutral-600-300: oklch(43.9% 0 0);
       --color-adaptive-neutral-600-400: oklch(43.9% 0 0);
       --color-adaptive-neutral-800-200: oklch(26.9% 0 0);
+      --color-adaptive-neutral-700-200: oklch(37.1% 0 0);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
@@ -1428,6 +1439,7 @@
       --color-adaptive-neutral-600-300: oklch(87% 0 0);
       --color-adaptive-neutral-600-400: oklch(70.8% 0 0);
       --color-adaptive-neutral-800-200: oklch(92.2% 0 0);
+      --color-adaptive-neutral-700-200: oklch(92.2% 0 0);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 0);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);

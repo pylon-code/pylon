@@ -76,6 +76,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  useColorScheme,
   View,
   type ViewStyle,
 } from "react-native";
@@ -272,9 +273,18 @@ export function ComposerSurface(props: {
 }) {
   // Drop shadow lives on a wrapper: `overflow: "hidden"` on the surface itself
   // (needed to clip content to the pill shape) would clip the shadow on iOS.
+  //
+  // The colour is set here rather than through a `shadow-adaptive-*` class. A
+  // bare Tailwind shadow-colour utility emits only `--tw-shadow-color` and no
+  // `box-shadow`, and Uniwind's native store only maps a style when
+  // `result.boxShadow` is defined — so the class contributes nothing to the RN
+  // style and `shadowOpacity: 1` would fall back to RN's default opaque black.
+  const shadowColor = useUniwindTheme()["--color-primary-shadow"];
+  const isDarkMode = useColorScheme() === "dark";
   const shadowStyle: ViewStyle = {
     borderRadius: props.style.borderRadius,
-    shadowOpacity: 1,
+    shadowColor,
+    shadowOpacity: isDarkMode ? 0.35 : 0.12,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 6 },
     elevation: 10,
@@ -282,7 +292,6 @@ export function ComposerSurface(props: {
 
   return (
     <Animated.View
-      className="shadow-adaptive-black-a15-a35"
       layout={props.animateLayout === false ? undefined : COMPOSER_LAYOUT_TRANSITION}
       style={shadowStyle}
     >

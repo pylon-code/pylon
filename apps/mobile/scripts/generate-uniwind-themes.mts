@@ -120,6 +120,7 @@ const ADAPTIVE_COLORS = {
   "--color-adaptive-neutral-600-300": [color("neutral", 600), color("neutral", 300)],
   "--color-adaptive-neutral-600-400": [color("neutral", 600), color("neutral", 400)],
   "--color-adaptive-neutral-800-200": [color("neutral", 800), color("neutral", 200)],
+  "--color-adaptive-neutral-700-200": [color("neutral", 700), color("neutral", 200)],
   "--color-adaptive-neutral-950-50": [color("neutral", 950), color("neutral", 50)],
   "--color-adaptive-red-50-950-a80": [color("red", 50), color("red", 950, 0.8)],
   "--color-adaptive-red-200-800": [color("red", 200), color("red", 800)],
