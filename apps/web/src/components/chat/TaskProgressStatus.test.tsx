@@ -57,4 +57,26 @@ describe("TaskProgressStatus", () => {
     expect(completed.match(/<circle/g)).toHaveLength(25);
     expect(active).toContain('data-state="loading"');
   });
+
+  it("distinguishes user-owned waits from passive waits", () => {
+    const userWait = renderToStaticMarkup(
+      <TaskStatusIndicator status="waiting" waitingOn="user" />,
+    );
+    const delegateWait = renderToStaticMarkup(
+      <TaskStatusIndicator status="waiting" waitingOn="delegates" />,
+    );
+    const segments = renderToStaticMarkup(
+      <TaskProgressSegments
+        steps={[
+          { step: "Review", status: "waiting", waitingOn: "user" },
+          { step: "Delegate", status: "waiting", waitingOn: "delegates" },
+        ]}
+      />,
+    );
+
+    expect(userWait).toContain('data-state="warning"');
+    expect(delegateWait).toContain('data-state="waiting"');
+    expect(segments).toContain("bg-warning");
+    expect(segments).toContain("bg-muted-foreground/50");
+  });
 });

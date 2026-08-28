@@ -1,4 +1,4 @@
-import { ListTodoIcon, XIcon } from "lucide-react";
+import { ListTodoIcon, UsersIcon, XIcon } from "lucide-react";
 import { memo } from "react";
 
 import { formatDuration } from "../../session-logic";
@@ -17,13 +17,81 @@ export interface ComposerTasksProgress {
   readonly totalSteps: number;
 }
 
-export interface ComposerTaskStep {
-  readonly durationMs?: number;
-  readonly step: string;
-  readonly status: "pending" | "inProgress" | "completed";
+export type ComposerTaskStep =
+  | {
+      readonly durationMs?: number;
+      readonly step: string;
+      readonly status: "pending" | "inProgress" | "completed";
+    }
+  | {
+      readonly durationMs?: number;
+      readonly step: string;
+      readonly status: "waiting";
+      readonly waitingOn: "user" | "delegates" | "external";
+    };
+
+export interface ComposerDelegatedWorkSummary {
+  readonly workingAgents: number;
+  readonly waitingAgents: number;
+}
+
+export interface ComposerTasksDismissalSnapshot {
+  readonly turnId: string;
+  readonly waitingKey: string | null;
+}
+
+export function composerTasksWaitingKey(
+  steps: readonly ComposerTaskStep[] | null | undefined,
+): string | null {
+  const waitingStep = steps?.find((step) => step.status === "waiting");
+  return waitingStep ? `${waitingStep.step}:${waitingStep.waitingOn}` : null;
+}
+
+export function areComposerTasksDismissed(
+  snapshot: ComposerTasksDismissalSnapshot | null,
+  activeTurnId: string | null,
+  steps: readonly ComposerTaskStep[] | null | undefined,
+): boolean {
+  return (
+    activeTurnId !== null &&
+    snapshot?.turnId === activeTurnId &&
+    snapshot.waitingKey === composerTasksWaitingKey(steps)
+  );
+}
+
+function delegatedWorkLabel(
+  summary: ComposerDelegatedWorkSummary | null | undefined,
+): string | null {
+  if (!summary || summary.workingAgents + summary.waitingAgents === 0) return null;
+  const parts: string[] = [];
+  if (summary.workingAgents > 0) {
+    parts.push(
+      `${summary.workingAgents} ${summary.workingAgents === 1 ? "agent" : "agents"} working`,
+    );
+  }
+  if (summary.waitingAgents > 0) {
+    parts.push(
+      parts.length === 0
+        ? `${summary.waitingAgents} ${summary.waitingAgents === 1 ? "agent" : "agents"} waiting`
+        : `${summary.waitingAgents} waiting`,
+    );
+  }
+  return parts.join(", ");
+}
+
+function waitingOwnerLabel(waitingOn: "user" | "delegates" | "external"): string {
+  switch (waitingOn) {
+    case "user":
+      return "Needs your input";
+    case "delegates":
+      return "Waiting on agents";
+    case "external":
+      return "Waiting on external system";
+  }
 }
 
 export const ComposerTasksBadge = memo(function ComposerTasksBadge({
+  delegatedWork,
   expanded,
   hasTrailingShoulder = false,
   onDismiss,
@@ -32,6 +100,7 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
   progress,
   steps,
 }: {
+  readonly delegatedWork?: ComposerDelegatedWorkSummary | null;
   readonly expanded: boolean;
   readonly hasTrailingShoulder?: boolean;
   readonly onDismiss: () => void;
@@ -43,11 +112,25 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
   if (progress.totalSteps <= 0) return null;
 
   const allDone = progress.completedSteps >= progress.totalSteps;
-  const currentStep = steps.find((step) => step.status === "inProgress")?.step;
-  const nextStep = steps.find((step) => step.status === "pending")?.step;
-  const labelStep = currentStep ?? nextStep ?? progress.step;
-  const labelContext = currentStep ? "Current task" : allDone ? "Completed plan" : "Next task";
-  const label = `Tasks: ${progress.completedSteps} of ${progress.totalSteps} complete. ${labelContext}: ${labelStep}`;
+  const currentStep = steps.find((step) => step.status === "inProgress");
+  const waitingStep = steps.find((step) => step.status === "waiting");
+  const nextStep = steps.find((step) => step.status === "pending");
+  const labelStep = currentStep?.step ?? waitingStep?.step ?? nextStep?.step ?? progress.step;
+  const labelContext = currentStep
+    ? "Current task"
+    : waitingStep
+      ? "Waiting task"
+      : allDone
+        ? "Completed plan"
+        : "Next task";
+  const delegatesLabel = delegatedWorkLabel(delegatedWork);
+  const label = [
+    `Tasks: ${progress.completedSteps} of ${progress.totalSteps} complete. ${labelContext}: ${labelStep}.`,
+    waitingStep ? `${waitingOwnerLabel(waitingStep.waitingOn)}.` : null,
+    delegatesLabel ? `${delegatesLabel}.` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" ");
   if (placement === "inline") {
     return (
       <span className="inline-flex shrink-0 items-center gap-0.5" data-composer-tasks-badge="true">
@@ -71,6 +154,12 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
           >
             {progress.completedSteps}/{progress.totalSteps}
           </span>
+          {delegatesLabel ? (
+            <span className="inline-flex items-center gap-1 text-foreground/70">
+              <UsersIcon aria-hidden className="size-3 shrink-0" />
+              <span>{delegatesLabel}</span>
+            </span>
+          ) : null}
         </Button>
         <Button
           size="icon-micro"
@@ -119,6 +208,12 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
         >
           {progress.completedSteps}/{progress.totalSteps}
         </span>
+        {delegatesLabel ? (
+          <span className="inline-flex shrink-0 items-center gap-1 text-foreground/70">
+            <UsersIcon aria-hidden className="size-3 shrink-0" />
+            <span>{delegatesLabel}</span>
+          </span>
+        ) : null}
         <TaskProgressSegments fit className="w-20" steps={steps} />
       </button>
       <Button
@@ -136,16 +231,19 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
 });
 
 export const ComposerTasksDrawer = memo(function ComposerTasksDrawer({
+  delegatedWork,
   onDismiss,
   onCollapse,
   progress,
   steps,
 }: {
+  readonly delegatedWork?: ComposerDelegatedWorkSummary | null;
   readonly onDismiss: () => void;
   readonly onCollapse: () => void;
   readonly progress: ComposerTasksProgress;
   readonly steps: readonly ComposerTaskStep[];
 }) {
+  const delegatesLabel = delegatedWorkLabel(delegatedWork);
   return (
     <div className="chat-composer-top-drawer" data-chat-composer-tasks-drawer="true">
       <div className="flex items-center gap-1 px-3 py-1.5 sm:px-4">
@@ -161,6 +259,12 @@ export const ComposerTasksDrawer = memo(function ComposerTasksDrawer({
           <span className="tabular-nums">
             {progress.completedSteps}/{progress.totalSteps}
           </span>
+          {delegatesLabel ? (
+            <span className="inline-flex items-center gap-1 text-foreground/70">
+              <UsersIcon aria-hidden className="size-3 shrink-0" />
+              <span>{delegatesLabel}</span>
+            </span>
+          ) : null}
         </button>
         <Button
           size="icon-micro"
@@ -177,7 +281,11 @@ export const ComposerTasksDrawer = memo(function ComposerTasksDrawer({
         {keyedTaskProgressSteps(steps).map(({ key, step }) => (
           <div key={key} className="flex items-start gap-2 text-xs leading-5" role="listitem">
             <span className="flex h-5 shrink-0 items-center">
-              <TaskStatusIndicator aria-hidden status={step.status} />
+              <TaskStatusIndicator
+                aria-hidden
+                status={step.status}
+                waitingOn={step.status === "waiting" ? step.waitingOn : undefined}
+              />
             </span>
             <span className="sr-only">{TASK_PROGRESS_STATUS_LABEL[step.status]}: </span>
             <span
@@ -187,20 +295,29 @@ export const ComposerTasksDrawer = memo(function ComposerTasksDrawer({
                   ? "text-muted-foreground/55"
                   : step.status === "inProgress"
                     ? "text-foreground/90"
-                    : "text-muted-foreground/70",
+                    : step.status === "waiting" && step.waitingOn === "user"
+                      ? "text-warning"
+                      : "text-muted-foreground/70",
               )}
             >
               {step.step}
             </span>
             <span
-              className="ml-auto w-10 shrink-0 text-right text-[10px] text-muted-foreground/45 tabular-nums"
+              className={cn(
+                "ml-auto shrink-0 text-right text-[10px] tabular-nums",
+                step.status === "waiting" && step.waitingOn === "user"
+                  ? "text-warning"
+                  : "text-muted-foreground/45",
+              )}
               data-composer-task-duration="true"
             >
-              {step.durationMs !== undefined
-                ? formatDuration(step.durationMs)
-                : step.status === "inProgress"
-                  ? "now"
-                  : null}
+              {step.status === "waiting"
+                ? waitingOwnerLabel(step.waitingOn)
+                : step.durationMs !== undefined
+                  ? formatDuration(step.durationMs)
+                  : step.status === "inProgress"
+                    ? "now"
+                    : null}
             </span>
           </div>
         ))}

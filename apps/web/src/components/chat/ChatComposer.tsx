@@ -14,7 +14,6 @@ import type {
   ServerProvider,
   SessionCompactionUpdatedPayload,
   ThreadId,
-  TurnId,
 } from "@t3tools/contracts";
 import {
   getServerProviderSupportedRuntimeModes,
@@ -109,8 +108,12 @@ import {
 import { ComposerStashBadge } from "./ComposerStashBadge";
 import { ComposerStashMenu } from "./ComposerStashMenu";
 import {
+  areComposerTasksDismissed,
+  composerTasksWaitingKey,
   ComposerTasksBadge,
   ComposerTasksDrawer,
+  type ComposerDelegatedWorkSummary,
+  type ComposerTasksDismissalSnapshot,
   type ComposerTaskStep,
   type ComposerTasksProgress,
 } from "./ComposerTasksBadge";
@@ -718,6 +721,7 @@ export interface ChatComposerProps {
   activeProposedPlan: Thread["proposedPlans"][number] | null;
   activeTasksProgress: ComposerTasksProgress | null;
   activeTaskSteps: readonly ComposerTaskStep[] | null;
+  activeDelegatedWork: ComposerDelegatedWorkSummary | null;
 
   // Mode
   runtimeMode: RuntimeMode;
@@ -851,6 +855,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeProposedPlan,
     activeTasksProgress,
     activeTaskSteps,
+    activeDelegatedWork,
     runtimeMode,
     interactionMode,
     lockedProvider,
@@ -1705,7 +1710,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [composerMenuAnchor, setComposerMenuAnchor] = useState<HTMLDivElement | null>(null);
   const [isStashMenuOpen, setIsStashMenuOpen] = useState(false);
   const [isTasksDrawerOpen, setIsTasksDrawerOpen] = useState(false);
-  const [dismissedTasksTurnId, setDismissedTasksTurnId] = useState<TurnId | null>(null);
+  const [dismissedTasksSnapshot, setDismissedTasksSnapshot] =
+    useState<ComposerTasksDismissalSnapshot | null>(null);
   const [stashPulse, setStashPulse] = useState<{ key: number; active: boolean }>({
     key: 0,
     active: false,
@@ -3117,18 +3123,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setIsTasksDrawerOpen((open) => !open);
   }, []);
   const activeTasksTurnId = activeThread?.latestTurn?.turnId ?? null;
-  const tasksDismissedForActiveTurn =
-    activeTasksTurnId !== null && dismissedTasksTurnId === activeTasksTurnId;
+  const activeTasksWaitingKey = composerTasksWaitingKey(activeTaskSteps);
+  const tasksDismissedForActiveTurn = areComposerTasksDismissed(
+    dismissedTasksSnapshot,
+    activeTasksTurnId,
+    activeTaskSteps,
+  );
   const visibleTasksProgress = tasksDismissedForActiveTurn ? null : activeTasksProgress;
   const visibleTaskSteps = tasksDismissedForActiveTurn ? null : activeTaskSteps;
   const hasBlockingComposerTopDrawer =
     activePendingApproval !== null || pendingUserInputs.length > 0;
   const dismissTasks = useCallback(() => {
     if (activeTasksTurnId !== null) {
-      setDismissedTasksTurnId(activeTasksTurnId);
+      setDismissedTasksSnapshot({
+        turnId: activeTasksTurnId,
+        waitingKey: activeTasksWaitingKey,
+      });
     }
     setIsTasksDrawerOpen(false);
-  }, [activeTasksTurnId]);
+  }, [activeTasksTurnId, activeTasksWaitingKey]);
   const showInlineStashBadge =
     stashQueue.length > 0 &&
     !isComposerApprovalState &&
@@ -3154,6 +3167,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     (props.externalDrawerAttached || showComposerTopDrawer || isComposerCollapsedMobile);
   const inlineTasksBadge = showInlineTasksBadge ? (
     <ComposerTasksBadge
+      delegatedWork={activeDelegatedWork}
       expanded={false}
       onDismiss={dismissTasks}
       onToggle={toggleTasksDrawer}
@@ -3782,6 +3796,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         visibleTasksProgress &&
         visibleTaskSteps ? (
           <ComposerTasksDrawer
+            delegatedWork={activeDelegatedWork}
             onDismiss={dismissTasks}
             onCollapse={toggleTasksDrawer}
             progress={visibleTasksProgress}
@@ -3791,6 +3806,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         <div className="relative">
           {showShoulderTabs && visibleTasksProgress && visibleTaskSteps ? (
             <ComposerTasksBadge
+              delegatedWork={activeDelegatedWork}
               expanded={false}
               hasTrailingShoulder={stashQueue.length > 0}
               onDismiss={dismissTasks}

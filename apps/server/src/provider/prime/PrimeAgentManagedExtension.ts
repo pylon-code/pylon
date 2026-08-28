@@ -14,10 +14,12 @@ export const PRIME_AGENT_PLAN_TOOL_DEFINITION = {
   name: PRIME_AGENT_PLAN_TOOL_NAME,
   label: "Update Plan",
   description:
-    "Publish the full authoritative task plan shown in Pylon. Use for multi-step work and call again whenever status changes.",
+    "Publish the full authoritative task plan shown in Pylon. Use for multi-step work and meaningful status changes.",
   promptGuidelines: [
-    "For multi-step work, keep Pylon's visible plan current with pylon_update_plan. Send the complete plan on every update and mark exactly one active step inProgress when work is underway.",
-    "Delegated agents must not call pylon_update_plan; only the root Pylon session owns the visible plan.",
+    "For multi-step work, keep Pylon's visible plan current with pylon_update_plan. Send the complete plan on every update. Plan steps describe meaningful root outcomes, not tools, files, test shards, or individual delegated agents.",
+    "Use at most one active step: inProgress while work is underway, or waiting with waitingOn when progress depends on the user, delegated agents, or an external system.",
+    "Before yielding control or sending a final response, reconcile the plan: complete finished outcomes, mark a real unresolved dependency waiting, and never leave a step inProgress when no work continues.",
+    "Delegated agents must not call pylon_update_plan; only the root Pylon session owns the visible plan. Pylon derives delegated-work visibility from native task events, so do not add plan rows for individual agents.",
   ],
   parameters: {
     type: "object",
@@ -28,13 +30,41 @@ export const PRIME_AGENT_PLAN_TOOL_DEFINITION = {
         type: "array",
         maxItems: PRIME_AGENT_PLAN_MAX_STEPS,
         items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            step: { type: "string", minLength: 1, maxLength: PRIME_AGENT_PLAN_MAX_STEP_CHARS },
-            status: { type: "string", enum: ["pending", "inProgress", "completed"] },
-          },
-          required: ["step", "status"],
+          oneOf: [
+            {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                step: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: PRIME_AGENT_PLAN_MAX_STEP_CHARS,
+                },
+                status: {
+                  type: "string",
+                  enum: ["pending", "inProgress", "completed"],
+                },
+              },
+              required: ["step", "status"],
+            },
+            {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                step: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: PRIME_AGENT_PLAN_MAX_STEP_CHARS,
+                },
+                status: { type: "string", const: "waiting" },
+                waitingOn: {
+                  type: "string",
+                  enum: ["user", "delegates", "external"],
+                },
+              },
+              required: ["step", "status", "waitingOn"],
+            },
+          ],
         },
       },
     },
@@ -243,8 +273,23 @@ function normalizedPlan(params) {
     if (step.length === 0 || step.length > PLAN_MAX_STEP_CHARS) {
       throw new Error("Plan steps must contain bounded non-empty text.");
     }
+    if (item.status === "waiting") {
+      if (!["user", "delegates", "external"].includes(item.waitingOn)) {
+        throw new Error("Waiting plan steps require waitingOn: user, delegates, or external.");
+      }
+      return { step, status: item.status, waitingOn: item.waitingOn };
+    }
+    if (item.waitingOn !== undefined) {
+      throw new Error("waitingOn is valid only for waiting plan steps.");
+    }
     return { step, status: item.status };
   });
+  const activeSteps = plan.filter(
+    (item) => item.status === "inProgress" || item.status === "waiting",
+  );
+  if (activeSteps.length > 1) {
+    throw new Error("Plan must contain at most one in-progress or waiting step.");
+  }
   return {
     protocol: PLAN_PROTOCOL,
     ...(explanation ? { explanation } : {}),

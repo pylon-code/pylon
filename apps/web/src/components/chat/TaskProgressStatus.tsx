@@ -3,28 +3,48 @@ import type { ComponentProps } from "react";
 import { cn } from "~/lib/utils";
 import { DotMatrix, type DotMatrixState } from "../ui/dot-matrix";
 
-export type TaskProgressStatus = "pending" | "inProgress" | "completed";
+export type TaskProgressStatus = "pending" | "inProgress" | "waiting" | "completed";
+export type TaskProgressWaitingOn = "user" | "delegates" | "external";
 
 export interface TaskProgressStep {
   readonly step: string;
   readonly status: TaskProgressStatus;
+  readonly waitingOn?: TaskProgressWaitingOn;
 }
 
-const MATRIX_BY_STATUS: Record<TaskProgressStatus, DotMatrixState> = {
-  pending: "idle",
-  inProgress: "loading",
-  completed: "success",
-};
+function matrixState(
+  status: TaskProgressStatus,
+  waitingOn?: TaskProgressWaitingOn,
+): DotMatrixState {
+  switch (status) {
+    case "pending":
+      return "idle";
+    case "inProgress":
+      return "loading";
+    case "waiting":
+      return waitingOn === "user" ? "warning" : "waiting";
+    case "completed":
+      return "success";
+  }
+}
 
-const SEGMENT_TONE_BY_STATUS: Record<TaskProgressStatus, string> = {
-  pending: "bg-muted-foreground/25",
-  inProgress: "bg-status-active",
-  completed: "bg-success",
-};
+function segmentTone(status: TaskProgressStatus, waitingOn?: TaskProgressWaitingOn): string {
+  switch (status) {
+    case "pending":
+      return "bg-muted-foreground/25";
+    case "inProgress":
+      return "bg-status-active";
+    case "waiting":
+      return waitingOn === "user" ? "bg-warning" : "bg-muted-foreground/50";
+    case "completed":
+      return "bg-success";
+  }
+}
 
 export const TASK_PROGRESS_STATUS_LABEL: Record<TaskProgressStatus, string> = {
   pending: "Pending",
   inProgress: "In progress",
+  waiting: "Waiting",
   completed: "Completed",
 };
 
@@ -62,7 +82,7 @@ export function TaskProgressSegments({
           className={cn(
             "h-[3px] rounded-full",
             fit ? "min-w-0 flex-1" : "w-2.5 shrink-0",
-            SEGMENT_TONE_BY_STATUS[step.status],
+            segmentTone(step.status, step.waitingOn),
           )}
           data-task-status={step.status}
         />
@@ -74,14 +94,16 @@ export function TaskProgressSegments({
 export function TaskStatusIndicator({
   className,
   status,
+  waitingOn,
   ...props
 }: Omit<ComponentProps<typeof DotMatrix>, "state" | "sizeRole"> & {
   readonly status: TaskProgressStatus;
+  readonly waitingOn?: TaskProgressWaitingOn | undefined;
 }) {
   return (
     <DotMatrix
       sizeRole="compact"
-      state={MATRIX_BY_STATUS[status]}
+      state={matrixState(status, waitingOn)}
       className={className}
       {...props}
     />

@@ -1244,6 +1244,17 @@ function ProposedPlanTimelineRow({
   );
 }
 
+function waitingOwnerLabel(waitingOn: "user" | "delegates" | "external"): string {
+  switch (waitingOn) {
+    case "user":
+      return "Needs your input";
+    case "delegates":
+      return "Waiting on agents";
+    case "external":
+      return "Waiting on external system";
+  }
+}
+
 /**
  * Inline folded plan chip: one row per turn that produced plan/todo steps.
  * Collapsed by default — a solid segment bar plus the in-progress step label —
@@ -1259,12 +1270,21 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
   const { steps } = row.turnPlan.plan;
   const completedCount = steps.filter((step) => step.status === "completed").length;
   const allDone = steps.length > 0 && completedCount === steps.length;
-  // Label priority: the in-progress step, else the next pending step (plan
-  // just created), else the last step (plan finished, rendered muted).
-  const currentStep = steps.find((step) => step.status === "inProgress")?.step;
-  const nextStep = steps.find((step) => step.status === "pending")?.step;
-  const label = currentStep ?? nextStep ?? steps.at(-1)?.step ?? "Plan";
-  const labelContext = currentStep ? "Current task" : allDone ? "Completed plan" : "Next task";
+  const currentStep = steps.find((step) => step.status === "inProgress");
+  const waitingStep = steps.find((step) => step.status === "waiting");
+  const nextStep = steps.find((step) => step.status === "pending");
+  const waitingForUser = waitingStep?.waitingOn === "user";
+  // Label priority: active work, an explicit wait, the next pending outcome,
+  // or the last step once the plan is complete.
+  const label =
+    currentStep?.step ?? waitingStep?.step ?? nextStep?.step ?? steps.at(-1)?.step ?? "Plan";
+  const labelContext = currentStep
+    ? "Current task"
+    : waitingStep
+      ? "Waiting task"
+      : allDone
+        ? "Completed plan"
+        : "Next task";
   const Chevron = expanded ? ChevronDownIcon : ChevronRightIcon;
 
   return (
@@ -1281,11 +1301,25 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
         <span
           className={cn(
             "min-w-0 truncate",
-            allDone ? "text-muted-foreground/65" : "font-medium text-foreground/85",
+            allDone
+              ? "text-muted-foreground/65"
+              : waitingForUser
+                ? "font-medium text-warning"
+                : "font-medium text-foreground/85",
           )}
         >
           {label}
         </span>
+        {waitingStep ? (
+          <span
+            className={cn(
+              "shrink-0 text-[10px]",
+              waitingForUser ? "text-warning" : "text-muted-foreground/70",
+            )}
+          >
+            {waitingOwnerLabel(waitingStep.waitingOn)}
+          </span>
+        ) : null}
         {steps.length > 1 ? (
           <span className="shrink-0 text-muted-foreground/50 tabular-nums">
             {completedCount}/{steps.length}
@@ -1297,7 +1331,11 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
           {keyedTaskProgressSteps(steps).map(({ key, step }) => (
             <div key={key} className="flex items-start gap-2 text-[12px] leading-5" role="listitem">
               <span className="flex h-5 shrink-0 items-center">
-                <TaskStatusIndicator aria-hidden status={step.status} />
+                <TaskStatusIndicator
+                  aria-hidden
+                  status={step.status}
+                  waitingOn={step.status === "waiting" ? step.waitingOn : undefined}
+                />
               </span>
               <span className="sr-only">{TASK_PROGRESS_STATUS_LABEL[step.status]}: </span>
               <span
@@ -1307,11 +1345,23 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
                     ? "text-muted-foreground/55"
                     : step.status === "inProgress"
                       ? "text-foreground/90"
-                      : "text-muted-foreground/70",
+                      : step.status === "waiting" && step.waitingOn === "user"
+                        ? "text-warning"
+                        : "text-muted-foreground/70",
                 )}
               >
                 {step.step}
               </span>
+              {step.status === "waiting" ? (
+                <span
+                  className={cn(
+                    "ml-auto shrink-0 text-[10px]",
+                    step.waitingOn === "user" ? "text-warning" : "text-muted-foreground/70",
+                  )}
+                >
+                  {waitingOwnerLabel(step.waitingOn)}
+                </span>
+              ) : null}
             </div>
           ))}
         </div>

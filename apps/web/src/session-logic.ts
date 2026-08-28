@@ -1,7 +1,11 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
-import { isBackgroundTaskActivity } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  deriveAgentPanelModel,
+  foldSubagentActivities,
+  isBackgroundTaskActivity,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
@@ -145,15 +149,24 @@ export interface PendingUserInput {
   questions: ReadonlyArray<UserInputQuestion>;
 }
 
+export type ActivePlanStep =
+  | {
+      durationMs?: number;
+      step: string;
+      status: "pending" | "inProgress" | "completed";
+    }
+  | {
+      durationMs?: number;
+      step: string;
+      status: "waiting";
+      waitingOn: "user" | "delegates" | "external";
+    };
+
 export interface ActivePlanState {
   createdAt: string;
   turnId: TurnId | null;
   explanation?: string | null;
-  steps: Array<{
-    durationMs?: number;
-    step: string;
-    status: "pending" | "inProgress" | "completed";
-  }>;
+  steps: Array<ActivePlanStep>;
 }
 
 export interface LatestProposedPlanState {
@@ -598,16 +611,26 @@ function planStateFromActivity(activity: OrchestrationThreadActivity): ActivePla
   if (!Array.isArray(rawPlan)) {
     return null;
   }
-  const steps: Array<{
-    step: string;
-    status: "pending" | "inProgress" | "completed";
-  }> = [];
+  const steps: Array<ActivePlanStep> = [];
   for (const entry of rawPlan) {
     if (!entry || typeof entry !== "object") {
       continue;
     }
     const record = entry as Record<string, unknown>;
     if (typeof record.step !== "string") {
+      continue;
+    }
+    if (
+      record.status === "waiting" &&
+      (record.waitingOn === "user" ||
+        record.waitingOn === "delegates" ||
+        record.waitingOn === "external")
+    ) {
+      steps.push({
+        step: record.step,
+        status: "waiting",
+        waitingOn: record.waitingOn,
+      });
       continue;
     }
     const status =
@@ -770,6 +793,28 @@ export function deriveTurnPlans(
     ...entry,
     plan: addPlanStepDurations(entry.plan, planActivities),
   }));
+}
+
+export interface TurnDelegatedWorkSummary {
+  readonly workingAgents: number;
+  readonly waitingAgents: number;
+}
+
+export function deriveTurnDelegatedWork(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  turnId: TurnId,
+  sessionLive: boolean,
+): TurnDelegatedWorkSummary | null {
+  const agents = foldSubagentActivities(
+    activities.filter((activity) => activity.turnId === turnId),
+    { sessionLive },
+  );
+  const model = deriveAgentPanelModel({ agents });
+  if (model.liveCount === 0) return null;
+  return {
+    workingAgents: model.runningCount,
+    waitingAgents: model.waitingCount,
+  };
 }
 
 export function findLatestProposedPlan(
