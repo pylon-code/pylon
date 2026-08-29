@@ -2518,4 +2518,65 @@ describe("session activity performance", () => {
       toolLifecycleStatus: "completed",
     });
   });
+
+  it("updates 20,000 ordered tool activities far faster than deriving them from scratch", () => {
+    const makeActivities = (count: number, prefix: string) =>
+      Array.from({ length: count }, (_, index) =>
+        makeActivity({
+          id: `${prefix}-${index}`,
+          createdAt: new Date(1_700_000_000_000 + index).toISOString(),
+          kind: "tool.completed",
+          summary: "Ran command",
+          sequence: index,
+          payload: {
+            itemType: "command_execution",
+            title: "Ran command",
+            data: { toolCallId: `${prefix}-${index}`, item: { command: ["git", "status"] } },
+          },
+        }),
+      );
+
+    // Wall-clock on a shared CI runner swings several-fold between runs (the
+    // old 100 ms bound measured 100-108 ms on a 4-vCPU hosted runner for work
+    // that takes 4 ms on a quiet laptop), so compare the update against a
+    // from-scratch derivation measured in the same process instead. Best of
+    // three rounds shrugs off a GC pause or scheduling stall in any one
+    // sample. With the per-activity cache an update is roughly 6-8x cheaper;
+    // without it both calls walk the same code path and the ratio is ~1.
+    let fromScratchMs = Number.POSITIVE_INFINITY;
+    let updateMs = Number.POSITIVE_INFINITY;
+    for (let round = 0; round < 3; round++) {
+      const activities = makeActivities(20_000, `benchmark-tool-${round}`);
+      deriveWorkLogEntries(activities);
+      const updatedActivities = [
+        ...activities,
+        makeActivity({
+          id: `benchmark-tool-appended-${round}`,
+          createdAt: new Date(1_700_000_000_000 + activities.length).toISOString(),
+          kind: "tool.completed",
+          summary: "Ran command",
+          sequence: activities.length,
+          payload: {
+            itemType: "command_execution",
+            title: "Ran command",
+            data: {
+              toolCallId: `benchmark-tool-appended-${round}`,
+              item: { command: ["git", "diff"] },
+            },
+          },
+        }),
+      ];
+
+      const updateStartedAt = performance.now();
+      expect(deriveWorkLogEntries(updatedActivities)).toHaveLength(20_001);
+      updateMs = Math.min(updateMs, performance.now() - updateStartedAt);
+
+      const fresh = makeActivities(20_001, `benchmark-fresh-${round}`);
+      const fromScratchStartedAt = performance.now();
+      expect(deriveWorkLogEntries(fresh)).toHaveLength(20_001);
+      fromScratchMs = Math.min(fromScratchMs, performance.now() - fromScratchStartedAt);
+    }
+
+    expect(updateMs).toBeLessThan(fromScratchMs / 2);
+  });
 });

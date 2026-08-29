@@ -118,7 +118,17 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("Verify the result");
     expect(markup).toContain("lucide-list-todo");
     expect(markup).toContain('aria-label="Dismiss tasks for this turn"');
-    expect(markup).not.toContain("lucide-chevron");
+    expect(markup).toContain('data-chat-composer-collapsed-controls="true"');
+    expect(markup).toContain('aria-label="Collapse tasks. 1 of 3 complete."');
+    expect(markup).toContain('aria-label="Task list. 1 of 3 complete."');
+    expect(markup).toContain('data-composer-tasks-list="true"');
+    expect(markup).toContain('tabindex="0"');
+    expect(markup).toContain("max-h-[min(24rem,40dvh)]");
+    expect(markup).toContain("overflow-y-auto");
+    expect(markup).toContain("overscroll-contain");
+    expect(markup).toContain("focus-visible:ring-2");
+    expect(markup).toContain("focus-visible:ring-inset");
+    expect(markup).toContain("lucide-chevron-down");
     expect(markup).not.toContain('data-task-progress-segments="true"');
     expect(markup).toContain('data-state="success"');
     expect(markup).toContain('data-state="loading"');
@@ -241,5 +251,24 @@ describe("delegated work copy", () => {
     );
 
     expect(markup).toContain("1 agent waiting");
+  });
+
+  it("keeps every long-list task inside the bounded scroll region", () => {
+    const longSteps = Array.from({ length: 20 }, (_, index) => ({
+      step: `Task ${index + 1}`,
+      status: index === 0 ? ("inProgress" as const) : ("pending" as const),
+    }));
+    const markup = renderToStaticMarkup(
+      <ComposerTasksDrawer
+        onCollapse={() => undefined}
+        onDismiss={() => undefined}
+        progress={{ step: "Task 1", completedSteps: 0, totalSteps: longSteps.length }}
+        steps={longSteps}
+      />,
+    );
+
+    const listStart = markup.indexOf('data-composer-tasks-list="true"');
+    expect(listStart).toBeGreaterThan(markup.indexOf('aria-label="Collapse tasks.'));
+    expect(markup.slice(listStart)).toContain("Task 20");
   });
 });
