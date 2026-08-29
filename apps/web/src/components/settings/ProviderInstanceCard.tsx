@@ -760,7 +760,7 @@ export function ProviderInstanceCard({
       <ArrowUpCircleIcon
         aria-hidden
         className={cn(
-          "size-3.5 [animation:bounce_2.4s_ease-in-out_infinite] motion-reduce:animate-none",
+          "provider-update-marker size-3.5 motion-reduce:animate-none",
           versionAdvisory.emphasis === "strong" ? "text-warning" : "text-update-foreground",
         )}
       />
