@@ -12,6 +12,7 @@ This is a living glossary for Pylon. It explains what common terms mean in this 
 - [Orchestration](#orchestration)
 - [Provider runtime](#provider-runtime)
 - [Checkpointing](#checkpointing)
+- [Appearance](#appearance)
 
 ## Concepts
 
@@ -159,6 +160,21 @@ The patch difference between two checkpoints. Query logic lives in [CheckpointDi
 
 The file patch and changed-file summary for one turn. It is usually computed in [CheckpointDiffQuery.ts][20], represented in [the contracts][1], and recorded into thread state by [projector.ts][4].
 
+### Appearance
+
+#### Environment theme
+
+A theme an environment's machine publishes for clients to follow, one file per theme under `themes/` in that environment's state directory; the filename is the theme id. [environmentTheme.ts][27] watches the directory and streams the set over `subscribeServerConfig`; clients render each as a library card, generating a full palette when the file carries seed colors and using the palette directly when it is a standard exported theme file. A desktop that retints its apps when the system theme changes rewrites its file, so T3 Code follows along without a restart. See [environment-theme.md][28].
+
+#### Default theme
+
+The environment's theme, held in its `settings.json` as `defaultTheme` (with `defaultThemeSetAt`
+as the set-generation) and set with `t3 theme set <id>`. Web and desktop clients apply each set
+once — live when connected, on the next connect otherwise — so setting it switches them, while a
+theme a user picks in Settings afterwards sticks until the next set; mobile keeps its own
+appearance settings. Naming a published [environment theme](#environment-theme) is how a desktop
+ships T3 Code already matching it.
+
 ## Practical Shortcuts
 
 - If you see `requested`, think "intent recorded".
@@ -200,3 +216,5 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [24]: ./overview.md
 [25]: ../../apps/server/src/orchestration/ThreadPlanProgress.ts
 [26]: ../../apps/server/src/orchestration/threadDetailCursor.ts
+[27]: ../../apps/server/src/environmentTheme.ts
+[28]: ../user/environment-theme.md
