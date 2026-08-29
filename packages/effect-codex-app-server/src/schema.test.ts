@@ -114,11 +114,22 @@ it("accepts Codex 0.150 account plan values", () => {
   }
 });
 
-it("rejects account plans Codex has not published yet", () => {
-  // Documents today's behaviour rather than endorsing it. `planType` is a closed
-  // literal on a required field and `account/read` is a bare `yield*`, so an
-  // unrecognized plan fails the whole Codex probe instead of degrading one
-  // label. Widening the decode is a separate decision; this test will fail
-  // loudly when that decision is made.
-  assert.equal(isAccountPlanType("plan_from_the_future"), false);
+it("accepts account plans Codex has not published yet", () => {
+  // The decision the previous version of this test anticipated. `planType` is an
+  // open string now, so a plan Codex names before Pylon knows it decodes
+  // normally and the whole account response survives; only the display label
+  // falls back. A closed literal here failed the entire provider probe.
+  assert.equal(isAccountPlanType("plan_from_the_future"), true);
+
+  assert.equal(
+    isGetAccountResponse({
+      account: {
+        email: "user@example.com",
+        planType: "plan_from_the_future",
+        type: "chatgpt",
+      },
+      requiresOpenaiAuth: true,
+    }),
+    true,
+  );
 });

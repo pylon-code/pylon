@@ -168,27 +168,15 @@ const Codex0150DefinitionSchemas: Record<string, Schema.Json> = {
     type: "string",
     enum: ["inProgress", "completed", "failed", "interrupted"],
   },
+  // Deliberately open, unlike the other overrides. `planType` is a required
+  // field and `account/read` is a bare `yield*`, so a closed literal meant one
+  // unrecognised plan failed the whole Codex probe — status error, zero models,
+  // zero skills — rather than costing a single label. Codex auto-updates ahead
+  // of Pylon, so that recurred on every release that named a plan. Upstream
+  // models the same tolerance in Rust with `#[serde(other)] Unknown`.
+  // `codexAccountAuthLabel` maps the known values and falls back for the rest.
   PlanType: {
     type: "string",
-    enum: [
-      "free",
-      "go",
-      "plus",
-      "pro",
-      "prolite",
-      "team",
-      "self_serve_business_prolite",
-      "self_serve_business_usage_based",
-      "business",
-      "ent26",
-      "enterprise_cbp_automation",
-      "enterprise_cbp_usage_based",
-      "enterprise",
-      "edu",
-      "edu_plus",
-      "edu_pro",
-      "unknown",
-    ],
   },
   SubAgentActivityKind: {
     type: "string",

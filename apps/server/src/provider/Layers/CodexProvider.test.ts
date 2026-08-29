@@ -152,9 +152,10 @@ it("ignores custom models that shadow a preferred slug", () => {
 });
 
 it("labels every account plan Codex can report", () => {
-  // The switch ends in `satisfies never`, so this table and the generated
-  // `PlanType` literals have to stay in step: adding a literal without a case
-  // fails typecheck, and reordering a case into the wrong group fails here.
+  // `planType` is an open string, so exhaustiveness no longer pins these
+  // mappings — this table is what does. Reordering a plan into the wrong group,
+  // or dropping a fall-through, changes user-visible text in Settings and fails
+  // here.
   const labels: ReadonlyArray<readonly [string, string]> = [
     ["free", "ChatGPT Free Subscription"],
     ["go", "ChatGPT Go Subscription"],
@@ -185,6 +186,19 @@ it("labels every account plan Codex can report", () => {
       expected,
     );
   }
+});
+
+it("falls back to a generic label for a plan Codex has not published yet", () => {
+  // The point of opening `planType`: an unknown plan costs the label, not the
+  // provider. Everything else on the account still decodes.
+  assert.strictEqual(
+    codexAccountAuthLabel({
+      email: "user@example.com",
+      planType: "plan_from_the_future" as CodexSchema.V2GetAccountResponse__PlanType,
+      type: "chatgpt",
+    }),
+    "ChatGPT Subscription",
+  );
 });
 
 it("labels non-ChatGPT account types", () => {
