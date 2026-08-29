@@ -289,6 +289,38 @@ Desktop renders the same web bundle, so it has them too. The waitlist enrollment
 private beta was removed when Connect went GA; sign-up is open unless a Clerk restriction below is
 enabled.
 
+## Desktop Clerk UI Version
+
+Desktop does not bundle Clerk's UI. `@clerk/electron` fetches it from Clerk's CDN at runtime, and
+`@clerk/shared` builds that URL in `clerkUIScriptUrl` as
+`https://<frontend-api-host>/npm/@clerk/ui@<version>/dist/ui.browser.js`. The version comes from
+`versionSelector(__internal_clerkUIVersion, "1.30.8")`, where the second argument is a fallback
+hardcoded inside `@clerk/shared`, not a value Pylon controls.
+
+Pylon passes no `__internal_clerkUIVersion`, so `versionSelector` returns the major and desktop
+requests **`@clerk/ui@1`** — a floating range resolved by the CDN on every launch.
+
+**This is a deliberate decision, and its cost is real.** `@clerk/ui` is not a dependency of any
+Pylon package, so it has no lockfile entry, and a new 1.x reaches every desktop user without a
+commit, a release, or a CI signal. There is nothing to bisect when it breaks. This is not
+theoretical: the pinned canary was dropped on 2026-08-27, when `@1` meant 1.30.8; Clerk published
+1.31.0 the following evening, and desktop moved to it with no change on our side.
+
+We accept that in exchange for picking up Clerk's fixes — including the OAuth transfer fixes that
+motivated dropping the pin — without a manual bump each time.
+
+If desktop sign-in breaks and the renderer console shows a Clerk UI load or render failure,
+suspect a Clerk release before suspecting a Pylon change:
+
+1. Resolve what the range points at now: `npm view '@clerk/ui@1' version`.
+2. Compare against the last version known to work.
+3. To pin as a stopgap, pass `__internal_clerkUIVersion` to `ElectronClerkProvider` in
+   `apps/web/src/main.tsx`. A pin lived there until 2026-08-27 (`pingdotgg/t3code#8248`,
+   Pylon `#108`), so the shape is in git history.
+
+An automatic passkey prompt on opening the sign-in surface is the specific regression the original
+upstream pin existed to prevent. Treat its reappearance as a Clerk UI regression, not a Pylon one.
+
 ## Restricting Sign-ups: Known-User Allowlist
 
 For a closed deployment where all permitted users are known in advance, restrict sign-up to
