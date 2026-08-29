@@ -238,6 +238,43 @@ const correlateRuntimeEventWithInstance = (
   return { ...event, providerInstanceId: source.instanceId };
 };
 
+/**
+ * Appends an on-disk path line for every attachment so the model's tools can
+ * dereference the actual file.
+ *
+ * Every attachment also reaches the adapter, and each adapter decides what its
+ * provider ingests natively: OpenCode sends generic files as file parts, the
+ * others send images only and rely on these lines for everything else. That
+ * makes the path line the sole channel a non-image attachment has on those
+ * providers, which is why follow-ups need it exactly as much as turns do.
+ *
+ * Unresolvable ids are skipped here and surface as adapter errors when the file
+ * is read.
+ */
+const appendAttachmentPathLines = (
+  attachmentsDir: string,
+  input: string | undefined,
+  attachments: ReadonlyArray<{
+    readonly id: string;
+    readonly type: string;
+    readonly name: string;
+  }>,
+): string | undefined => {
+  const lines = attachments.flatMap((attachment) => {
+    const attachmentPath = resolveAttachmentPath({
+      attachmentsDir,
+      attachment: attachment as Parameters<typeof resolveAttachmentPath>[0]["attachment"],
+    });
+    return attachmentPath === null
+      ? []
+      : [`[Attached ${attachment.type} "${attachment.name}" is saved at: ${attachmentPath}]`];
+  });
+  if (lines.length === 0) return input;
+  return [input, lines.join("\n")]
+    .filter((part): part is string => typeof part === "string" && part.length > 0)
+    .join("\n\n");
+};
+
 const makeProviderService = Effect.fn("makeProviderService")(function* (
   options?: ProviderServiceLiveOptions,
 ) {
@@ -773,27 +810,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
 
-    // Every attachment gets an on-disk path in the prompt so the model's tools
-    // can dereference the actual file. All attachments then go to the adapter,
-    // and each adapter decides what its provider ingests natively: OpenCode
-    // sends generic files as file parts, the others send images only and rely
-    // on the path line for everything else. Unresolvable ids are skipped here
-    // and surface as adapter errors when the file is read.
-    const attachmentPathLines = attachments.flatMap((attachment) => {
-      const attachmentPath = resolveAttachmentPath({
-        attachmentsDir: serverConfig.attachmentsDir,
-        attachment,
-      });
-      return attachmentPath === null
-        ? []
-        : [`[Attached ${attachment.type} "${attachment.name}" is saved at: ${attachmentPath}]`];
-    });
-    const inputTextWithAttachmentPaths =
-      attachmentPathLines.length === 0
-        ? parsed.input
-        : [parsed.input, attachmentPathLines.join("\n")]
-            .filter((part): part is string => typeof part === "string" && part.length > 0)
-            .join("\n\n");
+    const inputTextWithAttachmentPaths = appendAttachmentPathLines(
+      serverConfig.attachmentsDir,
+      parsed.input,
+      attachments,
+    );
 
     const input = {
       ...parsed,
@@ -1337,7 +1358,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       "provider.thread_id": input.threadId,
       "provider.attachment_count": input.attachments.length,
     });
-    return yield* followUpSession(input);
+    // Same path lines `sendTurn` appends. Without them a generic file attached
+    // to a follow-up is lost outright: every adapter except OpenCode skips
+    // non-images, so the path line is the only thing that tells the agent the
+    // file exists.
+    const followUpInputText = appendAttachmentPathLines(
+      serverConfig.attachmentsDir,
+      input.input,
+      input.attachments,
+    );
+    return yield* followUpSession({
+      ...input,
+      ...(followUpInputText !== undefined ? { input: followUpInputText } : {}),
+    });
   });
 
   const getSessionInputQueue: ProviderServiceMethod<"getSessionInputQueue"> = Effect.fn(

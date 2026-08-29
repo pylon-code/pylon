@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import type {
   ProviderApprovalDecision,
   ProviderRuntimeEvent,
+  ProviderFollowUpInput,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderTurnStartResult,
@@ -368,6 +369,19 @@ function makeFakeCodexAdapter(
       }),
   );
 
+  const followUp = vi.fn(
+    (
+      input: ProviderFollowUpInput,
+    ): Effect.Effect<SessionInputQueueUpdatedPayload, ProviderAdapterError> => {
+      if (!sessions.has(input.threadId)) {
+        return Effect.fail(
+          new ProviderAdapterSessionNotFoundError({ provider, threadId: input.threadId }),
+        );
+      }
+      return Effect.succeed(inputQueue);
+    },
+  );
+
   const adapter: ProviderAdapterShape<ProviderAdapterError> = {
     provider,
     capabilities: {
@@ -375,6 +389,7 @@ function makeFakeCodexAdapter(
     },
     startSession,
     sendTurn,
+    followUp,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -430,6 +445,7 @@ function makeFakeCodexAdapter(
     updateSession,
     startSession,
     sendTurn,
+    followUp,
     respondToInteraction,
     reloadSessionResources,
     askSessionSideQuestion,
@@ -1587,6 +1603,20 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const fileOnlyInput = routing.codex.sendTurn.mock.calls[0]?.[0] as ProviderSendTurnInput;
       assert.include(fileOnlyInput.input ?? "", '[Attached file "report.pdf" is saved at: ');
       assert.deepEqual(fileOnlyInput.attachments, [fileAttachment]);
+
+      // Follow-ups need the same path lines. Every adapter except OpenCode skips
+      // non-image attachments, so without this a file attached to a queued
+      // follow-up reaches the agent as nothing at all.
+      yield* provider.followUp({
+        threadId: session.threadId,
+        input: "and this one",
+        attachments: [fileAttachment],
+      });
+      const followUpInput = routing.codex.followUp.mock.calls[0]?.[0] as ProviderFollowUpInput;
+      assert.include(followUpInput.input ?? "", "and this one");
+      assert.include(followUpInput.input ?? "", '[Attached file "report.pdf" is saved at: ');
+      assert.include(followUpInput.input ?? "", `${fileAttachment.id}.pdf]`);
+      assert.deepEqual(followUpInput.attachments, [fileAttachment]);
 
       yield* provider.stopSession({ threadId: session.threadId });
     }),
