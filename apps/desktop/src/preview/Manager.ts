@@ -469,6 +469,11 @@ const POPUP_WINDOW_OPTIONS = {
     contextIsolation: true,
     nodeIntegration: false,
     sandbox: true,
+    // `preload` is a webPreference too, so an unset one is inherited from the
+    // guest. Preview guests load Pylon's pick/annotation preload, which imports
+    // `ipcRenderer` and was written for the trusted preview surface — it has no
+    // business running on a third-party sign-in page.
+    preload: "",
   },
 } satisfies Electron.BrowserWindowConstructorOptions;
 
