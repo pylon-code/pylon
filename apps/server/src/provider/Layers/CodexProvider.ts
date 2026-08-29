@@ -127,8 +127,10 @@ export function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse[
     case "unknown":
       return "ChatGPT Subscription";
     default:
-      account.planType satisfies never;
-      return undefined;
+      // `planType` is deliberately an open string: a plan Codex names before
+      // Pylon knows it must cost this label, not the whole provider probe. The
+      // known values above are pinned by a test rather than by exhaustiveness.
+      return "ChatGPT Subscription";
   }
 }
 
