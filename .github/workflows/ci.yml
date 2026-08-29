@@ -91,6 +91,13 @@ jobs:
       - name: Test
         run: vp run --fail-if-no-match --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' test
 
+      # The root package is filtered out above because its own `test` script is
+      # `vp run -r test`, which would recurse. That left its own suites -
+      # scripts/ and the oxlint plugin - running nowhere, which is how a failing
+      # build-desktop-artifact test went unnoticed. Run them directly instead.
+      - name: Test repository scripts and lint rules
+        run: vp test run scripts oxlint-plugin-t3code
+
   # apps/server sets `fileParallelism: false`, so its 278 files run strictly
   # one at a time. Sharding spreads them over separate runners instead of
   # separate workers, so no two server test files ever share a machine and the

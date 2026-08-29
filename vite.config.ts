@@ -25,6 +25,9 @@ export default defineConfig({
       "**/dist/**",
       "**/dist-electron/**",
       "**/.{idea,git,cache,output,temp}/**",
+      // Plain node scripts, not vitest suites. Vitest otherwise collects them
+      // and fails the run with "No test suite found in file".
+      ".github/scripts/**/*.cjs",
     ],
     hookTimeout: 60_000,
     testTimeout: 60_000,
