@@ -17,6 +17,12 @@ With a server URL, Pylon connects to that external server and uses only the pass
 provider settings. It does not send a local `OPENCODE_SERVER_PASSWORD` to an external server.
 OpenCode uses this password for HTTP Basic authentication.
 
+## Task progress
+
+When OpenCode keeps a todo list for a piece of work, its steps appear in the composer's Tasks tab,
+in the plan summary on the turn, and on the sidebar's working line, and they update as the agent
+moves through them. Steps OpenCode cancels drop off the list rather than showing as finished.
+
 ## Refresh the model list
 
 Pylon loads the model list when an enabled OpenCode provider starts and keeps the list in its

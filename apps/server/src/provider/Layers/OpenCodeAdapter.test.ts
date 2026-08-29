@@ -5021,4 +5021,254 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.deepEqual(closeCallsDuringRun, []);
     }),
   );
+
+  it.effect("maps OpenCode todo updates onto a turn plan", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-todo-plan");
+      const todoEvent = promiseWithResolvers<unknown>();
+      runtimeMock.state.autoPromptEcho = false;
+      runtimeMock.state.subscribedEvents = [todoEvent.promise];
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.plan.updated"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Plan the work",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+
+      todoEvent.resolve({
+        id: "evt-todo-plan",
+        type: "todo.updated",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          todos: [
+            { id: "t1", content: "Read the adapter", status: "completed", priority: "high" },
+            { id: "t2", content: "Emit the plan", status: "in_progress", priority: "medium" },
+            { id: "t3", content: "Write tests", status: "pending", priority: "low" },
+          ],
+        },
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      const planEvent = events[0];
+      NodeAssert.equal(planEvent?.type, "turn.plan.updated");
+      NodeAssert.equal(planEvent?.turnId, turn.turnId);
+      if (planEvent?.type === "turn.plan.updated") {
+        NodeAssert.deepEqual(planEvent.payload.plan, [
+          { step: "Read the adapter", status: "completed" },
+          { step: "Emit the plan", status: "inProgress" },
+          { step: "Write tests", status: "pending" },
+        ]);
+      }
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("drops cancelled todos and names an empty step", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-todo-cancelled");
+      const todoEvent = promiseWithResolvers<unknown>();
+      runtimeMock.state.autoPromptEcho = false;
+      runtimeMock.state.subscribedEvents = [todoEvent.promise];
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.plan.updated"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan with a cancelled item",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+
+      todoEvent.resolve({
+        id: "evt-todo-cancelled",
+        type: "todo.updated",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          todos: [
+            { id: "t1", content: "   ", status: "pending", priority: "high" },
+            { id: "t2", content: "Abandoned branch", status: "cancelled", priority: "low" },
+            { id: "t3", content: "Still going", status: "unrecognized-status", priority: "low" },
+          ],
+        },
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      const planEvent = events[0];
+      if (planEvent?.type === "turn.plan.updated") {
+        // Cancelled work is dropped rather than reported completed, an empty
+        // description gets a placeholder, and an unknown status stays pending.
+        NodeAssert.deepEqual(planEvent.payload.plan, [
+          { step: "Task", status: "pending" },
+          { step: "Still going", status: "pending" },
+        ]);
+      }
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("emits one plan update when OpenCode repeats a todo payload", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-todo-dedupe");
+      const firstTodo = promiseWithResolvers<unknown>();
+      const repeatTodo = promiseWithResolvers<unknown>();
+      const changedTodo = promiseWithResolvers<unknown>();
+      runtimeMock.state.autoPromptEcho = false;
+      runtimeMock.state.subscribedEvents = [
+        firstTodo.promise,
+        repeatTodo.promise,
+        changedTodo.promise,
+      ];
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.plan.updated"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Repeat the plan",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+
+      const todos = [{ id: "t1", content: "Only step", status: "pending", priority: "high" }];
+      firstTodo.resolve({
+        id: "evt-todo-first",
+        type: "todo.updated",
+        properties: { sessionID: "http://127.0.0.1:9999/session", todos },
+      });
+      yield* Effect.yieldNow;
+      repeatTodo.resolve({
+        id: "evt-todo-repeat",
+        type: "todo.updated",
+        properties: { sessionID: "http://127.0.0.1:9999/session", todos },
+      });
+      yield* Effect.yieldNow;
+      changedTodo.resolve({
+        id: "evt-todo-changed",
+        type: "todo.updated",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          todos: [{ id: "t1", content: "Only step", status: "completed", priority: "high" }],
+        },
+      });
+
+      // Take(2) only completes if the identical repeat was suppressed and the
+      // genuine status change was not.
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      NodeAssert.equal(events.length, 2);
+      const second = events[1];
+      if (second?.type === "turn.plan.updated") {
+        NodeAssert.deepEqual(second.payload.plan, [{ step: "Only step", status: "completed" }]);
+      }
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("classifies todowrite as a tool call rather than a file change", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-todo-classification");
+      const assistantMessage = promiseWithResolvers<unknown>();
+      const toolPart = promiseWithResolvers<unknown>();
+      runtimeMock.state.autoPromptEcho = false;
+      runtimeMock.state.subscribedEvents = [assistantMessage.promise, toolPart.promise];
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "item.completed"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Track the work",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+
+      assistantMessage.resolve({
+        id: "evt-assistant-todo-tool",
+        type: "message.updated",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          info: { id: "msg-todo-tool", role: "assistant" },
+        },
+      });
+      yield* Effect.yieldNow;
+      toolPart.resolve({
+        id: "evt-todo-tool-part",
+        type: "message.part.updated",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          part: {
+            id: "part-todo-tool",
+            sessionID: "http://127.0.0.1:9999/session",
+            messageID: "msg-todo-tool",
+            callID: "call-todo-tool",
+            type: "tool",
+            tool: "todowrite",
+            state: { status: "completed", title: "todowrite", time: { start: 1, end: 2 } },
+          },
+          time: 1,
+        },
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      const item = events[0];
+      if (item?.type === "item.completed") {
+        // "todowrite" contains "write" but edits nothing; filing it as
+        // file_change inflates the work log's edit count.
+        NodeAssert.equal(item.payload.itemType, "dynamic_tool_call");
+      }
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
 });
