@@ -57,6 +57,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
   }) => Effect.Effect<void>;
   readonly refreshInterval?: Duration.Input;
+  readonly refreshOnInterval?: boolean;
+  readonly checkProviderOnSettingsChange?: (previous: Settings, next: Settings) => boolean;
 }): Effect.fn.Return<
   ManagedServerProviderShape,
   ServerSettingsError,
@@ -147,6 +149,21 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     if (!forceRefresh && !input.haveSettingsChanged(previousSettings, nextSettings)) {
       yield* Ref.set(settingsRef, nextSettings);
       return yield* Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot));
+    }
+
+    if (
+      !forceRefresh &&
+      input.checkProviderOnSettingsChange?.(previousSettings, nextSettings) === false
+    ) {
+      const state = yield* Ref.get(snapshotStateRef);
+      const nextGeneration = state.enrichmentGeneration + 1;
+      yield* Ref.set(snapshotStateRef, {
+        ...state,
+        enrichmentGeneration: nextGeneration,
+      });
+      yield* Ref.set(settingsRef, nextSettings);
+      yield* restartSnapshotEnrichment(nextSettings, state.snapshot, nextGeneration);
+      return state.snapshot;
     }
 
     const stateBeforeCheck = yield* Ref.get(snapshotStateRef);
@@ -267,7 +284,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           Queue.take(refreshIntervalChanges).pipe(Effect.as(false)),
         ).pipe(
           Effect.flatMap((intervalElapsed) =>
-            intervalElapsed && Duration.toMillis(Duration.fromInputUnsafe(refreshInterval)) > 0
+            input.refreshOnInterval !== false &&
+            intervalElapsed &&
+            Duration.toMillis(Duration.fromInputUnsafe(refreshInterval)) > 0
               ? hasProviderStatusDemand.pipe(
                   Effect.flatMap((shouldRefresh) =>
                     shouldRefresh ? refreshSnapshot().pipe(Effect.asVoid) : Effect.void,
@@ -297,6 +316,10 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     Stream.filter((demand) => demand),
     Stream.runForEach(() =>
       Effect.gen(function* () {
+        // A driver that opts out of interval refresh (OpenCode, whose probe spawns a
+        // real server process) must also opt out here. This block is Pylon-only, so
+        // upstream's `refreshOnInterval` gate on the periodic loop does not cover it.
+        if (input.refreshOnInterval === false) return;
         const refreshInterval = yield* getRefreshInterval;
         const intervalMs = Duration.toMillis(Duration.fromInputUnsafe(refreshInterval));
         if (intervalMs <= 0) return;
