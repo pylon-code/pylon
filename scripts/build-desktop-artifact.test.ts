@@ -1065,9 +1065,15 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           targetArch: "arm64",
         });
 
-        assert.isFalse(
-          commands.some((command) => command.options.env?.ELECTRON_RUN_AS_NODE === "1"),
-        );
+        // Assert the probe did not spawn, not that a variable is absent.
+        // `verifyWindowsPrimaryFffNativeLoad` spreads `process.env` into the
+        // child, so checking for ELECTRON_RUN_AS_NODE made this test fail
+        // whenever the runner itself inherited it — which is the case under any
+        // Electron-hosted shell. The probe is the only thing that executes the
+        // packaged application, so its absence is the real signal.
+        const path = yield* Path.Path;
+        const packagedExecutable = path.join(fixture.packagedAppDir, fixture.appExecutableName);
+        assert.isFalse(commands.some((command) => command.command === packagedExecutable));
         assert.isTrue(
           commands.some(
             (command) =>
