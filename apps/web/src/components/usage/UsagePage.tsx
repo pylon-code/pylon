@@ -572,7 +572,7 @@ function UsageDeviceStrip({
         return (
           <span
             key={environment.environmentId}
-            className="animate-status-pulse text-muted-foreground"
+            className="animate-status-pulse text-muted-foreground motion-reduce:animate-none"
           >
             {environment.label}…
           </span>

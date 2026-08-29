@@ -22,6 +22,7 @@ import {
   resolveProjectStatusIndicator,
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
+  resolveSidebarThreadActivityVisual,
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
@@ -762,6 +763,24 @@ describe("resolveSidebarThreadStatus", () => {
     ).toBe("monitoring");
   });
 
+  it("keeps root work, delegation, and monitoring visually distinct", () => {
+    expect(resolveSidebarThreadActivityVisual("working", true)).toEqual({
+      label: "Working",
+      icon: "working",
+      className: "text-sky-600 dark:text-sky-400",
+    });
+    expect(resolveSidebarThreadActivityVisual("delegating", false)).toEqual({
+      label: "Delegating",
+      icon: "delegating",
+      className: "text-sky-600 dark:text-sky-400 opacity-75",
+    });
+    expect(resolveSidebarThreadActivityVisual("monitoring", false)).toEqual({
+      label: "Monitoring",
+      icon: null,
+      className: "text-sky-600 dark:text-sky-400",
+    });
+  });
+
   it("surfaces an actionable settled plan ahead of lingering background work", () => {
     expect(
       resolveSidebarThreadStatus({
@@ -1222,84 +1241,79 @@ describe("resolveThreadStatusPill", () => {
     },
   };
 
-  it("shows pending approval before all other statuses", () => {
+  it("restores distinct upstream attention colors", () => {
     expect(
       resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          hasPendingApprovals: true,
-          hasPendingUserInput: true,
-        },
+        thread: { ...baseThread, hasPendingApprovals: true, hasPendingUserInput: true },
       }),
-    ).toMatchObject({ label: "Pending Approval", matrix: "warning" });
-  });
-
-  it("shows awaiting input when plan mode is blocked on user answers", () => {
+    ).toMatchObject({
+      label: "Pending Approval",
+      colorClass: "text-amber-600 dark:text-amber-300/90",
+      dotClass: "bg-amber-500 dark:bg-amber-300/90",
+      pulse: false,
+    });
     expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          hasPendingUserInput: true,
-        },
-      }),
+      resolveThreadStatusPill({ thread: { ...baseThread, hasPendingUserInput: true } }),
     ).toMatchObject({
       label: "Awaiting Input",
-      matrix: "warning",
-      colorClass: "text-warning",
+      colorClass: "text-indigo-600 dark:text-indigo-300/90",
+      dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
+      pulse: false,
     });
   });
 
-  it("falls back to working when the thread is actively running without blockers", () => {
-    expect(
-      resolveThreadStatusPill({
-        thread: baseThread,
-      }),
-      // A root turn uses neutral loading; the ring is reserved for delegation.
-    ).toMatchObject({
+  it("uses upstream sky pulses for running and connecting", () => {
+    expect(resolveThreadStatusPill({ thread: baseThread })).toMatchObject({
       label: "Working",
-      matrix: "loading",
-      colorClass: "text-status-active",
+      colorClass: "text-sky-600 dark:text-sky-300/80",
+      dotClass: "bg-sky-500 dark:bg-sky-300/80",
+      pulse: true,
     });
-  });
-
-  it("shows connecting while the session is starting", () => {
     expect(
       resolveThreadStatusPill({
         thread: { ...baseThread, session: { ...baseThread.session, status: "starting" as const } },
       }),
-    ).toMatchObject({ label: "Connecting", matrix: "connecting" });
+    ).toMatchObject({ label: "Connecting", pulse: true });
   });
 
-  it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {
+  it("keeps plan-ready semantics with the upstream violet treatment", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
           hasActionableProposedPlan: true,
           latestTurn: makeLatestTurn(),
-          session: {
-            ...baseThread.session,
-            status: "ready",
-            activeTurnId: null,
-          },
-        },
-      }),
-    ).toMatchObject({ label: "Plan Ready", matrix: "info" });
-  });
-
-  it("uses the orchestration ring only for settled-turn background agents", () => {
-    expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          backgroundLiveness: "working",
           session: { ...baseThread.session, status: "ready", activeTurnId: null },
         },
       }),
     ).toMatchObject({
+      label: "Plan Ready",
+      colorClass: "text-violet-600 dark:text-violet-300/90",
+      dotClass: "bg-violet-500 dark:bg-violet-300/90",
+      pulse: false,
+    });
+  });
+
+  it("pulses active background work but leaves monitoring static", () => {
+    const backgroundThread = {
+      ...baseThread,
+      session: { ...baseThread.session, status: "ready" as const, activeTurnId: null },
+    };
+    expect(
+      resolveThreadStatusPill({ thread: { ...backgroundThread, backgroundLiveness: "working" } }),
+    ).toMatchObject({
       label: "Working",
-      matrix: "orchestrating",
-      colorClass: "text-status-active",
+      colorClass: "text-sky-600 dark:text-sky-300/80",
+      pulse: true,
+    });
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...backgroundThread, backgroundLiveness: "monitoring" },
+      }),
+    ).toMatchObject({
+      label: "Monitoring",
+      colorClass: "text-sky-600 dark:text-sky-300/80",
+      pulse: false,
     });
   });
 
@@ -1309,17 +1323,13 @@ describe("resolveThreadStatusPill", () => {
         thread: {
           ...baseThread,
           latestTurn: makeLatestTurn(),
-          session: {
-            ...baseThread.session,
-            status: "ready",
-            activeTurnId: null,
-          },
+          session: { ...baseThread.session, status: "ready", activeTurnId: null },
         },
       }),
     ).toBeNull();
   });
 
-  it("shows completed when there is an unseen completion and no active blocker", () => {
+  it("shows unseen completion with the upstream emerald treatment", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -1327,14 +1337,15 @@ describe("resolveThreadStatusPill", () => {
           interactionMode: "default",
           latestTurn: makeLatestTurn(),
           lastVisitedAt: "2026-03-09T10:04:00.000Z",
-          session: {
-            ...baseThread.session,
-            status: "ready",
-            activeTurnId: null,
-          },
+          session: { ...baseThread.session, status: "ready", activeTurnId: null },
         },
       }),
-    ).toMatchObject({ label: "Completed", matrix: "success" });
+    ).toMatchObject({
+      label: "Completed",
+      colorClass: "text-emerald-600 dark:text-emerald-300/90",
+      dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+      pulse: false,
+    });
   });
 });
 
@@ -1371,20 +1382,23 @@ describe("resolveProjectStatusIndicator", () => {
         {
           label: "Completed",
           colorClass: "text-emerald-600",
-          matrix: "success",
+          dotClass: "bg-emerald-500",
+          pulse: false,
         },
         {
           label: "Pending Approval",
           colorClass: "text-amber-600",
-          matrix: "warning",
+          dotClass: "bg-amber-500",
+          pulse: false,
         },
         {
           label: "Working",
           colorClass: "text-sky-600",
-          matrix: "loading",
+          dotClass: "bg-sky-500",
+          pulse: true,
         },
       ]),
-    ).toMatchObject({ label: "Pending Approval", matrix: "warning" });
+    ).toMatchObject({ label: "Pending Approval", pulse: false });
   });
 
   it("prefers plan-ready over completed when no stronger action is needed", () => {
@@ -1393,15 +1407,17 @@ describe("resolveProjectStatusIndicator", () => {
         {
           label: "Completed",
           colorClass: "text-emerald-600",
-          matrix: "success",
+          dotClass: "bg-emerald-500",
+          pulse: false,
         },
         {
           label: "Plan Ready",
           colorClass: "text-violet-600",
-          matrix: "info",
+          dotClass: "bg-violet-500",
+          pulse: false,
         },
       ]),
-    ).toMatchObject({ label: "Plan Ready", matrix: "info" });
+    ).toMatchObject({ label: "Plan Ready", pulse: false });
   });
 });
 

@@ -1,6 +1,5 @@
 import {
   createVividThemeColors,
-  ensureReadableStatusColors,
   getThemeModes,
   isSupportedThemeFileVersion,
   parseThemeFile,
@@ -321,14 +320,11 @@ export function parseVsCodeThemeFile(value: unknown): ThemeDefinition {
     );
   }
 
-  // Re-solve status foregrounds after the imported row surfaces replace the
-  // generated ones, then reuse the normal theme-file validation path.
-  const resolvedColors = ensureReadableStatusColors({ ...derived, ...overrides });
   return parseThemeFile({
     version: THEME_FILE_VERSION,
     name: resolveName(value),
     appearance,
-    colors: resolvedColors,
+    colors: { ...derived, ...overrides },
   });
 }
 

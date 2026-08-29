@@ -3,8 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  sidebarStatusColorClass,
-  statusForegroundColorClass,
+  terminalStatusFromRunningIds,
   ThreadStatusLabel,
   ThreadWorktreeIndicator,
 } from "./ThreadStatusIndicators";
@@ -44,35 +43,38 @@ describe("ThreadWorktreeIndicator", () => {
 });
 
 describe("ThreadStatusLabel", () => {
-  it("maps aggregate active and info status colors onto sidebar roles", () => {
-    expect(sidebarStatusColorClass("text-status-active")).toBe("text-status-active-sidebar");
-    expect(sidebarStatusColorClass("text-status-info")).toBe("text-status-info-sidebar");
-    expect(sidebarStatusColorClass("text-warning")).toBe("text-warning");
-    expect(statusForegroundColorClass("text-status-active")).toBe("text-status-active-foreground");
-    expect(statusForegroundColorClass("text-status-active-sidebar")).toBe(
-      "text-status-active-foreground-sidebar",
-    );
-  });
-
   const status = {
     label: "Working",
-    colorClass: "text-status-active",
-    matrix: "loading" as const,
+    colorClass: "text-sky-600 dark:text-sky-300/80",
+    dotClass: "bg-sky-500 dark:bg-sky-300/80",
+    pulse: true,
   };
 
-  it("uses separate readable label and indicator roles on the sidebar", () => {
-    const markup = renderToStaticMarkup(<ThreadStatusLabel status={status} surface="sidebar" />);
-
-    expect(markup).toContain("text-status-active-sidebar");
-    expect(markup).toContain("text-status-active-foreground-sidebar");
-    expect(markup).not.toMatch(/(?:^|\s)text-status-active(?:\s|$)/);
-  });
-
-  it("uses separate readable label and indicator roles on the canvas", () => {
+  it("renders the upstream hue and reduced-motion-safe pulse", () => {
     const markup = renderToStaticMarkup(<ThreadStatusLabel status={status} />);
 
-    expect(markup).toMatch(/(?:^|\s)text-status-active(?:\s|$)/);
-    expect(markup).toContain("text-status-active-foreground");
-    expect(markup).not.toContain("text-status-active-sidebar");
+    expect(markup).toContain("text-sky-600");
+    expect(markup).toContain("bg-sky-500");
+    expect(markup).toContain("animate-status-pulse");
+    expect(markup).toContain("motion-reduce:animate-none");
+    expect(markup).not.toContain('data-slot="dot-matrix"');
+  });
+
+  it("keeps compact static statuses static", () => {
+    const markup = renderToStaticMarkup(
+      <ThreadStatusLabel status={{ ...status, label: "Monitoring", pulse: false }} compact />,
+    );
+
+    expect(markup).toContain("size-[9px]");
+    expect(markup).not.toContain("animate-status-pulse");
+  });
+
+  it("restores the upstream teal terminal signal", () => {
+    expect(terminalStatusFromRunningIds(["terminal-1"])).toEqual({
+      label: "Terminal process running",
+      colorClass: "text-teal-600 dark:text-teal-300/90",
+      pulse: true,
+    });
+    expect(terminalStatusFromRunningIds([])).toBeNull();
   });
 });

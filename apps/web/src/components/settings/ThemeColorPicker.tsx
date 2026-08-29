@@ -19,8 +19,6 @@ export function getThemeRoleLabel(role: ThemeColorRole): string {
     errorSurface: "Error background",
     warningForeground: "Warning text",
     warningSurface: "Warning background",
-    statusActive: "Active work",
-    statusInfo: "Info",
     updateForeground: "Update text",
     updateSurface: "Update background",
   };

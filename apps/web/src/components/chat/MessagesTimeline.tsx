@@ -50,6 +50,7 @@ import {
 import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
+  CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
@@ -57,12 +58,15 @@ import {
   GlobeIcon,
   HammerIcon,
   MessageCircleIcon,
+  MinusIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
   SearchIcon,
   SquarePenIcon,
+  TerminalIcon,
   Undo2Icon,
   WrenchIcon,
+  XIcon,
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
@@ -111,7 +115,6 @@ import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
-import { DotMatrix, type DotMatrixState } from "../ui/dot-matrix";
 import {
   TASK_PROGRESS_STATUS_LABEL,
   keyedTaskProgressSteps,
@@ -1374,20 +1377,17 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   return (
     <div>
       <div className="border-b border-border/60 pb-2 pt-1">
-        <div className="flex items-center gap-2 px-1 text-sm leading-relaxed text-status-active-foreground tabular-nums">
-          <DotMatrix sizeRole="prominent" aria-hidden state="loading" />
-          <span>
-            {row.createdAt ? (
-              <>
-                Working for <WorkingTimer createdAt={row.createdAt} />
-              </>
-            ) : (
-              "Working..."
-            )}
-            {workingStepLabel ? (
-              <span className="ml-2 text-muted-foreground/55">· {workingStepLabel}</span>
-            ) : null}
-          </span>
+        <div className="px-1 text-sm leading-relaxed text-muted-foreground tabular-nums">
+          {row.createdAt ? (
+            <>
+              Working for <WorkingTimer createdAt={row.createdAt} />
+            </>
+          ) : (
+            "Working..."
+          )}
+          {workingStepLabel ? (
+            <span className="ml-2 text-muted-foreground/55">· {workingStepLabel}</span>
+          ) : null}
         </div>
       </div>
       {row.showThinking ? (
@@ -1493,29 +1493,23 @@ function LiveActivityRow({
   failed?: boolean;
 }) {
   return (
-    <div className="flex min-w-0 max-w-full items-center gap-1.5">
-      <div className="relative min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed">
-        <LiveActivityContent label={label} iconName={iconName} />
-        <div
-          aria-hidden
-          className="live-activity-focus pointer-events-none absolute inset-y-0 select-none"
-        >
-          <div className="live-activity-focus-counter">
-            <div className="live-activity-focus-aligned">
-              <LiveActivityContent label={label} iconName={iconName} highlighted />
-            </div>
+    <div className="relative min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed">
+      <LiveActivityContent
+        label={label}
+        iconName={iconName}
+        failed={failed}
+        announceFailure={failed}
+      />
+      <div
+        aria-hidden
+        className="live-activity-focus pointer-events-none absolute inset-y-0 select-none"
+      >
+        <div className="live-activity-focus-counter">
+          <div className="live-activity-focus-aligned">
+            <LiveActivityContent label={label} iconName={iconName} failed={failed} highlighted />
           </div>
         </div>
       </div>
-      {failed ? (
-        <span
-          className="flex size-4 shrink-0 items-center justify-center"
-          role="img"
-          aria-label="Tool call failed"
-        >
-          <DotMatrix sizeRole="inline" aria-hidden state="error" />
-        </span>
-      ) : null}
     </div>
   );
 }
@@ -1527,30 +1521,38 @@ function ThinkingActivityRow() {
 function LiveActivityContent({
   label,
   iconName,
+  failed = false,
+  announceFailure = false,
   highlighted = false,
 }: {
   label: string;
   iconName: WorkEntryIconName | undefined;
+  failed?: boolean;
+  announceFailure?: boolean;
   highlighted?: boolean;
 }) {
+  const resolvedIconName = failed ? "x" : iconName;
+
   return (
     <div
       className={cn(
         "flex min-h-6 min-w-0 items-center gap-1.5 py-0.5",
-        iconName ? "px-0.5" : "px-1",
+        resolvedIconName ? "px-0.5" : "px-1",
         highlighted ? "text-foreground" : "text-secondary-label",
       )}
     >
-      {iconName ? (
+      {resolvedIconName ? (
         <span
           className={cn(
             "flex size-6 shrink-0 items-center justify-center",
             highlighted ? "text-foreground" : "text-icon-muted",
           )}
+          role={announceFailure ? "img" : undefined}
+          aria-label={announceFailure ? "Tool call failed" : undefined}
         >
           <WorkEntryIconSvg
-            name={iconName}
-            className={cn("block shrink-0 stroke-[1.8]", !highlighted && "opacity-70")}
+            name={resolvedIconName}
+            className={cn("block size-4 shrink-0 stroke-[1.8]", !highlighted && "opacity-70")}
           />
         </span>
       ) : null}
@@ -1623,19 +1625,10 @@ function WorkGroupToggleTimelineRow({
         <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
           <WorkEntryIconSvg
             name={toolGroupSummaryIconName(row.summaryKind)}
-            className="shrink-0 stroke-[1.8] opacity-70"
+            className="size-4 shrink-0 stroke-[1.8] opacity-70"
           />
         </span>
         <span className="min-w-0 flex-1 truncate text-secondary-label">{row.summary}</span>
-        {row.hasFailure ? (
-          <span
-            className="flex size-4 shrink-0 items-center justify-center"
-            role="img"
-            aria-label="Tool call failed"
-          >
-            <DotMatrix sizeRole="inline" aria-hidden state="error" />
-          </span>
-        ) : null}
       </button>
     );
   }
@@ -2211,45 +2204,37 @@ type WorkEntryIconName =
   | "square-pen"
   | "terminal"
   | "wrench"
+  | "x"
   | "zap";
 
 function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; className: string }) {
-  const fixedIconClassName = cn("size-4", className);
   switch (name) {
     case "bot":
-      return <BotIcon className={fixedIconClassName} aria-hidden />;
+      return <BotIcon className={className} aria-hidden />;
     case "check":
-      return <DotMatrix sizeRole="inline" aria-hidden state="success" className={className} />;
+      return <CheckIcon className={className} aria-hidden />;
     case "circle-alert":
-      return <CircleAlertIcon className={fixedIconClassName} aria-hidden />;
+      return <CircleAlertIcon className={className} aria-hidden />;
     case "eye":
-      return <EyeIcon className={fixedIconClassName} aria-hidden />;
+      return <EyeIcon className={className} aria-hidden />;
     case "globe":
-      return <GlobeIcon className={fixedIconClassName} aria-hidden />;
+      return <GlobeIcon className={className} aria-hidden />;
     case "hammer":
-      return <HammerIcon className={fixedIconClassName} aria-hidden />;
+      return <HammerIcon className={className} aria-hidden />;
     case "message-circle":
-      return <MessageCircleIcon className={fixedIconClassName} aria-hidden />;
+      return <MessageCircleIcon className={className} aria-hidden />;
     case "search":
-      return <SearchIcon className={fixedIconClassName} aria-hidden />;
+      return <SearchIcon className={className} aria-hidden />;
     case "square-pen":
-      return <SquarePenIcon className={fixedIconClassName} aria-hidden />;
+      return <SquarePenIcon className={className} aria-hidden />;
     case "terminal":
-      // Live rows duplicate this icon inside their moving foreground mask.
-      // Inherit the row tone so the matrix brightens with the label instead of
-      // remaining pinned to its standalone muted terminal color.
-      return (
-        <DotMatrix
-          sizeRole="inline"
-          aria-hidden
-          state="terminal"
-          className={cn(className, "text-inherit")}
-        />
-      );
+      return <TerminalIcon className={className} aria-hidden />;
     case "wrench":
-      return <WrenchIcon className={fixedIconClassName} aria-hidden />;
+      return <WrenchIcon className={className} aria-hidden />;
+    case "x":
+      return <XIcon className={className} aria-hidden />;
     case "zap":
-      return <ZapIcon className={fixedIconClassName} aria-hidden />;
+      return <ZapIcon className={className} aria-hidden />;
   }
 }
 
@@ -2621,16 +2606,7 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
     workflowGroup?.workflow.workflowName ?? workflowGroup?.workflow.title ?? null;
 
   const coordinatorWorking = coordinatorStatus === "running";
-  const hasActiveWork = livePhase !== undefined || running > 0 || coordinatorWorking;
-  const matrix: DotMatrixState = live
-    ? hasActiveWork
-      ? "orchestrating"
-      : pending > 0 || coordinatorStatus === "pending"
-        ? "queued"
-        : "waiting"
-    : failed > 0
-      ? "error"
-      : "success";
+  const dotClass = live ? "bg-info" : failed > 0 ? "bg-destructive" : "bg-success";
   const lead = live
     ? `Kicked off ${agentCount} subagent${agentCount === 1 ? "" : "s"}`
     : `Ran ${agentCount} subagent${agentCount === 1 ? "" : "s"}`;
@@ -2641,11 +2617,13 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
         ? `${running} working`
         : pending > 0
           ? `${pending} queued`
-          : waiting > 0
-            ? `${waiting} waiting`
-            : coordinatorWorking
-              ? "working"
-              : "waiting"
+          : coordinatorStatus === "pending"
+            ? "queued"
+            : waiting > 0
+              ? `${waiting} waiting`
+              : coordinatorWorking
+                ? "working"
+                : "waiting"
     : failed > 0
       ? `${failed} failed`
       : "✓ completed";
@@ -2656,7 +2634,7 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
       onClick={onOpenAgents}
       className="flex w-full items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 text-left text-[13px] transition hover:bg-accent/50"
     >
-      <DotMatrix sizeRole="inline" aria-hidden state={matrix} />
+      <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", dotClass)} />
       <WorkEntryIconSvg name="bot" className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate">
         <span className="font-medium">{lead}</span>
@@ -2772,7 +2750,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
         <span className={cn(iconWrapperClass, !showEntryIcon && "invisible")} aria-hidden>
           <WorkEntryIconSvg
             name={entryIconName}
-            className="block shrink-0 stroke-[1.8] opacity-70"
+            className="block size-4 shrink-0 stroke-[1.8] opacity-70"
           />
         </span>
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -2814,7 +2792,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
                       <span className="flex size-4 items-center justify-center" aria-hidden />
                     }
                   >
-                    <DotMatrix sizeRole="inline" aria-hidden state="error" />
+                    <XIcon className="block size-3 shrink-0 text-destructive" aria-hidden />
                   </TooltipTrigger>
                   <TooltipPopup>{missingResponse ? "No final response" : "Failed"}</TooltipPopup>
                 </Tooltip>
@@ -2823,7 +2801,13 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
                   <TooltipTrigger
                     render={<span className="flex size-4 items-center justify-center" />}
                   >
-                    <DotMatrix sizeRole="inline" aria-hidden state="success" />
+                    <span className="inline-flex size-4 items-center justify-center">
+                      <CheckIcon
+                        className="block size-3 shrink-0 stroke-current"
+                        stroke="currentColor"
+                        aria-hidden
+                      />
+                    </span>
                   </TooltipTrigger>
                   <TooltipPopup>Completed</TooltipPopup>
                 </Tooltip>
@@ -2832,7 +2816,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
                   <TooltipTrigger
                     render={<span className="flex size-4 items-center justify-center" />}
                   >
-                    <DotMatrix sizeRole="inline" aria-hidden state="idle" className="opacity-70" />
+                    <MinusIcon className="block size-3 shrink-0 opacity-70" aria-hidden />
                   </TooltipTrigger>
                   <TooltipPopup>Empty</TooltipPopup>
                 </Tooltip>

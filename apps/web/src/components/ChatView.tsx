@@ -428,7 +428,6 @@ import {
   AlertDialogTitle,
 } from "./ui/alert-dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-import { DotMatrix } from "./ui/dot-matrix";
 import { ServerUpdateAction, ServerUpdateProgress } from "./ServerUpdateAction";
 import {
   buildVersionMismatchDismissalKey,
@@ -2299,7 +2298,12 @@ function ChatViewContent(props: ChatViewProps) {
           variant: "default",
           // Live connection status: calm styling, but it must front the stack.
           urgent: true,
-          icon: <DotMatrix sizeRole="inline" aria-hidden state="connecting" />,
+          icon: (
+            <span
+              className="size-1.5 animate-status-pulse rounded-full bg-foreground motion-reduce:animate-none"
+              aria-hidden="true"
+            />
+          ),
           title: `${unavailableConnection.phase === "connecting" ? "Connecting" : "Reconnecting"} to ${activeEnvironmentUnavailableState.label}`,
           description: "It may be finishing an update. One moment.",
         });
@@ -2351,12 +2355,14 @@ function ChatViewContent(props: ChatViewProps) {
         // A running update is live progress the user is waiting on; only the
         // idle "update available" offer is calm enough to stack behind.
         urgent: updateInProgress,
-        // In-flight and failed states carry their own DotMatrix marker inside
-        // ServerUpdateProgress; only the idle offer needs an icon, and it is
-        // a resting one — an available update is a notice, not a warning.
+        // In-flight and failed states carry their own status dot inside
+        // ServerUpdateProgress; only the idle offer needs an icon.
         icon:
           updateInProgress || updateFailed ? null : (
-            <DotMatrix sizeRole="inline" aria-hidden state="idle" />
+            <span
+              className="size-1.5 rounded-full border border-muted-foreground/40"
+              aria-hidden="true"
+            />
           ),
         title:
           updateInProgress || updateFailed ? (
@@ -5124,7 +5130,13 @@ function ChatViewContent(props: ChatViewProps) {
       id: `background-liveness:${activeThread.id}`,
       variant: "default",
       icon: (
-        <DotMatrix sizeRole="inline" aria-hidden state={working ? "orchestrating" : "listening"} />
+        <span
+          className={cn(
+            "size-1.5 rounded-full bg-foreground",
+            working && "animate-status-pulse motion-reduce:animate-none",
+          )}
+          aria-hidden="true"
+        />
       ),
       title: working
         ? liveCount > 0

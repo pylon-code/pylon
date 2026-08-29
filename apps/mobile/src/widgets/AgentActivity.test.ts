@@ -83,10 +83,11 @@ const lightEnvironment = {
 } as const;
 
 describe("AgentActivity widget layout", () => {
-  it("keeps warning status text readable on light and dark system materials", () => {
-    expect(contrastRatio("#bb4d00", "#ffffff")).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio("#ffb900", "#000000")).toBeGreaterThanOrEqual(4.5);
+  it("keeps approval status text readable on light and dark system materials", () => {
+    expect(contrastRatio("#b45309", "#ffffff")).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio("#fcd34d", "#000000")).toBeGreaterThanOrEqual(4.5);
   });
+
   it("tints each row by its own phase using the web sidebar's dark palette", () => {
     const layout = AgentActivity(
       {
@@ -101,7 +102,7 @@ describe("AgentActivity widget layout", () => {
     );
     const banner = JSON.stringify(layout.banner);
     expect(banner).toContain("#7dd3fc"); // sky-300: running
-    expect(banner).toContain("#ffb900"); // warning foreground: waiting_for_approval
+    expect(banner).toContain("#fcd34d"); // amber-300: waiting_for_approval
   });
 
   it("switches to the web sidebar's light palette when the scheme is light", () => {
@@ -120,9 +121,9 @@ describe("AgentActivity widget layout", () => {
     );
     const banner = JSON.stringify(layout.banner);
     expect(banner).toContain("#0284c7"); // sky-600: running
-    expect(banner).toContain("#bb4d00"); // warning foreground: waiting_for_approval
+    expect(banner).toContain("#b45309"); // amber-700: waiting_for_approval
     expect(banner).not.toContain("#7dd3fc");
-    expect(banner).not.toContain("#ffb900");
+    expect(banner).not.toContain("#fcd34d");
   });
 
   it("orders rows attention-first in the banner", () => {
@@ -176,10 +177,10 @@ describe("AgentActivity widget layout", () => {
       },
       environment as never,
     );
-    expect(JSON.stringify(layout.compactLeading)).toContain("#ffb900"); // warning foreground
+    expect(JSON.stringify(layout.compactLeading)).toContain("#a5b4fc"); // indigo-300
     expect(JSON.stringify(layout.compactTrailing)).toContain("Input");
-    expect(JSON.stringify(layout.minimal)).toContain("#ffb900");
-    expect(JSON.stringify(layout.minimal)).toContain("exclamationmark.circle.fill");
+    expect(JSON.stringify(layout.minimal)).toContain("#a5b4fc");
+    expect(JSON.stringify(layout.minimal)).toContain("questionmark.circle.fill");
   });
 
   it("deep links the banner to the row that needs attention", () => {

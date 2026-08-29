@@ -1,7 +1,6 @@
 import type { ComponentProps } from "react";
 
 import { cn } from "~/lib/utils";
-import { DotMatrix, type DotMatrixState } from "../ui/dot-matrix";
 
 export type TaskProgressStatus = "pending" | "inProgress" | "waiting" | "completed";
 export type TaskProgressWaitingOn = "user" | "delegates" | "external";
@@ -12,19 +11,21 @@ export interface TaskProgressStep {
   readonly waitingOn?: TaskProgressWaitingOn;
 }
 
-function matrixState(
+export function taskProgressStatusVisual(
   status: TaskProgressStatus,
   waitingOn?: TaskProgressWaitingOn,
-): DotMatrixState {
+): { readonly glyph: "✓" | "●" | "○"; readonly className: string } {
   switch (status) {
     case "pending":
-      return "idle";
+      return { glyph: "○", className: "text-muted-foreground/40" };
     case "inProgress":
-      return "loading";
+      return { glyph: "●", className: "text-primary" };
     case "waiting":
-      return waitingOn === "user" ? "warning" : "waiting";
+      return waitingOn === "user"
+        ? { glyph: "●", className: "text-warning" }
+        : { glyph: "○", className: "text-muted-foreground/50" };
     case "completed":
-      return "success";
+      return { glyph: "✓", className: "text-success" };
   }
 }
 
@@ -33,7 +34,7 @@ function segmentTone(status: TaskProgressStatus, waitingOn?: TaskProgressWaiting
     case "pending":
       return "bg-muted-foreground/25";
     case "inProgress":
-      return "bg-status-active";
+      return "bg-primary";
     case "waiting":
       return waitingOn === "user" ? "bg-warning" : "bg-muted-foreground/50";
     case "completed":
@@ -96,16 +97,21 @@ export function TaskStatusIndicator({
   status,
   waitingOn,
   ...props
-}: Omit<ComponentProps<typeof DotMatrix>, "state" | "sizeRole"> & {
+}: ComponentProps<"span"> & {
   readonly status: TaskProgressStatus;
   readonly waitingOn?: TaskProgressWaitingOn | undefined;
 }) {
+  const visual = taskProgressStatusVisual(status, waitingOn);
   return (
-    <DotMatrix
-      sizeRole="compact"
-      state={matrixState(status, waitingOn)}
-      className={className}
+    <span
+      className={cn(
+        "inline-block w-3 shrink-0 text-center font-mono text-[10px]",
+        visual.className,
+        className,
+      )}
       {...props}
-    />
+    >
+      {visual.glyph}
+    </span>
   );
 }

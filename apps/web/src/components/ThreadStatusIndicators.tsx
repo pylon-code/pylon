@@ -6,7 +6,7 @@ import {
 import { pullRequestDetailToVcsStatus } from "@t3tools/client-runtime/state/pull-requests";
 import type { EnvironmentId, ThreadLinkedPullRequest, VcsStatusResult } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
-import { CloudIcon, FolderGit2Icon, GitPullRequestIcon } from "lucide-react";
+import { CloudIcon, FolderGit2Icon, GitPullRequestIcon, TerminalIcon } from "lucide-react";
 import { useMemo } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
@@ -21,7 +21,6 @@ import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic"
 import type { SidebarThreadSummary } from "../types";
 import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-import { DotMatrix } from "./ui/dot-matrix";
 
 export interface PrStatusIndicator {
   label: string;
@@ -35,6 +34,7 @@ export interface PrStatusIndicator {
 export interface TerminalStatusIndicator {
   label: "Terminal process running";
   colorClass: string;
+  pulse: boolean;
 }
 
 export type ThreadPr = VcsStatusResult["pr"];
@@ -424,7 +424,8 @@ export function terminalStatusFromRunningIds(
   }
   return {
     label: "Terminal process running",
-    colorClass: "text-muted-foreground",
+    colorClass: "text-teal-600 dark:text-teal-300/90",
+    pulse: true,
   };
 }
 
@@ -462,42 +463,13 @@ export function ThreadWorktreeIndicator({
   );
 }
 
-export function sidebarStatusColorClass(colorClass: string): string {
-  return colorClass
-    .split(" ")
-    .map((token) => {
-      if (token === "text-status-active") return "text-status-active-sidebar";
-      if (token === "text-status-info") return "text-status-info-sidebar";
-      return token;
-    })
-    .join(" ");
-}
-
-export function statusForegroundColorClass(colorClass: string): string {
-  return colorClass
-    .split(" ")
-    .map((token) => {
-      if (token === "text-status-active") return "text-status-active-foreground";
-      if (token === "text-status-active-sidebar") {
-        return "text-status-active-foreground-sidebar";
-      }
-      return token;
-    })
-    .join(" ");
-}
-
 export function ThreadStatusLabel({
   status,
   compact = false,
-  surface = "default",
 }: {
   status: ThreadStatusPill;
   compact?: boolean;
-  surface?: "default" | "sidebar";
 }) {
-  const indicatorColorClass =
-    surface === "sidebar" ? sidebarStatusColorClass(status.colorClass) : status.colorClass;
-  const labelColorClass = statusForegroundColorClass(indicatorColorClass);
   if (compact) {
     return (
       <Tooltip>
@@ -506,15 +478,14 @@ export function ThreadStatusLabel({
             <span
               role="img"
               aria-label={status.label}
-              className={`inline-flex size-3.5 shrink-0 items-center justify-center ${indicatorColorClass}`}
+              className={`inline-flex size-3.5 shrink-0 items-center justify-center ${status.colorClass}`}
             />
           }
         >
-          <DotMatrix
-            sizeRole="compact"
-            state={status.matrix}
-            aria-hidden
-            className={indicatorColorClass}
+          <span
+            className={`size-[9px] rounded-full ${status.dotClass} ${
+              status.pulse ? "animate-status-pulse motion-reduce:animate-none" : ""
+            }`}
           />
         </TooltipTrigger>
         <TooltipPopup side="top">{status.label}</TooltipPopup>
@@ -529,17 +500,16 @@ export function ThreadStatusLabel({
           <span
             role="img"
             aria-label={status.label}
-            className="inline-flex items-center gap-1 text-[10px]"
+            className={`inline-flex items-center gap-1 text-[10px] ${status.colorClass}`}
           />
         }
       >
-        <DotMatrix
-          sizeRole="compact"
-          state={status.matrix}
-          aria-hidden
-          className={indicatorColorClass}
+        <span
+          className={`size-1.5 rounded-full ${status.dotClass} ${
+            status.pulse ? "animate-status-pulse motion-reduce:animate-none" : ""
+          }`}
         />
-        <span className={`hidden md:inline ${labelColorClass}`}>{status.label}</span>
+        <span className="hidden md:inline">{status.label}</span>
       </TooltipTrigger>
       <TooltipPopup side="top">{status.label}</TooltipPopup>
     </Tooltip>
@@ -656,7 +626,11 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
               />
             }
           >
-            <DotMatrix sizeRole="compact" aria-hidden state="terminal-active" />
+            <TerminalIcon
+              className={`size-3 ${
+                terminalStatus.pulse ? "animate-status-pulse motion-reduce:animate-none" : ""
+              }`}
+            />
           </TooltipTrigger>
           <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
         </Tooltip>

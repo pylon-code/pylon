@@ -151,6 +151,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --animate-skeleton: skeleton 2s -1s infinite linear;
   /* Duty-cycled indicator animations: long holds with stepped ramps, so the
      compositor updates discrete frames instead of every vsync. */
+  --animate-status-pulse: status-pulse 2s infinite;
   --animate-ghost-pulse: ghost-pulse 2.4s infinite;
   --animate-status-ping: status-ping 2s infinite;
   --color-warning-foreground: var(--warning-foreground);
@@ -166,12 +167,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --color-success: var(--success);
   --color-info-foreground: var(--info-foreground);
   --color-info: var(--info);
-  --color-status-active: var(--status-active);
-  --color-status-active-foreground: var(--status-active-foreground);
-  --color-status-info: var(--status-info);
-  --color-status-active-sidebar: var(--status-active-sidebar);
-  --color-status-active-foreground-sidebar: var(--status-active-foreground-sidebar);
-  --color-status-info-sidebar: var(--status-info-sidebar);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-ring: var(--ring);
   --color-input: var(--contrast-input);
@@ -244,6 +239,21 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       opacity: 1;
     }
   }
+  @keyframes status-pulse {
+    0%,
+    40% {
+      opacity: 1;
+      animation-timing-function: steps(6);
+    }
+    50%,
+    90% {
+      opacity: 0.5;
+      animation-timing-function: steps(6);
+    }
+    100% {
+      opacity: 1;
+    }
+  }
   @keyframes status-ping {
     /* Burst first (immediate feedback for click ripples), then hold
        invisible for the rest of the cycle. Mirrors animate-ping's
@@ -258,78 +268,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       opacity: 0;
       scale: 2;
     }
-  }
-}
-
-/* Dot Matrix is adapted from assistant-ui's standalone state language. The
-   registered amplitude bounds cross-fade when a state changes. Only live states
-   receive an animation timeline. Smooth motion is the polished default; the
-   client-local Efficient preference switches those timelines to stepped frames. */
-@property --dot-matrix-hi {
-  syntax: "<number>";
-  inherits: false;
-  initial-value: 1;
-}
-@property --dot-matrix-lo {
-  syntax: "<number>";
-  inherits: false;
-  initial-value: 0.15;
-}
-@keyframes dot-matrix-blink {
-  0%,
-  100% {
-    opacity: var(--dot-matrix-hi, 1);
-  }
-  50% {
-    opacity: var(--dot-matrix-lo, 0.15);
-  }
-}
-/* Pylon's orchestrating state keeps the existing circular head and fading tail
-   so subagent and workflow activity has a distinct identity. */
-@keyframes dot-matrix-chase {
-  0% {
-    opacity: var(--dot-matrix-hi, 1);
-  }
-  12% {
-    opacity: 0.78;
-  }
-  24% {
-    opacity: 0.56;
-  }
-  36% {
-    opacity: 0.38;
-  }
-  48% {
-    opacity: 0.22;
-  }
-  60%,
-  100% {
-    opacity: var(--dot-matrix-lo, 0.15);
-  }
-}
-.dot-matrix-dot {
-  transition:
-    opacity 0.3s,
-    --dot-matrix-hi 0.3s,
-    --dot-matrix-lo 0.3s;
-}
-.dot-matrix-dot[data-animated="true"],
-.dot-matrix-dot[data-animated="chase"] {
-  animation: dot-matrix-blink 1s infinite ease-in-out;
-}
-.dot-matrix-dot[data-animated="chase"] {
-  animation-name: dot-matrix-chase;
-}
-html[data-dot-matrix-motion="efficient"] .dot-matrix-dot[data-animated="true"] {
-  animation-timing-function: steps(4);
-}
-html[data-dot-matrix-motion="efficient"] .dot-matrix-dot[data-animated="chase"] {
-  animation-timing-function: steps(2);
-}
-@media (prefers-reduced-motion: reduce) {
-  .dot-matrix-dot[data-animated="true"],
-  .dot-matrix-dot[data-animated="chase"] {
-    animation: none !important;
   }
 }
 
@@ -1514,13 +1452,6 @@ html[data-dot-matrix-motion="efficient"] .dot-matrix-dot[data-animated="chase"] 
   --destructive-foreground: var(--error-foreground);
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-700);
-  /* The standard status pair. Installed themes replace both roles below. */
-  --status-active: var(--primary);
-  --status-active-foreground: var(--status-active);
-  --status-info: #7622bf;
-  --status-active-sidebar: var(--status-active);
-  --status-active-foreground-sidebar: var(--status-active-sidebar);
-  --status-info-sidebar: var(--status-info);
   --success: var(--color-emerald-500);
   --success-foreground: var(--color-emerald-700);
   --warning: var(--color-amber-500);
@@ -1571,10 +1502,6 @@ html[data-dot-matrix-motion="efficient"] .dot-matrix-dot[data-animated="chase"] 
     --border: --alpha(var(--color-white) / 6%);
     --input: --alpha(var(--color-white) / 8%);
     --info-foreground: var(--color-blue-400);
-    --status-active: #346bf1;
-    --status-active-foreground: #477cf4;
-    --status-active-foreground-sidebar: #477cf4;
-    --status-info: #e9d5ff;
     --success-foreground: var(--color-emerald-400);
     --warning-foreground: var(--color-amber-400);
     --warning-surface: color-mix(in srgb, var(--warning) 16%, transparent);
@@ -1689,12 +1616,6 @@ html[data-theme-id]:not([data-theme-id=""]) {
   --warning: var(--app-theme-warning);
   --warning-foreground: var(--app-theme-warning-foreground);
   --warning-surface: var(--app-theme-warning-surface);
-  --status-active: var(--app-theme-status-active);
-  --status-active-foreground: var(--app-theme-status-active);
-  --status-info: var(--app-theme-status-info);
-  --status-active-sidebar: var(--app-theme-status-active-sidebar);
-  --status-active-foreground-sidebar: var(--app-theme-status-active-sidebar);
-  --status-info-sidebar: var(--app-theme-status-info-sidebar);
   --update: var(--app-theme-update);
   --update-foreground: var(--app-theme-update-foreground);
   --update-surface: var(--app-theme-update-surface);

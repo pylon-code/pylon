@@ -1,51 +1,56 @@
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 
+import { cn } from "~/lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import { DotMatrix, type DotMatrixState } from "~/components/ui/dot-matrix";
 
-/**
- * Connection phase as a DotMatrix state. The dot carries hue and motion
- * together, so callers pass a phase rather than assembling colors themselves.
- */
-export function connectionPhaseDotMatrixState(
-  phase: EnvironmentConnectionPhase,
-): ConnectionStatusDotProps["state"] {
+/** Canonical connection-phase → dot color mapping shared by every status dot. */
+export function connectionPhaseDotClassName(phase: EnvironmentConnectionPhase): string {
   switch (phase) {
     case "connected":
-      return "success";
+      return "bg-success";
     case "connecting":
     case "reconnecting":
-      return "connecting";
+      return "bg-warning";
     case "error":
-      return "error";
+      return "bg-destructive";
     default:
-      return "offline";
+      return "bg-muted-foreground/40";
   }
+}
+
+/** Ping halo for transitional phases; null renders no ping. */
+export function connectionPhasePingClassName(phase: EnvironmentConnectionPhase): string | null {
+  return phase === "connecting" || phase === "reconnecting" ? "bg-warning/60 duration-2000" : null;
 }
 
 type ConnectionStatusDotProps = {
   tooltipText?: string | null;
-  state: Extract<
-    DotMatrixState,
-    "success" | "connecting" | "waiting" | "queued" | "error" | "offline"
-  >;
-  /** Only needed when a caller wants a hue other than the state's canonical
-   * tone (see dot-matrix.tsx's TONE map). */
-  colorClassName?: string | undefined;
+  dotClassName: string;
+  pingClassName?: string | null;
 };
 
 export function ConnectionStatusDot({
   tooltipText,
-  state,
-  colorClassName,
+  dotClassName,
+  pingClassName,
 }: ConnectionStatusDotProps) {
   const dotContent = (
-    <DotMatrix sizeRole="compact" aria-hidden state={state} className={colorClassName} />
+    <>
+      {pingClassName ? (
+        <span
+          className={cn(
+            "absolute inline-flex h-full w-full animate-status-ping rounded-full motion-reduce:hidden",
+            pingClassName,
+          )}
+        />
+      ) : null}
+      <span className={cn("relative inline-flex size-2 rounded-full", dotClassName)} />
+    </>
   );
 
   if (!tooltipText) {
     return (
-      <span className="relative flex size-3.5 shrink-0 items-center justify-center">
+      <span className="relative flex size-3 shrink-0 items-center justify-center">
         {dotContent}
       </span>
     );
@@ -55,7 +60,7 @@ export function ConnectionStatusDot({
     <button
       type="button"
       aria-label={tooltipText}
-      className="relative flex size-3.5 shrink-0 cursor-help items-center justify-center rounded-full outline-hidden"
+      className="relative flex size-3 shrink-0 cursor-help items-center justify-center rounded-full outline-hidden"
     >
       {dotContent}
     </button>

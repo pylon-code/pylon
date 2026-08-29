@@ -14,7 +14,6 @@ import type { ThreadRouteTarget } from "../threadRoutes";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
-import type { DotMatrixState } from "./ui/dot-matrix";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 200;
@@ -136,7 +135,8 @@ export interface ThreadStatusPill {
     | "Awaiting Input"
     | "Plan Ready";
   colorClass: string;
-  matrix: DotMatrixState;
+  dotClass: string;
+  pulse: boolean;
 }
 
 // Rollup order mirrors the per-thread resolver exactly: attention states,
@@ -477,6 +477,41 @@ export type SidebarThreadStatus =
   | "failed"
   | "ready";
 
+export interface SidebarThreadActivityVisual {
+  readonly label: "Working" | "Delegating" | "Monitoring";
+  readonly icon: "working" | "delegating" | null;
+  readonly className: string;
+}
+
+/** Static flat-sidebar treatment for root work, delegated work, and monitoring. */
+export function resolveSidebarThreadActivityVisual(
+  status: SidebarThreadStatus,
+  isActive: boolean,
+): SidebarThreadActivityVisual | null {
+  switch (status) {
+    case "working":
+      return {
+        label: "Working",
+        icon: "working",
+        className: cn("text-sky-600 dark:text-sky-400", !isActive && "opacity-75"),
+      };
+    case "delegating":
+      return {
+        label: "Delegating",
+        icon: "delegating",
+        className: cn("text-sky-600 dark:text-sky-400", !isActive && "opacity-75"),
+      };
+    case "monitoring":
+      return {
+        label: "Monitoring",
+        icon: null,
+        className: "text-sky-600 dark:text-sky-400",
+      };
+    default:
+      return null;
+  }
+}
+
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
   | "backgroundLiveness"
@@ -711,32 +746,36 @@ export function resolveThreadStatusPill(input: {
   if (thread.hasPendingApprovals) {
     return {
       label: "Pending Approval",
-      colorClass: "text-warning",
-      matrix: "warning",
+      colorClass: "text-amber-600 dark:text-amber-300/90",
+      dotClass: "bg-amber-500 dark:bg-amber-300/90",
+      pulse: false,
     };
   }
 
   if (thread.hasPendingUserInput) {
     return {
       label: "Awaiting Input",
-      colorClass: "text-warning",
-      matrix: "warning",
+      colorClass: "text-indigo-600 dark:text-indigo-300/90",
+      dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
+      pulse: false,
     };
   }
 
   if (thread.session?.status === "running") {
     return {
       label: "Working",
-      colorClass: "text-status-active",
-      matrix: "loading",
+      colorClass: "text-sky-600 dark:text-sky-300/80",
+      dotClass: "bg-sky-500 dark:bg-sky-300/80",
+      pulse: true,
     };
   }
 
   if (thread.session?.status === "starting") {
     return {
       label: "Connecting",
-      colorClass: "text-status-active",
-      matrix: "connecting",
+      colorClass: "text-sky-600 dark:text-sky-300/80",
+      dotClass: "bg-sky-500 dark:bg-sky-300/80",
+      pulse: true,
     };
   }
 
@@ -750,8 +789,9 @@ export function resolveThreadStatusPill(input: {
   if (hasPlanReadyPrompt) {
     return {
       label: "Plan Ready",
-      colorClass: "text-status-info",
-      matrix: "info",
+      colorClass: "text-violet-600 dark:text-violet-300/90",
+      dotClass: "bg-violet-500 dark:bg-violet-300/90",
+      pulse: false,
     };
   }
 
@@ -762,24 +802,27 @@ export function resolveThreadStatusPill(input: {
   if (thread.backgroundLiveness === "working") {
     return {
       label: "Working",
-      colorClass: "text-status-active",
-      matrix: "orchestrating",
+      colorClass: "text-sky-600 dark:text-sky-300/80",
+      dotClass: "bg-sky-500 dark:bg-sky-300/80",
+      pulse: true,
     };
   }
 
   if (thread.backgroundLiveness === "monitoring") {
     return {
       label: "Monitoring",
-      colorClass: "text-status-active",
-      matrix: "listening",
+      colorClass: "text-sky-600 dark:text-sky-300/80",
+      dotClass: "bg-sky-500 dark:bg-sky-300/80",
+      pulse: false,
     };
   }
 
   if (hasUnseenCompletion(thread)) {
     return {
       label: "Completed",
-      colorClass: "text-success",
-      matrix: "success",
+      colorClass: "text-emerald-600 dark:text-emerald-300/90",
+      dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+      pulse: false,
     };
   }
 

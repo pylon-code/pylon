@@ -9,8 +9,7 @@
  *   changing data must never change their height.
  * - Workflow expansion is presentation state. A live run stays expanded when
  *   it settles; older collapsed runs can still be opened at run granularity.
- * - Status reads through the shared DotMatrix language, with DOM-write
- *   elapsed timers and plain token counters.
+ * - Static status dots, DOM-write elapsed timers, plain token counters.
  */
 import { useAtomValue } from "@effect/atom-react";
 import type {
@@ -67,28 +66,27 @@ import {
   DialogTitle,
 } from "~/components/ui/dialog";
 import { Textarea } from "~/components/ui/textarea";
-import { DotMatrix, type DotMatrixState } from "./ui/dot-matrix";
 import { AgentLiveActivity } from "./AgentLiveActivity";
 
-/**
- * Agent status is a truth-bearing visual contract: the orbit is reserved for
- * running subagents, while queued and waiting agents use their own patterns.
- * Settled outcomes stay static except for attention states such as failure.
- */
-const STATUS_VISUALS: Record<RuntimeSubagent["status"], { matrix: DotMatrixState; label: string }> =
-  {
-    pending: { matrix: "queued", label: "Queued" },
-    running: { matrix: "orchestrating", label: "Working" },
-    waiting: { matrix: "waiting", label: "Waiting" },
-    idle: { matrix: "paused", label: "Idle · resumable" },
-    completed: { matrix: "success", label: "Completed" },
-    failed: { matrix: "error", label: "Failed" },
-    cancelled: { matrix: "stopped", label: "Stopped" },
-    interrupted: { matrix: "stopped", label: "Stopped" },
-  };
+/** Status truth stays in labels; the marker follows upstream's static dot vocabulary. */
+const STATUS_VISUALS: Record<RuntimeSubagent["status"], { dotClass: string; label: string }> = {
+  pending: { dotClass: "bg-info", label: "Queued" },
+  running: { dotClass: "bg-info", label: "Working" },
+  waiting: { dotClass: "bg-info", label: "Waiting" },
+  idle: { dotClass: "bg-muted-foreground/50", label: "Idle · resumable" },
+  completed: { dotClass: "bg-success", label: "Completed" },
+  failed: { dotClass: "bg-destructive", label: "Failed" },
+  cancelled: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
+  interrupted: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
+};
 
 function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
-  return <DotMatrix sizeRole="compact" aria-hidden state={STATUS_VISUALS[status].matrix} />;
+  return (
+    <span
+      aria-hidden
+      className={cn("size-1.5 shrink-0 rounded-full", STATUS_VISUALS[status].dotClass)}
+    />
+  );
 }
 
 function formatElapsedSeconds(totalSeconds: number): string {
@@ -220,9 +218,7 @@ function AgentRow({
   const liveActivityAvailable = liveActivityEligible && active;
 
   return (
-    // The marker track keeps a 14px alignment frame around the standard 12px
-    // Dot Matrix so the glyph cannot bleed into the title column.
-    <div className="grid h-[3.875rem] grid-cols-[0.875rem_minmax(0,1fr)_auto_auto_1.75rem_1.75rem] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
+    <div className="grid h-[3.875rem] grid-cols-[0.375rem_minmax(0,1fr)_auto_auto_1.75rem_1.75rem] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
       <span className="col-start-1 row-start-1 flex items-center">
         <StatusDot status={agent.status} />
       </span>
@@ -294,12 +290,11 @@ function AgentRow({
           agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
         )}
       >
-        {activity ?? visuals.label}
+        {activity ? `${visuals.label} · ${activity}` : visuals.label}
       </span>
       <span className="col-start-2 col-end-7 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
         {metadata.join(" · ")}
       </span>
-      <span className="sr-only">{visuals.label}</span>
     </div>
   );
 }

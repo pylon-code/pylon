@@ -688,8 +688,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
           <div className="flex min-h-5 items-center gap-1.5">
             <ConnectionStatusDot
               tooltipText={`Link created at ${formatAccessTimestamp(pairingLink.createdAt)}`}
-              state="queued"
-              colorClassName="text-warning"
+              dotClassName="bg-amber-400"
             />
             <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
           </div>
@@ -938,8 +937,8 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
           <div className="flex min-h-5 items-center gap-1.5">
             <ConnectionStatusDot
               tooltipText={statusTooltip}
-              state={isLive ? "success" : "offline"}
-              colorClassName={isLive ? undefined : "text-muted-foreground/40"}
+              dotClassName={isLive ? "bg-success" : "bg-muted-foreground/30"}
+              pingClassName={isLive ? "bg-success/60 duration-2000" : null}
             />
             <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
             {clientSession.current ? (
@@ -1366,17 +1365,14 @@ function SavedBackendListRow({
   const connectionState = environment.connection.phase;
   const isConnected = connectionState === "connected";
   const isConnecting = connectionState === "connecting" || connectionState === "reconnecting";
-  const connectionDot =
+  const stateDotClassName =
     connectionState === "connected"
-      ? { state: "success" as const, colorClassName: undefined }
+      ? "bg-success"
       : connectionState === "connecting" || connectionState === "reconnecting"
-        ? // Deliberate override: connecting here means "not yet available",
-          // not "in motion", so it borrows the warning tone rather than the
-          // spinner's default primary.
-          { state: "connecting" as const, colorClassName: "text-warning" }
+        ? "bg-warning"
         : connectionState === "error"
-          ? { state: "error" as const, colorClassName: undefined }
-          : { state: "offline" as const, colorClassName: "text-muted-foreground/40" };
+          ? "bg-destructive"
+          : "bg-muted-foreground/40";
   const statusTooltip = connectionStatusText(environment.connection);
   const errorTraceId = environment.connection.traceId;
   const { copyToClipboard: copyTraceIdToClipboard } = useCopyToClipboard<{ traceId: string }>({
@@ -1432,8 +1428,12 @@ function SavedBackendListRow({
           <div className="flex min-h-5 items-center gap-1.5">
             <ConnectionStatusDot
               tooltipText={statusTooltip}
-              state={connectionDot.state}
-              colorClassName={connectionDot.colorClassName}
+              dotClassName={stateDotClassName}
+              pingClassName={
+                connectionState === "connecting" || connectionState === "reconnecting"
+                  ? "bg-warning/60 duration-2000"
+                  : null
+              }
             />
             <h3 className="text-sm font-medium text-foreground">{environment.label}</h3>
           </div>
