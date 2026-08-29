@@ -757,33 +757,34 @@ exec ${process.execPath} ${mockAgentPath} "$@"
         ),
       );
 
-      const failed = yield* runTerminalTurn("failed", { T3_ACP_FAIL_PROMPT: "1" });
+      const actionablePromptFailure =
+        "402 Insufficient balance (including overdraft). Please add funds to continue.";
+      const failed = yield* runTerminalTurn("failed", {
+        T3_ACP_FAIL_PROMPT: "1",
+        T3_ACP_FAIL_PROMPT_MESSAGE: actionablePromptFailure,
+      });
       assert.equal(failed.result._tag, "Success");
       const serializedFailureResult = encodeUnknownJsonString(failed.result);
-      assert.notInclude(serializedFailureResult, "Mock prompt failure");
+      assert.notInclude(serializedFailureResult, actionablePromptFailure);
       assert.notInclude(serializedFailureResult, wrapperPath);
-      const failureNotice = failed.turnEvents.find((event) => event.type === "runtime.error");
-      assert.equal(failureNotice?.type, "runtime.error");
-      if (failureNotice?.type === "runtime.error") {
-        assert.deepEqual(failureNotice.payload, {
-          message: "Prime Agent stopped before sending a final response.",
-          detail: { kind: "missing-final-response", outcome: "failed" },
-        });
-        const serializedNotice = encodeUnknownJsonString(failureNotice);
-        assert.notInclude(serializedNotice, "Mock prompt failure");
-        assert.notInclude(serializedNotice, wrapperPath);
-      }
-      const serializedFailureEvents = encodeUnknownJsonString(failed.turnEvents);
-      assert.notInclude(serializedFailureEvents, "Mock prompt failure");
-      assert.notInclude(serializedFailureEvents, wrapperPath);
-      const failureTypes = failed.turnEvents.map((event) => event.type);
-      assert.isBelow(
-        failureTypes.lastIndexOf("runtime.error"),
-        failureTypes.lastIndexOf("turn.completed"),
+      assert.isFalse(
+        failed.turnEvents.some(
+          (event) => event.type === "runtime.warning" || event.type === "runtime.error",
+        ),
       );
       assert.equal(failed.turnEvents.at(-1)?.type, "turn.completed");
       const failedTerminal = failed.turnEvents.find(isTurnCompletedEvent);
-      assert.equal(failedTerminal?.payload.state, "failed");
+      assert.deepEqual(failedTerminal?.payload, {
+        state: "failed",
+        errorMessage: actionablePromptFailure,
+      });
+      const serializedFailureEvents = encodeUnknownJsonString(failed.turnEvents);
+      assert.include(serializedFailureEvents, actionablePromptFailure);
+      assert.notInclude(
+        serializedFailureEvents,
+        "Prime Agent stopped before sending a final response.",
+      );
+      assert.notInclude(serializedFailureEvents, wrapperPath);
 
       const privateThought = yield* runTerminalTurn("private-thought", {
         T3_ACP_EMIT_PRIVATE_THOUGHT_CHUNK: "1",
@@ -887,6 +888,7 @@ exec ${process.execPath} ${mockAgentPath} "$@"
         ...process.env,
         T3_ACP_PRIME_TERMINAL_QUIESCENCE_DELAY_MS: "500",
         T3_ACP_PRIME_TERMINAL_QUIESCENCE_OUTCOME: "error",
+        T3_ACP_PRIME_TERMINAL_QUIESCENCE_RESPONSE_TEXT: "   ",
         T3_ACP_REQUEST_LOG_PATH: requestLogPath,
         T3_ACP_ASSERT_TOP_LEVEL_ENV: "1",
         PRIME_AGENT_INTERNAL_TEST_WORKER: "nested",
@@ -919,7 +921,10 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     const terminal = yield* Fiber.join(terminalFiber);
     assert.isTrue(Option.isSome(terminal));
     if (Option.isSome(terminal)) {
-      assert.equal(terminal.value.payload.state, "failed");
+      assert.deepEqual(terminal.value.payload, {
+        state: "failed",
+        errorMessage: "Prime Agent stopped before sending a final response.",
+      });
     }
     yield* adapter.stopSession(threadId);
   }).pipe(Effect.scoped, Effect.provide(testLayer)),

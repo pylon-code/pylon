@@ -304,7 +304,7 @@ export function makePrimeAgentAdapter(
         | {
             readonly state: "failed";
             readonly errorMessage: string;
-            readonly terminalFailure?: boolean;
+            readonly nativeTerminalFailure?: boolean;
           }
         | { readonly state: "cancelled" },
       recordCompletedTurn = false,
@@ -344,7 +344,8 @@ export function makePrimeAgentAdapter(
         const shouldEmitMissingFinalResponseNotice =
           missingFinalResponse &&
           (effectiveOutcome.state === "completed" ||
-            (effectiveOutcome.state === "failed" && effectiveOutcome.terminalFailure === true));
+            (effectiveOutcome.state === "failed" &&
+              effectiveOutcome.nativeTerminalFailure === true));
         if (shouldEmitMissingFinalResponseNotice) {
           const failed = effectiveOutcome.state === "failed";
           yield* offerRuntimeEvent({
@@ -381,7 +382,7 @@ export function makePrimeAgentAdapter(
               ? {
                   state: "failed",
                   errorMessage:
-                    missingFinalResponse && effectiveOutcome.terminalFailure === true
+                    missingFinalResponse && effectiveOutcome.nativeTerminalFailure === true
                       ? PRIME_AGENT_STOPPED_WITHOUT_FINAL_RESPONSE
                       : effectiveOutcome.errorMessage,
                 }
@@ -403,7 +404,7 @@ export function makePrimeAgentAdapter(
         | {
             readonly state: "failed";
             readonly errorMessage: string;
-            readonly terminalFailure?: boolean;
+            readonly nativeTerminalFailure?: boolean;
           }
         | { readonly state: "cancelled" },
       recordCompletedTurn = false,
@@ -949,7 +950,7 @@ export function makePrimeAgentAdapter(
                 ? {
                     state: "failed",
                     errorMessage: PRIME_AGENT_TURN_FAILED,
-                    terminalFailure: true,
+                    nativeTerminalFailure: true,
                   }
                 : terminal?.state === "cancelled" || result.stopReason === "cancelled"
                   ? { state: "cancelled" }
@@ -967,16 +968,16 @@ export function makePrimeAgentAdapter(
           });
 
           return yield* restore(promptEffect).pipe(
-            Effect.catch(() =>
+            Effect.catch((error) =>
               Effect.gen(function* () {
                 yield* settleActiveTurn(ctx, turnId, {
                   state: "failed",
-                  errorMessage: PRIME_AGENT_TURN_FAILED,
-                  terminalFailure: true,
+                  errorMessage:
+                    error._tag === "ProviderAdapterRequestError" ? error.detail : error.message,
                 });
                 // Admission succeeded and the runtime event stream already
-                // carries the authoritative failed terminal. Returning the
-                // admitted turn prevents a second turn-start failure activity.
+                // carries the mapped prompt failure. Returning the admitted turn
+                // prevents a second turn-start failure activity.
                 return {
                   threadId: input.threadId,
                   turnId,

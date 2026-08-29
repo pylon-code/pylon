@@ -16,12 +16,17 @@ if (process.env.ACP_MOCK_EXIT_IMMEDIATELY_CODE !== undefined) {
 }
 
 const sessionId = "mock-session-1";
+const hangInitialize = process.env.ACP_MOCK_HANG_INITIALIZE === "1";
+const hangAuthenticate = process.env.ACP_MOCK_HANG_AUTHENTICATE === "1";
+const hangCreateSession = process.env.ACP_MOCK_HANG_CREATE_SESSION === "1";
+const hangPrompt = process.env.ACP_MOCK_HANG_PROMPT === "1";
 
 const program = Effect.gen(function* () {
   const agent = yield* AcpAgent.AcpAgent;
 
-  yield* agent.handleInitialize(() =>
-    Effect.succeed({
+  yield* agent.handleInitialize(() => {
+    if (hangInitialize) return Effect.never;
+    return Effect.succeed({
       protocolVersion: 1,
       agentCapabilities: {
         sessionCapabilities: {
@@ -32,16 +37,17 @@ const program = Effect.gen(function* () {
         name: "mock-agent",
         version: "0.0.0",
       },
-    }),
-  );
+    });
+  });
 
-  yield* agent.handleAuthenticate(() => Effect.succeed({}));
+  yield* agent.handleAuthenticate(() => (hangAuthenticate ? Effect.never : Effect.succeed({})));
   yield* agent.handleLogout(() => Effect.succeed({}));
-  yield* agent.handleCreateSession(() =>
-    Effect.succeed({
+  yield* agent.handleCreateSession(() => {
+    if (hangCreateSession) return Effect.never;
+    return Effect.succeed({
       sessionId,
-    }),
-  );
+    });
+  });
   yield* agent.handleLoadSession(() => Effect.succeed({}));
   yield* agent.handleListSessions(() =>
     Effect.succeed({
@@ -56,6 +62,8 @@ const program = Effect.gen(function* () {
 
   yield* agent.handlePrompt(() =>
     Effect.gen(function* () {
+      if (hangPrompt) return yield* Effect.never;
+
       yield* agent.client.requestPermission({
         sessionId,
         options: [
