@@ -87,7 +87,11 @@ with the turn already shown. The turn still needs a public final response before
 those checks succeed, root tool work, delegated children, and the parent response remain part of the
 original turn. Cancelling the turn stops this wait. If recovery exceeds the bound or Pylon cannot prove
 prompt admission, worker continuity, or stream continuity, it fails the turn once and closes that Prime session
-instead of retrying your prompt or guessing at missing output.
+instead of retrying your prompt or guessing at missing output. When the optional correlated lifecycle is
+negotiated, recovery is stricter: Pylon never copies missing prompt output from a snapshot. Prime must
+provide complete event continuity, and the completed-message transcript must exactly match messages
+Pylon already received through attributed live events. Any extra snapshot message closes the uncertain
+session rather than guessing whether it was your answer or unrelated background output.
 Restarting the Pylon server is a separate boundary and does not yet adopt Prime work that is still running
 in another process.
 
@@ -276,6 +280,10 @@ access off withholds both the tools and their instructions; it does not affect b
 - Heartbeat creation remains unavailable even though Prime Agent 0.8.1 exposes heartbeat methods. Prime does not identify a scheduled run in a way Pylon can safely match to a durable conversation turn and filesystem checkpoint. Clearing a heartbeat also does not return its underlying session to the normal lifecycle, so stopping or deleting the Pylon thread could otherwise leave invisible work behind. Pylon will not offer creation until recovery, clearing, stopping, and deletion can be made authoritative.
 - Prime's daemon-global pause/resume controls for inbound agent messages are intentionally not exposed;
   they can clear queued messages and reset limits across unrelated sessions.
+- Foreground prompts can wait safely behind native background work only when the installed Prime Agent
+  explicitly supports Pylon's correlated lifecycle extension and the live model controls already match.
+  Stock Prime Agent 0.8.1 instead returns a retryable busy result when Pylon can observe native activity;
+  it cannot close the narrow race where native work starts before ordinary prompt admission completes.
 - Prime Agent is not used for Pylon's background text-generation helpers in Early Access.
 - Quick questions are one-shot and temporary because Prime cannot recover or list them after reconnect.
   They are available only under the Supervised safeguards described above. Native scoped-model cycling

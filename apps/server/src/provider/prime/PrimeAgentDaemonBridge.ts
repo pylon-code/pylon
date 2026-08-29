@@ -48,7 +48,9 @@ export interface PrimeAgentDaemonClient {
     timeoutMs?: number,
   ) => Promise<unknown>;
   readonly enableRequestRecovery?: () => void;
-  readonly supportsServerCapability?: (capability: "queue_message_mutation") => boolean;
+  readonly supportsServerCapability?: (
+    capability: "queue_message_mutation" | "correlated_prompt_lifecycle_v1",
+  ) => boolean;
   readonly enableAutoReconnect?: (options: {
     readonly recoverDaemon: () => Promise<void>;
     readonly timeoutMs?: number;
@@ -124,6 +126,17 @@ export interface PrimeAgentDaemonAgentConnection {
     message: string,
     options?: PrimeAgentDaemonPromptOptions,
   ) => Promise<unknown>;
+  readonly submitCorrelatedPrompt?: (
+    message: string,
+    options: {
+      readonly correlationId: string;
+      readonly images?: ReadonlyArray<PrimeAgentDaemonImage>;
+      readonly queueIfBusy?: boolean;
+      readonly signal?: AbortSignal;
+    },
+  ) => Promise<unknown>;
+  readonly cancelPromptLifecycle?: (correlationId: string) => Promise<unknown>;
+  readonly getPromptLifecycles?: () => Promise<unknown>;
   readonly waitForHeadlessCompletion?: (options?: {
     readonly waitForRlmQuiescence?: boolean;
   }) => Promise<unknown>;

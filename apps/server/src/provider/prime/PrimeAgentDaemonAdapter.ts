@@ -75,8 +75,13 @@ import type {
 import {
   PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS,
   PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES,
+  primeAgentPromptLifecycleCanAdvance,
+  primeAgentPromptLifecycleIsSame,
+  primeAgentPromptLifecycleIsSuccessor,
   type PrimeDaemonEvent,
   type PrimeDaemonMessage,
+  type PrimeDaemonPromptLifecycleSnapshot,
+  type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import {
@@ -161,6 +166,9 @@ interface PrimeAgentDaemonActiveTurn {
   readonly id: TurnId;
   readonly controller: AbortController;
   readonly completed: Deferred.Deferred<void>;
+  /** Provider-private. Never publish or persist this native ownership token. */
+  readonly correlationId?: string | undefined;
+  correlatedLifecycle?: PrimeDaemonPromptLifecycleSnapshot | undefined;
   cancellationRequested: boolean;
   assistantTextStreamed: boolean;
   assistantTextEmitted: string;
@@ -198,6 +206,8 @@ interface PrimeAgentDaemonPendingInteraction {
   readonly nativeId: string;
   readonly method: PrimeAgentDaemonBlockingInteractionMethod;
   readonly selectOptions: ReadonlySet<string> | undefined;
+  readonly ownerTurnId: TurnId | undefined;
+  readonly ownerCorrelationId: string | undefined;
 }
 
 type PrimeAgentDaemonExtensionProjection =
@@ -294,6 +304,8 @@ function projectExtensionRequest(
 interface PrimeAgentDaemonPendingApproval {
   readonly nativeId: string;
   readonly requestType: PrimeAgentManagedPermissionRequestType;
+  readonly ownerTurnId: TurnId | undefined;
+  readonly ownerCorrelationId: string | undefined;
 }
 
 interface PrimeAgentDaemonSharedActivityStream {
@@ -340,6 +352,9 @@ interface PrimeAgentDaemonSessionContext {
   approvalsAcceptedForSession: boolean;
   activeTurn: PrimeAgentDaemonActiveTurn | undefined;
   nativeRunActive: boolean;
+  backgroundQuiescenceGeneration: number;
+  backgroundQuiescencePending: boolean;
+  backgroundQuiescenceController: AbortController | undefined;
   nativeBashActive: boolean;
   readonly activeNativeChildren: Set<string>;
   readonly knownNativeChildren: Map<string, PrimeAgentDaemonChild>;
@@ -459,11 +474,15 @@ type TurnOutcome =
       readonly state: "completed";
       readonly event: Extract<PrimeDaemonEvent, { readonly _tag: "RunCompleted" }>;
     }
-  | { readonly state: "completedWithoutMessage" }
+  | {
+      readonly state: "completedWithoutMessage";
+      readonly usageOverride?: PrimeDaemonUsage | undefined;
+    }
   | {
       readonly state: "failed";
       readonly errorMessage: string;
       readonly runtimeErrorMessage?: string;
+      readonly usageOverride?: PrimeDaemonUsage | undefined;
     }
   | { readonly state: "cancelled" };
 
@@ -1154,6 +1173,20 @@ export function makePrimeAgentDaemonAdapter(
         }
       });
 
+    const correlatedTranscriptSnapshotIsExact = (
+      context: PrimeAgentDaemonSessionContext,
+      event: Extract<PrimeDaemonEvent, { readonly _tag: "SessionResynced" }>,
+    ): boolean => {
+      if (event.replayContinuity !== "complete") return false;
+      const reconciliation = reconcileTranscriptTail({
+        observed: context.nativeTranscript,
+        observedCount: context.nativeTranscriptMessageCount,
+        snapshot: event.messages,
+        snapshotCount: event.state.messageCount,
+      });
+      return reconciliation !== undefined && reconciliation.missingMessages.length === 0;
+    };
+
     const reconcileTranscriptSnapshotLocked = (
       context: PrimeAgentDaemonSessionContext,
       event: Extract<PrimeDaemonEvent, { readonly _tag: "SessionResynced" }>,
@@ -1381,6 +1414,9 @@ export function makePrimeAgentDaemonAdapter(
       Effect.gen(function* () {
         const previousChildren = new Map(context.knownNativeChildren);
         const initialProjection = !context.agentRosterProjected;
+        const snapshotOwner = context.runtime.correlatedPromptLifecycleAvailable
+          ? undefined
+          : context.activeTurn;
         const previousActive = new Map(
           [...previousChildren].filter(
             ([, child]) => child.status === "queued" || child.status === "running",
@@ -1408,7 +1444,7 @@ export function makePrimeAgentDaemonAdapter(
             yield* publishDrafts(
               context,
               { _tag: "ChildUpdated", child: authoritativeChild },
-              context.activeTurn,
+              snapshotOwner,
             );
           }
         }
@@ -1419,11 +1455,7 @@ export function makePrimeAgentDaemonAdapter(
           const settled = { ...child, status: "cancelled" as const, error: undefined };
           context.knownNativeChildren.set(settled.id, settled);
           context.cancellationPendingNativeChildren.delete(settled.id);
-          yield* publishDrafts(
-            context,
-            { _tag: "ChildUpdated", child: settled },
-            context.activeTurn,
-          );
+          yield* publishDrafts(context, { _tag: "ChildUpdated", child: settled }, snapshotOwner);
         }
         yield* signalInactiveActivityWatchesLocked(context);
         context.agentRosterProjected = true;
@@ -1478,7 +1510,9 @@ export function makePrimeAgentDaemonAdapter(
         }
 
         const effectiveOutcome: TurnOutcome =
-          context.stopRequested || turn.cancellationRequested ? { state: "cancelled" } : outcome;
+          context.stopRequested || (turn.correlationId === undefined && turn.cancellationRequested)
+            ? { state: "cancelled" }
+            : outcome;
         turn.pendingRunCompletionHandoff = undefined;
         if (
           effectiveOutcome.state === "failed" &&
@@ -1515,10 +1549,39 @@ export function makePrimeAgentDaemonAdapter(
             turnId: turn.id,
             payload:
               effectiveOutcome.state === "completedWithoutMessage"
-                ? { state: "completed" }
+                ? {
+                    state: "completed",
+                    ...(effectiveOutcome.usageOverride === undefined
+                      ? {}
+                      : {
+                          usage: {
+                            inputTokens: effectiveOutcome.usageOverride.inputTokens,
+                            outputTokens: effectiveOutcome.usageOverride.outputTokens,
+                            cachedInputTokens: effectiveOutcome.usageOverride.cachedInputTokens,
+                            cacheWriteTokens: effectiveOutcome.usageOverride.cacheWriteTokens,
+                            totalTokens: effectiveOutcome.usageOverride.totalTokens,
+                          },
+                          totalCostUsd: effectiveOutcome.usageOverride.totalCostUsd,
+                        }),
+                  }
                 : effectiveOutcome.state === "cancelled"
                   ? { state: "cancelled", stopReason: "aborted" }
-                  : { state: "failed", errorMessage: effectiveOutcome.errorMessage },
+                  : {
+                      state: "failed",
+                      errorMessage: effectiveOutcome.errorMessage,
+                      ...(effectiveOutcome.usageOverride === undefined
+                        ? {}
+                        : {
+                            usage: {
+                              inputTokens: effectiveOutcome.usageOverride.inputTokens,
+                              outputTokens: effectiveOutcome.usageOverride.outputTokens,
+                              cachedInputTokens: effectiveOutcome.usageOverride.cachedInputTokens,
+                              cacheWriteTokens: effectiveOutcome.usageOverride.cacheWriteTokens,
+                              totalTokens: effectiveOutcome.usageOverride.totalTokens,
+                            },
+                            totalCostUsd: effectiveOutcome.usageOverride.totalCostUsd,
+                          }),
+                    },
           });
         }
 
@@ -1541,6 +1604,105 @@ export function makePrimeAgentDaemonAdapter(
       Effect.uninterruptible(
         withThreadLock(context.threadId, settleActiveTurnLocked(context, turn, outcome)),
       );
+
+    const failCorrelatedProtocolLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      turn: PrimeAgentDaemonActiveTurn,
+    ) =>
+      settleActiveTurnLocked(context, turn, {
+        state: "failed",
+        errorMessage: "Prime Agent returned invalid correlated prompt lifecycle data.",
+        runtimeErrorMessage: "Prime Agent returned invalid correlated prompt lifecycle data.",
+      });
+
+    const applyCorrelatedPromptLifecycleLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      lifecycle: PrimeDaemonPromptLifecycleSnapshot,
+      options: { readonly authoritativeSnapshot?: boolean } = {},
+    ) =>
+      Effect.gen(function* () {
+        const turn = context.activeTurn;
+        if (turn === undefined || turn.correlationId !== lifecycle.correlationId) return false;
+        const current = turn.correlatedLifecycle;
+        if (current !== undefined) {
+          if (lifecycle.revision === current.revision) {
+            if (primeAgentPromptLifecycleIsSame(lifecycle, current)) return false;
+            return yield* failCorrelatedProtocolLocked(context, turn);
+          }
+          const valid =
+            options.authoritativeSnapshot === true
+              ? primeAgentPromptLifecycleCanAdvance(current, lifecycle)
+              : primeAgentPromptLifecycleIsSuccessor(current, lifecycle);
+          if (!valid) return yield* failCorrelatedProtocolLocked(context, turn);
+        }
+        turn.correlatedLifecycle = lifecycle;
+        if (
+          lifecycle.phase !== "completed" &&
+          lifecycle.phase !== "cancelled" &&
+          lifecycle.phase !== "failed"
+        ) {
+          return false;
+        }
+        if (lifecycle.phase === "cancelled") {
+          return yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+        }
+        if (lifecycle.phase === "failed") {
+          return yield* settleActiveTurnLocked(context, turn, {
+            state: "failed",
+            errorMessage: "Prime Agent prompt failed.",
+            ...(lifecycle.usage === undefined ? {} : { usageOverride: lifecycle.usage }),
+          });
+        }
+        if (lifecycle.kind !== "model_prompt") {
+          return yield* settleActiveTurnLocked(context, turn, {
+            state: "completedWithoutMessage",
+            ...(lifecycle.usage === undefined ? {} : { usageOverride: lifecycle.usage }),
+          });
+        }
+        return yield* settleActiveTurnLocked(context, turn, {
+          state: "completed",
+          event: {
+            _tag: "RunCompleted",
+            messages: turn.completedRunMessages,
+            ...(lifecycle.usage === undefined ? {} : { usageOverride: lifecycle.usage }),
+          },
+        });
+      });
+
+    const cancelActiveTurnLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      turn: PrimeAgentDaemonActiveTurn,
+    ) =>
+      Effect.gen(function* () {
+        turn.cancellationRequested = true;
+        turn.controller.abort();
+        if (turn.correlationId === undefined) {
+          const abortExit = yield* context.runtime.abortAndClearQueue.pipe(
+            Effect.mapError((error) =>
+              runtimeOperationError(context.threadId, "session/abort-and-clear-queue", error),
+            ),
+            Effect.exit,
+          );
+          yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+          if (Exit.isFailure(abortExit)) return yield* Effect.failCause(abortExit.cause);
+          return;
+        }
+        const result = yield* context.runtime
+          .cancelPromptLifecycle(turn.correlationId)
+          .pipe(
+            Effect.mapError((error) =>
+              runtimeOperationError(context.threadId, "session/cancel-prompt", error),
+            ),
+          );
+        if (result.status === "cancelled") {
+          yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+        } else if (result.status === "expired" || result.status === "unknown") {
+          yield* settleActiveTurnLocked(context, turn, {
+            state: "failed",
+            errorMessage: "Prime Agent could not reconcile the cancelled prompt lifecycle.",
+          });
+        }
+      });
 
     const promotePendingRunCompletionToQueuedRun = (turn: PrimeAgentDaemonActiveTurn) => {
       const pending = turn.pendingRunCompletionHandoff;
@@ -1625,7 +1787,7 @@ export function makePrimeAgentDaemonAdapter(
             provider: PROVIDER,
             providerInstanceId: boundInstanceId,
             threadId: context.threadId,
-            ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
+            ...(pending.ownerTurnId === undefined ? {} : { turnId: pending.ownerTurnId }),
             requestId,
             payload: { response: { kind: "cancelled" } },
           });
@@ -1653,7 +1815,7 @@ export function makePrimeAgentDaemonAdapter(
             provider: PROVIDER,
             providerInstanceId: boundInstanceId,
             threadId: context.threadId,
-            ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
+            ...(pending.ownerTurnId === undefined ? {} : { turnId: pending.ownerTurnId }),
             requestId: RuntimeRequestId.make(requestId),
             payload: { requestType: pending.requestType, decision: "cancel" },
           });
@@ -1670,13 +1832,17 @@ export function makePrimeAgentDaemonAdapter(
       Effect.gen(function* () {
         context.approvalsAcceptedForSession = false;
         const turn = context.activeTurn;
-        if (turn !== undefined) {
-          turn.cancellationRequested = true;
-          turn.controller.abort();
-        }
-        yield* context.runtime.abortAndClearQueue.pipe(Effect.ignore);
-        if (turn !== undefined) {
-          yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+        if (turn?.correlationId !== undefined) {
+          yield* cancelActiveTurnLocked(context, turn).pipe(Effect.ignore);
+        } else {
+          if (turn !== undefined) {
+            turn.cancellationRequested = true;
+            turn.controller.abort();
+          }
+          yield* context.runtime.abortAndClearQueue.pipe(Effect.ignore);
+          if (turn !== undefined) {
+            yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+          }
         }
         yield* offerRuntimeEvent({
           type: "runtime.error",
@@ -1706,9 +1872,125 @@ export function makePrimeAgentDaemonAdapter(
         return false;
       });
 
+    /** Must be called with the thread lock held. */
+    const startBackgroundQuiescenceWatchLocked = (context: PrimeAgentDaemonSessionContext) => {
+      if (!context.runtime.rlmQuiescenceAvailable || context.stopped) return Effect.void;
+      if (context.backgroundQuiescencePending) {
+        // The native call may finish later, but its aborted signal prevents that older watch
+        // from clearing activity observed by the replacement generation.
+        context.backgroundQuiescenceController?.abort();
+      }
+      context.backgroundQuiescenceGeneration += 1;
+      const generation = context.backgroundQuiescenceGeneration;
+      const controller = new AbortController();
+      context.backgroundQuiescencePending = true;
+      context.backgroundQuiescenceController = controller;
+      const token = `background:${context.threadId}:${generation}`;
+      return context.runtime.waitForRlmQuiescence(token, controller.signal).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (context.backgroundQuiescenceGeneration === generation) {
+              context.backgroundQuiescencePending = false;
+              context.backgroundQuiescenceController = undefined;
+            }
+          }),
+        ),
+        Effect.ignore,
+        Effect.forkDetach,
+        Effect.asVoid,
+      );
+    };
+
+    const activeTurnForNativeEvent = (
+      context: PrimeAgentDaemonSessionContext,
+      event: PrimeDaemonEvent,
+    ): PrimeAgentDaemonActiveTurn | undefined => {
+      const turn = context.activeTurn;
+      if (
+        !context.runtime.correlatedPromptLifecycleAvailable ||
+        turn?.correlationId === undefined
+      ) {
+        return turn;
+      }
+      return event.attribution?.scope === "prompt" &&
+        turn?.correlationId === event.attribution.correlationId &&
+        turn.correlatedLifecycle?.deliveryCrossed === true
+        ? turn
+        : undefined;
+    };
+
+    interface CapturedExtensionOwner {
+      readonly turnId: TurnId | undefined;
+      readonly correlationId: string | undefined;
+    }
+
+    const captureExtensionOwnerLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      event: Extract<PrimeDaemonEvent, { readonly _tag: "ExtensionRequest" }>,
+    ): CapturedExtensionOwner | undefined => {
+      if (sessions.get(context.threadId) !== context || context.stopped || context.stopRequested) {
+        return undefined;
+      }
+      const turn = activeTurnForNativeEvent(context, event);
+      if (
+        context.runtime.correlatedPromptLifecycleAvailable &&
+        (turn?.correlationId === undefined || turn.cancellationRequested)
+      ) {
+        return undefined;
+      }
+      return { turnId: turn?.id, correlationId: turn?.correlationId };
+    };
+
+    const capturedExtensionOwnerIsCurrentLocked = (
+      context: PrimeAgentDaemonSessionContext,
+      event: Extract<PrimeDaemonEvent, { readonly _tag: "ExtensionRequest" }>,
+      owner: CapturedExtensionOwner,
+    ): boolean => {
+      if (sessions.get(context.threadId) !== context || context.stopped || context.stopRequested) {
+        return false;
+      }
+      if (!context.runtime.correlatedPromptLifecycleAvailable) return true;
+      const turn = activeTurnForNativeEvent(context, event);
+      return (
+        owner.turnId !== undefined &&
+        owner.correlationId !== undefined &&
+        turn !== undefined &&
+        !turn.cancellationRequested &&
+        turn.id === owner.turnId &&
+        turn.correlationId === owner.correlationId
+      );
+    };
+
+    const rejectExtensionRequest = (
+      context: PrimeAgentDaemonSessionContext,
+      event: Extract<PrimeDaemonEvent, { readonly _tag: "ExtensionRequest" }>,
+    ) =>
+      context.runtime
+        .respondToExtensionUiRequest(event.request.id, { cancelled: true })
+        .pipe(Effect.ignore);
+
     const consumeEvent = (context: PrimeAgentDaemonSessionContext, event: PrimeDaemonEvent) =>
       Effect.gen(function* () {
         yield* logNativeKind(context.threadId, event);
+        if (event._tag === "CorrelatedProtocolViolation") {
+          yield* withThreadLock(
+            context.threadId,
+            Effect.gen(function* () {
+              const turn = context.activeTurn;
+              if (turn?.correlationId !== undefined) {
+                yield* failCorrelatedProtocolLocked(context, turn);
+              }
+            }),
+          );
+          return;
+        }
+        if (event._tag === "PromptLifecycleUpdated") {
+          yield* withThreadLock(
+            context.threadId,
+            applyCorrelatedPromptLifecycleLocked(context, event.lifecycle),
+          );
+          return;
+        }
         if (event._tag === "SessionResynced") {
           const managedSourceVerified = yield* fileSystem
             .readFileString(context.managedExtensionPath)
@@ -1745,8 +2027,58 @@ export function makePrimeAgentDaemonAdapter(
                   return;
                 }
                 context.managedPlanProjectionEnabled = true;
-                if (reconnectGeneration !== undefined) {
-                  const activeTurn = context.activeTurn;
+                const activeTurn = context.activeTurn;
+                if (context.runtime.correlatedPromptLifecycleAvailable) {
+                  if (event.initialSnapshot !== true) {
+                    if (!correlatedTranscriptSnapshotIsExact(context, event)) {
+                      if (reconnectGeneration !== undefined) {
+                        context.runtime.resolveReconnectSnapshot(reconnectGeneration, false, false);
+                      }
+                      if (activeTurn?.correlationId !== undefined) {
+                        yield* settleActiveTurnLocked(context, activeTurn, {
+                          state: "failed",
+                          errorMessage:
+                            "Prime Agent transcript continuity could not be verified after synchronizing.",
+                          runtimeErrorMessage:
+                            "Prime Agent transcript continuity could not be verified after synchronizing.",
+                        });
+                      }
+                      context.stopRequested = true;
+                      reconnectRecoveryFailed = true;
+                      return;
+                    }
+                    if (activeTurn?.correlationId !== undefined) {
+                      const lifecycle = event.promptLifecycles?.records.find(
+                        (candidate) => candidate.correlationId === activeTurn.correlationId,
+                      );
+                      if (lifecycle === undefined) {
+                        if (reconnectGeneration !== undefined) {
+                          context.runtime.resolveReconnectSnapshot(
+                            reconnectGeneration,
+                            false,
+                            false,
+                          );
+                        }
+                        yield* settleActiveTurnLocked(context, activeTurn, {
+                          state: "failed",
+                          errorMessage:
+                            "Prime Agent could not recover the correlated prompt lifecycle after synchronizing.",
+                          runtimeErrorMessage:
+                            "Prime Agent could not recover the correlated prompt lifecycle after synchronizing.",
+                        });
+                        context.stopRequested = true;
+                        reconnectRecoveryFailed = true;
+                        return;
+                      }
+                      yield* applyCorrelatedPromptLifecycleLocked(context, lifecycle, {
+                        authoritativeSnapshot: true,
+                      });
+                    }
+                    if (reconnectGeneration !== undefined) {
+                      context.runtime.resolveReconnectSnapshot(reconnectGeneration, true, false);
+                    }
+                  }
+                } else if (reconnectGeneration !== undefined) {
                   const pendingRunCompletionBefore = activeTurn?.pendingRunCompletionHandoff;
                   const reconciled = yield* reconcileTranscriptSnapshotLocked(context, event);
                   recoveredSnapshotRunCompletion =
@@ -1781,6 +2113,21 @@ export function makePrimeAgentDaemonAdapter(
                 }
                 context.autoCompactionEnabled = event.state.autoCompactionEnabled;
                 context.nativeRunActive = event.state.isStreaming;
+                if (
+                  context.activeTurn === undefined &&
+                  (event.state.isStreaming ||
+                    event.state.isCompacting ||
+                    event.state.isBashRunning ||
+                    event.state.retryAttempt > 0 ||
+                    event.state.inputQueue.activeAction ||
+                    event.state.inputQueue.steeringCount + event.state.inputQueue.followUpCount >
+                      0 ||
+                    event.children.some(
+                      (child) => child.status === "queued" || child.status === "running",
+                    ))
+                ) {
+                  yield* startBackgroundQuiescenceWatchLocked(context);
+                }
                 context.nativeBashActive = event.state.isBashRunning;
                 const compactionWasActive = context.activeCompactionScope !== undefined;
                 context.activeCompactionScope = event.state.isCompacting
@@ -1825,7 +2172,11 @@ export function makePrimeAgentDaemonAdapter(
                     ? { autoCompactionEnabled: event.state.autoCompactionEnabled }
                     : {}),
                 });
-                const turn = context.activeTurn;
+                const turn =
+                  context.runtime.correlatedPromptLifecycleAvailable &&
+                  context.activeTurn?.correlationId !== undefined
+                    ? undefined
+                    : context.activeTurn;
                 if (turn !== undefined) {
                   turn.queuedInputCount =
                     event.state.inputQueue.steeringCount + event.state.inputQueue.followUpCount;
@@ -1904,7 +2255,10 @@ export function makePrimeAgentDaemonAdapter(
                   : "Prime Agent session state could not be reconciled.",
               ),
             ).pipe(Effect.ignore, Effect.forkDetach);
-          } else if (context.lifecycleStarted) {
+          } else if (
+            context.lifecycleStarted &&
+            !context.runtime.correlatedPromptLifecycleAvailable
+          ) {
             yield* refreshContextUsage(context).pipe(Effect.forkDetach);
           }
           return;
@@ -1912,6 +2266,14 @@ export function makePrimeAgentDaemonAdapter(
         if (event._tag === "SessionReplaced") return;
 
         if (event._tag === "ExtensionRequest") {
+          const capturedOwner = yield* withThreadLock(
+            context.threadId,
+            Effect.sync(() => captureExtensionOwnerLocked(context, event)),
+          );
+          if (capturedOwner === undefined) {
+            yield* rejectExtensionRequest(context, event);
+            return;
+          }
           const permissionProjection = projectPrimeAgentManagedPermissionRequest(
             event.request,
             context.permissionToken ?? "",
@@ -1920,11 +2282,8 @@ export function makePrimeAgentDaemonAdapter(
             yield* withThreadLock(
               context.threadId,
               Effect.gen(function* () {
-                if (
-                  sessions.get(context.threadId) !== context ||
-                  context.stopped ||
-                  context.stopRequested
-                ) {
+                if (!capturedExtensionOwnerIsCurrentLocked(context, event, capturedOwner)) {
+                  yield* rejectExtensionRequest(context, event);
                   return;
                 }
                 const nativeId = event.request.id.trim();
@@ -1967,6 +2326,8 @@ export function makePrimeAgentDaemonAdapter(
                 const pending: PrimeAgentDaemonPendingApproval = {
                   nativeId,
                   requestType: permissionProjection.requestType,
+                  ownerTurnId: capturedOwner.turnId,
+                  ownerCorrelationId: capturedOwner.correlationId,
                 };
                 context.pendingApprovals.set(requestId, pending);
                 const stamp = yield* makeEventStamp();
@@ -1989,9 +2350,9 @@ export function makePrimeAgentDaemonAdapter(
                             provider: PROVIDER,
                             providerInstanceId: boundInstanceId,
                             threadId: context.threadId,
-                            ...(context.activeTurn === undefined
+                            ...(pending.ownerTurnId === undefined
                               ? {}
-                              : { turnId: context.activeTurn.id }),
+                              : { turnId: pending.ownerTurnId }),
                             requestId: RuntimeRequestId.make(requestId),
                             payload: {
                               requestType: pending.requestType,
@@ -2011,7 +2372,7 @@ export function makePrimeAgentDaemonAdapter(
                   provider: PROVIDER,
                   providerInstanceId: boundInstanceId,
                   threadId: context.threadId,
-                  ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
+                  ...(capturedOwner.turnId === undefined ? {} : { turnId: capturedOwner.turnId }),
                   requestId: RuntimeRequestId.make(requestId),
                   payload: {
                     requestType: permissionProjection.requestType,
@@ -2050,14 +2411,22 @@ export function makePrimeAgentDaemonAdapter(
                   Effect.gen(function* () {
                     if (sessions.get(context.threadId) !== context || context.stopped) return false;
                     const turn = context.activeTurn;
-                    if (turn !== undefined) {
-                      turn.cancellationRequested = true;
-                      turn.controller.abort();
-                    }
-                    const abortExit = yield* context.runtime.abortAndClearQueue.pipe(Effect.exit);
-                    if (turn !== undefined) {
-                      yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
-                    }
+                    const abortExit =
+                      turn?.correlationId !== undefined
+                        ? yield* cancelActiveTurnLocked(context, turn).pipe(Effect.exit)
+                        : yield* Effect.gen(function* () {
+                            if (turn !== undefined) {
+                              turn.cancellationRequested = true;
+                              turn.controller.abort();
+                            }
+                            const exit = yield* context.runtime.abortAndClearQueue.pipe(
+                              Effect.exit,
+                            );
+                            if (turn !== undefined) {
+                              yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+                            }
+                            return exit;
+                          });
                     yield* offerRuntimeEvent({
                       type: "runtime.error",
                       ...(yield* makeEventStamp()),
@@ -2070,7 +2439,7 @@ export function makePrimeAgentDaemonAdapter(
                         class: "provider_error",
                       },
                     });
-                    return Exit.isFailure(abortExit);
+                    return abortExit._tag === "Failure";
                   }),
                 );
                 if (abortFailed) {
@@ -2085,11 +2454,7 @@ export function makePrimeAgentDaemonAdapter(
             yield* withThreadLock(
               context.threadId,
               Effect.gen(function* () {
-                if (
-                  sessions.get(context.threadId) !== context ||
-                  context.stopped ||
-                  context.stopRequested
-                ) {
+                if (!capturedExtensionOwnerIsCurrentLocked(context, event, capturedOwner)) {
                   return;
                 }
                 yield* offerRuntimeEvent({
@@ -2098,7 +2463,7 @@ export function makePrimeAgentDaemonAdapter(
                   provider: PROVIDER,
                   providerInstanceId: boundInstanceId,
                   threadId: context.threadId,
-                  ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
+                  ...(capturedOwner.turnId === undefined ? {} : { turnId: capturedOwner.turnId }),
                   payload: {
                     message: unsupportedEditor
                       ? "Prime Agent editor interactions are disabled because their prefills cannot be stored safely."
@@ -2118,11 +2483,8 @@ export function makePrimeAgentDaemonAdapter(
             yield* withThreadLock(
               context.threadId,
               Effect.gen(function* () {
-                if (
-                  sessions.get(context.threadId) !== context ||
-                  context.stopped ||
-                  context.stopRequested
-                ) {
+                if (!capturedExtensionOwnerIsCurrentLocked(context, event, capturedOwner)) {
+                  yield* rejectExtensionRequest(context, event);
                   return;
                 }
                 yield* offerRuntimeEvent({
@@ -2131,7 +2493,7 @@ export function makePrimeAgentDaemonAdapter(
                   provider: PROVIDER,
                   providerInstanceId: boundInstanceId,
                   threadId: context.threadId,
-                  ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
+                  ...(capturedOwner.turnId === undefined ? {} : { turnId: capturedOwner.turnId }),
                   payload: { presentation },
                 });
               }),
@@ -2143,11 +2505,8 @@ export function makePrimeAgentDaemonAdapter(
           yield* withThreadLock(
             context.threadId,
             Effect.gen(function* () {
-              if (
-                sessions.get(context.threadId) !== context ||
-                context.stopped ||
-                context.stopRequested
-              ) {
+              if (!capturedExtensionOwnerIsCurrentLocked(context, event, capturedOwner)) {
+                yield* rejectExtensionRequest(context, event);
                 return;
               }
               const requestId = SessionInteractionRequestId.make(yield* randomUUIDv4);
@@ -2159,6 +2518,8 @@ export function makePrimeAgentDaemonAdapter(
                   blocking.request.kind === "select"
                     ? new Set(blocking.request.options)
                     : undefined,
+                ownerTurnId: capturedOwner.turnId,
+                ownerCorrelationId: capturedOwner.correlationId,
               };
               context.pendingInteractions.set(requestId, pending);
               const timeoutPublished =
@@ -2180,9 +2541,9 @@ export function makePrimeAgentDaemonAdapter(
                           provider: PROVIDER,
                           providerInstanceId: boundInstanceId,
                           threadId: context.threadId,
-                          ...(context.activeTurn === undefined
+                          ...(pending.ownerTurnId === undefined
                             ? {}
-                            : { turnId: context.activeTurn.id }),
+                            : { turnId: pending.ownerTurnId }),
                           requestId,
                           payload: { response: { kind: "cancelled" } },
                         });
@@ -2199,7 +2560,7 @@ export function makePrimeAgentDaemonAdapter(
                 provider: PROVIDER,
                 providerInstanceId: boundInstanceId,
                 threadId: context.threadId,
-                ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
+                ...(capturedOwner.turnId === undefined ? {} : { turnId: capturedOwner.turnId }),
                 requestId,
                 payload: { request: blocking.request },
               });
@@ -2274,8 +2635,20 @@ export function makePrimeAgentDaemonAdapter(
             context.threadId,
             Effect.gen(function* () {
               context.nativeRunActive = false;
-              const turn = context.activeTurn;
+              const turn = activeTurnForNativeEvent(context, event);
               if (turn === undefined) return false;
+              if (context.runtime.correlatedPromptLifecycleAvailable) {
+                const observed = new Set(
+                  turn.completedRunMessages.map(primeDaemonMessageFingerprint),
+                );
+                for (const message of event.messages) {
+                  const fingerprint = primeDaemonMessageFingerprint(message);
+                  if (observed.has(fingerprint)) continue;
+                  observed.add(fingerprint);
+                  turn.completedRunMessages.push(message);
+                }
+                return false;
+              }
               if (turn.queuedInputCount > 0) {
                 turn.completedRunMessages.push(...event.messages);
                 turn.awaitingQueuedRun = true;
@@ -2329,13 +2702,16 @@ export function makePrimeAgentDaemonAdapter(
             context.threadId,
             Effect.gen(function* () {
               if (sessions.get(context.threadId) !== context || context.stopped) return;
-              const turn = context.activeTurn;
+              const turn = activeTurnForNativeEvent(context, event);
+              if (turn === undefined) yield* startBackgroundQuiescenceWatchLocked(context);
               context.activeCompactionScope ??= turn === undefined ? {} : { turnId: turn.id };
               yield* updateCompactionProjectionLocked(context, {
                 status: context.compactionAbortRequested ? "abort-requested" : "compacting",
                 abortable: true,
               });
-              yield* publishDrafts(context, event, turn);
+              if (!context.runtime.correlatedPromptLifecycleAvailable || turn !== undefined) {
+                yield* publishDrafts(context, event, turn);
+              }
             }),
           );
           return;
@@ -2346,14 +2722,19 @@ export function makePrimeAgentDaemonAdapter(
             context.threadId,
             Effect.gen(function* () {
               if (sessions.get(context.threadId) !== context || context.stopped) return false;
-              const turn = context.activeTurn;
+              const turn = activeTurnForNativeEvent(context, event);
               const compactionScope = context.activeCompactionScope;
               const compactionTurnId =
                 compactionScope?.turnId ?? (turn?.command === "compact" ? turn.id : undefined);
               const pendingHandoff = turn?.pendingRunCompletionHandoff;
               // Prime reports exhausted overflow recovery with an unmatched
               // compaction_end. Only a previously observed compaction owns an item.
-              if (compactionScope !== undefined) yield* publishDrafts(context, event, turn);
+              if (
+                compactionScope !== undefined &&
+                (!context.runtime.correlatedPromptLifecycleAvailable || turn !== undefined)
+              ) {
+                yield* publishDrafts(context, event, turn);
+              }
               // willRetry means the model prompt will continue after this completed
               // compaction; it does not mean another compaction attempt is active.
               context.activeCompactionScope = undefined;
@@ -2367,6 +2748,7 @@ export function makePrimeAgentDaemonAdapter(
                 // post-compaction continuation its own complete handoff window.
                 yield* restartPendingRunCompletionHandoffLocked(context, turn);
               }
+              if (turn?.correlationId !== undefined) return true;
               if (turn?.command !== "compact" || compactionTurnId !== turn.id) return true;
               yield* settleActiveTurnLocked(
                 context,
@@ -2384,7 +2766,13 @@ export function makePrimeAgentDaemonAdapter(
               return true;
             }),
           );
-          if (terminal) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+          if (
+            terminal &&
+            (!context.runtime.correlatedPromptLifecycleAvailable ||
+              event.attribution?.scope !== "prompt")
+          ) {
+            yield* refreshContextUsage(context).pipe(Effect.forkDetach);
+          }
           return;
         }
 
@@ -2400,7 +2788,8 @@ export function makePrimeAgentDaemonAdapter(
                 yield* settleActiveTurnLocked(
                   context,
                   turn,
-                  turn.cancellationRequested || context.stopRequested
+                  context.stopRequested ||
+                    (turn.correlationId === undefined && turn.cancellationRequested)
                     ? { state: "cancelled" }
                     : {
                         state: "failed",
@@ -2451,12 +2840,28 @@ export function makePrimeAgentDaemonAdapter(
           context.threadId,
           Effect.gen(function* () {
             if (sessions.get(context.threadId) !== context || context.stopped) return;
-            const turn = context.activeTurn;
-            let publishEvent = true;
+            const turn = activeTurnForNativeEvent(context, event);
+            let publishEvent =
+              !context.runtime.correlatedPromptLifecycleAvailable ||
+              turn !== undefined ||
+              event._tag === "ConnectionStatus";
             if (event._tag === "ConnectionStatus" && event.status === "reconnecting") {
               context.managedPlanProjectionEnabled = false;
             }
+            if (
+              turn === undefined &&
+              ((event._tag === "ChildUpdated" &&
+                (event.child.status === "queued" || event.child.status === "running")) ||
+                event._tag === "BashStarted" ||
+                event._tag === "BashOutput" ||
+                event._tag === "RetryStarted" ||
+                (event._tag === "QueueChanged" &&
+                  (event.queuedCount > 0 || event.active !== undefined)))
+            ) {
+              yield* startBackgroundQuiescenceWatchLocked(context);
+            }
             if (event._tag === "RunStarted") {
+              if (turn === undefined) yield* startBackgroundQuiescenceWatchLocked(context);
               observeNativeRunStarted(context, turn);
             } else if (event._tag === "MessageCompleted") {
               context.nativeTranscriptMessageCount += appendTranscriptMessages(
@@ -2465,6 +2870,16 @@ export function makePrimeAgentDaemonAdapter(
                 [event.message],
               );
               if (turn !== undefined) {
+                if (context.runtime.correlatedPromptLifecycleAvailable) {
+                  const fingerprint = primeDaemonMessageFingerprint(event.message);
+                  if (
+                    !turn.completedRunMessages.some(
+                      (message) => primeDaemonMessageFingerprint(message) === fingerprint,
+                    )
+                  ) {
+                    turn.completedRunMessages.push(event.message);
+                  }
+                }
                 if (event.message.role === "assistant") {
                   for (const toolCall of event.message.toolCalls) {
                     recordCorrelatedToolName(turn.durableToolCallNames, toolCall.id, toolCall.name);
@@ -2538,7 +2953,7 @@ export function makePrimeAgentDaemonAdapter(
               };
               context.nativeQueueActionActive = event.active !== undefined;
               yield* updateInputQueueProjection(context, queue);
-              if (turn !== undefined) {
+              if (turn !== undefined && turn.correlationId === undefined) {
                 turn.queuedInputCount = event.queuedCount;
                 if (turn.awaitingQueuedRun && event.active !== undefined) {
                   context.inputQueueClearPending = false;
@@ -2592,12 +3007,13 @@ export function makePrimeAgentDaemonAdapter(
               };
             }
             if (publishEvent) {
-              yield* publishDrafts(context, event, context.activeTurn);
+              yield* publishDrafts(context, event, turn);
             }
           }),
         );
         if (
           context.lifecycleStarted &&
+          !context.runtime.correlatedPromptLifecycleAvailable &&
           event._tag === "ConnectionStatus" &&
           event.status === "connected"
         ) {
@@ -2631,6 +3047,9 @@ export function makePrimeAgentDaemonAdapter(
       Effect.gen(function* () {
         if (sessions.get(context.threadId) !== context || context.stopped) return;
         context.stopRequested = true;
+        context.backgroundQuiescenceController?.abort();
+        context.backgroundQuiescenceController = undefined;
+        context.backgroundQuiescencePending = false;
         yield* endActiveSideQuestionLocked(context);
         for (const watchedAgentId of new Set([
           ...context.activityWatchStops.keys(),
@@ -2749,7 +3168,7 @@ export function makePrimeAgentDaemonAdapter(
       turn: PrimeAgentDaemonActiveTurn,
     ) =>
       Effect.gen(function* () {
-        if (!context.runtime.rlmQuiescenceAvailable) return;
+        if (turn.correlationId !== undefined || !context.runtime.rlmQuiescenceAvailable) return;
         turn.terminalQuiescenceGeneration += 1;
         const token = rlmQuiescenceToken(turn.id, turn.terminalQuiescenceGeneration);
         turn.terminalQuiescenceToken = token;
@@ -3158,6 +3577,9 @@ export function makePrimeAgentDaemonAdapter(
             approvalsAcceptedForSession: false,
             activeTurn: undefined,
             nativeRunActive: runtime.initialSnapshot.state.isStreaming,
+            backgroundQuiescenceGeneration: 0,
+            backgroundQuiescencePending: false,
+            backgroundQuiescenceController: undefined,
             nativeBashActive: runtime.initialSnapshot.state.isBashRunning,
             activeNativeChildren: new Set(
               runtime.initialSnapshot.children
@@ -3233,6 +3655,9 @@ export function makePrimeAgentDaemonAdapter(
             Stream.runForEach((event) => consumeEvent(context, event)),
             Effect.forkChild,
           );
+          if (runtime.inputAdmissionBusy) {
+            yield* startBackgroundQuiescenceWatchLocked(context);
+          }
 
           context.lifecycleStarted = true;
           yield* refreshContextUsage(context).pipe(Effect.forkDetach);
@@ -3378,7 +3803,33 @@ export function makePrimeAgentDaemonAdapter(
               }
 
               const requestedModel = modelSelection?.model.trim();
+              const thinkingLevel =
+                turnControls.thinkingLevel === PRIME_AGENT_INHERIT_MODEL_OPTION
+                  ? context.defaultThinkingLevel
+                  : turnControls.thinkingLevel;
+              const serviceTier =
+                turnControls.serviceTier === PRIME_AGENT_INHERIT_MODEL_OPTION
+                  ? context.defaultServiceTier
+                  : turnControls.serviceTier;
+              const controlsMatchCurrent =
+                (requestedModel === undefined ||
+                  requestedModel.length === 0 ||
+                  requestedModel === context.session.model) &&
+                (thinkingLevel === undefined || thinkingLevel === context.currentThinkingLevel) &&
+                (serviceTier === undefined || serviceTier === context.currentServiceTier);
               if (activeTurn !== undefined) {
+                if (
+                  activeTurn.correlationId !== undefined &&
+                  activeTurn.correlatedLifecycle?.deliveryCrossed !== true
+                ) {
+                  return yield* new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "sendTurn",
+                    reason: "busy",
+                    issue:
+                      "Prime Agent background work is still running. Try again after it finishes.",
+                  });
+                }
                 if (activeTurn.command === "compact") {
                   return yield* new ProviderAdapterValidationError({
                     provider: PROVIDER,
@@ -3386,21 +3837,7 @@ export function makePrimeAgentDaemonAdapter(
                     issue: "Prime Agent cannot steer an active context compaction.",
                   });
                 }
-                const thinkingLevel =
-                  turnControls.thinkingLevel === PRIME_AGENT_INHERIT_MODEL_OPTION
-                    ? context.defaultThinkingLevel
-                    : turnControls.thinkingLevel;
-                const serviceTier =
-                  turnControls.serviceTier === PRIME_AGENT_INHERIT_MODEL_OPTION
-                    ? context.defaultServiceTier
-                    : turnControls.serviceTier;
-                if (
-                  (requestedModel !== undefined &&
-                    requestedModel.length > 0 &&
-                    requestedModel !== context.session.model) ||
-                  (thinkingLevel !== undefined && thinkingLevel !== context.currentThinkingLevel) ||
-                  (serviceTier !== undefined && serviceTier !== context.currentServiceTier)
-                ) {
+                if (!controlsMatchCurrent) {
                   return yield* new ProviderAdapterValidationError({
                     provider: PROVIDER,
                     operation: "sendTurn",
@@ -3436,10 +3873,27 @@ export function makePrimeAgentDaemonAdapter(
                 };
               }
 
-              if (
+              const knownCompactionBusy =
                 context.activeCompactionScope !== undefined ||
-                context.manualCompactionRequestActive
+                context.manualCompactionRequestActive;
+              const nativeInputBusy = context.runtime.inputAdmissionBusy;
+              const admissionBusy =
+                nativeInputBusy ||
+                (context.runtime.correlatedPromptLifecycleAvailable && knownCompactionBusy);
+              if (
+                admissionBusy &&
+                (!context.runtime.correlatedPromptLifecycleAvailable || !controlsMatchCurrent)
               ) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "sendTurn",
+                  reason: "busy",
+                  issue:
+                    "Prime Agent background work is still running. Try again after it finishes.",
+                });
+              }
+
+              if (!context.runtime.correlatedPromptLifecycleAvailable && knownCompactionBusy) {
                 return yield* new ProviderAdapterValidationError({
                   provider: PROVIDER,
                   operation: "sendTurn",
@@ -3468,12 +3922,18 @@ export function makePrimeAgentDaemonAdapter(
                     "Prime Agent cannot return to its own default model in a running session. Start a new thread to use Prime Agent Default.",
                 });
               }
-              yield* applyTurnSelection(context, input.threadId, requestedModel, turnControls);
+              if (!admissionBusy) {
+                yield* applyTurnSelection(context, input.threadId, requestedModel, turnControls);
+              }
               const turnId = TurnId.make(yield* randomUUIDv4);
+              const correlationId = context.runtime.correlatedPromptLifecycleAvailable
+                ? yield* randomUUIDv4
+                : undefined;
               const turn: PrimeAgentDaemonActiveTurn = {
                 id: turnId,
                 controller: new AbortController(),
                 completed: yield* Deferred.make<void>(),
+                ...(correlationId === undefined ? {} : { correlationId }),
                 cancellationRequested: false,
                 assistantTextStreamed: false,
                 assistantTextEmitted: "",
@@ -3482,10 +3942,12 @@ export function makePrimeAgentDaemonAdapter(
                 activeAssistantItemId: undefined,
                 lastAssistantHadRenderableText: false,
                 runCompletionHandoffSequence: 0,
-                terminalQuiescenceGeneration: context.runtime.rlmQuiescenceAvailable ? 1 : 0,
-                terminalQuiescenceToken: context.runtime.rlmQuiescenceAvailable
-                  ? rlmQuiescenceToken(turnId, 1)
-                  : undefined,
+                terminalQuiescenceGeneration:
+                  correlationId === undefined && context.runtime.rlmQuiescenceAvailable ? 1 : 0,
+                terminalQuiescenceToken:
+                  correlationId === undefined && context.runtime.rlmQuiescenceAvailable
+                    ? rlmQuiescenceToken(turnId, 1)
+                    : undefined,
                 pendingRunCompletionHandoff: undefined,
                 queuedInputCount: 0,
                 awaitingQueuedRun: false,
@@ -3538,20 +4000,40 @@ export function makePrimeAgentDaemonAdapter(
               turnId: turn.id,
               payload: { model: turnModel },
             });
-            yield* context.runtime
-              .prompt({
-                text,
-                ...(images.length === 0 ? {} : { images }),
-                ...(initialRlmQuiescenceToken === undefined
-                  ? {}
-                  : { rlmQuiescenceToken: initialRlmQuiescenceToken }),
-                signal: turn.controller.signal,
-              })
-              .pipe(
-                Effect.mapError((error) =>
-                  runtimeOperationError(input.threadId, "session/prompt", error),
-                ),
+            if (turn.correlationId !== undefined) {
+              const lifecycle = yield* context.runtime
+                .submitCorrelatedPrompt({
+                  text,
+                  correlationId: turn.correlationId,
+                  queueIfBusy: true,
+                  ...(images.length === 0 ? {} : { images }),
+                  signal: turn.controller.signal,
+                })
+                .pipe(
+                  Effect.mapError((error) =>
+                    runtimeOperationError(input.threadId, "session/prompt", error),
+                  ),
+                );
+              yield* withThreadLock(
+                context.threadId,
+                applyCorrelatedPromptLifecycleLocked(context, lifecycle),
               );
+            } else {
+              yield* context.runtime
+                .prompt({
+                  text,
+                  ...(images.length === 0 ? {} : { images }),
+                  ...(initialRlmQuiescenceToken === undefined
+                    ? {}
+                    : { rlmQuiescenceToken: initialRlmQuiescenceToken }),
+                  signal: turn.controller.signal,
+                })
+                .pipe(
+                  Effect.mapError((error) =>
+                    runtimeOperationError(input.threadId, "session/prompt", error),
+                  ),
+                );
+            }
             if (initialRlmQuiescenceToken !== undefined) {
               yield* awaitRlmQuiescence(context, turn, initialRlmQuiescenceToken).pipe(
                 Effect.catch((error) =>
@@ -3588,6 +4070,10 @@ export function makePrimeAgentDaemonAdapter(
           return yield* restore(runPrompt).pipe(
             Effect.catch(() =>
               Effect.gen(function* () {
+                if (turn.correlationId !== undefined && turn.cancellationRequested) {
+                  yield* Deferred.await(turn.completed);
+                  return result;
+                }
                 const cancelled = turn.cancellationRequested || turn.controller.signal.aborted;
                 yield* settleActiveTurn(
                   context,
@@ -3607,10 +4093,7 @@ export function makePrimeAgentDaemonAdapter(
                 context.threadId,
                 Effect.gen(function* () {
                   if (context.activeTurn !== turn) return;
-                  turn.cancellationRequested = true;
-                  turn.controller.abort();
-                  yield* context.runtime.abortAndClearQueue.pipe(Effect.ignore);
-                  yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+                  yield* cancelActiveTurnLocked(context, turn).pipe(Effect.ignore);
                 }),
               ),
             ),
@@ -3634,21 +4117,11 @@ export function makePrimeAgentDaemonAdapter(
               issue: `Turn '${turnId}' is not active.`,
             });
           }
-          if (turn !== undefined) {
-            turn.cancellationRequested = true;
-            turn.controller.abort();
-          }
           yield* clearPendingApprovalsLocked(context, true);
-          const abortExit = yield* context.runtime.abortAndClearQueue.pipe(
-            Effect.mapError((error) =>
-              runtimeOperationError(threadId, "session/abort-and-clear-queue", error),
-            ),
-            Effect.exit,
-          );
-          if (turn !== undefined) {
-            yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+          if (context.runtime.correlatedPromptLifecycleAvailable) {
+            yield* clearPendingInteractionsLocked(context, true);
           }
-          if (Exit.isFailure(abortExit)) return yield* Effect.failCause(abortExit.cause);
+          if (turn !== undefined) yield* cancelActiveTurnLocked(context, turn);
         }),
       );
 
@@ -3662,7 +4135,17 @@ export function makePrimeAgentDaemonAdapter(
         Effect.gen(function* () {
           const context = yield* requireSession(threadId);
           const pending = context.pendingApprovals.get(requestId);
-          if (pending === undefined) {
+          const activeTurn = context.activeTurn;
+          if (
+            pending === undefined ||
+            (context.runtime.correlatedPromptLifecycleAvailable &&
+              (pending.ownerTurnId === undefined ||
+                pending.ownerCorrelationId === undefined ||
+                activeTurn === undefined ||
+                activeTurn.cancellationRequested ||
+                pending.ownerTurnId !== activeTurn.id ||
+                pending.ownerCorrelationId !== activeTurn.correlationId))
+          ) {
             return yield* new ProviderAdapterRequestError({
               provider: PROVIDER,
               method: "session/request",
@@ -3696,26 +4179,13 @@ export function makePrimeAgentDaemonAdapter(
             provider: PROVIDER,
             providerInstanceId: boundInstanceId,
             threadId,
-            ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
+            ...(pending.ownerTurnId === undefined ? {} : { turnId: pending.ownerTurnId }),
             requestId: RuntimeRequestId.make(requestId),
             payload: { requestType: pending.requestType, decision },
           });
           if (decision === "cancel") {
             const turn = context.activeTurn;
-            if (turn !== undefined) {
-              turn.cancellationRequested = true;
-              turn.controller.abort();
-            }
-            const abortExit = yield* context.runtime.abortAndClearQueue.pipe(
-              Effect.mapError((error) =>
-                runtimeOperationError(threadId, "session/abort-and-clear-queue", error),
-              ),
-              Effect.exit,
-            );
-            if (turn !== undefined) {
-              yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
-            }
-            if (Exit.isFailure(abortExit)) return yield* Effect.failCause(abortExit.cause);
+            if (turn !== undefined) yield* cancelActiveTurnLocked(context, turn);
           }
         }),
       );
@@ -3740,7 +4210,17 @@ export function makePrimeAgentDaemonAdapter(
         Effect.gen(function* () {
           const context = yield* requireSession(threadId);
           const pending = context.pendingInteractions.get(requestId);
-          if (pending === undefined) {
+          const activeTurn = context.activeTurn;
+          if (
+            pending === undefined ||
+            (context.runtime.correlatedPromptLifecycleAvailable &&
+              (pending.ownerTurnId === undefined ||
+                pending.ownerCorrelationId === undefined ||
+                activeTurn === undefined ||
+                activeTurn.cancellationRequested ||
+                pending.ownerTurnId !== activeTurn.id ||
+                pending.ownerCorrelationId !== activeTurn.correlationId))
+          ) {
             return yield* new ProviderAdapterRequestError({
               provider: PROVIDER,
               method: "session/interaction-response",
@@ -3822,7 +4302,7 @@ export function makePrimeAgentDaemonAdapter(
             provider: PROVIDER,
             providerInstanceId: boundInstanceId,
             threadId,
-            ...(context.activeTurn === undefined ? {} : { turnId: context.activeTurn.id }),
+            ...(pending.ownerTurnId === undefined ? {} : { turnId: pending.ownerTurnId }),
             requestId,
             payload: { response: safeResponse },
           });

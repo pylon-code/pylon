@@ -371,6 +371,9 @@ export function mapPrimeAgentDaemonRuntimeEventDrafts(input: {
   const event = input.event;
 
   switch (event._tag) {
+    case "PromptLifecycleUpdated":
+    case "CorrelatedProtocolViolation":
+      return [];
     case "RunStarted":
       return [{ ...base, type: "session.state.changed", payload: { state: "running" } }];
     case "RunCompleted": {

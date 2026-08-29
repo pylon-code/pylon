@@ -41,8 +41,12 @@ import {
   PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES,
   type PrimeDaemonEvent,
   type PrimeDaemonMessage,
+  type PrimeDaemonPromptLifecycleCancellationResult,
+  type PrimeDaemonPromptLifecycleSnapshot,
+  type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import { PRIME_AGENT_PLAN_TOOL_NAME } from "./PrimeAgentManagedExtension.ts";
 import {
   makePrimeAgentDaemonAdapter,
   PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS,
@@ -92,6 +96,28 @@ function assistantMessage(
     usage,
     stopReason,
   } satisfies PrimeDaemonMessage;
+}
+
+function lifecycleSnapshot(
+  correlationId: string,
+  phase: PrimeDaemonPromptLifecycleSnapshot["phase"],
+  revision: number,
+  options: {
+    readonly kind?: PrimeDaemonPromptLifecycleSnapshot["kind"];
+    readonly deliveryCrossed?: boolean;
+    readonly usage?: PrimeDaemonUsage;
+  } = {},
+): PrimeDaemonPromptLifecycleSnapshot {
+  return {
+    correlationId,
+    phase,
+    kind: options.kind ?? "model_prompt",
+    revision,
+    deliveryCrossed:
+      options.deliveryCrossed ??
+      (phase === "delivered" || phase === "completed" || phase === "failed"),
+    ...(options.usage === undefined ? {} : { usage: options.usage }),
+  };
 }
 
 function initialSnapshot(): Extract<PrimeDaemonEvent, { readonly _tag: "SessionResynced" }> {
@@ -145,6 +171,21 @@ interface FakeCaptures {
   readonly followUps: Array<{ readonly text: string; readonly imageCount: number }>;
   followUpFailure: boolean;
   inputRecoveryPending: boolean;
+  inputAdmissionBusy: boolean;
+  correlatedPromptLifecycleAvailable: boolean;
+  readonly correlatedPromptSubmissions: Array<{
+    readonly text: string;
+    readonly correlationId: string;
+    readonly queueIfBusy: true;
+  }>;
+  readonly correlatedPromptCancellations: Array<string>;
+  correlatedPromptObserved: Queue.Queue<string> | undefined;
+  correlatedPromptSubmitResult: PrimeDaemonPromptLifecycleSnapshot | undefined;
+  correlatedPromptCancellationResult: PrimeDaemonPromptLifecycleCancellationResult | undefined;
+  correlatedPromptCancellationObserved: Queue.Queue<void> | undefined;
+  correlatedPromptCancellationRelease:
+    | Deferred.Deferred<PrimeDaemonPromptLifecycleCancellationResult>
+    | undefined;
   readonly steers: Array<{
     readonly text: string;
     readonly images: ReadonlyArray<{
@@ -282,6 +323,7 @@ interface FakeCaptures {
   readonly rlmQuiescenceCalls: Array<string>;
   readonly rlmQuiescenceSignals: Array<AbortSignal>;
   rlmQuiescenceObserved: Queue.Queue<string> | undefined;
+  backgroundQuiescenceCompleted: Queue.Queue<string> | undefined;
   rlmQuiescenceFailure: boolean;
   rlmConnectionGeneration: number;
   rlmContinuityValid: boolean;
@@ -313,6 +355,15 @@ function makeCaptures(): FakeCaptures {
     followUps: [],
     followUpFailure: false,
     inputRecoveryPending: false,
+    inputAdmissionBusy: false,
+    correlatedPromptLifecycleAvailable: false,
+    correlatedPromptSubmissions: [],
+    correlatedPromptCancellations: [],
+    correlatedPromptObserved: undefined,
+    correlatedPromptSubmitResult: undefined,
+    correlatedPromptCancellationResult: undefined,
+    correlatedPromptCancellationObserved: undefined,
+    correlatedPromptCancellationRelease: undefined,
     steers: [],
     models: [],
     thinkingLevels: [],
@@ -422,6 +473,7 @@ function makeCaptures(): FakeCaptures {
     rlmQuiescenceCalls: [],
     rlmQuiescenceSignals: [],
     rlmQuiescenceObserved: undefined,
+    backgroundQuiescenceCompleted: undefined,
     rlmQuiescenceFailure: false,
     rlmConnectionGeneration: 0,
     rlmContinuityValid: true,
@@ -763,6 +815,12 @@ function fakeRuntimeFactory(
                 detail: "quiescence failed",
               });
             }
+            if (token.startsWith("background:")) {
+              captures.inputAdmissionBusy = false;
+              if (captures.backgroundQuiescenceCompleted !== undefined) {
+                yield* Queue.offer(captures.backgroundQuiescenceCompleted, token);
+              }
+            }
             yield* Queue.offer(queue, {
               _tag: "RlmQuiesced",
               token,
@@ -792,6 +850,56 @@ function fakeRuntimeFactory(
         },
         isConnectionGenerationCurrent: (generation) =>
           generation === captures.rlmConnectionGeneration,
+        get correlatedPromptLifecycleAvailable() {
+          return captures.correlatedPromptLifecycleAvailable;
+        },
+        submitCorrelatedPrompt: (prompt) =>
+          Effect.gen(function* () {
+            captures.correlatedPromptSubmissions.push({
+              text: prompt.text,
+              correlationId: prompt.correlationId,
+              queueIfBusy: prompt.queueIfBusy,
+            });
+            if (captures.correlatedPromptObserved !== undefined) {
+              yield* Queue.offer(captures.correlatedPromptObserved, prompt.correlationId);
+            }
+            return (
+              captures.correlatedPromptSubmitResult ?? {
+                correlationId: prompt.correlationId,
+                phase: "owned",
+                kind: prompt.text.startsWith("/") ? "session_command" : "model_prompt",
+                revision: 1,
+                deliveryCrossed: false,
+              }
+            );
+          }),
+        cancelPromptLifecycle: (correlationId) =>
+          Effect.gen(function* () {
+            captures.correlatedPromptCancellations.push(correlationId);
+            if (captures.correlatedPromptCancellationObserved !== undefined) {
+              yield* Queue.offer(captures.correlatedPromptCancellationObserved, undefined);
+            }
+            if (captures.correlatedPromptCancellationRelease !== undefined) {
+              return yield* Deferred.await(captures.correlatedPromptCancellationRelease);
+            }
+            return (
+              captures.correlatedPromptCancellationResult ?? {
+                status: "cancelled",
+                ownershipCrossed: true,
+                deliveryCrossed: false,
+                lifecycle: {
+                  correlationId,
+                  phase: "cancelled",
+                  kind: "model_prompt",
+                  revision: 2,
+                  deliveryCrossed: false,
+                },
+              }
+            );
+          }),
+        get inputAdmissionBusy() {
+          return captures.inputAdmissionBusy;
+        },
         prompt: (prompt) =>
           Effect.gen(function* () {
             captures.order.push("prompt");
@@ -1013,6 +1121,860 @@ function offer(captures: FakeCaptures, event: PrimeDaemonEvent) {
 }
 
 describe("PrimeAgentDaemonAdapter", () => {
+  it.effect("settles only the delivered correlated owner and uses terminal lifecycle usage", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.inputAdmissionBusy = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId, model: "openai/current" },
+        });
+        const turnFiber = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "owned prompt",
+            modelSelection: { instanceId, model: "openai/current" },
+          })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        expect(correlationId).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        );
+        expect(captures.prompts).toEqual([]);
+        expect(captures.correlatedPromptSubmissions).toEqual([
+          { text: "owned prompt", correlationId, queueIfBusy: true },
+        ]);
+
+        const preDelivery = yield* adapter
+          .sendTurn({ threadId, input: "must not steer predecessor" })
+          .pipe(Effect.flip);
+        expect(preDelivery).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          reason: "busy",
+        });
+        expect(captures.steers).toEqual([]);
+
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: assistantMessage("background contamination"),
+          attribution: { scope: "session" },
+        });
+        yield* offer(captures, {
+          _tag: "ToolStarted",
+          toolCallId: "background-tool-call",
+          toolName: PRIME_AGENT_PLAN_TOOL_NAME,
+          attribution: { scope: "session" },
+        });
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: {
+            role: "toolResult",
+            timestamp: 2,
+            toolCallId: "background-tool-call",
+            toolName: PRIME_AGENT_PLAN_TOOL_NAME,
+            text: "background plan result",
+            imageMimeTypes: [],
+            isError: false,
+            planUpdate: {
+              toolCallId: "background-tool-call",
+              plan: [{ step: "background plan", status: "pending" }],
+            },
+          },
+          attribution: { scope: "session" },
+        });
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: {
+            id: "background-interaction",
+            method: "confirm",
+            title: "Background interaction",
+            message: "must not open",
+          },
+          attribution: { scope: "session" },
+        });
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+        });
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: assistantMessage("wrong owner contamination"),
+          attribution: {
+            scope: "prompt",
+            correlationId: "f2663409-0ea8-4168-84df-5513925968c2",
+          },
+        });
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: assistantMessage("owned answer"),
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* offer(captures, {
+          _tag: "RunCompleted",
+          messages: [assistantMessage("owned answer")],
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "completed", 3, { usage }),
+        });
+        const result = yield* Fiber.join(turnFiber);
+        expect(correlationId).not.toBe(result.turnId);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        const encodedTurnEvents = encodeUnknownJson(turnEvents);
+        expect(encodedTurnEvents).not.toContain(correlationId);
+        expect(encodedTurnEvents).not.toContain("contamination");
+        expect(encodedTurnEvents).not.toContain("background plan");
+        expect(encodedTurnEvents).not.toContain("Background interaction");
+        expect(encodedTurnEvents).toContain("owned answer");
+        expect(captures.extensions).toContainEqual({
+          id: "background-interaction",
+          response: { cancelled: true },
+        });
+        expect(turnEvents.findLast((event) => event.type === "turn.completed")).toMatchObject({
+          payload: {
+            state: "completed",
+            usage: {
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              totalTokens: usage.totalTokens,
+            },
+            totalCostUsd: usage.totalCostUsd,
+          },
+        });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("completes a correlated slash command without model output", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "/status" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "delivered", 2, {
+            kind: "session_command",
+          }),
+        });
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "completed", 3, {
+            kind: "session_command",
+            usage,
+          }),
+        });
+        const result = yield* Fiber.join(turnFiber);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(turnEvents.filter((event) => event.type === "runtime.error")).toEqual([]);
+        expect(turnEvents.findLast((event) => event.type === "turn.completed")).toMatchObject({
+          payload: { state: "completed", totalCostUsd: usage.totalCostUsd },
+        });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("reconciles queued, delivered, terminal, and expired correlated snapshots", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        const completedFiber = yield* adapter
+          .sendTurn({ threadId, input: "recover me" })
+          .pipe(Effect.forkChild);
+        const completedCorrelationId = yield* Queue.take(captures.correlatedPromptObserved);
+        for (const lifecycle of [
+          lifecycleSnapshot(completedCorrelationId, "queued", 2),
+          lifecycleSnapshot(completedCorrelationId, "delivered", 3),
+          lifecycleSnapshot(completedCorrelationId, "completed", 4, { usage }),
+        ]) {
+          yield* offer(captures, {
+            ...initialSnapshot(),
+            connectionGeneration: 0,
+            replayContinuity: "complete",
+            promptLifecycles: { records: [lifecycle], expired: [] },
+          });
+        }
+        const completed = yield* Fiber.join(completedFiber);
+        expect(
+          subscription.events.findLast(
+            (event) => event.turnId === completed.turnId && event.type === "turn.completed",
+          ),
+        ).toMatchObject({ payload: { state: "completed", totalCostUsd: usage.totalCostUsd } });
+
+        const expiredFiber = yield* adapter
+          .sendTurn({ threadId, input: "expired lifecycle" })
+          .pipe(Effect.forkChild);
+        const expiredCorrelationId = yield* Queue.take(captures.correlatedPromptObserved);
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          connectionGeneration: 0,
+          replayContinuity: "complete",
+          promptLifecycles: {
+            records: [],
+            expired: [{ correlationId: expiredCorrelationId, deliveryCrossed: false }],
+          },
+        });
+        const expired = yield* Fiber.join(expiredFiber);
+        expect(
+          subscription.events.findLast(
+            (event) => event.turnId === expired.turnId && event.type === "turn.completed",
+          ),
+        ).toMatchObject({ payload: { state: "failed" } });
+        expect(captures.correlatedPromptSubmissions).toHaveLength(2);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("reconciles a non-reconnect lifecycle snapshot and preserves failed usage", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "catch up without reconnect" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          lastEventSequence: 2,
+          replayContinuity: "complete",
+          promptLifecycles: {
+            records: [lifecycleSnapshot(correlationId, "failed", 2, { usage })],
+            expired: [],
+          },
+        });
+
+        const result = yield* Fiber.join(turnFiber);
+        expect(captures.correlatedPromptSubmissions).toHaveLength(1);
+        expect(
+          subscription.events.findLast(
+            (event) => event.turnId === result.turnId && event.type === "turn.completed",
+          ),
+        ).toMatchObject({
+          payload: {
+            state: "failed",
+            errorMessage: "Prime Agent prompt failed.",
+            usage: {
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              cachedInputTokens: usage.cachedInputTokens,
+              cacheWriteTokens: usage.cacheWriteTokens,
+              totalTokens: usage.totalTokens,
+            },
+            totalCostUsd: usage.totalCostUsd,
+          },
+        });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps background snapshot children unscoped from a queued correlation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "queued owner" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          lastEventSequence: 2,
+          replayContinuity: "complete",
+          children: [{ id: "background-child", label: "background", status: "running" }],
+          promptLifecycles: {
+            records: [lifecycleSnapshot(correlationId, "queued", 2)],
+            expired: [],
+          },
+        });
+        const childProgress = yield* awaitObservedType(subscription.observed, "task.progress");
+        expect(childProgress).not.toHaveProperty("turnId");
+        expect(
+          subscription.events.filter(
+            (event) =>
+              event.turnId === started.turnId &&
+              (event.type === "task.progress" || event.type === "task.completed"),
+          ),
+        ).toEqual([]);
+
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "failed", 3),
+        });
+        yield* Fiber.join(turnFiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails an active correlated turn on a private protocol violation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "fail closed" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+
+        yield* offer(captures, { _tag: "CorrelatedProtocolViolation" });
+        const result = yield* Fiber.join(turnFiber);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(turnEvents.findLast((event) => event.type === "runtime.error")).toMatchObject({
+          payload: {
+            message: "Prime Agent returned invalid correlated prompt lifecycle data.",
+            class: "provider_error",
+          },
+        });
+        expect(turnEvents.findLast((event) => event.type === "turn.completed")).toMatchObject({
+          payload: { state: "failed" },
+        });
+        expect(encodeUnknownJson(turnEvents)).not.toContain(correlationId);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("preserves correlated cancellation failures and terminal failed usage", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        for (const status of ["expired", "unknown"] as const) {
+          captures.correlatedPromptCancellationResult =
+            status === "expired"
+              ? { status, ownershipCrossed: true, deliveryCrossed: false }
+              : { status, ownershipCrossed: "unknown", deliveryCrossed: "unknown" };
+          const turnFiber = yield* adapter
+            .sendTurn({ threadId, input: `${status} cancellation` })
+            .pipe(Effect.forkChild);
+          yield* Queue.take(captures.correlatedPromptObserved);
+          yield* adapter.interruptTurn(threadId);
+          const result = yield* Fiber.join(turnFiber);
+          expect(
+            subscription.events.findLast(
+              (event) => event.turnId === result.turnId && event.type === "turn.completed",
+            ),
+          ).toMatchObject({
+            payload: {
+              state: "failed",
+              errorMessage: "Prime Agent could not reconcile the cancelled prompt lifecycle.",
+            },
+          });
+        }
+
+        const terminalFiber = yield* adapter
+          .sendTurn({ threadId, input: "too late then failed" })
+          .pipe(Effect.forkChild);
+        const terminalCorrelationId = yield* Queue.take(captures.correlatedPromptObserved);
+        const delivered = lifecycleSnapshot(terminalCorrelationId, "delivered", 2);
+        yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: delivered });
+        yield* offer(captures, {
+          _tag: "SessionInfoChanged",
+          name: "delivered",
+          attribution: { scope: "prompt", correlationId: terminalCorrelationId },
+        });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        captures.correlatedPromptCancellationResult = {
+          status: "too_late",
+          ownershipCrossed: true,
+          deliveryCrossed: true,
+          lifecycle: delivered,
+        };
+        yield* adapter.interruptTurn(threadId);
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(terminalCorrelationId, "failed", 3, { usage }),
+        });
+        const terminal = yield* Fiber.join(terminalFiber);
+        expect(
+          subscription.events.findLast(
+            (event) => event.turnId === terminal.turnId && event.type === "turn.completed",
+          ),
+        ).toMatchObject({
+          payload: {
+            state: "failed",
+            errorMessage: "Prime Agent prompt failed.",
+            usage: { totalTokens: usage.totalTokens },
+            totalCostUsd: usage.totalCostUsd,
+          },
+        });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects interactions and approvals after too-late cancellation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const interactionFiber = yield* adapter
+          .sendTurn({ threadId, input: "cancel before interaction" })
+          .pipe(Effect.forkChild);
+        const interactionCorrelationId = yield* Queue.take(captures.correlatedPromptObserved);
+        const interactionDelivered = lifecycleSnapshot(interactionCorrelationId, "delivered", 2);
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: interactionDelivered,
+        });
+        yield* offer(captures, {
+          _tag: "SessionInfoChanged",
+          name: "interaction delivered",
+          attribution: { scope: "prompt", correlationId: interactionCorrelationId },
+        });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        captures.correlatedPromptCancellationResult = {
+          status: "too_late",
+          ownershipCrossed: true,
+          deliveryCrossed: true,
+          lifecycle: interactionDelivered,
+        };
+        yield* adapter.interruptTurn(threadId);
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: { id: "late-interaction", method: "confirm", title: "Too late" },
+          attribution: { scope: "prompt", correlationId: interactionCorrelationId },
+        });
+        yield* offer(captures, {
+          _tag: "SessionInfoChanged",
+          name: "interaction rejected",
+          attribution: { scope: "prompt", correlationId: interactionCorrelationId },
+        });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(captures.extensions).toContainEqual({
+          id: "late-interaction",
+          response: { cancelled: true },
+        });
+        expect(
+          subscription.events.filter((event) => event.type === "interaction.requested"),
+        ).toEqual([]);
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(interactionCorrelationId, "failed", 3),
+        });
+        yield* Fiber.join(interactionFiber);
+
+        yield* adapter.stopSession(threadId);
+        captures.correlatedPromptCancellationResult = undefined;
+        captures.extensions.length = 0;
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const extensionPath = captures.runtimeInputs.at(-1)!.extensions![0]!;
+        const extensionSource = yield* Effect.promise(() =>
+          NodeFSP.readFile(extensionPath, "utf8"),
+        );
+        const title = extensionSource.match(/const TITLE = "([^"]+)";/)?.[1];
+        if (title === undefined) throw new Error("Managed extension title was not generated.");
+        const approvalFiber = yield* adapter
+          .sendTurn({ threadId, input: "cancel before approval" })
+          .pipe(Effect.forkChild);
+        const approvalCorrelationId = yield* Queue.take(captures.correlatedPromptObserved);
+        const approvalDelivered = lifecycleSnapshot(approvalCorrelationId, "delivered", 2);
+        yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: approvalDelivered });
+        yield* offer(captures, {
+          _tag: "SessionInfoChanged",
+          name: "approval delivered",
+          attribution: { scope: "prompt", correlationId: approvalCorrelationId },
+        });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        captures.correlatedPromptCancellationResult = {
+          status: "too_late",
+          ownershipCrossed: true,
+          deliveryCrossed: true,
+          lifecycle: approvalDelivered,
+        };
+        yield* adapter.interruptTurn(threadId);
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: {
+            id: "late-approval",
+            method: "confirm",
+            title,
+            message: "pylon-permission-v1\ncommand_execution_approval\nbash\nprintf guarded",
+          },
+          attribution: { scope: "prompt", correlationId: approvalCorrelationId },
+        });
+        yield* offer(captures, {
+          _tag: "SessionInfoChanged",
+          name: "approval rejected",
+          attribution: { scope: "prompt", correlationId: approvalCorrelationId },
+        });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+        expect(captures.extensions).toContainEqual({
+          id: "late-approval",
+          response: { cancelled: true },
+        });
+        expect(subscription.events.filter((event) => event.type === "request.opened")).toEqual([]);
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(approvalCorrelationId, "failed", 3),
+        });
+        yield* Fiber.join(approvalFiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects an extension that settles while waiting for the thread lock", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        captures.correlatedPromptCancellationObserved = yield* Queue.unbounded<void>();
+        captures.correlatedPromptCancellationRelease =
+          yield* Deferred.make<PrimeDaemonPromptLifecycleCancellationResult>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "settle before extension lock" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+        });
+        yield* offer(captures, {
+          _tag: "SessionInfoChanged",
+          name: "race delivered",
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+
+        const interrupt = yield* adapter.interruptTurn(threadId).pipe(Effect.forkChild);
+        yield* Queue.take(captures.correlatedPromptCancellationObserved);
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: { id: "settled-race", method: "confirm", title: "Must reject" },
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(captures.correlatedPromptCancellationRelease, {
+          status: "expired",
+          ownershipCrossed: true,
+          deliveryCrossed: true,
+        });
+        yield* Fiber.join(interrupt);
+        yield* offer(captures, { _tag: "ConnectionStatus", status: "connected" });
+        yield* awaitObservedType(subscription.observed, "session.state.changed");
+        yield* Fiber.join(turnFiber);
+
+        expect(captures.extensions).toContainEqual({
+          id: "settled-race",
+          response: { cancelled: true },
+        });
+        expect(
+          subscription.events.filter((event) => event.type === "interaction.requested"),
+        ).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails closed on a capable reconnect transcript delta", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "unsafe reconnect" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        const background = assistantMessage("background snapshot output");
+        const final = { ...assistantMessage("missing final answer"), timestamp: 2 };
+
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, messageCount: 2 },
+          messages: [background, final],
+          streamingMessage: { ...assistantMessage("partial replay"), timestamp: 3 },
+          replayContinuity: "unavailable",
+          connectionGeneration: 1,
+          promptLifecycles: {
+            records: [lifecycleSnapshot(correlationId, "completed", 2, { usage })],
+            expired: [],
+          },
+        });
+        const result = yield* Fiber.join(turnFiber);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(captures.reconnectResolutions).toContainEqual({
+          generation: 1,
+          reconciled: false,
+          terminalResponseObserved: false,
+        });
+        expect(captures.reconnectResolutions.some((resolution) => resolution.reconciled)).toBe(
+          false,
+        );
+        expect(turnEvents.findLast((event) => event.type === "turn.completed")).toMatchObject({
+          payload: { state: "failed" },
+        });
+        expect(
+          turnEvents.findLast((event) => event.type === "turn.completed")?.payload,
+        ).not.toHaveProperty("usage");
+        expect(
+          turnEvents.some(
+            (event) =>
+              event.type === "runtime.error" &&
+              typeof event.payload.detail === "object" &&
+              event.payload.detail !== null &&
+              "kind" in event.payload.detail &&
+              event.payload.detail.kind === "missing-final-response",
+          ),
+        ).toBe(false);
+        expect(encodeUnknownJson(turnEvents)).not.toContain("snapshot output");
+        expect(encodeUnknownJson(turnEvents)).not.toContain("missing final answer");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails a worker recovery gate before applying a mixed terminal snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        captures.retryWorkerRecoverySnapshots = true;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "unsafe worker recovery" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        const background = assistantMessage("mixed background result");
+        const final = { ...assistantMessage("unattributed worker final"), timestamp: 2 };
+
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, messageCount: 2 },
+          messages: [background, final],
+          replayContinuity: "complete",
+          connectionGeneration: 1,
+          promptLifecycles: {
+            records: [lifecycleSnapshot(correlationId, "completed", 2, { usage })],
+            expired: [],
+          },
+        });
+        const result = yield* Fiber.join(turnFiber);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(captures.retryWorkerRecoverySnapshotCalls).toEqual([]);
+        expect(captures.reconnectResolutions).toContainEqual({
+          generation: 1,
+          reconciled: false,
+          terminalResponseObserved: false,
+        });
+        expect(turnEvents.findLast((event) => event.type === "turn.completed")).toMatchObject({
+          payload: { state: "failed" },
+        });
+        expect(
+          turnEvents.findLast((event) => event.type === "turn.completed")?.payload,
+        ).not.toHaveProperty("totalCostUsd");
+        expect(encodeUnknownJson(turnEvents)).not.toContain("mixed background result");
+        expect(encodeUnknownJson(turnEvents)).not.toContain("unattributed worker final");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("accepts exact complete capable recovery with already observed output", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "safe exact recovery" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+        });
+        const answer = assistantMessage("already observed answer");
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: answer,
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* offer(captures, {
+          _tag: "SessionInfoChanged",
+          name: "answer observed",
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* awaitObservedType(subscription.observed, "thread.metadata.updated");
+
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, messageCount: 1 },
+          messages: [answer],
+          replayContinuity: "complete",
+          connectionGeneration: 1,
+          promptLifecycles: {
+            records: [lifecycleSnapshot(correlationId, "completed", 3, { usage })],
+            expired: [],
+          },
+        });
+        yield* offer(captures, { _tag: "ConnectionStatus", status: "connected" });
+        yield* awaitObservedType(subscription.observed, "session.state.changed");
+        const result = yield* Fiber.join(turnFiber);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(
+          captures.reconnectResolutions.some(
+            (resolution) =>
+              resolution.generation === 1 &&
+              resolution.reconciled &&
+              !resolution.terminalResponseObserved,
+          ),
+        ).toBe(true);
+        expect(turnEvents.findLast((event) => event.type === "turn.completed")).toMatchObject({
+          payload: {
+            state: "completed",
+            usage: { totalTokens: usage.totalTokens },
+            totalCostUsd: usage.totalCostUsd,
+          },
+        });
+        expect(encodeUnknownJson(turnEvents)).toContain("already observed answer");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps control mismatch busy and scopes pre-delivery cancellation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.inputAdmissionBusy = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId, model: "openai/current" },
+        });
+        const mismatch = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "wrong controls",
+            modelSelection: { instanceId, model: "openai/other" },
+          })
+          .pipe(Effect.flip);
+        expect(mismatch).toMatchObject({ reason: "busy" });
+        expect(captures.correlatedPromptSubmissions).toEqual([]);
+        expect(captures.models).toEqual([]);
+
+        const turnFiber = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "queue then cancel",
+            modelSelection: { instanceId, model: "openai/current" },
+          })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        yield* adapter.interruptTurn(threadId);
+        yield* Fiber.join(turnFiber);
+        expect(captures.correlatedPromptCancellations).toEqual([correlationId]);
+        expect(captures.order).not.toContain("abort-clear");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects unsupported runtime modes at the adapter boundary", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -2360,6 +3322,132 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(captures.followUps).toEqual([]);
         expect(captures.disposeCount).toBe(0);
         expect(yield* adapter.listSessions()).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("returns busy and rearms quiescence for newer native background activity", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.inputAdmissionBusy = true;
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.backgroundQuiescenceCompleted = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+        const initialToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+
+        yield* offer(captures, {
+          _tag: "ChildUpdated",
+          child: { id: "heartbeat-child", label: "heartbeat child", status: "running" },
+        });
+        const childToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+        yield* offer(captures, { _tag: "BashOutput", chunk: "newer background output" });
+        const bashOutputToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+
+        expect([initialToken, childToken, bashOutputToken]).toEqual([
+          `background:${threadId}:1`,
+          `background:${threadId}:2`,
+          `background:${threadId}:3`,
+        ]);
+        expect(captures.rlmQuiescenceSignals.map((signal) => signal.aborted)).toEqual([
+          true,
+          true,
+          false,
+        ]);
+
+        const error = yield* adapter
+          .sendTurn({ threadId, input: "do not attach this to the heartbeat" })
+          .pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          reason: "busy",
+          issue: "Prime Agent background work is still running. Try again after it finishes.",
+        });
+        expect(captures.prompts).toEqual([]);
+        expect(captures.disposeCount).toBe(0);
+        expect((yield* adapter.listSessions())[0]?.activeTurnId).toBeUndefined();
+        expect(subscription.events.some((event) => event.type === "turn.started")).toBe(false);
+
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        const completedTokens = [
+          yield* Queue.take(captures.backgroundQuiescenceCompleted),
+          yield* Queue.take(captures.backgroundQuiescenceCompleted),
+          yield* Queue.take(captures.backgroundQuiescenceCompleted),
+        ];
+        expect(new Set(completedTokens)).toEqual(
+          new Set([initialToken, childToken, bashOutputToken]),
+        );
+        yield* adapter
+          .sendTurn({ threadId, input: "now the background work is done" })
+          .pipe(Effect.forkChild);
+        yield* Queue.take(captures.promptObserved!);
+        expect(captures.prompts.map((prompt) => prompt.text)).toEqual([
+          "now the background work is done",
+        ]);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rearms quiescence for active resync compaction, bash, retry, and queue states", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const idle = initialSnapshot();
+        const activeSnapshots = [
+          { ...idle, state: { ...idle.state, isCompacting: true }, lastEventSequence: 2 },
+          { ...idle, state: { ...idle.state, isBashRunning: true }, lastEventSequence: 3 },
+          { ...idle, state: { ...idle.state, retryAttempt: 1 }, lastEventSequence: 4 },
+          {
+            ...idle,
+            state: {
+              ...idle.state,
+              inputQueue: { ...idle.state.inputQueue, followUpCount: 1, activeAction: true },
+            },
+            lastEventSequence: 5,
+          },
+        ];
+        const observedTokens: string[] = [];
+        for (const activeSnapshot of activeSnapshots) {
+          yield* offer(captures, activeSnapshot);
+          observedTokens.push(yield* Queue.take(captures.rlmQuiescenceObserved));
+        }
+
+        expect(observedTokens).toEqual([
+          `background:${threadId}:1`,
+          `background:${threadId}:2`,
+          `background:${threadId}:3`,
+          `background:${threadId}:4`,
+        ]);
+        expect(captures.rlmQuiescenceSignals.map((signal) => signal.aborted)).toEqual([
+          true,
+          true,
+          true,
+          false,
+        ]);
+
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),
   );
