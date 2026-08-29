@@ -37,8 +37,8 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("chat-composer-tasks-tab");
     expect(markup).toContain("rounded-t-xl");
     expect(markup).toContain("border-b-0");
-    expect(markup).toContain("left-4");
-    expect(markup).toContain("right-4");
+    expect(markup).toContain("left-5.5");
+    expect(markup).toContain("right-5.5");
     expect(markup).toContain('data-composer-task-current="true"');
     expect(markup).toContain("min-w-0 flex-1 truncate");
     expect(markup).toContain("w-20");
@@ -72,8 +72,8 @@ describe("ComposerTasksBadge", () => {
       />,
     );
 
-    expect(markup).toContain("right-28");
-    expect(markup).not.toContain("right-4");
+    expect(markup).toContain("right-30");
+    expect(markup).not.toContain("right-5.5");
   });
 
   it("has a compact inline fallback for occupied composer shoulders", () => {
@@ -208,6 +208,37 @@ describe("ComposerTasksBadge", () => {
       }
     },
   );
+
+  it("drops the step segments when they would render as a blank gap", () => {
+    const manySteps = Array.from({ length: 24 }, (_, index) => ({
+      step: `Step ${index + 1}`,
+      status: "pending" as const,
+    }));
+    const tab = renderToStaticMarkup(
+      <ComposerTasksBadge
+        expanded={false}
+        onDismiss={() => undefined}
+        onToggle={() => undefined}
+        progress={{ ...progress, totalSteps: manySteps.length }}
+        steps={manySteps}
+      />,
+    );
+    const inline = renderToStaticMarkup(
+      <ComposerTasksBadge
+        expanded={false}
+        onDismiss={() => undefined}
+        onToggle={() => undefined}
+        placement="inline"
+        progress={{ ...progress, totalSteps: manySteps.length }}
+        steps={manySteps}
+      />,
+    );
+
+    expect(tab).not.toContain("w-20");
+    expect(tab).toContain("1/24");
+    expect(inline).not.toContain("w-10");
+    expect(inline).toContain("1/24");
+  });
 });
 
 describe("composer task dismissal semantics", () => {
