@@ -87,6 +87,7 @@ export const ThreadListGroupHeader = memo(function ThreadListGroupHeader(props: 
   readonly newThreadTarget?: EnvironmentProject | null;
   readonly onNewThread?: (project: EnvironmentProject) => void;
 }) {
+  const iconMutedColor = useUniwindTheme()["--color-icon-muted"];
   const { groupKey, onGroupAction, onNewThread } = props;
   const newThreadTarget = props.newThreadTarget ?? null;
   const compact = props.variant === "compact";
@@ -170,7 +171,7 @@ export const ThreadListGroupHeader = memo(function ThreadListGroupHeader(props: 
           <SymbolView
             name="plus"
             size={compact ? 20 : 16}
-            tintColorClassName={"accent-icon-muted"}
+            tintColor={iconMutedColor}
             type="monochrome"
             weight="medium"
           />
@@ -189,6 +190,7 @@ export const ThreadListShowMoreRow = memo(function ThreadListShowMoreRow(props: 
   readonly groupKey: string;
   readonly onGroupAction: (key: string, action: HomeGroupDisplayAction) => void;
 }) {
+  const iconSubtleColor = useUniwindTheme()["--color-icon-subtle"];
   const showsMore = props.hiddenCount > 0;
   const compact = props.variant === "compact";
   const { groupKey, onGroupAction } = props;
@@ -219,7 +221,7 @@ export const ThreadListShowMoreRow = memo(function ThreadListShowMoreRow(props: 
         <SymbolView
           name={icon}
           size={10}
-          tintColorClassName={"accent-icon-subtle"}
+          tintColor={iconSubtleColor}
           type="monochrome"
           weight="semibold"
         />
@@ -273,9 +275,10 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
 }) {
   const compact = props.variant === "compact";
-  const theme = useUniwindTheme();
-  const separatorColor = theme["--color-separator"];
-  const pressedBackgroundColor = theme["--color-subtle"];
+  const separatorColor = useUniwindTheme()["--color-separator"];
+  const iconSubtleColor = useUniwindTheme()["--color-icon-subtle"];
+  const mutedColor = useUniwindTheme()["--color-foreground-muted"];
+  const pressedBackgroundColor = useUniwindTheme()["--color-subtle"];
 
   const { pendingTask, onSelectPendingTask, onDeletePendingTask } = props;
   const timestamp = relativeTime(pendingTask.message.createdAt);
@@ -302,7 +305,7 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
         <SymbolView
           name="tray.and.arrow.up"
           size={10}
-          tintColorClassName={compact ? "accent-icon-subtle" : "accent-foreground-muted"}
+          tintColor={compact ? iconSubtleColor : mutedColor}
           type="monochrome"
         />
         <Text
@@ -352,7 +355,7 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
               <SymbolView
                 name="chevron.right"
                 size={13}
-                tintColorClassName={"accent-icon-subtle"}
+                tintColor={iconSubtleColor}
                 type="monochrome"
               />
             </View>
@@ -443,13 +446,14 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   // thread, so a hover highlight can't leak across rows.
   const [hovered, setHovered] = useRecyclingState(false);
 
-  const theme = useUniwindTheme();
-  const separatorColor = theme["--color-separator"];
-  const screenColor = theme["--color-screen"];
-  const drawerColor = theme["--color-drawer"];
-  const pressedBackgroundColor = theme["--color-subtle"];
-  const selectedBackgroundColor = theme["--color-user-bubble"];
-  const selectedForegroundColor = theme["--color-user-bubble-foreground"];
+  const separatorColor = useUniwindTheme()["--color-separator"];
+  const iconSubtleColor = useUniwindTheme()["--color-icon-subtle"];
+  const screenColor = useUniwindTheme()["--color-screen"];
+  const drawerColor = useUniwindTheme()["--color-drawer"];
+  const pressedBackgroundColor = useUniwindTheme()["--color-subtle"];
+  const selectedBackgroundColor = useUniwindTheme()["--color-user-bubble"];
+  const selectedForegroundColor = useUniwindTheme()["--color-user-bubble-foreground"];
+  const warningForegroundColor = useUniwindTheme()["--color-warning-foreground"];
 
   const { thread, onSelectThread, onArchiveThread, onDeleteThread, onRegenerateThreadTitle } =
     props;
@@ -467,8 +471,10 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const effectivePressedBackground = selected
     ? themeColorWithAlpha(String(selectedForegroundColor), 0.16)
     : pressedBackgroundColor;
+  const usesWarningTreatment =
+    status?.kind === "pending-approval" || status?.kind === "awaiting-input";
   const effectiveStatus =
-    selected && status
+    selected && status && !usesWarningTreatment
       ? {
           ...status,
           pillClassName: "bg-user-bubble-foreground/20",
@@ -512,7 +518,17 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   );
 
   const statusPill = effectiveStatus ? (
-    <View className={`${effectiveStatus.pillClassName} rounded-full px-1.5 py-0.5`}>
+    <View
+      className={`${effectiveStatus.pillClassName} flex-row items-center gap-0.5 rounded-full px-1.5 py-0.5`}
+    >
+      {effectiveStatus.kind === "awaiting-input" ? (
+        <SymbolView
+          name="exclamationmark.triangle"
+          size={9}
+          tintColor={warningForegroundColor}
+          type="monochrome"
+        />
+      ) : null}
       <Text className={`text-3xs font-t3-bold ${effectiveStatus.textClassName}`}>
         {effectiveStatus.label}
       </Text>
@@ -597,7 +613,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
                 <SymbolView
                   name="chevron.right"
                   size={13}
-                  tintColorClassName={"accent-icon-subtle"}
+                  tintColor={iconSubtleColor}
                   type="monochrome"
                 />
               </View>

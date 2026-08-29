@@ -46,15 +46,15 @@ const MONO_FONT = Platform.select({
   default: "monospace",
 });
 
-// Status hues follow the system-wide convention set by sidebar v1 and the
-// Live Activity/widgets (amber approval, indigo input, sky working) so a
-// thread reads the same color everywhere it surfaces.
+// Active work and Plan Ready follow shared theme roles. User-blocking Input
+// uses the orange warning treatment instead of operational Waiting's neutral treatment.
 const STATUS_LABEL_BY_STATUS: Partial<
   Record<ThreadListV2Status, { label: string; className: string }>
 > = {
-  approval: { label: "Approval", className: "text-adaptive-amber-700-300" },
-  input: { label: "Input", className: "text-adaptive-indigo-600-300" },
-  working: { label: "Working", className: "text-adaptive-sky-600-400" },
+  approval: { label: "Approval", className: "text-warning-foreground" },
+  input: { label: "Input", className: "text-warning-foreground" },
+  "plan-ready": { label: "Plan Ready", className: "text-status-info" },
+  working: { label: "Working", className: "text-status-active" },
   failed: { label: "Failed", className: "text-adaptive-red-700-300" },
 };
 
@@ -93,6 +93,7 @@ export const ThreadListV2SectionDivider = memo(function ThreadListV2SectionDivid
   readonly label: string;
   readonly pane?: "screen" | "sidebar";
 }) {
+  const borderColor = useUniwindTheme()["--color-border"];
   return (
     <View
       className={cn(
@@ -101,7 +102,7 @@ export const ThreadListV2SectionDivider = memo(function ThreadListV2SectionDivid
       )}
     >
       <Text className="text-xs font-t3-medium text-foreground-tertiary">{props.label}</Text>
-      <View className="h-px flex-1 bg-border" />
+      <View className="h-px flex-1" style={{ backgroundColor: borderColor }} />
     </View>
   );
 });
@@ -155,6 +156,7 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
   readonly onToggle: () => void;
   readonly pane?: "screen" | "sidebar";
 }) {
+  const mutedColor = useUniwindTheme()["--color-foreground-muted"];
   return (
     <Pressable
       accessibilityHint={
@@ -178,7 +180,7 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
       <SymbolView
         name="chevron.down"
         size={10}
-        tintColorClassName={"accent-foreground-muted"}
+        tintColor={mutedColor}
         type="monochrome"
         style={{ transform: [{ rotate: props.expanded ? "180deg" : "0deg" }] }}
       />
@@ -211,9 +213,8 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
 }) {
   const { pendingTask, onSelectPendingTask, onDeletePendingTask } = props;
-  const theme = useUniwindTheme();
-  const drawerColor = theme["--color-drawer"];
-  const pressedBackgroundColor = theme["--color-subtle"];
+  const drawerColor = useUniwindTheme()["--color-drawer"];
+  const pressedBackgroundColor = useUniwindTheme()["--color-subtle"];
   const sidebarPane = props.pane === "sidebar";
   const projectTitle =
     props.projectTitle ?? props.project?.title ?? pendingTask.creation.projectTitle ?? "";
@@ -417,11 +418,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onChangeRequestState?.(threadKey, changeRequest);
   }, [onChangeRequestState, prState, prUpdatedAt, thread.linkedPullRequest, threadKey]);
 
-  const theme = useUniwindTheme();
-  const screenColor = theme["--color-screen"];
-  const drawerColor = theme["--color-drawer"];
-  const pressedBackgroundColor = theme["--color-subtle"];
-  const selectedBackgroundColor = theme["--color-user-bubble"];
+  const screenColor = useUniwindTheme()["--color-screen"];
+  const drawerColor = useUniwindTheme()["--color-drawer"];
+  const pressedBackgroundColor = useUniwindTheme()["--color-subtle"];
+  const selectedBackgroundColor = useUniwindTheme()["--color-user-bubble"];
+  const pinTintColor = useUniwindTheme()["--color-foreground-muted"];
+  const warningForegroundColor = useUniwindTheme()["--color-warning-foreground"];
+  const selectedForegroundColor = useUniwindTheme()["--color-user-bubble-foreground"];
   const sidebarPane = props.pane === "sidebar";
   const selected = props.selected === true;
 
@@ -698,23 +701,37 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           {props.projectTitle ?? props.project?.title ?? ""}
         </Text>
         {pinnedRow ? (
-          <SymbolView
-            name="pin"
-            size={11}
-            tintColorClassName={"accent-foreground-muted"}
-            type="monochrome"
-          />
+          <SymbolView name="pin" size={11} tintColor={pinTintColor} type="monochrome" />
         ) : null}
-        <Text
-          className={cn(
-            "text-xs tabular-nums",
-            selected
-              ? "text-user-bubble-foreground"
-              : (statusLabel?.className ?? "text-foreground-tertiary"),
-          )}
-        >
-          {statusLabel?.label ?? timeLabel}
-        </Text>
+        {statusLabel ? (
+          <View className="flex-row items-center gap-1">
+            {status === "input" ? (
+              <SymbolView
+                name="exclamationmark.triangle"
+                size={10}
+                tintColor={selected ? selectedForegroundColor : warningForegroundColor}
+                type="monochrome"
+              />
+            ) : null}
+            <Text
+              className={cn(
+                "text-xs tabular-nums",
+                selected ? "text-user-bubble-foreground" : statusLabel.className,
+              )}
+            >
+              {statusLabel.label}
+            </Text>
+          </View>
+        ) : (
+          <Text
+            className={cn(
+              "text-xs tabular-nums",
+              selected ? "text-user-bubble-foreground" : "text-foreground-tertiary",
+            )}
+          >
+            {timeLabel}
+          </Text>
+        )}
       </View>
       <Text
         className={cn(

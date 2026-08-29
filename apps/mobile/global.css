@@ -57,6 +57,13 @@
       --color-danger-border: rgba(239, 68, 68, 0.12);
       --color-danger-foreground: #dc2626;
 
+      /* Thread status */
+      --color-warning: #fe9a00;
+      --color-warning-foreground: #bb4d00;
+      --color-warning-surface: #fcf4e8;
+      --color-status-active: #1b4ed8;
+      --color-status-info: #7622bf;
+
       /* Inputs */
       --color-input: #ffffff;
       --color-input-border: rgba(0, 0, 0, 0.1);
@@ -155,6 +162,13 @@
       --color-danger: rgba(239, 68, 68, 0.14);
       --color-danger-border: rgba(248, 113, 113, 0.18);
       --color-danger-foreground: #fca5a5;
+
+      /* Thread status */
+      --color-warning: #fe9a00;
+      --color-warning-foreground: #ffb900;
+      --color-warning-surface: #312108;
+      --color-status-active: #477cf4;
+      --color-status-info: #e9d5ff;
 
       /* Inputs */
       --color-input: #141414;

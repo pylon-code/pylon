@@ -36,9 +36,12 @@ import {
   createManagedThemeColors,
   createVividThemeColors,
   getDefaultThemeColors,
+  getStandardThemeColors,
+  getSidebarStatusColors,
   themeColorToHex,
   toCanonicalThemeColor,
   THEME_FILE_VERSION,
+  type ThemeColors,
 } from "./themePalette";
 
 function asHex(value: string): string {
@@ -62,20 +65,41 @@ function expectThemeColors(
   }
 }
 
+function themeRgbChannels(value: string): readonly [number, number, number] {
+  const hex = asHex(value).slice(1);
+  return [0, 1, 2].map(
+    (channel) => Number.parseInt(hex.slice(channel * 2, channel * 2 + 2), 16) / 255,
+  ) as unknown as readonly [number, number, number];
+}
+
 function contrastRatio(first: string, second: string): number {
-  const toRgb = (value: string) => {
-    const hex = asHex(value).slice(1);
-    return [0, 1, 2].map(
-      (channel) => Number.parseInt(hex.slice(channel * 2, channel * 2 + 2), 16) / 255,
-    );
-  };
   const luminance = (value: string) =>
-    toRgb(value)
+    themeRgbChannels(value)
       .map((channel) => (channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4))
       .reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index]!, 0);
   const lighter = Math.max(luminance(first), luminance(second));
   const darker = Math.min(luminance(first), luminance(second));
   return (lighter + 0.05) / (darker + 0.05);
+}
+
+function expectStatusColorsReadable(colors: ThemeColors, activeCanvasMinimum = 4.5): void {
+  expect(contrastRatio(colors.statusActive, colors.canvas)).toBeGreaterThanOrEqual(
+    activeCanvasMinimum,
+  );
+  expect(contrastRatio(colors.statusInfo, colors.canvas)).toBeGreaterThanOrEqual(4.5);
+
+  const sidebarStatus = getSidebarStatusColors(colors);
+  const sidebarSurfaces = [
+    colors.sidebar,
+    colors.sidebarRowHover,
+    colors.sidebarRowActive,
+    colors.sidebarRowSelected,
+  ];
+  for (const status of [sidebarStatus.statusActive, sidebarStatus.statusInfo]) {
+    for (const surface of sidebarSurfaces) {
+      expect(contrastRatio(status, surface)).toBeGreaterThanOrEqual(4.5);
+    }
+  }
 }
 
 describe("theme files", () => {
@@ -106,6 +130,8 @@ describe("theme files", () => {
     expect(contrastRatio(dark.textMuted, dark.canvas)).toBeCloseTo(5.082, 1);
     expect(light.secondaryLabel).toBe(light.textMuted);
     expect(dark.secondaryLabel).toBe(dark.textMuted);
+    expectStatusColorsReadable(light);
+    expectStatusColorsReadable(dark);
     expect(contrastRatio(light.accentForeground, light.accent)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(dark.accentForeground, dark.accent)).toBeGreaterThanOrEqual(4.5);
     // Status colors fall back to Pylon's standard red and amber rather than
@@ -168,11 +194,19 @@ describe("theme files", () => {
         4.5,
       );
       expect(contrastRatio(colors.sidebarForeground, colors.sidebar)).toBeGreaterThanOrEqual(4.5);
+      expectStatusColorsReadable(colors);
       // The companion action is a distinct voice, not the accent again.
       expect(colors.messageAction).not.toBe(colors.accent);
       // Update family follows the theme, not the default palette.
       expect(asHex(colors.update)).toBe(accent);
     }
+  });
+
+  it("keeps generated status roles readable for exact low-contrast seeds", () => {
+    expectStatusColorsReadable(createVividThemeColors("light", "#ffffff", "#ffff00"));
+
+    expectStatusColorsReadable(createVividThemeColors("light", "#777777", "#777777"));
+    expectStatusColorsReadable(createVividThemeColors("light", "#7407ef", "#29e2cc"));
   });
 
   it("keys status colors off the canvas, not the appearance slot", () => {
@@ -215,6 +249,19 @@ describe("theme files", () => {
         placeholder: canonical("#968d9f"),
       },
     });
+  });
+
+  it("imports version 1 themes while exporting the expanded version 2 schema", () => {
+    const theme = parseThemeFile({
+      version: 1,
+      name: "Legacy theme",
+      appearance: "light",
+      colors: { accent: "#2563eb" },
+    });
+
+    expect(theme.colors.statusActive).toBe(getDefaultThemeColors("light").statusActive);
+    expect(theme.colors.statusInfo).toBe(getDefaultThemeColors("light").statusInfo);
+    expect(JSON.parse(serializeThemeFile(theme)).version).toBe(THEME_FILE_VERSION);
   });
 
   it("decodes literal CSS color formats into OKLCH without dropping alpha", () => {
@@ -340,16 +387,26 @@ describe("theme files", () => {
 
   it("suppresses sidebar artwork during a live custom-theme preview", () => {
     const listener = vi.fn();
+    const setProperty = vi.fn();
     const unsubscribe = subscribeToThemePreview(listener);
     vi.stubGlobal("document", {
       documentElement: {
         classList: { toggle: vi.fn() },
         dataset: {},
-        style: { removeProperty: vi.fn(), setProperty: vi.fn() },
+        style: { removeProperty: vi.fn(), setProperty },
       },
     });
 
     applyThemeColorPreview(T3_CHAT_THEME.colors, "light");
+    const sidebarStatus = getSidebarStatusColors(T3_CHAT_THEME.colors);
+    expect(setProperty).toHaveBeenCalledWith(
+      "--app-theme-status-active-sidebar",
+      sidebarStatus.statusActive,
+    );
+    expect(setProperty).toHaveBeenCalledWith(
+      "--app-theme-status-info-sidebar",
+      sidebarStatus.statusInfo,
+    );
     expect(getThemePreviewSidebarArtwork()).toBe(false);
     expect(listener).toHaveBeenCalledTimes(1);
 
@@ -358,6 +415,36 @@ describe("theme files", () => {
     expect(listener).toHaveBeenCalledTimes(2);
 
     unsubscribe();
+    vi.unstubAllGlobals();
+  });
+
+  it("preserves derived sidebar colors while a preview dependency is half-typed", () => {
+    const setProperty = vi.fn();
+    vi.stubGlobal("document", {
+      documentElement: {
+        classList: { toggle: vi.fn() },
+        dataset: {},
+        style: { setProperty },
+      },
+    });
+
+    applyThemeColorPreview(T3_CHAT_THEME.colors, "light");
+    applyThemeColorPreview({ ...T3_CHAT_THEME.colors, statusActive: "#" }, "light");
+    const activeSidebarCalls = setProperty.mock.calls.filter(
+      ([variable]) => variable === "--app-theme-status-active-sidebar",
+    );
+    expect(activeSidebarCalls).toHaveLength(1);
+
+    const derivedCallCount = setProperty.mock.calls.filter(([variable]) =>
+      ["--app-theme-status-active-sidebar", "--app-theme-status-info-sidebar"].includes(variable),
+    ).length;
+    applyThemeColorPreview({ ...T3_CHAT_THEME.colors, sidebarRowHover: "#" }, "light");
+    expect(
+      setProperty.mock.calls.filter(([variable]) =>
+        ["--app-theme-status-active-sidebar", "--app-theme-status-info-sidebar"].includes(variable),
+      ),
+    ).toHaveLength(derivedCallCount);
+
     vi.unstubAllGlobals();
   });
 
@@ -434,6 +521,21 @@ describe("theme files", () => {
   });
 
   it("includes the dual-mode maintainer themes", () => {
+    const expectedStatusActive: Readonly<
+      Record<string, Readonly<Record<"light" | "dark", string>>>
+    > = {
+      "t3-chat": { light: "#0f766e", dark: "#2dd4bf" },
+      grove: { light: "#1d4ed8", dark: "#60a5fa" },
+      ocean: { light: "#0e7490", dark: "#22d3ee" },
+      ember: { light: "#075985", dark: "#7dd3fc" },
+      iris: { light: "#0369a1", dark: "#38bdf8" },
+    };
+    for (const mode of ["light", "dark"] as const) {
+      const colors = getStandardThemeColors(mode);
+      expectStatusColorsReadable(colors, mode === "dark" ? 3 : 4.5);
+      expect(asHex(colors.statusActive)).toBe(mode === "dark" ? "#346bf1" : "#1b4ed8");
+    }
+
     for (const theme of [T3_CHAT_THEME, GROVE_THEME, OCEAN_THEME, EMBER_THEME, IRIS_THEME]) {
       expect(getThemeDefinition(theme.id)).toBe(theme);
       expect(getThemeModes(theme)).toEqual(["light", "dark"]);
@@ -447,6 +549,10 @@ describe("theme files", () => {
         expect(colors).not.toBeNull();
         expect(contrastRatio(colors!.text, colors!.canvas)).toBeGreaterThanOrEqual(4.5);
         expect(contrastRatio(colors!.textMuted, colors!.canvas)).toBeGreaterThanOrEqual(4.5);
+        expectStatusColorsReadable(colors!);
+        expect(asHex(colors!.statusActive)).toBe(expectedStatusActive[theme.id]?.[mode]);
+        expect(asHex(colors!.statusInfo)).toBe(mode === "dark" ? "#e9d5ff" : "#7622bf");
+        expect(colors!.statusActive).not.toBe(colors!.statusInfo);
         if (theme !== T3_CHAT_THEME) {
           expect(contrastRatio(colors!.textMuted, colors!.canvas)).toBeLessThan(5.5);
           expect(contrastRatio(colors!.textMuted, colors!.canvas)).toBeCloseTo(

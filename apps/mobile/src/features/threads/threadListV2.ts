@@ -26,11 +26,16 @@ export { snoozeWakeLabel };
  * Thread List v2 model, ported from the web sidebar v2
  * (apps/web/src/components/Sidebar.logic.ts + SidebarV2.tsx).
  *
- * Four visual states, three colors: color is reserved for "act now"
- * (approval), "in motion" (working), and "broken" (failed). Ready is the
- * unlabeled resting state.
+ * Actionable attention, active work, failure, and Plan Ready receive explicit
+ * labels. Ready is the unlabeled resting state.
  */
-export type ThreadListV2Status = "approval" | "input" | "working" | "failed" | "ready";
+export type ThreadListV2Status =
+  | "approval"
+  | "input"
+  | "working"
+  | "failed"
+  | "plan-ready"
+  | "ready";
 export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze" | "unsnooze";
 
 export interface ThreadListV2ChangeRequestState extends ChangeRequestSettleSource {
@@ -157,8 +162,23 @@ export function resolveThreadListV2Enabled(input: {
   return input.legacyPreference !== true;
 }
 
+function isThreadListV2LatestTurnSettled(
+  thread: Pick<EnvironmentThreadShell, "latestTurn" | "session">,
+): boolean {
+  if (!thread.latestTurn?.startedAt || !thread.latestTurn.completedAt) return false;
+  return thread.session?.status !== "running";
+}
+
 export function resolveThreadListV2Status(
-  thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "session">,
+  thread: Pick<
+    EnvironmentThreadShell,
+    | "hasActionableProposedPlan"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "interactionMode"
+    | "latestTurn"
+    | "session"
+  >,
 ): ThreadListV2Status {
   if (thread.hasPendingApprovals) {
     return "approval";
@@ -171,6 +191,13 @@ export function resolveThreadListV2Status(
   }
   if (thread.session?.status === "error") {
     return "failed";
+  }
+  if (
+    thread.interactionMode === "plan" &&
+    thread.hasActionableProposedPlan &&
+    isThreadListV2LatestTurnSettled(thread)
+  ) {
+    return "plan-ready";
   }
   return "ready";
 }

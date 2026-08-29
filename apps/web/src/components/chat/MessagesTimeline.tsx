@@ -111,6 +111,12 @@ import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 import { DotMatrix, type DotMatrixState } from "../ui/dot-matrix";
+import {
+  TASK_PROGRESS_STATUS_LABEL,
+  keyedTaskProgressSteps,
+  TaskProgressSegments,
+  TaskStatusIndicator,
+} from "./TaskProgressStatus";
 
 import {
   buildInlineTerminalContextText,
@@ -1238,10 +1244,22 @@ function ProposedPlanTimelineRow({
   );
 }
 
+function waitingOwnerLabel(waitingOn: "user" | "delegates" | "external"): string {
+  switch (waitingOn) {
+    case "user":
+      return "Needs your input";
+    case "delegates":
+      return "Waiting on agents";
+    case "external":
+      return "Waiting on external system";
+  }
+}
+
 /**
  * Inline folded plan chip: one row per turn that produced plan/todo steps.
- * Collapsed by default — a segment bar plus the in-progress step label —
- * and expands in place to the full step list. Replaces the old plan sidebar.
+ * Collapsed by default — a solid segment bar plus the in-progress step label —
+ * and expands in place to the full step list. Replaces the old plan
+ * sidebar.
  */
 const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
   row,
@@ -1251,14 +1269,22 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
   const [expanded, setExpanded] = useState(false);
   const { steps } = row.turnPlan.plan;
   const completedCount = steps.filter((step) => step.status === "completed").length;
-  const allDone = completedCount === steps.length;
-  // Label priority: the in-progress step, else the next pending step (plan
-  // just created), else the last step (plan finished, rendered muted).
+  const allDone = steps.length > 0 && completedCount === steps.length;
+  const currentStep = steps.find((step) => step.status === "inProgress");
+  const waitingStep = steps.find((step) => step.status === "waiting");
+  const nextStep = steps.find((step) => step.status === "pending");
+  const waitingForUser = waitingStep?.waitingOn === "user";
+  // Label priority: active work, an explicit wait, the next pending outcome,
+  // or the last step once the plan is complete.
   const label =
-    steps.find((step) => step.status === "inProgress")?.step ??
-    steps.find((step) => step.status === "pending")?.step ??
-    steps.at(-1)?.step ??
-    "Plan";
+    currentStep?.step ?? waitingStep?.step ?? nextStep?.step ?? steps.at(-1)?.step ?? "Plan";
+  const labelContext = currentStep
+    ? "Current task"
+    : waitingStep
+      ? "Waiting task"
+      : allDone
+        ? "Completed plan"
+        : "Next task";
   const Chevron = expanded ? ChevronDownIcon : ChevronRightIcon;
 
   return (
@@ -1267,34 +1293,33 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
         type="button"
         className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-0.5 py-0.5 text-left text-[12px] leading-5 transition-colors duration-150 hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
         aria-expanded={expanded}
+        aria-label={`Tasks: ${completedCount} of ${steps.length} complete. ${labelContext}: ${label}`}
         onClick={() => setExpanded((value) => !value)}
       >
         <Chevron className="size-3.5 shrink-0 text-muted-foreground/65" />
-        {steps.length > 1 ? (
-          <span aria-hidden className="flex shrink-0 items-center gap-0.5">
-            {steps.map((step) => (
-              <span
-                key={step.step}
-                className={cn(
-                  "h-[3px] w-2.5 rounded-full",
-                  step.status === "completed"
-                    ? "bg-success"
-                    : step.status === "inProgress"
-                      ? "bg-primary"
-                      : "bg-muted-foreground/25",
-                )}
-              />
-            ))}
-          </span>
-        ) : null}
+        <TaskProgressSegments steps={steps} />
         <span
           className={cn(
             "min-w-0 truncate",
-            allDone ? "text-muted-foreground/65" : "font-medium text-foreground/85",
+            allDone
+              ? "text-muted-foreground/65"
+              : waitingForUser
+                ? "font-medium text-warning"
+                : "font-medium text-foreground/85",
           )}
         >
           {label}
         </span>
+        {waitingStep ? (
+          <span
+            className={cn(
+              "shrink-0 text-[10px]",
+              waitingForUser ? "text-warning" : "text-muted-foreground/70",
+            )}
+          >
+            {waitingOwnerLabel(waitingStep.waitingOn)}
+          </span>
+        ) : null}
         {steps.length > 1 ? (
           <span className="shrink-0 text-muted-foreground/50 tabular-nums">
             {completedCount}/{steps.length}
@@ -1302,25 +1327,17 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
         ) : null}
       </button>
       {expanded ? (
-        <div className="mt-0.5 space-y-px pl-6">
-          {steps.map((step) => (
-            <div key={step.step} className="flex items-start gap-2 text-[12px] leading-5">
-              {/* Plan progress uses the same semantic DotMatrix states as the
-                  rest of the app: thinking while active, success when done,
-                  and idle before work starts. */}
+        <div className="mt-0.5 space-y-px pl-6" role="list">
+          {keyedTaskProgressSteps(steps).map(({ key, step }) => (
+            <div key={key} className="flex items-start gap-2 text-[12px] leading-5" role="listitem">
               <span className="flex h-5 shrink-0 items-center">
-                <DotMatrix
+                <TaskStatusIndicator
                   aria-hidden
-                  state={
-                    step.status === "completed"
-                      ? "success"
-                      : step.status === "inProgress"
-                        ? "thinking"
-                        : "idle"
-                  }
-                  className="size-3.5"
+                  status={step.status}
+                  waitingOn={step.status === "waiting" ? step.waitingOn : undefined}
                 />
               </span>
+              <span className="sr-only">{TASK_PROGRESS_STATUS_LABEL[step.status]}: </span>
               <span
                 className={cn(
                   "min-w-0",
@@ -1328,11 +1345,23 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
                     ? "text-muted-foreground/55"
                     : step.status === "inProgress"
                       ? "text-foreground/90"
-                      : "text-muted-foreground/70",
+                      : step.status === "waiting" && step.waitingOn === "user"
+                        ? "text-warning"
+                        : "text-muted-foreground/70",
                 )}
               >
                 {step.step}
               </span>
+              {step.status === "waiting" ? (
+                <span
+                  className={cn(
+                    "ml-auto shrink-0 text-[10px]",
+                    step.waitingOn === "user" ? "text-warning" : "text-muted-foreground/70",
+                  )}
+                >
+                  {waitingOwnerLabel(step.waitingOn)}
+                </span>
+              ) : null}
             </div>
           ))}
         </div>
@@ -1346,12 +1375,8 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   return (
     <div>
       <div className="border-b border-border/60 pb-2 pt-1">
-        <div className="flex items-center gap-2 px-1 text-sm leading-relaxed text-muted-foreground tabular-nums">
-          <DotMatrix
-            aria-hidden
-            state={row.showThinking ? "thinking" : "loading"}
-            className="size-3.5"
-          />
+        <div className="flex items-center gap-2 px-1 text-sm leading-relaxed text-status-active-foreground tabular-nums">
+          <DotMatrix sizeRole="prominent" aria-hidden state="loading" />
           <span>
             {row.createdAt ? (
               <>
@@ -1489,7 +1514,7 @@ function LiveActivityRow({
           role="img"
           aria-label="Tool call failed"
         >
-          <DotMatrix aria-hidden state="error" className="size-3.5" />
+          <DotMatrix sizeRole="inline" aria-hidden state="error" />
         </span>
       ) : null}
     </div>
@@ -1526,7 +1551,7 @@ function LiveActivityContent({
         >
           <WorkEntryIconSvg
             name={iconName}
-            className={cn("block size-4 shrink-0 stroke-[1.8]", !highlighted && "opacity-70")}
+            className={cn("block shrink-0 stroke-[1.8]", !highlighted && "opacity-70")}
           />
         </span>
       ) : null}
@@ -1599,7 +1624,7 @@ function WorkGroupToggleTimelineRow({
         <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
           <WorkEntryIconSvg
             name={toolGroupSummaryIconName(row.summaryKind)}
-            className="size-4 shrink-0 stroke-[1.8] opacity-70"
+            className="shrink-0 stroke-[1.8] opacity-70"
           />
         </span>
         <span className="min-w-0 flex-1 truncate text-secondary-label">{row.summary}</span>
@@ -1609,7 +1634,7 @@ function WorkGroupToggleTimelineRow({
             role="img"
             aria-label="Tool call failed"
           >
-            <DotMatrix aria-hidden state="error" className="size-3.5" />
+            <DotMatrix sizeRole="inline" aria-hidden state="error" />
           </span>
         ) : null}
       </button>
@@ -1640,7 +1665,7 @@ function WorkGroupToggleTimelineRow({
         aria-label={showHiddenFailure ? "Hidden work includes a failure" : undefined}
       >
         {showHiddenFailure ? (
-          <WorkEntryIconSvg name="x" className="size-4 shrink-0 stroke-[1.8] opacity-70" />
+          <WorkEntryIconSvg name="x" className="shrink-0 stroke-[1.8] opacity-70" />
         ) : (
           <ChevronDownIcon
             className={cn(
@@ -2199,36 +2224,44 @@ type WorkEntryIconName =
   | "zap";
 
 function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; className: string }) {
+  const fixedIconClassName = cn("size-4", className);
   switch (name) {
     case "bot":
-      return <BotIcon className={className} aria-hidden />;
+      return <BotIcon className={fixedIconClassName} aria-hidden />;
     case "check":
-      return <DotMatrix aria-hidden state="success" className={cn(className)} />;
+      return <DotMatrix sizeRole="inline" aria-hidden state="success" className={className} />;
     case "circle-alert":
-      return <CircleAlertIcon className={className} aria-hidden />;
+      return <CircleAlertIcon className={fixedIconClassName} aria-hidden />;
     case "eye":
-      return <EyeIcon className={className} aria-hidden />;
+      return <EyeIcon className={fixedIconClassName} aria-hidden />;
     case "globe":
-      return <GlobeIcon className={className} aria-hidden />;
+      return <GlobeIcon className={fixedIconClassName} aria-hidden />;
     case "hammer":
-      return <HammerIcon className={className} aria-hidden />;
+      return <HammerIcon className={fixedIconClassName} aria-hidden />;
     case "message-circle":
-      return <MessageCircleIcon className={className} aria-hidden />;
+      return <MessageCircleIcon className={fixedIconClassName} aria-hidden />;
     case "search":
-      return <SearchIcon className={className} aria-hidden />;
+      return <SearchIcon className={fixedIconClassName} aria-hidden />;
     case "square-pen":
-      return <SquarePenIcon className={className} aria-hidden />;
+      return <SquarePenIcon className={fixedIconClassName} aria-hidden />;
     case "terminal":
       // Live rows duplicate this icon inside their moving foreground mask.
       // Inherit the row tone so the matrix brightens with the label instead of
       // remaining pinned to its standalone muted terminal color.
-      return <DotMatrix aria-hidden state="terminal" className={cn(className, "text-inherit")} />;
+      return (
+        <DotMatrix
+          sizeRole="inline"
+          aria-hidden
+          state="terminal"
+          className={cn(className, "text-inherit")}
+        />
+      );
     case "wrench":
-      return <WrenchIcon className={className} aria-hidden />;
+      return <WrenchIcon className={fixedIconClassName} aria-hidden />;
     case "x":
-      return <DotMatrix aria-hidden state="error" className={cn(className)} />;
+      return <DotMatrix sizeRole="inline" aria-hidden state="error" className={className} />;
     case "zap":
-      return <ZapIcon className={className} aria-hidden />;
+      return <ZapIcon className={fixedIconClassName} aria-hidden />;
   }
 }
 
@@ -2635,7 +2668,7 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
       onClick={onOpenAgents}
       className="flex w-full items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 text-left text-[13px] transition hover:bg-accent/50"
     >
-      <DotMatrix aria-hidden state={matrix} className="size-3.5 shrink-0" />
+      <DotMatrix sizeRole="inline" aria-hidden state={matrix} />
       <WorkEntryIconSvg name="bot" className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate">
         <span className="font-medium">{lead}</span>
@@ -2747,7 +2780,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
         <span className={cn(iconWrapperClass, !showEntryIcon && "invisible")} aria-hidden>
           <WorkEntryIconSvg
             name={entryIconName}
-            className="block size-4 shrink-0 stroke-[1.8] opacity-70"
+            className="block shrink-0 stroke-[1.8] opacity-70"
           />
         </span>
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -2789,7 +2822,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
                       <span className="flex size-4 items-center justify-center" aria-hidden />
                     }
                   >
-                    <DotMatrix aria-hidden state="error" className="size-3.5" />
+                    <DotMatrix sizeRole="inline" aria-hidden state="error" />
                   </TooltipTrigger>
                   <TooltipPopup>{missingResponse ? "No final response" : "Failed"}</TooltipPopup>
                 </Tooltip>
@@ -2798,7 +2831,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
                   <TooltipTrigger
                     render={<span className="flex size-4 items-center justify-center" />}
                   >
-                    <DotMatrix aria-hidden state="success" className="size-3.5" />
+                    <DotMatrix sizeRole="inline" aria-hidden state="success" />
                   </TooltipTrigger>
                   <TooltipPopup>Completed</TooltipPopup>
                 </Tooltip>
@@ -2807,7 +2840,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
                   <TooltipTrigger
                     render={<span className="flex size-4 items-center justify-center" />}
                   >
-                    <DotMatrix aria-hidden state="idle" className="size-3.5 opacity-70" />
+                    <DotMatrix sizeRole="inline" aria-hidden state="idle" className="opacity-70" />
                   </TooltipTrigger>
                   <TooltipPopup>Empty</TooltipPopup>
                 </Tooltip>

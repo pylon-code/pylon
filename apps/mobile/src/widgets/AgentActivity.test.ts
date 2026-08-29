@@ -45,6 +45,25 @@ function makeRow(overrides: Partial<AgentActivityRowProps>): AgentActivityRowPro
   };
 }
 
+function contrastRatio(first: string, second: string): number {
+  const luminance = (hex: string) => {
+    const [red, green, blue] = hex
+      .slice(1)
+      .match(/.{2}/g)!
+      .map((channel) => Number.parseInt(channel, 16) / 255)
+      .map((channel) =>
+        channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+      );
+    return 0.2126 * red! + 0.7152 * green! + 0.0722 * blue!;
+  };
+  const firstLuminance = luminance(first);
+  const secondLuminance = luminance(second);
+  return (
+    (Math.max(firstLuminance, secondLuminance) + 0.05) /
+    (Math.min(firstLuminance, secondLuminance) + 0.05)
+  );
+}
+
 const props = {
   title: "T3 Code",
   subtitle: "Agent work in progress",
@@ -64,6 +83,10 @@ const lightEnvironment = {
 } as const;
 
 describe("AgentActivity widget layout", () => {
+  it("keeps warning status text readable on light and dark system materials", () => {
+    expect(contrastRatio("#bb4d00", "#ffffff")).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio("#ffb900", "#000000")).toBeGreaterThanOrEqual(4.5);
+  });
   it("tints each row by its own phase using the web sidebar's dark palette", () => {
     const layout = AgentActivity(
       {
@@ -78,7 +101,7 @@ describe("AgentActivity widget layout", () => {
     );
     const banner = JSON.stringify(layout.banner);
     expect(banner).toContain("#7dd3fc"); // sky-300: running
-    expect(banner).toContain("#fcd34d"); // amber-300: waiting_for_approval
+    expect(banner).toContain("#ffb900"); // warning foreground: waiting_for_approval
   });
 
   it("switches to the web sidebar's light palette when the scheme is light", () => {
@@ -97,9 +120,9 @@ describe("AgentActivity widget layout", () => {
     );
     const banner = JSON.stringify(layout.banner);
     expect(banner).toContain("#0284c7"); // sky-600: running
-    expect(banner).toContain("#d97706"); // amber-600: waiting_for_approval
+    expect(banner).toContain("#bb4d00"); // warning foreground: waiting_for_approval
     expect(banner).not.toContain("#7dd3fc");
-    expect(banner).not.toContain("#fcd34d");
+    expect(banner).not.toContain("#ffb900");
   });
 
   it("orders rows attention-first in the banner", () => {
@@ -153,9 +176,10 @@ describe("AgentActivity widget layout", () => {
       },
       environment as never,
     );
-    expect(JSON.stringify(layout.compactLeading)).toContain("#a5b4fc"); // indigo-300
+    expect(JSON.stringify(layout.compactLeading)).toContain("#ffb900"); // warning foreground
     expect(JSON.stringify(layout.compactTrailing)).toContain("Input");
-    expect(JSON.stringify(layout.minimal)).toContain("#a5b4fc");
+    expect(JSON.stringify(layout.minimal)).toContain("#ffb900");
+    expect(JSON.stringify(layout.minimal)).toContain("exclamationmark.circle.fill");
   });
 
   it("deep links the banner to the row that needs attention", () => {

@@ -1,7 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ComposerTasksBadge, ComposerTasksDrawer } from "./ComposerTasksBadge";
+import {
+  areComposerTasksDismissed,
+  composerTasksWaitingKey,
+  ComposerTasksBadge,
+  ComposerTasksDrawer,
+} from "./ComposerTasksBadge";
 
 const progress = {
   step: "Attach task progress",
@@ -46,8 +51,12 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain('aria-label="Dismiss tasks for this turn"');
     expect(markup).toContain("lucide-x");
     expect(markup).not.toContain("lucide-chevron");
+    expect(markup).toContain('data-task-progress-segments="true"');
+    expect(markup).toContain('data-task-status="completed"');
+    expect(markup).toContain('data-task-status="inProgress"');
+    expect(markup).toContain('data-task-status="pending"');
     expect(markup).toContain("bg-success");
-    expect(markup).toContain("bg-primary");
+    expect(markup).toContain("bg-status-active");
     expect(markup).toContain("bg-muted-foreground/25");
   });
 
@@ -83,6 +92,7 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("1/3");
     expect(markup).not.toContain("chat-composer-shoulder-tab");
     expect(markup).not.toContain("rounded-t-xl");
+    expect(markup).toContain("w-10");
   });
 
   it("expands into a read-only attached task list", () => {
@@ -101,7 +111,7 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain('role="list"');
     expect(markup).toContain("Inspect the composer");
     expect(markup).toContain('data-composer-task-duration="true"');
-    expect(markup).toContain("ml-auto w-10");
+    expect(markup).toContain("ml-auto shrink-0");
     expect(markup).toContain("4.0s");
     expect(markup).toContain("now");
     expect(markup).toContain("Attach task progress");
@@ -109,9 +119,17 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("lucide-list-todo");
     expect(markup).toContain('aria-label="Dismiss tasks for this turn"');
     expect(markup).not.toContain("lucide-chevron");
-    expect(markup).not.toContain("bg-success");
-    expect(markup).not.toContain("bg-primary");
-    expect(markup).not.toContain("bg-muted-foreground/25");
+    expect(markup).not.toContain('data-task-progress-segments="true"');
+    expect(markup).toContain('data-state="success"');
+    expect(markup).toContain('data-state="loading"');
+    expect(markup).toContain('data-state="idle"');
+    expect(markup.match(/<circle/g)).toHaveLength(75);
+    expect(markup).toContain('data-slot="dot-matrix"');
+    expect(markup).toContain('data-size-role="compact"');
+    expect(markup).toContain("size-[max(12px,0.85em)]");
+    expect(markup).toContain("Completed:");
+    expect(markup).toContain("In progress:");
+    expect(markup).toContain("Pending:");
   });
 
   it("does not render an empty task count", () => {
@@ -126,5 +144,102 @@ describe("ComposerTasksBadge", () => {
     );
 
     expect(markup).toBe("");
+  });
+
+  it("renders one compact delegated-work aggregate beside an honest wait", () => {
+    const markup = renderToStaticMarkup(
+      <ComposerTasksBadge
+        delegatedWork={{ workingAgents: 2, waitingAgents: 1 }}
+        expanded={false}
+        onDismiss={() => undefined}
+        onToggle={() => undefined}
+        placement="inline"
+        progress={{ step: "Await delegated review", completedSteps: 1, totalSteps: 3 }}
+        steps={[
+          { step: "Implement", status: "completed" },
+          { step: "Await delegated review", status: "waiting", waitingOn: "delegates" },
+          { step: "Ship", status: "pending" },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("2 agents working, 1 waiting");
+    expect(markup).toContain("Waiting on agents");
+    expect(markup).toContain("bg-muted-foreground/50");
+    expect(markup).not.toContain("bg-warning");
+  });
+
+  it.each(["user", "delegates", "external"] as const)(
+    "names %s as the wait owner in the task drawer",
+    (waitingOn) => {
+      const markup = renderToStaticMarkup(
+        <ComposerTasksDrawer
+          onDismiss={() => undefined}
+          onCollapse={() => undefined}
+          progress={{ step: "Await dependency", completedSteps: 0, totalSteps: 1 }}
+          steps={[{ step: "Await dependency", status: "waiting", waitingOn }]}
+        />,
+      );
+
+      const label =
+        waitingOn === "user"
+          ? "Needs your input"
+          : waitingOn === "delegates"
+            ? "Waiting on agents"
+            : "Waiting on external system";
+      expect(markup).toContain(label);
+      if (waitingOn === "user") {
+        expect(markup).toContain('data-state="warning"');
+        expect(markup).toContain("text-warning");
+      } else {
+        expect(markup).toContain('data-state="waiting"');
+        expect(markup).not.toContain('data-state="warning"');
+      }
+    },
+  );
+});
+
+describe("composer task dismissal semantics", () => {
+  it("keeps the same state dismissed but resurfaces meaningful wait changes", () => {
+    const activeSteps = [{ step: "Implement", status: "inProgress" }] as const;
+    const waitForUser = [{ step: "Review", status: "waiting", waitingOn: "user" }] as const;
+    const initialDismissal = { turnId: "turn-1", waitingKey: null };
+
+    expect(areComposerTasksDismissed(initialDismissal, "turn-1", activeSteps)).toBe(true);
+    expect(areComposerTasksDismissed(initialDismissal, "turn-1", waitForUser)).toBe(false);
+
+    const waitingDismissal = {
+      turnId: "turn-1",
+      waitingKey: composerTasksWaitingKey(waitForUser),
+    };
+    expect(areComposerTasksDismissed(waitingDismissal, "turn-1", waitForUser)).toBe(true);
+    expect(
+      areComposerTasksDismissed(waitingDismissal, "turn-1", [
+        { step: "Review", status: "waiting", waitingOn: "external" },
+      ]),
+    ).toBe(false);
+    expect(
+      areComposerTasksDismissed(waitingDismissal, "turn-1", [
+        { step: "Approve", status: "waiting", waitingOn: "user" },
+      ]),
+    ).toBe(false);
+    expect(areComposerTasksDismissed(waitingDismissal, "turn-2", waitForUser)).toBe(false);
+  });
+});
+
+describe("delegated work copy", () => {
+  it("names agents when every live delegate is waiting", () => {
+    const markup = renderToStaticMarkup(
+      <ComposerTasksBadge
+        delegatedWork={{ workingAgents: 0, waitingAgents: 1 }}
+        expanded={false}
+        onDismiss={() => undefined}
+        onToggle={() => undefined}
+        progress={{ step: "Implement", completedSteps: 0, totalSteps: 1 }}
+        steps={[{ step: "Implement", status: "inProgress" }]}
+      />,
+    );
+
+    expect(markup).toContain("1 agent waiting");
   });
 });

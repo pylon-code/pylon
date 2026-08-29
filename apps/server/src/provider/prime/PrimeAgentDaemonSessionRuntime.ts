@@ -1042,10 +1042,10 @@ export interface PrimeAgentDaemonSessionRuntime {
   ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly steer: (
     input: PrimeAgentDaemonPromptInput,
-  ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  ) => Effect.Effect<"accepted" | "recovering", PrimeAgentDaemonSessionRuntimeError>;
   readonly followUp: (
     input: PrimeAgentDaemonPromptInput,
-  ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  ) => Effect.Effect<"accepted" | "recovering", PrimeAgentDaemonSessionRuntimeError>;
   readonly getInputQueue: Effect.Effect<
     PrimeAgentDaemonInputQueue,
     PrimeAgentDaemonSessionRuntimeError
@@ -2165,6 +2165,35 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let mcpRecoveryTail = Promise.resolve();
     let mcpRecoveryPending = false;
     let mcpRecoveryFailed = false;
+    type QuiescenceMcpRecovery = {
+      readonly promise: Promise<boolean>;
+      readonly resolve: (restored: boolean) => void;
+      settled: boolean;
+      restored?: boolean;
+    };
+    let quiescenceMcpRecovery: QuiescenceMcpRecovery | undefined;
+    const beginQuiescenceMcpRecovery = () => {
+      const current = quiescenceMcpRecovery;
+      if (current !== undefined && !current.settled) return current;
+      let resolve!: (restored: boolean) => void;
+      const promise = new Promise<boolean>((complete) => {
+        resolve = complete;
+      });
+      const recovery = { promise, resolve, settled: false };
+      quiescenceMcpRecovery = recovery;
+      return recovery;
+    };
+    const settleQuiescenceMcpRecovery = (
+      recovery: QuiescenceMcpRecovery | undefined,
+      restored: boolean,
+    ) => {
+      if (recovery === undefined || recovery.settled) return false;
+      recovery.settled = true;
+      recovery.restored = restored;
+      recovery.resolve(restored);
+      if (!restored) mcpRecoveryFailed = true;
+      return true;
+    };
     const markActiveWorkerRecoveryTerminal = () => {
       const recovery = activeWorkerRecovery;
       if (
@@ -2229,25 +2258,36 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               return;
             }
             if (rawType === "session_resynced" && mcpRecoveryPending && !mcpRecoveryFailed) {
-              const restored = yield* configureMcpServer.pipe(
-                Effect.as(true),
-                Effect.orElseSucceed(() => false),
-              );
-              mcpRecoveryPending = false;
-              if (!restored) {
-                mcpRecoveryFailed = true;
-                markActiveWorkerRecoveryTerminal();
-                yield* routeRawEvent({
-                  type: "closed",
-                  error:
-                    "Pylon browser tools could not be restored after the Prime Agent daemon reconnected.",
-                });
-                return;
+              const recoveringWorkerSnapshot = activeWorkerRecovery?.explicitSnapshotRaw === raw;
+              if (recoveringWorkerSnapshot && rlmQuiescenceAvailable) {
+                // Prime ties MCP ownership to the exact daemon client and rejects replacement
+                // while an agent is streaming. Reconcile this same-worker snapshot now, but do
+                // not make the session usable until the authoritative barrier reaches idle and
+                // the new client reclaims scoped MCP ownership.
+                beginQuiescenceMcpRecovery();
+                mcpRecoveryPending = false;
+              } else {
+                const restored = yield* configureMcpServer.pipe(
+                  Effect.as(true),
+                  Effect.orElseSucceed(() => false),
+                );
+                mcpRecoveryPending = false;
+                if (!restored) {
+                  mcpRecoveryFailed = true;
+                  markActiveWorkerRecoveryTerminal();
+                  yield* routeRawEvent({
+                    type: "closed",
+                    error:
+                      "Pylon browser tools could not be restored after the Prime Agent daemon reconnected.",
+                  });
+                  return;
+                }
               }
             }
             if (rawType === "closed") {
               mcpRecoveryPending = false;
               mcpRecoveryFailed = true;
+              settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
             }
             if (!mcpRecoveryFailed || rawType === "closed") yield* routeRawEvent(raw);
           }),
@@ -2256,6 +2296,33 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       mcpRecoveryTail = delivery.catch(() => undefined);
       return delivery;
     };
+    const restoreMcpAfterQuiescence = Effect.fn(
+      "PrimeAgentDaemonSessionRuntime.restoreMcpAfterQuiescence",
+    )(function* () {
+      const recovery = quiescenceMcpRecovery;
+      if (recovery === undefined) return;
+      if (recovery.settled) {
+        if (recovery.restored === true) return;
+        return yield* runtimeError(
+          "configure-mcp",
+          "request-failed",
+          "Pylon browser tools are unavailable after worker recovery.",
+        );
+      }
+      const restored = yield* configureMcpServer.pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+      settleQuiescenceMcpRecovery(recovery, restored);
+      if (!restored) {
+        markActiveWorkerRecoveryTerminal();
+        return yield* runtimeError(
+          "configure-mcp",
+          "request-failed",
+          "Pylon browser tools could not be reclaimed after worker recovery.",
+        );
+      }
+    });
     const verifyManagedExtensionAfterReconnect = Effect.tryPromise({
       try: async () => {
         if (expectedExtension === undefined) return true;
@@ -2428,11 +2495,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       managedRecoveryTail = guarded.catch(() => undefined);
       return guarded;
     };
+    const beginWorkerRecoveryInputBlock = () => {
+      if (input.mcpServer === undefined) return;
+      mcpAttached = false;
+      mcpRecoveryPending = true;
+      if (rlmQuiescenceAvailable) beginQuiescenceMcpRecovery();
+    };
     const beginManagedWorkerRecovery = (): Promise<void> => {
-      if (input.mcpServer !== undefined) {
-        mcpAttached = false;
-        mcpRecoveryPending = true;
-      }
+      beginWorkerRecoveryInputBlock();
       if (expectedExtension === undefined) return Promise.resolve();
       const recovery = beginManagedRecovery();
       const delivery = managedRecoveryTail
@@ -2477,7 +2547,12 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       input.mcpServer === undefined
         ? Effect.void
         : Effect.tryPromise({
-            try: () => mcpRecoveryTail,
+            try: async () => {
+              await mcpRecoveryTail;
+              const recovery = quiescenceMcpRecovery;
+              if (recovery === undefined) return !mcpRecoveryFailed;
+              return recovery.settled ? recovery.restored === true : recovery.promise;
+            },
             catch: () =>
               runtimeError(
                 "configure-mcp",
@@ -2485,22 +2560,41 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 "Could not restore Pylon browser tools after the Prime Agent daemon reconnected.",
               ),
           }).pipe(
-            Effect.andThen(
-              Effect.suspend(() =>
-                mcpRecoveryFailed
-                  ? runtimeError(
-                      "configure-mcp",
-                      "request-failed",
-                      "Pylon browser tools are unavailable after the Prime Agent daemon reconnected.",
-                    )
-                  : Effect.void,
-              ),
+            Effect.flatMap((restored) =>
+              restored && !mcpRecoveryFailed
+                ? Effect.void
+                : runtimeError(
+                    "configure-mcp",
+                    "request-failed",
+                    "Pylon browser tools are unavailable after the Prime Agent daemon reconnected.",
+                  ),
             ),
           ),
     );
     const awaitProviderRecovery = Effect.all([awaitManagedRecovery, awaitMcpRecovery]).pipe(
       Effect.asVoid,
     );
+    const inputAdmissionAfterRecovery = (operation: "steer" | "follow-up") =>
+      Effect.suspend(() => {
+        if (
+          managedRecoveryPending() ||
+          mcpRecoveryPending ||
+          (quiescenceMcpRecovery !== undefined && !quiescenceMcpRecovery.settled) ||
+          (reconnectResolution !== undefined && !reconnectResolution.settled)
+        ) {
+          return Effect.succeed("recovering" as const);
+        }
+        if (managedRecoveryFailed || mcpRecoveryFailed) {
+          return Effect.fail(
+            runtimeError(
+              operation,
+              "request-failed",
+              "Prime Agent provider recovery did not complete safely.",
+            ),
+          );
+        }
+        return Effect.succeed("ready" as const);
+      });
     let routeWorkerAwareRawEvent: (raw: unknown) => Promise<void> = routeManagedAwareRawEvent;
 
     // The initial snapshot reserves one queue slot. Admission is cumulative for
@@ -3885,6 +3979,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           provisionalSnapshot: undefined,
         };
         activeWorkerRecovery = recovery;
+        beginWorkerRecoveryInputBlock();
         const gatePromise = runPromise(
           awaitWorkerRecoveryGate(resolution, generation, signal, summary),
         );
@@ -3997,6 +4092,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             }
             if (waitResult === "completed") {
               yield* adoptConcurrentWorkerRecovery;
+              yield* restoreMcpAfterQuiescence();
               break;
             }
             if (waitResult === "worker-recovering") {
@@ -4033,6 +4129,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                   provisionalSnapshot: undefined,
                 };
                 activeWorkerRecovery = recovery;
+                beginWorkerRecoveryInputBlock();
                 gatePromise = runPromise(
                   awaitWorkerRecoveryGate(resolution, waitGeneration, signal),
                 );
@@ -4130,6 +4227,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {
+              settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
               const resolution = workerRecoveryResolution;
               if (resolution === undefined) return;
               const workerRecoveryWasUnsettled = !resolution.settled;
@@ -4370,22 +4468,26 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
       yield* ensureOpen("steer");
-      yield* awaitProviderRecovery;
       const images = yield* validateImages("steer", promptInput.images);
       yield* validatePromptContent("steer", promptInput.text, images);
+      const recovery = yield* inputAdmissionAfterRecovery("steer");
+      if (recovery === "recovering") return recovery;
       const method = yield* requireMethod("steer", connection!.steer);
       yield* callVoid("steer", () => method.call(connection, promptInput.text, images));
+      return "accepted" as const;
     });
 
     const followUp = Effect.fn("PrimeAgentDaemonSessionRuntime.followUp")(function* (
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
       yield* ensureOpen("follow-up");
-      yield* awaitProviderRecovery;
       const images = yield* validateImages("follow-up", promptInput.images);
       yield* validatePromptContent("follow-up", promptInput.text, images);
+      const recovery = yield* inputAdmissionAfterRecovery("follow-up");
+      if (recovery === "recovering") return recovery;
       const method = yield* requireMethod("follow-up", connection!.followUp);
       yield* callVoid("follow-up", () => method.call(connection, promptInput.text, images));
+      return "accepted" as const;
     });
 
     const readPrivateInputQueue = (operation: "get-input-queue" | "remove-only-input-queue-item") =>
@@ -5080,6 +5182,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       if (disposed || disposeStarted) return Effect.void;
       disposeStarted = true;
       settleReconnectResolution(connectionGeneration, false);
+      settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
       unsubscribe?.();
       const nativeSideQuestions = [...activePrivateSideQuestions.entries()];
       return Effect.forEach(nativeSideQuestions, ([nativeId, active]) =>
@@ -5106,6 +5209,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             ),
           ),
         ),
+        Effect.timeoutOrElse({
+          duration: COMMAND_TIMEOUT_MS,
+          orElse: () =>
+            runtimeError(
+              "dispose",
+              "request-timed-out",
+              "Timed out while disposing the daemon session.",
+            ),
+        }),
         Effect.ensuring(
           Effect.gen(function* () {
             disposed = true;

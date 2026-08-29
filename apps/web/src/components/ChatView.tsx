@@ -111,6 +111,7 @@ import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   deriveTurnPlans,
+  deriveTurnDelegatedWork,
   findLatestProposedPlan,
   deriveWorkLogEntries,
   hasActionableProposedPlan,
@@ -1315,7 +1316,7 @@ function ChatViewContent(props: ChatViewProps) {
   const threadSyncPhase = routeKind === "server" ? (props.threadSyncPhase ?? null) : null;
   const threadDetailLoading = threadSyncPhase === "loading";
   const handleNewThread = useNewThreadHandler();
-  const { settleThread } = useThreadActions();
+  const { settleThread, pinThread, unpinThread } = useThreadActions();
   const routeThreadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
     [environmentId, threadId],
@@ -2282,7 +2283,7 @@ function ChatViewContent(props: ChatViewProps) {
           variant: "default",
           // Live connection status: calm styling, but it must front the stack.
           urgent: true,
-          icon: <DotMatrix aria-hidden state="connecting" className="size-3.5 text-foreground" />,
+          icon: <DotMatrix sizeRole="inline" aria-hidden state="connecting" />,
           title: `${unavailableConnection.phase === "connecting" ? "Connecting" : "Reconnecting"} to ${activeEnvironmentUnavailableState.label}`,
           description: "It may be finishing an update. One moment.",
         });
@@ -2339,7 +2340,7 @@ function ChatViewContent(props: ChatViewProps) {
         // a resting one — an available update is a notice, not a warning.
         icon:
           updateInProgress || updateFailed ? null : (
-            <DotMatrix aria-hidden state="idle" className="size-3.5" />
+            <DotMatrix sizeRole="inline" aria-hidden state="idle" />
           ),
         title:
           updateInProgress || updateFailed ? (
@@ -2614,15 +2615,15 @@ function ChatViewContent(props: ChatViewProps) {
   );
   // Current step for the in-chat working row: only for the running turn's own
   // plan (deriveActivePlanState falls back to older turns' plans, which must
-  // not label fresh work). Falls back to the first pending step so an
-  // all-pending freshly written plan labels the row, matching the chip and
-  // the server's planProgress.
+  // not label fresh work). Prefer active work or an explicit wait, then the
+  // first pending outcome for a freshly written plan.
   const workingStepLabel = useMemo(() => {
     if (!activePlan || activePlan.turnId !== (activeLatestTurn?.turnId ?? null)) {
       return null;
     }
     return (
       activePlan.steps.find((step) => step.status === "inProgress")?.step ??
+      activePlan.steps.find((step) => step.status === "waiting")?.step ??
       activePlan.steps.find((step) => step.status === "pending")?.step ??
       null
     );
@@ -4613,14 +4614,36 @@ function ChatViewContent(props: ChatViewProps) {
   // partition (same shell, same capability gate, same PR auto-settle input)
   // so the banner and the sidebar row never disagree.
   const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
+  const activeComposerPlan =
+    activePlan && activePlan.turnId === activeLatestTurn?.turnId ? activePlan : null;
+  const activeComposerCurrentStep =
+    activeComposerPlan?.steps.find((step) => step.status === "inProgress") ??
+    activeComposerPlan?.steps.find((step) => step.status === "waiting") ??
+    activeComposerPlan?.steps.find((step) => step.status === "pending");
+  // The durable plan activity owns the composer preview. This survives a
+  // server restart; the shell's in-memory planProgress remains only a compact
+  // sidebar/working-line optimization.
   const activeComposerTasksProgress =
-    activeLatestTurn !== null && !latestTurnSettled
-      ? (activeThreadShell?.planProgress ?? null)
+    activeLatestTurn !== null &&
+    activeComposerPlan &&
+    activeComposerCurrentStep &&
+    (!latestTurnSettled || activeComposerCurrentStep.status === "waiting")
+      ? {
+          step: activeComposerCurrentStep.step,
+          completedSteps: activeComposerPlan.steps.filter((step) => step.status === "completed")
+            .length,
+          totalSteps: activeComposerPlan.steps.length,
+        }
       : null;
   const activeComposerTaskSteps =
-    activeComposerTasksProgress && activePlan && activePlan.turnId === activeLatestTurn?.turnId
-      ? activePlan.steps
-      : null;
+    activeComposerTasksProgress && activeComposerPlan ? activeComposerPlan.steps : null;
+  const activeComposerDelegatedWork = useMemo(
+    () =>
+      activeComposerTaskSteps && activeComposerPlan?.turnId
+        ? deriveTurnDelegatedWork(threadActivities, activeComposerPlan.turnId, agentSessionLive)
+        : null,
+    [activeComposerPlan?.turnId, activeComposerTaskSteps, agentSessionLive, threadActivities],
+  );
   const autoSettleAfterDays = useClientSettings((settings) => settings.sidebarAutoSettleAfterDays);
   const autoSettleOnMerge = useClientSettings((settings) => settings.sidebarAutoSettleOnMerge);
   const linkedPullRequestStatus = useLinkedThreadPullRequest(
@@ -4657,6 +4680,8 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const supportsSettlement = serverConfig?.environment.capabilities.threadSettlement === true;
   const supportsSnooze = serverConfig?.environment.capabilities.threadSnooze === true;
+  const supportsPinning = serverConfig?.environment.capabilities.threadPinning === true;
+  const activeThreadPinned = supportsPinning && activeThreadShell?.pinnedAt != null;
   const nowMinute = useNowMinute();
   const snoozeNow = new Date().toISOString();
   const activeThreadSnoozed =
@@ -5083,11 +5108,7 @@ function ChatViewContent(props: ChatViewProps) {
       id: `background-liveness:${activeThread.id}`,
       variant: "default",
       icon: (
-        <DotMatrix
-          aria-hidden
-          state={working ? "orchestrating" : "listening"}
-          className="size-3.5 text-foreground"
-        />
+        <DotMatrix sizeRole="inline" aria-hidden state={working ? "orchestrating" : "listening"} />
       ),
       title: working
         ? liveCount > 0
@@ -5509,6 +5530,25 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
+      if (command === "thread.pin") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!isServerThread || !activeThreadRef || !supportsPinning) return;
+        const pinned = activeThreadPinned;
+        void (pinned ? unpinThread(activeThreadRef) : pinThread(activeThreadRef)).then((result) => {
+          if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
+          const error = squashAtomCommandFailure(result);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: pinned ? "Failed to unpin thread" : "Failed to pin thread",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+        });
+        return;
+      }
+
       if (command === "terminal.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -5613,6 +5653,7 @@ function ChatViewContent(props: ChatViewProps) {
     activeRightPanelSurface,
     addTerminalSurface,
     activeThreadRef,
+    activeThreadPinned,
     activeThreadSettled,
     terminalUiState.terminalOpen,
     terminalUiState.activeTerminalId,
@@ -5628,8 +5669,11 @@ function ChatViewContent(props: ChatViewProps) {
     handleUnsettleActiveThread,
     isServerThread,
     onToggleDiff,
+    pinThread,
     settleThread,
+    supportsPinning,
     supportsSettlement,
+    unpinThread,
     toggleRightPanel,
     toggleRightPanelMaximized,
     toggleTerminalVisibility,
@@ -8113,6 +8157,7 @@ function ChatViewContent(props: ChatViewProps) {
                             activeProposedPlan={activeProposedPlan}
                             activeTasksProgress={activeComposerTasksProgress}
                             activeTaskSteps={activeComposerTaskSteps}
+                            activeDelegatedWork={activeComposerDelegatedWork}
                             runtimeMode={runtimeMode}
                             interactionMode={interactionMode}
                             lockedProvider={lockedProvider}

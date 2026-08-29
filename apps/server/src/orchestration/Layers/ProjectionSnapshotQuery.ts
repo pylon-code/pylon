@@ -1287,9 +1287,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
-  // Blocking request payloads must remain available even if they predate the
-  // recent activity window. Each CTE returns at most one unresolved row per
-  // request, so the merge below stays bounded by actionable work.
+  // Blocking request payloads and the latest turn's authoritative plan must
+  // remain available even if they predate the recent activity window. Each
+  // CTE returns bounded state, so the merge below cannot grow with history.
   const listPinnedThreadActivityRowsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadActivityDbRowSchema,
@@ -1349,6 +1349,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             )
             AND json_extract(activity.payload_json, '$.requestId') IS NOT NULL
         ),
+        latest_plan_activity AS (
+          SELECT activity.activity_id
+          FROM projection_thread_activities AS activity
+          INNER JOIN projection_threads AS thread
+            ON thread.thread_id = activity.thread_id
+          WHERE activity.thread_id = ${threadId}
+            AND activity.turn_id = thread.latest_turn_id
+            AND activity.kind = 'turn.plan.updated'
+          ORDER BY
+            activity.sequence DESC,
+            activity.created_at DESC,
+            activity.activity_id DESC
+          LIMIT 1
+        ),
         pinned_activity_ids AS (
           SELECT activity_id
           FROM pending_approval_activities
@@ -1358,6 +1372,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           FROM user_input_lifecycle
           WHERE request_order = 1
             AND kind = 'user-input.requested'
+          UNION ALL
+          SELECT activity_id
+          FROM latest_plan_activity
         )
         SELECT
           activity.activity_id AS "activityId",

@@ -16,6 +16,7 @@ import {
   prStatusIndicator,
   PrStatusTooltipContent,
   resolveThreadPr,
+  sidebarStatusColorClass,
   terminalStatusFromRunningIds,
   ThreadStatusLabel,
   ThreadWorktreeIndicator,
@@ -723,7 +724,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
               </TooltipPopup>
             </Tooltip>
           )}
-          {threadStatus && <ThreadStatusLabel status={threadStatus} />}
+          {threadStatus && <ThreadStatusLabel status={threadStatus} surface="sidebar" />}
           {renamingThreadKey === threadKey ? (
             <input
               ref={handleRenameInputRef}
@@ -786,7 +787,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                   />
                 }
               >
-                <DotMatrix aria-hidden state="terminal-active" className="size-3" />
+                <DotMatrix sizeRole="compact" aria-hidden state="terminal-active" />
               </TooltipTrigger>
               <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
             </Tooltip>
@@ -1056,7 +1057,9 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
             }}
           >
             <span className="flex min-w-0 flex-1 items-center gap-2">
-              {hiddenThreadStatus && <ThreadStatusLabel status={hiddenThreadStatus} compact />}
+              {hiddenThreadStatus && (
+                <ThreadStatusLabel status={hiddenThreadStatus} compact surface="sidebar" />
+              )}
               <span>Show more</span>
             </span>
           </SidebarMenuSubButton>
@@ -1299,6 +1302,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       visibleProjectThreads,
     };
   }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
+  const projectStatusColorClass = projectStatus
+    ? sidebarStatusColorClass(projectStatus.colorClass)
+    : "";
   const pinnedCollapsedThread = useMemo(() => {
     const activeThreadKey = activeRouteThreadKey ?? undefined;
     if (!activeThreadKey || projectExpanded) {
@@ -2271,12 +2277,17 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                   <span
                     role="img"
                     aria-label={projectStatus.label}
-                    className={`-ml-0.5 relative inline-flex size-3.5 shrink-0 items-center justify-center ${projectStatus.colorClass}`}
+                    className={`-ml-0.5 relative inline-flex size-3.5 shrink-0 items-center justify-center ${projectStatusColorClass}`}
                   />
                 }
               >
                 <span className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover/project-header:opacity-0">
-                  <DotMatrix state={projectStatus.matrix} aria-hidden className="size-3" />
+                  <DotMatrix
+                    sizeRole="compact"
+                    state={projectStatus.matrix}
+                    aria-hidden
+                    className={projectStatusColorClass}
+                  />
                 </span>
                 <ChevronRightIcon className="absolute inset-0 m-auto size-3.5 text-icon-muted opacity-0 transition-opacity duration-150 group-hover/project-header:opacity-100" />
               </TooltipTrigger>

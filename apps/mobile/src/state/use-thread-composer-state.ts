@@ -327,6 +327,7 @@ export function useThreadComposerState() {
     ? sessionCompactionMutation.scopeKey
     : null;
   const sessionCompactionBlocksSubmission = isSessionCompactionSubmissionBlocked({
+    hasActiveScope: sessionCompactionScope !== null,
     current: selectedThreadCompaction,
     activity: activitySessionCompaction,
     compactPending:

@@ -1,6 +1,5 @@
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 
-import { cn } from "~/lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { DotMatrix, type DotMatrixState } from "~/components/ui/dot-matrix";
 
@@ -41,7 +40,7 @@ export function ConnectionStatusDot({
   colorClassName,
 }: ConnectionStatusDotProps) {
   const dotContent = (
-    <DotMatrix aria-hidden state={state} className={cn("size-3", colorClassName)} />
+    <DotMatrix sizeRole="compact" aria-hidden state={state} className={colorClassName} />
   );
 
   if (!tooltipText) {

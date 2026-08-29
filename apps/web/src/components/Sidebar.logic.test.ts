@@ -705,7 +705,13 @@ describe("resolveSidebarThreadStatus", () => {
     updatedAt: "2026-03-09T10:00:00.000Z",
   };
 
-  const idle = { hasPendingApprovals: false, hasPendingUserInput: false };
+  const idle = {
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: DEFAULT_INTERACTION_MODE,
+    latestTurn: null,
+  };
 
   it("prioritizes approval over a running session", () => {
     expect(resolveSidebarThreadStatus({ ...idle, hasPendingApprovals: true, session })).toBe(
@@ -752,6 +758,19 @@ describe("resolveSidebarThreadStatus", () => {
         session: { ...session, status: "ready" as const },
       }),
     ).toBe("monitoring");
+  });
+
+  it("surfaces an actionable settled plan ahead of lingering background work", () => {
+    expect(
+      resolveSidebarThreadStatus({
+        ...idle,
+        backgroundLiveness: "working",
+        hasActionableProposedPlan: true,
+        interactionMode: "plan",
+        latestTurn: makeLatestTurn(),
+        session: { ...session, status: "ready" as const },
+      }),
+    ).toBe("plan-ready");
   });
 
   it("reports failed only while the session status is error", () => {
@@ -1158,7 +1177,11 @@ describe("resolveThreadStatusPill", () => {
           hasPendingUserInput: true,
         },
       }),
-    ).toMatchObject({ label: "Awaiting Input", matrix: "waiting" });
+    ).toMatchObject({
+      label: "Awaiting Input",
+      matrix: "warning",
+      colorClass: "text-warning",
+    });
   });
 
   it("falls back to working when the thread is actively running without blockers", () => {
@@ -1167,7 +1190,11 @@ describe("resolveThreadStatusPill", () => {
         thread: baseThread,
       }),
       // A root turn uses neutral loading; the ring is reserved for delegation.
-    ).toMatchObject({ label: "Working", matrix: "loading" });
+    ).toMatchObject({
+      label: "Working",
+      matrix: "loading",
+      colorClass: "text-status-active",
+    });
   });
 
   it("shows connecting while the session is starting", () => {
@@ -1207,7 +1234,7 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({
       label: "Working",
       matrix: "orchestrating",
-      colorClass: "text-foreground",
+      colorClass: "text-status-active",
     });
   });
 

@@ -462,13 +462,42 @@ export function ThreadWorktreeIndicator({
   );
 }
 
+export function sidebarStatusColorClass(colorClass: string): string {
+  return colorClass
+    .split(" ")
+    .map((token) => {
+      if (token === "text-status-active") return "text-status-active-sidebar";
+      if (token === "text-status-info") return "text-status-info-sidebar";
+      return token;
+    })
+    .join(" ");
+}
+
+export function statusForegroundColorClass(colorClass: string): string {
+  return colorClass
+    .split(" ")
+    .map((token) => {
+      if (token === "text-status-active") return "text-status-active-foreground";
+      if (token === "text-status-active-sidebar") {
+        return "text-status-active-foreground-sidebar";
+      }
+      return token;
+    })
+    .join(" ");
+}
+
 export function ThreadStatusLabel({
   status,
   compact = false,
+  surface = "default",
 }: {
   status: ThreadStatusPill;
   compact?: boolean;
+  surface?: "default" | "sidebar";
 }) {
+  const indicatorColorClass =
+    surface === "sidebar" ? sidebarStatusColorClass(status.colorClass) : status.colorClass;
+  const labelColorClass = statusForegroundColorClass(indicatorColorClass);
   if (compact) {
     return (
       <Tooltip>
@@ -477,11 +506,16 @@ export function ThreadStatusLabel({
             <span
               role="img"
               aria-label={status.label}
-              className={`inline-flex size-3.5 shrink-0 items-center justify-center ${status.colorClass}`}
+              className={`inline-flex size-3.5 shrink-0 items-center justify-center ${indicatorColorClass}`}
             />
           }
         >
-          <DotMatrix state={status.matrix} aria-hidden className="size-3" />
+          <DotMatrix
+            sizeRole="compact"
+            state={status.matrix}
+            aria-hidden
+            className={indicatorColorClass}
+          />
         </TooltipTrigger>
         <TooltipPopup side="top">{status.label}</TooltipPopup>
       </Tooltip>
@@ -495,12 +529,17 @@ export function ThreadStatusLabel({
           <span
             role="img"
             aria-label={status.label}
-            className={`inline-flex items-center gap-1 text-[10px] ${status.colorClass}`}
+            className="inline-flex items-center gap-1 text-[10px]"
           />
         }
       >
-        <DotMatrix state={status.matrix} aria-hidden className="size-3" />
-        <span className="hidden md:inline">{status.label}</span>
+        <DotMatrix
+          sizeRole="compact"
+          state={status.matrix}
+          aria-hidden
+          className={indicatorColorClass}
+        />
+        <span className={`hidden md:inline ${labelColorClass}`}>{status.label}</span>
       </TooltipTrigger>
       <TooltipPopup side="top">{status.label}</TooltipPopup>
     </Tooltip>
@@ -617,7 +656,7 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
               />
             }
           >
-            <DotMatrix aria-hidden state="terminal-active" className="size-3" />
+            <DotMatrix sizeRole="compact" aria-hidden state="terminal-active" />
           </TooltipTrigger>
           <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
         </Tooltip>

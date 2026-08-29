@@ -235,7 +235,7 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
         explanation: "Prime tasks",
         plan: [
           { step: "Inspect", status: "completed" as const },
-          { step: "Implement", status: "inProgress" as const },
+          { step: "Await review", status: "waiting" as const, waitingOn: "user" as const },
         ],
       },
     };
@@ -255,7 +255,7 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
           explanation: "Prime tasks",
           plan: [
             { step: "Inspect", status: "completed" },
-            { step: "Implement", status: "inProgress" },
+            { step: "Await review", status: "waiting", waitingOn: "user" },
           ],
         },
       },

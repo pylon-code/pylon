@@ -255,7 +255,8 @@ describe("PrimeAgentDaemonEvents", () => {
         explanation: "  Safe task parity  ",
         plan: [
           { step: "  Inspect behavior  ", status: "completed" },
-          { step: "Project plan", status: "inProgress" },
+          { step: "Project plan", status: "pending" },
+          { step: "Await delegated review", status: "waiting", waitingOn: "delegates" },
         ],
       },
       isError: false,
@@ -272,7 +273,8 @@ describe("PrimeAgentDaemonEvents", () => {
           explanation: "Safe task parity",
           plan: [
             { step: "Inspect behavior", status: "completed" },
-            { step: "Project plan", status: "inProgress" },
+            { step: "Project plan", status: "pending" },
+            { step: "Await delegated review", status: "waiting", waitingOn: "delegates" },
           ],
         },
       },
@@ -333,6 +335,33 @@ describe("PrimeAgentDaemonEvents", () => {
         details: {
           protocol: "pylon-plan-v1",
           plan: [{ step: "   ", status: "pending" }],
+        },
+      },
+      {
+        toolName: "pylon_update_plan",
+        isError: false,
+        details: {
+          protocol: "pylon-plan-v1",
+          plan: [{ step: "Wait", status: "waiting" }],
+        },
+      },
+      {
+        toolName: "pylon_update_plan",
+        isError: false,
+        details: {
+          protocol: "pylon-plan-v1",
+          plan: [{ step: "Work", status: "inProgress", waitingOn: "user" }],
+        },
+      },
+      {
+        toolName: "pylon_update_plan",
+        isError: false,
+        details: {
+          protocol: "pylon-plan-v1",
+          plan: [
+            { step: "Work", status: "inProgress" },
+            { step: "Wait", status: "waiting", waitingOn: "external" },
+          ],
         },
       },
     ];
