@@ -254,7 +254,11 @@ export function ComposerToolbarButton(props: {
         // so callers can lift it with max-w-full — flex-filling pills in the
         // thread composer stretch to the row's edge. The numeric maxWidth
         // prop still wins via the inline style below.
-        "h-11 max-w-[172px] flex-row items-center justify-center rounded-full border shadow-lg shadow-adaptive-black-a10-a25 active:opacity-70",
+        "h-11 max-w-[172px] flex-row items-center justify-center rounded-full border active:opacity-70",
+        // The shadow is a class now, so a disabled button has to drop the class:
+        // Uniwind maps it to RN's `boxShadow`, which wins over the legacy
+        // `shadowOpacity` that used to switch it off.
+        props.disabled ? undefined : "shadow-lg shadow-adaptive-black-a10-a25",
         isCircle ? "w-11" : "gap-2 px-3.5",
         variant === "primary"
           ? props.disabled
@@ -281,7 +285,6 @@ export function ComposerToolbarButton(props: {
           maxWidth: props.maxWidth,
           minWidth: props.minWidth,
           opacity: props.disabled ? 0.55 : pressed ? 0.72 : 1,
-          shadowOpacity: props.disabled ? 0 : 1,
         },
         props.style,
       ]}
