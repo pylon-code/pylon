@@ -138,6 +138,7 @@ import {
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
+  isImageAttachment,
   type SessionPhase,
   type Thread,
   type TurnDiffSummary,
@@ -204,6 +205,7 @@ import {
 } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { gitHubPullRequestBrowserUrl } from "~/lib/openPullRequestLink";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
@@ -2227,6 +2229,20 @@ function ChatViewContent(props: ChatViewProps) {
     : (primaryEnvironment?.serverConfig ?? null);
   const pullRequestsCapabilityKnown = serverConfig !== null;
   const supportsPullRequests = serverConfig?.environment.capabilities.pullRequests === true;
+  // Same fallback the load-failure view offers: a pull request stays readable on
+  // GitHub even when this environment's server is too old to browse it here.
+  const pullRequestsUnavailableGitHubUrl =
+    activeRightPanelSurface?.kind === "pull-request"
+      ? gitHubPullRequestBrowserUrl(
+          allProjects.find(
+            (project) =>
+              project.id === activeRightPanelSurface.projectId &&
+              project.environmentId === activeThread?.environmentId,
+          )?.repositoryIdentity,
+          activeRightPanelSurface.repository,
+          activeRightPanelSurface.number,
+        )
+      : null;
   const attachmentEnvironmentConfig = environmentById.get(environmentId)?.serverConfig ?? null;
   const attachmentUploadsCapabilityKnown = attachmentEnvironmentConfig !== null;
   const supportsAttachmentUploads =
@@ -2786,7 +2802,7 @@ function ChatViewContent(props: ChatViewProps) {
       }
 
       const serverPreviewUrls = serverMessage.attachments.flatMap((attachment) =>
-        attachment.type === "image" && attachment.previewUrl ? [attachment.previewUrl] : [],
+        isImageAttachment(attachment) && attachment.previewUrl ? [attachment.previewUrl] : [],
       );
       if (
         serverPreviewUrls.length === 0 ||
@@ -2869,7 +2885,7 @@ function ChatViewContent(props: ChatViewProps) {
             let changed = false;
             let imageIndex = 0;
             const attachments = message.attachments.map((attachment) => {
-              if (attachment.type !== "image") {
+              if (!isImageAttachment(attachment)) {
                 return attachment;
               }
               const handoffPreviewUrl = handoffPreviewUrls[imageIndex];
@@ -7798,6 +7814,12 @@ function ChatViewContent(props: ChatViewProps) {
       <PullRequestsUnavailableState
         title="Pull requests unavailable"
         error="Update this environment's Pylon server to browse pull requests."
+        // The pull request is still readable on GitHub even when this server is
+        // too old to browse it here, so this surface gets the same way out as
+        // the load-failure one rather than being a dead end.
+        {...(pullRequestsUnavailableGitHubUrl
+          ? { gitHubUrl: pullRequestsUnavailableGitHubUrl }
+          : {})}
       />
     ) : activeRightPanelSurface?.kind === "pull-request" ? (
       // No onClose: the surface tab's own X owns closing here, and a second X in the header

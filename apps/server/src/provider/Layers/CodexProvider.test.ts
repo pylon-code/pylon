@@ -1,6 +1,12 @@
 import { assert, it } from "@effect/vitest";
 
-import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
+import * as CodexSchema from "effect-codex-app-server/schema";
+
+import {
+  applyPreferredCodexDefaultModel,
+  codexAccountAuthLabel,
+  mapCodexModelCapabilities,
+} from "./CodexProvider.ts";
 
 it("maps current Codex model capability fields", () => {
   const capabilities = mapCodexModelCapabilities({
@@ -143,4 +149,47 @@ it("ignores custom models that shadow a preferred slug", () => {
   ]);
 
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
+});
+
+it("labels every account plan Codex can report", () => {
+  // The switch ends in `satisfies never`, so this table and the generated
+  // `PlanType` literals have to stay in step: adding a literal without a case
+  // fails typecheck, and reordering a case into the wrong group fails here.
+  const labels: ReadonlyArray<readonly [string, string]> = [
+    ["free", "ChatGPT Free Subscription"],
+    ["go", "ChatGPT Go Subscription"],
+    ["plus", "ChatGPT Plus Subscription"],
+    ["pro", "ChatGPT Pro 20x Subscription"],
+    ["prolite", "ChatGPT Pro 5x Subscription"],
+    ["team", "ChatGPT Team Subscription"],
+    ["self_serve_business_prolite", "ChatGPT Business Subscription"],
+    ["self_serve_business_usage_based", "ChatGPT Business Subscription"],
+    ["business", "ChatGPT Business Subscription"],
+    ["ent26", "ChatGPT Enterprise Subscription"],
+    ["enterprise_cbp_automation", "ChatGPT Enterprise Subscription"],
+    ["enterprise_cbp_usage_based", "ChatGPT Enterprise Subscription"],
+    ["enterprise", "ChatGPT Enterprise Subscription"],
+    ["edu", "ChatGPT Edu Subscription"],
+    ["edu_plus", "ChatGPT Edu Subscription"],
+    ["edu_pro", "ChatGPT Edu Subscription"],
+    ["unknown", "ChatGPT Subscription"],
+  ];
+
+  for (const [planType, expected] of labels) {
+    assert.strictEqual(
+      codexAccountAuthLabel({
+        email: "user@example.com",
+        planType: planType as CodexSchema.V2GetAccountResponse__PlanType,
+        type: "chatgpt",
+      }),
+      expected,
+    );
+  }
+});
+
+it("labels non-ChatGPT account types", () => {
+  assert.strictEqual(codexAccountAuthLabel({ type: "apiKey" }), "OpenAI API Key");
+  assert.strictEqual(codexAccountAuthLabel({ type: "amazonBedrock" }), "Amazon Bedrock");
+  assert.strictEqual(codexAccountAuthLabel(undefined), undefined);
+  assert.strictEqual(codexAccountAuthLabel(null), undefined);
 });

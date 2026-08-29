@@ -76,7 +76,7 @@ import {
   Modal,
   Platform,
   Pressable,
-  StyleSheet,
+  useColorScheme,
   View,
   type ViewStyle,
 } from "react-native";
@@ -88,9 +88,8 @@ import Animated, {
   FadeOutDown,
   LinearTransition,
 } from "react-native-reanimated";
-import { useThemeColor } from "../../lib/useThemeColor";
+import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { presentMobileContextWindow } from "../../lib/contextWindow";
-import { themeColorWithAlpha } from "../../lib/mobileTheme";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 
@@ -119,7 +118,6 @@ import {
   showModelSelectionInteractionModeToggle,
 } from "../../lib/modelOptions";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
-import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import {
   insertRankedSearchResult,
@@ -270,19 +268,23 @@ const COMPOSER_LAYOUT_TRANSITION =
 export function ComposerSurface(props: {
   readonly children: ReactNode;
   readonly style: ViewStyle;
-  readonly isDarkMode: boolean;
   /** Existing thread composers morph between pill and card layouts. */
   readonly animateLayout?: boolean;
 }) {
-  const cardColor = useThemeColor("--color-card-translucent");
-  const borderColor = useThemeColor("--color-border");
-  const shadowColor = useThemeColor("--color-primary-shadow");
   // Drop shadow lives on a wrapper: `overflow: "hidden"` on the surface itself
   // (needed to clip content to the pill shape) would clip the shadow on iOS.
+  //
+  // The colour is set here rather than through a `shadow-adaptive-*` class. A
+  // bare Tailwind shadow-colour utility emits only `--tw-shadow-color` and no
+  // `box-shadow`, and Uniwind's native store only maps a style when
+  // `result.boxShadow` is defined — so the class contributes nothing to the RN
+  // style and `shadowOpacity: 1` would fall back to RN's default opaque black.
+  const shadowColor = useUniwindTheme()["--color-primary-shadow"];
+  const isDarkMode = useColorScheme() === "dark";
   const shadowStyle: ViewStyle = {
     borderRadius: props.style.borderRadius,
     shadowColor,
-    shadowOpacity: props.isDarkMode ? 0.35 : 0.12,
+    shadowOpacity: isDarkMode ? 0.35 : 0.12,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 6 },
     elevation: 10,
@@ -295,11 +297,7 @@ export function ComposerSurface(props: {
     >
       <GlassSurface
         chrome="none"
-        fallbackStyle={{
-          backgroundColor: cardColor,
-          borderWidth: 1,
-          borderColor,
-        }}
+        fallbackClassName="border border-border bg-card-translucent"
         glassEffectStyle="regular"
         // The composer is a passive material containing interactive controls.
         // Expo GlassView defaults to non-interactive and both layouts share it.
@@ -368,8 +366,6 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
   readonly status: ComposerStatusPillState;
 }) {
   const isReconnecting = props.status.kind !== "unavailable";
-  const indicatorColor = useThemeColor("--color-icon-muted");
-
   return (
     <Animated.View
       className="absolute inset-x-0 bottom-full items-center pb-2"
@@ -383,7 +379,7 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
         className="max-w-full flex-row items-center gap-2 rounded-full bg-card px-3 py-2 shadow-sm active:opacity-70"
       >
         {isReconnecting ? (
-          <ActivityIndicator size="small" color={indicatorColor} />
+          <ActivityIndicator size="small" colorClassName={"accent-icon-muted"} />
         ) : (
           <View className="h-2 w-2 rounded-full bg-red-500" />
         )}
@@ -438,9 +434,7 @@ const ContextWindowIndicator = memo(function ContextWindowIndicator(props: {
 
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
   const navigation = useNavigation();
-  const { themeAppearance } = useAppearancePreferences();
-  const isDarkMode = themeAppearance === "dark";
-  const foregroundColor = useThemeColor("--color-foreground");
+  const foregroundColor = useUniwindTheme()["--color-foreground"];
   const bodyText = useScaledTextRole("body");
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
@@ -517,11 +511,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     environmentLabel: props.environmentLabel,
     threadSyncPhase: props.threadSyncPhase,
   });
-  const toolbarSurface = String(useThemeColor("--color-card"));
-  const backdropSurface = String(useThemeColor("--color-screen"));
-  const toolbarFadeOpaque = themeColorWithAlpha(toolbarSurface, 0.95);
-  const toolbarFadeTransparent = themeColorWithAlpha(toolbarSurface, 0);
-  const backdropGradient = `linear-gradient(to bottom, ${themeColorWithAlpha(backdropSurface, 0)} 0%, ${themeColorWithAlpha(backdropSurface, 0.6)} 55%, ${themeColorWithAlpha(backdropSurface, 0.9)} 100%)`;
   const selectedProviderStatus = useMemo(() => {
     if (!props.serverConfig) return null;
     return (
@@ -1754,13 +1743,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           silently drops experimental_backgroundImage on Android, which left this
           strip fully transparent and the feed text legible through the composer. */}
       <View
+        className="absolute inset-0 bg-linear-to-b from-screen/0 via-screen/60 to-screen/90"
         pointerEvents="none"
-        style={[
-          StyleSheet.absoluteFill,
-          {
-            experimental_backgroundImage: backdropGradient,
-          },
-        ]}
       />
       <Animated.View
         className="relative w-full self-center"
@@ -1786,7 +1770,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         ) : null}
 
         <ComposerSurface
-          isDarkMode={isDarkMode}
           style={
             isExpanded
               ? {
@@ -1916,11 +1899,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           ) : null}
           {isExpanded ? (
             <ComposerToolbarRow paddingBottom={0} paddingHorizontal={0} paddingTop={4}>
-              <ComposerToolbarScroller
-                fadeOpaque={toolbarFadeOpaque}
-                fadeTransparent={toolbarFadeTransparent}
-                contentPaddingRight={8}
-              >
+              <ComposerToolbarScroller contentPaddingRight={8}>
                 <ComposerToolbarButton
                   accessibilityLabel="Add attachment"
                   icon="plus"
