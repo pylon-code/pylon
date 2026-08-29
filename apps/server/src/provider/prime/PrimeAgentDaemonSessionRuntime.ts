@@ -1037,6 +1037,8 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly retryWorkerRecoverySnapshot: (generation: number) => boolean;
   readonly noteWorkerRecoveryTerminalResponse: () => void;
   readonly isConnectionGenerationCurrent: (generation: number) => boolean;
+  /** True while native background work makes a new supervised prompt unsafe to admit. */
+  readonly inputAdmissionBusy: boolean;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
   ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
@@ -1317,6 +1319,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let rlmTurnUsageBaseline: PrimeDaemonUsage | undefined;
     let observedCompletedMessageCount = 0;
     let nativeRunObservedActive = false;
+    let nativeInputRunActive = false;
+    let nativeInputCompactionActive = false;
+    let nativeInputBashActive = false;
+    let nativeInputRetryAttempt = 0;
+    let nativeInputQueuedCount = 0;
+    let nativeInputQueueActionActive = false;
+    let nativeDescendantQuiescenceUncertain = false;
+    let nativeInputActivityRevision = 0;
     let activePromptRecovery:
       | {
           readonly admissionGeneration: number;
@@ -1373,6 +1383,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             | {
                 readonly event: Extract<PrimeDaemonEvent, { readonly _tag: "SessionResynced" }>;
                 readonly rosterRevisionAtOffer: number;
+                readonly inputActivityRevisionAtOffer: number;
               }
             | undefined;
         }
@@ -2030,9 +2041,38 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     const commitSessionResyncedMetadata = (
       event: Extract<PrimeDaemonEvent, { readonly _tag: "SessionResynced" }>,
       rosterRevisionAtOffer: number,
+      inputActivityRevisionAtOffer: number,
       mergePostOfferCallbacks: boolean,
     ) => {
-      nativeRunObservedActive = nativeRunObservedActive || event.state.isStreaming;
+      nativeRunObservedActive =
+        nativeRunObservedActive ||
+        event.state.isStreaming ||
+        event.state.isCompacting ||
+        event.state.isBashRunning ||
+        event.state.retryAttempt > 0 ||
+        event.state.inputQueue.activeAction ||
+        event.state.inputQueue.steeringCount + event.state.inputQueue.followUpCount > 0 ||
+        (Predicate.isFunction(connection?.waitForHeadlessCompletion) &&
+          event.children.some((child) => child.status === "queued" || child.status === "running"));
+      if (
+        !Predicate.isFunction(connection?.waitForHeadlessCompletion) &&
+        event.children.some((child) => child.status === "queued" || child.status === "running")
+      ) {
+        nativeDescendantQuiescenceUncertain = true;
+      }
+      if (
+        !mergePostOfferCallbacks ||
+        nativeInputActivityRevision === inputActivityRevisionAtOffer
+      ) {
+        nativeInputRunActive = event.state.isStreaming;
+        nativeInputCompactionActive = event.state.isCompacting;
+        nativeInputBashActive = event.state.isBashRunning;
+        nativeInputRetryAttempt = event.state.retryAttempt;
+        nativeInputQueuedCount =
+          event.state.inputQueue.steeringCount + event.state.inputQueue.followUpCount;
+        nativeInputQueueActionActive = event.state.inputQueue.activeAction;
+        nativeInputActivityRevision += 1;
+      }
       lastSnapshotSequence = event.lastEventSequence;
       lastSnapshotConnectionGeneration = event.connectionGeneration ?? connectionGeneration;
       const prompt = activePromptRecovery;
@@ -2057,7 +2097,12 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       const provisional = recovery.provisionalSnapshot;
       if (provisional === undefined) return;
       recovery.provisionalSnapshot = undefined;
-      commitSessionResyncedMetadata(provisional.event, provisional.rosterRevisionAtOffer, true);
+      commitSessionResyncedMetadata(
+        provisional.event,
+        provisional.rosterRevisionAtOffer,
+        provisional.inputActivityRevisionAtOffer,
+        true,
+      );
     };
 
     const offerDecoded = (raw: unknown) => {
@@ -2110,10 +2155,58 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           ? { ...decoded, connectionGeneration: eventConnectionGeneration }
           : decoded;
       const prompt = activePromptRecovery;
+      const inputActivityRevisionAtOffer = nativeInputActivityRevision;
       if (event._tag === "RunStarted") {
         nativeRunObservedActive = true;
-      } else if (event._tag === "RunCompleted" && !rlmQuiescenceAvailable) {
-        nativeRunObservedActive = false;
+        nativeInputRunActive = true;
+      } else if (event._tag === "RunCompleted") {
+        nativeInputRunActive = false;
+        if (!rlmQuiescenceAvailable) nativeRunObservedActive = false;
+      } else if (event._tag === "CompactionStarted") {
+        nativeInputCompactionActive = true;
+        if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
+      } else if (event._tag === "CompactionCompleted") {
+        nativeInputCompactionActive = false;
+      } else if (event._tag === "BashStarted" || event._tag === "BashOutput") {
+        nativeInputBashActive = true;
+        if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
+      } else if (event._tag === "BashCompleted") {
+        nativeInputBashActive = false;
+      } else if (event._tag === "RetryStarted") {
+        nativeInputRetryAttempt = event.attempt;
+        if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
+      } else if (event._tag === "RetryCompleted") {
+        nativeInputRetryAttempt = 0;
+      } else if (event._tag === "QueueChanged") {
+        nativeInputQueuedCount = event.queuedCount;
+        nativeInputQueueActionActive = event.active !== undefined;
+        if (rlmQuiescenceAvailable && (event.queuedCount > 0 || event.active !== undefined)) {
+          nativeRunObservedActive = true;
+        }
+      } else if (
+        event._tag === "ChildUpdated" &&
+        (event.child.status === "queued" || event.child.status === "running")
+      ) {
+        if (rlmQuiescenceAvailable) {
+          nativeRunObservedActive = true;
+        } else {
+          nativeDescendantQuiescenceUncertain = true;
+        }
+      }
+      if (
+        event._tag === "RunStarted" ||
+        event._tag === "RunCompleted" ||
+        event._tag === "CompactionStarted" ||
+        event._tag === "CompactionCompleted" ||
+        event._tag === "BashStarted" ||
+        event._tag === "BashOutput" ||
+        event._tag === "BashCompleted" ||
+        event._tag === "RetryStarted" ||
+        event._tag === "RetryCompleted" ||
+        event._tag === "QueueChanged" ||
+        event._tag === "ChildUpdated"
+      ) {
+        nativeInputActivityRevision += 1;
       }
       if (event._tag === "SessionResynced") {
         if (
@@ -2129,9 +2222,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           workerRecovery.provisionalSnapshot = {
             event,
             rosterRevisionAtOffer: knownAgentRosterRevision,
+            inputActivityRevisionAtOffer,
           };
         } else {
-          commitSessionResyncedMetadata(event, knownAgentRosterRevision, false);
+          commitSessionResyncedMetadata(
+            event,
+            knownAgentRosterRevision,
+            inputActivityRevisionAtOffer,
+            false,
+          );
         }
       } else if (event._tag === "MessageCompleted") {
         if (
@@ -2653,7 +2752,30 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         "The daemon returned an invalid or mismatched initial snapshot.",
       );
     }
-    nativeRunObservedActive = initialEvent.state.isStreaming;
+    nativeRunObservedActive =
+      initialEvent.state.isStreaming ||
+      initialEvent.state.isCompacting ||
+      initialEvent.state.isBashRunning ||
+      initialEvent.state.retryAttempt > 0 ||
+      initialEvent.state.inputQueue.activeAction ||
+      initialEvent.state.inputQueue.steeringCount + initialEvent.state.inputQueue.followUpCount >
+        0 ||
+      (Predicate.isFunction(connection!.waitForHeadlessCompletion) &&
+        initialEvent.children.some(
+          (child) => child.status === "queued" || child.status === "running",
+        ));
+    nativeInputRunActive = initialEvent.state.isStreaming;
+    nativeInputCompactionActive = initialEvent.state.isCompacting;
+    nativeInputBashActive = initialEvent.state.isBashRunning;
+    nativeInputRetryAttempt = initialEvent.state.retryAttempt;
+    nativeInputQueuedCount =
+      initialEvent.state.inputQueue.steeringCount + initialEvent.state.inputQueue.followUpCount;
+    nativeInputQueueActionActive = initialEvent.state.inputQueue.activeAction;
+    nativeDescendantQuiescenceUncertain =
+      !Predicate.isFunction(connection!.waitForHeadlessCompletion) &&
+      initialEvent.children.some(
+        (child) => child.status === "queued" || child.status === "running",
+      );
     if (
       input.requiredExtension !== undefined &&
       (initialEvent.state.isStreaming ||
@@ -4006,6 +4128,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             "Prime Agent descendant quiescence wait was cancelled.",
           );
         let workerRecoveryResolution: ReconnectResolution | undefined;
+        let successfulBarrierInputActivityRevision: number | undefined;
         const wait = Effect.gen(function* () {
           yield* ensureOpen("rlm-quiescence");
           if (signal.aborted) {
@@ -4091,6 +4214,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               return yield* cancellationError();
             }
             if (waitResult === "completed") {
+              successfulBarrierInputActivityRevision = nativeInputActivityRevision;
               yield* adoptConcurrentWorkerRecovery;
               yield* restoreMcpAfterQuiescence();
               break;
@@ -4216,7 +4340,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               workerCloseRecoveryAttempt = undefined;
             }
           }
-          nativeRunObservedActive = false;
+          // Recovery and usage reads continue after the native barrier. A background callback
+          // observed during those reads must be fenced by a fresh barrier before admission clears.
+          if (
+            !token.startsWith("background:") ||
+            nativeInputActivityRevision === successfulBarrierInputActivityRevision
+          ) {
+            nativeRunObservedActive = false;
+            nativeInputRunActive = false;
+            nativeInputActivityRevision += 1;
+          }
           const usage = subtractCumulativeUsage(currentUsage, rlmTurnUsageBaseline);
           yield* Queue.offer(eventQueue, {
             _tag: "RlmQuiesced",
@@ -4254,18 +4387,19 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             }),
           ),
         );
-        yield* rlmQuiescenceSemaphore.withPermit(wait).pipe(
-          Effect.ensuring(Effect.sync(() => (nativeRunObservedActive = false))),
-          Effect.mapError(
-            (error) =>
-              error ??
-              runtimeError(
-                "rlm-quiescence",
-                "request-failed",
-                "Prime Agent could not confirm descendant quiescence.",
-              ),
-          ),
-        );
+        yield* rlmQuiescenceSemaphore
+          .withPermit(wait)
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                error ??
+                runtimeError(
+                  "rlm-quiescence",
+                  "request-failed",
+                  "Prime Agent could not confirm descendant quiescence.",
+                ),
+            ),
+          );
       },
     );
 
@@ -5275,6 +5409,21 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       retryWorkerRecoverySnapshot,
       noteWorkerRecoveryTerminalResponse,
       isConnectionGenerationCurrent: (generation) => generation === connectionGeneration,
+      get inputAdmissionBusy() {
+        return (
+          nativeRunObservedActive ||
+          nativeInputRunActive ||
+          nativeInputCompactionActive ||
+          nativeInputBashActive ||
+          nativeInputRetryAttempt > 0 ||
+          nativeInputQueuedCount > 0 ||
+          nativeInputQueueActionActive ||
+          nativeDescendantQuiescenceUncertain ||
+          [...knownAgentRoster.values()].some(
+            (child) => child.status === "queued" || child.status === "running",
+          )
+        );
+      },
       prompt,
       steer,
       followUp,

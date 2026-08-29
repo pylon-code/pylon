@@ -145,6 +145,7 @@ interface FakeCaptures {
   readonly followUps: Array<{ readonly text: string; readonly imageCount: number }>;
   followUpFailure: boolean;
   inputRecoveryPending: boolean;
+  inputAdmissionBusy: boolean;
   readonly steers: Array<{
     readonly text: string;
     readonly images: ReadonlyArray<{
@@ -282,6 +283,7 @@ interface FakeCaptures {
   readonly rlmQuiescenceCalls: Array<string>;
   readonly rlmQuiescenceSignals: Array<AbortSignal>;
   rlmQuiescenceObserved: Queue.Queue<string> | undefined;
+  backgroundQuiescenceCompleted: Queue.Queue<string> | undefined;
   rlmQuiescenceFailure: boolean;
   rlmConnectionGeneration: number;
   rlmContinuityValid: boolean;
@@ -313,6 +315,7 @@ function makeCaptures(): FakeCaptures {
     followUps: [],
     followUpFailure: false,
     inputRecoveryPending: false,
+    inputAdmissionBusy: false,
     steers: [],
     models: [],
     thinkingLevels: [],
@@ -422,6 +425,7 @@ function makeCaptures(): FakeCaptures {
     rlmQuiescenceCalls: [],
     rlmQuiescenceSignals: [],
     rlmQuiescenceObserved: undefined,
+    backgroundQuiescenceCompleted: undefined,
     rlmQuiescenceFailure: false,
     rlmConnectionGeneration: 0,
     rlmContinuityValid: true,
@@ -763,6 +767,12 @@ function fakeRuntimeFactory(
                 detail: "quiescence failed",
               });
             }
+            if (token.startsWith("background:")) {
+              captures.inputAdmissionBusy = false;
+              if (captures.backgroundQuiescenceCompleted !== undefined) {
+                yield* Queue.offer(captures.backgroundQuiescenceCompleted, token);
+              }
+            }
             yield* Queue.offer(queue, {
               _tag: "RlmQuiesced",
               token,
@@ -792,6 +802,9 @@ function fakeRuntimeFactory(
         },
         isConnectionGenerationCurrent: (generation) =>
           generation === captures.rlmConnectionGeneration,
+        get inputAdmissionBusy() {
+          return captures.inputAdmissionBusy;
+        },
         prompt: (prompt) =>
           Effect.gen(function* () {
             captures.order.push("prompt");
@@ -2360,6 +2373,132 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(captures.followUps).toEqual([]);
         expect(captures.disposeCount).toBe(0);
         expect(yield* adapter.listSessions()).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("returns busy and rearms quiescence for newer native background activity", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.inputAdmissionBusy = true;
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        captures.backgroundQuiescenceCompleted = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+        const initialToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+
+        yield* offer(captures, {
+          _tag: "ChildUpdated",
+          child: { id: "heartbeat-child", label: "heartbeat child", status: "running" },
+        });
+        const childToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+        yield* offer(captures, { _tag: "BashOutput", chunk: "newer background output" });
+        const bashOutputToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+
+        expect([initialToken, childToken, bashOutputToken]).toEqual([
+          `background:${threadId}:1`,
+          `background:${threadId}:2`,
+          `background:${threadId}:3`,
+        ]);
+        expect(captures.rlmQuiescenceSignals.map((signal) => signal.aborted)).toEqual([
+          true,
+          true,
+          false,
+        ]);
+
+        const error = yield* adapter
+          .sendTurn({ threadId, input: "do not attach this to the heartbeat" })
+          .pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          reason: "busy",
+          issue: "Prime Agent background work is still running. Try again after it finishes.",
+        });
+        expect(captures.prompts).toEqual([]);
+        expect(captures.disposeCount).toBe(0);
+        expect((yield* adapter.listSessions())[0]?.activeTurnId).toBeUndefined();
+        expect(subscription.events.some((event) => event.type === "turn.started")).toBe(false);
+
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        const completedTokens = [
+          yield* Queue.take(captures.backgroundQuiescenceCompleted),
+          yield* Queue.take(captures.backgroundQuiescenceCompleted),
+          yield* Queue.take(captures.backgroundQuiescenceCompleted),
+        ];
+        expect(new Set(completedTokens)).toEqual(
+          new Set([initialToken, childToken, bashOutputToken]),
+        );
+        yield* adapter
+          .sendTurn({ threadId, input: "now the background work is done" })
+          .pipe(Effect.forkChild);
+        yield* Queue.take(captures.promptObserved!);
+        expect(captures.prompts.map((prompt) => prompt.text)).toEqual([
+          "now the background work is done",
+        ]);
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rearms quiescence for active resync compaction, bash, retry, and queue states", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.rlmQuiescenceAvailable = true;
+        captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+        captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const idle = initialSnapshot();
+        const activeSnapshots = [
+          { ...idle, state: { ...idle.state, isCompacting: true }, lastEventSequence: 2 },
+          { ...idle, state: { ...idle.state, isBashRunning: true }, lastEventSequence: 3 },
+          { ...idle, state: { ...idle.state, retryAttempt: 1 }, lastEventSequence: 4 },
+          {
+            ...idle,
+            state: {
+              ...idle.state,
+              inputQueue: { ...idle.state.inputQueue, followUpCount: 1, activeAction: true },
+            },
+            lastEventSequence: 5,
+          },
+        ];
+        const observedTokens: string[] = [];
+        for (const activeSnapshot of activeSnapshots) {
+          yield* offer(captures, activeSnapshot);
+          observedTokens.push(yield* Queue.take(captures.rlmQuiescenceObserved));
+        }
+
+        expect(observedTokens).toEqual([
+          `background:${threadId}:1`,
+          `background:${threadId}:2`,
+          `background:${threadId}:3`,
+          `background:${threadId}:4`,
+        ]);
+        expect(captures.rlmQuiescenceSignals.map((signal) => signal.aborted)).toEqual([
+          true,
+          true,
+          true,
+          false,
+        ]);
+
+        yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+        yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),
   );

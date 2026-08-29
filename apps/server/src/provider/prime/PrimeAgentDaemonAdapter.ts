@@ -340,6 +340,9 @@ interface PrimeAgentDaemonSessionContext {
   approvalsAcceptedForSession: boolean;
   activeTurn: PrimeAgentDaemonActiveTurn | undefined;
   nativeRunActive: boolean;
+  backgroundQuiescenceGeneration: number;
+  backgroundQuiescencePending: boolean;
+  backgroundQuiescenceController: AbortController | undefined;
   nativeBashActive: boolean;
   readonly activeNativeChildren: Set<string>;
   readonly knownNativeChildren: Map<string, PrimeAgentDaemonChild>;
@@ -1706,6 +1709,35 @@ export function makePrimeAgentDaemonAdapter(
         return false;
       });
 
+    /** Must be called with the thread lock held. */
+    const startBackgroundQuiescenceWatchLocked = (context: PrimeAgentDaemonSessionContext) => {
+      if (!context.runtime.rlmQuiescenceAvailable || context.stopped) return Effect.void;
+      if (context.backgroundQuiescencePending) {
+        // The native call may finish later, but its aborted signal prevents that older watch
+        // from clearing activity observed by the replacement generation.
+        context.backgroundQuiescenceController?.abort();
+      }
+      context.backgroundQuiescenceGeneration += 1;
+      const generation = context.backgroundQuiescenceGeneration;
+      const controller = new AbortController();
+      context.backgroundQuiescencePending = true;
+      context.backgroundQuiescenceController = controller;
+      const token = `background:${context.threadId}:${generation}`;
+      return context.runtime.waitForRlmQuiescence(token, controller.signal).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (context.backgroundQuiescenceGeneration === generation) {
+              context.backgroundQuiescencePending = false;
+              context.backgroundQuiescenceController = undefined;
+            }
+          }),
+        ),
+        Effect.ignore,
+        Effect.forkDetach,
+        Effect.asVoid,
+      );
+    };
+
     const consumeEvent = (context: PrimeAgentDaemonSessionContext, event: PrimeDaemonEvent) =>
       Effect.gen(function* () {
         yield* logNativeKind(context.threadId, event);
@@ -1781,6 +1813,21 @@ export function makePrimeAgentDaemonAdapter(
                 }
                 context.autoCompactionEnabled = event.state.autoCompactionEnabled;
                 context.nativeRunActive = event.state.isStreaming;
+                if (
+                  context.activeTurn === undefined &&
+                  (event.state.isStreaming ||
+                    event.state.isCompacting ||
+                    event.state.isBashRunning ||
+                    event.state.retryAttempt > 0 ||
+                    event.state.inputQueue.activeAction ||
+                    event.state.inputQueue.steeringCount + event.state.inputQueue.followUpCount >
+                      0 ||
+                    event.children.some(
+                      (child) => child.status === "queued" || child.status === "running",
+                    ))
+                ) {
+                  yield* startBackgroundQuiescenceWatchLocked(context);
+                }
                 context.nativeBashActive = event.state.isBashRunning;
                 const compactionWasActive = context.activeCompactionScope !== undefined;
                 context.activeCompactionScope = event.state.isCompacting
@@ -2330,6 +2377,7 @@ export function makePrimeAgentDaemonAdapter(
             Effect.gen(function* () {
               if (sessions.get(context.threadId) !== context || context.stopped) return;
               const turn = context.activeTurn;
+              if (turn === undefined) yield* startBackgroundQuiescenceWatchLocked(context);
               context.activeCompactionScope ??= turn === undefined ? {} : { turnId: turn.id };
               yield* updateCompactionProjectionLocked(context, {
                 status: context.compactionAbortRequested ? "abort-requested" : "compacting",
@@ -2456,7 +2504,20 @@ export function makePrimeAgentDaemonAdapter(
             if (event._tag === "ConnectionStatus" && event.status === "reconnecting") {
               context.managedPlanProjectionEnabled = false;
             }
+            if (
+              turn === undefined &&
+              ((event._tag === "ChildUpdated" &&
+                (event.child.status === "queued" || event.child.status === "running")) ||
+                event._tag === "BashStarted" ||
+                event._tag === "BashOutput" ||
+                event._tag === "RetryStarted" ||
+                (event._tag === "QueueChanged" &&
+                  (event.queuedCount > 0 || event.active !== undefined)))
+            ) {
+              yield* startBackgroundQuiescenceWatchLocked(context);
+            }
             if (event._tag === "RunStarted") {
+              if (turn === undefined) yield* startBackgroundQuiescenceWatchLocked(context);
               observeNativeRunStarted(context, turn);
             } else if (event._tag === "MessageCompleted") {
               context.nativeTranscriptMessageCount += appendTranscriptMessages(
@@ -2631,6 +2692,9 @@ export function makePrimeAgentDaemonAdapter(
       Effect.gen(function* () {
         if (sessions.get(context.threadId) !== context || context.stopped) return;
         context.stopRequested = true;
+        context.backgroundQuiescenceController?.abort();
+        context.backgroundQuiescenceController = undefined;
+        context.backgroundQuiescencePending = false;
         yield* endActiveSideQuestionLocked(context);
         for (const watchedAgentId of new Set([
           ...context.activityWatchStops.keys(),
@@ -3158,6 +3222,9 @@ export function makePrimeAgentDaemonAdapter(
             approvalsAcceptedForSession: false,
             activeTurn: undefined,
             nativeRunActive: runtime.initialSnapshot.state.isStreaming,
+            backgroundQuiescenceGeneration: 0,
+            backgroundQuiescencePending: false,
+            backgroundQuiescenceController: undefined,
             nativeBashActive: runtime.initialSnapshot.state.isBashRunning,
             activeNativeChildren: new Set(
               runtime.initialSnapshot.children
@@ -3233,6 +3300,9 @@ export function makePrimeAgentDaemonAdapter(
             Stream.runForEach((event) => consumeEvent(context, event)),
             Effect.forkChild,
           );
+          if (runtime.inputAdmissionBusy) {
+            yield* startBackgroundQuiescenceWatchLocked(context);
+          }
 
           context.lifecycleStarted = true;
           yield* refreshContextUsage(context).pipe(Effect.forkDetach);
@@ -3434,6 +3504,16 @@ export function makePrimeAgentDaemonAdapter(
                     resumeCursor: context.session.resumeCursor,
                   } satisfies ProviderTurnStartResult,
                 };
+              }
+
+              if (context.runtime.inputAdmissionBusy) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "sendTurn",
+                  reason: "busy",
+                  issue:
+                    "Prime Agent background work is still running. Try again after it finishes.",
+                });
               }
 
               if (

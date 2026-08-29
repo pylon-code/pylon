@@ -1488,6 +1488,456 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect("blocks admission from initial compaction, bash, retry, and queue snapshots", () =>
+    Effect.gen(function* () {
+      const idle = snapshot();
+      const activeSnapshots = [
+        { ...idle, state: { ...idle.state, isCompacting: true }, children: [] },
+        { ...idle, state: { ...idle.state, isBashRunning: true }, children: [] },
+        { ...idle, state: { ...idle.state, retryAttempt: 1 }, children: [] },
+        {
+          ...idle,
+          state: {
+            ...idle.state,
+            sessionActions: {
+              ...idle.state.sessionActions,
+              queuedCount: 1,
+              followUps: [{ text: "queued input" }],
+            },
+          },
+          children: [],
+        },
+      ];
+      const admissionStates: boolean[] = [];
+      for (const rawSnapshot of activeSnapshots) {
+        admissionStates.push(
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const runtime = yield* fixture({ rawSnapshot }).make();
+              return runtime.inputAdmissionBusy;
+            }),
+          ),
+        );
+      }
+
+      expect(admissionStates).toEqual([true, true, true, true]);
+    }),
+  );
+
+  it.effect("blocks admission from resynced compaction, bash, retry, and queue snapshots", () =>
+    Effect.gen(function* () {
+      const idle = snapshot(5);
+      const activeSnapshots = [
+        { ...idle, state: { ...idle.state, isCompacting: true }, children: [] },
+        { ...idle, state: { ...idle.state, isBashRunning: true }, children: [] },
+        { ...idle, state: { ...idle.state, retryAttempt: 1 }, children: [] },
+        {
+          ...idle,
+          state: {
+            ...idle.state,
+            sessionActions: {
+              ...idle.state.sessionActions,
+              queuedCount: 1,
+              steering: [{ text: "queued input" }],
+            },
+          },
+          children: [],
+        },
+      ];
+      const admissionStates: boolean[] = [];
+      for (const activeSnapshot of activeSnapshots) {
+        admissionStates.push(
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const initial = snapshot();
+              const { emit, make } = fixture({
+                rawSnapshot: { ...initial, children: [] },
+              });
+              const runtime = yield* make();
+              expect(runtime.inputAdmissionBusy).toBe(false);
+              yield* Effect.promise(() =>
+                emit({ type: "session_resynced", snapshot: activeSnapshot }),
+              );
+              return runtime.inputAdmissionBusy;
+            }),
+          ),
+        );
+      }
+
+      expect(admissionStates).toEqual([true, true, true, true]);
+    }),
+  );
+
+  it.effect(
+    "tracks live compaction, bash, BashOutput, retry, and queue activity until quiescence",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const initial = snapshot();
+          const { emit, make } = fixture({ rawSnapshot: { ...initial, children: [] } });
+          const runtime = yield* make();
+          const activityCases: ReadonlyArray<{
+            readonly start: unknown;
+            readonly complete: unknown;
+          }> = [
+            {
+              start: {
+                type: "session_event",
+                event: { type: "compaction_start", reason: "manual" },
+              },
+              complete: {
+                type: "session_event",
+                event: {
+                  type: "compaction_end",
+                  reason: "manual",
+                  aborted: false,
+                  willRetry: false,
+                },
+              },
+            },
+            {
+              start: {
+                type: "session_event",
+                event: {
+                  type: "bash_start",
+                  command: "printf activity",
+                  excludeFromContext: false,
+                },
+              },
+              complete: {
+                type: "session_event",
+                event: {
+                  type: "bash_end",
+                  exitCode: 0,
+                  cancelled: false,
+                  truncated: false,
+                },
+              },
+            },
+            {
+              start: {
+                type: "session_event",
+                event: { type: "bash_output", chunk: "late output without a start callback" },
+              },
+              complete: {
+                type: "session_event",
+                event: {
+                  type: "bash_end",
+                  exitCode: 0,
+                  cancelled: false,
+                  truncated: false,
+                },
+              },
+            },
+            {
+              start: {
+                type: "session_event",
+                event: {
+                  type: "auto_retry_start",
+                  attempt: 1,
+                  maxAttempts: 3,
+                  delayMs: 100,
+                  errorMessage: "retrying",
+                },
+              },
+              complete: {
+                type: "session_event",
+                event: { type: "auto_retry_end", success: true, attempt: 1 },
+              },
+            },
+            {
+              start: {
+                type: "session_event",
+                event: {
+                  type: "session_action_update",
+                  actions: {
+                    queuedCount: 1,
+                    steering: [{ text: "queued input" }],
+                    followUps: [],
+                    active: { kind: "turn", phase: "running" },
+                  },
+                },
+              },
+              complete: {
+                type: "session_event",
+                event: { type: "session_action_update", actions },
+              },
+            },
+          ];
+
+          for (const [index, activity] of activityCases.entries()) {
+            yield* Effect.promise(() => emit(activity.start));
+            expect(runtime.inputAdmissionBusy).toBe(true);
+            yield* Effect.promise(() => emit(activity.complete));
+            expect(runtime.inputAdmissionBusy).toBe(true);
+            yield* runtime.waitForRlmQuiescence(`background:live:${index}`, activeSignal());
+            expect(runtime.inputAdmissionBusy).toBe(false);
+          }
+        }),
+      ),
+  );
+
+  it.effect("does not let an older background barrier clear newer bash output", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let releaseBarrier!: () => void;
+        let reportBarrierStarted!: () => void;
+        const barrierStarted = new Promise<void>((resolve) => {
+          reportBarrierStarted = resolve;
+        });
+        const barrier = new Promise<void>((resolve) => {
+          releaseBarrier = resolve;
+        });
+        let releaseStats!: () => void;
+        let reportStatsStarted!: () => void;
+        const statsStarted = new Promise<void>((resolve) => {
+          reportStatsStarted = resolve;
+        });
+        const stats = new Promise<unknown>((resolve) => {
+          releaseStats = () =>
+            resolve({
+              sessionFile: "/daemon/private/session.jsonl",
+              sessionId: "session-1",
+              tokens: {
+                input: 1,
+                output: 1,
+                cacheRead: 0,
+                cacheWrite: 0,
+                total: 2,
+              },
+              cost: 0,
+              contextUsage: { tokens: 2, contextWindow: 200_000, percent: 0.001 },
+            });
+        });
+        const initial = snapshot();
+        const { emit, make } = fixture({
+          rawSnapshot: { ...initial, children: [] },
+          waitForHeadlessCompletionImpl: () => {
+            reportBarrierStarted();
+            return barrier;
+          },
+          getSessionStatsImpl: () => {
+            reportStatsStarted();
+            return stats;
+          },
+        });
+        const runtime = yield* make();
+        yield* Effect.promise(() =>
+          emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        yield* Effect.promise(() =>
+          emit({ type: "session_event", event: { type: "agent_end", messages: [] } }),
+        );
+        const waiting = yield* runtime
+          .waitForRlmQuiescence("background:stale", activeSignal())
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => barrierStarted);
+        releaseBarrier();
+        yield* Effect.promise(() => statsStarted);
+
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_event",
+            event: { type: "bash_output", chunk: "newer native activity" },
+          }),
+        );
+        releaseStats();
+        yield* Fiber.join(waiting);
+        expect(runtime.inputAdmissionBusy).toBe(true);
+
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_event",
+            event: {
+              type: "bash_end",
+              exitCode: 0,
+              cancelled: false,
+              truncated: false,
+            },
+          }),
+        );
+        yield* runtime.waitForRlmQuiescence("background:fresh", activeSignal());
+        expect(runtime.inputAdmissionBusy).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect(
+    "keeps an active recovery snapshot conservative across a newer live terminal event",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let snapshotReads = 0;
+          const idle = snapshot(5);
+          const test = fixture({
+            rawSnapshotImpl: () => {
+              snapshotReads += 1;
+              return snapshotReads === 1
+                ? { ...idle, children: [] }
+                : {
+                    ...snapshot(6),
+                    state: {
+                      ...snapshot(6).state,
+                      activeSessionId: "active-secret-1",
+                      isCompacting: true,
+                    },
+                    children: [],
+                  };
+            },
+            omitRlmQuiescence: true,
+            listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+          });
+          const runtime = yield* test.make();
+          const recoveryEvents = yield* collectEvents(runtime, 3).pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Effect.promise(() =>
+            test.emit({ type: "session_event", event: { type: "agent_start" } }),
+          );
+          const closing = yield* Effect.promise(() =>
+            test.emit({ type: "closed", error: "Daemon worker client closed" }),
+          ).pipe(Effect.forkChild({ startImmediately: true }));
+
+          yield* TestClock.adjust(250);
+          expect((yield* Fiber.join(recoveryEvents)).map((event) => event._tag)).toEqual([
+            "SessionResynced",
+            "RunStarted",
+            "SessionResynced",
+          ]);
+          yield* Effect.promise(() =>
+            test.emit({ type: "session_event", event: { type: "agent_end", messages: [] } }),
+          );
+          expect(runtime.inputAdmissionBusy).toBe(false);
+
+          expect(runtime.resolveReconnectSnapshot(0, true, true)).toBe(true);
+          expect(runtime.inputAdmissionBusy).toBe(true);
+          yield* Fiber.join(closing);
+        }).pipe(Effect.provide(TestClock.layer())),
+      ),
+  );
+
+  it.effect("tracks native background activity through authoritative quiescence", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const initial = snapshot();
+        const { emit, make } = fixture({ rawSnapshot: { ...initial, children: [] } });
+        const runtime = yield* make();
+        expect(runtime.inputAdmissionBusy).toBe(false);
+
+        yield* Effect.promise(() =>
+          emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        yield* Effect.promise(() =>
+          emit({ type: "session_event", event: { type: "agent_end", messages: [] } }),
+        );
+        expect(runtime.inputAdmissionBusy).toBe(true);
+        yield* runtime.waitForRlmQuiescence("background:root", activeSignal());
+        expect(runtime.inputAdmissionBusy).toBe(false);
+
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_event",
+            event: {
+              type: "rlm_child_update",
+              child: {
+                id: "child-only-background",
+                label: "child-only heartbeat",
+                status: "running",
+                sessionDir: "/daemon/private/child-only",
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_event",
+            event: {
+              type: "rlm_child_update",
+              child: {
+                id: "child-only-background",
+                label: "child-only heartbeat",
+                status: "done",
+                sessionDir: "/daemon/private/child-only",
+              },
+            },
+          }),
+        );
+        expect(runtime.inputAdmissionBusy).toBe(true);
+        yield* runtime.waitForRlmQuiescence("background:child", activeSignal());
+        expect(runtime.inputAdmissionBusy).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("fails closed after descendant work when no quiescence capability exists", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const initial = snapshot();
+        const { emit, make } = fixture({
+          rawSnapshot: { ...initial, children: [] },
+          omitRlmQuiescence: true,
+        });
+        const runtime = yield* make();
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_event",
+            event: {
+              type: "rlm_child_update",
+              child: {
+                id: "unverifiable-child",
+                label: "unverifiable child",
+                status: "running",
+                sessionDir: "/daemon/private/unverifiable-child",
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_event",
+            event: {
+              type: "rlm_child_update",
+              child: {
+                id: "unverifiable-child",
+                label: "unverifiable child",
+                status: "done",
+                sessionDir: "/daemon/private/unverifiable-child",
+              },
+            },
+          }),
+        );
+
+        expect(runtime.inputAdmissionBusy).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("keeps prompt admission busy when the authoritative idle barrier fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const initial = snapshot();
+        const { emit, make } = fixture({
+          rawSnapshot: { ...initial, children: [] },
+          waitForHeadlessCompletionImpl: () => Promise.reject(new Error("private barrier failure")),
+        });
+        const runtime = yield* make();
+        yield* Effect.promise(() =>
+          emit({ type: "session_event", event: { type: "agent_start" } }),
+        );
+        yield* Effect.promise(() =>
+          emit({ type: "session_event", event: { type: "agent_end", messages: [] } }),
+        );
+
+        expect(
+          yield* runtime
+            .waitForRlmQuiescence("background:failed", activeSignal())
+            .pipe(Effect.flip),
+        ).toMatchObject({ operation: "rlm-quiescence", reason: "request-failed" });
+        expect(runtime.inputAdmissionBusy).toBe(true);
+      }),
+    ),
+  );
+
   it.effect("tracks live child updates for mutation preflight without stale snapshot reads", () =>
     Effect.scoped(
       Effect.gen(function* () {
