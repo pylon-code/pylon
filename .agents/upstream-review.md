@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "e2d4d12a81516b55abbecdc64794971f781cacd8"
-reviewed-through-date: "2026-08-27"
+reviewed-through: "f94a0d646ed78a4788e4af6417f74202a628a5e9"
+reviewed-through-date: "2026-08-28"
 ---
 
 # T3 upstream review log
@@ -12,6 +12,104 @@ This ledger is the durable handoff between upstream-review sessions. The `review
 Deferred decisions remain listed after the cursor advances so later sessions can revisit them without rediscovering the entire upstream range.
 
 ## Review batches
+
+## 2026-08-28 — `e2d4d12a81516b55abbecdc64794971f781cacd8..f94a0d646ed78a4788e4af6417f74202a628a5e9`
+
+Seventeen upstream commits formed thirteen change sets. The developer reviewed the
+brief and directed that everything recommended as adopt, consider, or defer be
+taken, and only the skips skipped — so nothing in this range remains undecided and
+no new register entries were opened. `git cherry` found none already present.
+DEF-7 was the only open entry and stayed open.
+
+All thirteen adoptions have merged; the table records each one's merge commit.
+Every branch was rebased onto `pylon` first, except the mobile theme refactor,
+which took a merge instead: `92ec009ee` had landed in the meantime and replaced
+the same status-indicator lines with Pylon's own semantic warning tokens, so
+resolving that once in a merge was clearer than replaying it through four
+commits.
+
+Two recommendations were revised during review, both after the developer pushed
+back on the reasoning rather than the conclusion. U12 had been recommended as
+defer; that was wrong in direction. #7327 deletes `useThemeColor` and its uses across 67
+files, so upstream is entirely on the far side of the change and deferring would
+have taxed every later mobile adoption without ever delivering the benefit — the
+real choice was adopt-soon or skip-permanently. U11's deferral rested on the
+`~/.t3` path, which is ordinary porting work; the honest objection is that the
+tests which execute the generated install script skip silently on macOS for want
+of `flock`.
+
+| ID   | Upstream                                     | Decision                | Pylon reference            | Notes                                                                                                                                                                                                                                                                                                                                                         |
+| ---- | -------------------------------------------- | ----------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| U1a  | `f276e632c` / `#8472`                        | adopted with adaptation | `#130`, merged `77336451a` | Provider settings editor layout stabilised. Follow-up to the split taken in `#125`. Four conflicts resolved Pylon-first.                                                                                                                                                                                                                                      |
+| U1b  | `f276e632c` / `#8472`                        | skipped                 | —                          | Upstream's re-added "Account email" field in the Configuration tab. Pylon shows the email in the editor header by the developer's 2026-08-27 decision; both would render the same redacted address twice.                                                                                                                                                     |
+| U2   | `94401d01b` / `#8447`                        | adopted                 | `#128`, merged `de82ec82b` | Codex 0.150 account plans. Schema and label halves are coupled by `satisfies never`; verified by mutation probe. Ships extra label and namespace tests upstream lacks.                                                                                                                                                                                        |
+| U3   | `2fbe31309` / `#8483`                        | adopted                 | `#127`, merged `0aac3b99e` | Preview automation in agent-created threads. Pylon had the identical 128-character `PreviewTabId` bug on the IPC result. Reviewed clean with no findings.                                                                                                                                                                                                     |
+| U4   | `f1e6f0c9b` / `#8395`                        | adopted with adaptation | `#131`, merged `a235bd907` | Ordinary tool failures stop rendering red. Three upstream tests asserted lucide class names Pylon cannot emit — one was vacuous — and were retargeted at Pylon's DotMatrix signals. Mobile warnings also moved to amber.                                                                                                                                      |
+| U5a  | `9257bd860` / `#8168`                        | adopted                 | `#133`, merged `fbdd94b66` | Back button on project settings. Reverse-state fix.                                                                                                                                                                                                                                                                                                           |
+| U5b  | `7068e86f7` / `#8507`                        | adopted with adaptation | `#134`, merged `92dce5a47` | "Open on GitHub" when the pull request API fails. One docs conflict resolved Pylon-first; upstream's copy named T3 Code twice.                                                                                                                                                                                                                                |
+| U5cd | `b0ae3f3a8` / `#8468`, `c8aba2587` / `#8484` | adopted                 | `#135`, merged `9dd3c8e65` | Staged-fmt hook tolerates ignored-only changes; a tautological cache-key test removed.                                                                                                                                                                                                                                                                        |
+| U6   | `4c51b4c9b`                                  | adopted                 | `#132`, merged `292366962` | `mod+shift+p` toggles thread pin. Pylon already had the whole substrate.                                                                                                                                                                                                                                                                                      |
+| U7   | `b982847ab` / `#8467`                        | adopted, reduced scope  | `#139`, merged `88d232802` | iOS home header stability patch. Originally scoped with `850e4582e` / `#8399`; that commit is contained in U12, which supersedes it, so cherry-picking it separately would have re-applied an older version.                                                                                                                                                  |
+| U8   | `49f6241dd` / `#8502`                        | adopted with adaptation | `#136`, merged `68e3560f2` | Codex sub-agent models. Two child-identity conflicts; Pylon's `toolUseId` kept at the call site because it names the live turn, not the child. Both halves mutation-probed.                                                                                                                                                                                   |
+| U9   | `88be5631f` / `#8481`                        | skipped                 | —                          | Client platform analytics. Would enrich per-device data flowing into T3's PostHog project, since Pylon still ships upstream's key with telemetry on by default. (An earlier draft of this row also claimed the feature labels connections "T3 Code Web"/"T3 Code Desktop"; that was wrong, Pylon already emits "Pylon Desktop"/"Pylon Web" from platform.ts.) |
+| U10  | `8f4913221` / `#8235`                        | adopted with adaptation | `#140`, merged `3ed652022` | File uploads to 50 MiB. Both of Pylon's Prime adapters needed the image-only guard upstream gave its five, or a PDF would have been base64'd as an ACP image block. The daemon adapter was missed until review. Ships tests upstream never wrote.                                                                                                             |
+| U11  | `f94a0d646` / `#5769`                        | adopted with adaptation | `#141`, merged `864f7fbf3` | WSL runtime cached inside the distro, remapped to `~/.pylon-code/wsl-runtime`. Not branding: the pruner deletes unrecognised `sha256-*` siblings, so a shared parent means two products deleting each other's runtimes.                                                                                                                                       |
+| U12  | `018d7f277` / `#7327`                        | adopted with adaptation | `#138`, merged `eafef85ca` | Mobile semantic themes compiled for Uniwind. Six conflicts; `T3Wordmark` stays deleted and `PylonMark` gains the same idiom. Also converted three Pylon-only files the new lint rule rejected at error severity.                                                                                                                                              |
+| U13  | `5766dfbf5`                                  | skipped                 | —                          | Nightly cron minute moved 7 → 38. Applies to Pylon, but upstream states plainly it is a guess at GitHub scheduler behaviour, and Pylon has seen no evidence of skipped nightlies.                                                                                                                                                                             |
+
+**Every change set got an independent review pass, and it mattered.** The first
+four were reviewed as they landed; the remaining ten were reviewed afterwards, on
+the developer's prompting, after the batch summary overstated coverage. That
+second sweep found defects on five of the ten, including two the batch would
+otherwise have shipped: the image-only guard was on only one of Pylon's two Prime
+adapters, leaving the daemon backend base64'ing PDFs as image blocks, and the
+mobile composer lost its shadow colour to a bare Tailwind shadow-colour utility
+that emits no `box-shadow`, so iOS fell back to opaque black. Both were Pylon-side
+adaptation mistakes, not inherited upstream bugs. Fixes landed on their branches;
+findings left open are recorded as pull request comments, because they belong to
+the review of a specific change rather than to the decision to adopt it.
+
+Two review findings outlive their pull requests and belong here.
+`thread/resume` is sent with `excludeTurns: true`, a parameter that appears
+nowhere in the generated Codex schema, so upstream's sub-agent model lookup either
+errors into a swallowed `Effect.catch` or silently loads a child's full history.
+And `ProviderService.followUp` never builds the attachment path lines `sendTurn`
+builds, so once a client can attach a generic file, one attached to a queued
+follow-up is dropped with neither native ingestion nor a path — inherited from
+upstream, and unreachable only until `#8236`/`#8237` ship.
+
+**Three findings worth carrying forward, none fixed in this batch.**
+
+Pylon reports telemetry into T3 Code's analytics project. `AnalyticsService.ts`
+still defaults to upstream's PostHog key `phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m`
+and host `us.i.posthog.com` with `T3CODE_TELEMETRY_ENABLED` defaulting to true,
+and `git log origin/pylon --not t3code-upstream/main -- apps/server/src/telemetry/`
+is empty — the directory has never been touched since the fork. This is why U9
+was skipped, and it is a live issue independent of that decision.
+
+Codex decode is a treadmill. `planType` is a closed literal on a required field
+and `account/read` is a bare `yield*`, so one unrecognised plan fails the entire
+Codex probe — status error, zero models, zero skills — rather than degrading a
+single label. Codex auto-updates ahead of Pylon, so U2's shape recurs on every
+release that names a plan. The same pattern applies to `CodexErrorInfo`
+(0.150 added `misalignmentPolicyViolation`) and to `HookEventName`/`HookHandlerType`,
+where decode failures are swallowed at `client.ts:156` and produce a silent hang
+instead of an error. Upstream models tolerance in Rust via `#[serde(other)]` but
+not in the generated schema.
+
+`schema.gen.ts` cannot be verified by regeneration in either fork. `UPSTREAM_REF`
+is pinned to the same ref recorded in the file header, yet regenerating produces
+roughly 39k lines of difference because a dependency now emits
+`.annotate({ identifier: … })` and orders declarations differently. The
+`identifier: "` count is 0 in the committed file, on `origin/pylon`, and on
+`t3code-upstream/main` alike, so the staleness is shared and pre-existing — but
+that generated file is effectively hand-maintained today.
+
+**One pre-existing failure surfaced.** `scripts/build-desktop-artifact.test.ts`
+fails on `pylon` itself: "skips the primary native probe for cross-architecture
+Windows payloads". Confirmed by running `origin/pylon`'s own copies of the script
+and its test (1 failed / 58 passed), so U11 did not cause it. Either CI does not
+run that file or it has been broken unnoticed.
 
 ## 2026-08-27 (third batch) — `f6f2be32d8bc072e87753e41ad77c7c67e8b0b95..e2d4d12a81516b55abbecdc64794971f781cacd8`
 
@@ -23,12 +121,9 @@ editor header rather than dropping it as upstream did. `git cherry` found neithe
 already present. DEF-7 was the only open register entry and stayed open; this
 batch opened none.
 
-Both adoptions are recorded against open pull requests, not merged commits: the
-Pylon references below are branch commits on `#124` and `#125`. The cursor
-advances because every candidate received a decision, which is what the cursor
-tracks — but if either pull request is closed unmerged, reopen its change set
-here explicitly, because an advanced cursor will not surface the upstream commit
-again. Update this batch with the merge commits once they land.
+Both pull requests have since merged, closing the caveat this entry originally
+carried: `#125` as `9514875cc` and `#124` as `2b7a9b8e2`. `#125` merged first, so
+the ledger record landed beneath the work it describes.
 
 | ID  | Upstream              | Decision                | Pylon reference     | Notes                                                                                                                                                                                                |
 | --- | --------------------- | ----------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -2890,7 +2985,10 @@ them so the adoption stayed faithful, and `fix/pull-request-quota-followups`
 fixed both the same day. DEF-6 was opened 2026-08-21 and adopted the same
 day, once `#7725` reconciled the tests it was blocked on. The 2026-08-24 batch
 opened no new entries either; 2026-08-27 opened DEF-7, which the second and third 2026-08-27 batches
-re-checked and left open. The 2026-08-23 batch
+re-checked and left open, as did 2026-08-28 — no upstream commit in that range
+touched `desktop-macos-preview.yml`, and its 2026-11-01 floor is unreached. The
+2026-08-28 batch opened no new entries: the developer adopted every candidate
+that was not skipped outright, so nothing was left pending. The 2026-08-23 batch
 opened no new entries and left it empty; it did retire the dead `U-4326`
 revisit condition recorded in the 2026-08-04 table, since that pull request
 closed unmerged. Entries are removed once adopted, skipped, or fixed._
