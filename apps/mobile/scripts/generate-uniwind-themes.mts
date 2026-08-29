@@ -58,6 +58,7 @@ const ADAPTIVE_COLORS = {
   "--color-adaptive-amber-50-950-a40": [color("amber", 50), color("amber", 950, 0.4)],
   "--color-adaptive-amber-200-900-a60": [color("amber", 200), color("amber", 900, 0.6)],
   "--color-adaptive-amber-500-a12-a16": [color("amber", 500, 0.12), color("amber", 500, 0.16)],
+  "--color-adaptive-amber-600-400": [color("amber", 600), color("amber", 400)],
   "--color-adaptive-amber-700-300": [color("amber", 700), color("amber", 300)],
   "--color-adaptive-amber-700-400": [color("amber", 700), color("amber", 400)],
   "--color-adaptive-amber-800-200": [color("amber", 800), color("amber", 200)],

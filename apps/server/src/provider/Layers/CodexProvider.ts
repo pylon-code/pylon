@@ -92,7 +92,7 @@ function reasoningEffortLabel(reasoningEffort: string): string {
   return REASONING_EFFORT_LABELS[reasoningEffort] ?? reasoningEffort;
 }
 
-function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse["account"]) {
+export function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse["account"]) {
   if (!account) return undefined;
   if (account.type === "apiKey") return "OpenAI API Key";
   if (account.type === "amazonBedrock") return "Amazon Bedrock";
@@ -111,13 +111,18 @@ function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse["accoun
       return "ChatGPT Pro 5x Subscription";
     case "team":
       return "ChatGPT Team Subscription";
+    case "self_serve_business_prolite":
     case "self_serve_business_usage_based":
     case "business":
       return "ChatGPT Business Subscription";
+    case "ent26":
+    case "enterprise_cbp_automation":
     case "enterprise_cbp_usage_based":
     case "enterprise":
       return "ChatGPT Enterprise Subscription";
     case "edu":
+    case "edu_plus":
+    case "edu_pro":
       return "ChatGPT Edu Subscription";
     case "unknown":
       return "ChatGPT Subscription";

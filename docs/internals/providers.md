@@ -225,6 +225,34 @@ Windows are matched by duration, never by label: anything under a day is the ses
 anything of a week or more is a weekly, and the first weekly is the account-wide one. That is what
 lets one strip and one popover render Codex and Claude the same way.
 
+## Attachment access
+
+The server stores uploaded attachments in its attachment directory, outside the project workspace.
+`ProviderService` adds the absolute path of each attachment to the turn text, then passes every
+attachment to the provider adapter. Each adapter decides what its provider ingests natively:
+
+- Codex, Claude, Cursor, Grok, and Prime Agent send images as native image inputs and skip generic
+  files. For these providers, generic files reach the agent only as file paths in the turn text.
+- OpenCode sends PNG/JPEG/GIF/WebP images, text files, and PDFs up to 20 MB as native file parts
+  with their real mime type. Everything else (ZIP and other binaries, image formats model APIs
+  reject, oversized files) falls back to the file path in the turn text, like the other providers.
+
+Claude receives the attachment directory as an allowed additional directory. Codex keeps its
+configured sandbox policy, so access depends on that policy and the selected runtime mode. OpenCode
+allows all paths in full-access mode and requests approval for directories outside the workspace in
+restricted modes. Cursor and Grok use their own provider permission rules.
+
+The server does not copy attachments into a project or bypass provider approval rules. If an agent
+cannot read an attachment, the user must approve the access or select a runtime mode that permits it.
+
+Updated attachment schemas tolerate unknown attachment members, but old image-only clients still
+cannot decode messages that contain file attachments. Client file-picking rollouts must account for
+this limit.
+
+Do not run an old image-only server against state that contains file attachments. Replay decodes
+each persisted event before projection. A file-bearing event can make `ProjectionPipeline` bootstrap
+and `OrchestrationEngine` startup fail for the entire environment, not only the affected thread.
+
 ## How provider work is requested
 
 Clients never call a provider directly. They dispatch orchestration commands over the RPC method
