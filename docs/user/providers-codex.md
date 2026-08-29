@@ -37,7 +37,7 @@ and share with OpenAI employees.
 ## Sub-agent models
 
 The web and desktop Agents panel shows each sub-agent's model and reasoning effort when Codex
-reports them. If Codex does not report either value, T3 Code leaves it out instead of using the
+reports them. If Codex does not report either value, Pylon leaves it out instead of using the
 parent agent's settings.
 
 ## Approve access to other apps
