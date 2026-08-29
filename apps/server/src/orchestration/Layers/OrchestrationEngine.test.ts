@@ -1006,7 +1006,7 @@ describe("OrchestrationEngine", () => {
     ]);
 
     const retryResult = await runtime.runPromise(engine.dispatch(turnStartCommand));
-    expect(retryResult.sequence).toBe(4);
+    expect(retryResult.sequence).toBe(5);
 
     const eventsAfterRetry = await runtime.runPromise(
       Stream.runCollect(engine.readEvents(0)).pipe(
@@ -1017,11 +1017,12 @@ describe("OrchestrationEngine", () => {
       "project.created",
       "thread.created",
       "thread.message-sent",
+      "thread.session-set",
       "thread.turn-start-requested",
     ]);
     expect(
       eventsAfterRetry.filter((event) => event.commandId === turnStartCommand.commandId),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
 
     await runtime.dispose();
   });
@@ -1288,6 +1289,18 @@ describe("OrchestrationEngine", () => {
     } as const;
 
     const first = await system.run(engine.dispatch(turnStart));
+    await expect(
+      system.run(
+        engine.dispatch({
+          ...turnStart,
+          commandId: CommandId.make("cmd-retry-turn-start-conflicting"),
+          message: {
+            ...turnStart.message,
+            messageId: asMessageId("msg-retry-conflicting"),
+          },
+        }),
+      ),
+    ).rejects.toThrow("already has pending turn admission");
     const second = await system.run(engine.dispatch(turnStart));
     expect(second.sequence).toBe(first.sequence);
 

@@ -25,6 +25,7 @@ const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHO
 const streamCommandChunks = Number(process.env.T3_ACP_STREAM_COMMAND_CHUNKS ?? "0");
 const streamCommandChunkChars = Number(process.env.T3_ACP_STREAM_COMMAND_CHUNK_CHARS ?? "64");
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
+const emitCursorStartupPlan = process.env.T3_ACP_EMIT_CURSOR_STARTUP_PLAN === "1";
 const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION === "1";
 const emitXAiExitPlanMode = process.env.T3_ACP_EMIT_XAI_EXIT_PLAN_MODE === "1";
 const emitXAiPlanMdWrite = process.env.T3_ACP_EMIT_XAI_PLAN_MD_WRITE === "1";
@@ -357,11 +358,21 @@ const program = Effect.gen(function* () {
   yield* agent.handleAuthenticate(() => Effect.succeed({}));
 
   yield* agent.handleCreateSession(() =>
-    Effect.succeed({
-      sessionId,
-      modes: modeState(),
-      models: modelState(),
-      configOptions: configOptions(),
+    Effect.gen(function* () {
+      if (emitCursorStartupPlan) {
+        yield* agent.client.extRequest("cursor/create_plan", {
+          toolCallId: "startup-plan-tool-call",
+          name: "Startup plan",
+          plan: "# Startup plan",
+          todos: [],
+        });
+      }
+      return {
+        sessionId,
+        modes: modeState(),
+        models: modelState(),
+        configOptions: configOptions(),
+      };
     }),
   );
 

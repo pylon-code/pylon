@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
   ApprovalRequestId,
+  defaultInstanceIdForDriver,
   EnvironmentId,
   PrimeAgentSettings,
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
@@ -13,6 +14,7 @@ import {
   ProviderSessionSideQuestionRequestId,
   type ProviderRuntimeEvent,
   type ProviderSessionAgentActivityTimelineEntry,
+  RuntimeSessionId,
   RuntimeTaskId,
   SessionInteractionRequestId,
   ThreadId,
@@ -25,12 +27,23 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
+import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as ServerSettings from "../../serverSettings.ts";
+import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
+import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
+import * as ProviderService from "../Services/ProviderService.ts";
+import * as ProviderEventLoggers from "../Layers/ProviderEventLoggers.ts";
+import { makeProviderServiceLive } from "../Layers/ProviderService.ts";
+import { ProviderSessionDirectoryLive } from "../Layers/ProviderSessionDirectory.ts";
+import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import type {
   PrimeAgentDaemonExtensionUiResponse,
@@ -46,10 +59,12 @@ import {
   type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import { PRIME_AGENT_EVENT_BUFFER_CAPACITY } from "./PrimeAgentEventBuffer.ts";
 import { PRIME_AGENT_PLAN_TOOL_NAME } from "./PrimeAgentManagedExtension.ts";
 import {
   makePrimeAgentDaemonAdapter,
   PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS,
+  PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS,
   PRIME_AGENT_SIDE_QUESTION_TIMEOUT_MS,
   type PrimeAgentDaemonAdapterLiveOptions,
 } from "./PrimeAgentDaemonAdapter.ts";
@@ -206,6 +221,8 @@ interface FakeCaptures {
   }>;
   readonly order: Array<string>;
   disposeCount: number;
+  disposeObserved: Queue.Queue<void> | undefined;
+  disposeRelease: Deferred.Deferred<void> | undefined;
   extensionFailure: boolean;
   abortClearFailure: boolean;
   sessionStatsFailure: boolean;
@@ -380,6 +397,8 @@ function makeCaptures(): FakeCaptures {
     extensions: [],
     order: [],
     disposeCount: 0,
+    disposeObserved: undefined,
+    disposeRelease: undefined,
     extensionFailure: false,
     abortClearFailure: false,
     sessionStatsFailure: false,
@@ -1112,9 +1131,15 @@ function fakeRuntimeFactory(
               captures.sessionStatsCount += 1;
               return captures.sessionStats;
             }),
-        dispose: Effect.sync(() => {
+        dispose: Effect.gen(function* () {
           captures.order.push("dispose");
           captures.disposeCount += 1;
+          if (captures.disposeObserved !== undefined) {
+            yield* Queue.offer(captures.disposeObserved, undefined);
+          }
+          if (captures.disposeRelease !== undefined) {
+            yield* Deferred.await(captures.disposeRelease);
+          }
         }),
       };
       return runtime;
@@ -1153,6 +1178,92 @@ function offer(captures: FakeCaptures, event: PrimeDaemonEvent) {
 }
 
 describe("PrimeAgentDaemonAdapter", () => {
+  it.effect("stamps every daemon event path from the captured session incarnation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        const sessionIncarnationId = RuntimeSessionId.make("prime-daemon-incarnation-a");
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          sessionIncarnationId,
+        });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        const turnFiber = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "stamp all daemon event paths",
+            sessionIncarnationId,
+          })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        const message = assistantMessage("captured incarnation");
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+        });
+        yield* offer(captures, {
+          _tag: "MessageStarted",
+          message,
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* offer(captures, {
+          _tag: "AssistantStream",
+          phase: "delta",
+          kind: "text",
+          delta: message.text,
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message,
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* offer(captures, {
+          _tag: "RunCompleted",
+          messages: [message],
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "completed", 3, { usage }),
+        });
+        yield* Fiber.join(turnFiber);
+        yield* awaitObservedType(subscription.observed, "turn.completed");
+        yield* adapter.stopSession(threadId);
+        yield* awaitObservedType(subscription.observed, "session.exited");
+
+        const requiredTypes: ReadonlyArray<ProviderRuntimeEvent["type"]> = [
+          "session.started",
+          "session.resources.updated",
+          "session.state.changed",
+          "thread.started",
+          "turn.started",
+          "item.started",
+          "content.delta",
+          "item.completed",
+          "turn.completed",
+          "session.exited",
+        ];
+        for (const type of requiredTypes) {
+          expect(subscription.events.some((event) => event.type === type)).toBe(true);
+        }
+        expect(
+          subscription.events.every((event) => event.sessionIncarnationId === sessionIncarnationId),
+        ).toBe(true);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rechecks correlated recovery before committing a new strict turn", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -2261,9 +2372,6 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* Deferred.await(publicationObserved);
 
         const stopFiber = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
-        yield* Effect.yieldNow;
-        yield* Effect.yieldNow;
-        expect(stopFiber.pollUnsafe()).toBeDefined();
         yield* Fiber.join(stopFiber);
         expect(captures.disposeCount).toBe(1);
       }),
@@ -3605,6 +3713,7 @@ describe("PrimeAgentDaemonAdapter", () => {
           method: "session/follow-up",
         });
         expect(captures.disposeCount).toBe(1);
+        yield* awaitObservedType(subscription.observed, "session.exited");
         expect(subscription.events).toContainEqual(
           expect.objectContaining({
             type: "session.input-queue.updated",
@@ -8544,10 +8653,333 @@ describe("PrimeAgentDaemonAdapter", () => {
           expect(captures.extensions).toEqual([
             { id: "native-stop-secret", response: { cancelled: true } },
           ]);
-          expect(captures.order).toEqual(["extension:native-stop-secret", "dispose"]);
+          expect(captures.order).toEqual(["dispose", "extension:native-stop-secret"]);
           yield* Fiber.interrupt(subscription.fiber);
         }),
       ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("continues stop teardown when interaction cancellation fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.extensionFailure = true;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+        yield* offer(captures, {
+          _tag: "ExtensionRequest",
+          request: { id: "native-stop-failure", method: "confirm", title: "Pending" },
+        });
+        yield* awaitObservedType(subscription.observed, "interaction.requested");
+
+        yield* adapter.stopSession(threadId);
+        yield* awaitObservedType(subscription.observed, "session.exited");
+
+        expect(captures.disposeCount).toBe(1);
+        expect(yield* adapter.hasSession(threadId)).toBe(false);
+        expect(yield* adapter.listSessions()).toEqual([]);
+        expect(subscription.events.filter((event) => event.type === "session.exited")).toHaveLength(
+          1,
+        );
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("stops multiple sessions with bounded cleanup and one terminal event each", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstCaptures = makeCaptures();
+        const secondCaptures = makeCaptures();
+        let starts = 0;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: (input) =>
+            fakeRuntimeFactory(starts++ === 0 ? firstCaptures : secondCaptures)(input),
+        });
+        const subscription = yield* subscribe(adapter);
+        const secondThreadId = ThreadId.make("thread-prime-second");
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* adapter.startSession({
+          threadId: secondThreadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        yield* adapter.stopAll();
+
+        expect(firstCaptures.disposeCount).toBe(1);
+        expect(secondCaptures.disposeCount).toBe(1);
+        expect(yield* adapter.listSessions()).toEqual([]);
+        const exits = subscription.events.filter((event) => event.type === "session.exited");
+        expect(exits).toHaveLength(2);
+        expect(new Set(exits.map((event) => event.threadId))).toEqual(
+          new Set([threadId, secondThreadId]),
+        );
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "keeps ProviderService stop bounded behind a stalled subscriber and relays one ordered exit",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          const providerKind = ProviderDriverKind.make("primeAgent");
+          const providerInstanceId = defaultInstanceIdForDriver(providerKind);
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId: providerInstanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const pull = yield* Stream.toPull(adapter.streamEvents);
+          const initialPull = yield* pull.pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+
+          const serviceSubscribed = yield* Deferred.make<void>();
+          const serviceAdapter = {
+            ...adapter,
+            streamEvents: adapter.streamEvents.pipe(
+              Stream.onStart(Deferred.succeed(serviceSubscribed, undefined)),
+            ),
+          };
+          const registry = makeAdapterRegistryMock({ [providerKind]: serviceAdapter });
+          const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+            Layer.provide(SqlitePersistenceMemory),
+          );
+          const directoryLayer = ProviderSessionDirectoryLive.pipe(
+            Layer.provide(runtimeRepositoryLayer),
+          );
+          const providerLayer = Layer.mergeAll(
+            makeProviderServiceLive().pipe(
+              Layer.provide(
+                Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry),
+              ),
+              Layer.provide(directoryLayer),
+              Layer.provide(ServerSettings.ServerSettingsService.layerTest()),
+              Layer.provideMerge(AnalyticsService.layerTest),
+              Layer.provide(
+                Layer.succeed(
+                  ProviderEventLoggers.ProviderEventLoggers,
+                  ProviderEventLoggers.NoOpProviderEventLoggers,
+                ),
+              ),
+            ),
+            directoryLayer,
+            runtimeRepositoryLayer,
+          );
+          const providerScope = yield* Scope.make();
+          const services = yield* Layer.build(providerLayer).pipe(Scope.provide(providerScope));
+          const provider = yield* ProviderService.ProviderService.pipe(Effect.provide(services));
+          const subscription = yield* subscribe(provider);
+          yield* Deferred.await(serviceSubscribed);
+          const session = yield* provider.startSession(threadId, {
+            provider: providerKind,
+            providerInstanceId,
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          });
+          const initialEvents = [...(yield* Fiber.join(initialPull))];
+          yield* awaitObservedType(subscription.observed, "thread.started");
+          const turnFiber = yield* provider
+            .sendTurn({
+              threadId,
+              input: "preserve every assistant delta while delivery is stalled",
+              sessionIncarnationId: session.sessionIncarnationId,
+            })
+            .pipe(Effect.forkChild);
+          yield* Queue.take(captures.promptObserved!);
+
+          let markAssistantProcessed!: () => void;
+          const assistantProcessed = new Promise<void>((resolve) => {
+            markAssistantProcessed = resolve;
+          });
+          captures.workerRecoveryTerminalResponseObserved = markAssistantProcessed;
+          const deltaCount = PRIME_AGENT_EVENT_BUFFER_CAPACITY * 2;
+          const deltas = Array.from({ length: deltaCount }, (_, index) => `delta:${index};`);
+          const message = assistantMessage(deltas.join(""));
+          yield* offer(captures, { _tag: "MessageStarted", message });
+          for (const delta of deltas) {
+            yield* offer(captures, {
+              _tag: "AssistantStream",
+              phase: "delta",
+              kind: "text",
+              delta,
+            });
+          }
+          yield* offer(captures, { _tag: "MessageCompleted", message });
+
+          yield* Effect.promise(() => assistantProcessed);
+
+          yield* provider.stopSession({ threadId });
+          expect(subscription.events.some((event) => event.type === "session.exited")).toBe(false);
+
+          const directEvents = [...initialEvents];
+          while (!directEvents.some((event) => event.type === "session.exited")) {
+            directEvents.push(...(yield* pull));
+          }
+          yield* awaitObservedType(subscription.observed, "session.exited");
+
+          expect(
+            subscription.events
+              .filter((event) => event.type === "content.delta")
+              .map((event) => event.payload.delta),
+          ).toEqual(deltas);
+          expect(
+            directEvents
+              .filter((event) => event.type === "content.delta")
+              .map((event) => event.payload.delta),
+          ).toEqual(deltas);
+          expect(
+            subscription.events.filter((event) => event.type === "session.exited"),
+          ).toHaveLength(1);
+          expect(directEvents.filter((event) => event.type === "session.exited")).toHaveLength(1);
+          expect(yield* adapter.hasSession(threadId)).toBe(false);
+          yield* Fiber.interrupt(turnFiber);
+          yield* Fiber.interrupt(subscription.fiber);
+          yield* Scope.close(providerScope, Exit.void);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps the replacement gate closed while scope-owned disposal is in flight", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const oldCaptures = makeCaptures();
+        oldCaptures.disposeObserved = yield* Queue.unbounded<void>();
+        oldCaptures.disposeRelease = yield* Deferred.make<void>();
+        const replacementCaptures = makeCaptures();
+        const oldDelegate = fakeRuntimeFactory(oldCaptures);
+        const replacementFactory = fakeRuntimeFactory(replacementCaptures);
+        let oldRuntimeScope: Scope.Closeable | undefined;
+        const scopeOwningFactory: NonNullable<
+          PrimeAgentDaemonAdapterLiveOptions["runtimeFactory"]
+        > = (input) =>
+          Effect.gen(function* () {
+            oldRuntimeScope = (yield* Scope.Scope) as Scope.Closeable;
+            const runtime = yield* oldDelegate(input);
+            const disposeCompletion = yield* Deferred.make<
+              void,
+              PrimeAgentDaemonSessionRuntimeError
+            >();
+            let disposeStarted = false;
+            const dispose = Effect.suspend(() => {
+              if (disposeStarted) return Deferred.await(disposeCompletion);
+              disposeStarted = true;
+              return runtime.dispose.pipe(
+                Effect.onExit((exit) => Deferred.done(disposeCompletion, exit).pipe(Effect.ignore)),
+              );
+            });
+            yield* Effect.addFinalizer(() => dispose.pipe(Effect.ignore));
+            return { ...runtime, dispose };
+          });
+        let runtimeStartCount = 0;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: (input) => {
+            runtimeStartCount += 1;
+            return runtimeStartCount === 1 ? scopeOwningFactory(input) : replacementFactory(input);
+          },
+        });
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          sessionIncarnationId: RuntimeSessionId.make("prime-daemon-scope-owner-old"),
+        });
+
+        const scopeClose = yield* Scope.close(oldRuntimeScope!, Exit.void).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Queue.take(oldCaptures.disposeObserved);
+        const stop = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
+        const replacement = yield* adapter
+          .startSession({
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+            sessionIncarnationId: RuntimeSessionId.make("prime-daemon-scope-owner-replacement"),
+          })
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+
+        expect(oldCaptures.disposeCount).toBe(1);
+        expect(stop.pollUnsafe()).toBeUndefined();
+        expect(replacement.pollUnsafe()).toBeUndefined();
+        expect(runtimeStartCount).toBe(1);
+
+        yield* Deferred.succeed(oldCaptures.disposeRelease, undefined);
+        yield* Fiber.join(scopeClose);
+        yield* Fiber.join(stop);
+        const replacementSession = yield* Fiber.join(replacement);
+        expect(replacementSession.sessionIncarnationId).toBe(
+          RuntimeSessionId.make("prime-daemon-scope-owner-replacement"),
+        );
+        expect(runtimeStartCount).toBe(2);
+        expect(oldCaptures.disposeCount).toBe(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("bounds four hung session cleanups by one global teardown window", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = [makeCaptures(), makeCaptures(), makeCaptures(), makeCaptures()];
+        for (const capture of captures) {
+          capture.disposeObserved = yield* Queue.unbounded<void>();
+          capture.disposeRelease = yield* Deferred.make<void>();
+        }
+        let starts = 0;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: (input) => fakeRuntimeFactory(captures[starts++]!)(input),
+        });
+        const subscription = yield* subscribe(adapter);
+        const threadIds = [
+          ThreadId.make("thread-prime-hung-1"),
+          ThreadId.make("thread-prime-hung-2"),
+          ThreadId.make("thread-prime-hung-3"),
+          ThreadId.make("thread-prime-hung-4"),
+        ];
+        for (const currentThreadId of threadIds) {
+          yield* adapter.startSession({
+            threadId: currentThreadId,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          });
+        }
+
+        const stopFiber = yield* adapter.stopAll().pipe(Effect.forkChild);
+        yield* Effect.all(
+          captures.map((capture) => Queue.take(capture.disposeObserved!)),
+          { concurrency: "unbounded", discard: true },
+        );
+        expect(captures.map((capture) => capture.disposeCount)).toEqual([1, 1, 1, 1]);
+        expect(stopFiber.pollUnsafe()).toBeUndefined();
+
+        yield* TestClock.adjust(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS);
+        yield* Fiber.join(stopFiber);
+        expect(captures.map((capture) => capture.disposeCount)).toEqual([1, 1, 1, 1]);
+        expect(yield* adapter.listSessions()).toEqual([]);
+        yield* Effect.forEach(
+          captures,
+          (capture) => Deferred.succeed(capture.disposeRelease!, undefined),
+          { concurrency: "unbounded", discard: true },
+        );
+        expect(subscription.events.filter((event) => event.type === "session.exited")).toHaveLength(
+          4,
+        );
+        yield* Fiber.interrupt(subscription.fiber);
+      }),
+    ).pipe(Effect.provide(testLayer)),
   );
 
   it.effect("treats SessionClosed as terminal cleanup without duplicate exit or completion", () =>
@@ -8642,6 +9074,104 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "times out hung SessionClosed cleanup before starting a replacement and ignores the late old close",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const oldCaptures = makeCaptures();
+          oldCaptures.disposeObserved = yield* Queue.unbounded<void>();
+          oldCaptures.disposeRelease = yield* Deferred.make<void>();
+          const replacementCaptures = makeCaptures();
+          const oldFactory = fakeRuntimeFactory(oldCaptures);
+          const replacementFactory = fakeRuntimeFactory(replacementCaptures);
+          let runtimeStartCount = 0;
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: (input) =>
+              (runtimeStartCount++ === 0 ? oldFactory : replacementFactory)(input),
+          });
+          const subscription = yield* subscribe(adapter);
+          const oldIncarnationId = RuntimeSessionId.make("prime-daemon-old-incarnation");
+          const replacementIncarnationId = RuntimeSessionId.make(
+            "prime-daemon-replacement-incarnation",
+          );
+          yield* adapter.startSession({
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+            sessionIncarnationId: oldIncarnationId,
+          });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+
+          yield* offer(oldCaptures, { _tag: "SessionClosed", error: "private old close" });
+          yield* Queue.take(oldCaptures.disposeObserved);
+          expect(yield* adapter.hasSession(threadId)).toBe(false);
+          expect(yield* adapter.listSessions()).toEqual([]);
+
+          const replacementFiber = yield* adapter
+            .startSession({
+              threadId,
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+              sessionIncarnationId: replacementIncarnationId,
+            })
+            .pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          expect(replacementFiber.pollUnsafe()).toBeUndefined();
+          expect(runtimeStartCount).toBe(1);
+
+          yield* offer(oldCaptures, { _tag: "SessionClosed", error: "private late old close" });
+          const concurrentStopFiber = yield* adapter
+            .stopSession(threadId)
+            .pipe(Effect.result, Effect.forkChild);
+          yield* Effect.yieldNow;
+          expect(concurrentStopFiber.pollUnsafe()).toBeUndefined();
+
+          yield* TestClock.adjust(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS);
+          yield* awaitObservedType(subscription.observed, "session.exited");
+          const concurrentStop = yield* Fiber.join(concurrentStopFiber);
+          expect(concurrentStop._tag).toBe("Failure");
+          const replacement = yield* Fiber.join(replacementFiber);
+
+          expect(replacement.threadId).toBe(threadId);
+          expect(runtimeStartCount).toBe(2);
+          expect(oldCaptures.disposeCount).toBe(1);
+          expect(replacementCaptures.disposeCount).toBe(0);
+          expect(yield* adapter.hasSession(threadId)).toBe(true);
+          expect(yield* adapter.listSessions()).toEqual([replacement]);
+          const exits = subscription.events.filter((event) => event.type === "session.exited");
+          expect(exits).toHaveLength(1);
+          expect(exits[0]?.sessionIncarnationId).toBe(oldIncarnationId);
+          const replacementEvents = subscription.events.filter(
+            (event) =>
+              event.sessionIncarnationId === replacementIncarnationId &&
+              (event.type === "session.started" || event.type === "session.resources.updated"),
+          );
+          expect(replacementEvents.map((event) => event.type)).toEqual([
+            "session.started",
+            "session.resources.updated",
+          ]);
+          expect(
+            subscription.events.some(
+              (event) =>
+                event.type !== "session.exited" &&
+                event.createdAt === exits[0]?.createdAt &&
+                event.sessionIncarnationId === replacementIncarnationId,
+            ),
+          ).toBe(false);
+
+          yield* Deferred.succeed(oldCaptures.disposeRelease, undefined).pipe(Effect.ignore);
+          yield* Effect.yieldNow;
+          expect(yield* adapter.hasSession(threadId)).toBe(true);
+          expect(
+            subscription.events.filter((event) => event.type === "session.exited"),
+          ).toHaveLength(1);
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
   );
 
   it.effect("asks only fresh approval-required sessions and keeps native ids private", () =>

@@ -970,6 +970,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Proposed plan '${sourceProposedPlan?.planId}' belongs to thread '${sourceThread.id}' in a different project.`,
         });
       }
+      if (
+        targetThread.session?.status === "starting" &&
+        targetThread.session.pendingTurnRequestId !== undefined &&
+        targetThread.session.pendingTurnRequestId !== command.commandId
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' already has pending turn admission '${targetThread.session.pendingTurnRequestId}'.`,
+        });
+      }
+      const admissionObservedAt = yield* DateTime.now;
+      const admissionRequestedAt = DateTime.formatIso(admissionObservedAt);
+      const admissionDeadlineAt = DateTime.formatIso(
+        DateTime.add(admissionObservedAt, { milliseconds: 60_000 }),
+      );
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -1009,9 +1024,49 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
+          admissionRequestedAt,
+          admissionDeadlineAt,
           createdAt: command.createdAt,
         },
       };
+      const admissionPendingEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      if (targetThread.session?.status !== "running") {
+        const desiredInstanceId =
+          command.modelSelection?.instanceId ?? targetThread.modelSelection.instanceId;
+        admissionPendingEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.session-set",
+          payload: {
+            threadId: command.threadId,
+            session: {
+              ...(targetThread.session ?? {
+                threadId: command.threadId,
+                providerName: null,
+              }),
+              status: "starting",
+              providerInstanceId: targetThread.session?.providerInstanceId ?? desiredInstanceId,
+              runtimeMode: command.runtimeMode,
+              pendingTurnRequestId: command.commandId,
+              pendingTurnMessageId: command.message.messageId,
+              pendingTurnRequestedAt: admissionRequestedAt,
+              pendingTurnDeadlineAt: admissionDeadlineAt,
+              ...(targetThread.session?.sessionIncarnationId !== undefined
+                ? { pendingTurnSessionId: targetThread.session.sessionIncarnationId }
+                : {}),
+              activeTurnRequestId: undefined,
+              failedTurnRequestId: undefined,
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: command.createdAt,
+            },
+          },
+        });
+      }
       // Real activity resets ANY override: it wakes an explicitly settled
       // thread, and it clears a keep-active pin back to neutral so the
       // thread can auto-settle again after this burst of work goes stale.
@@ -1050,7 +1105,129 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
-      return [...lifecycleResetEvents, userMessageEvent, turnStartRequestedEvent];
+      return [
+        ...lifecycleResetEvents,
+        userMessageEvent,
+        ...admissionPendingEvents,
+        turnStartRequestedEvent,
+      ];
+    }
+
+    case "thread.turn.admission.accept": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const admissionIsCurrent =
+        thread.session?.status === "starting" &&
+        thread.session.pendingTurnRequestId === command.requestId &&
+        thread.session.pendingTurnMessageId === command.messageId &&
+        thread.session.providerInstanceId === command.providerInstanceId &&
+        thread.session.pendingTurnSessionId === command.sessionIncarnationId &&
+        thread.session.sessionIncarnationId === command.sessionIncarnationId &&
+        thread.session.activeTurnId === null;
+      if (!admissionIsCurrent) {
+        return [];
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {
+            requestId: command.requestId as unknown as OrchestrationEvent["metadata"]["requestId"],
+          },
+        })),
+        type: "thread.session-set",
+        payload: {
+          threadId: command.threadId,
+          session: {
+            ...thread.session,
+            status: "running",
+            pendingTurnRequestId: undefined,
+            pendingTurnMessageId: undefined,
+            pendingTurnRequestedAt: undefined,
+            pendingTurnDeadlineAt: undefined,
+            pendingTurnSessionId: undefined,
+            activeTurnRequestId: command.requestId,
+            failedTurnRequestId: undefined,
+            activeTurnId: command.turnId,
+            lastError: null,
+            updatedAt: command.createdAt,
+          },
+        },
+      };
+    }
+
+    case "thread.turn.admission.fail": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const admissionIsCurrent =
+        thread.session?.status === "starting" &&
+        thread.session.pendingTurnRequestId === command.requestId &&
+        thread.session.pendingTurnMessageId === command.messageId &&
+        thread.session.activeTurnId === null;
+      if (!admissionIsCurrent) {
+        return [];
+      }
+      const sessionEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.session-set",
+        payload: {
+          threadId: command.threadId,
+          session: {
+            ...thread.session,
+            status: "error",
+            pendingTurnRequestId: undefined,
+            pendingTurnMessageId: undefined,
+            pendingTurnRequestedAt: undefined,
+            pendingTurnDeadlineAt: undefined,
+            pendingTurnSessionId: undefined,
+            activeTurnRequestId: undefined,
+            failedTurnRequestId: command.requestId,
+            activeTurnId: null,
+            lastError: command.detail,
+            updatedAt: command.createdAt,
+          },
+        },
+      };
+      const activityBase = yield* withEventBase({
+        aggregateKind: "thread",
+        aggregateId: command.threadId,
+        occurredAt: command.createdAt,
+        commandId: command.commandId,
+        metadata: {
+          requestId: command.requestId as unknown as OrchestrationEvent["metadata"]["requestId"],
+        },
+      });
+      const activityEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...activityBase,
+        causationEventId: sessionEvent.eventId,
+        type: "thread.activity-appended",
+        payload: {
+          threadId: command.threadId,
+          activity: {
+            id: activityBase.eventId,
+            tone: "error",
+            kind: "provider.turn.start.failed",
+            summary: "Provider turn start failed",
+            payload: { detail: command.detail, requestId: command.requestId },
+            turnId: null,
+            createdAt: command.createdAt,
+          },
+        },
+      };
+      return [sessionEvent, activityEvent];
     }
 
     case "thread.input-queue.follow-up": {
@@ -1281,12 +1458,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
-    case "thread.session.set": {
+    case "thread.session.apply-lifecycle": {
       const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const current = thread.session;
+      const lineageIsCurrent =
+        (current?.status ?? null) === command.expectedStatus &&
+        (current?.providerInstanceId ?? null) === command.expectedProviderInstanceId &&
+        (current?.sessionIncarnationId ?? null) === command.expectedSessionIncarnationId &&
+        (current?.pendingTurnRequestId ?? null) === command.expectedPendingTurnRequestId &&
+        (current?.pendingTurnSessionId ?? null) === command.expectedPendingTurnSessionId &&
+        (current?.activeTurnRequestId ?? null) === command.expectedActiveTurnRequestId &&
+        (current?.activeTurnId ?? null) === command.expectedActiveTurnId &&
+        (current?.failedTurnRequestId ?? null) === command.expectedFailedTurnRequestId;
+      if (!lineageIsCurrent) return [];
+      if (
+        current?.failedTurnRequestId !== undefined &&
+        command.session.failedTurnRequestId !== current.failedTurnRequestId &&
+        command.allowFailedTurnRequestClear !== true
+      ) {
+        return [];
+      }
+
       const sessionSetEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -1301,6 +1497,97 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           session: command.session,
         },
       };
+      const isSessionActivity =
+        command.session.status === "starting" || command.session.status === "running";
+      if (thread.settledOverride === null || !isSessionActivity) return sessionSetEvent;
+      const unsettledEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.unsettled",
+        payload: {
+          threadId: command.threadId,
+          reason: "activity",
+          updatedAt: command.createdAt,
+        },
+      };
+      return [unsettledEvent, sessionSetEvent];
+    }
+
+    case "thread.session.bind-pending": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        thread.session?.status !== "starting" ||
+        thread.session.pendingTurnRequestId !== command.requestId ||
+        thread.session.pendingTurnMessageId !== command.messageId ||
+        thread.session.failedTurnRequestId !== undefined ||
+        thread.session.activeTurnId !== null ||
+        command.session.pendingTurnRequestId !== command.requestId ||
+        command.session.pendingTurnMessageId !== command.messageId ||
+        command.session.sessionIncarnationId === undefined ||
+        command.session.pendingTurnSessionId !== command.session.sessionIncarnationId
+      ) {
+        return [];
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.session-set",
+        payload: {
+          threadId: command.threadId,
+          session: command.session,
+        },
+      };
+    }
+
+    case "thread.session.set": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const preservesPendingAdmission =
+        command.session.status === "starting" &&
+        thread.session?.pendingTurnRequestId !== undefined &&
+        (command.session.pendingTurnRequestId === undefined ||
+          command.session.pendingTurnRequestId === thread.session.pendingTurnRequestId);
+      const session = preservesPendingAdmission
+        ? {
+            ...thread.session,
+            ...command.session,
+            pendingTurnRequestId: thread.session.pendingTurnRequestId,
+            pendingTurnMessageId: thread.session.pendingTurnMessageId,
+            pendingTurnRequestedAt: thread.session.pendingTurnRequestedAt,
+            pendingTurnDeadlineAt: thread.session.pendingTurnDeadlineAt,
+            pendingTurnSessionId:
+              command.session.pendingTurnSessionId ?? thread.session.pendingTurnSessionId,
+          }
+        : command.session;
+      const sessionSetEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {},
+        })),
+        type: "thread.session-set",
+        payload: {
+          threadId: command.threadId,
+          session,
+        },
+      };
       // Only a session coming alive is activity worth waking a settled thread
       // for — status writes like ready/stopped/error arrive after the fact and
       // must not fight a user's explicit settle. Snooze is deliberately NOT
@@ -1309,8 +1596,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // surfaces immediately — effectiveSnoozed refuses to classify a thread
       // with a raised hand (approval / input / failure / fresh completion)
       // as snoozed, without spending the return ticket.
-      const isSessionActivity =
-        command.session.status === "starting" || command.session.status === "running";
+      const isSessionActivity = session.status === "starting" || session.status === "running";
       // Real activity resets ANY override (settled wakes, active unpins).
       if (thread.settledOverride === null || !isSessionActivity) {
         return sessionSetEvent;

@@ -2,9 +2,11 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  type MessageId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
+  type ProviderInstanceId,
   type ProjectId,
   type OrchestrationSession,
   ThreadId,
@@ -15,11 +17,15 @@ import {
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -105,6 +111,12 @@ const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
 
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
+export const PROVIDER_TURN_ADMISSION_TIMEOUT_MS = 60_000;
+const PROVIDER_TURN_RECONCILIATION_CONCURRENCY = 8;
+export const PROVIDER_TURN_INVENTORY_ATTEMPT_TIMEOUT_MS = 2_000;
+export const PROVIDER_TURN_INVENTORY_RETRY_TIMEOUT_MS = 6_500;
+const PROVIDER_TURN_ADMISSION_TIMEOUT_DETAIL =
+  "Provider did not start the requested turn within 60 seconds.";
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const MAX_REGENERATION_ATTACHMENTS = 4;
 const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
@@ -325,6 +337,7 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
@@ -342,6 +355,33 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
+  const admissionFibers = new Map<CommandId, Fiber.Fiber<unknown, unknown>>();
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      const fibers = Array.from(admissionFibers.entries());
+      // Keep registry ownership until the admission itself is done. Clearing it
+      // before interruption hid detached work from the layer finalizer.
+      yield* Effect.forEach(fibers, ([, fiber]) => Fiber.interrupt(fiber).pipe(Effect.forkDetach), {
+        concurrency: "unbounded",
+        discard: true,
+      });
+      const joined = yield* Effect.forEach(fibers, ([, fiber]) => Fiber.await(fiber), {
+        concurrency: "unbounded",
+        discard: true,
+      }).pipe(Effect.timeoutOption(Duration.seconds(1)));
+      if (Option.isSome(joined)) {
+        for (const [requestId, fiber] of fibers) {
+          if (admissionFibers.get(requestId) === fiber && fiber.pollUnsafe() !== undefined) {
+            admissionFibers.delete(requestId);
+          }
+        }
+      } else if (fibers.length > 0) {
+        yield* Effect.logWarning("provider turn admissions remained after reactor teardown", {
+          retainedAdmissionCount: admissionFibers.size,
+        });
+      }
+    }),
+  );
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -357,9 +397,13 @@ const make = Effect.gen(function* () {
     readonly turnId: TurnId | null;
     readonly createdAt: string;
     readonly requestId?: string;
+    readonly commandId?: CommandId;
   }) =>
     Effect.all({
-      commandId: serverCommandId("provider-failure-activity"),
+      commandId:
+        input.commandId === undefined
+          ? serverCommandId("provider-failure-activity")
+          : Effect.succeed(input.commandId),
       eventId: serverEventId(),
     }).pipe(
       Effect.flatMap(({ commandId, eventId }) =>
@@ -395,49 +439,79 @@ const make = Effect.gen(function* () {
     return Cause.pretty(cause);
   };
 
-  const setThreadSession = (input: {
+  const applyThreadSessionLifecycle = (input: {
     readonly threadId: ThreadId;
+    readonly expectedSession: OrchestrationSession | null;
     readonly session: OrchestrationSession;
     readonly createdAt: string;
+    readonly allowFailedTurnRequestClear?: true;
   }) =>
-    serverCommandId("provider-session-set").pipe(
-      Effect.flatMap((commandId) =>
-        orchestrationEngine.dispatch({
-          type: "thread.session.set",
+    serverCommandId("provider-session-lifecycle").pipe(
+      Effect.flatMap((commandId) => {
+        const expected = input.expectedSession;
+        return orchestrationEngine.dispatch({
+          type: "thread.session.apply-lifecycle",
           commandId,
           threadId: input.threadId,
+          expectedStatus: expected?.status ?? null,
+          expectedProviderInstanceId: expected?.providerInstanceId ?? null,
+          expectedSessionIncarnationId: expected?.sessionIncarnationId ?? null,
+          expectedPendingTurnRequestId: expected?.pendingTurnRequestId ?? null,
+          expectedPendingTurnSessionId: expected?.pendingTurnSessionId ?? null,
+          expectedActiveTurnRequestId: expected?.activeTurnRequestId ?? null,
+          expectedActiveTurnId: expected?.activeTurnId ?? null,
+          expectedFailedTurnRequestId: expected?.failedTurnRequestId ?? null,
+          ...(input.allowFailedTurnRequestClear === true
+            ? { allowFailedTurnRequestClear: true as const }
+            : {}),
           session: input.session,
           createdAt: input.createdAt,
-        }),
-      ),
+        });
+      }),
     );
 
-  const setThreadSessionErrorOnTurnStartFailure = Effect.fnUntraced(function* (input: {
+  const acceptTurnAdmissionIfPending = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
+    readonly requestId: CommandId;
+    readonly messageId: MessageId;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly sessionIncarnationId: NonNullable<ProviderSession["sessionIncarnationId"]>;
+    readonly turnId: TurnId;
+    readonly createdAt: string;
+  }) {
+    const commandId = yield* serverCommandId("provider-turn-admission-accept");
+    const dispatched = yield* orchestrationEngine.dispatch({
+      type: "thread.turn.admission.accept",
+      commandId,
+      threadId: input.threadId,
+      requestId: input.requestId,
+      messageId: input.messageId,
+      providerInstanceId: input.providerInstanceId,
+      sessionIncarnationId: input.sessionIncarnationId,
+      turnId: input.turnId,
+      createdAt: input.createdAt,
+    });
+    return (dispatched.eventCount ?? 0) > 0;
+  });
+
+  const failTurnAdmissionIfPending = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly requestId: CommandId;
+    readonly messageId: MessageId;
     readonly detail: string;
     readonly createdAt: string;
   }) {
-    const thread = yield* resolveThread(input.threadId);
-    if (!thread) {
-      return;
-    }
-    const session = thread.session;
-    yield* setThreadSession({
+    const commandId = yield* serverCommandId("provider-turn-admission");
+    const dispatched = yield* orchestrationEngine.dispatch({
+      type: "thread.turn.admission.fail",
+      commandId,
       threadId: input.threadId,
-      session: {
-        ...(session ?? {
-          threadId: input.threadId,
-          providerName: null,
-          providerInstanceId: thread.modelSelection.instanceId,
-          runtimeMode: thread.runtimeMode,
-        }),
-        status: session?.status === "stopped" ? "stopped" : "error",
-        activeTurnId: null,
-        lastError: input.detail,
-        updatedAt: input.createdAt,
-      },
+      requestId: input.requestId,
+      messageId: input.messageId,
+      detail: input.detail,
       createdAt: input.createdAt,
     });
+    return (dispatched.eventCount ?? 0) > 0;
   });
 
   const resolveProject = Effect.fnUntraced(function* (projectId: ProjectId) {
@@ -536,6 +610,10 @@ const make = Effect.gen(function* () {
     options?: {
       readonly modelSelection?: ModelSelection;
       readonly pendingTurnStart?: boolean;
+      readonly pendingTurnRequestId?: CommandId;
+      readonly pendingTurnMessageId?: MessageId;
+      readonly pendingTurnRequestedAt?: string;
+      readonly pendingTurnDeadlineAt?: string;
     },
   ) {
     const thread = yield* resolveThread(threadId);
@@ -551,6 +629,9 @@ const make = Effect.gen(function* () {
         .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === threadId)));
 
     const activeSession = yield* resolveActiveSession(threadId);
+    const desiredModelSelection = requestedModelSelection ?? thread.modelSelection;
+    const desiredInstanceId = desiredModelSelection.instanceId;
+
     const activeThreadSession =
       thread.session !== null && thread.session.status !== "stopped" && activeSession
         ? thread.session
@@ -573,8 +654,6 @@ const make = Effect.gen(function* () {
       activeSession.providerInstanceId !== undefined
         ? activeSession.providerInstanceId
         : thread.modelSelection.instanceId;
-    const desiredModelSelection = requestedModelSelection ?? thread.modelSelection;
-    const desiredInstanceId = desiredModelSelection.instanceId;
     const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId).pipe(
       Effect.mapError(
         () =>
@@ -610,23 +689,13 @@ const make = Effect.gen(function* () {
       });
     }
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
-    if (options?.pendingTurnStart === true && thread.session?.status !== "running") {
-      yield* setThreadSession({
-        threadId,
-        session: {
-          threadId,
-          status: "starting",
-          providerName: activeSession?.provider ?? preferredProvider,
-          providerInstanceId: activeSession?.providerInstanceId ?? desiredInstanceId,
-          runtimeMode: desiredRuntimeMode,
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: createdAt,
-        },
-        createdAt,
-      });
-    }
-    if (thread.session !== null) {
+    const hasStartedSession =
+      activeSession !== undefined ||
+      thread.latestTurn !== null ||
+      thread.session?.startedAt !== undefined ||
+      (thread.session?.providerInstanceId !== undefined &&
+        thread.session.providerInstanceId !== desiredInstanceId);
+    if (thread.session !== null && hasStartedSession) {
       yield* rejectStartedThreadModelChangeIfRequired({
         threadId,
         currentModelSelection:
@@ -642,6 +711,7 @@ const make = Effect.gen(function* () {
     }
     if (
       thread.session !== null &&
+      hasStartedSession &&
       requestedModelSelection !== undefined &&
       requestedModelSelection.instanceId !== currentInstanceId
     ) {
@@ -686,33 +756,70 @@ const make = Effect.gen(function* () {
 
     const bindSessionToThread = (session: ProviderSession) =>
       Effect.gen(function* () {
-        if (session.providerInstanceId === undefined) {
+        if (
+          session.providerInstanceId === undefined ||
+          session.sessionIncarnationId === undefined
+        ) {
           return yield* new ProviderAdapterRequestError({
             provider: providerErrorLabel(session.provider),
             method: "thread.turn.start",
-            detail: `Provider session '${session.threadId}' started without a provider instance id.`,
+            detail: `Provider session '${session.threadId}' started without a provider instance or session incarnation id.`,
           });
         }
-        yield* setThreadSession({
+        const sessionBinding: OrchestrationSession = {
           threadId,
-          session: {
-            threadId,
-            status:
-              options?.pendingTurnStart === true && session.status === "ready"
-                ? "starting"
-                : mapProviderSessionStatusToOrchestrationStatus(session.status),
-            providerName: session.provider,
-            providerInstanceId: session.providerInstanceId,
-            runtimeMode: desiredRuntimeMode,
-            ...(session.restored === true ? { restored: true } : {}),
-            startedAt: session.createdAt,
-            // Provider turn ids are not orchestration turn ids.
-            activeTurnId: null,
-            lastError: session.lastError ?? null,
-            updatedAt: session.updatedAt,
-          },
-          createdAt,
-        });
+          status:
+            options?.pendingTurnStart === true && session.status === "ready"
+              ? "starting"
+              : mapProviderSessionStatusToOrchestrationStatus(session.status),
+          providerName: session.provider,
+          providerInstanceId: session.providerInstanceId,
+          runtimeMode: desiredRuntimeMode,
+          ...(session.restored === true ? { restored: true } : {}),
+          sessionIncarnationId: session.sessionIncarnationId,
+          ...(options?.pendingTurnRequestId === undefined
+            ? {}
+            : { pendingTurnRequestId: options.pendingTurnRequestId }),
+          ...(options?.pendingTurnMessageId === undefined
+            ? {}
+            : { pendingTurnMessageId: options.pendingTurnMessageId }),
+          ...(options?.pendingTurnRequestedAt === undefined
+            ? {}
+            : { pendingTurnRequestedAt: options.pendingTurnRequestedAt }),
+          ...(options?.pendingTurnDeadlineAt === undefined
+            ? {}
+            : { pendingTurnDeadlineAt: options.pendingTurnDeadlineAt }),
+          ...(options?.pendingTurnRequestId === undefined
+            ? {}
+            : { pendingTurnSessionId: session.sessionIncarnationId }),
+          activeTurnRequestId: undefined,
+          startedAt: session.createdAt,
+          // Provider turn ids are not orchestration turn ids.
+          activeTurnId: null,
+          lastError: session.lastError ?? null,
+          updatedAt: session.updatedAt,
+        };
+        const commandId = yield* serverCommandId("provider-session-bind");
+        const dispatched = yield* orchestrationEngine.dispatch(
+          options?.pendingTurnRequestId === undefined
+            ? {
+                type: "thread.session.set",
+                commandId,
+                threadId,
+                session: sessionBinding,
+                createdAt,
+              }
+            : {
+                type: "thread.session.bind-pending",
+                commandId,
+                threadId,
+                requestId: options.pendingTurnRequestId,
+                messageId: options.pendingTurnMessageId!,
+                session: sessionBinding,
+                createdAt,
+              },
+        );
+        return (dispatched.eventCount ?? 1) > 0;
       });
 
     const existingSessionThreadId =
@@ -742,7 +849,8 @@ const make = Effect.gen(function* () {
         !shouldRestartForModelChange &&
         !shouldRestartForModelSelectionChange
       ) {
-        return existingSessionThreadId;
+        if (options?.pendingTurnStart === false) return activeSession;
+        return (yield* bindSessionToThread(activeSession!)) ? activeSession : undefined;
       }
 
       const resumeCursor = shouldRestartForModelChange
@@ -778,13 +886,11 @@ const make = Effect.gen(function* () {
         runtimeMode: restartedSession.runtimeMode,
         cwd: restartedSession.cwd,
       });
-      yield* bindSessionToThread(restartedSession);
-      return restartedSession.threadId;
+      return (yield* bindSessionToThread(restartedSession)) ? restartedSession : undefined;
     }
 
     const startedSession = yield* startProviderSession(undefined);
-    yield* bindSessionToThread(startedSession);
-    return startedSession.threadId;
+    return (yield* bindSessionToThread(startedSession)) ? startedSession : undefined;
   });
 
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
@@ -793,6 +899,10 @@ const make = Effect.gen(function* () {
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
+    readonly requestId: CommandId;
+    readonly messageId: MessageId;
+    readonly admissionRequestedAt: string;
+    readonly admissionDeadlineAt: string;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -801,10 +911,26 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
-    yield* ensureSessionForThread(input.threadId, input.createdAt, {
+    const requiresExactAdmission = thread.session?.status !== "running";
+    const admittedSession = yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-      pendingTurnStart: true,
+      pendingTurnStart: requiresExactAdmission,
+      ...(requiresExactAdmission
+        ? {
+            pendingTurnRequestId: input.requestId,
+            pendingTurnMessageId: input.messageId,
+            pendingTurnRequestedAt: input.admissionRequestedAt,
+            pendingTurnDeadlineAt: input.admissionDeadlineAt,
+          }
+        : {}),
     });
+    if (admittedSession === undefined) {
+      return yield* new ProviderAdapterRequestError({
+        provider: "unknown",
+        method: "thread.turn.start",
+        detail: `Turn admission '${input.requestId}' was superseded before provider binding completed.`,
+      });
+    }
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
@@ -844,6 +970,11 @@ const make = Effect.gen(function* () {
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      admissionRequestId:
+        requiresExactAdmission || thread.session?.activeTurnRequestId === undefined
+          ? input.requestId
+          : thread.session.activeTurnRequestId,
+      sessionIncarnationId: admittedSession.sessionIncarnationId!,
     };
   });
 
@@ -1134,15 +1265,10 @@ const make = Effect.gen(function* () {
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
     const key = turnStartKeyForEvent(event);
-    if (yield* hasHandledTurnStartRecently(key)) {
-      return;
-    }
+    if (yield* hasHandledTurnStartRecently(key)) return;
 
     const thread = yield* resolveThread(event.payload.threadId);
-    if (!thread) {
-      return;
-    }
-
+    if (!thread) return;
     const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
     if (!message || message.role !== "user") {
       yield* appendProviderFailureActivity({
@@ -1156,96 +1282,219 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* ensureThreadWorktree(thread);
-
-    const isFirstUserMessageTurn =
-      thread.messages.filter((entry) => entry.role === "user").length === 1;
-    if (isFirstUserMessageTurn) {
-      const project = yield* resolveProject(thread.projectId);
-      const generationCwd =
-        resolveThreadWorkspaceCwd({
-          thread,
-          projects: project ? [project] : [],
-        }) ?? process.cwd();
-      const generationInput = {
-        messageText: message.text,
-        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-        ...(event.payload.titleSeed !== undefined ? { titleSeed: event.payload.titleSeed } : {}),
-      };
-
-      yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
-        threadId: event.payload.threadId,
-        branch: thread.branch,
-        worktreePath: thread.worktreePath,
-        ...generationInput,
-      }).pipe(Effect.forkScoped);
-
-      if (canReplaceThreadTitle(thread.title, event.payload.titleSeed)) {
-        yield* maybeGenerateThreadTitleForFirstTurn({
-          threadId: event.payload.threadId,
-          cwd: generationCwd,
-          ...generationInput,
-        }).pipe(Effect.forkScoped);
-      }
-    }
-
-    const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
-      if (Cause.hasInterruptsOnly(cause)) {
-        return Effect.void;
-      }
-      const detail = formatFailureDetail(cause);
-      return setThreadSessionErrorOnTurnStartFailure({
-        threadId: event.payload.threadId,
-        detail,
-        createdAt: event.payload.createdAt,
-      }).pipe(
-        Effect.flatMap(() =>
-          appendProviderFailureActivity({
+    const requestId = event.commandId ?? CommandId.make(`event:${event.eventId}`);
+    const admissionRequestedAt =
+      event.payload.admissionRequestedAt ?? DateTime.formatIso(yield* DateTime.now);
+    const admissionDeadlineAt =
+      event.payload.admissionDeadlineAt ??
+      DateTime.formatIso(
+        DateTime.add(DateTime.makeUnsafe(admissionRequestedAt), {
+          milliseconds: PROVIDER_TURN_ADMISSION_TIMEOUT_MS,
+        }),
+      );
+    const admissionDeadlineMs = DateTime.toEpochMillis(DateTime.makeUnsafe(admissionDeadlineAt));
+    const failAdmission = (detail: string) =>
+      DateTime.now.pipe(
+        Effect.flatMap((failedAt) =>
+          failTurnAdmissionIfPending({
             threadId: event.payload.threadId,
-            kind: "provider.turn.start.failed",
-            summary: "Provider turn start failed",
+            requestId,
+            messageId: event.payload.messageId,
             detail,
-            turnId: null,
-            createdAt: event.payload.createdAt,
-          }),
-        ),
-        Effect.asVoid,
-      );
-    };
-
-    const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
-      handleTurnStartFailure(cause).pipe(
-        Effect.catchCause((recoveryCause) =>
-          Effect.logWarning("provider command reactor failed to recover turn start failure", {
-            eventType: event.type,
-            threadId: event.payload.threadId,
-            cause: Cause.pretty(recoveryCause),
-            originalCause: Cause.pretty(cause),
+            createdAt: DateTime.formatIso(failedAt),
           }),
         ),
       );
+    const handleTurnStartFailure = (cause: Cause.Cause<unknown>) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.succeed(false)
+        : failAdmission(formatFailureDetail(cause)).pipe(
+            Effect.catchCause((recoveryCause) =>
+              Effect.logWarning("provider command reactor failed to recover turn start failure", {
+                eventType: event.type,
+                threadId: event.payload.threadId,
+                cause: Cause.pretty(recoveryCause),
+                originalCause: Cause.pretty(cause),
+              }).pipe(Effect.as(false)),
+            ),
+          );
 
-    const sendTurnRequest = yield* buildSendTurnRequestForThread({
-      threadId: event.payload.threadId,
-      messageText: message.text,
-      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-      ...(event.payload.modelSelection !== undefined
-        ? { modelSelection: event.payload.modelSelection }
-        : {}),
-      interactionMode: event.payload.interactionMode,
-      createdAt: event.payload.createdAt,
-    }).pipe(
-      Effect.map(Option.some),
-      Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(Option.none()))),
-    );
-
-    if (Option.isNone(sendTurnRequest)) {
+    if ((yield* Clock.currentTimeMillis) >= admissionDeadlineMs) {
+      yield* failAdmission(PROVIDER_TURN_ADMISSION_TIMEOUT_DETAIL);
       return;
     }
 
-    yield* providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+    // Subscribe before provider admission starts. Only the persisted exact
+    // admission CAS disarms the watchdog; observing a raw provider start is not
+    // sufficient because ingestion or projection can still reject it.
+    const signalSubscriptionReady = yield* Deferred.make<void>();
+    const startedSignal = Stream.runHead(
+      orchestrationEngine.streamDomainEvents.pipe(
+        Stream.onStart(Deferred.succeed(signalSubscriptionReady, undefined)),
+        Stream.filter(
+          (domainEvent) =>
+            domainEvent.type === "thread.session-set" &&
+            domainEvent.payload.threadId === event.payload.threadId &&
+            domainEvent.payload.session.status === "running" &&
+            domainEvent.payload.session.activeTurnRequestId === requestId,
+        ),
+      ),
+    ).pipe(
+      Effect.flatMap((started) =>
+        Option.isSome(started) ? Effect.succeed({ _tag: "Started" as const }) : Effect.never,
+      ),
+    );
+    const startedSignalFiber = yield* startedSignal.pipe(Effect.forkScoped);
+    yield* Deferred.await(signalSubscriptionReady);
+
+    const watchdog = yield* Effect.gen(function* () {
+      const remainingMs = Math.max(0, admissionDeadlineMs - (yield* Clock.currentTimeMillis));
+      if (remainingMs > 0) yield* Effect.sleep(Duration.millis(remainingMs));
+      const applied = yield* failAdmission(PROVIDER_TURN_ADMISSION_TIMEOUT_DETAIL);
+      return { _tag: "Deadline" as const, applied };
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.never
+          : Effect.logWarning("provider turn admission watchdog failed", {
+              threadId: event.payload.threadId,
+              requestId,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.andThen(Effect.never)),
+      ),
+      Effect.forkScoped,
+    );
+
+    const admissionEffect = Effect.gen(function* () {
+      yield* ensureThreadWorktree(thread);
+      const isFirstUserMessageTurn =
+        thread.messages.filter((entry) => entry.role === "user").length === 1;
+      if (isFirstUserMessageTurn) {
+        const project = yield* resolveProject(thread.projectId);
+        const generationCwd =
+          resolveThreadWorkspaceCwd({
+            thread,
+            projects: project ? [project] : [],
+          }) ?? process.cwd();
+        const generationInput = {
+          messageText: message.text,
+          ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+          ...(event.payload.titleSeed !== undefined ? { titleSeed: event.payload.titleSeed } : {}),
+        };
+        yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
+          threadId: event.payload.threadId,
+          branch: thread.branch,
+          worktreePath: thread.worktreePath,
+          ...generationInput,
+        }).pipe(Effect.forkScoped);
+        if (canReplaceThreadTitle(thread.title, event.payload.titleSeed)) {
+          yield* maybeGenerateThreadTitleForFirstTurn({
+            threadId: event.payload.threadId,
+            cwd: generationCwd,
+            ...generationInput,
+          }).pipe(Effect.forkScoped);
+        }
+      }
+      const sendTurnRequest = yield* buildSendTurnRequestForThread({
+        threadId: event.payload.threadId,
+        messageText: message.text,
+        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+        ...(event.payload.modelSelection !== undefined
+          ? { modelSelection: event.payload.modelSelection }
+          : {}),
+        interactionMode: event.payload.interactionMode,
+        requestId,
+        messageId: event.payload.messageId,
+        admissionRequestedAt,
+        admissionDeadlineAt,
+        createdAt: event.payload.createdAt,
+      });
+      return yield* providerService.sendTurn(sendTurnRequest);
+    });
+    const admissionFiber = yield* admissionEffect.pipe(Effect.forkDetach);
+    admissionFibers.set(requestId, admissionFiber);
+    yield* Fiber.await(admissionFiber).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (admissionFibers.get(requestId) === admissionFiber) {
+            admissionFibers.delete(requestId);
+          }
+        }),
+      ),
+      // The admission is detached from the reactor scope. Its registry observer
+      // must be detached too, or scope shutdown removes the entry before the
+      // finalizer can interrupt and join the still-running admission.
+      Effect.forkDetach,
+    );
+
+    const superviseAdmission = Effect.gen(function* () {
+      if (thread.session?.status === "running") {
+        const steeringExit = yield* Fiber.await(admissionFiber);
+        yield* Fiber.interrupt(watchdog);
+        if (Exit.isFailure(steeringExit) && !Cause.hasInterruptsOnly(steeringExit.cause)) {
+          yield* appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.turn.start.failed",
+            summary: "Provider turn start failed",
+            detail: formatFailureDetail(steeringExit.cause),
+            turnId: thread.session.activeTurnId,
+            createdAt: yield* nowIso,
+            requestId,
+          });
+        }
+        return;
+      }
+      const admissionFailure = Fiber.await(admissionFiber).pipe(
+        Effect.flatMap((exit) =>
+          Exit.isFailure(exit)
+            ? handleTurnStartFailure(exit.cause).pipe(
+                Effect.as({ _tag: "AdmissionFailed" as const }),
+              )
+            : Effect.never,
+        ),
+      );
+      const outcome = yield* Effect.race(
+        Effect.race(Fiber.join(startedSignalFiber), Fiber.join(watchdog)),
+        admissionFailure,
+      );
+
+      if (
+        outcome._tag === "Started" ||
+        outcome._tag === "AdmissionFailed" ||
+        (outcome._tag === "Deadline" && !outcome.applied)
+      ) {
+        yield* Fiber.interrupt(watchdog);
+        return;
+      }
+
+      // Interrupt only when this exact request won the conditional timeout.
+      // A CAS-lost or superseded deadline must not cancel newer adapter work.
+      // The interrupt request is detached because a provider finalizer may hang;
+      // only joining the retained fiber is bounded.
+      yield* Fiber.interrupt(admissionFiber).pipe(Effect.forkDetach);
+      const interrupted = yield* Fiber.join(admissionFiber).pipe(
+        Effect.exit,
+        Effect.timeoutOption(Duration.seconds(1)),
+      );
+      if (Option.isNone(interrupted)) {
+        yield* Effect.logWarning("provider turn admission did not release after interruption", {
+          threadId: event.payload.threadId,
+          requestId,
+        });
+      }
+    }).pipe(
+      Effect.ensuring(Fiber.interrupt(startedSignalFiber)),
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.void
+          : Effect.logWarning("provider turn admission supervisor failed", {
+              threadId: event.payload.threadId,
+              requestId,
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    );
+    yield* superviseAdmission.pipe(Effect.forkScoped);
   });
 
   const processInputQueueFollowUpRequested = Effect.fn("processInputQueueFollowUpRequested")(
@@ -1349,8 +1598,9 @@ const make = Effect.gen(function* () {
           return;
         }
 
-        yield* setThreadSession({
+        yield* applyThreadSessionLifecycle({
           threadId: event.payload.threadId,
+          expectedSession: stoppedSession,
           session: {
             ...stoppedSession,
             status: "stopped",
@@ -1478,8 +1728,10 @@ const make = Effect.gen(function* () {
       yield* providerService.stopSession({ threadId: thread.id });
     }
 
-    yield* setThreadSession({
+    yield* applyThreadSessionLifecycle({
       threadId: thread.id,
+      expectedSession: thread.session,
+      allowFailedTurnRequestClear: true,
       session: {
         threadId: thread.id,
         status: "stopped",
@@ -1550,6 +1802,137 @@ const make = Effect.gen(function* () {
     }
   });
 
+  const reconcileOverdueTurnAdmissions = Effect.fn("reconcileOverdueTurnAdmissions")(function* () {
+    const pendingAdmissions = yield* (
+      projectionSnapshotQuery.listPendingTurnAdmissions?.() ?? Effect.succeed([])
+    );
+    if (pendingAdmissions.length === 0) return;
+
+    type PendingAdmission = (typeof pendingAdmissions)[number];
+    type AdmissionInventory =
+      | { readonly _tag: "Known"; readonly sessions: ReadonlyArray<ProviderSession> }
+      | { readonly _tag: "Unknown"; readonly detail: string };
+
+    const boundedInventory = <E, R>(
+      effect: Effect.Effect<ReadonlyArray<ProviderSession>, E, R>,
+    ): Effect.Effect<AdmissionInventory, never, R> =>
+      effect.pipe(
+        // Each native inventory attempt gets its own deadline. The outer bound
+        // also covers the complete retry chain, so a provider that returns
+        // Effect.never cannot pin startup reconciliation indefinitely.
+        Effect.timeout(Duration.millis(PROVIDER_TURN_INVENTORY_ATTEMPT_TIMEOUT_MS)),
+        Effect.retry({ times: 2 }),
+        Effect.timeout(Duration.millis(PROVIDER_TURN_INVENTORY_RETRY_TIMEOUT_MS)),
+        Effect.exit,
+        Effect.map((inventory) =>
+          Exit.isSuccess(inventory)
+            ? ({ _tag: "Known", sessions: inventory.value } as const)
+            : ({ _tag: "Unknown", detail: Cause.pretty(inventory.cause) } as const),
+        ),
+      );
+
+    const processPendingAdmission = Effect.fnUntraced(function* (
+      pending: PendingAdmission,
+      inventory: AdmissionInventory,
+    ) {
+      if (inventory._tag === "Unknown") {
+        // Unknown inventory is never evidence of absence. Record the distinct
+        // reconciliation error through the exact pending-admission CAS.
+        yield* failTurnAdmissionIfPending({
+          threadId: pending.threadId,
+          requestId: pending.requestId,
+          messageId: pending.messageId,
+          detail: `Provider turn admission reconciliation could not inventory its provider session: ${inventory.detail}`,
+          createdAt: yield* nowIso,
+        });
+        return;
+      }
+
+      const liveSession = inventory.sessions.find(
+        (session) => session.threadId === pending.threadId,
+      );
+      const exactRunningSession =
+        liveSession?.status === "running" &&
+        liveSession.activeTurnRequestId === pending.requestId &&
+        liveSession.activeTurnId !== undefined &&
+        pending.sessionIncarnationId !== null &&
+        liveSession.sessionIncarnationId === pending.sessionIncarnationId &&
+        pending.providerInstanceId !== null &&
+        liveSession.providerInstanceId === pending.providerInstanceId;
+      if (exactRunningSession) {
+        yield* acceptTurnAdmissionIfPending({
+          threadId: pending.threadId,
+          requestId: pending.requestId,
+          messageId: pending.messageId,
+          providerInstanceId: pending.providerInstanceId!,
+          sessionIncarnationId: pending.sessionIncarnationId!,
+          turnId: liveSession.activeTurnId!,
+          createdAt: yield* nowIso,
+        });
+        return;
+      }
+
+      const deadlineMs = DateTime.toEpochMillis(DateTime.makeUnsafe(pending.deadlineAt));
+      const remainingMs = Math.max(0, deadlineMs - (yield* Clock.currentTimeMillis));
+      const fail = DateTime.now.pipe(
+        Effect.flatMap((failedAt) =>
+          failTurnAdmissionIfPending({
+            threadId: pending.threadId,
+            requestId: pending.requestId,
+            messageId: pending.messageId,
+            detail: PROVIDER_TURN_ADMISSION_TIMEOUT_DETAIL,
+            createdAt: DateTime.formatIso(failedAt),
+          }),
+        ),
+        Effect.asVoid,
+      );
+      if (remainingMs === 0) {
+        yield* fail;
+        return;
+      }
+      yield* forkParked(Effect.sleep(Duration.millis(remainingMs)).pipe(Effect.andThen(fail)));
+    });
+
+    const byInstance = new Map<ProviderInstanceId | null, Array<PendingAdmission>>();
+    for (const pending of pendingAdmissions) {
+      const grouped = byInstance.get(pending.providerInstanceId) ?? [];
+      grouped.push(pending);
+      byInstance.set(pending.providerInstanceId, grouped);
+    }
+
+    // Inventory and restore watchdogs per instance. A blocked provider uses
+    // only its own bounded lane and cannot delay healthy instances.
+    yield* Effect.forEach(
+      byInstance,
+      ([instanceId, pendingForInstance]) =>
+        Effect.gen(function* () {
+          const inventory: AdmissionInventory =
+            instanceId === null
+              ? {
+                  _tag: "Unknown",
+                  detail: "Pending admission has no provider instance id.",
+                }
+              : providerService.listSessionsForInstance !== undefined
+                ? yield* boundedInventory(
+                    Effect.suspend(() => providerService.listSessionsForInstance!(instanceId)),
+                  )
+                : yield* boundedInventory(
+                    Effect.suspend(() => providerService.listSessions()).pipe(
+                      Effect.map((sessions) =>
+                        sessions.filter((session) => session.providerInstanceId === instanceId),
+                      ),
+                    ),
+                  );
+          yield* Effect.forEach(
+            pendingForInstance,
+            (pending) => processPendingAdmission(pending, inventory),
+            { concurrency: PROVIDER_TURN_RECONCILIATION_CONCURRENCY, discard: true },
+          );
+        }),
+      { concurrency: PROVIDER_TURN_RECONCILIATION_CONCURRENCY, discard: true },
+    );
+  });
+
   const processDomainEventSafely = (event: ProviderIntentEvent) =>
     processDomainEvent(event).pipe(
       Effect.catchCause((cause) => {
@@ -1612,11 +1995,22 @@ const make = Effect.gen(function* () {
         );
       }),
     );
+    const reconcileAdmissions = reconcileOverdueTurnAdmissions().pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+        return Effect.logWarning(
+          "provider command reactor failed to reconcile overdue turn admissions",
+          { cause: Cause.pretty(cause) },
+        );
+      }),
+    );
     const activation = yield* ServerActivation;
     if (activation === undefined) {
       yield* clearInterrupted;
+      yield* reconcileAdmissions;
     } else {
       yield* forkParked(clearInterrupted);
+      yield* forkParked(reconcileAdmissions);
     }
   });
 

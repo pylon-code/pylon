@@ -21,6 +21,7 @@ import {
   CursorSettings,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
+  RuntimeSessionId,
   ThreadId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
@@ -173,6 +174,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const adapter = yield* CursorAdapter;
       const settings = yield* ServerSettingsService;
       const threadId = ThreadId.make("cursor-mock-thread");
+      const sessionIncarnationId = RuntimeSessionId.make("cursor-mock-incarnation");
 
       const wrapperPath = yield* Effect.promise(() => makeMockAgentWrapper());
       yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
@@ -187,6 +189,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
+        sessionIncarnationId,
         modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
       });
 
@@ -204,6 +207,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       const types = runtimeEvents.map((e) => e.type);
+      assert.isTrue(
+        runtimeEvents.every((event) => event.sessionIncarnationId === sessionIncarnationId),
+      );
 
       for (const t of [
         "session.started",
@@ -246,6 +252,40 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         ]);
       }
 
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("stamps an ACP callback that fires before the session enters the routing map", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-startup-callback-thread");
+      const sessionIncarnationId = RuntimeSessionId.make("cursor-startup-callback-incarnation");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_CURSOR_STARTUP_PLAN: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "thread.started"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        sessionIncarnationId,
+      });
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const startupPlan = runtimeEvents.find((event) => event.type === "turn.proposed.completed");
+      assert.isDefined(startupPlan);
+      assert.equal(startupPlan?.sessionIncarnationId, sessionIncarnationId);
+      assert.isTrue(
+        runtimeEvents.every((event) => event.sessionIncarnationId === sessionIncarnationId),
+      );
       yield* adapter.stopSession(threadId);
     }),
   );

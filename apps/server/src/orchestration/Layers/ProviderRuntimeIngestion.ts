@@ -18,6 +18,7 @@ import {
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
+  type OrchestrationSession,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -2155,8 +2156,101 @@ const make = Effect.gen(function* () {
         yield* providerRegistry.refreshProviderCapacity(event.providerInstanceId);
       }
 
-      const thread = yield* resolveThreadShell(event.threadId);
+      let thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
+
+      if (thread.session?.failedTurnRequestId !== undefined) {
+        // A failed admission quarantines the lineage even for legacy sessions
+        // that do not have an incarnation id. Runtime start/state/output/item/
+        // completion/exit events cannot repopulate or clear it. Only a new
+        // exact turn admission or an explicit session stop can do that.
+        return;
+      }
+
+      // New provider sessions use one immutable incarnation id across every
+      // thread-scoped runtime event. A stamped event is valid only after that
+      // exact incarnation is durably bound to the projection; this also fences
+      // synchronous adapter startup events emitted before startSession returns.
+      // Genuinely unstamped legacy sessions keep the prior guards until restart.
+      const strictSessionIncarnation = thread.session?.sessionIncarnationId;
+      if (
+        (event.sessionIncarnationId !== undefined &&
+          event.sessionIncarnationId !== strictSessionIncarnation) ||
+        (strictSessionIncarnation !== undefined &&
+          (event.providerInstanceId === undefined ||
+            event.providerInstanceId !== thread.session?.providerInstanceId ||
+            event.sessionIncarnationId !== strictSessionIncarnation))
+      ) {
+        return;
+      }
+      let admissionAcceptedByCas = false;
+      if (event.type === "turn.started" && strictSessionIncarnation !== undefined) {
+        const eventTurnId = toTurnId(event.turnId);
+        if (
+          thread.session?.status !== "starting" ||
+          thread.session.pendingTurnRequestId === undefined ||
+          thread.session.pendingTurnMessageId === undefined ||
+          event.providerInstanceId === undefined ||
+          eventTurnId === undefined ||
+          event.admissionRequestId !== thread.session.pendingTurnRequestId ||
+          event.sessionIncarnationId !== thread.session.pendingTurnSessionId
+        ) {
+          return;
+        }
+        const dispatched = yield* orchestrationEngine.dispatch({
+          type: "thread.turn.admission.accept",
+          commandId: yield* providerCommandId(event, "turn-admission-accept"),
+          threadId: thread.id,
+          requestId: thread.session.pendingTurnRequestId,
+          messageId: thread.session.pendingTurnMessageId,
+          providerInstanceId: event.providerInstanceId,
+          sessionIncarnationId: strictSessionIncarnation,
+          turnId: eventTurnId,
+          createdAt: event.createdAt,
+        });
+        if ((dispatched.eventCount ?? 0) === 0) return;
+        admissionAcceptedByCas = true;
+        const acceptedThread = yield* resolveThreadShell(event.threadId);
+        if (!acceptedThread) return;
+        thread = acceptedThread;
+      } else if (
+        strictSessionIncarnation !== undefined &&
+        thread.session?.status === "starting" &&
+        thread.session.pendingTurnRequestId !== undefined
+      ) {
+        // No output or lifecycle transition may pass a pending exact admission.
+        return;
+      }
+
+      if (strictSessionIncarnation !== undefined) {
+        const activeRequestId = thread.session?.activeTurnRequestId;
+        const isTurnScoped =
+          event.turnId !== undefined ||
+          event.admissionRequestId !== undefined ||
+          event.type.startsWith("turn.") ||
+          event.type.startsWith("item.") ||
+          event.type === "content.delta" ||
+          event.type === "request.opened" ||
+          event.type === "request.resolved" ||
+          event.type === "user-input.requested" ||
+          event.type === "user-input.resolved" ||
+          event.type === "interaction.requested" ||
+          event.type === "interaction.resolved";
+        if (
+          !admissionAcceptedByCas &&
+          isTurnScoped &&
+          (activeRequestId === undefined || event.admissionRequestId !== activeRequestId)
+        ) {
+          return;
+        }
+        if (
+          thread.session?.status === "error" &&
+          thread.session.activeTurnId === null &&
+          (isTurnScoped || event.admissionRequestId !== undefined)
+        ) {
+          return;
+        }
+      }
 
       let loadedThreadDetail: OrchestrationThread | null | undefined;
       const getLoadedThreadDetail = () =>
@@ -2171,11 +2265,47 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      const applyObservedSessionLifecycle = Effect.fnUntraced(function* (
+        session: OrchestrationSession,
+        commandTag: string,
+      ) {
+        const observed = thread.session;
+        return yield* orchestrationEngine.dispatch({
+          type: "thread.session.apply-lifecycle",
+          commandId: yield* providerCommandId(event, commandTag),
+          threadId: thread.id,
+          expectedStatus: observed?.status ?? null,
+          expectedProviderInstanceId: observed?.providerInstanceId ?? null,
+          expectedSessionIncarnationId: observed?.sessionIncarnationId ?? null,
+          expectedPendingTurnRequestId: observed?.pendingTurnRequestId ?? null,
+          expectedPendingTurnSessionId: observed?.pendingTurnSessionId ?? null,
+          expectedActiveTurnRequestId: observed?.activeTurnRequestId ?? null,
+          expectedActiveTurnId: observed?.activeTurnId ?? null,
+          expectedFailedTurnRequestId: observed?.failedTurnRequestId ?? null,
+          session,
+          createdAt: now,
+        });
+      });
       const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
         threadId: thread.id,
       });
       const hasPendingTurnStart =
         Option.isSome(pendingTurnStart) && thread.session?.status === "starting";
+      const turnStartedMatchesPendingAdmission =
+        event.type === "turn.started" &&
+        thread.session?.status === "starting" &&
+        thread.session.pendingTurnRequestId !== undefined &&
+        thread.session.pendingTurnMessageId !== undefined &&
+        thread.session.pendingTurnSessionId !== undefined &&
+        event.admissionRequestId === thread.session.pendingTurnRequestId &&
+        event.sessionIncarnationId === thread.session.pendingTurnSessionId;
+      const turnStartedIsLegacyUncorrelated =
+        event.type === "turn.started" &&
+        event.admissionRequestId === undefined &&
+        event.sessionIncarnationId === undefined &&
+        ((thread.session?.status === "ready" && !hasPendingTurnStart) ||
+          ((thread.session?.status === "starting" || Option.isSome(pendingTurnStart)) &&
+            thread.session?.pendingTurnSessionId === undefined));
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -2189,7 +2319,8 @@ const make = Effect.gen(function* () {
       // turn.started for some other turn id still gets rejected.
       const conflictingTurnStartIsPendingTurnStart =
         event.type === "turn.started" && conflictsWithActiveTurn
-          ? sameId(yield* getExpectedProviderTurnIdForThread(thread.id), eventTurnId) &&
+          ? (turnStartedMatchesPendingAdmission || turnStartedIsLegacyUncorrelated) &&
+            sameId(yield* getExpectedProviderTurnIdForThread(thread.id), eventTurnId) &&
             Option.isSome(pendingTurnStart)
           : false;
 
@@ -2204,7 +2335,11 @@ const make = Effect.gen(function* () {
           case "thread.started":
             return true;
           case "turn.started":
-            return !conflictsWithActiveTurn || conflictingTurnStartIsPendingTurnStart;
+            if (activeTurnId === null) {
+              return turnStartedMatchesPendingAdmission || turnStartedIsLegacyUncorrelated;
+            }
+            if (!conflictsWithActiveTurn) return true;
+            return conflictingTurnStartIsPendingTurnStart;
           case "turn.completed":
             if (conflictsWithActiveTurn || missingTurnForActiveTurn) {
               return false;
@@ -2236,17 +2371,15 @@ const make = Effect.gen(function* () {
         thread.session !== null &&
         event.payload.sessionStartedAt === thread.session.startedAt
       ) {
-        yield* orchestrationEngine.dispatch({
-          type: "thread.session.set",
-          commandId: yield* providerCommandId(event, "thread-session-refinement-set"),
-          threadId: thread.id,
-          session: {
+        const applied = yield* applyObservedSessionLifecycle(
+          {
             ...thread.session,
             harnessRefinementStatus: event.payload.status,
             updatedAt: now,
           },
-          createdAt: now,
-        });
+          "thread-session-refinement-set",
+        );
+        if ((applied.eventCount ?? 0) === 0) return;
       }
 
       if (
@@ -2300,6 +2433,53 @@ const make = Effect.gen(function* () {
                 : (thread.session?.lastError ?? null);
 
         if (shouldApplyThreadLifecycle) {
+          if (!(event.type === "turn.started" && admissionAcceptedByCas)) {
+            const applied = yield* applyObservedSessionLifecycle(
+              {
+                threadId: thread.id,
+                status,
+                providerName: event.provider,
+                ...(event.providerInstanceId !== undefined
+                  ? { providerInstanceId: event.providerInstanceId }
+                  : {}),
+                runtimeMode: thread.session?.runtimeMode ?? "full-access",
+                ...(thread.session?.restored === true ? { restored: true } : {}),
+                ...(thread.session?.startedAt !== undefined
+                  ? { startedAt: thread.session.startedAt }
+                  : {}),
+                ...(thread.session?.sessionIncarnationId !== undefined
+                  ? { sessionIncarnationId: thread.session.sessionIncarnationId }
+                  : {}),
+                ...(thread.session?.harnessRefinementStatus !== undefined
+                  ? { harnessRefinementStatus: thread.session.harnessRefinementStatus }
+                  : {}),
+                ...(status === "starting" && thread.session?.pendingTurnRequestId !== undefined
+                  ? { pendingTurnRequestId: thread.session.pendingTurnRequestId }
+                  : {}),
+                ...(status === "starting" && thread.session?.pendingTurnMessageId !== undefined
+                  ? { pendingTurnMessageId: thread.session.pendingTurnMessageId }
+                  : {}),
+                ...(status === "starting" && thread.session?.pendingTurnRequestedAt !== undefined
+                  ? { pendingTurnRequestedAt: thread.session.pendingTurnRequestedAt }
+                  : {}),
+                ...(status === "starting" && thread.session?.pendingTurnDeadlineAt !== undefined
+                  ? { pendingTurnDeadlineAt: thread.session.pendingTurnDeadlineAt }
+                  : {}),
+                ...(status === "starting" && thread.session?.pendingTurnSessionId !== undefined
+                  ? { pendingTurnSessionId: thread.session.pendingTurnSessionId }
+                  : {}),
+                ...(status === "running" && thread.session?.activeTurnRequestId !== undefined
+                  ? { activeTurnRequestId: thread.session.activeTurnRequestId }
+                  : {}),
+                activeTurnId: nextActiveTurnId,
+                lastError,
+                updatedAt: now,
+              },
+              "thread-session-set",
+            );
+            if ((applied.eventCount ?? 0) === 0) return;
+          }
+
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
               acceptedTurnStartedSourcePlan.sourceThreadId,
@@ -2319,32 +2499,6 @@ const make = Effect.gen(function* () {
               ),
             );
           }
-
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
-            commandId: yield* providerCommandId(event, "thread-session-set"),
-            threadId: thread.id,
-            session: {
-              threadId: thread.id,
-              status,
-              providerName: event.provider,
-              ...(event.providerInstanceId !== undefined
-                ? { providerInstanceId: event.providerInstanceId }
-                : {}),
-              runtimeMode: thread.session?.runtimeMode ?? "full-access",
-              ...(thread.session?.restored === true ? { restored: true } : {}),
-              ...(thread.session?.startedAt !== undefined
-                ? { startedAt: thread.session.startedAt }
-                : {}),
-              ...(thread.session?.harnessRefinementStatus !== undefined
-                ? { harnessRefinementStatus: thread.session.harnessRefinementStatus }
-                : {}),
-              activeTurnId: nextActiveTurnId,
-              lastError,
-              updatedAt: now,
-            },
-            createdAt: now,
-          });
         }
       }
 
@@ -2585,11 +2739,8 @@ const make = Effect.gen(function* () {
           : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
 
         if (shouldApplyRuntimeError) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
-            commandId: yield* providerCommandId(event, "runtime-error-session-set"),
-            threadId: thread.id,
-            session: {
+          const applied = yield* applyObservedSessionLifecycle(
+            {
               threadId: thread.id,
               status: "error",
               providerName: event.provider,
@@ -2601,6 +2752,9 @@ const make = Effect.gen(function* () {
               ...(thread.session?.startedAt !== undefined
                 ? { startedAt: thread.session.startedAt }
                 : {}),
+              ...(thread.session?.sessionIncarnationId !== undefined
+                ? { sessionIncarnationId: thread.session.sessionIncarnationId }
+                : {}),
               ...(thread.session?.harnessRefinementStatus !== undefined
                 ? { harnessRefinementStatus: thread.session.harnessRefinementStatus }
                 : {}),
@@ -2608,8 +2762,9 @@ const make = Effect.gen(function* () {
               lastError: runtimeErrorMessage,
               updatedAt: now,
             },
-            createdAt: now,
-          });
+            "runtime-error-session-set",
+          );
+          if ((applied.eventCount ?? 0) === 0) return;
         }
       }
 

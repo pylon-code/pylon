@@ -1352,6 +1352,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let unsubscribe: (() => void) | undefined;
     let disposed = false;
     let disposeStarted = false;
+    const disposeCompletion = yield* Deferred.make<void, PrimeAgentDaemonSessionRuntimeError>();
     let needsResumeAfterAbort = false;
     let connectionGeneration = 0;
     type RouteRetirementSignal = {
@@ -7497,48 +7498,27 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     // synchronous assignment. Later events enter the normal bounded queue path.
     initializing = false;
 
-    const dispose = Effect.suspend(() => {
-      if (disposed || disposeStarted) return Effect.void;
+    const dispose = Effect.uninterruptibleMask((restore) => {
+      // Scope cleanup and explicit teardown can race. Every caller joins the
+      // first bounded native disposal instead of treating "started" as done.
+      if (disposeStarted) return restore(Deferred.await(disposeCompletion));
       disposeStarted = true;
-      retireOrdinaryIngressFence();
-      retireCurrentOrdinaryWorkerCloseRoute();
-      retireProviderRoute(correlatedProviderRouteRetirement);
-      settleReconnectResolution(connectionGeneration, false);
-      settleManagedRecovery(managedRecoveryResolution, false);
-      mcpRecoveryPending = false;
-      mcpRecoveryFailed = true;
-      settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
-      const workerRecovery = activeWorkerRecovery;
-      if (workerRecovery !== undefined) {
-        workerRecovery.provisionalSnapshot = undefined;
-        settleReconnectResolution(workerRecovery.resolution.generation, false);
-        if (activeWorkerRecovery === workerRecovery) activeWorkerRecovery = undefined;
-      }
-      unsubscribe?.();
-      const nativeSideQuestions = [...activePrivateSideQuestions.entries()];
-      return Effect.forEach(nativeSideQuestions, ([nativeId, active]) =>
-        bestEffortAbortSideQuestion(nativeId, active),
-      ).pipe(
-        Effect.andThen(failActivePrivateSideQuestions()),
-        Effect.andThen(releaseMcpServer),
-        Effect.andThen(
-          Effect.tryPromise({
-            try: () => connection!.dispose(),
-            catch: () =>
-              runtimeError("dispose", "request-failed", "Could not dispose the daemon session."),
-          }).pipe(
-            Effect.flatMap((output) =>
-              output === undefined
-                ? Effect.void
-                : Effect.fail(
-                    runtimeError(
-                      "dispose",
-                      "invalid-response",
-                      "The daemon dispose operation returned an invalid response.",
-                    ),
-                  ),
-            ),
-          ),
+
+      const nativeDispose = Effect.tryPromise({
+        try: () => connection!.dispose(),
+        catch: () =>
+          runtimeError("dispose", "request-failed", "Could not dispose the daemon session."),
+      }).pipe(
+        Effect.flatMap((output) =>
+          output === undefined
+            ? Effect.void
+            : Effect.fail(
+                runtimeError(
+                  "dispose",
+                  "invalid-response",
+                  "The daemon dispose operation returned an invalid response.",
+                ),
+              ),
         ),
         Effect.timeoutOrElse({
           duration: COMMAND_TIMEOUT_MS,
@@ -7549,17 +7529,51 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               "Timed out while disposing the daemon session.",
             ),
         }),
+      );
+      const beginDisposeOwner = Effect.sync(() => {
+        retireOrdinaryIngressFence();
+        retireCurrentOrdinaryWorkerCloseRoute();
+        retireProviderRoute(correlatedProviderRouteRetirement);
+        settleReconnectResolution(connectionGeneration, false);
+        settleManagedRecovery(managedRecoveryResolution, false);
+        mcpRecoveryPending = false;
+        mcpRecoveryFailed = true;
+        settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
+        const workerRecovery = activeWorkerRecovery;
+        if (workerRecovery !== undefined) {
+          workerRecovery.provisionalSnapshot = undefined;
+          settleReconnectResolution(workerRecovery.resolution.generation, false);
+          if (activeWorkerRecovery === workerRecovery) activeWorkerRecovery = undefined;
+        }
+        unsubscribe?.();
+        return [...activePrivateSideQuestions.entries()];
+      });
+      const disposeOwnerBody = (
+        nativeSideQuestions: ReadonlyArray<readonly [string, ActivePrivateSideQuestion]>,
+      ) =>
+        Effect.forEach(nativeSideQuestions, ([nativeId, active]) =>
+          bestEffortAbortSideQuestion(nativeId, active),
+        ).pipe(Effect.andThen(failActivePrivateSideQuestions()), Effect.andThen(releaseMcpServer));
+      return beginDisposeOwner.pipe(
+        // Election stays masked through synchronous route retirement and unsubscribe.
+        // Only the remaining owner body observes an interrupt pending since election.
+        Effect.flatMap((nativeSideQuestions) => restore(disposeOwnerBody(nativeSideQuestions))),
+        // These finalizers must be installed outside restore: a pending interrupt may
+        // prevent the restored body from starting, but it cannot skip native teardown.
+        Effect.onExit(() => nativeDispose),
         Effect.ensuring(
           Effect.gen(function* () {
             disposed = true;
             activePrivateSideQuestions.clear();
             prestartAbortedSideQuestionIds.clear();
             recentlySettledSideQuestionIds.clear();
-            client.close();
+            yield* closeClient;
             yield* Queue.shutdown(eventQueue);
             yield* Queue.shutdown(runtimeEventWeightCapacityAvailable);
           }),
         ),
+        // Publish only the final Exit after every cleanup and combined cleanup defect.
+        Effect.onExit((exit) => Deferred.done(disposeCompletion, exit).pipe(Effect.ignore)),
       );
     });
 

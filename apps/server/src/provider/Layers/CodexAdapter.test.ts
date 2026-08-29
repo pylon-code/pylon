@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import {
   ApprovalRequestId,
   CodexSettings,
+  CommandId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -17,6 +18,7 @@ import {
   type ProviderUserInputAnswers,
   ThreadId,
   TurnId,
+  RuntimeSessionId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -557,6 +559,126 @@ function startLifecycleRuntime() {
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("correlates the next native turn start to the exact admission", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const admissionRequestId = CommandId.make("cmd-codex-admission");
+      const sessionIncarnationId = RuntimeSessionId.make("session-codex-admission");
+      const eventFiber = yield* Stream.runHead(
+        adapter.streamEvents.pipe(Stream.filter((event) => event.type === "turn.started")),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.sendTurn({
+        threadId: asThreadId("thread-1"),
+        input: "correlate me",
+        admissionRequestId,
+        sessionIncarnationId,
+      });
+      yield* runtime.emit({
+        id: asEventId("evt-codex-admission"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: sessionIncarnationId,
+        method: "turn/started",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        payload: {},
+      });
+
+      const event = Option.getOrThrow(yield* Fiber.join(eventFiber));
+      NodeAssert.equal(event.admissionRequestId, admissionRequestId);
+      NodeAssert.equal(event.sessionIncarnationId, sessionIncarnationId);
+    }),
+  );
+
+  it.effect("serializes concurrent admissions despite reverse provider completion", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstAdmissionRequestId = CommandId.make("cmd-codex-admission-first");
+      const secondAdmissionRequestId = CommandId.make("cmd-codex-admission-second");
+      const sessionIncarnationId = RuntimeSessionId.make("session-codex-admission-concurrent");
+      let resolveFirst!: (value: ProviderTurnStartResult) => void;
+      let resolveSecond!: (value: ProviderTurnStartResult) => void;
+      const firstGate = new Promise<ProviderTurnStartResult>((resolve) => {
+        resolveFirst = resolve;
+      });
+      const secondGate = new Promise<ProviderTurnStartResult>((resolve) => {
+        resolveSecond = resolve;
+      });
+      runtime.sendTurnImpl
+        .mockImplementationOnce(() => firstGate)
+        .mockImplementationOnce(() => secondGate);
+      const eventFiber = yield* Stream.runCollect(
+        adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.started"),
+          Stream.take(2),
+        ),
+      ).pipe(Effect.forkChild);
+
+      const firstSend = yield* adapter
+        .sendTurn({
+          threadId: asThreadId("thread-1"),
+          input: "first",
+          admissionRequestId: firstAdmissionRequestId,
+          sessionIncarnationId,
+        })
+        .pipe(Effect.forkChild);
+      const secondSend = yield* adapter
+        .sendTurn({
+          threadId: asThreadId("thread-1"),
+          input: "second",
+          admissionRequestId: secondAdmissionRequestId,
+          sessionIncarnationId,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 1);
+      // Complete the second provider response first. The serialized admission
+      // boundary must still prevent it from entering the native runtime early.
+      resolveSecond({
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-second"),
+      });
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 1);
+
+      yield* runtime.emit({
+        id: asEventId("evt-codex-admission-first"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "turn/started",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-first"),
+        payload: {},
+      });
+      resolveFirst({
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-first"),
+      });
+      yield* Fiber.join(firstSend);
+      yield* Effect.yieldNow;
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 2);
+
+      yield* runtime.emit({
+        id: asEventId("evt-codex-admission-second"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        method: "turn/started",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-second"),
+        payload: {},
+      });
+      yield* Fiber.join(secondSend);
+
+      const events = Array.from(yield* Fiber.join(eventFiber));
+      NodeAssert.deepStrictEqual(
+        events.map((event) => event.admissionRequestId),
+        [firstAdmissionRequestId, secondAdmissionRequestId],
+      );
+    }),
+  );
+
   it.effect("carries child model metadata through every task event", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

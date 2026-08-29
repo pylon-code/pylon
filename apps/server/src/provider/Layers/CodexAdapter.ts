@@ -24,6 +24,7 @@ import {
   type RuntimeTaskUsage,
   ProviderApprovalDecision,
   ThreadId,
+  type TurnId,
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -33,6 +34,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -93,6 +95,12 @@ interface CodexAdapterSessionContext {
   readonly scope: Scope.Closeable;
   readonly runtime: CodexSessionRuntimeShape;
   readonly eventFiber: Fiber.Fiber<void, never>;
+  readonly admissionSemaphore: Semaphore.Semaphore;
+  readonly pendingAdmissions: Array<{
+    readonly admissionRequestId: NonNullable<ProviderSendTurnInput["admissionRequestId"]>;
+    readonly sessionIncarnationId: NonNullable<ProviderSendTurnInput["sessionIncarnationId"]>;
+    turnId?: TurnId;
+  }>;
   stopped: boolean;
 }
 
@@ -1738,6 +1746,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
+        const pendingAdmissions: CodexAdapterSessionContext["pendingAdmissions"] = [];
+
         // Fork into the session scope, not the calling fiber. `forkChild` makes
         // this a child of `startSession`, and Effect interrupts a fiber's
         // children when it completes, so the consumer died on return and every
@@ -1745,7 +1755,26 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
           Effect.gen(function* () {
             yield* writeNativeEvent(event);
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+            const runtimeEvents = mapToRuntimeEvents(event, event.threadId).map((runtimeEvent) => {
+              const stampedRuntimeEvent =
+                runtimeEvent.sessionIncarnationId !== undefined ||
+                input.sessionIncarnationId === undefined
+                  ? runtimeEvent
+                  : { ...runtimeEvent, sessionIncarnationId: input.sessionIncarnationId };
+              if (stampedRuntimeEvent.type !== "turn.started") return stampedRuntimeEvent;
+              const exactIndex = pendingAdmissions.findIndex(
+                (admission) => admission.turnId === stampedRuntimeEvent.turnId,
+              );
+              const admissionIndex =
+                exactIndex >= 0
+                  ? exactIndex
+                  : pendingAdmissions.findIndex((admission) => admission.turnId === undefined);
+              const admission =
+                admissionIndex >= 0 ? pendingAdmissions.splice(admissionIndex, 1)[0] : undefined;
+              if (admission === undefined) return stampedRuntimeEvent;
+              const { turnId: _turnId, ...correlation } = admission;
+              return { ...stampedRuntimeEvent, ...correlation };
+            });
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                 method: event.method,
@@ -1783,6 +1812,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           scope: sessionScope,
           runtime,
           eventFiber,
+          admissionSemaphore: yield* Semaphore.make(1),
+          pendingAdmissions,
           stopped: false,
         });
         sessionScopeTransferred = true;
@@ -1834,30 +1865,57 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
     const session = yield* requireSession(input.threadId);
-    const reasoningEffort =
-      input.modelSelection?.instanceId === boundInstanceId
-        ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
-        : undefined;
-    const serviceTier =
-      input.modelSelection?.instanceId === boundInstanceId
-        ? getCodexServiceTierOptionValue(input.modelSelection)
-        : undefined;
-    return yield* session.runtime
-      .sendTurn({
-        ...(input.input !== undefined ? { input: input.input } : {}),
-        ...(input.modelSelection?.instanceId === boundInstanceId
-          ? { model: input.modelSelection.model }
-          : {}),
-        ...(reasoningEffort
-          ? {
-              effort: reasoningEffort as EffectCodexSchema.V2TurnStartParams__ReasoningEffort,
-            }
-          : {}),
-        ...(serviceTier ? { serviceTier } : {}),
-        ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-        ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
-      })
-      .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
+    return yield* session.admissionSemaphore.withPermit(
+      Effect.gen(function* () {
+        const reasoningEffort =
+          input.modelSelection?.instanceId === boundInstanceId
+            ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
+            : undefined;
+        const serviceTier =
+          input.modelSelection?.instanceId === boundInstanceId
+            ? getCodexServiceTierOptionValue(input.modelSelection)
+            : undefined;
+        const admission: CodexAdapterSessionContext["pendingAdmissions"][number] | undefined =
+          input.admissionRequestId !== undefined && input.sessionIncarnationId !== undefined
+            ? {
+                admissionRequestId: input.admissionRequestId,
+                sessionIncarnationId: input.sessionIncarnationId,
+              }
+            : undefined;
+        if (admission !== undefined) session.pendingAdmissions.push(admission);
+        const result = yield* session.runtime
+          .sendTurn({
+            ...(input.input !== undefined ? { input: input.input } : {}),
+            ...(input.modelSelection?.instanceId === boundInstanceId
+              ? { model: input.modelSelection.model }
+              : {}),
+            ...(reasoningEffort
+              ? {
+                  effort: reasoningEffort as EffectCodexSchema.V2TurnStartParams__ReasoningEffort,
+                }
+              : {}),
+            ...(serviceTier ? { serviceTier } : {}),
+            ...(input.interactionMode !== undefined
+              ? { interactionMode: input.interactionMode }
+              : {}),
+            ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
+          })
+          .pipe(
+            Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)),
+            Effect.onError(() =>
+              Effect.sync(() => {
+                if (admission === undefined) return;
+                const index = session.pendingAdmissions.indexOf(admission);
+                if (index >= 0) session.pendingAdmissions.splice(index, 1);
+              }),
+            ),
+          );
+        if (admission !== undefined && session.pendingAdmissions.includes(admission)) {
+          admission.turnId = result.turnId;
+        }
+        return result;
+      }),
+    );
   });
 
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {

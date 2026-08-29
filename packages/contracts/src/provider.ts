@@ -3,10 +3,12 @@ import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchema
 import { ProviderApprovalDecision } from "./baseSchemas.ts";
 import {
   ApprovalRequestId,
+  CommandId,
   EventId,
   IsoDateTime,
   ProviderItemId,
   RuntimeRequestId,
+  RuntimeSessionId,
   RuntimeTaskId,
   ThreadId,
   TurnId,
@@ -50,6 +52,10 @@ export const ProviderSession = Schema.Struct({
   /** True when the provider attached this runtime from a durable continuation. */
   restored: Schema.optional(Schema.Boolean),
   activeTurnId: Schema.optional(TurnId),
+  /** Admission request owning the active provider turn, when known. */
+  activeTurnRequestId: Schema.optional(CommandId),
+  /** Immutable identity for this provider-session incarnation. */
+  sessionIncarnationId: Schema.optional(RuntimeSessionId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyString),
@@ -68,6 +74,8 @@ export const ProviderSessionStartInput = Schema.Struct({
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
+  /** ProviderService-assigned immutable identity for this session start. */
+  sessionIncarnationId: Schema.optional(RuntimeSessionId),
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
@@ -81,6 +89,10 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  /** Durable orchestration admission correlation. Optional for frozen older clients. */
+  admissionRequestId: Schema.optional(CommandId),
+  /** Immutable provider-session incarnation admitting this turn. */
+  sessionIncarnationId: Schema.optional(RuntimeSessionId),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 

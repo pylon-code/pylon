@@ -507,6 +507,7 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
       expect(turnEvents.map((event) => event.type)).toEqual([
         "thread.unsettled",
         "thread.message-sent",
+        "thread.session-set",
         "thread.turn-start-requested",
       ]);
 
@@ -555,6 +556,7 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
       expect(turnEvents.map((event) => event.type)).toEqual([
         "thread.unsettled",
         "thread.message-sent",
+        "thread.session-set",
         "thread.turn-start-requested",
       ]);
 

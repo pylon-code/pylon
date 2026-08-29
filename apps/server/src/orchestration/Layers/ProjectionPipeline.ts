@@ -1216,21 +1216,106 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         });
         return;
       }
-      if (event.type !== "thread.session-set") {
+      if (event.type === "thread.turn-start-requested") {
+        const existing = yield* projectionThreadSessionRepository.getByThreadId({
+          threadId: event.payload.threadId,
+        });
+        if (Option.isSome(existing) && existing.value.status === "running") return;
+        const legacyAdmissionSentinel = "1970-01-01T00:00:00.000Z";
+        const isLegacyAdmission = event.payload.admissionRequestedAt === undefined;
+        // Preserve the legacy event fingerprint while making its deadline
+        // immediately overdue. This lets full replay detect the same ambiguous
+        // duplicate set that migration 048 sees in SQL.
+        const requestedAt = event.payload.admissionRequestedAt ?? event.payload.createdAt;
+        const deadlineAt = event.payload.admissionDeadlineAt ?? legacyAdmissionSentinel;
+        const pendingSession = Option.getOrElse(existing, () => ({
+          threadId: event.payload.threadId,
+          status: "starting" as const,
+          providerName: null,
+          providerInstanceId: null,
+          runtimeMode: event.payload.runtimeMode,
+          restored: false,
+          startedAt: null,
+          sessionIncarnationId: null,
+          harnessRefinementStatus: null,
+          pendingTurnRequestId: null,
+          pendingTurnRequestAmbiguous: false,
+          pendingTurnMessageId: null,
+          pendingTurnRequestedAt: null,
+          pendingTurnDeadlineAt: null,
+          pendingTurnSessionId: null,
+          activeTurnRequestId: null,
+          failedTurnRequestId: null,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: event.occurredAt,
+        }));
+        const duplicatesCurrentLegacyAdmission =
+          isLegacyAdmission &&
+          pendingSession.status === "starting" &&
+          pendingSession.pendingTurnMessageId === event.payload.messageId &&
+          pendingSession.pendingTurnRequestedAt === event.payload.createdAt &&
+          (pendingSession.pendingTurnRequestId !== null ||
+            pendingSession.pendingTurnRequestAmbiguous);
+        yield* projectionThreadSessionRepository.upsert({
+          ...pendingSession,
+          status: "starting",
+          pendingTurnRequestId: duplicatesCurrentLegacyAdmission ? null : event.commandId,
+          pendingTurnRequestAmbiguous: duplicatesCurrentLegacyAdmission,
+          pendingTurnMessageId: event.payload.messageId,
+          pendingTurnRequestedAt: requestedAt,
+          pendingTurnDeadlineAt: deadlineAt,
+          pendingTurnSessionId: pendingSession.sessionIncarnationId,
+          activeTurnRequestId: null,
+        });
         return;
       }
+      if (event.type !== "thread.session-set") return;
+
+      const incoming = event.payload.session;
+      const existing = yield* projectionThreadSessionRepository.getByThreadId({
+        threadId: event.payload.threadId,
+      });
+      const preserved = Option.getOrUndefined(existing);
+      const preserveHistoricalPending =
+        incoming.status === "starting" &&
+        incoming.pendingTurnRequestId === undefined &&
+        ((preserved?.pendingTurnRequestId !== null &&
+          preserved?.pendingTurnRequestId !== undefined) ||
+          preserved?.pendingTurnRequestAmbiguous === true);
       yield* projectionThreadSessionRepository.upsert({
         threadId: event.payload.threadId,
-        status: event.payload.session.status,
-        providerName: event.payload.session.providerName,
-        providerInstanceId: event.payload.session.providerInstanceId ?? null,
-        runtimeMode: event.payload.session.runtimeMode,
-        restored: event.payload.session.restored === true,
-        startedAt: event.payload.session.startedAt ?? null,
-        harnessRefinementStatus: event.payload.session.harnessRefinementStatus ?? null,
-        activeTurnId: event.payload.session.activeTurnId,
-        lastError: event.payload.session.lastError,
-        updatedAt: event.payload.session.updatedAt,
+        status: incoming.status,
+        providerName: incoming.providerName,
+        providerInstanceId: incoming.providerInstanceId ?? null,
+        runtimeMode: incoming.runtimeMode,
+        restored: incoming.restored === true,
+        startedAt: incoming.startedAt ?? null,
+        sessionIncarnationId: incoming.sessionIncarnationId ?? null,
+        harnessRefinementStatus: incoming.harnessRefinementStatus ?? null,
+        pendingTurnRequestId: preserveHistoricalPending
+          ? preserved.pendingTurnRequestId
+          : (incoming.pendingTurnRequestId ?? null),
+        pendingTurnRequestAmbiguous: preserveHistoricalPending
+          ? preserved.pendingTurnRequestAmbiguous
+          : false,
+        pendingTurnMessageId: preserveHistoricalPending
+          ? preserved.pendingTurnMessageId
+          : (incoming.pendingTurnMessageId ?? null),
+        pendingTurnRequestedAt: preserveHistoricalPending
+          ? preserved.pendingTurnRequestedAt
+          : (incoming.pendingTurnRequestedAt ?? null),
+        pendingTurnDeadlineAt: preserveHistoricalPending
+          ? preserved.pendingTurnDeadlineAt
+          : (incoming.pendingTurnDeadlineAt ?? null),
+        pendingTurnSessionId: preserveHistoricalPending
+          ? (incoming.sessionIncarnationId ?? preserved.pendingTurnSessionId)
+          : (incoming.pendingTurnSessionId ?? null),
+        activeTurnRequestId: incoming.activeTurnRequestId ?? null,
+        failedTurnRequestId: incoming.failedTurnRequestId ?? null,
+        activeTurnId: incoming.activeTurnId,
+        lastError: incoming.lastError,
+        updatedAt: incoming.updatedAt,
       });
     });
 

@@ -18,11 +18,16 @@ import {
 const ProjectionThreadSessionDbRow = Schema.Struct({
   ...ProjectionThreadSession.fields,
   restored: Schema.Number,
+  pendingTurnRequestAmbiguous: Schema.Number,
 });
 
 const toProjectionThreadSession = (
   row: Schema.Schema.Type<typeof ProjectionThreadSessionDbRow>,
-): ProjectionThreadSession => ({ ...row, restored: row.restored === 1 });
+): ProjectionThreadSession => ({
+  ...row,
+  restored: row.restored === 1,
+  pendingTurnRequestAmbiguous: row.pendingTurnRequestAmbiguous === 1,
+});
 
 const makeProjectionThreadSessionRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -39,7 +44,16 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           runtime_mode,
           restored,
           started_at,
+          session_incarnation_id,
           harness_refinement_status,
+          pending_turn_request_id,
+          pending_turn_request_ambiguous,
+          pending_turn_message_id,
+          pending_turn_requested_at,
+          pending_turn_deadline_at,
+          pending_turn_session_id,
+          active_turn_request_id,
+          failed_turn_request_id,
           active_turn_id,
           last_error,
           updated_at
@@ -52,7 +66,16 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.runtimeMode},
           ${row.restored ? 1 : 0},
           ${row.startedAt},
+          ${row.sessionIncarnationId},
           ${row.harnessRefinementStatus},
+          ${row.pendingTurnRequestId},
+          ${row.pendingTurnRequestAmbiguous ? 1 : 0},
+          ${row.pendingTurnMessageId},
+          ${row.pendingTurnRequestedAt},
+          ${row.pendingTurnDeadlineAt},
+          ${row.pendingTurnSessionId},
+          ${row.activeTurnRequestId},
+          ${row.failedTurnRequestId},
           ${row.activeTurnId},
           ${row.lastError},
           ${row.updatedAt}
@@ -65,7 +88,16 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           runtime_mode = excluded.runtime_mode,
           restored = excluded.restored,
           started_at = excluded.started_at,
+          session_incarnation_id = excluded.session_incarnation_id,
           harness_refinement_status = excluded.harness_refinement_status,
+          pending_turn_request_id = excluded.pending_turn_request_id,
+          pending_turn_request_ambiguous = excluded.pending_turn_request_ambiguous,
+          pending_turn_message_id = excluded.pending_turn_message_id,
+          pending_turn_requested_at = excluded.pending_turn_requested_at,
+          pending_turn_deadline_at = excluded.pending_turn_deadline_at,
+          pending_turn_session_id = excluded.pending_turn_session_id,
+          active_turn_request_id = excluded.active_turn_request_id,
+          failed_turn_request_id = excluded.failed_turn_request_id,
           active_turn_id = excluded.active_turn_id,
           last_error = excluded.last_error,
           updated_at = excluded.updated_at
@@ -85,7 +117,16 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           restored,
           started_at AS "startedAt",
+          session_incarnation_id AS "sessionIncarnationId",
           harness_refinement_status AS "harnessRefinementStatus",
+          pending_turn_request_id AS "pendingTurnRequestId",
+          pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
+          pending_turn_message_id AS "pendingTurnMessageId",
+          pending_turn_requested_at AS "pendingTurnRequestedAt",
+          pending_turn_deadline_at AS "pendingTurnDeadlineAt",
+          pending_turn_session_id AS "pendingTurnSessionId",
+          active_turn_request_id AS "activeTurnRequestId",
+          failed_turn_request_id AS "failedTurnRequestId",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           updated_at AS "updatedAt"

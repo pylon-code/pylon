@@ -208,26 +208,31 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               }
 
               const lastSavedEvent = committedEvents.at(-1) ?? null;
-              if (lastSavedEvent === null) {
+              const acceptsStaleNoEvent =
+                envelope.command.type === "thread.turn.admission.accept" ||
+                envelope.command.type === "thread.turn.admission.fail" ||
+                envelope.command.type === "thread.session.bind-pending";
+              if (lastSavedEvent === null && !acceptsStaleNoEvent) {
                 return yield* new OrchestrationCommandInvariantError({
                   commandType: envelope.command.type,
                   detail: "Command produced no events.",
                 });
               }
-
+              const resultSequence =
+                lastSavedEvent?.sequence ?? nextCommandReadModel.snapshotSequence;
               yield* commandReceiptRepository.upsert({
                 commandId: envelope.command.commandId,
-                aggregateKind: lastSavedEvent.aggregateKind,
-                aggregateId: lastSavedEvent.aggregateId,
-                acceptedAt: lastSavedEvent.occurredAt,
-                resultSequence: lastSavedEvent.sequence,
+                aggregateKind: lastSavedEvent?.aggregateKind ?? aggregateRef.aggregateKind,
+                aggregateId: lastSavedEvent?.aggregateId ?? aggregateRef.aggregateId,
+                acceptedAt: lastSavedEvent?.occurredAt ?? (yield* nowIso),
+                resultSequence,
                 status: "accepted",
                 error: null,
               });
 
               return {
                 committedEvents,
-                lastSequence: lastSavedEvent.sequence,
+                lastSequence: resultSequence,
                 nextCommandReadModel,
               } as const;
             }),
@@ -256,7 +261,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             );
           }
         }
-        return { sequence: committedCommand.lastSequence };
+        return {
+          sequence: committedCommand.lastSequence,
+          eventCount: committedCommand.committedEvents.length,
+        };
       }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`)),
     ).pipe(
       Effect.flatMap((exit) =>

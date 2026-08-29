@@ -22,6 +22,7 @@ import {
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  RuntimeSessionId,
   ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -1817,6 +1818,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
       const threadId = asThreadId("thread-polled-busy-after-stop");
+      const sessionIncarnationId = RuntimeSessionId.make("opencode-polled-busy-incarnation");
       const firstUserMessageEvent = promiseWithResolvers<unknown>();
       const assistantMessageEvent = promiseWithResolvers<unknown>();
       const assistantPartEvent = promiseWithResolvers<unknown>();
@@ -1844,6 +1846,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         provider: ProviderDriverKind.make("opencode"),
         threadId,
         runtimeMode: "full-access",
+        sessionIncarnationId,
       });
       const stoppedTurn = yield* adapter.sendTurn({
         threadId,
@@ -1921,6 +1924,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
 
       const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      NodeAssert.equal(
+        events.every((event) => event.sessionIncarnationId === sessionIncarnationId),
+        true,
+      );
       NodeAssert.deepEqual(
         events.map((event) => event.type),
         ["content.delta", "turn.completed"],

@@ -11,6 +11,7 @@ import {
   ProviderInstanceId,
   type ServerProviderRateLimit,
   type ServerProviderUsageWindow,
+  RuntimeSessionId,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -28,8 +29,10 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as PubSub from "effect/PubSub";
@@ -760,7 +763,7 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
-  it("maps turn started/completed events into thread session updates", async () => {
+  it("maps legacy unstamped turn events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -799,7 +802,684 @@ describe("ProviderRuntimeIngestion", () => {
         entry.session?.lastError === "turn failed",
     );
     expect(thread.session?.status).toBe("error");
+    expect(thread.session?.sessionIncarnationId).toBeUndefined();
     expect(thread.session?.lastError).toBe("turn failed");
+  });
+
+  effectIt.effect("quarantines stamped startup events until the exact incarnation binds", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = asThreadId("thread-1");
+      const requestId = CommandId.make("cmd-runtime-prebind-quarantine");
+      const messageId = asMessageId("message-runtime-prebind-quarantine");
+      const sessionIncarnationId = RuntimeSessionId.make("session-runtime-prebind-quarantine");
+      const turnId = asTurnId("turn-runtime-prebind-quarantine");
+      const requestedAt = "2026-01-01T00:00:01.000Z";
+      const releaseStart = yield* Deferred.make<void>();
+      const startupEventsPublished = yield* Deferred.make<void>();
+
+      yield* Effect.promise(() =>
+        harness.dispatch({
+          type: "thread.turn.start",
+          commandId: requestId,
+          threadId,
+          message: {
+            messageId,
+            role: "user",
+            text: "fence synchronous startup output",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: requestedAt,
+        }),
+      );
+
+      const startup = yield* Effect.gen(function* () {
+        yield* Effect.sync(() => {
+          const eventBase = {
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            sessionIncarnationId,
+            threadId,
+            turnId,
+            admissionRequestId: requestId,
+            createdAt: "2026-01-01T00:00:02.000Z",
+          } as const;
+          harness.emit({
+            ...eventBase,
+            type: "session.started",
+            eventId: asEventId("evt-runtime-prebind-session-started"),
+            payload: {},
+          });
+          harness.emit({
+            ...eventBase,
+            type: "session.state.changed",
+            eventId: asEventId("evt-runtime-prebind-session-state"),
+            payload: { state: "ready" },
+          });
+          harness.emit({
+            ...eventBase,
+            type: "content.delta",
+            eventId: asEventId("evt-runtime-prebind-content"),
+            payload: { streamKind: "assistant_text", delta: "pre-bind content" },
+          });
+          harness.emit({
+            ...eventBase,
+            type: "item.completed",
+            eventId: asEventId("evt-runtime-prebind-item"),
+            itemId: asItemId("item-runtime-prebind"),
+            payload: { itemType: "assistant_message", detail: "pre-bind item" },
+          });
+          harness.emit({
+            ...eventBase,
+            type: "turn.plan.updated",
+            eventId: asEventId("evt-runtime-prebind-plan"),
+            payload: {
+              plan: [{ step: "Pre-bind plan", status: "in_progress" }],
+            },
+          });
+          harness.emit({
+            ...eventBase,
+            type: "session.exited",
+            eventId: asEventId("evt-runtime-prebind-exit"),
+            payload: { exitKind: "graceful" },
+          });
+        });
+        yield* Deferred.succeed(startupEventsPublished, undefined);
+        yield* Deferred.await(releaseStart);
+        yield* Effect.promise(() =>
+          harness.dispatch({
+            type: "thread.session.bind-pending",
+            commandId: CommandId.make("cmd-runtime-prebind-bind"),
+            threadId,
+            requestId,
+            messageId,
+            session: {
+              threadId,
+              status: "starting",
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "approval-required",
+              sessionIncarnationId,
+              pendingTurnRequestId: requestId,
+              pendingTurnMessageId: messageId,
+              pendingTurnRequestedAt: requestedAt,
+              pendingTurnDeadlineAt: "2026-01-01T00:01:01.000Z",
+              pendingTurnSessionId: sessionIncarnationId,
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: "2026-01-01T00:00:03.000Z",
+            },
+            createdAt: "2026-01-01T00:00:03.000Z",
+          }),
+        );
+      }).pipe(Effect.forkChild);
+
+      yield* Deferred.await(startupEventsPublished);
+      yield* Effect.promise(() => harness.drain());
+      let thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(thread?.session?.status).toBe("starting");
+      expect(thread?.session?.sessionIncarnationId).toBeUndefined();
+      expect(thread?.session?.pendingTurnRequestId).toBe(requestId);
+      expect(thread?.session?.activeTurnId).toBeNull();
+      expect(thread?.messages.some((message) => message.role === "assistant")).toBe(false);
+      expect(thread?.activities.some((activity) => activity.kind === "turn.plan.updated")).toBe(
+        false,
+      );
+
+      yield* Deferred.succeed(releaseStart, undefined);
+      yield* Fiber.join(startup);
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-runtime-postbind-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        sessionIncarnationId,
+        threadId,
+        turnId,
+        admissionRequestId: requestId,
+        createdAt: "2026-01-01T00:00:04.000Z",
+        payload: {},
+      });
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId("evt-runtime-postbind-item"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        sessionIncarnationId,
+        threadId,
+        turnId,
+        admissionRequestId: requestId,
+        itemId: asItemId("item-runtime-postbind"),
+        createdAt: "2026-01-01T00:00:05.000Z",
+        payload: { itemType: "assistant_message", detail: "accepted after bind" },
+      });
+      harness.emit({
+        type: "turn.plan.updated",
+        eventId: asEventId("evt-runtime-postbind-plan"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        sessionIncarnationId,
+        threadId,
+        turnId,
+        admissionRequestId: requestId,
+        createdAt: "2026-01-01T00:00:06.000Z",
+        payload: { plan: [{ step: "Bound plan", status: "completed" }] },
+      });
+      yield* Effect.promise(() => harness.drain());
+
+      thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(thread?.session?.status).toBe("running");
+      expect(thread?.session?.sessionIncarnationId).toBe(sessionIncarnationId);
+      expect(thread?.session?.activeTurnRequestId).toBe(requestId);
+      expect(thread?.session?.activeTurnId).toBe(turnId);
+      expect(
+        thread?.messages
+          .filter((message) => message.role === "assistant")
+          .map((message) => message.text),
+      ).toEqual(["accepted after bind"]);
+      expect(thread?.activities.some((activity) => activity.kind === "turn.plan.updated")).toBe(
+        true,
+      );
+    }),
+  );
+
+  effectIt.effect("keeps startup failure CAS live after a stamped pre-bind exit", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = asThreadId("thread-1");
+      const requestId = CommandId.make("cmd-runtime-prebind-start-failure");
+      const messageId = asMessageId("message-runtime-prebind-start-failure");
+      const startupFailed = yield* Deferred.make<void>();
+      const startupExitPublished = yield* Deferred.make<void>();
+
+      yield* Effect.promise(() =>
+        harness.dispatch({
+          type: "thread.turn.start",
+          commandId: requestId,
+          threadId,
+          message: {
+            messageId,
+            role: "user",
+            text: "fail after a synchronous exit",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+
+      const failure = yield* Effect.gen(function* () {
+        yield* Effect.sync(() =>
+          harness.emit({
+            type: "session.exited",
+            eventId: asEventId("evt-runtime-prebind-failed-start-exit"),
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            sessionIncarnationId: RuntimeSessionId.make("session-runtime-prebind-failed-start"),
+            threadId,
+            createdAt: "2026-01-01T00:00:02.000Z",
+            payload: { exitKind: "error", reason: "startup failed" },
+          }),
+        );
+        yield* Deferred.succeed(startupExitPublished, undefined);
+        yield* Deferred.await(startupFailed);
+        yield* Effect.promise(() =>
+          harness.dispatch({
+            type: "thread.turn.admission.fail",
+            commandId: CommandId.make("cmd-runtime-prebind-start-failure-cas"),
+            threadId,
+            requestId,
+            messageId,
+            detail: "deterministic startup failure",
+            createdAt: "2026-01-01T00:00:03.000Z",
+          }),
+        );
+      }).pipe(Effect.forkChild);
+
+      yield* Deferred.await(startupExitPublished);
+      yield* Effect.promise(() => harness.drain());
+      let thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(thread?.session?.status).toBe("starting");
+      expect(thread?.session?.pendingTurnRequestId).toBe(requestId);
+
+      yield* Deferred.succeed(startupFailed, undefined);
+      yield* Fiber.join(failure);
+      thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(thread?.session?.status).toBe("error");
+      expect(thread?.session?.failedTurnRequestId).toBe(requestId);
+      expect(thread?.session?.lastError).toContain("deterministic startup failure");
+    }),
+  );
+
+  it("accepts only the exact pending admission and provider session incarnation", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const requestId = CommandId.make("cmd-runtime-admission-exact");
+    const messageId = asMessageId("message-runtime-admission-exact");
+    const requestedAt = "2026-01-01T00:00:01.000Z";
+    const sessionStartedAt = "2026-01-01T00:00:00.000Z";
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: requestId,
+      threadId,
+      message: {
+        messageId,
+        role: "user",
+        text: "correlate this start",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: requestedAt,
+    });
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-runtime-admission-bind"),
+      threadId,
+      session: {
+        threadId,
+        status: "starting",
+        providerName: "codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: "approval-required",
+        startedAt: sessionStartedAt,
+        sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+        pendingTurnRequestId: requestId,
+        pendingTurnMessageId: messageId,
+        pendingTurnRequestedAt: requestedAt,
+        pendingTurnDeadlineAt: "2026-01-01T00:01:01.000Z",
+        pendingTurnSessionId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: requestedAt,
+      },
+      createdAt: requestedAt,
+    });
+
+    for (const [eventId, admissionRequestId, sessionIncarnationId] of [
+      [
+        "evt-runtime-wrong-request",
+        CommandId.make("cmd-runtime-admission-wrong"),
+        sessionStartedAt,
+      ],
+      ["evt-runtime-wrong-session", requestId, "2025-12-31T23:59:59.000Z"],
+    ] as const) {
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId(eventId),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId,
+        turnId: asTurnId(`turn-${eventId}`),
+        admissionRequestId,
+        sessionIncarnationId,
+        createdAt: requestedAt,
+        payload: {},
+      });
+      await harness.drain();
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      expect(thread?.session?.status).toBe("starting");
+      expect(thread?.session?.activeTurnId).toBeNull();
+    }
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-runtime-exact-admission"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: asTurnId("turn-runtime-exact-admission"),
+      admissionRequestId: requestId,
+      sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+      createdAt: requestedAt,
+      payload: {},
+    });
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.status === "running" &&
+        entry.session.activeTurnId === asTurnId("turn-runtime-exact-admission"),
+    );
+    expect(thread.session?.pendingTurnRequestId).toBeUndefined();
+    expect(thread.session?.activeTurnRequestId).toBe(requestId);
+  });
+
+  it("filters stale session A lifecycle and content before accepting session B", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const requestId = CommandId.make("cmd-runtime-session-b");
+    const messageId = asMessageId("message-runtime-session-b");
+    const sessionA = RuntimeSessionId.make("session-runtime-a");
+    const sessionB = RuntimeSessionId.make("session-runtime-b");
+    const requestedAt = "2026-01-01T00:00:01.000Z";
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: requestId,
+      threadId,
+      message: {
+        messageId,
+        role: "user",
+        text: "bind session B",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: requestedAt,
+    });
+    await harness.dispatch({
+      type: "thread.session.bind-pending",
+      commandId: CommandId.make("cmd-runtime-bind-session-b"),
+      threadId,
+      requestId,
+      messageId,
+      session: {
+        threadId,
+        status: "starting",
+        providerName: "codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: "approval-required",
+        sessionIncarnationId: sessionB,
+        pendingTurnRequestId: requestId,
+        pendingTurnMessageId: messageId,
+        pendingTurnRequestedAt: requestedAt,
+        pendingTurnDeadlineAt: "2026-01-01T00:01:01.000Z",
+        pendingTurnSessionId: sessionB,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: requestedAt,
+      },
+      createdAt: requestedAt,
+    });
+
+    const staleTurnId = asTurnId("turn-runtime-session-a");
+    for (const event of [
+      {
+        type: "session.started" as const,
+        eventId: asEventId("evt-runtime-session-a-started"),
+        payload: {},
+      },
+      {
+        type: "content.delta" as const,
+        eventId: asEventId("evt-runtime-session-a-content"),
+        turnId: staleTurnId,
+        admissionRequestId: CommandId.make("cmd-runtime-session-a"),
+        payload: { streamKind: "assistant_text" as const, delta: "stale A output" },
+      },
+      {
+        type: "turn.completed" as const,
+        eventId: asEventId("evt-runtime-session-a-completed"),
+        turnId: staleTurnId,
+        admissionRequestId: CommandId.make("cmd-runtime-session-a"),
+        payload: { state: "completed" as const },
+      },
+      {
+        type: "session.exited" as const,
+        eventId: asEventId("evt-runtime-session-a-exited"),
+        payload: { exitKind: "graceful" as const },
+      },
+    ]) {
+      harness.emit({
+        ...event,
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId,
+        sessionIncarnationId: sessionA,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+    }
+    await harness.drain();
+
+    let thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("starting");
+    expect(thread?.session?.sessionIncarnationId).toBe(sessionB);
+    expect(thread?.session?.pendingTurnRequestId).toBe(requestId);
+    expect(thread?.messages.some((message) => message.role === "assistant")).toBe(false);
+
+    const currentTurnId = asTurnId("turn-runtime-session-b");
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-runtime-session-b-started"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: currentTurnId,
+      admissionRequestId: requestId,
+      sessionIncarnationId: sessionB,
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: {},
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-runtime-session-b-item"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: currentTurnId,
+      admissionRequestId: requestId,
+      sessionIncarnationId: sessionB,
+      createdAt: "2026-01-01T00:00:04.000Z",
+      payload: { itemType: "assistant_message", detail: "current B output" },
+    });
+    await harness.drain();
+
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnRequestId).toBe(requestId);
+    expect(
+      thread?.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text),
+    ).toEqual(["current B output"]);
+  });
+
+  it("does not revive a failed admission from a late exact provider event", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const requestId = CommandId.make("cmd-runtime-admission-late");
+    const messageId = asMessageId("message-runtime-admission-late");
+    const requestedAt = "2026-01-01T00:00:01.000Z";
+    const sessionStartedAt = "2026-01-01T00:00:00.000Z";
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: requestId,
+      threadId,
+      message: {
+        messageId,
+        role: "user",
+        text: "time this start out",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: requestedAt,
+    });
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-runtime-admission-late-bind"),
+      threadId,
+      session: {
+        threadId,
+        status: "starting",
+        providerName: "codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: "approval-required",
+        startedAt: sessionStartedAt,
+        sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+        pendingTurnRequestId: requestId,
+        pendingTurnMessageId: messageId,
+        pendingTurnRequestedAt: requestedAt,
+        pendingTurnDeadlineAt: "2026-01-01T00:01:01.000Z",
+        pendingTurnSessionId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: requestedAt,
+      },
+      createdAt: requestedAt,
+    });
+    await harness.dispatch({
+      type: "thread.turn.admission.fail",
+      commandId: CommandId.make("cmd-runtime-admission-timeout"),
+      threadId,
+      requestId,
+      messageId,
+      detail: "Provider did not acknowledge the turn start within 60 seconds.",
+      createdAt: "2026-01-01T00:01:01.000Z",
+    });
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-runtime-late-exact-admission"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: asTurnId("turn-runtime-late-exact-admission"),
+      admissionRequestId: requestId,
+      sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+      createdAt: "2026-01-01T00:01:02.000Z",
+      payload: {},
+    });
+    const staleTurnId = asTurnId("turn-runtime-late-exact-admission");
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-runtime-late-content"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: staleTurnId,
+      admissionRequestId: requestId,
+      sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+      createdAt: "2026-01-01T00:01:03.000Z",
+      payload: { streamKind: "assistant_text", delta: "stale output" },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-runtime-late-item"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: staleTurnId,
+      admissionRequestId: requestId,
+      sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+      createdAt: "2026-01-01T00:01:04.000Z",
+      payload: { itemType: "assistant_message", detail: "stale completion" },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-runtime-late-completion"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: staleTurnId,
+      admissionRequestId: requestId,
+      sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+      createdAt: "2026-01-01T00:01:05.000Z",
+      payload: { state: "completed" },
+    });
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-runtime-late-state"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: staleTurnId,
+      admissionRequestId: requestId,
+      sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+      createdAt: "2026-01-01T00:01:06.000Z",
+      payload: { state: "ready" },
+    });
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-runtime-late-uncorrelated-state"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+      createdAt: "2026-01-01T00:01:06.500Z",
+      payload: { state: "ready" },
+    });
+    await harness.drain();
+
+    let thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("error");
+    expect(thread?.session?.failedTurnRequestId).toBe(requestId);
+    expect(thread?.session?.activeTurnId).toBeNull();
+    expect(thread?.messages.some((message) => message.role === "assistant")).toBe(false);
+
+    const retryRequestId = CommandId.make("cmd-runtime-admission-retry");
+    const retryMessageId = asMessageId("message-runtime-admission-retry");
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: retryRequestId,
+      threadId,
+      message: {
+        messageId: retryMessageId,
+        role: "user",
+        text: "retry exactly",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: "2026-01-01T00:01:07.000Z",
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-runtime-old-content-interleaved-with-retry"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: staleTurnId,
+      admissionRequestId: requestId,
+      sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+      createdAt: "2026-01-01T00:01:08.000Z",
+      payload: { streamKind: "assistant_text", delta: "still stale" },
+    });
+    const retryTurnId = asTurnId("turn-runtime-admission-retry");
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-runtime-admission-retry-started"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: retryTurnId,
+      admissionRequestId: retryRequestId,
+      sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+      createdAt: "2026-01-01T00:01:09.000Z",
+      payload: {},
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-runtime-admission-retry-item"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: retryTurnId,
+      admissionRequestId: retryRequestId,
+      sessionIncarnationId: RuntimeSessionId.make(`session:${sessionStartedAt}`),
+      createdAt: "2026-01-01T00:01:10.000Z",
+      payload: { itemType: "assistant_message", detail: "retry output" },
+    });
+    await harness.drain();
+
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnRequestId).toBe(retryRequestId);
+    expect(thread?.session?.failedTurnRequestId).toBeUndefined();
+    expect(
+      thread?.messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.text),
+    ).toEqual(["retry output"]);
   });
 
   it("applies provider session.state.changed transitions directly", async () => {

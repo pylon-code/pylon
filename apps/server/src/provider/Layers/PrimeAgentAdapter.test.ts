@@ -21,6 +21,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  RuntimeSessionId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -129,6 +130,7 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     assert.equal(rejectedLaunchArgs._tag, "Failure");
 
     const threadId = ThreadId.make("resume/thread");
+    const sessionIncarnationId = RuntimeSessionId.make("prime-acp-incarnation");
     const mcpSession = {
       providerSessionId: "provider-session-prime-acp-test",
       threadId,
@@ -176,6 +178,7 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       provider: ProviderDriverKind.make("primeAgent"),
       cwd: process.cwd(),
       runtimeMode: "full-access",
+      sessionIncarnationId,
       resumeCursor: { schemaVersion: 1, kind: "prime-agent-cli-continue", continue: true },
       modelSelection: {
         instanceId: ProviderInstanceId.make("primeAgent"),
@@ -193,6 +196,7 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       commands: [],
     });
     assert.equal(resourcesEvent.providerInstanceId, ProviderInstanceId.make("primeAgent"));
+    assert.equal(resourcesEvent.sessionIncarnationId, sessionIncarnationId);
     assert.deepEqual(goalEvent.payload, {
       available: false,
       active: false,
@@ -202,6 +206,7 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       continuationsUsed: 0,
     });
     assert.equal(goalEvent.providerInstanceId, ProviderInstanceId.make("primeAgent"));
+    assert.equal(goalEvent.sessionIncarnationId, sessionIncarnationId);
     assert.isTrue(parsePrimeAgentResumeMarker(session.resumeCursor));
     assert.isTrue(
       parsePrimeAgentResumeMarker({
@@ -289,6 +294,9 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     });
     yield* Deferred.await(completedSignal);
     const completedTurnEvents = events.filter((event) => event.turnId === completedTurn.turnId);
+    assert.isTrue(
+      completedTurnEvents.every((event) => event.sessionIncarnationId === sessionIncarnationId),
+    );
     assert.include(
       completedTurnEvents.map((event) => event.type),
       "content.delta",
