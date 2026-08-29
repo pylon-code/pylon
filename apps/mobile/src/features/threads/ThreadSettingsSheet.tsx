@@ -98,7 +98,7 @@ function ModelRow(props: {
 }) {
   return (
     <Pressable
-      accessibilityLabel={props.option.label}
+      accessibilityLabel={[props.option.label, props.option.subtitle].filter(Boolean).join(", ")}
       accessibilityRole="radio"
       accessibilityState={{ checked: props.selected, disabled: props.disabledReason !== undefined }}
       accessibilityHint={props.disabledReason}
@@ -111,25 +111,36 @@ function ModelRow(props: {
         props.disabledReason ? "opacity-40" : undefined,
       )}
     >
-      <Text className="min-w-0 shrink text-base font-t3-medium text-foreground" numberOfLines={1}>
-        {props.option.label}
-      </Text>
+      <View className="min-w-0 flex-1">
+        <View className="flex-row items-center gap-2">
+          <Text
+            className="min-w-0 shrink text-base font-t3-medium text-foreground"
+            numberOfLines={1}
+          >
+            {props.option.label}
+          </Text>
+          {props.option.isDefault ? (
+            <View className="rounded-md bg-subtle-strong px-1.5 py-0.5">
+              <Text className="text-3xs font-t3-bold text-foreground-muted">Default</Text>
+            </View>
+          ) : null}
+          {props.option.isLegacy ? (
+            <View className="rounded-md bg-subtle px-1.5 py-0.5">
+              <Text className="text-3xs font-t3-bold text-foreground-muted">Legacy</Text>
+            </View>
+          ) : null}
+        </View>
+        {props.option.subtitle ? (
+          <Text className="text-xs text-foreground-muted" numberOfLines={1}>
+            {props.option.subtitle}
+          </Text>
+        ) : null}
+      </View>
       {props.disabledReason ? (
         <Text className="max-w-[45%] text-right text-3xs text-foreground-muted" numberOfLines={2}>
           {props.disabledReason}
         </Text>
       ) : null}
-      {props.option.isDefault ? (
-        <View className="rounded-md bg-subtle-strong px-1.5 py-0.5">
-          <Text className="text-3xs font-t3-bold text-foreground-muted">Default</Text>
-        </View>
-      ) : null}
-      {props.option.isLegacy ? (
-        <View className="rounded-md bg-subtle px-1.5 py-0.5">
-          <Text className="text-3xs font-t3-bold text-foreground-muted">Legacy</Text>
-        </View>
-      ) : null}
-      <View className="flex-1" />
       {props.selected ? (
         <SymbolView
           name="checkmark"
