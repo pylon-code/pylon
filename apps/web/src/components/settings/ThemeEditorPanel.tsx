@@ -207,6 +207,18 @@ const THEME_EDITOR_ROLE_GROUPS: ReadonlyArray<{
     title: "Status",
     families: [
       {
+        id: "status-active",
+        label: "Active work",
+        role: "statusActive",
+        roles: ["statusActive"],
+      },
+      {
+        id: "status-info",
+        label: "Info",
+        role: "statusInfo",
+        roles: ["statusInfo"],
+      },
+      {
         id: "error",
         label: "Error",
         role: "error",

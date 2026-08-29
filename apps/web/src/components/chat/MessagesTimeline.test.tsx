@@ -1176,6 +1176,80 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-state="error"');
   });
 
+  it("renders transcript task progress as the original solid segments", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "turn-plan-row",
+            kind: "turn-plan",
+            createdAt: MESSAGE_CREATED_AT,
+            turnPlan: {
+              id: "turn-plan",
+              createdAt: MESSAGE_CREATED_AT,
+              turnId: null,
+              plan: {
+                createdAt: MESSAGE_CREATED_AT,
+                turnId: null,
+                steps: [
+                  { step: "Inspect", status: "completed" },
+                  { step: "Implement", status: "inProgress" },
+                  { step: "Verify", status: "pending" },
+                ],
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Tasks: 1 of 3 complete. Current task: Implement"');
+    expect(markup).toContain('data-task-progress-segments="true"');
+    expect(markup).toContain('data-task-status="completed"');
+    expect(markup).toContain('data-task-status="inProgress"');
+    expect(markup).toContain('data-task-status="pending"');
+    expect(markup).toContain("bg-status-active");
+  });
+
+  it.each([
+    {
+      expected: "Tasks: 0 of 2 complete. Next task: Inspect",
+      steps: [
+        { step: "Inspect", status: "pending" as const },
+        { step: "Verify", status: "pending" as const },
+      ],
+    },
+    {
+      expected: "Tasks: 2 of 2 complete. Completed plan: Verify",
+      steps: [
+        { step: "Inspect", status: "completed" as const },
+        { step: "Verify", status: "completed" as const },
+      ],
+    },
+  ])("describes next and completed task plans accurately", ({ expected, steps }) => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "turn-plan-accessibility",
+            kind: "turn-plan",
+            createdAt: MESSAGE_CREATED_AT,
+            turnPlan: {
+              id: "turn-plan-accessibility",
+              createdAt: MESSAGE_CREATED_AT,
+              turnId: null,
+              plan: { createdAt: MESSAGE_CREATED_AT, turnId: null, steps },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain(`aria-label="${expected}"`);
+  });
+
   it("renders working state as the active-turn header", () => {
     const turnId = TurnId.make("turn-active-header");
     const userEntry = buildUserTimelineEntry("Start active turn");
@@ -1225,10 +1299,14 @@ describe("MessagesTimeline", () => {
     expect(assistantIndex).toBeGreaterThan(workingIndex);
     expect(markup).toContain('class="border-b border-border/60 pb-2 pt-1"');
     expect(markup).toContain(
-      'class="flex items-center gap-2 px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
+      'class="flex items-center gap-2 px-1 text-sm leading-relaxed text-status-active-foreground tabular-nums"',
     );
     expect(markup).not.toContain('class="pt-0.5 pb-5 pl-1.5"');
-    expect(markup).toContain('data-state="loading"');
+    const workingMatrixRoot = markup.match(/<span[^>]*data-state="loading"[^>]*>/)?.[0];
+    expect(workingMatrixRoot).toBeDefined();
+    const workingClassTokens = /class="([^"]+)"/.exec(workingMatrixRoot ?? "")?.[1]?.split(" ");
+    expect(workingClassTokens).toContain("size-[max(16px,1.1em)]");
+    expect(workingMatrixRoot).toContain('data-size-role="prominent"');
   });
 
   it("aligns the iconless Thinking row with the working timer", () => {
@@ -1243,7 +1321,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Working for");
     expect(markup).toContain("Thinking");
-    expect(markup).toContain('data-state="thinking"');
+    expect(markup).toContain('data-state="loading"');
     expect(markup).toContain("gap-1.5 py-0.5 px-1");
   });
 

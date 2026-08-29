@@ -2,7 +2,12 @@ import { ThreadId } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ThreadWorktreeIndicator } from "./ThreadStatusIndicators";
+import {
+  sidebarStatusColorClass,
+  statusForegroundColorClass,
+  ThreadStatusLabel,
+  ThreadWorktreeIndicator,
+} from "./ThreadStatusIndicators";
 
 describe("ThreadWorktreeIndicator", () => {
   it("renders the worktree folder and branch in an accessible label", () => {
@@ -35,5 +40,39 @@ describe("ThreadWorktreeIndicator", () => {
     );
 
     expect(markup).toBe("");
+  });
+});
+
+describe("ThreadStatusLabel", () => {
+  it("maps aggregate active and info status colors onto sidebar roles", () => {
+    expect(sidebarStatusColorClass("text-status-active")).toBe("text-status-active-sidebar");
+    expect(sidebarStatusColorClass("text-status-info")).toBe("text-status-info-sidebar");
+    expect(sidebarStatusColorClass("text-warning")).toBe("text-warning");
+    expect(statusForegroundColorClass("text-status-active")).toBe("text-status-active-foreground");
+    expect(statusForegroundColorClass("text-status-active-sidebar")).toBe(
+      "text-status-active-foreground-sidebar",
+    );
+  });
+
+  const status = {
+    label: "Working",
+    colorClass: "text-status-active",
+    matrix: "loading" as const,
+  };
+
+  it("uses separate readable label and indicator roles on the sidebar", () => {
+    const markup = renderToStaticMarkup(<ThreadStatusLabel status={status} surface="sidebar" />);
+
+    expect(markup).toContain("text-status-active-sidebar");
+    expect(markup).toContain("text-status-active-foreground-sidebar");
+    expect(markup).not.toMatch(/(?:^|\s)text-status-active(?:\s|$)/);
+  });
+
+  it("uses separate readable label and indicator roles on the canvas", () => {
+    const markup = renderToStaticMarkup(<ThreadStatusLabel status={status} />);
+
+    expect(markup).toMatch(/(?:^|\s)text-status-active(?:\s|$)/);
+    expect(markup).toContain("text-status-active-foreground");
+    expect(markup).not.toContain("text-status-active-sidebar");
   });
 });

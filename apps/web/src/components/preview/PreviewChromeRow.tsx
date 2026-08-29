@@ -274,9 +274,10 @@ export function PreviewChromeRow({
               <Camera className={cn(recording && "text-destructive")} />
               {recording ? (
                 <DotMatrix
+                  sizeRole="compact"
                   aria-hidden
                   state="recording"
-                  className="absolute -right-1 -top-1 size-3.5"
+                  className="absolute -right-1 -top-1"
                 />
               ) : null}
             </TooltipTrigger>

@@ -35,6 +35,18 @@ describe("themeRoleFromUtilityClass", () => {
       "mutedForeground",
     );
     expect(themeRoleFromUtilityClass("bg-primary/90", "background")).toBe("messageAction");
+    expect(themeRoleFromUtilityClass("text-status-active", "foreground")).toBe("statusActive");
+    expect(themeRoleFromUtilityClass("text-status-active-sidebar", "foreground")).toBe(
+      "statusActive",
+    );
+    expect(themeRoleFromUtilityClass("text-status-active-foreground", "foreground")).toBe(
+      "statusActive",
+    );
+    expect(themeRoleFromUtilityClass("text-status-active-foreground-sidebar", "foreground")).toBe(
+      "statusActive",
+    );
+    expect(themeRoleFromUtilityClass("text-status-info", "foreground")).toBe("statusInfo");
+    expect(themeRoleFromUtilityClass("text-status-info-sidebar", "foreground")).toBe("statusInfo");
     expect(themeRoleFromUtilityClass("ring-ring", "border")).toBe("focus");
   });
 

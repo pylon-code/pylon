@@ -46,15 +46,15 @@ const MONO_FONT = Platform.select({
   default: "monospace",
 });
 
-// Status hues follow the system-wide convention set by sidebar v1 and the
-// Live Activity/widgets (amber approval, indigo input, sky working) so a
-// thread reads the same color everywhere it surfaces.
+// Active work and Plan Ready follow shared theme roles. User-blocking Input
+// uses the orange warning treatment instead of operational Waiting's neutral treatment.
 const STATUS_LABEL_BY_STATUS: Partial<
   Record<ThreadListV2Status, { label: string; className: string }>
 > = {
-  approval: { label: "Approval", className: "text-amber-700 dark:text-amber-300" },
-  input: { label: "Input", className: "text-indigo-600 dark:text-indigo-300" },
-  working: { label: "Working", className: "text-sky-600 dark:text-sky-400" },
+  approval: { label: "Approval", className: "text-warning-foreground" },
+  input: { label: "Input", className: "text-warning-foreground" },
+  "plan-ready": { label: "Plan Ready", className: "text-status-info" },
+  working: { label: "Working", className: "text-status-active" },
   failed: { label: "Failed", className: "text-red-700 dark:text-red-300" },
 };
 
@@ -423,6 +423,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const pressedBackgroundColor = useThemeColor("--color-subtle");
   const selectedBackgroundColor = useThemeColor("--color-user-bubble");
   const pinTintColor = useThemeColor("--color-foreground-muted");
+  const warningForegroundColor = useThemeColor("--color-warning-foreground");
+  const selectedForegroundColor = useThemeColor("--color-user-bubble-foreground");
   const sidebarPane = props.pane === "sidebar";
   const selected = props.selected === true;
 
@@ -701,16 +703,35 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         {pinnedRow ? (
           <SymbolView name="pin" size={11} tintColor={pinTintColor} type="monochrome" />
         ) : null}
-        <Text
-          className={cn(
-            "text-xs tabular-nums",
-            selected
-              ? "text-user-bubble-foreground"
-              : (statusLabel?.className ?? "text-foreground-tertiary"),
-          )}
-        >
-          {statusLabel?.label ?? timeLabel}
-        </Text>
+        {statusLabel ? (
+          <View className="flex-row items-center gap-1">
+            {status === "input" ? (
+              <SymbolView
+                name="exclamationmark.triangle"
+                size={10}
+                tintColor={selected ? selectedForegroundColor : warningForegroundColor}
+                type="monochrome"
+              />
+            ) : null}
+            <Text
+              className={cn(
+                "text-xs tabular-nums",
+                selected ? "text-user-bubble-foreground" : statusLabel.className,
+              )}
+            >
+              {statusLabel.label}
+            </Text>
+          </View>
+        ) : (
+          <Text
+            className={cn(
+              "text-xs tabular-nums",
+              selected ? "text-user-bubble-foreground" : "text-foreground-tertiary",
+            )}
+          >
+            {timeLabel}
+          </Text>
+        )}
       </View>
       <Text
         className={cn(

@@ -193,6 +193,66 @@ describe("resolveThreadListV2Status", () => {
       "ready",
     );
   });
+
+  it("keeps user input distinct from operational waiting", () => {
+    expect(
+      resolveThreadListV2Status(
+        makeThread({ id: ThreadId.make("t"), title: "t", hasPendingUserInput: true }),
+      ),
+    ).toBe("input");
+  });
+
+  it("shows Plan Ready for an actionable settled plan", () => {
+    expect(
+      resolveThreadListV2Status(
+        makeThread({
+          id: ThreadId.make("t"),
+          title: "t",
+          interactionMode: "plan",
+          hasActionableProposedPlan: true,
+          latestTurn: {
+            turnId: TurnId.make("plan-turn"),
+            state: "completed",
+            requestedAt: "2026-06-01T00:00:00.000Z",
+            startedAt: "2026-06-01T00:00:01.000Z",
+            completedAt: "2026-06-01T00:00:02.000Z",
+            assistantMessageId: null,
+          },
+        }),
+      ),
+    ).toBe("plan-ready");
+  });
+
+  it("does not expose a stale plan prompt while a new session is starting", () => {
+    expect(
+      resolveThreadListV2Status(
+        makeThread({
+          id: ThreadId.make("t"),
+          title: "t",
+          interactionMode: "plan",
+          hasActionableProposedPlan: true,
+          latestTurn: {
+            turnId: TurnId.make("plan-turn"),
+            state: "completed",
+            requestedAt: "2026-06-01T00:00:00.000Z",
+            startedAt: "2026-06-01T00:00:01.000Z",
+            completedAt: "2026-06-01T00:00:02.000Z",
+            assistantMessageId: null,
+          },
+          session: {
+            threadId: ThreadId.make("t"),
+            status: "starting",
+            providerName: "Codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: NOW,
+          },
+        }),
+      ),
+    ).toBe("working");
+  });
 });
 
 describe("resolveThreadListV2SwipeActions", () => {

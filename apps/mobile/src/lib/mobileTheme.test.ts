@@ -77,6 +77,9 @@ describe("mobile themes", () => {
     expect(getMobileThemeVariables(DEFAULT_MOBILE_THEME_ID, "dark")["--color-screen"]).toBe(
       "#0a0a0a",
     );
+    expect(getMobileThemeVariables(DEFAULT_MOBILE_THEME_ID, "dark")["--color-status-active"]).toBe(
+      "#477cf4",
+    );
     expect(
       getMobileThemeVariables(DEFAULT_MOBILE_THEME_ID, "light")[
         "--color-user-bubble-skill-foreground"
@@ -163,7 +166,20 @@ describe("mobile themes", () => {
 
   it("maps semantic palette roles onto every mobile color variable", () => {
     const variables = createMobileThemeVariables(BUILT_IN_THEMES[0].colors, "light");
-    expect(Object.keys(variables)).toHaveLength(65);
+    expect(Object.keys(variables)).toHaveLength(70);
+    expect(variables["--color-warning"]).toBe(
+      themeColorToNativeColor(BUILT_IN_THEMES[0].colors.warning),
+    );
+    expect(variables["--color-warning-foreground"]).toMatch(/^#/);
+    expect(variables["--color-warning-surface"]).toBe(
+      themeColorToNativeColor(BUILT_IN_THEMES[0].colors.warningSurface),
+    );
+    expect(variables["--color-status-active"]).toBe(
+      themeColorToNativeColor(BUILT_IN_THEMES[0].colors.statusActive),
+    );
+    expect(variables["--color-status-info"]).toBe(
+      themeColorToNativeColor(BUILT_IN_THEMES[0].colors.statusInfo),
+    );
     expect(variables["--color-sheet-solid"]).toBe(
       themeColorToNativeColor(BUILT_IN_THEMES[0].colors.chrome),
     );
@@ -189,13 +205,43 @@ describe("mobile themes", () => {
     }
   });
 
-  it("keeps placeholders and selected-row labels readable on their mobile surfaces", () => {
+  it("keeps status labels, warning pills, and selected rows readable on their surfaces", () => {
     for (const themeId of MOBILE_THEME_IDS) {
       for (const appearance of ["light", "dark"] as const) {
         const variables = getMobileThemeVariables(themeId, appearance);
         expect(
           contrastRatio(variables["--color-placeholder"], variables["--color-input"]),
         ).toBeGreaterThanOrEqual(4.5);
+        for (const role of [
+          "--color-warning-foreground",
+          "--color-status-active",
+          "--color-status-info",
+        ] as const) {
+          expect(
+            contrastRatio(variables[role], variables["--color-screen"]),
+          ).toBeGreaterThanOrEqual(4.5);
+        }
+        expect(
+          contrastRatio(
+            variables["--color-warning-foreground"],
+            variables["--color-warning-surface"],
+          ),
+        ).toBeGreaterThanOrEqual(4.5);
+        const drawerSurface = compositeOver(
+          variables["--color-drawer"],
+          variables["--color-screen"],
+        );
+        expect(
+          contrastRatio(variables["--color-warning-foreground"], drawerSurface),
+        ).toBeGreaterThanOrEqual(4.5);
+        // V2 selected warning icons inherit the selected foreground; graphical
+        // indicators require 3:1 against the selected row surface.
+        expect(
+          contrastRatio(
+            variables["--color-user-bubble-foreground"],
+            variables["--color-user-bubble"],
+          ),
+        ).toBeGreaterThanOrEqual(3);
       }
     }
 

@@ -123,8 +123,11 @@ type StateConfig = {
 
 /**
  * Pylon's status language follows assistant-ui's standalone Dot Matrix states.
- * Neutral activity inherits the adaptive foreground tone; color is reserved for
- * semantic outcomes. Static states do not receive an animation timeline.
+ * Live activity tracks the theme's active color. Informational states use a
+ * distinct purple role, while operational waiting and active terminal identity
+ * stay neutral foreground. Thread requests for user input use the warning glyph
+ * and tone at their presentation boundary. Static
+ * states do not receive an animation timeline.
  */
 const STATES = {
   idle: { base: 0.3 },
@@ -239,31 +242,40 @@ export type DotMatrixState = keyof typeof STATES;
 export const dotMatrixStates = Object.keys(STATES) as ReadonlyArray<DotMatrixState>;
 export const dotMatrixAnimatedStates = dotMatrixStates.filter((state) => "blink" in STATES[state]);
 
+export type DotMatrixSizeRole = "compact" | "inline" | "prominent";
+
+export const dotMatrixSizeClass: Record<DotMatrixSizeRole, string> = {
+  compact: "size-[max(12px,0.85em)]",
+  inline: "size-[1em]",
+  prominent: "size-[max(16px,1.1em)]",
+};
+
 export type DotMatrixProps = Omit<React.ComponentProps<"span">, "children"> & {
   state: DotMatrixState;
+  sizeRole: DotMatrixSizeRole;
   label?: string;
 };
 
 const TONE: Record<DotMatrixState, string> = {
   idle: "text-muted-foreground",
-  loading: "text-foreground",
-  orchestrating: "text-foreground",
+  loading: "text-status-active",
+  orchestrating: "text-status-active",
   queued: "text-muted-foreground",
-  thinking: "text-foreground",
-  streaming: "text-foreground",
-  searching: "text-foreground",
-  syncing: "text-foreground",
-  connecting: "text-foreground",
+  thinking: "text-status-active",
+  streaming: "text-status-active",
+  searching: "text-status-active",
+  syncing: "text-status-active",
+  connecting: "text-status-active",
   waiting: "text-foreground",
-  uploading: "text-foreground",
-  downloading: "text-foreground",
-  listening: "text-foreground",
-  speaking: "text-foreground",
+  uploading: "text-status-active",
+  downloading: "text-status-active",
+  listening: "text-status-active",
+  speaking: "text-status-active",
   recording: "text-destructive",
   success: "text-success",
   error: "text-destructive",
   warning: "text-warning",
-  info: "text-primary",
+  info: "text-status-info",
   paused: "text-muted-foreground",
   stopped: "text-muted-foreground",
   offline: "text-muted-foreground",
@@ -274,10 +286,11 @@ const TONE: Record<DotMatrixState, string> = {
 /**
  * A 5×5 status indicator adapted from assistant-ui's standalone Dot Matrix.
  * Each state combines a stable pattern, motion, and semantic tone. Active
- * neutral states use `text-foreground`, which reads white on dark themes and
- * dark on light themes. Callers own size and may override tone with className.
+ * states follow the theme through `text-status-active`; information uses
+ * `text-status-info`; waiting and active terminal identity stay neutral. The required
+ * size role is authoritative, while callers may override tone with className.
  */
-function DotMatrix({ className, state, label, ...props }: DotMatrixProps) {
+function DotMatrix({ className, state, sizeRole, label, ...props }: DotMatrixProps) {
   const config: StateConfig = STATES[state];
   return (
     <span
@@ -286,7 +299,8 @@ function DotMatrix({ className, state, label, ...props }: DotMatrixProps) {
       aria-hidden={label ? undefined : true}
       data-slot="dot-matrix"
       data-state={state}
-      className={cn("inline-flex shrink-0", TONE[state], className)}
+      data-size-role={sizeRole}
+      className={cn("inline-flex shrink-0", TONE[state], className, dotMatrixSizeClass[sizeRole])}
       {...props}
     >
       <svg

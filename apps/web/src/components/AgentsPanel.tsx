@@ -88,9 +88,7 @@ const STATUS_VISUALS: Record<RuntimeSubagent["status"], { matrix: DotMatrixState
   };
 
 function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
-  return (
-    <DotMatrix aria-hidden state={STATUS_VISUALS[status].matrix} className="size-3.5 shrink-0" />
-  );
+  return <DotMatrix sizeRole="compact" aria-hidden state={STATUS_VISUALS[status].matrix} />;
 }
 
 function formatElapsedSeconds(totalSeconds: number): string {
@@ -222,9 +220,8 @@ function AgentRow({
   const liveActivityAvailable = liveActivityEligible && active;
 
   return (
-    // The marker track is sized for a 14px DotMatrix, not upstream's 6px dot:
-    // a narrower track would let the glyph bleed into the title column and
-    // undo the fixed-height guarantee this grid exists for.
+    // The marker track keeps a 14px alignment frame around the standard 12px
+    // Dot Matrix so the glyph cannot bleed into the title column.
     <div className="grid h-[3.875rem] grid-cols-[0.875rem_minmax(0,1fr)_auto_auto_1.75rem_1.75rem] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
       <span className="col-start-1 row-start-1 flex items-center">
         <StatusDot status={agent.status} />

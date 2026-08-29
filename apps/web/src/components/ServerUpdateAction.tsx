@@ -45,7 +45,7 @@ export function ServerUpdateProgress({
   if (state.status === "failed") {
     return (
       <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-destructive" role="alert">
-        <DotMatrix aria-hidden state="error" className="size-3.5 shrink-0" />
+        <DotMatrix sizeRole="inline" aria-hidden state="error" />
         <Tooltip>
           <TooltipTrigger render={<span className="min-w-0 truncate">{state.message}</span>} />
           <TooltipPopup side="top" className="max-w-80">
@@ -58,9 +58,9 @@ export function ServerUpdateProgress({
   return (
     <div className="mt-1 flex items-center gap-2 text-xs font-medium text-foreground">
       <DotMatrix
+        sizeRole="inline"
         aria-hidden
         state={state.stage === "resuming" ? "syncing" : "downloading"}
-        className="size-3.5 shrink-0"
       />
       <span>{serverUpdateStageLabel(state.stage)}</span>
     </div>

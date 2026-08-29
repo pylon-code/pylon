@@ -160,16 +160,16 @@ function contrastRatio(
   );
 }
 
-/** Preserve the theme's action hue while making it readable as skill text on a message bubble. */
-function readableMessageAccent(accent: string, surface: string): string {
-  const accentChannels = rgbChannels(accent);
+/** Preserve a theme hue while adjusting it toward a readable surface foreground. */
+function readableForeground(foreground: string, surface: string, minimumContrast = 4.5): string {
+  const foregroundChannels = rgbChannels(foreground);
   const surfaceChannels = rgbChannels(surface);
   if (
-    !accentChannels ||
+    !foregroundChannels ||
     !surfaceChannels ||
-    contrastRatio(accentChannels, surfaceChannels) >= 4.5
+    contrastRatio(foregroundChannels, surfaceChannels) >= minimumContrast
   ) {
-    return accent;
+    return foreground;
   }
 
   const black = [0, 0, 0] as const;
@@ -182,11 +182,11 @@ function readableMessageAccent(accent: string, surface: string): string {
   for (let index = 0; index < 12; index += 1) {
     const amount = (lowerAmount + upperAmount) / 2;
     const candidate: readonly [number, number, number] = [
-      Math.round(accentChannels[0] + (target[0] - accentChannels[0]) * amount),
-      Math.round(accentChannels[1] + (target[1] - accentChannels[1]) * amount),
-      Math.round(accentChannels[2] + (target[2] - accentChannels[2]) * amount),
+      Math.round(foregroundChannels[0] + (target[0] - foregroundChannels[0]) * amount),
+      Math.round(foregroundChannels[1] + (target[1] - foregroundChannels[1]) * amount),
+      Math.round(foregroundChannels[2] + (target[2] - foregroundChannels[2]) * amount),
     ];
-    if (contrastRatio(candidate, surfaceChannels) >= 4.5) {
+    if (contrastRatio(candidate, surfaceChannels) >= minimumContrast) {
       readable = candidate;
       upperAmount = amount;
     } else {
@@ -242,6 +242,11 @@ export function createMobileThemeVariables(
     "--color-danger": c.errorSurface,
     "--color-danger-border": withAlpha(c.error, 0.32),
     "--color-danger-foreground": c.errorForeground,
+    "--color-warning": c.warning,
+    "--color-warning-foreground": readableForeground(c.warningForeground, c.sidebar, 4.6),
+    "--color-warning-surface": c.warningSurface,
+    "--color-status-active": c.statusActive,
+    "--color-status-info": c.statusInfo,
     "--color-input": c.surfaceRaised,
     "--color-input-border": c.input,
     "--color-sidebar-search": c.sidebarControlSurface,
@@ -269,10 +274,7 @@ export function createMobileThemeVariables(
     "--color-user-bubble": c.messageSurface,
     "--color-user-bubble-foreground": c.messageForeground,
     "--color-user-bubble-foreground-muted": withAlpha(c.messageForeground, 0.78),
-    "--color-user-bubble-skill-foreground": readableMessageAccent(
-      c.messageAction,
-      c.messageSurface,
-    ),
+    "--color-user-bubble-skill-foreground": readableForeground(c.messageAction, c.messageSurface),
     "--color-backdrop": withAlpha("#000000", appearance === "dark" ? 0.48 : 0.22),
     "--color-drawer": withAlpha(c.sidebar, 0.99),
     "--color-drawer-shadow": withAlpha("#000000", appearance === "dark" ? 0.32 : 0.12),

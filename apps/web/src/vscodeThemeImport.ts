@@ -1,6 +1,8 @@
 import {
   createVividThemeColors,
+  ensureReadableStatusColors,
   getThemeModes,
+  isSupportedThemeFileVersion,
   parseThemeFile,
   themeColorToHex,
   THEME_FILE_VERSION,
@@ -148,7 +150,7 @@ function hexToRgb(value: string): VsCodeRgb {
  */
 export function isVsCodeThemeFile(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  if (value.version === THEME_FILE_VERSION) return false;
+  if (isSupportedThemeFileVersion(value.version)) return false;
   const hasWorkbenchColors =
     isRecord(value.colors) && Object.keys(value.colors).some((key) => key.includes("."));
   return hasWorkbenchColors || Array.isArray(value.tokenColors);
@@ -319,13 +321,14 @@ export function parseVsCodeThemeFile(value: unknown): ThemeDefinition {
     );
   }
 
-  // Reuse the theme-file parser so ids, names, and color values go through the
-  // same validation as a hand-written file.
+  // Re-solve status foregrounds after the imported row surfaces replace the
+  // generated ones, then reuse the normal theme-file validation path.
+  const resolvedColors = ensureReadableStatusColors({ ...derived, ...overrides });
   return parseThemeFile({
     version: THEME_FILE_VERSION,
     name: resolveName(value),
     appearance,
-    colors: { ...derived, ...overrides },
+    colors: resolvedColors,
   });
 }
 

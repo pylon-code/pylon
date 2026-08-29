@@ -2282,7 +2282,7 @@ function ChatViewContent(props: ChatViewProps) {
           variant: "default",
           // Live connection status: calm styling, but it must front the stack.
           urgent: true,
-          icon: <DotMatrix aria-hidden state="connecting" className="size-3.5 text-foreground" />,
+          icon: <DotMatrix sizeRole="inline" aria-hidden state="connecting" />,
           title: `${unavailableConnection.phase === "connecting" ? "Connecting" : "Reconnecting"} to ${activeEnvironmentUnavailableState.label}`,
           description: "It may be finishing an update. One moment.",
         });
@@ -2339,7 +2339,7 @@ function ChatViewContent(props: ChatViewProps) {
         // a resting one — an available update is a notice, not a warning.
         icon:
           updateInProgress || updateFailed ? null : (
-            <DotMatrix aria-hidden state="idle" className="size-3.5" />
+            <DotMatrix sizeRole="inline" aria-hidden state="idle" />
           ),
         title:
           updateInProgress || updateFailed ? (
@@ -5083,11 +5083,7 @@ function ChatViewContent(props: ChatViewProps) {
       id: `background-liveness:${activeThread.id}`,
       variant: "default",
       icon: (
-        <DotMatrix
-          aria-hidden
-          state={working ? "orchestrating" : "listening"}
-          className="size-3.5 text-foreground"
-        />
+        <DotMatrix sizeRole="inline" aria-hidden state={working ? "orchestrating" : "listening"} />
       ),
       title: working
         ? liveCount > 0

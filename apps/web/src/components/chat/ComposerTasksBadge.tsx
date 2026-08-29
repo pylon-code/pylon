@@ -4,6 +4,12 @@ import { memo } from "react";
 import { formatDuration } from "../../session-logic";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import {
+  TASK_PROGRESS_STATUS_LABEL,
+  keyedTaskProgressSteps,
+  TaskProgressSegments,
+  TaskStatusIndicator,
+} from "./TaskProgressStatus";
 
 export interface ComposerTasksProgress {
   readonly step: string;
@@ -15,43 +21,6 @@ export interface ComposerTaskStep {
   readonly durationMs?: number;
   readonly step: string;
   readonly status: "pending" | "inProgress" | "completed";
-}
-
-function keyedTaskSteps(steps: readonly ComposerTaskStep[]) {
-  const occurrences = new Map<string, number>();
-  return steps.map((step) => {
-    const occurrence = occurrences.get(step.step) ?? 0;
-    occurrences.set(step.step, occurrence + 1);
-    return { key: `${step.step}:${occurrence}`, step };
-  });
-}
-
-function TaskSegments({
-  className,
-  steps,
-}: {
-  readonly className?: string;
-  readonly steps: readonly ComposerTaskStep[];
-}) {
-  if (steps.length <= 1) return null;
-
-  return (
-    <span aria-hidden className={cn("flex w-10 shrink-0 items-center gap-0.5", className)}>
-      {keyedTaskSteps(steps).map(({ key, step }) => (
-        <span
-          key={key}
-          className={cn(
-            "h-[3px] min-w-0 flex-1 rounded-full",
-            step.status === "completed"
-              ? "bg-success"
-              : step.status === "inProgress"
-                ? "bg-primary"
-                : "bg-muted-foreground/25",
-          )}
-        />
-      ))}
-    </span>
-  );
 }
 
 export const ComposerTasksBadge = memo(function ComposerTasksBadge({
@@ -74,7 +43,11 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
   if (progress.totalSteps <= 0) return null;
 
   const allDone = progress.completedSteps >= progress.totalSteps;
-  const label = `Tasks: ${progress.completedSteps} of ${progress.totalSteps} complete. Current task: ${progress.step}`;
+  const currentStep = steps.find((step) => step.status === "inProgress")?.step;
+  const nextStep = steps.find((step) => step.status === "pending")?.step;
+  const labelStep = currentStep ?? nextStep ?? progress.step;
+  const labelContext = currentStep ? "Current task" : allDone ? "Completed plan" : "Next task";
+  const label = `Tasks: ${progress.completedSteps} of ${progress.totalSteps} complete. ${labelContext}: ${labelStep}`;
   if (placement === "inline") {
     return (
       <span className="inline-flex shrink-0 items-center gap-0.5" data-composer-tasks-badge="true">
@@ -89,7 +62,7 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
         >
           <ListTodoIcon aria-hidden className="size-3 shrink-0" />
           <span>Tasks</span>
-          <TaskSegments steps={steps} />
+          <TaskProgressSegments fit className="w-10" steps={steps} />
           <span
             className={cn(
               "font-medium tabular-nums",
@@ -146,7 +119,7 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
         >
           {progress.completedSteps}/{progress.totalSteps}
         </span>
-        <TaskSegments className="w-20" steps={steps} />
+        <TaskProgressSegments fit className="w-20" steps={steps} />
       </button>
       <Button
         size="icon-micro"
@@ -201,21 +174,12 @@ export const ComposerTasksDrawer = memo(function ComposerTasksDrawer({
         </Button>
       </div>
       <div className="space-y-px px-3 pb-4 sm:px-4" role="list">
-        {keyedTaskSteps(steps).map(({ key, step }) => (
-          <div key={key} className="flex items-baseline gap-2 text-xs leading-5" role="listitem">
-            <span
-              aria-hidden
-              className={cn(
-                "w-3 shrink-0 text-center font-mono text-[10px]",
-                step.status === "completed"
-                  ? "text-success"
-                  : step.status === "inProgress"
-                    ? "text-primary"
-                    : "text-muted-foreground/40",
-              )}
-            >
-              {step.status === "completed" ? "✓" : step.status === "inProgress" ? "●" : "○"}
+        {keyedTaskProgressSteps(steps).map(({ key, step }) => (
+          <div key={key} className="flex items-start gap-2 text-xs leading-5" role="listitem">
+            <span className="flex h-5 shrink-0 items-center">
+              <TaskStatusIndicator aria-hidden status={step.status} />
             </span>
+            <span className="sr-only">{TASK_PROGRESS_STATUS_LABEL[step.status]}: </span>
             <span
               className={cn(
                 "min-w-0 flex-1",
