@@ -506,6 +506,26 @@ html[data-dot-matrix-motion="efficient"] .dot-matrix-dot[data-animated="chase"] 
   }
 }
 
+/* The provider update marker draws the eye once when the row appears, then
+   stops. It used an infinite bounce, which repaints for as long as Settings is
+   open — the class AGENTS.md rules out — and bounce easing reads dated next to
+   the rest of the app's motion. Ease-out-quint settles the way a real object
+   would. */
+@keyframes provider-update-marker-settle {
+  0% {
+    transform: translateY(-2px);
+    opacity: 0.55;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.provider-update-marker {
+  animation: provider-update-marker-settle 320ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
 @keyframes live-activity-focus {
   0% {
     transform: translateX(0);
