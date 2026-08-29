@@ -40,22 +40,23 @@ describe("TaskProgressStatus", () => {
     expect(markup).toContain('data-task-progress-segments="true"');
     expect(markup).toContain("rounded-full");
     expect(markup).toContain("bg-success");
-    expect(markup).toContain("bg-status-active");
+    expect(markup).toContain("bg-primary");
     expect(markup).toContain("bg-muted-foreground/25");
     expect(markup).not.toContain("<circle");
   });
 
-  it("uses a 12 px Dot Matrix for expanded task rows", () => {
+  it("renders upstream task glyphs for expanded rows", () => {
     const completed = renderToStaticMarkup(<TaskStatusIndicator status="completed" />);
     const active = renderToStaticMarkup(<TaskStatusIndicator status="inProgress" />);
+    const pending = renderToStaticMarkup(<TaskStatusIndicator status="pending" />);
 
-    expect(completed).toContain('data-slot="dot-matrix"');
-    expect(completed).toContain('data-state="success"');
-    const rootClassTokens = /class="([^"]+)"/.exec(completed)?.[1]?.split(" ");
-    expect(rootClassTokens).toContain("size-[max(12px,0.85em)]");
-    expect(completed).toContain('data-size-role="compact"');
-    expect(completed.match(/<circle/g)).toHaveLength(25);
-    expect(active).toContain('data-state="loading"');
+    expect(completed).toContain("✓");
+    expect(completed).toContain("text-success");
+    expect(active).toContain("●");
+    expect(active).toContain("text-primary");
+    expect(pending).toContain("○");
+    expect(pending).toContain("text-muted-foreground/40");
+    expect(completed).not.toContain('data-slot="dot-matrix"');
   });
 
   it("distinguishes user-owned waits from passive waits", () => {
@@ -74,8 +75,10 @@ describe("TaskProgressStatus", () => {
       />,
     );
 
-    expect(userWait).toContain('data-state="warning"');
-    expect(delegateWait).toContain('data-state="waiting"');
+    expect(userWait).toContain("●");
+    expect(userWait).toContain("text-warning");
+    expect(delegateWait).toContain("○");
+    expect(delegateWait).toContain("text-muted-foreground/50");
     expect(segments).toContain("bg-warning");
     expect(segments).toContain("bg-muted-foreground/50");
   });

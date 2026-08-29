@@ -1,31 +1,24 @@
 # Status indicators
 
-Pylon uses compact Dot Matrix patterns to distinguish active work, queued work,
-waiting, orchestration, connection phases, terminal activity, and settled
-outcomes. Motion represents a known active state rather than a generic
-“Working” label. Active work uses the theme's active color (blue in the
-standard theme). Info uses purple. Operational Waiting and active terminal
-identity use the normal foreground color. A thread that needs your input uses
-an orange exclamation indicator. Collapsed task progress uses a
-compact solid segment bar; expanded task rows use the same Dot Matrix language.
+Pylon uses small dots, icons, labels, and progress marks to show what needs your
+attention. Color has a consistent meaning:
 
-## Choose the motion style
+- **Sky** means a thread is working, connecting, or running delegated work.
+- **Amber** means an approval is required.
+- **Indigo** means Pylon is waiting for your input.
+- **Violet** means a plan is ready to review.
+- **Emerald** means work completed successfully.
+- **Red** means work failed.
+- **Muted** indicators are idle, offline, or waiting without requiring action.
 
-1. Open **Settings**.
-2. Select **Appearance**.
-3. Find **Status language**.
-4. Set **Status motion** to one of these options:
-   - **Smooth** uses fluid fades and is the default.
-   - **Efficient** uses stepped frames to reduce continuous rendering on the
-     current device.
+Monitoring states remain still. Active progress can pulse, but Pylon stops that
+motion when your device has Reduce Motion enabled.
 
-Your operating system’s Reduce Motion preference pauses status animation in
-either mode.
+Connection indicators use green for connected, amber for connecting or
+reconnecting, red for an error, and muted grey while offline. Connecting or
+reconnecting environments use an amber halo. Connected client sessions use a
+green liveness halo. Reduce Motion hides both halos.
 
-## Preview the status language
-
-Under **Status catalog**, select **View catalog** to inspect every pattern and
-its meaning. The catalog begins with compact, inline, and prominent size
-previews, then shows the streaming terminal-row treatment. Select **Hide
-catalog** when you are done; its live previews are removed rather than
-continuing to animate in the background.
+Task lists use `✓` for completed steps, `●` for the current step, and `○` for
+pending or passive waiting steps. A step that is specifically waiting for you
+uses an amber `●`.

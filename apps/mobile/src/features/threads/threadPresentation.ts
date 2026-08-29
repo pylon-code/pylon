@@ -17,9 +17,19 @@ export type ThreadStatusKind =
 
 export interface ThreadStatusPresentation extends StatusTone {
   readonly kind: ThreadStatusKind;
+  /** Foreground color for the leading status icon. */
+  readonly iconColor: string;
+  /** Background color for the leading status icon circle. */
+  readonly iconBackground: string;
   /** Whether the indicator represents in-flight activity. */
   readonly pulse: boolean;
 }
+
+/** Neutral icon colors for threads with no actionable status. */
+export const THREAD_STATUS_NEUTRAL_ICON = {
+  iconColor: "#8e8e93",
+  iconBackground: "rgba(142,142,147,0.22)",
+} as const;
 
 function isLatestTurnSettled(
   latestTurn: OrchestrationLatestTurn | null,
@@ -43,8 +53,10 @@ export function resolveThreadStatus(
     return {
       kind: "pending-approval",
       label: "Needs Approval",
-      pillClassName: "bg-warning-surface",
-      textClassName: "text-warning-foreground",
+      pillClassName: "bg-adaptive-amber-500-a12-a16",
+      textClassName: "text-adaptive-amber-700-300",
+      iconColor: "#ff9f0a",
+      iconBackground: "rgba(255,159,10,0.22)",
       pulse: false,
     };
   }
@@ -53,8 +65,10 @@ export function resolveThreadStatus(
     return {
       kind: "awaiting-input",
       label: "Awaiting Input",
-      pillClassName: "bg-warning-surface",
-      textClassName: "text-warning-foreground",
+      pillClassName: "bg-adaptive-indigo-500-a12-a16",
+      textClassName: "text-adaptive-indigo-700-300",
+      iconColor: "#5e5ce6",
+      iconBackground: "rgba(94,92,230,0.22)",
       pulse: false,
     };
   }
@@ -63,8 +77,10 @@ export function resolveThreadStatus(
     return {
       kind: "working",
       label: "Working",
-      pillClassName: "bg-screen",
-      textClassName: "text-status-active",
+      pillClassName: "bg-adaptive-sky-500-a12-a16",
+      textClassName: "text-adaptive-sky-700-300",
+      iconColor: "#0a84ff",
+      iconBackground: "rgba(10,132,255,0.22)",
       pulse: true,
     };
   }
@@ -73,8 +89,10 @@ export function resolveThreadStatus(
     return {
       kind: "connecting",
       label: "Connecting",
-      pillClassName: "bg-screen",
-      textClassName: "text-status-active",
+      pillClassName: "bg-adaptive-sky-500-a12-a16",
+      textClassName: "text-adaptive-sky-700-300",
+      iconColor: "#0a84ff",
+      iconBackground: "rgba(10,132,255,0.22)",
       pulse: true,
     };
   }
@@ -85,6 +103,8 @@ export function resolveThreadStatus(
       label: "Error",
       pillClassName: "bg-adaptive-rose-500-a12-a16",
       textClassName: "text-adaptive-rose-700-300",
+      iconColor: "#ff453a",
+      iconBackground: "rgba(255,69,58,0.22)",
       pulse: false,
     };
   }
@@ -97,8 +117,10 @@ export function resolveThreadStatus(
     return {
       kind: "plan-ready",
       label: "Plan Ready",
-      pillClassName: "bg-screen",
-      textClassName: "text-status-info",
+      pillClassName: "bg-adaptive-violet-500-a12-a16",
+      textClassName: "text-adaptive-violet-700-300",
+      iconColor: "#bf5af2",
+      iconBackground: "rgba(191,90,242,0.22)",
       pulse: false,
     };
   }

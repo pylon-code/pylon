@@ -17,7 +17,6 @@ import {
 } from "react";
 
 import { Button } from "~/components/ui/button";
-import { DotMatrix } from "~/components/ui/dot-matrix";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "~/components/ui/input-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
@@ -273,11 +272,9 @@ export function PreviewChromeRow({
             >
               <Camera className={cn(recording && "text-destructive")} />
               {recording ? (
-                <DotMatrix
-                  sizeRole="compact"
-                  aria-hidden
-                  state="recording"
-                  className="absolute -right-1 -top-1"
+                <span
+                  className="absolute right-0.5 top-0.5 size-1.5 animate-status-pulse rounded-full bg-destructive motion-reduce:animate-none"
+                  aria-hidden="true"
                 />
               ) : null}
             </TooltipTrigger>

@@ -46,15 +46,15 @@ const MONO_FONT = Platform.select({
   default: "monospace",
 });
 
-// Active work and Plan Ready follow shared theme roles. User-blocking Input
-// uses the orange warning treatment instead of operational Waiting's neutral treatment.
+// Status hues follow upstream's cross-surface convention. Plan Ready is a
+// Pylon-only semantic state and uses upstream's existing violet plan hue.
 const STATUS_LABEL_BY_STATUS: Partial<
   Record<ThreadListV2Status, { label: string; className: string }>
 > = {
-  approval: { label: "Approval", className: "text-warning-foreground" },
-  input: { label: "Input", className: "text-warning-foreground" },
-  "plan-ready": { label: "Plan Ready", className: "text-status-info" },
-  working: { label: "Working", className: "text-status-active" },
+  approval: { label: "Approval", className: "text-adaptive-amber-700-300" },
+  input: { label: "Input", className: "text-adaptive-indigo-600-300" },
+  "plan-ready": { label: "Plan Ready", className: "text-adaptive-violet-700-300" },
+  working: { label: "Working", className: "text-adaptive-sky-600-400" },
   failed: { label: "Failed", className: "text-adaptive-red-700-300" },
 };
 
@@ -423,8 +423,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const pressedBackgroundColor = useUniwindTheme()["--color-subtle"];
   const selectedBackgroundColor = useUniwindTheme()["--color-user-bubble"];
   const pinTintColor = useUniwindTheme()["--color-foreground-muted"];
-  const warningForegroundColor = useUniwindTheme()["--color-warning-foreground"];
-  const selectedForegroundColor = useUniwindTheme()["--color-user-bubble-foreground"];
   const sidebarPane = props.pane === "sidebar";
   const selected = props.selected === true;
 
@@ -703,35 +701,16 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         {pinnedRow ? (
           <SymbolView name="pin" size={11} tintColor={pinTintColor} type="monochrome" />
         ) : null}
-        {statusLabel ? (
-          <View className="flex-row items-center gap-1">
-            {status === "input" ? (
-              <SymbolView
-                name="exclamationmark.triangle"
-                size={10}
-                tintColor={selected ? selectedForegroundColor : warningForegroundColor}
-                type="monochrome"
-              />
-            ) : null}
-            <Text
-              className={cn(
-                "text-xs tabular-nums",
-                selected ? "text-user-bubble-foreground" : statusLabel.className,
-              )}
-            >
-              {statusLabel.label}
-            </Text>
-          </View>
-        ) : (
-          <Text
-            className={cn(
-              "text-xs tabular-nums",
-              selected ? "text-user-bubble-foreground" : "text-foreground-tertiary",
-            )}
-          >
-            {timeLabel}
-          </Text>
-        )}
+        <Text
+          className={cn(
+            "text-xs tabular-nums",
+            selected
+              ? "text-user-bubble-foreground"
+              : (statusLabel?.className ?? "text-foreground-tertiary"),
+          )}
+        >
+          {statusLabel?.label ?? timeLabel}
+        </Text>
       </View>
       <Text
         className={cn(

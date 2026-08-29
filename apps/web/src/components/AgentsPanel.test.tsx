@@ -86,7 +86,7 @@ describe("AgentsPanel agent cancellation", () => {
     expect(markup).toContain("Working");
   });
 
-  it("keeps queued, running, waiting, and settled agent states distinct", () => {
+  it("keeps truthful labels while rendering upstream static status dots", () => {
     const statuses: RuntimeSubagent["status"][] = [
       "pending",
       "running",
@@ -102,15 +102,30 @@ describe("AgentsPanel agent cancellation", () => {
     };
     const markup = renderToStaticMarkup(<AgentsPanel model={statusModel} />);
 
-    expect(markup).toContain('data-state="orchestrating"');
-    expect(markup).toContain('data-state="queued"');
-    expect(markup).toContain('data-state="waiting"');
-    expect(markup).toContain('data-state="paused"');
-    expect(markup).toContain('data-state="success"');
-    expect(markup).toContain('data-state="error"');
-    expect(markup).toContain('data-state="stopped"');
+    expect(markup.match(/bg-info/g)).toHaveLength(3);
+    expect(markup).toContain("bg-muted-foreground/50");
+    expect(markup).toContain("bg-muted-foreground/60");
+    expect(markup).toContain("bg-success");
+    expect(markup).toContain("bg-destructive");
+    expect(markup).not.toContain('data-slot="dot-matrix"');
     expect(markup).toContain("Queued");
     expect(markup).toContain("Waiting");
+  });
+
+  it("keeps active status labels visible when an activity detail is present", () => {
+    const statusModel = {
+      ...model,
+      directAgents: [
+        { ...agent("agent-pending", "Pending reviewer", "pending"), progress: "Waiting for slot" },
+        { ...agent("agent-running", "Running reviewer", "running"), lastToolName: "ipython" },
+        { ...agent("agent-waiting", "Waiting reviewer", "waiting"), progress: "Awaiting review" },
+      ],
+    };
+    const markup = renderToStaticMarkup(<AgentsPanel model={statusModel} />);
+
+    expect(markup).toContain("Queued · Waiting for slot");
+    expect(markup).toContain("Working · ▸ ipython");
+    expect(markup).toContain("Waiting · Awaiting review");
   });
 
   it("keeps every agent row read-only without an advertised capability", () => {

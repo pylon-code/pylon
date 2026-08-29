@@ -176,23 +176,21 @@ export function CloudEnvironmentConnectRows({
     const savedConnection = savedEnvironment
       ? presentSavedCloudEnvironmentConnection(savedEnvironment.connection)
       : null;
-    // "connecting" borrows the warning tone rather than the spinner's
-    // default primary: here it means "not yet available", not "in motion".
-    const connectionDot = savedConnection
+    const dotClassName = savedConnection
       ? savedConnection.tone === "connected"
-        ? { state: "success" as const, colorClassName: undefined }
+        ? "bg-success"
         : savedConnection.tone === "connecting"
-          ? { state: "connecting" as const, colorClassName: "text-warning" }
+          ? "bg-warning"
           : savedConnection.tone === "error"
-            ? { state: "error" as const, colorClassName: undefined }
-            : { state: "offline" as const, colorClassName: "text-muted-foreground/35" }
+            ? "bg-destructive"
+            : "bg-muted-foreground/35"
       : availability === "online"
-        ? { state: "success" as const, colorClassName: undefined }
+        ? "bg-success"
         : availability === "error"
-          ? { state: "error" as const, colorClassName: undefined }
+          ? "bg-destructive"
           : availability === "checking"
-            ? { state: "connecting" as const, colorClassName: "text-warning" }
-            : { state: "offline" as const, colorClassName: "text-muted-foreground/35" };
+            ? "bg-warning"
+            : "bg-muted-foreground/35";
     const statusText = savedConnection
       ? savedConnection.statusText
       : availability === "online"
@@ -208,8 +206,13 @@ export function CloudEnvironmentConnectRows({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <ConnectionStatusDot
-                state={connectionDot.state}
-                colorClassName={connectionDot.colorClassName}
+                dotClassName={dotClassName}
+                pingClassName={
+                  savedConnection?.tone === "connecting" ||
+                  (savedConnection === null && availability === "checking")
+                    ? "bg-warning/60 duration-2000"
+                    : null
+                }
                 tooltipText={
                   savedConnection
                     ? savedConnection.statusText

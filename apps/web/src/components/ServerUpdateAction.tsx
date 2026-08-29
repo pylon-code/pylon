@@ -9,7 +9,6 @@ import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { manualServerUpdateCommand } from "~/versionSkew";
 import { Button } from "./ui/button";
-import { DotMatrix } from "./ui/dot-matrix";
 import { toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
@@ -33,9 +32,9 @@ function updateFailureMessage(error: unknown): string {
 
 /**
  * One-row status for an in-flight server update: "Downloading…" then
- * "Restarting…". The update is a wait, not a warning: a single DotMatrix
- * marker and label, no step rail, no versions. Failure turns the row red
- * with the rollback reason.
+ * "Restarting…". The update is a wait, not a warning: a single pulsing dot
+ * and label, no step rail, no versions. Failure turns the row red with the
+ * rollback reason.
  */
 export function ServerUpdateProgress({
   state,
@@ -45,7 +44,7 @@ export function ServerUpdateProgress({
   if (state.status === "failed") {
     return (
       <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-destructive" role="alert">
-        <DotMatrix sizeRole="inline" aria-hidden state="error" />
+        <span className="size-1.5 shrink-0 rounded-full bg-destructive" aria-hidden="true" />
         <Tooltip>
           <TooltipTrigger render={<span className="min-w-0 truncate">{state.message}</span>} />
           <TooltipPopup side="top" className="max-w-80">
@@ -57,10 +56,9 @@ export function ServerUpdateProgress({
   }
   return (
     <div className="mt-1 flex items-center gap-2 text-xs font-medium text-foreground">
-      <DotMatrix
-        sizeRole="inline"
-        aria-hidden
-        state={state.stage === "resuming" ? "syncing" : "downloading"}
+      <span
+        className="size-1.5 shrink-0 animate-status-pulse rounded-full bg-foreground motion-reduce:animate-none"
+        aria-hidden="true"
       />
       <span>{serverUpdateStageLabel(state.stage)}</span>
     </div>

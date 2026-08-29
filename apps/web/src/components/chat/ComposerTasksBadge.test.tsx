@@ -56,7 +56,7 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain('data-task-status="inProgress"');
     expect(markup).toContain('data-task-status="pending"');
     expect(markup).toContain("bg-success");
-    expect(markup).toContain("bg-status-active");
+    expect(markup).toContain("bg-primary");
     expect(markup).toContain("bg-muted-foreground/25");
   });
 
@@ -130,13 +130,13 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("focus-visible:ring-inset");
     expect(markup).toContain("lucide-chevron-down");
     expect(markup).not.toContain('data-task-progress-segments="true"');
-    expect(markup).toContain('data-state="success"');
-    expect(markup).toContain('data-state="loading"');
-    expect(markup).toContain('data-state="idle"');
-    expect(markup.match(/<circle/g)).toHaveLength(75);
-    expect(markup).toContain('data-slot="dot-matrix"');
-    expect(markup).toContain('data-size-role="compact"');
-    expect(markup).toContain("size-[max(12px,0.85em)]");
+    expect(markup).toContain("✓");
+    expect(markup).toContain("●");
+    expect(markup).toContain("○");
+    expect(markup).toContain("text-success");
+    expect(markup).toContain("text-primary");
+    expect(markup).toContain("text-muted-foreground/40");
+    expect(markup).not.toContain('data-slot="dot-matrix"');
     expect(markup).toContain("Completed:");
     expect(markup).toContain("In progress:");
     expect(markup).toContain("Pending:");
@@ -199,11 +199,12 @@ describe("ComposerTasksBadge", () => {
             : "Waiting on external system";
       expect(markup).toContain(label);
       if (waitingOn === "user") {
-        expect(markup).toContain('data-state="warning"');
+        expect(markup).toContain("●");
         expect(markup).toContain("text-warning");
       } else {
-        expect(markup).toContain('data-state="waiting"');
-        expect(markup).not.toContain('data-state="warning"');
+        expect(markup).toContain("○");
+        expect(markup).toContain("text-muted-foreground/50");
+        expect(markup).not.toContain("text-warning");
       }
     },
   );

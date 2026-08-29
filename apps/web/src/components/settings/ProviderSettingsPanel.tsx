@@ -51,7 +51,11 @@ import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useEnvironmentSessionState } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { getRelativeTimeState } from "../../timestampFormat";
-import { ConnectionStatusDot, connectionPhaseDotMatrixState } from "../ConnectionStatusDot";
+import {
+  ConnectionStatusDot,
+  connectionPhaseDotClassName,
+  connectionPhasePingClassName,
+} from "../ConnectionStatusDot";
 import {
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
@@ -241,9 +245,12 @@ export function ProviderSettingsPanel() {
                     >
                       <Icon className="size-3.5 shrink-0" aria-hidden />
                       <span className="max-w-40 truncate">{environment.label}</span>
-                      <ConnectionStatusDot
-                        state={connectionPhaseDotMatrixState(environment.connection.phase)}
-                      />
+                      {environment.connection.phase !== "connected" ? (
+                        <ConnectionStatusDot
+                          dotClassName={connectionPhaseDotClassName(environment.connection.phase)}
+                          pingClassName={connectionPhasePingClassName(environment.connection.phase)}
+                        />
+                      ) : null}
                       <span className="sr-only">
                         {detail}, {statusText}
                       </span>

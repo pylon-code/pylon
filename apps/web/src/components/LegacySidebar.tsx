@@ -9,6 +9,7 @@ import {
   LoaderIcon,
   SearchIcon,
   SquarePenIcon,
+  TerminalIcon,
   TriangleAlertIcon,
 } from "lucide-react";
 import {
@@ -16,7 +17,6 @@ import {
   prStatusIndicator,
   PrStatusTooltipContent,
   resolveThreadPr,
-  sidebarStatusColorClass,
   terminalStatusFromRunningIds,
   ThreadStatusLabel,
   ThreadWorktreeIndicator,
@@ -126,7 +126,6 @@ import {
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { Kbd } from "./ui/kbd";
-import { DotMatrix } from "./ui/dot-matrix";
 import {
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
@@ -724,7 +723,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
               </TooltipPopup>
             </Tooltip>
           )}
-          {threadStatus && <ThreadStatusLabel status={threadStatus} surface="sidebar" />}
+          {threadStatus && <ThreadStatusLabel status={threadStatus} />}
           {renamingThreadKey === threadKey ? (
             <input
               ref={handleRenameInputRef}
@@ -787,7 +786,11 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                   />
                 }
               >
-                <DotMatrix sizeRole="compact" aria-hidden state="terminal-active" />
+                <TerminalIcon
+                  className={`size-3 ${
+                    terminalStatus.pulse ? "animate-status-pulse motion-reduce:animate-none" : ""
+                  }`}
+                />
               </TooltipTrigger>
               <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
             </Tooltip>
@@ -1057,9 +1060,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
             }}
           >
             <span className="flex min-w-0 flex-1 items-center gap-2">
-              {hiddenThreadStatus && (
-                <ThreadStatusLabel status={hiddenThreadStatus} compact surface="sidebar" />
-              )}
+              {hiddenThreadStatus && <ThreadStatusLabel status={hiddenThreadStatus} compact />}
               <span>Show more</span>
             </span>
           </SidebarMenuSubButton>
@@ -1302,9 +1303,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       visibleProjectThreads,
     };
   }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
-  const projectStatusColorClass = projectStatus
-    ? sidebarStatusColorClass(projectStatus.colorClass)
-    : "";
   const pinnedCollapsedThread = useMemo(() => {
     const activeThreadKey = activeRouteThreadKey ?? undefined;
     if (!activeThreadKey || projectExpanded) {
@@ -2277,16 +2275,15 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                   <span
                     role="img"
                     aria-label={projectStatus.label}
-                    className={`-ml-0.5 relative inline-flex size-3.5 shrink-0 items-center justify-center ${projectStatusColorClass}`}
+                    className={`-ml-0.5 relative inline-flex size-3.5 shrink-0 items-center justify-center ${projectStatus.colorClass}`}
                   />
                 }
               >
                 <span className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover/project-header:opacity-0">
-                  <DotMatrix
-                    sizeRole="compact"
-                    state={projectStatus.matrix}
-                    aria-hidden
-                    className={projectStatusColorClass}
+                  <span
+                    className={`size-[9px] rounded-full ${projectStatus.dotClass} ${
+                      projectStatus.pulse ? "animate-status-pulse motion-reduce:animate-none" : ""
+                    }`}
                   />
                 </span>
                 <ChevronRightIcon className="absolute inset-0 m-auto size-3.5 text-icon-muted opacity-0 transition-opacity duration-150 group-hover/project-header:opacity-100" />

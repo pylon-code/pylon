@@ -133,7 +133,6 @@ function RootRouteView() {
       <AnchoredToastProvider>
         <DocumentTitleSync />
         <ContrastAppearanceSync />
-        <DotMatrixMotionSync />
         <GlassAppearanceSync />
         <FontAppearanceSync />
         {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
@@ -161,16 +160,6 @@ function ContrastAppearanceSync() {
   useEffect(() => {
     applyAppearanceContrast(document.documentElement, appearanceContrast);
   }, [appearanceContrast]);
-
-  return null;
-}
-
-function DotMatrixMotionSync() {
-  const motion = useClientSettings((settings) => settings.dotMatrixMotion);
-
-  useEffect(() => {
-    document.documentElement.dataset.dotMatrixMotion = motion;
-  }, [motion]);
 
   return null;
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 
-import { resolveThreadStatus } from "./threadPresentation";
+import { resolveThreadStatus, THREAD_STATUS_NEUTRAL_ICON } from "./threadPresentation";
 
 const baseThread = {
   interactionMode: "default",
@@ -14,15 +14,22 @@ const baseThread = {
 } as EnvironmentThreadShell;
 
 describe("resolveThreadStatus", () => {
-  it("uses the orange warning treatment for user input", () => {
+  it("restores distinct upstream approval and input hues", () => {
+    expect(resolveThreadStatus({ ...baseThread, hasPendingApprovals: true })).toMatchObject({
+      kind: "pending-approval",
+      pillClassName: "bg-adaptive-amber-500-a12-a16",
+      textClassName: "text-adaptive-amber-700-300",
+      iconColor: "#ff9f0a",
+    });
     expect(resolveThreadStatus({ ...baseThread, hasPendingUserInput: true })).toMatchObject({
       kind: "awaiting-input",
-      pillClassName: "bg-warning-surface",
-      textClassName: "text-warning-foreground",
+      pillClassName: "bg-adaptive-indigo-500-a12-a16",
+      textClassName: "text-adaptive-indigo-700-300",
+      iconColor: "#5e5ce6",
     });
   });
 
-  it("uses the purple info role for plan-ready information", () => {
+  it("uses the upstream violet plan-ready treatment", () => {
     expect(
       resolveThreadStatus({
         ...baseThread,
@@ -35,13 +42,14 @@ describe("resolveThreadStatus", () => {
       } as EnvironmentThreadShell),
     ).toMatchObject({
       kind: "plan-ready",
-      pillClassName: "bg-screen",
-      textClassName: "text-status-info",
+      pillClassName: "bg-adaptive-violet-500-a12-a16",
+      textClassName: "text-adaptive-violet-700-300",
+      iconColor: "#bf5af2",
     });
   });
 
   it.each(["running", "starting"] as const)(
-    "uses the active theme role while the session is %s",
+    "uses upstream sky while the session is %s",
     (status) => {
       expect(
         resolveThreadStatus({
@@ -49,9 +57,18 @@ describe("resolveThreadStatus", () => {
           session: { status },
         } as EnvironmentThreadShell),
       ).toMatchObject({
-        pillClassName: "bg-screen",
-        textClassName: "text-status-active",
+        pillClassName: "bg-adaptive-sky-500-a12-a16",
+        textClassName: "text-adaptive-sky-700-300",
+        iconColor: "#0a84ff",
+        pulse: true,
       });
     },
   );
+
+  it("retains upstream neutral icon metadata", () => {
+    expect(THREAD_STATUS_NEUTRAL_ICON).toEqual({
+      iconColor: "#8e8e93",
+      iconBackground: "rgba(142,142,147,0.22)",
+    });
+  });
 });

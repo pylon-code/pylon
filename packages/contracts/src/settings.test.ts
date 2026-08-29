@@ -49,6 +49,17 @@ describe("ClaudeSettings auto-compaction", () => {
   });
 });
 
+describe("ClientSettings retired status motion", () => {
+  it("ignores the removed setting in existing persisted data", () => {
+    expect(decodeClientSettings({ dotMatrixMotion: "smooth" })).not.toHaveProperty(
+      "dotMatrixMotion",
+    );
+    expect(decodeClientSettingsPatch({ dotMatrixMotion: "efficient" })).not.toHaveProperty(
+      "dotMatrixMotion",
+    );
+  });
+});
+
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
     expect(decodeClientSettings({}).wordWrap).toBe(true);
@@ -95,21 +106,6 @@ describe("ClientSettings appearance contrast", () => {
   it.each([50, 100, 150, 200])("accepts an appearance contrast in range: %s", (value) => {
     expect(decodeClientSettings({ appearanceContrast: value }).appearanceContrast).toBe(value);
     expect(decodeClientSettingsPatch({ appearanceContrast: value }).appearanceContrast).toBe(value);
-  });
-});
-
-describe("ClientSettings Dot Matrix motion", () => {
-  it("defaults to smooth motion", () => {
-    expect(decodeClientSettings({}).dotMatrixMotion).toBe("smooth");
-  });
-
-  it.each(["smooth", "efficient"] as const)("accepts %s motion", (value) => {
-    expect(decodeClientSettingsPatch({ dotMatrixMotion: value }).dotMatrixMotion).toBe(value);
-  });
-
-  it("rejects unsupported motion styles", () => {
-    expect(() => decodeClientSettings({ dotMatrixMotion: "off" })).toThrow();
-    expect(() => decodeClientSettingsPatch({ dotMatrixMotion: "off" })).toThrow();
   });
 });
 

@@ -84,9 +84,6 @@ export const AppearanceContrast = Schema.Int.check(
 export type AppearanceContrast = typeof AppearanceContrast.Type;
 export const DEFAULT_APPEARANCE_CONTRAST: AppearanceContrast = 100;
 
-export const DotMatrixMotion = Schema.Literals(["smooth", "efficient"]);
-export type DotMatrixMotion = typeof DotMatrixMotion.Type;
-export const DEFAULT_DOT_MATRIX_MOTION: DotMatrixMotion = "smooth";
 /**
  * Font size preferences, in CSS pixels. The ranges are deliberately narrow:
  * the interface size scales every rem-based dimension in the app, so the
@@ -147,9 +144,6 @@ export const DEFAULT_BROWSER_AUTO_SHOW_FLOATING_PREVIEW = true;
 export const ClientSettingsSchema = Schema.Struct({
   appearanceContrast: AppearanceContrast.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_APPEARANCE_CONTRAST)),
-  ),
-  dotMatrixMotion: DotMatrixMotion.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_DOT_MATRIX_MOTION)),
   ),
   browserDefaultViewport: PreviewViewportSetting.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_VIEWPORT)),
@@ -969,7 +963,6 @@ export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
   appearanceContrast: Schema.optionalKey(AppearanceContrast),
-  dotMatrixMotion: Schema.optionalKey(DotMatrixMotion),
   browserDefaultViewport: Schema.optionalKey(PreviewViewportSetting),
   browserDefaultZoomFactor: Schema.optionalKey(PreviewZoomFactor),
   browserDefaultAppearance: Schema.optionalKey(PreviewAppearancePreference),

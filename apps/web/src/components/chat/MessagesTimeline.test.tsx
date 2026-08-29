@@ -1,5 +1,9 @@
 import { CheckpointRef, EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
 import { codexFeedbackMessage } from "@t3tools/client-runtime/state/threads";
+import type {
+  AgentPanelModel,
+  RuntimeSubagent,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import { createRef, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
@@ -173,6 +177,43 @@ beforeAll(async () => {
 
 const ACTIVE_THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const MESSAGE_CREATED_AT = "2026-03-17T19:12:28.000Z";
+
+function buildRuntimeSubagent(
+  id: string,
+  status: RuntimeSubagent["status"],
+  kind: RuntimeSubagent["kind"] = "subagent",
+): RuntimeSubagent {
+  return {
+    id,
+    kind,
+    title: id,
+    role: null,
+    model: null,
+    effort: null,
+    messageable: false,
+    status,
+    activationCount: 1,
+    usage: null,
+    progress: null,
+    lastToolName: null,
+    result: null,
+    error: null,
+    outputFile: null,
+    parentAgentId: null,
+    agentIndex: null,
+    phaseIndex: null,
+    phaseTitle: null,
+    attempt: null,
+    workflowName: null,
+    phases: [],
+    runHandles: null,
+    recentActivity: [],
+    firstSeenAt: MESSAGE_CREATED_AT,
+    startedAt: MESSAGE_CREATED_AT,
+    completedAt: status === "completed" ? MESSAGE_CREATED_AT : null,
+    updatedAt: MESSAGE_CREATED_AT,
+  };
+}
 
 function buildProps() {
   return {
@@ -924,6 +965,58 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Work Log");
   });
 
+  it("reports a coordinator-only pending workflow as queued", () => {
+    const workflow = buildRuntimeSubagent("workflow-1", "pending", "workflow");
+    const completedMember = {
+      ...buildRuntimeSubagent("member-1", "completed"),
+      parentAgentId: workflow.id,
+    };
+    const agentPanelModel: AgentPanelModel = {
+      workflows: [
+        {
+          workflow,
+          phases: [],
+          unphasedMembers: [completedMember],
+        },
+      ],
+      directAgents: [],
+      runningCount: 0,
+      waitingCount: 0,
+      idleCount: 0,
+      settledCount: 1,
+      totalTokens: 0,
+      hasAgents: true,
+      liveCount: 1,
+    };
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        agentPanelModel={agentPanelModel}
+        timelineEntries={[
+          {
+            id: "workflow-spawn",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "workflow-spawn",
+              createdAt: MESSAGE_CREATED_AT,
+              label: "Start workflow",
+              tone: "info",
+              agentSpawn: {
+                workflowId: workflow.id,
+                agentTaskIds: [workflow.id, completedMember.id],
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Kicked off 1 subagent");
+    expect(markup).toContain(">queued<");
+    expect(markup).not.toContain(">waiting<");
+  });
+
   it("summarizes changed files in one line", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -1027,9 +1120,8 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Ran 2 commands");
     // Neutral: the group keeps its command glyph instead of swapping to a
     // failure glyph, and neither the heading nor the icon wrapper goes red once
-    // the group ends in an ordinary command failure. Pylon renders the command
-    // summary as a DotMatrix, so assert its state rather than a lucide class.
-    expect(markup).toContain('data-state="terminal"');
+    // the group ends in an ordinary command failure.
+    expect(markup).toContain("lucide-terminal");
     expect(markup).not.toMatch(/font-medium text-destructive/);
     expect(markup).not.toMatch(/size-6 shrink-0 items-center justify-center text-destructive/);
     // The failure stays discoverable for screen readers.
@@ -1218,9 +1310,8 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Running pnpm");
     expect(markup).toContain("tool call failed");
-    expect(markup).toContain('data-state="terminal"');
-    expect(markup).toContain("text-inherit");
-    expect(markup).toContain('data-state="error"');
+    expect(markup).toContain("lucide-x");
+    expect(markup).not.toContain('data-slot="dot-matrix"');
   });
 
   it("renders transcript task progress as the original solid segments", () => {
@@ -1256,7 +1347,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-task-status="completed"');
     expect(markup).toContain('data-task-status="inProgress"');
     expect(markup).toContain('data-task-status="pending"');
-    expect(markup).toContain("bg-status-active");
+    expect(markup).toContain("bg-primary");
   });
 
   it.each([
@@ -1346,14 +1437,10 @@ describe("MessagesTimeline", () => {
     expect(assistantIndex).toBeGreaterThan(workingIndex);
     expect(markup).toContain('class="border-b border-border/60 pb-2 pt-1"');
     expect(markup).toContain(
-      'class="flex items-center gap-2 px-1 text-sm leading-relaxed text-status-active-foreground tabular-nums"',
+      'class="px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
     );
     expect(markup).not.toContain('class="pt-0.5 pb-5 pl-1.5"');
-    const workingMatrixRoot = markup.match(/<span[^>]*data-state="loading"[^>]*>/)?.[0];
-    expect(workingMatrixRoot).toBeDefined();
-    const workingClassTokens = /class="([^"]+)"/.exec(workingMatrixRoot ?? "")?.[1]?.split(" ");
-    expect(workingClassTokens).toContain("size-[max(16px,1.1em)]");
-    expect(workingMatrixRoot).toContain('data-size-role="prominent"');
+    expect(markup).not.toContain('data-slot="dot-matrix"');
   });
 
   it("aligns the iconless Thinking row with the working timer", () => {
@@ -1368,7 +1455,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Working for");
     expect(markup).toContain("Thinking");
-    expect(markup).toContain('data-state="loading"');
+    expect(markup).not.toContain('data-slot="dot-matrix"');
     expect(markup).toContain("gap-1.5 py-0.5 px-1");
   });
 
@@ -1482,11 +1569,9 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain('data-state="error"');
+    expect(markup).toContain("lucide-x");
     expect(markup).toContain('aria-label="Tool call failed"');
-    // Ordinary tool failures render muted, not red. Pylon's marker is a small
-    // DotMatrix status dot that is itself destructive-coloured, so assert on the
-    // row treatment rather than on the absence of the class anywhere in the tree.
+    // Ordinary tool failures keep a muted row even though the outcome glyph is red.
     expect(markup).not.toMatch(/font-medium text-destructive/);
     expect(markup).not.toMatch(/size-6 shrink-0 items-center justify-center text-destructive/);
   });
