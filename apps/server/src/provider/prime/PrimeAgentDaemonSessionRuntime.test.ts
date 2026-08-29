@@ -54,7 +54,7 @@ const activeSignal = () => new AbortController().signal;
 function snapshot(sequence = 4) {
   return {
     state: {
-      activeSessionId: "active-1",
+      activeSessionId: "active-secret-1",
       cwd: "/work/project",
       thinkingLevel: "medium",
       serviceTier: null,
@@ -83,6 +83,33 @@ function snapshot(sequence = 4) {
       },
     ],
     lastEventSequence: sequence,
+  };
+}
+
+function promptLifecycle(
+  correlationId: string,
+  phase: "owned" | "queued" | "delivered" | "completed" | "cancelled" | "failed",
+  revision: number,
+  options: {
+    readonly kind?:
+      | "model_prompt"
+      | "session_command"
+      | "extension_command"
+      | "input_handler"
+      | "injected_prompt";
+    readonly deliveryCrossed?: boolean;
+    readonly usage?: unknown;
+  } = {},
+) {
+  return {
+    correlationId,
+    phase,
+    kind: options.kind ?? "model_prompt",
+    revision,
+    deliveryCrossed:
+      options.deliveryCrossed ??
+      (phase === "delivered" || phase === "completed" || phase === "failed"),
+    ...(options.usage === undefined ? {} : { usage: options.usage }),
   };
 }
 
@@ -235,6 +262,18 @@ function fixture(options?: {
     message: string,
     options?: PrimeAgentDaemonPromptOptions,
   ) => Promise<unknown>;
+  readonly correlatedPromptLifecycleCapability?: boolean;
+  readonly submitCorrelatedPromptImpl?: (
+    message: string,
+    options: {
+      readonly correlationId: string;
+      readonly images?: ReadonlyArray<PrimeAgentDaemonImage>;
+      readonly queueIfBusy?: boolean;
+      readonly signal?: AbortSignal;
+    },
+  ) => Promise<unknown>;
+  readonly cancelPromptLifecycleImpl?: (correlationId: string) => Promise<unknown>;
+  readonly getPromptLifecyclesImpl?: () => Promise<unknown>;
   readonly resumeQueueResponses?: ReadonlyArray<unknown>;
   readonly listedActiveSessionId?: string;
   readonly listResponses?: ReadonlyArray<unknown>;
@@ -363,9 +402,12 @@ function fixture(options?: {
     enableRequestRecovery(): void {
       captures.order.push("request-recovery");
     }
-    supportsServerCapability(capability: "queue_message_mutation"): boolean {
-      expect(capability).toBe("queue_message_mutation");
-      return options?.queueMutationCapability ?? true;
+    supportsServerCapability(
+      capability: "queue_message_mutation" | "correlated_prompt_lifecycle_v1",
+    ): boolean {
+      return capability === "queue_message_mutation"
+        ? (options?.queueMutationCapability ?? true)
+        : (options?.correlatedPromptLifecycleCapability ?? false);
     }
     enableAutoReconnect(reconnectOptions: { readonly recoverDaemon: () => Promise<void> }): void {
       captures.reconnectOptions.push(reconnectOptions);
@@ -467,6 +509,31 @@ function fixture(options?: {
         );
       }
       return options?.promptAndWaitImpl?.(message, promptOptions) ?? Promise.resolve(undefined);
+    }
+    submitCorrelatedPrompt(
+      message: string,
+      promptOptions: {
+        readonly correlationId: string;
+        readonly images?: ReadonlyArray<PrimeAgentDaemonImage>;
+        readonly queueIfBusy?: boolean;
+        readonly signal?: AbortSignal;
+      },
+    ): Promise<unknown> {
+      captures.connectionCalls.push({
+        method: "submitCorrelatedPrompt",
+        args: [message, promptOptions],
+      });
+      return (
+        options?.submitCorrelatedPromptImpl?.(message, promptOptions) ?? Promise.resolve(undefined)
+      );
+    }
+    cancelPromptLifecycle(correlationId: string): Promise<unknown> {
+      captures.connectionCalls.push({ method: "cancelPromptLifecycle", args: [correlationId] });
+      return options?.cancelPromptLifecycleImpl?.(correlationId) ?? Promise.resolve(undefined);
+    }
+    getPromptLifecycles(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getPromptLifecycles", args: [] });
+      return options?.getPromptLifecyclesImpl?.() ?? Promise.resolve({ records: [], expired: [] });
     }
     waitForHeadlessCompletion(
       waitOptions: { readonly waitForRlmQuiescence?: boolean } = {},
@@ -825,6 +892,662 @@ function collectEvents(runtime: PrimeAgentDaemonSessionRuntime, count: number) {
 }
 
 describe("PrimeAgentDaemonSessionRuntime", () => {
+  it.effect("negotiates correlated prompt lifecycle only when the server advertises it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const unsupported = fixture();
+        const legacy = yield* unsupported.make();
+        expect(legacy.correlatedPromptLifecycleAvailable).toBe(false);
+
+        const correlationId = "8d86fd25-cb7d-4d5a-b07a-62aab2d16ea9";
+        const capable = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(),
+            promptLifecycles: { records: [], expired: [] },
+          },
+          submitCorrelatedPromptImpl: (_message, options) =>
+            Promise.resolve({
+              lifecycle: promptLifecycle(options.correlationId, "owned", 1),
+              duplicate: false,
+            }),
+        });
+        const runtime = yield* capable.make();
+        expect(runtime.correlatedPromptLifecycleAvailable).toBe(true);
+        const events = yield* collectEvents(runtime, 2).pipe(Effect.forkChild);
+        const lifecycle = yield* runtime.submitCorrelatedPrompt({
+          text: "queued safely",
+          correlationId,
+          queueIfBusy: true,
+        });
+        expect(lifecycle).toEqual(promptLifecycle(correlationId, "owned", 1));
+        expect((yield* Fiber.join(events)).slice(1)).toEqual([
+          { _tag: "PromptLifecycleUpdated", lifecycle },
+        ]);
+        expect(
+          capable.captures.connectionCalls.find((call) => call.method === "submitCorrelatedPrompt")
+            ?.args,
+        ).toEqual(["queued safely", expect.objectContaining({ correlationId, queueIfBusy: true })]);
+      }),
+    ),
+  );
+
+  it.effect("rejects a malformed scoped correlated cancellation result", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const correlationId = "5070d085-2f9b-4f04-9e55-2d699e804cbb";
+        const { make } = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(),
+            promptLifecycles: {
+              records: [promptLifecycle(correlationId, "owned", 1)],
+              expired: [],
+            },
+          },
+          cancelPromptLifecycleImpl: () =>
+            Promise.resolve({
+              status: "cancelled",
+              ownershipCrossed: true,
+              deliveryCrossed: false,
+              lifecycle: promptLifecycle("wrong-correlation", "cancelled", 2),
+            }),
+        });
+        const runtime = yield* make();
+        const error = yield* runtime.cancelPromptLifecycle(correlationId).pipe(Effect.flip);
+        expect(error).toMatchObject({ operation: "abort", reason: "invalid-response" });
+      }),
+    ),
+  );
+
+  it.effect("rejects stale correlated lifecycle progression after a valid successor", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const correlationId = "b11dddee-9a03-473b-8c79-6268d21d737d";
+        const { emit, make } = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(),
+            promptLifecycles: {
+              records: [promptLifecycle(correlationId, "owned", 1)],
+              expired: [],
+            },
+          },
+        });
+        const runtime = yield* make();
+        const events = yield* collectEvents(runtime, 3).pipe(Effect.forkChild);
+        yield* Effect.promise(() =>
+          emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(correlationId, "queued", 2),
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(correlationId, "owned", 1),
+          }),
+        );
+        expect((yield* Fiber.join(events)).slice(1)).toEqual([
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: promptLifecycle(correlationId, "queued", 2),
+          },
+          { _tag: "CorrelatedProtocolViolation" },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("routes the private protocol marker only for capable sessions", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const unsupportedFixture = fixture();
+        const unsupported = yield* unsupportedFixture.make();
+        const unsupportedEvents = yield* collectEvents(unsupported, 2).pipe(Effect.forkChild);
+        yield* Effect.promise(() =>
+          unsupportedFixture.emit({ type: "correlated_prompt_protocol_violation" }),
+        );
+        expect((yield* Fiber.join(unsupportedEvents)).slice(1)).toEqual([
+          {
+            _tag: "Ignored",
+            reason: "unknown-event",
+            sourceType: "correlated_prompt_protocol_violation",
+          },
+        ]);
+
+        const capableFixture = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(),
+            promptLifecycles: { records: [], expired: [] },
+          },
+        });
+        const capable = yield* capableFixture.make();
+        const capableEvents = yield* collectEvents(capable, 2).pipe(Effect.forkChild);
+        yield* Effect.promise(() =>
+          capableFixture.emit({ type: "correlated_prompt_protocol_violation" }),
+        );
+        expect((yield* Fiber.join(capableEvents)).slice(1)).toEqual([
+          { _tag: "CorrelatedProtocolViolation" },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("does not merge lifecycle state from a stale rejected resync", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const correlationId = "47eace3d-ddc2-4d20-b46c-d3ef0b87eef8";
+        const { emit, make } = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(4),
+            promptLifecycles: {
+              records: [promptLifecycle(correlationId, "owned", 1)],
+              expired: [],
+            },
+          },
+        });
+        const runtime = yield* make();
+        const events = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event._tag === "HeartbeatsChanged"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(correlationId, "queued", 2),
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(4),
+              promptLifecycles: {
+                records: [promptLifecycle(correlationId, "delivered", 3)],
+                expired: [],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(correlationId, "delivered", 3),
+          }),
+        );
+        yield* Effect.promise(() => emit({ type: "heartbeats_changed" }));
+
+        expect(Array.from(yield* Fiber.join(events))).toEqual([
+          expect.objectContaining({ _tag: "SessionResynced" }),
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId, phase: "queued", revision: 2 }),
+          },
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId, phase: "delivered", revision: 3 }),
+          },
+          { _tag: "HeartbeatsChanged" },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("keeps lifecycle snapshot validation atomic across tombstone conflicts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const correlationId = "69e20929-0152-41ac-a6e4-5432098831f1";
+        const deliveredId = "6bd6843d-403e-4432-ad4b-6971b1875dd9";
+        const immutableExpiredId = "be266e21-6fca-47e5-8dd9-857a418d796b";
+        const { emit, make } = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(4),
+            promptLifecycles: {
+              records: [
+                promptLifecycle(correlationId, "owned", 1),
+                promptLifecycle(deliveredId, "failed", 2),
+              ],
+              expired: [{ correlationId: immutableExpiredId, deliveryCrossed: false }],
+            },
+          },
+        });
+        const runtime = yield* make();
+        const events = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event._tag === "HeartbeatsChanged"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        // A later invalid tombstone must not partially commit the queued record.
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              promptLifecycles: {
+                records: [promptLifecycle(correlationId, "queued", 2)],
+                expired: [{ correlationId: deliveredId, deliveryCrossed: false }],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(correlationId, "queued", 2),
+          }),
+        );
+        // Existing tombstones are immutable in both delivery-boundary directions.
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(6),
+              promptLifecycles: {
+                records: [],
+                expired: [{ correlationId: immutableExpiredId, deliveryCrossed: true }],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(7),
+              promptLifecycles: {
+                records: [promptLifecycle(correlationId, "queued", 2)],
+                expired: [{ correlationId: immutableExpiredId, deliveryCrossed: false }],
+              },
+            },
+          }),
+        );
+        // Prime only evicts terminal records, never a locally known queued record.
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(8),
+              promptLifecycles: {
+                records: [],
+                expired: [{ correlationId, deliveryCrossed: false }],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(correlationId, "delivered", 3),
+          }),
+        );
+        // A snapshot cannot contain both a retained record and its tombstone.
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(9),
+              promptLifecycles: {
+                records: [promptLifecycle(correlationId, "failed", 4)],
+                expired: [{ correlationId, deliveryCrossed: true }],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(correlationId, "failed", 4),
+          }),
+        );
+        yield* Effect.promise(() => emit({ type: "heartbeats_changed" }));
+
+        expect(Array.from(yield* Fiber.join(events))).toEqual([
+          expect.objectContaining({ _tag: "SessionResynced" }),
+          { _tag: "CorrelatedProtocolViolation" },
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId, phase: "queued", revision: 2 }),
+          },
+          { _tag: "CorrelatedProtocolViolation" },
+          expect.objectContaining({ _tag: "SessionResynced" }),
+          { _tag: "CorrelatedProtocolViolation" },
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId, phase: "delivered", revision: 3 }),
+          },
+          { _tag: "CorrelatedProtocolViolation" },
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId, phase: "failed", revision: 4 }),
+          },
+          { _tag: "HeartbeatsChanged" },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("bounds live lifecycle retention without evicting an active prompt", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const lifecycleId = (index: number) =>
+          `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`;
+        const activeId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+        const test = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(4),
+            promptLifecycles: {
+              records: [promptLifecycle(activeId, "owned", 1)],
+              expired: [],
+            },
+          },
+        });
+        const runtime = yield* test.make();
+        const initialTerminals = yield* collectEvents(runtime, 521).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        for (let index = 0; index < 520; index += 1) {
+          yield* Effect.promise(() =>
+            test.emit({
+              type: "prompt_lifecycle",
+              lifecycle: promptLifecycle(lifecycleId(index), "failed", index + 2),
+            }),
+          );
+        }
+        expect(yield* Fiber.join(initialTerminals)).toHaveLength(521);
+
+        const boundedEvents = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event._tag === "HeartbeatsChanged"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        // An exact duplicate must not refresh the oldest retained terminal.
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(lifecycleId(264), "failed", 266),
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(lifecycleId(520), "failed", 522),
+          }),
+        );
+        // The duplicate stayed oldest and became a tombstone after the next terminal.
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(lifecycleId(264), "failed", 266),
+          }),
+        );
+        // The oldest terminal and tombstone have both aged out and are accepted as unknown.
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(lifecycleId(0), "failed", 2),
+          }),
+        );
+        // All nonterminal records survive terminal/tombstone pruning.
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(activeId, "queued", 523),
+          }),
+        );
+        yield* Effect.promise(() => test.emit({ type: "heartbeats_changed" }));
+
+        expect(Array.from(yield* Fiber.join(boundedEvents))).toEqual([
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId: lifecycleId(520) }),
+          },
+          { _tag: "CorrelatedProtocolViolation" },
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId: lifecycleId(0) }),
+          },
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId: activeId, phase: "queued" }),
+          },
+          { _tag: "HeartbeatsChanged" },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("replaces bounded lifecycle state from an authoritative snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const activeId = "004370d8-540f-4592-aa54-b98388577f6a";
+        const agedTerminalId = "5d2948af-229b-4873-bb39-92d36bcf07c3";
+        const agedTombstoneId = "b77ea8bd-14f7-4a33-80cc-9dd4e05d340d";
+        const test = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(4),
+            promptLifecycles: {
+              records: [
+                promptLifecycle(activeId, "owned", 1),
+                promptLifecycle(agedTerminalId, "failed", 2),
+              ],
+              expired: [{ correlationId: agedTombstoneId, deliveryCrossed: false }],
+            },
+          },
+        });
+        const runtime = yield* test.make();
+        const events = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event._tag === "HeartbeatsChanged"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        // Omitting a known nonterminal is invalid and must not mutate any state.
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              promptLifecycles: { records: [], expired: [] },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(activeId, "queued", 3),
+          }),
+        );
+        // A valid authoritative snapshot retains the active record and ages out old terminal state.
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(6),
+              promptLifecycles: {
+                records: [promptLifecycle(activeId, "queued", 3)],
+                expired: [],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(agedTerminalId, "failed", 2),
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(agedTombstoneId, "failed", 4, {
+              deliveryCrossed: false,
+            }),
+          }),
+        );
+        yield* Effect.promise(() => test.emit({ type: "heartbeats_changed" }));
+
+        expect(Array.from(yield* Fiber.join(events))).toEqual([
+          expect.objectContaining({ _tag: "SessionResynced" }),
+          { _tag: "CorrelatedProtocolViolation" },
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId: activeId, phase: "queued" }),
+          },
+          expect.objectContaining({ _tag: "SessionResynced" }),
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId: agedTerminalId }),
+          },
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId: agedTombstoneId }),
+          },
+          { _tag: "HeartbeatsChanged" },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("rejects capable snapshots from a mismatched owned generation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const invalidInitial = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(),
+            state: { ...snapshot().state, activeSessionId: "other-active-generation" },
+            promptLifecycles: { records: [], expired: [] },
+          },
+        });
+        const initialError = yield* invalidInitial.make().pipe(Effect.flip);
+        expect(initialError).toMatchObject({
+          operation: "initial-snapshot",
+          reason: "invalid-response",
+        });
+
+        const correlationId = "70c5df6a-a680-4ad6-a5ca-aa581cf81f81";
+        const { emit, make } = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(4),
+            promptLifecycles: {
+              records: [promptLifecycle(correlationId, "owned", 1)],
+              expired: [],
+            },
+          },
+        });
+        const runtime = yield* make();
+        const events = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event._tag === "HeartbeatsChanged"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(5),
+              state: { ...snapshot(5).state, activeSessionId: "other-active-generation" },
+              promptLifecycles: {
+                records: [promptLifecycle(correlationId, "queued", 2)],
+                expired: [],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(correlationId, "queued", 2),
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(6),
+              state: { ...snapshot(6).state, sessionId: "other-durable-generation" },
+              promptLifecycles: {
+                records: [promptLifecycle(correlationId, "delivered", 3)],
+                expired: [],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          emit({
+            type: "prompt_lifecycle",
+            lifecycle: promptLifecycle(correlationId, "delivered", 3),
+          }),
+        );
+        yield* Effect.promise(() => emit({ type: "heartbeats_changed" }));
+
+        expect(Array.from(yield* Fiber.join(events))).toEqual([
+          expect.objectContaining({ _tag: "SessionResynced" }),
+          { _tag: "CorrelatedProtocolViolation" },
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId, phase: "queued", revision: 2 }),
+          },
+          { _tag: "CorrelatedProtocolViolation" },
+          {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: expect.objectContaining({ correlationId, phase: "delivered", revision: 3 }),
+          },
+          { _tag: "HeartbeatsChanged" },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect(
+    "fails closed on malformed capable provenance and accepts an exact delivered owner",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const correlationId = "a72dc9f8-8ada-43fa-a556-039e16b7cb50";
+          const { emit, make } = fixture({
+            correlatedPromptLifecycleCapability: true,
+            rawSnapshot: {
+              ...snapshot(),
+              promptLifecycles: {
+                records: [promptLifecycle(correlationId, "delivered", 2)],
+                expired: [],
+              },
+            },
+          });
+          const runtime = yield* make();
+          const events = yield* collectEvents(runtime, 3).pipe(Effect.forkChild);
+          yield* Effect.promise(() =>
+            emit({
+              type: "session_event",
+              event: { type: "agent_start", promptCorrelationId: correlationId },
+            }),
+          );
+          yield* Effect.promise(() =>
+            emit({
+              type: "session_event",
+              attribution: { scope: "prompt", correlationId },
+              event: { type: "agent_start", promptCorrelationId: correlationId },
+            }),
+          );
+          expect((yield* Fiber.join(events)).slice(1)).toEqual([
+            { _tag: "CorrelatedProtocolViolation" },
+            {
+              _tag: "RunStarted",
+              attribution: { scope: "prompt", correlationId },
+            },
+          ]);
+        }),
+      ),
+  );
+
   it.effect(
     "creates one client-owned session, subscribes before snapshot, and exposes only an opaque cursor",
     () =>
@@ -4200,6 +4923,61 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(
           test.captures.connectionCalls.filter((call) => call.method === "prompt"),
         ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("does not consume worker proof for an invalid lifecycle snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const correlationId = "b11506fb-c718-4880-892d-08f2a26cff85";
+        let snapshotReads = 0;
+        let reportRecoverySnapshot!: () => void;
+        const recoverySnapshot = new Promise<void>((resolve) => {
+          reportRecoverySnapshot = resolve;
+        });
+        const test = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshotImpl: () => {
+            snapshotReads += 1;
+            if (snapshotReads === 1) {
+              return {
+                ...snapshot(5),
+                state: { ...snapshot(5).state, isStreaming: true },
+                promptLifecycles: {
+                  records: [promptLifecycle(correlationId, "owned", 1)],
+                  expired: [],
+                },
+              };
+            }
+            reportRecoverySnapshot();
+            return {
+              ...snapshot(6),
+              state: { ...snapshot(6).state, isStreaming: true },
+              promptLifecycles: {
+                records: [],
+                expired: [{ correlationId, deliveryCrossed: false }],
+              },
+            };
+          },
+          listResponses: [workerListResponse("recovering"), workerListResponse("ready")],
+        });
+        const runtime = yield* test.make();
+        const events = yield* collectEvents(runtime, 3).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const closing = yield* Effect.promise(() =>
+          test.emit({ type: "closed", error: "Daemon worker client closed" }),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+
+        yield* TestClock.adjust(250);
+        yield* Effect.promise(() => recoverySnapshot);
+        const recoveredEvents = yield* Fiber.join(events);
+        expect(recoveredEvents[1]).toEqual({ _tag: "CorrelatedProtocolViolation" });
+        expect(recoveredEvents[2]).toMatchObject({ _tag: "SessionClosed" });
+        expect(runtime.resolveReconnectSnapshot(0, true)).toBe(false);
+        expect(runtime.retryWorkerRecoverySnapshot(0)).toBe(false);
+        yield* Fiber.join(closing);
       }),
     ),
   );

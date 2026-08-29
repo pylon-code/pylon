@@ -63,6 +63,62 @@ const usage = Schema.Struct({
   }),
 });
 
+const promptCorrelationId = Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(128));
+const promptLifecycleKind = Schema.Literals([
+  "model_prompt",
+  "session_command",
+  "extension_command",
+  "input_handler",
+  "injected_prompt",
+]);
+const promptLifecyclePhase = Schema.Literals([
+  "owned",
+  "queued",
+  "delivered",
+  "completed",
+  "cancelled",
+  "failed",
+]);
+const promptLifecycleUsage = Schema.Struct({
+  input: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  output: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  cacheRead: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  cacheWrite: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  totalTokens: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  cost: Schema.Struct({
+    input: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+    output: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+    cacheRead: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+    cacheWrite: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+    total: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const promptLifecycleSnapshot = Schema.Struct({
+  correlationId: promptCorrelationId,
+  phase: promptLifecyclePhase,
+  kind: promptLifecycleKind,
+  revision: Schema.Int.check(Schema.isGreaterThan(0)),
+  deliveryCrossed: Schema.Boolean,
+  usage: Schema.optional(promptLifecycleUsage),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const expiredPromptLifecycle = Schema.Struct({
+  correlationId: promptCorrelationId,
+  deliveryCrossed: Schema.Boolean,
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const promptLifecycleStateSnapshot = Schema.Struct({
+  records: Schema.Array(promptLifecycleSnapshot).check(Schema.isMaxLength(1_000)),
+  expired: Schema.Array(expiredPromptLifecycle).check(Schema.isMaxLength(1_000)),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const promptEventAttribution = Schema.Union([
+  Schema.Struct({ scope: Schema.Literal("session") }).annotate({
+    parseOptions: { onExcessProperty: "error" },
+  }),
+  Schema.Struct({
+    scope: Schema.Literal("prompt"),
+    correlationId: promptCorrelationId,
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+]);
+
 export const PrimeAgentDaemonAssistantMessage = Schema.Struct({
   role: Schema.Literal("assistant"),
   content: Schema.Array(Schema.Union([textContent, thinkingContent, toolCallContent])),
@@ -444,6 +500,7 @@ const sessionSnapshot = Schema.Struct({
   messages: Schema.Array(Schema.Unknown),
   streamingMessage: Schema.optional(Schema.Unknown),
   children: Schema.optional(Schema.Array(rlmChild)),
+  promptLifecycles: Schema.optional(promptLifecycleStateSnapshot),
   lastEventSequence: Schema.optional(Schema.Number),
   replay: Schema.optional(reconnectReplay),
 });
@@ -475,7 +532,18 @@ const extensionPayload = Schema.Struct({
 });
 
 export const PrimeAgentDaemonConnectionEvent = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("session_event"), event: agentSessionEvent }),
+  Schema.Struct({
+    type: Schema.Literal("session_event"),
+    event: agentSessionEvent,
+    attribution: Schema.optional(promptEventAttribution),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("prompt_lifecycle"),
+    lifecycle: promptLifecycleSnapshot,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("correlated_prompt_protocol_violation"),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
   Schema.Struct({
     type: Schema.Literal("session_replaced"),
     state: sessionState,
@@ -489,6 +557,7 @@ export const PrimeAgentDaemonConnectionEvent = Schema.Union([
       id: Schema.String,
       method: extensionMethod,
       payload: extensionPayload,
+      attribution: Schema.optional(promptEventAttribution),
     }),
   }),
   Schema.Struct({
@@ -496,6 +565,7 @@ export const PrimeAgentDaemonConnectionEvent = Schema.Union([
     extensionPath: Schema.String,
     event: Schema.String,
     error: Schema.String,
+    attribution: Schema.optional(promptEventAttribution),
   }),
   Schema.Struct({
     type: Schema.Literal("connection_status"),
@@ -516,6 +586,8 @@ const decodeEventType = Schema.decodeUnknownOption(Schema.Struct({ type: Schema.
 
 const knownConnectionEventTypes = new Set([
   "session_event",
+  "prompt_lifecycle",
+  "correlated_prompt_protocol_violation",
   "session_replaced",
   "session_resynced",
   "session_status",
@@ -744,7 +816,271 @@ export interface PrimeDaemonSessionState {
   readonly recap?: string | undefined;
 }
 
-export type PrimeDaemonEvent =
+export type PrimeDaemonPromptEventAttribution =
+  | { readonly scope: "session" }
+  | { readonly scope: "prompt"; readonly correlationId: string };
+export type PrimeDaemonPromptLifecycleKind = typeof promptLifecycleKind.Type;
+export type PrimeDaemonPromptLifecyclePhase = typeof promptLifecyclePhase.Type;
+export interface PrimeDaemonPromptLifecycleSnapshot {
+  readonly correlationId: string;
+  readonly phase: PrimeDaemonPromptLifecyclePhase;
+  readonly kind: PrimeDaemonPromptLifecycleKind;
+  readonly revision: number;
+  readonly deliveryCrossed: boolean;
+  readonly usage?: PrimeDaemonUsage | undefined;
+}
+export interface PrimeDaemonExpiredPromptLifecycle {
+  readonly correlationId: string;
+  readonly deliveryCrossed: boolean;
+}
+export interface PrimeDaemonPromptLifecycleStateSnapshot {
+  readonly records: ReadonlyArray<PrimeDaemonPromptLifecycleSnapshot>;
+  readonly expired: ReadonlyArray<PrimeDaemonExpiredPromptLifecycle>;
+}
+export type PrimeDaemonPromptLifecycleCancellationResult =
+  | {
+      readonly status: "cancelled";
+      readonly ownershipCrossed: true;
+      readonly deliveryCrossed: false;
+      readonly lifecycle: PrimeDaemonPromptLifecycleSnapshot;
+    }
+  | {
+      readonly status: "too_late";
+      readonly ownershipCrossed: true;
+      readonly deliveryCrossed: boolean;
+      readonly lifecycle: PrimeDaemonPromptLifecycleSnapshot;
+    }
+  | {
+      readonly status: "expired";
+      readonly ownershipCrossed: true;
+      readonly deliveryCrossed: boolean;
+    }
+  | {
+      readonly status: "unknown";
+      readonly ownershipCrossed: "unknown";
+      readonly deliveryCrossed: "unknown";
+    };
+
+const decodePromptLifecycleSnapshotRaw = Schema.decodeUnknownOption(promptLifecycleSnapshot);
+const decodePromptLifecycleStateSnapshotRaw = Schema.decodeUnknownOption(
+  promptLifecycleStateSnapshot,
+);
+const promptLifecycleSubmitResult = Schema.Struct({
+  lifecycle: promptLifecycleSnapshot,
+  duplicate: Schema.Boolean,
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const decodePromptLifecycleSubmitResultRaw = Schema.decodeUnknownOption(
+  promptLifecycleSubmitResult,
+);
+const promptLifecycleCancellationResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("cancelled"),
+    ownershipCrossed: Schema.Literal(true),
+    deliveryCrossed: Schema.Literal(false),
+    lifecycle: promptLifecycleSnapshot,
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    status: Schema.Literal("too_late"),
+    ownershipCrossed: Schema.Literal(true),
+    deliveryCrossed: Schema.Boolean,
+    lifecycle: promptLifecycleSnapshot,
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    status: Schema.Literal("expired"),
+    ownershipCrossed: Schema.Literal(true),
+    deliveryCrossed: Schema.Boolean,
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    status: Schema.Literal("unknown"),
+    ownershipCrossed: Schema.Literal("unknown"),
+    deliveryCrossed: Schema.Literal("unknown"),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+]);
+const decodePromptLifecycleCancellationResultRaw = Schema.decodeUnknownOption(
+  promptLifecycleCancellationResult,
+);
+const promptLifecycleTransitions: Readonly<
+  Record<PrimeDaemonPromptLifecyclePhase, ReadonlySet<PrimeDaemonPromptLifecyclePhase>>
+> = {
+  owned: new Set(["queued", "delivered", "cancelled", "failed"]),
+  queued: new Set(["delivered", "cancelled", "failed"]),
+  delivered: new Set(["completed", "failed"]),
+  completed: new Set(),
+  cancelled: new Set(),
+  failed: new Set(),
+};
+const promptLifecycleReachableTransitions: Readonly<
+  Record<PrimeDaemonPromptLifecyclePhase, ReadonlySet<PrimeDaemonPromptLifecyclePhase>>
+> = {
+  owned: new Set(["queued", "delivered", "completed", "cancelled", "failed"]),
+  queued: new Set(["delivered", "completed", "cancelled", "failed"]),
+  delivered: new Set(["completed", "failed"]),
+  completed: new Set(),
+  cancelled: new Set(),
+  failed: new Set(),
+};
+
+function promptLifecycleSemanticallyValid(value: typeof promptLifecycleSnapshot.Type): boolean {
+  if (
+    (value.phase === "owned" || value.phase === "queued" || value.phase === "cancelled") &&
+    value.deliveryCrossed
+  ) {
+    return false;
+  }
+  if ((value.phase === "delivered" || value.phase === "completed") && !value.deliveryCrossed) {
+    return false;
+  }
+  return (
+    value.usage === undefined ||
+    value.phase === "completed" ||
+    value.phase === "cancelled" ||
+    value.phase === "failed"
+  );
+}
+
+function mapPromptLifecycleUsage(value: typeof promptLifecycleUsage.Type): PrimeDaemonUsage {
+  return {
+    inputTokens: value.input,
+    outputTokens: value.output,
+    cachedInputTokens: value.cacheRead,
+    cacheWriteTokens: value.cacheWrite,
+    totalTokens: value.totalTokens,
+    totalCostUsd: value.cost.total,
+  };
+}
+
+function mapPromptLifecycleSnapshot(
+  value: typeof promptLifecycleSnapshot.Type,
+): PrimeDaemonPromptLifecycleSnapshot {
+  return {
+    correlationId: value.correlationId,
+    phase: value.phase,
+    kind: value.kind,
+    revision: value.revision,
+    deliveryCrossed: value.deliveryCrossed,
+    ...(value.usage === undefined ? {} : { usage: mapPromptLifecycleUsage(value.usage) }),
+  };
+}
+
+export function decodePrimeAgentPromptLifecycleSnapshot(
+  input: unknown,
+): PrimeDaemonPromptLifecycleSnapshot | undefined {
+  const decoded = decodePromptLifecycleSnapshotRaw(input);
+  return Option.isSome(decoded) && promptLifecycleSemanticallyValid(decoded.value)
+    ? mapPromptLifecycleSnapshot(decoded.value)
+    : undefined;
+}
+
+export function decodePrimeAgentPromptLifecycleStateSnapshot(
+  input: unknown,
+): PrimeDaemonPromptLifecycleStateSnapshot | undefined {
+  const decoded = decodePromptLifecycleStateSnapshotRaw(input);
+  if (Option.isNone(decoded)) return undefined;
+  const seen = new Set<string>();
+  const records: Array<PrimeDaemonPromptLifecycleSnapshot> = [];
+  for (const record of decoded.value.records) {
+    if (seen.has(record.correlationId) || !promptLifecycleSemanticallyValid(record))
+      return undefined;
+    seen.add(record.correlationId);
+    records.push(mapPromptLifecycleSnapshot(record));
+  }
+  const expired: Array<PrimeDaemonExpiredPromptLifecycle> = [];
+  for (const tombstone of decoded.value.expired) {
+    if (seen.has(tombstone.correlationId)) return undefined;
+    seen.add(tombstone.correlationId);
+    expired.push(tombstone);
+  }
+  return { records, expired };
+}
+
+export function decodePrimeAgentPromptLifecycleSubmitResult(
+  input: unknown,
+  correlationId: string,
+):
+  | { readonly lifecycle: PrimeDaemonPromptLifecycleSnapshot; readonly duplicate: boolean }
+  | undefined {
+  const decoded = decodePromptLifecycleSubmitResultRaw(input);
+  if (
+    Option.isNone(decoded) ||
+    decoded.value.lifecycle.correlationId !== correlationId ||
+    !promptLifecycleSemanticallyValid(decoded.value.lifecycle)
+  ) {
+    return undefined;
+  }
+  return {
+    lifecycle: mapPromptLifecycleSnapshot(decoded.value.lifecycle),
+    duplicate: decoded.value.duplicate,
+  };
+}
+
+export function decodePrimeAgentPromptLifecycleCancellationResult(
+  input: unknown,
+  correlationId: string,
+): PrimeDaemonPromptLifecycleCancellationResult | undefined {
+  const decoded = decodePromptLifecycleCancellationResultRaw(input);
+  if (Option.isNone(decoded)) return undefined;
+  const value = decoded.value;
+  if (value.status === "unknown" || value.status === "expired") return value;
+  if (
+    value.lifecycle.correlationId !== correlationId ||
+    !promptLifecycleSemanticallyValid(value.lifecycle) ||
+    value.lifecycle.deliveryCrossed !== value.deliveryCrossed ||
+    (value.status === "cancelled" && value.lifecycle.phase !== "cancelled") ||
+    (value.status === "too_late" &&
+      (value.lifecycle.phase === "cancelled" ||
+        (!value.deliveryCrossed && value.lifecycle.phase !== "failed")))
+  ) {
+    return undefined;
+  }
+  return { ...value, lifecycle: mapPromptLifecycleSnapshot(value.lifecycle) };
+}
+
+export function primeAgentPromptLifecycleIsSame(
+  left: PrimeDaemonPromptLifecycleSnapshot,
+  right: PrimeDaemonPromptLifecycleSnapshot,
+): boolean {
+  return (
+    left.correlationId === right.correlationId &&
+    left.phase === right.phase &&
+    left.kind === right.kind &&
+    left.revision === right.revision &&
+    left.deliveryCrossed === right.deliveryCrossed &&
+    left.usage?.inputTokens === right.usage?.inputTokens &&
+    left.usage?.outputTokens === right.usage?.outputTokens &&
+    left.usage?.cachedInputTokens === right.usage?.cachedInputTokens &&
+    left.usage?.cacheWriteTokens === right.usage?.cacheWriteTokens &&
+    left.usage?.totalTokens === right.usage?.totalTokens &&
+    left.usage?.totalCostUsd === right.usage?.totalCostUsd
+  );
+}
+
+export function primeAgentPromptLifecycleCanAdvance(
+  current: PrimeDaemonPromptLifecycleSnapshot,
+  next: PrimeDaemonPromptLifecycleSnapshot,
+): boolean {
+  return (
+    current.correlationId === next.correlationId &&
+    current.kind === next.kind &&
+    next.revision > current.revision &&
+    promptLifecycleReachableTransitions[current.phase].has(next.phase) &&
+    (!current.deliveryCrossed || next.deliveryCrossed)
+  );
+}
+
+export function primeAgentPromptLifecycleIsSuccessor(
+  current: PrimeDaemonPromptLifecycleSnapshot,
+  next: PrimeDaemonPromptLifecycleSnapshot,
+): boolean {
+  return (
+    current.correlationId === next.correlationId &&
+    current.kind === next.kind &&
+    next.revision > current.revision &&
+    promptLifecycleTransitions[current.phase].has(next.phase) &&
+    next.deliveryCrossed === (current.deliveryCrossed || next.phase === "delivered")
+  );
+}
+
+export type PrimeDaemonEvent = (
   | { readonly _tag: "RunStarted" }
   | {
       readonly _tag: "RunCompleted";
@@ -895,6 +1231,7 @@ export type PrimeDaemonEvent =
       readonly state: PrimeDaemonSessionState;
       readonly messages: ReadonlyArray<PrimeDaemonMessage>;
       readonly streamingMessage?: PrimeDaemonMessage | undefined;
+      readonly promptLifecycles?: PrimeDaemonPromptLifecycleStateSnapshot | undefined;
       readonly children: ReadonlyArray<
         Extract<PrimeDaemonEvent, { readonly _tag: "ChildUpdated" }>["child"]
       >;
@@ -903,7 +1240,16 @@ export type PrimeDaemonEvent =
       readonly replayContinuity?: "complete" | "unavailable" | "unknown" | undefined;
       /** Local Pylon transport generation, attached by the session runtime. */
       readonly connectionGeneration?: number | undefined;
+      /** A connection-level replacement normalized through its authoritative cached snapshot. */
+      readonly replacementSnapshot?: boolean | undefined;
+      /** The startup snapshot already installed synchronously before this queued projection. */
+      readonly initialSnapshot?: boolean | undefined;
     }
+  | {
+      readonly _tag: "PromptLifecycleUpdated";
+      readonly lifecycle: PrimeDaemonPromptLifecycleSnapshot;
+    }
+  | { readonly _tag: "CorrelatedProtocolViolation" }
   | { readonly _tag: "SessionStatus"; readonly recap?: string | undefined }
   | {
       readonly _tag: "ExtensionRequest";
@@ -941,7 +1287,8 @@ export type PrimeDaemonEvent =
       readonly _tag: "Ignored";
       readonly reason: "unknown-event" | "malformed-event";
       readonly sourceType?: string | undefined;
-    };
+    }
+) & { readonly attribution?: PrimeDaemonPromptEventAttribution | undefined };
 
 function mapUsage(value: typeof usage.Type): PrimeDaemonUsage {
   return {
@@ -1460,7 +1807,17 @@ export function mapPrimeAgentDaemonConnectionEvent(
 ): PrimeDaemonEvent {
   switch (event.type) {
     case "session_event":
-      return mapSessionEvent(event.event);
+      return {
+        ...mapSessionEvent(event.event),
+        ...(event.attribution === undefined ? {} : { attribution: event.attribution }),
+      };
+    case "prompt_lifecycle":
+      return {
+        _tag: "PromptLifecycleUpdated",
+        lifecycle: mapPromptLifecycleSnapshot(event.lifecycle),
+      };
+    case "correlated_prompt_protocol_violation":
+      return { _tag: "CorrelatedProtocolViolation" };
     case "session_replaced":
       return {
         _tag: "SessionReplaced",
@@ -1472,6 +1829,9 @@ export function mapPrimeAgentDaemonConnectionEvent(
         event.snapshot.streamingMessage === undefined
           ? undefined
           : decodeMessage(event.snapshot.streamingMessage);
+      const promptLifecycles = decodePrimeAgentPromptLifecycleStateSnapshot(
+        event.snapshot.promptLifecycles,
+      );
       return {
         _tag: "SessionResynced",
         state: mapState(event.snapshot.state),
@@ -1480,6 +1840,7 @@ export function mapPrimeAgentDaemonConnectionEvent(
           streamingMessage && Option.isSome(streamingMessage)
             ? mapMessage(streamingMessage.value)
             : undefined,
+        ...(promptLifecycles === undefined ? {} : { promptLifecycles }),
         children: (event.snapshot.children ?? []).slice(0, MAX_LIST_ITEMS).map(mapChild),
         lastEventSequence: event.snapshot.lastEventSequence,
         replayContinuity: reconnectReplayContinuity(event.snapshot),
@@ -1510,6 +1871,9 @@ export function mapPrimeAgentDaemonConnectionEvent(
           widgetPlacement: event.request.payload.widgetPlacement,
           text: optionalBounded(event.request.payload.text),
         },
+        ...(event.request.attribution === undefined
+          ? {}
+          : { attribution: event.request.attribution }),
       };
     case "extension_error":
       return {
@@ -1517,6 +1881,7 @@ export function mapPrimeAgentDaemonConnectionEvent(
         extensionPath: bounded(event.extensionPath, MAX_PREVIEW_LENGTH),
         event: bounded(event.event, MAX_PREVIEW_LENGTH),
         error: bounded(event.error),
+        ...(event.attribution === undefined ? {} : { attribution: event.attribution }),
       };
     case "connection_status":
       return {
@@ -1548,19 +1913,88 @@ function sourceType(input: unknown): { readonly sourceType?: string; readonly kn
   };
 }
 
+const decodePromptEventAttribution = Schema.decodeUnknownOption(promptEventAttribution);
+
+function capablePromptAttribution(input: unknown): PrimeDaemonPromptEventAttribution | undefined {
+  const decoded = decodePromptEventAttribution(input);
+  return Option.isSome(decoded) ? decoded.value : undefined;
+}
+
+function capableEventHasValidProvenance(input: unknown): boolean {
+  if (!Predicate.isObject(input) || !("type" in input) || !Predicate.isString(input.type)) {
+    return false;
+  }
+  if (input.type === "prompt_lifecycle") {
+    return (
+      "lifecycle" in input && decodePrimeAgentPromptLifecycleSnapshot(input.lifecycle) !== undefined
+    );
+  }
+  if (input.type === "session_resynced") {
+    return (
+      "snapshot" in input &&
+      Predicate.isObject(input.snapshot) &&
+      "promptLifecycles" in input.snapshot &&
+      decodePrimeAgentPromptLifecycleStateSnapshot(input.snapshot.promptLifecycles) !== undefined
+    );
+  }
+  if (input.type === "session_event") {
+    if (!("event" in input) || !Predicate.isObject(input.event)) return false;
+    const attribution =
+      "attribution" in input ? capablePromptAttribution(input.attribution) : undefined;
+    if (attribution === undefined || !("promptCorrelationId" in input.event)) return false;
+    return attribution.scope === "session"
+      ? input.event.promptCorrelationId === null
+      : input.event.promptCorrelationId === attribution.correlationId;
+  }
+  if (input.type === "extension_ui_request") {
+    if (!("request" in input) || !Predicate.isObject(input.request)) return false;
+    return (
+      "attribution" in input.request &&
+      capablePromptAttribution(input.request.attribution) !== undefined
+    );
+  }
+  if (input.type === "extension_error") {
+    return "attribution" in input && capablePromptAttribution(input.attribution) !== undefined;
+  }
+  return true;
+}
+
+export interface PrimeAgentDaemonEventDecodeOptions {
+  readonly correlatedPromptLifecycle?: boolean;
+}
+
 /**
  * Decodes the untrusted daemon callback value and immediately projects it into a
  * bounded, provider-internal vocabulary. New or malformed events are inert data,
  * never exceptions and never an implicit success path.
  */
-export function decodePrimeAgentDaemonEvent(input: unknown): PrimeDaemonEvent {
+export function decodePrimeAgentDaemonEvent(
+  input: unknown,
+  options: PrimeAgentDaemonEventDecodeOptions = {},
+): PrimeDaemonEvent {
+  const source = sourceType(input);
+  if (
+    options.correlatedPromptLifecycle !== true &&
+    (source.sourceType === "prompt_lifecycle" ||
+      source.sourceType === "correlated_prompt_protocol_violation")
+  ) {
+    return { _tag: "Ignored", reason: "unknown-event", sourceType: source.sourceType };
+  }
+  if (
+    options.correlatedPromptLifecycle === true &&
+    source.known &&
+    !capableEventHasValidProvenance(input)
+  ) {
+    return { _tag: "CorrelatedProtocolViolation" };
+  }
   const decoded = decodeConnectionEvent(input);
   if (Option.isSome(decoded)) return mapPrimeAgentDaemonConnectionEvent(decoded.value);
 
-  const source = sourceType(input);
-  return {
-    _tag: "Ignored",
-    reason: source.known ? "malformed-event" : "unknown-event",
-    sourceType: source.sourceType,
-  };
+  return options.correlatedPromptLifecycle === true && source.known
+    ? { _tag: "CorrelatedProtocolViolation" }
+    : {
+        _tag: "Ignored",
+        reason: source.known ? "malformed-event" : "unknown-event",
+        sourceType: source.sourceType,
+      };
 }

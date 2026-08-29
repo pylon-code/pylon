@@ -48,10 +48,19 @@ import {
   decodePrimeAgentDaemonChildren,
   decodePrimeAgentDaemonEvent,
   decodePrimeAgentDaemonSessionState,
+  decodePrimeAgentPromptLifecycleCancellationResult,
+  decodePrimeAgentPromptLifecycleStateSnapshot,
+  decodePrimeAgentPromptLifecycleSubmitResult,
   primeAgentDaemonImageDigest,
   PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS,
   PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES,
+  primeAgentPromptLifecycleCanAdvance,
+  primeAgentPromptLifecycleIsSame,
+  primeAgentPromptLifecycleIsSuccessor,
   type PrimeDaemonEvent,
+  type PrimeDaemonPromptLifecycleCancellationResult,
+  type PrimeDaemonPromptLifecycleSnapshot,
+  type PrimeDaemonPromptLifecycleStateSnapshot,
   type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
@@ -75,6 +84,8 @@ const RLM_QUIESCENCE_CANCELLATION_MAX_RETRIES = 3;
 const RLM_WORKER_RECOVERY_TIMEOUT_MS = 60_000;
 const RLM_WORKER_RECOVERY_LIST_TIMEOUT_MS = 5_000;
 const RLM_WORKER_RECOVERY_SNAPSHOT_MAX_ATTEMPTS = 3;
+const PRIME_AGENT_PROMPT_LIFECYCLE_TERMINAL_RETENTION = 256;
+const PRIME_AGENT_PROMPT_LIFECYCLE_TOMBSTONE_RETENTION = 256;
 const RLM_WORKER_RECOVERY_SNAPSHOT_RETRY_DELAYS_MS = [100, 250] as const;
 // Prime Agent keeps disconnected client-owned workers for a 30-second grace period.
 // A restarted Pylon waits beyond that boundary, but never steals a session from a live owner.
@@ -882,6 +893,14 @@ export interface PrimeAgentDaemonPromptInput {
   readonly signal?: AbortSignal;
 }
 
+export interface PrimeAgentDaemonCorrelatedPromptInput {
+  readonly text: string;
+  readonly correlationId: string;
+  readonly images?: ReadonlyArray<PrimeAgentDaemonImage>;
+  readonly queueIfBusy: true;
+  readonly signal?: AbortSignal;
+}
+
 export type PrimeAgentDaemonSideQuestionResult =
   | { readonly disposition: "answered"; readonly answer: string }
   | { readonly disposition: "cancelled" }
@@ -1037,6 +1056,17 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly retryWorkerRecoverySnapshot: (generation: number) => boolean;
   readonly noteWorkerRecoveryTerminalResponse: () => void;
   readonly isConnectionGenerationCurrent: (generation: number) => boolean;
+  /** True only when the daemon explicitly negotiated correlated prompt lifecycle support. */
+  readonly correlatedPromptLifecycleAvailable: boolean;
+  readonly submitCorrelatedPrompt: (
+    input: PrimeAgentDaemonCorrelatedPromptInput,
+  ) => Effect.Effect<PrimeDaemonPromptLifecycleSnapshot, PrimeAgentDaemonSessionRuntimeError>;
+  readonly cancelPromptLifecycle: (
+    correlationId: string,
+  ) => Effect.Effect<
+    PrimeDaemonPromptLifecycleCancellationResult,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
   /** True while native background work makes a new supervised prompt unsafe to admit. */
   readonly inputAdmissionBusy: boolean;
   readonly prompt: (
@@ -1309,6 +1339,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           runtimeError("open-client", "request-failed", "Could not open the shared daemon client."),
         ),
       );
+    const correlatedPromptLifecycleAvailable =
+      client.supportsServerCapability?.("correlated_prompt_lifecycle_v1") === true;
     let connection: PrimeAgentDaemonAgentConnection | undefined;
     let unsubscribe: (() => void) | undefined;
     let disposed = false;
@@ -1327,6 +1359,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let nativeInputQueueActionActive = false;
     let nativeDescendantQuiescenceUncertain = false;
     let nativeInputActivityRevision = 0;
+    const promptLifecycles = new Map<string, PrimeDaemonPromptLifecycleSnapshot>();
+    const expiredPromptLifecycles = new Map<string, boolean>();
     let activePromptRecovery:
       | {
           readonly admissionGeneration: number;
@@ -1482,14 +1516,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return settled;
     };
 
-    const retryWorkerRecoverySnapshot = (generation: number) => {
+    const retryWorkerRecoverySnapshot = (generation: number, rejectedExplicitSnapshot = false) => {
       const recovery = activeWorkerRecovery;
       const retry = recovery?.snapshotRetry;
       if (
         recovery === undefined ||
         recovery.resolution.generation !== generation ||
         recovery.resolution.settled ||
-        !recovery.explicitSnapshotOffered ||
+        (!recovery.explicitSnapshotOffered && !rejectedExplicitSnapshot) ||
         retry === undefined ||
         retry.settled
       ) {
@@ -1700,6 +1734,21 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "Could not attach to the created daemon session.",
         ),
     }).pipe(Effect.onError(() => completeUnattachedOwnedSession));
+
+    if (
+      correlatedPromptLifecycleAvailable &&
+      (!Predicate.isFunction(connection.submitCorrelatedPrompt) ||
+        !Predicate.isFunction(connection.cancelPromptLifecycle) ||
+        !Predicate.isFunction(connection.getPromptLifecycles))
+    ) {
+      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+      client.close();
+      return yield* runtimeError(
+        "attach-session",
+        "invalid-response",
+        "Prime Agent negotiated correlated prompt lifecycle without its required connection methods.",
+      );
+    }
 
     let mcpAttached = false;
     const releaseMcpServer = Effect.suspend(() => {
@@ -2105,8 +2154,153 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       );
     };
 
+    const promptLifecycleIsTerminal = (lifecycle: PrimeDaemonPromptLifecycleSnapshot) =>
+      lifecycle.phase === "completed" ||
+      lifecycle.phase === "cancelled" ||
+      lifecycle.phase === "failed";
+
+    const boundPromptLifecycleState = (
+      records: ReadonlyMap<string, PrimeDaemonPromptLifecycleSnapshot>,
+      expired: ReadonlyMap<string, boolean>,
+    ) => {
+      const terminalRecords = [...records.values()]
+        .filter(promptLifecycleIsTerminal)
+        .sort((left, right) => left.revision - right.revision);
+      const retainedTerminalIds = new Set(
+        terminalRecords
+          .slice(-PRIME_AGENT_PROMPT_LIFECYCLE_TERMINAL_RETENTION)
+          .map((lifecycle) => lifecycle.correlationId),
+      );
+      const nextPromptLifecycles = new Map<string, PrimeDaemonPromptLifecycleSnapshot>();
+      for (const [correlationId, lifecycle] of records) {
+        if (!promptLifecycleIsTerminal(lifecycle) || retainedTerminalIds.has(correlationId)) {
+          nextPromptLifecycles.set(correlationId, lifecycle);
+        }
+      }
+      const nextExpiredPromptLifecycles = new Map(expired);
+      for (const lifecycle of terminalRecords.slice(
+        0,
+        -PRIME_AGENT_PROMPT_LIFECYCLE_TERMINAL_RETENTION,
+      )) {
+        nextExpiredPromptLifecycles.set(lifecycle.correlationId, lifecycle.deliveryCrossed);
+      }
+      while (nextExpiredPromptLifecycles.size > PRIME_AGENT_PROMPT_LIFECYCLE_TOMBSTONE_RETENTION) {
+        const oldest = nextExpiredPromptLifecycles.keys().next().value;
+        if (oldest === undefined) break;
+        nextExpiredPromptLifecycles.delete(oldest);
+      }
+      return { nextPromptLifecycles, nextExpiredPromptLifecycles };
+    };
+
+    const commitPromptLifecycleStateMerge = (plan: {
+      readonly nextPromptLifecycles: ReadonlyMap<string, PrimeDaemonPromptLifecycleSnapshot>;
+      readonly nextExpiredPromptLifecycles: ReadonlyMap<string, boolean>;
+    }) => {
+      promptLifecycles.clear();
+      for (const [correlationId, lifecycle] of plan.nextPromptLifecycles) {
+        promptLifecycles.set(correlationId, lifecycle);
+      }
+      expiredPromptLifecycles.clear();
+      for (const [correlationId, deliveryCrossed] of plan.nextExpiredPromptLifecycles) {
+        expiredPromptLifecycles.set(correlationId, deliveryCrossed);
+      }
+    };
+
+    const observePromptLifecycle = (
+      lifecycle: PrimeDaemonPromptLifecycleSnapshot,
+    ): "accepted" | "duplicate" | "invalid" => {
+      if (expiredPromptLifecycles.has(lifecycle.correlationId)) return "invalid";
+      const current = promptLifecycles.get(lifecycle.correlationId);
+      if (current !== undefined) {
+        if (primeAgentPromptLifecycleIsSame(current, lifecycle)) return "duplicate";
+        if (!primeAgentPromptLifecycleIsSuccessor(current, lifecycle)) return "invalid";
+      }
+      const records = new Map(promptLifecycles);
+      records.set(lifecycle.correlationId, lifecycle);
+      commitPromptLifecycleStateMerge(boundPromptLifecycleState(records, expiredPromptLifecycles));
+      return "accepted";
+    };
+
+    const planPromptLifecycleStateMerge = (state: PrimeDaemonPromptLifecycleStateSnapshot) => {
+      const snapshotRecords = new Map<string, PrimeDaemonPromptLifecycleSnapshot>();
+      const snapshotExpired = new Map<string, boolean>();
+      for (const lifecycle of state.records) {
+        if (
+          snapshotRecords.has(lifecycle.correlationId) ||
+          snapshotExpired.has(lifecycle.correlationId) ||
+          expiredPromptLifecycles.has(lifecycle.correlationId)
+        ) {
+          return undefined;
+        }
+        const current = promptLifecycles.get(lifecycle.correlationId);
+        if (
+          current !== undefined &&
+          !primeAgentPromptLifecycleIsSame(current, lifecycle) &&
+          !primeAgentPromptLifecycleCanAdvance(current, lifecycle)
+        ) {
+          return undefined;
+        }
+        snapshotRecords.set(lifecycle.correlationId, lifecycle);
+      }
+      for (const tombstone of state.expired) {
+        if (
+          snapshotRecords.has(tombstone.correlationId) ||
+          snapshotExpired.has(tombstone.correlationId)
+        ) {
+          return undefined;
+        }
+        const current = promptLifecycles.get(tombstone.correlationId);
+        const expiredDeliveryCrossed = expiredPromptLifecycles.get(tombstone.correlationId);
+        if (
+          (current !== undefined && !promptLifecycleIsTerminal(current)) ||
+          (current !== undefined && current.deliveryCrossed !== tombstone.deliveryCrossed) ||
+          (expiredDeliveryCrossed !== undefined &&
+            expiredDeliveryCrossed !== tombstone.deliveryCrossed)
+        ) {
+          return undefined;
+        }
+        snapshotExpired.set(tombstone.correlationId, tombstone.deliveryCrossed);
+      }
+      for (const current of promptLifecycles.values()) {
+        if (promptLifecycleIsTerminal(current)) continue;
+        const authoritative = snapshotRecords.get(current.correlationId);
+        if (
+          authoritative === undefined ||
+          (!primeAgentPromptLifecycleIsSame(current, authoritative) &&
+            !primeAgentPromptLifecycleCanAdvance(current, authoritative))
+        ) {
+          return undefined;
+        }
+      }
+      return boundPromptLifecycleState(snapshotRecords, snapshotExpired);
+    };
+
     const offerDecoded = (raw: unknown) => {
-      const decoded = safeEvent(decodePrimeAgentDaemonEvent(raw));
+      let decoded = safeEvent(
+        decodePrimeAgentDaemonEvent(raw, {
+          correlatedPromptLifecycle: correlatedPromptLifecycleAvailable,
+        }),
+      );
+      if (
+        correlatedPromptLifecycleAvailable &&
+        decoded._tag === "SessionResynced" &&
+        (decoded.state.sessionId !== sessionId || decoded.state.activeSessionId !== activeSessionId)
+      ) {
+        decoded = { _tag: "CorrelatedProtocolViolation" };
+      }
+      if (
+        decoded._tag === "SessionResynced" &&
+        Predicate.isObject(raw) &&
+        "pylonReplacementSnapshot" in raw &&
+        raw.pylonReplacementSnapshot === true
+      ) {
+        decoded = { ...decoded, replacementSnapshot: true };
+      }
+      if (correlatedPromptLifecycleAvailable && decoded._tag === "PromptLifecycleUpdated") {
+        const observation = observePromptLifecycle(decoded.lifecycle);
+        if (observation === "duplicate") return Effect.void;
+        if (observation === "invalid") decoded = { _tag: "CorrelatedProtocolViolation" };
+      }
       const eventConnectionGeneration = connectionGeneration;
       const workerRecovery = activeWorkerRecovery;
       const workerRecoveryRequiresExplicitSnapshot =
@@ -2126,9 +2320,6 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         !reconnectResolution.settled &&
         (!workerRecoveryRequiresExplicitSnapshot || workerRecovery?.explicitSnapshotRaw === raw);
       const workerRecoverySnapshot = reconnectSnapshot && workerRecoveryRequiresExplicitSnapshot;
-      if (workerRecoverySnapshot && workerRecovery !== undefined) {
-        workerRecovery.explicitSnapshotOffered = true;
-      }
       const unsafeWorkerRecoverySnapshot =
         workerRecoverySnapshot &&
         decoded._tag === "SessionResynced" &&
@@ -2144,7 +2335,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             lastSnapshotConnectionGeneration === eventConnectionGeneration &&
             decoded.lastEventSequence < lastSnapshotSequence));
       if (unsafeWorkerRecoverySnapshot) {
-        if (!retryWorkerRecoverySnapshot(eventConnectionGeneration)) {
+        if (!retryWorkerRecoverySnapshot(eventConnectionGeneration, true)) {
           settleReconnectResolution(eventConnectionGeneration, false);
         }
         return Effect.void;
@@ -2218,7 +2409,20 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         ) {
           return Effect.void;
         }
+        if (correlatedPromptLifecycleAvailable && event.promptLifecycles !== undefined) {
+          const lifecyclePlan = planPromptLifecycleStateMerge(event.promptLifecycles);
+          if (lifecyclePlan === undefined) {
+            if (workerRecoverySnapshot) {
+              settleReconnectResolution(eventConnectionGeneration, false);
+            }
+            return Queue.offer(eventQueue, { _tag: "CorrelatedProtocolViolation" }).pipe(
+              Effect.asVoid,
+            );
+          }
+          commitPromptLifecycleStateMerge(lifecyclePlan);
+        }
         if (workerRecoverySnapshot && workerRecovery !== undefined) {
+          workerRecovery.explicitSnapshotOffered = true;
           workerRecovery.provisionalSnapshot = {
             event,
             rosterRevisionAtOffer: knownAgentRosterRevision,
@@ -2694,7 +2898,32 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         return Effect.succeed("ready" as const);
       });
-    let routeWorkerAwareRawEvent: (raw: unknown) => Promise<void> = routeManagedAwareRawEvent;
+    const routeCorrelatedReplacementAwareRawEvent = (raw: unknown): Promise<void> => {
+      const rawType =
+        Predicate.isObject(raw) && "type" in raw && Predicate.isString(raw.type)
+          ? raw.type
+          : undefined;
+      if (!correlatedPromptLifecycleAvailable || rawType !== "session_replaced") {
+        return routeManagedAwareRawEvent(raw);
+      }
+      return connection!
+        .getInitialSnapshot()
+        .then((snapshot) =>
+          routeManagedAwareRawEvent({
+            type: "session_resynced",
+            snapshot,
+            pylonReplacementSnapshot: true,
+          }),
+        )
+        .catch(() =>
+          routeManagedAwareRawEvent({
+            type: "closed",
+            error: "Prime Agent replacement lifecycle state could not be reconciled.",
+          }),
+        );
+    };
+    let routeWorkerAwareRawEvent: (raw: unknown) => Promise<void> =
+      routeCorrelatedReplacementAwareRawEvent;
 
     // The initial snapshot reserves one queue slot. Admission is cumulative for
     // the whole initialization phase: draining a batch never reopens capacity.
@@ -2740,9 +2969,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       );
     }
     const initialEvent = safeEvent(
-      decodePrimeAgentDaemonEvent({ type: "session_resynced", snapshot: rawSnapshot }),
+      decodePrimeAgentDaemonEvent(
+        { type: "session_resynced", snapshot: rawSnapshot },
+        { correlatedPromptLifecycle: correlatedPromptLifecycleAvailable },
+      ),
     );
-    if (initialEvent._tag !== "SessionResynced" || initialEvent.state.sessionId !== sessionId) {
+    if (
+      initialEvent._tag !== "SessionResynced" ||
+      initialEvent.state.sessionId !== sessionId ||
+      (correlatedPromptLifecycleAvailable && initialEvent.state.activeSessionId !== activeSessionId)
+    ) {
       unsubscribe();
       yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
       client.close();
@@ -2751,6 +2987,20 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         "invalid-response",
         "The daemon returned an invalid or mismatched initial snapshot.",
       );
+    }
+    if (correlatedPromptLifecycleAvailable) {
+      const lifecyclePlan = planPromptLifecycleStateMerge(initialEvent.promptLifecycles!);
+      if (lifecyclePlan === undefined) {
+        unsubscribe();
+        yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+        client.close();
+        return yield* runtimeError(
+          "initial-snapshot",
+          "invalid-response",
+          "The daemon returned an invalid correlated lifecycle snapshot.",
+        );
+      }
+      commitPromptLifecycleStateMerge(lifecyclePlan);
     }
     nativeRunObservedActive =
       initialEvent.state.isStreaming ||
@@ -4029,7 +4279,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         typeof raw === "object" && raw !== null && "type" in raw && typeof raw.type === "string"
           ? raw.type
           : undefined;
-      if (rawType !== "closed") return routeManagedAwareRawEvent(raw);
+      if (rawType !== "closed") return routeCorrelatedReplacementAwareRawEvent(raw);
       const generation = connectionGeneration;
       if (workerCloseRecoveryAttempt?.generation === generation) {
         return workerCloseRecoveryAttempt.promise;
@@ -4481,6 +4731,177 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             return true;
           }),
         );
+      },
+    );
+
+    const emitPromptLifecycle = (lifecycle: PrimeDaemonPromptLifecycleSnapshot) =>
+      Queue.offer(eventQueue, {
+        _tag: "PromptLifecycleUpdated",
+        lifecycle,
+      });
+
+    const reconcileCorrelatedPromptLifecycle = Effect.fn(
+      "PrimeAgentDaemonSessionRuntime.reconcileCorrelatedPromptLifecycle",
+    )(function* (correlationId: string) {
+      const raw = yield* Effect.tryPromise({
+        try: () => connection!.getPromptLifecycles!(),
+        catch: () =>
+          runtimeError(
+            "prompt",
+            "request-failed",
+            "Could not reconcile the correlated Prime Agent prompt lifecycle.",
+          ),
+      });
+      const state = decodePrimeAgentPromptLifecycleStateSnapshot(raw);
+      if (state === undefined) {
+        return yield* runtimeError(
+          "prompt",
+          "invalid-response",
+          "Prime Agent returned an invalid correlated prompt lifecycle snapshot.",
+        );
+      }
+      const lifecyclePlan = planPromptLifecycleStateMerge(state);
+      if (lifecyclePlan === undefined) {
+        return yield* runtimeError(
+          "prompt",
+          "invalid-response",
+          "Prime Agent returned a regressing correlated prompt lifecycle snapshot.",
+        );
+      }
+      commitPromptLifecycleStateMerge(lifecyclePlan);
+      const lifecycle = state.records.find(
+        (candidate) => candidate.correlationId === correlationId,
+      );
+      if (lifecycle !== undefined) {
+        yield* emitPromptLifecycle(lifecycle);
+        return lifecycle;
+      }
+      return yield* runtimeError(
+        "prompt",
+        "invalid-response",
+        "The correlated Prime Agent prompt lifecycle is no longer retained.",
+      );
+    });
+
+    const submitCorrelatedPrompt = Effect.fn(
+      "PrimeAgentDaemonSessionRuntime.submitCorrelatedPrompt",
+    )(function* (promptInput: PrimeAgentDaemonCorrelatedPromptInput) {
+      yield* ensureOpen("prompt");
+      if (!correlatedPromptLifecycleAvailable) {
+        return yield* runtimeError(
+          "prompt",
+          "invalid-input",
+          "Correlated prompt lifecycle was not negotiated for this session.",
+        );
+      }
+      yield* awaitProviderRecovery;
+      const images = yield* validateImages("prompt", promptInput.images);
+      yield* validatePromptContent("prompt", promptInput.text, images);
+      const attempted = yield* Effect.tryPromise({
+        try: () =>
+          connection!.submitCorrelatedPrompt!(promptInput.text, {
+            correlationId: promptInput.correlationId,
+            queueIfBusy: true,
+            ...(images.length === 0 ? {} : { images }),
+            ...(promptInput.signal === undefined ? {} : { signal: promptInput.signal }),
+          }),
+        catch: () =>
+          runtimeError(
+            "prompt",
+            "request-failed",
+            "Could not submit the correlated Prime Agent prompt.",
+          ),
+      }).pipe(
+        Effect.map((value) => ({ ok: true as const, value })),
+        Effect.orElseSucceed(() => ({ ok: false as const })),
+      );
+      if (!attempted.ok) {
+        return yield* reconcileCorrelatedPromptLifecycle(promptInput.correlationId);
+      }
+      const result = decodePrimeAgentPromptLifecycleSubmitResult(
+        attempted.value,
+        promptInput.correlationId,
+      );
+      if (result === undefined) {
+        return yield* runtimeError(
+          "prompt",
+          "invalid-response",
+          "Prime Agent returned an invalid correlated prompt submission result.",
+        );
+      }
+      const current = promptLifecycles.get(promptInput.correlationId);
+      if (current !== undefined && current.revision > result.lifecycle.revision) {
+        if (!primeAgentPromptLifecycleCanAdvance(result.lifecycle, current)) {
+          return yield* runtimeError(
+            "prompt",
+            "invalid-response",
+            "Prime Agent returned inconsistent correlated prompt lifecycle data.",
+          );
+        }
+        return current;
+      }
+      const observation = observePromptLifecycle(result.lifecycle);
+      if (observation === "invalid") {
+        return yield* runtimeError(
+          "prompt",
+          "invalid-response",
+          "Prime Agent returned a regressing correlated prompt lifecycle.",
+        );
+      }
+      if (observation === "accepted") yield* emitPromptLifecycle(result.lifecycle);
+      return promptLifecycles.get(promptInput.correlationId) ?? result.lifecycle;
+    });
+
+    const cancelPromptLifecycle = Effect.fn("PrimeAgentDaemonSessionRuntime.cancelPromptLifecycle")(
+      function* (correlationId: string) {
+        yield* ensureOpen("abort");
+        if (!correlatedPromptLifecycleAvailable) {
+          return yield* runtimeError(
+            "abort",
+            "invalid-input",
+            "Correlated prompt lifecycle was not negotiated for this session.",
+          );
+        }
+        const raw = yield* Effect.tryPromise({
+          try: () => connection!.cancelPromptLifecycle!(correlationId),
+          catch: () =>
+            runtimeError(
+              "abort",
+              "request-failed",
+              "Could not cancel the correlated Prime Agent prompt lifecycle.",
+            ),
+        });
+        const result = decodePrimeAgentPromptLifecycleCancellationResult(raw, correlationId);
+        if (result === undefined) {
+          return yield* runtimeError(
+            "abort",
+            "invalid-response",
+            "Prime Agent returned an invalid correlated prompt cancellation result.",
+          );
+        }
+        if (result.status === "cancelled" || result.status === "too_late") {
+          const current = promptLifecycles.get(correlationId);
+          if (current !== undefined && current.revision > result.lifecycle.revision) {
+            if (!primeAgentPromptLifecycleCanAdvance(result.lifecycle, current)) {
+              return yield* runtimeError(
+                "abort",
+                "invalid-response",
+                "Prime Agent returned inconsistent correlated prompt cancellation data.",
+              );
+            }
+          } else {
+            const observation = observePromptLifecycle(result.lifecycle);
+            if (observation === "invalid") {
+              return yield* runtimeError(
+                "abort",
+                "invalid-response",
+                "Prime Agent returned a regressing correlated prompt cancellation lifecycle.",
+              );
+            }
+            if (observation === "accepted") yield* emitPromptLifecycle(result.lifecycle);
+          }
+        }
+        return result;
       },
     );
 
@@ -5290,7 +5711,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
 
     // Keep initialization admission active through every control-plane read.
     // The cumulative cap guarantees this entire flush fits without a consumer.
-    yield* Queue.offer(eventQueue, initialEvent);
+    yield* Queue.offer(eventQueue, { ...initialEvent, initialSnapshot: true });
     while (bufferedEvents.length > 0) {
       const batch = bufferedEvents.splice(0);
       for (const bufferedEvent of batch) {
@@ -5409,6 +5830,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       retryWorkerRecoverySnapshot,
       noteWorkerRecoveryTerminalResponse,
       isConnectionGenerationCurrent: (generation) => generation === connectionGeneration,
+      correlatedPromptLifecycleAvailable,
+      submitCorrelatedPrompt,
+      cancelPromptLifecycle,
       get inputAdmissionBusy() {
         return (
           nativeRunObservedActive ||
