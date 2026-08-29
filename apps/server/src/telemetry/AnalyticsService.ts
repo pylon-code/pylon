@@ -29,9 +29,11 @@ interface BufferedAnalyticsEvent {
 }
 
 const TelemetryEnvConfig = Config.all({
-  posthogKey: Config.string("T3CODE_POSTHOG_KEY").pipe(
-    Config.withDefault("phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m"),
-  ),
+  // No baked-in key. Pylon inherited upstream's, which meant every install
+  // reported into T3 Code's PostHog project — data Pylon cannot read and did not
+  // ask for. Telemetry is opt-in until a key is configured; setting
+  // T3CODE_POSTHOG_KEY to a Pylon project turns it back on with one variable.
+  posthogKey: Config.string("T3CODE_POSTHOG_KEY").pipe(Config.withDefault("")),
   posthogHost: Config.string("T3CODE_POSTHOG_HOST").pipe(
     Config.withDefault("https://us.i.posthog.com"),
   ),
@@ -106,7 +108,7 @@ export const make = Effect.gen(function* () {
   const sendBatch = Effect.fn("AnalyticsService.sendBatch")(function* (
     events: ReadonlyArray<BufferedAnalyticsEvent>,
   ) {
-    if (!telemetryConfig.enabled || !identifier) return;
+    if (!telemetryConfig.enabled || !telemetryConfig.posthogKey || !identifier) return;
 
     const payload = {
       api_key: telemetryConfig.posthogKey,
@@ -160,7 +162,7 @@ export const make = Effect.gen(function* () {
 
   const record: AnalyticsService["Service"]["record"] = Effect.fn("AnalyticsService.record")(
     function* (event, properties) {
-      if (!telemetryConfig.enabled || !identifier) return;
+      if (!telemetryConfig.enabled || !telemetryConfig.posthogKey || !identifier) return;
 
       const enqueueResult = yield* enqueueBufferedEvent(event, properties);
       if (enqueueResult.dropped) {
