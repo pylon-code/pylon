@@ -38,6 +38,7 @@ import {
   workEntryIndicatesToolSuccess,
   workLogEntryIsMissingResponse,
   workEntryDisplayIndicatesToolFailure,
+  workEntrySignalsSevereFailure,
   workLogEntryIsToolLike,
 } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
@@ -1647,33 +1648,25 @@ function WorkGroupToggleTimelineRow({
     : row.hiddenCount === 1
       ? "log entry"
       : "log entries";
-  const showHiddenFailure = row.hasFailure && !row.expanded;
-
   return (
     <button
       type="button"
       className="flex min-h-6 w-full cursor-pointer items-center gap-1.5 rounded-md px-0.5 py-0.5 text-left text-sm leading-relaxed transition-colors duration-150 hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+      aria-label={
+        row.hasFailure && !row.expanded
+          ? `+${row.hiddenCount} previous ${labelNoun}, includes a failure`
+          : undefined
+      }
       aria-expanded={row.expanded}
       onClick={() => ctx.onToggleWorkGroup(row.groupId, row.id)}
     >
-      <span
-        className={cn(
-          "flex size-6 shrink-0 items-center justify-center",
-          showHiddenFailure ? "text-destructive" : "text-icon-muted",
-        )}
-        role={showHiddenFailure ? "img" : undefined}
-        aria-label={showHiddenFailure ? "Hidden work includes a failure" : undefined}
-      >
-        {showHiddenFailure ? (
-          <WorkEntryIconSvg name="x" className="shrink-0 stroke-[1.8] opacity-70" />
-        ) : (
-          <ChevronDownIcon
-            className={cn(
-              "size-4 shrink-0 opacity-70 transition-transform duration-200",
-              row.expanded && "rotate-180",
-            )}
-          />
-        )}
+      <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
+        <ChevronDownIcon
+          className={cn(
+            "size-4 shrink-0 opacity-70 transition-transform duration-200",
+            row.expanded && "rotate-180",
+          )}
+        />
       </span>
       {row.expanded ? (
         <span className="font-medium text-foreground">
@@ -2220,7 +2213,6 @@ type WorkEntryIconName =
   | "square-pen"
   | "terminal"
   | "wrench"
-  | "x"
   | "zap";
 
 function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; className: string }) {
@@ -2258,8 +2250,6 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
       );
     case "wrench":
       return <WrenchIcon className={fixedIconClassName} aria-hidden />;
-    case "x":
-      return <DotMatrix sizeRole="inline" aria-hidden state="error" className={className} />;
     case "zap":
       return <ZapIcon className={fixedIconClassName} aria-hidden />;
   }
@@ -2730,14 +2720,18 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
     (turnSettled && workEntryIndicatesToolNeutralStatus(workEntry));
   const showDestructiveRowStyle =
     showFailedIndicator &&
-    (workEntry.sourceActivityKind === "runtime.error" || !workLogEntryIsToolLike(workEntry));
+    (workEntrySignalsSevereFailure(workEntry) || !workLogEntryIsToolLike(workEntry));
+  // Ordinary tool failures stay muted; only runtime errors and warnings get
+  // color. The red treatment is reserved for severe failures.
   const iconWrapperClass = cn(
     "flex size-6 shrink-0 items-center justify-center",
-    showWarningIndicator || showDestructiveRowStyle
-      ? "text-destructive"
-      : workLogEntryIsToolLike(workEntry)
-        ? "text-icon-muted"
-        : iconConfig.className,
+    showWarningIndicator
+      ? "text-warning"
+      : showDestructiveRowStyle
+        ? "text-destructive"
+        : workLogEntryIsToolLike(workEntry)
+          ? "text-icon-muted"
+          : iconConfig.className,
   );
   const headingClass = showWarningIndicator
     ? "font-medium text-warning"
