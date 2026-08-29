@@ -186,11 +186,28 @@ describe("WSL runtime cache", () => {
     expect(sanitizeWslRuntimeId("1.2.3/x64; touch /tmp/nope")).toBe("1.2.3_x64__touch__tmp_nope");
   });
 
+  it("keeps each channel's runtime cache in its own parent", () => {
+    // Prune deletes every sha256-* sibling it does not recognise as current,
+    // previous, or in use. Channels ship different archive hashes, so a shared
+    // parent would have Alpha and Nightly evicting each other on every launch.
+    const stable = buildWslRuntimePruneScript("sha256-aaa", "pylon-code");
+    const nightly = buildWslRuntimePruneScript("sha256-bbb", "pylon-code-nightly");
+
+    expect(stable).toContain('runtime_parent="$HOME/.pylon-code/wsl-runtime"');
+    expect(nightly).toContain('runtime_parent="$HOME/.pylon-code-nightly/wsl-runtime"');
+    expect(nightly).not.toContain('"$HOME/.pylon-code/wsl-runtime"');
+
+    expect(buildWslRuntimeInvalidateScript("sha256-bbb", "pylon-code-nightly")).toContain(
+      ".pylon-code-nightly/wsl-runtime/sha256-bbb",
+    );
+  });
+
   it("installs through a temporary directory and only reuses valid completed caches", () => {
     const script = buildWslRuntimeInstallScript(
       "/mnt/c/Program Files/T3 Code/wsl-runtime.tar.gz",
       "1.2.3-x64",
       "b".repeat(64),
+      "pylon-code",
     );
 
     expect(script).toContain('runtime_parent="$HOME/.pylon-code/wsl-runtime"');
@@ -229,6 +246,7 @@ describe("WSL runtime cache", () => {
       "/mnt/c/Program Files/T3 Code/wsl-runtime.tar.gz",
       "1.2.3-x64",
       "b".repeat(64),
+      "pylon-code",
     );
 
     const expected = "b".repeat(64);
@@ -258,6 +276,7 @@ describe("WSL runtime cache", () => {
       "/mnt/c/Program Files/T3 Code/wsl-runtime.tar.gz",
       "sha256-" + "c".repeat(64),
       "b".repeat(64),
+      "pylon-code",
     );
 
     expect(script).toContain('grep -qF -- "$1/" /proc/[0-9]*/cmdline 2>/dev/null');
@@ -287,6 +306,7 @@ describe("WSL runtime cache", () => {
       "/mnt/c/Program Files/T3 Code/wsl-runtime.tar.gz",
       "1.2.3-x64",
       "b".repeat(64),
+      "pylon-code",
     );
 
     // A glob, not a mapped `uname -m`: this is a presence check, and the later
@@ -317,6 +337,7 @@ describe("WSL runtime cache", () => {
       "/mnt/c/Program Files/T3 Code/wsl-runtime.tar.gz",
       "1.2.3-x64",
       "b".repeat(64),
+      "pylon-code",
     );
 
     expect(script).toContain(
@@ -349,6 +370,7 @@ describe("WSL runtime cache", () => {
       "/mnt/c/Program Files/T3 Code/wsl-runtime.tar.gz",
       "1.2.3-x64",
       "b".repeat(64),
+      "pylon-code",
     );
 
     expect(script).toContain('if ! node_pty_payload_present "$runtime_tmp"; then');
@@ -372,7 +394,7 @@ describe("WSL runtime cache", () => {
   });
 
   it("prunes completed runtimes except the current and newest previous cache", () => {
-    const script = buildWslRuntimePruneScript("1.2.3/x64");
+    const script = buildWslRuntimePruneScript("1.2.3/x64", "pylon-code");
 
     expect(script).toContain('current_runtime="$runtime_parent/1.2.3_x64"');
     expect(script).toContain('[ "$candidate" -nt "$previous_runtime" ]');
@@ -383,7 +405,7 @@ describe("WSL runtime cache", () => {
   });
 
   it("never deletes a runtime another backend is running from", () => {
-    const script = buildWslRuntimePruneScript("1.2.3/x64");
+    const script = buildWslRuntimePruneScript("1.2.3/x64", "pylon-code");
 
     // The running backend's argv holds `<runtime>/apps/server/dist/bin.mjs`, so
     // the process itself is the lease and exiting releases it. Nothing has to be
@@ -404,7 +426,7 @@ describe("WSL runtime cache", () => {
   });
 
   it("sweeps orphaned install scratch directories the ready-marker loops cannot see", () => {
-    const script = buildWslRuntimePruneScript("1.2.3/x64");
+    const script = buildWslRuntimePruneScript("1.2.3/x64", "pylon-code");
 
     // Dot-prefixed, so `"$runtime_parent"/*` never matches them, and they carry
     // no ready marker either; without this pass a killed install leaks forever.
@@ -416,7 +438,7 @@ describe("WSL runtime cache", () => {
   });
 
   it("invalidates a cache by dropping its ready marker, not the tree", () => {
-    const script = buildWslRuntimeInvalidateScript("1.2.3/x64");
+    const script = buildWslRuntimeInvalidateScript("1.2.3/x64", "pylon-code");
 
     // Readiness is a presence check, so a tree whose pty.node is present but
     // unloadable stays ready forever unless the probe can revoke the marker.
@@ -470,7 +492,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
       [
         `HOME=${sh(`${work}/home`)}`,
         "export HOME",
-        buildWslRuntimeInstallScript(archive, runtimeId, sha),
+        buildWslRuntimeInstallScript(archive, runtimeId, sha, "pylon-code"),
       ].join("\n");
     return {
       work,
@@ -641,7 +663,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         `sh ${sh(`${fixture.work}/select.sh`)}`,
         `HOME=${sh(`${fixture.work}/home`)}`,
         "export HOME",
-        buildWslRuntimePruneScript("sha256-current"),
+        buildWslRuntimePruneScript("sha256-current", "pylon-code"),
         `test -d ${sh(fixture.runtimeRoot)}`,
       ].join("\n"),
     );
@@ -664,7 +686,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         'touch -d "1 minute ago" "$runtime_parent/sha256-previous"',
         `HOME=${sh(`${fixture.work}/home`)}`,
         "export HOME",
-        buildWslRuntimePruneScript("sha256-current"),
+        buildWslRuntimePruneScript("sha256-current", "pylon-code"),
         `test ! -e ${sh(fixture.runtimeRoot)}`,
       ].join("\n"),
     );
@@ -690,7 +712,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         'touch -d "180 minutes ago" "$stale"',
         `HOME=${sh(`${fixture.work}/home`)}`,
         "export HOME",
-        buildWslRuntimePruneScript(fixture.runtimeId),
+        buildWslRuntimePruneScript(fixture.runtimeId, "pylon-code"),
         'test ! -e "$stale"',
         "kill $active_pid",
         "wait $active_pid 2>/dev/null || true",
@@ -730,7 +752,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         "sleep 0.1",
         `HOME="$home"`,
         "export HOME",
-        buildWslRuntimePruneScript("sha256-current"),
+        buildWslRuntimePruneScript("sha256-current", "pylon-code"),
         'test -d "$runtime_parent/sha256-current"',
         'test -d "$runtime_parent/sha256-previous"',
         'test -d "$runtime_parent/sha256-active"',

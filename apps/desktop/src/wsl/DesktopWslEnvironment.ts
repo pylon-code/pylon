@@ -261,13 +261,18 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
 // that install wrote.
 const WSL_RUNTIME_READY_MARKER = ".t3code-wsl-runtime-ready";
 const WSL_RUNTIME_SELECTED_MARKER = ".t3code-wsl-runtime-selected";
-// Pylon's own runtime home inside the distro, not `~/.t3`, which belongs to T3
-// Code. This is a correctness boundary rather than branding: `pruneRuntimes`
-// deletes every `sha256-*` sibling it does not recognise as current, previous,
-// or in use, so two products sharing one parent would each delete the other's
-// staged runtimes. The marker filenames stay compatibility-named; they live
-// inside this directory and collide with nothing.
-const WSL_RUNTIME_PARENT = '"$HOME/.pylon-code/wsl-runtime"';
+// Pylon's own runtime home inside the distro, per channel — not `~/.t3`, which
+// belongs to T3 Code. This is a correctness boundary rather than branding:
+// `pruneRuntimes` deletes every `sha256-*` sibling it does not recognise as
+// current, previous, or in use, so anything sharing one parent deletes the
+// other's staged runtimes. That applies to a coexisting T3 Code install and,
+// just as much, to Alpha next to Nightly — each channel ships a different
+// archive hash, so they would evict each other on every launch. The dir name
+// comes from `DesktopEnvironment.userDataDirName` (`pylon-code`,
+// `pylon-code-nightly`, `pylon-code-dev`). Marker filenames stay
+// compatibility-named; they live inside this directory and collide with nothing.
+const wslRuntimeParent = (runtimeHomeDirName: string) =>
+  `"$HOME/.${runtimeHomeDirName}/wsl-runtime"`;
 const WSL_RUNTIME_SELECTION_GRACE_MINUTES = 5;
 
 export const sanitizeWslRuntimeId = (value: string): string =>
@@ -280,11 +285,12 @@ export const buildWslRuntimeInstallScript = (
   linuxArchivePath: string,
   runtimeId: string,
   archiveSha256: string,
+  runtimeHomeDirName: string,
 ): string => {
   const safeRuntimeId = sanitizeWslRuntimeId(runtimeId);
   return [
     "set -eu",
-    `runtime_parent=${WSL_RUNTIME_PARENT}`,
+    `runtime_parent=${wslRuntimeParent(runtimeHomeDirName)}`,
     `runtime_root="$runtime_parent/${safeRuntimeId}"`,
     `ready_marker="$runtime_root/${WSL_RUNTIME_READY_MARKER}"`,
     // The native payload is the part of the tree the WSL backend actually
@@ -416,11 +422,14 @@ export const buildWslRuntimeInstallScript = (
 // any live install while still bounding how long an orphan survives.
 const ORPHANED_RUNTIME_SCRATCH_MAX_AGE_MINUTES = 120;
 
-export const buildWslRuntimePruneScript = (runtimeId: string): string => {
+export const buildWslRuntimePruneScript = (
+  runtimeId: string,
+  runtimeHomeDirName: string,
+): string => {
   const safeRuntimeId = sanitizeWslRuntimeId(runtimeId);
   return [
     "set -eu",
-    `runtime_parent=${WSL_RUNTIME_PARENT}`,
+    `runtime_parent=${wslRuntimeParent(runtimeHomeDirName)}`,
     `current_runtime="$runtime_parent/${safeRuntimeId}"`,
     '[ -d "$runtime_parent" ] || exit 0',
     // Serialize the whole retention decision so two backends cannot select
@@ -480,11 +489,14 @@ export const buildWslRuntimePruneScript = (runtimeId: string): string => {
 // ready forever and fails the probe on every launch. Only the probe can see
 // that, so the probe is what revokes the marker. The tree itself is left in
 // place: the install script moves an unready root aside before extracting.
-export const buildWslRuntimeInvalidateScript = (runtimeId: string): string => {
+export const buildWslRuntimeInvalidateScript = (
+  runtimeId: string,
+  runtimeHomeDirName: string,
+): string => {
   const safeRuntimeId = sanitizeWslRuntimeId(runtimeId);
   return [
     "set -eu",
-    `rm -f "$HOME/.pylon-code/wsl-runtime/${safeRuntimeId}/${WSL_RUNTIME_READY_MARKER}"`,
+    `rm -f "$HOME/.${runtimeHomeDirName}/wsl-runtime/${safeRuntimeId}/${WSL_RUNTIME_READY_MARKER}"`,
   ].join("\n");
 };
 
@@ -854,6 +866,7 @@ const ensureNodePtyImpl = (
 const prepareWslRuntimeImpl = Effect.fn("desktop.wsl.prepareRuntimeImpl")(function* (
   distro: string | null,
   archive: WslRuntimeArchive,
+  runtimeHomeDirName: string,
   windowsToWslPath: (
     distro: string | null,
     windowsPath: string,
@@ -869,7 +882,12 @@ const prepareWslRuntimeImpl = Effect.fn("desktop.wsl.prepareRuntimeImpl")(functi
 
   const install = yield* runWslShell(
     distro,
-    buildWslRuntimeInstallScript(linuxArchivePath.value, archive.runtimeId, archive.sha256),
+    buildWslRuntimeInstallScript(
+      linuxArchivePath.value,
+      archive.runtimeId,
+      archive.sha256,
+      runtimeHomeDirName,
+    ),
     RUNTIME_INSTALL_TIMEOUT,
     { resolveNode: false },
   );
@@ -902,10 +920,11 @@ const prepareWslRuntimeImpl = Effect.fn("desktop.wsl.prepareRuntimeImpl")(functi
 const pruneWslRuntimesImpl = Effect.fn("desktop.wsl.pruneRuntimesImpl")(function* (
   distro: string | null,
   runtimeId: string,
+  runtimeHomeDirName: string,
 ): Effect.fn.Return<void, never, ChildProcessSpawner.ChildProcessSpawner> {
   const result = yield* runWslShell(
     distro,
-    buildWslRuntimePruneScript(runtimeId),
+    buildWslRuntimePruneScript(runtimeId, runtimeHomeDirName),
     RUNTIME_PRUNE_TIMEOUT,
     { resolveNode: false },
   );
@@ -922,10 +941,11 @@ const pruneWslRuntimesImpl = Effect.fn("desktop.wsl.pruneRuntimesImpl")(function
 const invalidateWslRuntimeImpl = Effect.fn("desktop.wsl.invalidateRuntimeImpl")(function* (
   distro: string | null,
   runtimeId: string,
+  runtimeHomeDirName: string,
 ): Effect.fn.Return<void, never, ChildProcessSpawner.ChildProcessSpawner> {
   const result = yield* runWslShell(
     distro,
-    buildWslRuntimeInvalidateScript(runtimeId),
+    buildWslRuntimeInvalidateScript(runtimeId, runtimeHomeDirName),
     RUNTIME_INVALIDATE_TIMEOUT,
     { resolveNode: false },
   );
@@ -1256,17 +1276,17 @@ export const layer = Layer.effect(
       getUserHome,
       getDistroIp,
       prepareRuntime: (distro, archive) =>
-        provideSpawner(prepareWslRuntimeImpl(distro, archive, windowsToWslPath)).pipe(
-          Effect.withSpan("desktop.wsl.prepareRuntime"),
-        ),
+        provideSpawner(
+          prepareWslRuntimeImpl(distro, archive, environment.userDataDirName, windowsToWslPath),
+        ).pipe(Effect.withSpan("desktop.wsl.prepareRuntime")),
       pruneRuntimes: (distro, runtimeId) =>
-        provideSpawner(pruneWslRuntimesImpl(distro, runtimeId)).pipe(
+        provideSpawner(pruneWslRuntimesImpl(distro, runtimeId, environment.userDataDirName)).pipe(
           Effect.withSpan("desktop.wsl.pruneRuntimes"),
         ),
       invalidateRuntime: (distro, runtimeId) =>
-        provideSpawner(invalidateWslRuntimeImpl(distro, runtimeId)).pipe(
-          Effect.withSpan("desktop.wsl.invalidateRuntime"),
-        ),
+        provideSpawner(
+          invalidateWslRuntimeImpl(distro, runtimeId, environment.userDataDirName),
+        ).pipe(Effect.withSpan("desktop.wsl.invalidateRuntime")),
       ensureNodePty: (distro, linuxAppRoot, options) =>
         provideSpawner(ensureNodePtyImpl(distro, linuxAppRoot, options)).pipe(
           Effect.withSpan("desktop.wsl.ensureNodePty"),
