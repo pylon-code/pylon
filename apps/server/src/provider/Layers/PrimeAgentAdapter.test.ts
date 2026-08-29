@@ -25,6 +25,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
@@ -322,6 +323,38 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       1,
     );
     assert.isTrue(completedTurnEvents.every((event) => event.turnId === completedTurn.turnId));
+    // Prime ingests images only. ProviderService now hands every attachment to
+    // the adapter and puts each one's path in the prompt text, so a generic file
+    // must be skipped here rather than base64'd into an ACP image block.
+    const { attachmentsDir } = yield* ServerConfig;
+    const imageAttachment = {
+      type: "image" as const,
+      id: "thread-prime-attach-12345678-1234-1234-1234-123456789abc",
+      name: "diagram.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+    };
+    const fileAttachment = {
+      type: "file" as const,
+      id: "thread-prime-attach-12345678-1234-1234-1234-123456789abd",
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 4,
+    };
+    for (const attachment of [imageAttachment, fileAttachment]) {
+      const onDisk = NodePath.join(attachmentsDir, attachmentRelativePath(attachment)!);
+      yield* Effect.promise(() => NodeFSP.mkdir(NodePath.dirname(onDisk), { recursive: true }));
+      yield* Effect.promise(() => NodeFSP.writeFile(onDisk, Uint8Array.from([1, 2, 3, 4])));
+    }
+    const attachmentSignal = yield* Deferred.make<void>();
+    turnCompletedSignals.set(threadId, attachmentSignal);
+    yield* adapter.sendTurn({
+      threadId,
+      input: "summarize the report",
+      attachments: [imageAttachment, fileAttachment],
+    });
+    yield* Deferred.await(attachmentSignal);
+
     const requestEntries: ReadonlyArray<unknown> = yield* Effect.promise(() =>
       NodeFSP.readFile(requestLogPath, "utf8").then((contents) =>
         contents
@@ -331,6 +364,26 @@ exec ${process.execPath} ${mockAgentPath} "$@"
           .map((line) => JSON.parse(line) as unknown),
       ),
     );
+    const promptEntries = requestEntries.filter(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        "method" in entry &&
+        entry.method === "session/prompt",
+    ) as ReadonlyArray<{
+      readonly params?: { readonly prompt?: ReadonlyArray<{ readonly type?: string }> };
+    }>;
+    const attachmentPrompt = promptEntries.at(-1);
+    assert.isDefined(attachmentPrompt);
+    const blockTypes = (attachmentPrompt?.params?.prompt ?? []).map((block) => block.type);
+    // One image block for the PNG, none for the PDF, and the text block still
+    // carries the path line ProviderService appended.
+    assert.deepEqual(
+      blockTypes.filter((type) => type === "image"),
+      ["image"],
+    );
+    assert.include(blockTypes, "text");
+
     const newSessionEntry = requestEntries.find(
       (entry) =>
         typeof entry === "object" &&

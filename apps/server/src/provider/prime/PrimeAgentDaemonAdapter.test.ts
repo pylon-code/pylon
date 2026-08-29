@@ -4536,18 +4536,30 @@ describe("PrimeAgentDaemonAdapter", () => {
             mimeType: "image/png",
             sizeBytes: 3,
           };
-          yield* Effect.promise(() =>
-            NodeFSP.writeFile(
-              `${config.attachmentsDir}/${attachmentRelativePath(attachment)}`,
-              Buffer.from([1, 2, 3]),
-            ),
-          );
+          // Prime ingests images only. ProviderService forwards every
+          // attachment, so a generic file must be skipped here rather than
+          // base64'd into an image block with a non-image mime type.
+          const fileAttachment = {
+            type: "file" as const,
+            id: "prime-daemon-thread-00000000-0000-4000-8000-000000000002",
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 3,
+          };
+          for (const each of [attachment, fileAttachment]) {
+            yield* Effect.promise(() =>
+              NodeFSP.writeFile(
+                `${config.attachmentsDir}/${attachmentRelativePath(each)}`,
+                Buffer.from([1, 2, 3]),
+              ),
+            );
+          }
 
           const turnFiber = yield* adapter
             .sendTurn({
               threadId,
               input: "hello",
-              attachments: [attachment],
+              attachments: [attachment, fileAttachment],
               modelSelection: {
                 instanceId,
                 model: "anthropic/second",
@@ -4561,6 +4573,9 @@ describe("PrimeAgentDaemonAdapter", () => {
             .pipe(Effect.forkChild);
           yield* awaitObservedType(subscription.observed, "turn.started");
           yield* Queue.take(captures.promptObserved!);
+          expect(captures.prompts.at(-1)?.images.map((image) => image.mimeType)).toEqual([
+            "image/png",
+          ]);
           const toolTurnMessage = assistantMessage("hello back", "toolUse");
           yield* offer(captures, { _tag: "MessageStarted", message: assistantMessage("") });
           yield* offer(captures, {
