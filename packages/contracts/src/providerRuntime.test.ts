@@ -50,6 +50,51 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.plan[1]?.status).toBe("inProgress");
   });
 
+  it("requires a wait owner only for waiting plan steps", () => {
+    for (const waitingOn of ["user", "delegates", "external"] as const) {
+      const parsed = decodeRuntimeEvent({
+        type: "turn.plan.updated",
+        eventId: `event-waiting-${waitingOn}`,
+        provider: "primeAgent",
+        createdAt: "2026-02-28T00:00:00.000Z",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        payload: {
+          plan: [{ step: "Await dependency", status: "waiting", waitingOn }],
+        },
+      });
+
+      expect(parsed.type).toBe("turn.plan.updated");
+      if (parsed.type !== "turn.plan.updated") throw new Error("expected plan update");
+      expect(parsed.payload.plan).toEqual([
+        { step: "Await dependency", status: "waiting", waitingOn },
+      ]);
+    }
+
+    const base = {
+      type: "turn.plan.updated",
+      eventId: "event-invalid-wait",
+      provider: "primeAgent",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+    };
+    expect(() =>
+      decodeRuntimeEvent({
+        ...base,
+        payload: { plan: [{ step: "Await dependency", status: "waiting" }] },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeRuntimeEvent({
+        ...base,
+        payload: {
+          plan: [{ step: "Keep working", status: "inProgress", waitingOn: "user" }],
+        },
+      }),
+    ).toThrow();
+  });
+
   it("decodes proposed-plan completion events", () => {
     const parsed = decodeRuntimeEvent({
       type: "turn.proposed.completed",

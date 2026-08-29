@@ -12,6 +12,7 @@ import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   deriveTurnPlans,
+  deriveTurnDelegatedWork,
   derivePendingApprovals,
   derivePendingUserInputs,
   deriveTimelineEntries,
@@ -419,6 +420,39 @@ describe("deriveActivePlanState", () => {
     });
   });
 
+  it("preserves an explicit wait owner and tolerates malformed legacy waits", () => {
+    const waiting = makeActivity({
+      id: "plan-waiting",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      kind: "turn.plan.updated",
+      summary: "Plan updated",
+      tone: "info",
+      turnId: "turn-1",
+      payload: {
+        plan: [
+          { step: "Await delegated checks", status: "waiting", waitingOn: "delegates" },
+          { step: "Ship", status: "pending" },
+        ],
+      },
+    });
+    expect(deriveActivePlanState([waiting], TurnId.make("turn-1"))?.steps).toEqual([
+      { step: "Await delegated checks", status: "waiting", waitingOn: "delegates" },
+      { step: "Ship", status: "pending" },
+    ]);
+
+    const malformed = makeActivity({
+      id: "plan-malformed-wait",
+      kind: "turn.plan.updated",
+      summary: "Plan updated",
+      tone: "info",
+      turnId: "turn-1",
+      payload: { plan: [{ step: "Unknown old wait", status: "waiting" }] },
+    });
+    expect(deriveActivePlanState([malformed], TurnId.make("turn-1"))?.steps).toEqual([
+      { step: "Unknown old wait", status: "pending" },
+    ]);
+  });
+
   it("falls back to the most recent plan from a previous turn", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -690,6 +724,34 @@ describe("deriveTurnPlans", () => {
       }),
     ];
     expect(deriveTurnPlans(activities)).toEqual([]);
+  });
+});
+
+describe("deriveTurnDelegatedWork", () => {
+  it("counts only live agents from the plan's turn", () => {
+    const activities = [
+      makeActivity({
+        kind: "task.started",
+        turnId: "earlier-turn",
+        payload: { taskId: "earlier-agent", agentKind: "agent" },
+      }),
+      makeActivity({
+        kind: "task.started",
+        turnId: "plan-turn",
+        payload: { taskId: "waiting-agent", agentKind: "agent" },
+      }),
+      makeActivity({
+        kind: "task.updated",
+        turnId: "plan-turn",
+        payload: { taskId: "waiting-agent", agentKind: "agent", status: "waiting" },
+      }),
+    ];
+
+    expect(deriveTurnDelegatedWork(activities, TurnId.make("plan-turn"), true)).toEqual({
+      workingAgents: 0,
+      waitingAgents: 1,
+    });
+    expect(deriveTurnDelegatedWork(activities, TurnId.make("empty-turn"), true)).toBeNull();
   });
 });
 

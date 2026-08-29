@@ -101,10 +101,17 @@ export const PrimeAgentDaemonMessage = Schema.Union([
 ]);
 export type PrimeAgentDaemonMessage = typeof PrimeAgentDaemonMessage.Type;
 
-const managedPlanStepDetails = Schema.Struct({
-  step: Schema.String.check(Schema.isMaxLength(PRIME_AGENT_PLAN_MAX_STEP_CHARS)),
-  status: Schema.Literals(["pending", "inProgress", "completed"]),
-}).annotate({ parseOptions: { onExcessProperty: "error" } });
+const managedPlanStepDetails = Schema.Union([
+  Schema.Struct({
+    step: Schema.String.check(Schema.isMaxLength(PRIME_AGENT_PLAN_MAX_STEP_CHARS)),
+    status: Schema.Literals(["pending", "inProgress", "completed"]),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    step: Schema.String.check(Schema.isMaxLength(PRIME_AGENT_PLAN_MAX_STEP_CHARS)),
+    status: Schema.Literal("waiting"),
+    waitingOn: Schema.Literals(["user", "delegates", "external"]),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+]);
 const managedPlanDetails = Schema.Struct({
   protocol: Schema.Literal(PRIME_AGENT_PLAN_PROTOCOL),
   explanation: Schema.optional(
@@ -660,10 +667,17 @@ export interface PrimeDaemonToolCall {
 export interface PrimeDaemonPlanUpdate {
   readonly toolCallId: string;
   readonly explanation?: string | undefined;
-  readonly plan: ReadonlyArray<{
-    readonly step: string;
-    readonly status: "pending" | "inProgress" | "completed";
-  }>;
+  readonly plan: ReadonlyArray<
+    | {
+        readonly step: string;
+        readonly status: "pending" | "inProgress" | "completed";
+      }
+    | {
+        readonly step: string;
+        readonly status: "waiting";
+        readonly waitingOn: "user" | "delegates" | "external";
+      }
+  >;
 }
 
 export type PrimeDaemonMessage =
@@ -991,11 +1005,17 @@ export function projectPrimeAgentManagedPlanUpdate(input: {
   if (toolCallId.length === 0 || toolCallId.length > MAX_PREVIEW_LENGTH) return undefined;
   const decoded = decodeManagedPlanDetails(input.details);
   if (Option.isNone(decoded)) return undefined;
-  const plan = decoded.value.plan.map((item) => ({
-    step: item.step.trim(),
-    status: item.status,
-  }));
-  if (plan.some((item) => item.step.length === 0)) return undefined;
+  const plan: PrimeDaemonPlanUpdate["plan"] = decoded.value.plan.map((item) =>
+    item.status === "waiting"
+      ? { step: item.step.trim(), status: item.status, waitingOn: item.waitingOn }
+      : { step: item.step.trim(), status: item.status },
+  );
+  if (
+    plan.some((item) => item.step.length === 0) ||
+    plan.filter((item) => item.status === "inProgress" || item.status === "waiting").length > 1
+  ) {
+    return undefined;
+  }
   const explanation = decoded.value.explanation?.trim();
   return {
     toolCallId,

@@ -80,8 +80,11 @@ export type RuntimeThreadState = typeof RuntimeThreadState.Type;
 const RuntimeTurnState = Schema.Literals(["completed", "failed", "interrupted", "cancelled"]);
 export type RuntimeTurnState = typeof RuntimeTurnState.Type;
 
-const RuntimePlanStepStatus = Schema.Literals(["pending", "inProgress", "completed"]);
+const RuntimePlanStepStatus = Schema.Literals(["pending", "inProgress", "waiting", "completed"]);
 export type RuntimePlanStepStatus = typeof RuntimePlanStepStatus.Type;
+
+const RuntimePlanWaitingOn = Schema.Literals(["user", "delegates", "external"]);
+export type RuntimePlanWaitingOn = typeof RuntimePlanWaitingOn.Type;
 
 const RuntimeItemStatus = Schema.Literals(["inProgress", "completed", "failed", "declined"]);
 export type RuntimeItemStatus = typeof RuntimeItemStatus.Type;
@@ -412,10 +415,17 @@ const TurnAbortedPayload = Schema.Struct({
 });
 export type TurnAbortedPayload = typeof TurnAbortedPayload.Type;
 
-const RuntimePlanStep = Schema.Struct({
-  step: TrimmedNonEmptyStringSchema,
-  status: RuntimePlanStepStatus,
-});
+const RuntimePlanStep = Schema.Union([
+  Schema.Struct({
+    step: TrimmedNonEmptyStringSchema,
+    status: Schema.Literals(["pending", "inProgress", "completed"]),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    step: TrimmedNonEmptyStringSchema,
+    status: Schema.Literal("waiting"),
+    waitingOn: RuntimePlanWaitingOn,
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+]);
 export type RuntimePlanStep = typeof RuntimePlanStep.Type;
 
 const TurnPlanUpdatedPayload = Schema.Struct({

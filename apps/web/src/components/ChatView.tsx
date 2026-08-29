@@ -111,6 +111,7 @@ import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   deriveTurnPlans,
+  deriveTurnDelegatedWork,
   findLatestProposedPlan,
   deriveWorkLogEntries,
   hasActionableProposedPlan,
@@ -2614,15 +2615,15 @@ function ChatViewContent(props: ChatViewProps) {
   );
   // Current step for the in-chat working row: only for the running turn's own
   // plan (deriveActivePlanState falls back to older turns' plans, which must
-  // not label fresh work). Falls back to the first pending step so an
-  // all-pending freshly written plan labels the row, matching the chip and
-  // the server's planProgress.
+  // not label fresh work). Prefer active work or an explicit wait, then the
+  // first pending outcome for a freshly written plan.
   const workingStepLabel = useMemo(() => {
     if (!activePlan || activePlan.turnId !== (activeLatestTurn?.turnId ?? null)) {
       return null;
     }
     return (
       activePlan.steps.find((step) => step.status === "inProgress")?.step ??
+      activePlan.steps.find((step) => step.status === "waiting")?.step ??
       activePlan.steps.find((step) => step.status === "pending")?.step ??
       null
     );
@@ -4613,14 +4614,36 @@ function ChatViewContent(props: ChatViewProps) {
   // partition (same shell, same capability gate, same PR auto-settle input)
   // so the banner and the sidebar row never disagree.
   const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
+  const activeComposerPlan =
+    activePlan && activePlan.turnId === activeLatestTurn?.turnId ? activePlan : null;
+  const activeComposerCurrentStep =
+    activeComposerPlan?.steps.find((step) => step.status === "inProgress") ??
+    activeComposerPlan?.steps.find((step) => step.status === "waiting") ??
+    activeComposerPlan?.steps.find((step) => step.status === "pending");
+  // The durable plan activity owns the composer preview. This survives a
+  // server restart; the shell's in-memory planProgress remains only a compact
+  // sidebar/working-line optimization.
   const activeComposerTasksProgress =
-    activeLatestTurn !== null && !latestTurnSettled
-      ? (activeThreadShell?.planProgress ?? null)
+    activeLatestTurn !== null &&
+    activeComposerPlan &&
+    activeComposerCurrentStep &&
+    (!latestTurnSettled || activeComposerCurrentStep.status === "waiting")
+      ? {
+          step: activeComposerCurrentStep.step,
+          completedSteps: activeComposerPlan.steps.filter((step) => step.status === "completed")
+            .length,
+          totalSteps: activeComposerPlan.steps.length,
+        }
       : null;
   const activeComposerTaskSteps =
-    activeComposerTasksProgress && activePlan && activePlan.turnId === activeLatestTurn?.turnId
-      ? activePlan.steps
-      : null;
+    activeComposerTasksProgress && activeComposerPlan ? activeComposerPlan.steps : null;
+  const activeComposerDelegatedWork = useMemo(
+    () =>
+      activeComposerTaskSteps && activeComposerPlan?.turnId
+        ? deriveTurnDelegatedWork(threadActivities, activeComposerPlan.turnId, agentSessionLive)
+        : null,
+    [activeComposerPlan?.turnId, activeComposerTaskSteps, agentSessionLive, threadActivities],
+  );
   const autoSettleAfterDays = useClientSettings((settings) => settings.sidebarAutoSettleAfterDays);
   const autoSettleOnMerge = useClientSettings((settings) => settings.sidebarAutoSettleOnMerge);
   const linkedPullRequestStatus = useLinkedThreadPullRequest(
@@ -8109,6 +8132,7 @@ function ChatViewContent(props: ChatViewProps) {
                             activeProposedPlan={activeProposedPlan}
                             activeTasksProgress={activeComposerTasksProgress}
                             activeTaskSteps={activeComposerTaskSteps}
+                            activeDelegatedWork={activeComposerDelegatedWork}
                             runtimeMode={runtimeMode}
                             interactionMode={interactionMode}
                             lockedProvider={lockedProvider}

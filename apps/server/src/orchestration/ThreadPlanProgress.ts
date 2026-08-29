@@ -49,11 +49,12 @@ export function make(): ThreadPlanProgressService["Service"] {
     recordPlanProgress: (threadId, plan) => {
       const totalSteps = plan.length;
       const completedSteps = plan.filter((step) => step.status === "completed").length;
-      // Current step: the in-progress one, else the first pending one (a
-      // plan that was just written has no in-progress step yet).
+      // Current step: active work or an explicit wait, else the first
+      // pending outcome (a plan that was just written has no active step yet).
       const current =
         plan.find((step) => step.status === "inProgress") ??
-        plan.find((step) => step.status !== "completed");
+        plan.find((step) => step.status === "waiting") ??
+        plan.find((step) => step.status === "pending");
       if (totalSteps === 0 || completedSteps === totalSteps || current === undefined) {
         progressByThreadId.delete(threadId);
         return;

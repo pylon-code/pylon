@@ -24,7 +24,7 @@ describe("ThreadPlanProgress", () => {
     expect(progress.getThreadPlanProgress(threadId)).toBeNull();
   });
 
-  it("falls back to the first non-completed step when nothing is in progress", () => {
+  it("falls back to the first pending step when nothing is active", () => {
     const progress = ThreadPlanProgress.make();
     const threadId = "t-plan-2";
     progress.recordPlanProgress(threadId, [
@@ -32,6 +32,20 @@ describe("ThreadPlanProgress", () => {
       { step: "Second", status: "pending" },
     ]);
     expect(progress.getThreadPlanProgress(threadId)?.step).toBe("First");
+  });
+
+  it("surfaces an explicit wait before pending work", () => {
+    const progress = ThreadPlanProgress.make();
+    const threadId = "t-plan-wait";
+    progress.recordPlanProgress(threadId, [
+      { step: "Pending setup", status: "pending" },
+      { step: "Await review", status: "waiting" },
+    ]);
+    expect(progress.getThreadPlanProgress(threadId)).toEqual({
+      step: "Await review",
+      completedSteps: 0,
+      totalSteps: 2,
+    });
   });
 
   it("clearThreadPlanProgress removes the entry (turn settled / session died)", () => {

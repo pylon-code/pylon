@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   PRIME_AGENT_PLAN_PROTOCOL,
+  PRIME_AGENT_PLAN_TOOL_DEFINITION,
   PRIME_AGENT_PLAN_TOOL_NAME,
   makePrimeAgentManagedExtensionSource,
   projectPrimeAgentManagedPermissionRequest,
@@ -13,6 +14,19 @@ const project = (input: {
   readonly title?: string;
   readonly message?: string;
 }) => projectPrimeAgentManagedPermissionRequest(input, token);
+
+describe("PRIME_AGENT_PLAN_TOOL_DEFINITION", () => {
+  it("advertises the same discriminated waiting contract enforced at runtime", () => {
+    const [nonWaiting, waiting] =
+      PRIME_AGENT_PLAN_TOOL_DEFINITION.parameters.properties.plan.items.oneOf;
+
+    expect(nonWaiting.properties.status.enum).toEqual(["pending", "inProgress", "completed"]);
+    expect(nonWaiting.properties).not.toHaveProperty("waitingOn");
+    expect(waiting.properties.status.const).toBe("waiting");
+    expect(waiting.properties.waitingOn.enum).toEqual(["user", "delegates", "external"]);
+    expect(waiting.required).toContain("waitingOn");
+  });
+});
 
 describe("projectPrimeAgentManagedPermissionRequest", () => {
   it("projects only the versioned, session-authorized managed confirmation format", () => {
@@ -187,6 +201,70 @@ describe("makePrimeAgentManagedExtensionSource", () => {
         .get(PRIME_AGENT_PLAN_TOOL_NAME)
         ?.execute("call-2", { plan: [] }, undefined, undefined, extensionContext(false)),
     ).rejects.toThrow("root Pylon session");
+  });
+
+  it("preserves honest waits and rejects ambiguous managed plans", async () => {
+    const extension = await loadExtension(extensionSource());
+    const execute = extension.tools.get(PRIME_AGENT_PLAN_TOOL_NAME)?.execute;
+    if (!execute) throw new Error("expected managed plan tool");
+
+    for (const waitingOn of ["user", "delegates", "external"] as const) {
+      await expect(
+        execute(
+          `call-wait-${waitingOn}`,
+          { plan: [{ step: "Await dependency", status: "waiting", waitingOn }] },
+          undefined,
+          undefined,
+          extensionContext(true),
+        ),
+      ).resolves.toMatchObject({
+        details: {
+          plan: [{ step: "Await dependency", status: "waiting", waitingOn }],
+        },
+      });
+    }
+
+    await expect(
+      execute(
+        "call-wait-missing-owner",
+        { plan: [{ step: "Await dependency", status: "waiting" }] },
+        undefined,
+        undefined,
+        extensionContext(true),
+      ),
+    ).rejects.toThrow("Waiting plan steps require waitingOn");
+    await expect(
+      execute(
+        "call-owner-without-wait",
+        { plan: [{ step: "Keep working", status: "inProgress", waitingOn: "user" }] },
+        undefined,
+        undefined,
+        extensionContext(true),
+      ),
+    ).rejects.toThrow("waitingOn is valid only for waiting plan steps");
+    await expect(
+      execute(
+        "call-ambiguous-active",
+        {
+          plan: [
+            { step: "Implement", status: "inProgress" },
+            { step: "Await agents", status: "waiting", waitingOn: "delegates" },
+          ],
+        },
+        undefined,
+        undefined,
+        extensionContext(true),
+      ),
+    ).rejects.toThrow("at most one in-progress or waiting step");
+    await expect(
+      execute(
+        "call-all-complete",
+        { plan: [{ step: "Done", status: "completed" }] },
+        undefined,
+        undefined,
+        extensionContext(true),
+      ),
+    ).resolves.toMatchObject({ details: { plan: [{ step: "Done", status: "completed" }] } });
   });
 
   it("combines plan updates with the supervised gate and allows only that side-effect-free tool", async () => {
