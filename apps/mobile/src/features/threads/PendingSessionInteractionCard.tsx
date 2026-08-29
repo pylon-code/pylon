@@ -48,8 +48,8 @@ function ActionButton(props: {
         props.tone === "primary"
           ? "bg-blue-500"
           : props.tone === "danger"
-            ? "bg-rose-100 dark:bg-rose-500/18"
-            : "bg-neutral-200 dark:bg-neutral-800",
+            ? "bg-adaptive-rose-100-500-a18"
+            : "bg-adaptive-neutral-200-800",
         props.disabled ? "opacity-50" : "active:opacity-70",
       )}
       disabled={props.disabled}
@@ -61,8 +61,8 @@ function ActionButton(props: {
           props.tone === "primary"
             ? "text-white"
             : props.tone === "danger"
-              ? "text-rose-700 dark:text-rose-300"
-              : "text-neutral-950 dark:text-neutral-50",
+              ? "text-adaptive-rose-700-300"
+              : "text-adaptive-neutral-950-50",
         )}
       >
         {props.label}
@@ -92,18 +92,16 @@ export function PendingSessionInteractionCard(props: PendingSessionInteractionCa
   const submitDraft = () => respond(submittedInteractionResponse(draft));
 
   return (
-    <View className="gap-2.5 rounded-[20px] border border-neutral-200 bg-neutral-100 p-4 dark:border-white/6 dark:bg-neutral-900">
+    <View className="gap-2.5 rounded-[20px] border border-adaptive-neutral-200-white-a6 bg-adaptive-neutral-100-900 p-4">
       <View className="flex-row items-center justify-between gap-3">
-        <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-sky-700 dark:text-sky-300">
+        <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-adaptive-sky-700-300">
           Input needed
         </Text>
         {props.submitting ? (
           <ActivityIndicator accessibilityLabel="Sending response" size="small" />
         ) : null}
       </View>
-      <Text className="font-t3-bold text-lg text-neutral-950 dark:text-neutral-50">
-        {model.title}
-      </Text>
+      <Text className="font-t3-bold text-lg text-adaptive-neutral-950-50">{model.title}</Text>
 
       <ScrollView
         bounces={false}
@@ -127,7 +125,7 @@ export function PendingSessionInteractionCard(props: PendingSessionInteractionCa
           ) : model.kind === "confirm" ? (
             <>
               {model.message ? (
-                <Text className="font-sans text-sm leading-normal text-neutral-600 dark:text-neutral-300">
+                <Text className="font-sans text-sm leading-normal text-adaptive-neutral-600-300">
                   {model.message}
                 </Text>
               ) : null}
@@ -158,7 +156,7 @@ export function PendingSessionInteractionCard(props: PendingSessionInteractionCa
                 autoCapitalize="sentences"
                 blurOnSubmit={!model.multiline}
                 className={cn(
-                  "rounded-2xl border border-neutral-200 bg-white px-3.5 py-3 font-sans text-base text-neutral-950 dark:border-white/8 dark:bg-neutral-950/70 dark:text-neutral-50",
+                  "rounded-2xl border border-adaptive-neutral-200-white-a8 bg-adaptive-white-neutral-950-a70 px-3.5 py-3 font-sans text-base text-adaptive-neutral-950-50",
                   model.multiline ? "min-h-[132px]" : "min-h-[52px]",
                 )}
                 editable={!props.submitting}
@@ -187,9 +185,9 @@ export function PendingSessionInteractionCard(props: PendingSessionInteractionCa
       {props.error ? (
         <View
           accessibilityRole="alert"
-          className="gap-2 rounded-xl bg-rose-100 p-3 dark:bg-rose-500/18"
+          className="gap-2 rounded-xl bg-adaptive-rose-100-500-a18 p-3"
         >
-          <Text className="font-sans text-sm text-rose-800 dark:text-rose-200">{props.error}</Text>
+          <Text className="font-sans text-sm text-adaptive-rose-800-200">{props.error}</Text>
           {props.canRetry ? (
             <ActionButton
               accessibilityLabel="Retry response"

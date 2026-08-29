@@ -20,8 +20,8 @@ import {
 import { RootStack } from "./Stack";
 import { appAtomRegistry } from "./state/atom-registry";
 import { OverlayPortalHost } from "./components/OverlayPortal";
+import { useUniwindTheme } from "./lib/useUniwindTheme";
 import { appBlurTargetRef } from "./lib/appBlurTarget";
-import { useThemeColor } from "./lib/useThemeColor";
 import { useMobileNavigationTheme } from "./lib/useMobileNavigationTheme";
 
 import "../global.css";
@@ -76,8 +76,8 @@ export default function App() {
 
 function AppContent() {
   const { themeAppearance } = useAppearancePreferences();
-  const statusBarBg = useThemeColor("--color-status-bar");
-  const navigationTheme = useMobileNavigationTheme(themeAppearance);
+  const statusBarColor = String(useUniwindTheme()["--color-status-bar"]);
+  const navigationTheme = useMobileNavigationTheme();
 
   return (
     <>
@@ -87,7 +87,10 @@ function AppContent() {
           <SafeAreaProvider>
             <StatusBar
               barStyle={themeAppearance === "dark" ? "light-content" : "dark-content"}
-              backgroundColor={statusBarBg}
+              // Android draws under a translucent bar, so dropping the colour
+              // left the scrim off and orphaned `--color-status-bar`. iOS
+              // ignores this prop.
+              backgroundColor={statusBarColor}
               translucent
             />
             {/* The navigation theme drives the NATIVE header appearance: native-stack

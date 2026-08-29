@@ -43,7 +43,7 @@ export const SessionPresentationSurface = memo(function SessionPresentationSurfa
   }
 
   return (
-    <View className="mb-2 max-h-48 overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-100/95 px-3.5 py-3 dark:border-white/6 dark:bg-neutral-900/95">
+    <View className="mb-2 max-h-48 overflow-hidden rounded-2xl border border-adaptive-neutral-200-white-a6 bg-adaptive-neutral-100-a95-900-a95 px-3.5 py-3">
       <ScrollView
         bounces={false}
         nestedScrollEnabled
@@ -56,20 +56,20 @@ export const SessionPresentationSurface = memo(function SessionPresentationSurfa
             className={cn(
               "rounded-xl px-3 py-2",
               props.notification.level === "error"
-                ? "bg-rose-100 dark:bg-rose-500/18"
+                ? "bg-adaptive-rose-100-500-a18"
                 : props.notification.level === "warning"
-                  ? "bg-amber-100 dark:bg-amber-500/18"
-                  : "bg-sky-100 dark:bg-sky-500/18",
+                  ? "bg-adaptive-amber-100-500-a18"
+                  : "bg-adaptive-sky-100-500-a18",
             )}
           >
             <Text
               className={cn(
                 "font-sans text-sm leading-normal",
                 props.notification.level === "error"
-                  ? "text-rose-800 dark:text-rose-200"
+                  ? "text-adaptive-rose-800-200"
                   : props.notification.level === "warning"
-                    ? "text-amber-900 dark:text-amber-200"
-                    : "text-sky-800 dark:text-sky-200",
+                    ? "text-adaptive-amber-900-200"
+                    : "text-adaptive-sky-800-200",
               )}
               numberOfLines={4}
             >
@@ -82,13 +82,10 @@ export const SessionPresentationSurface = memo(function SessionPresentationSurfa
           <View key={status.key} className="flex-row items-start gap-2">
             <View className="mt-1.5 size-2 rounded-full bg-sky-500" />
             <View className="min-w-0 flex-1">
-              <Text className="font-t3-bold text-2xs uppercase tracking-[0.8px] text-neutral-500 dark:text-neutral-400">
+              <Text className="font-t3-bold text-2xs uppercase tracking-[0.8px] text-adaptive-neutral-500-400">
                 {compactSessionPresentationText(status.key)}
               </Text>
-              <Text
-                className="font-sans text-sm text-neutral-800 dark:text-neutral-200"
-                numberOfLines={3}
-              >
+              <Text className="font-sans text-sm text-adaptive-neutral-800-200" numberOfLines={3}>
                 {compactSessionPresentationText(status.text)}
               </Text>
             </View>
@@ -98,14 +95,17 @@ export const SessionPresentationSurface = memo(function SessionPresentationSurfa
         {widgets.map((widget) => {
           const lines = widget.lines.slice(0, MAX_VISIBLE_WIDGET_LINES);
           return (
-            <View key={widget.key} className="rounded-xl bg-white px-3 py-2 dark:bg-neutral-950/70">
-              <Text className="font-t3-bold text-2xs uppercase tracking-[0.8px] text-neutral-500 dark:text-neutral-400">
+            <View
+              key={widget.key}
+              className="rounded-xl bg-adaptive-white-neutral-950-a70 px-3 py-2"
+            >
+              <Text className="font-t3-bold text-2xs uppercase tracking-[0.8px] text-adaptive-neutral-500-400">
                 {compactSessionPresentationText(widget.key)}
               </Text>
               {lines.map((line, index) => (
                 <Text
                   key={widgetLineKey(lines, index)}
-                  className="font-sans text-sm text-neutral-800 dark:text-neutral-200"
+                  className="font-sans text-sm text-adaptive-neutral-800-200"
                   numberOfLines={2}
                 >
                   {compactSessionPresentationText(line)}

@@ -83,8 +83,8 @@ export function resolveThreadStatus(
     return {
       kind: "error",
       label: "Error",
-      pillClassName: "bg-rose-500/12 dark:bg-rose-500/16",
-      textClassName: "text-rose-700 dark:text-rose-300",
+      pillClassName: "bg-adaptive-rose-500-a12-a16",
+      textClassName: "text-adaptive-rose-700-300",
       pulse: false,
     };
   }
