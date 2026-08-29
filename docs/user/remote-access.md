@@ -190,6 +190,8 @@ the conversation and in **Settings** → **Connections**. Follow the action show
 be able to update and reconnect the server for you, or it may ask you to update the desktop app or
 run a copied command on the server machine.
 
+If Pylon Connect cannot connect, check the date and time on both devices, then try again.
+
 Finish active work before updating because the server restarts briefly. For step-by-step guidance,
 see [Keeping Pylon in Sync](./updating.md).
 
