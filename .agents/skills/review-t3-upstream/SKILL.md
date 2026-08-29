@@ -1,6 +1,6 @@
 ---
 name: review-t3-upstream
-description: Review T3 Code upstream changes for selective adoption into Pylon. Use when the user asks what changed upstream, whether Pylon should sync or update, which T3 commits or pull requests are worth adopting, how the forks differ, whether previously deferred upstream work is ready to revisit, or asks to integrate selected upstream work. Fetch the protected upstream remote, consult the durable review ledger, re-evaluate deferred work against its recorded revisit conditions, group and assess candidate changes, wait for an explicit user decision, and then selectively port approved work with Pylon-first conflict resolution.
+description: Review T3 Code upstream changes for selective adoption into Pylon. Use when the user asks what changed upstream, whether Pylon should sync or update, which T3 commits or pull requests are worth adopting, how the forks differ, whether previously deferred upstream work is ready to revisit, or asks to integrate selected upstream work. Fetch the protected upstream remote, consult the durable review ledger, re-evaluate deferred and watched upstream work against its recorded revisit conditions, group and assess candidate changes, wait for an explicit user decision, and then selectively port approved work with Pylon-first conflict resolution.
 ---
 
 # Review T3 Upstream
@@ -34,6 +34,7 @@ Confirm:
 - `t3code-upstream` fetches `pingdotgg/t3code` and has a disabled push URL;
 - `.agents/upstream-review.md` contains a `reviewed-through` commit;
 - the ledger contains a `## Deferred register` section;
+- the ledger contains an `## Upstream watch list` section;
 - the current checkout belongs to Pylon.
 
 A dirty tree does not block read-only review, but it blocks integration. Never stash, discard, or commit unrelated work to make the tree clean.
@@ -65,11 +66,19 @@ git cherry -v pylon t3code-upstream/main <cursor>
 
 Record the exact upstream head used for the report. Never describe a moving branch without its commit SHA.
 
-## Phase 2.5: Re-evaluate deferred work
+## Phase 2.5: Re-evaluate deferred and watched work
 
 Deferred work is not decided work. It is a promise to look again, and a
 deferral nobody revisits is indistinguishable from having lost it. Run this
 phase on every review, including a review that finds no new commits.
+
+This phase covers two sections, and a review that reads only the first is
+incomplete. The `## Deferred register` holds change sets that appeared in some
+batch and were consciously not adopted. The `## Upstream watch list` holds
+upstream work that never entered a review range — open issues and unmerged pull
+requests — which no `<cursor>..t3code-upstream/main` command can surface,
+because a pull request that never merges produces no commit to find. Phases 2
+and 3 are structurally blind to it; this phase is the only place it gets seen.
 
 Read the `## Deferred register` in `.agents/upstream-review.md`. For each open
 entry:
@@ -104,6 +113,26 @@ Never adopt a deferred entry just because its condition came due. The
 condition earns it a fresh review, not automatic approval — the user still
 decides.
 
+Then read the `## Upstream watch list` and do the same for each entry, with two
+differences. Its conditions are about upstream _state_, not upstream commits, so
+checking one usually means asking GitHub rather than `git log`:
+
+```bash
+gh pr view <number> --repo pingdotgg/t3code --json state,mergedAt
+gh issue view <number> --repo pingdotgg/t3code --json state
+```
+
+A pull request that shows `CLOSED` with a null `mergedAt` closed unmerged. That
+is a real signal, not a non-event: the premise the entry was written on is gone.
+Rewrite the entry around what Pylon would now be waiting for — usually a
+replacement — or propose retiring it. Do not leave a row describing a live
+upstream effort that has stopped.
+
+Each watch entry names an `Owner` issue holding its design context. When an
+entry comes due, is rewritten, or is retired, update that issue in the same
+change. Two ledgers that disagree are worse than one, and this list exists
+because an owning issue once carried a watch duty that no workflow could see.
+
 ## Phase 3: Understand the changes
 
 Group commits into coherent change sets before presenting them. A pull request, a dependency chain, or several commits implementing one behavior should normally be one decision.
@@ -128,12 +157,15 @@ Lead with a compact summary:
 - patch-equivalent or already-adopted work;
 - **deferred entries that are now due**, named up front rather than buried
   after the new candidates — they have already waited once;
+- **watch-list entries whose upstream state changed**, including any that
+  closed unmerged;
 - highest-value recommendations;
 - areas likely to conflict with Pylon.
 
 Give deferred work its own section, before or after the new change sets but
 never merged into them, so the user can tell "this is back again" from "this is
-new". Report the register's full state there: due, not yet, and stale.
+new". Report the register's full state there: due, not yet, and stale, and the
+watch list's full state alongside it.
 
 For each change set, report:
 
@@ -176,6 +208,14 @@ Keep the register current in both directions:
 An entry whose condition has come due repeatedly without anyone acting on it is
 a signal the answer is really "skip" — say so rather than deferring a fourth
 time.
+
+Maintain the `## Upstream watch list` the same way, keyed `WATCH-<n>`. Add an
+entry when the review turns up upstream work Pylon cares about that a commit
+range will never surface — an open issue, an unmerged pull request, a capability
+Pylon expects upstream to attempt. Rewrite an entry whose upstream premise
+changed, and retire it once Pylon adopts the capability, upstream ships
+something Pylon reviewed, or the interest is gone. Every entry needs an `Owner`
+issue; when the row changes, change the issue with it, in the same pull request.
 
 Do not advance the cursor when:
 
@@ -222,7 +262,9 @@ Keep the review ledger and final handoff aligned. Report:
 - checks run and unresolved risks;
 - the deferred register's state after this review: what was added, what came
   due and what happened to it, what was retired, and what is still waiting
-  with its next check.
+  with its next check;
+- the watch list's state on the same terms, including any owning issue updated
+  to match.
 
-Closing without mentioning the register is an incomplete handoff, even when
-nothing in it changed.
+Closing without mentioning the register and the watch list is an incomplete
+handoff, even when nothing in them changed.
