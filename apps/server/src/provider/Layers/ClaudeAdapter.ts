@@ -14,6 +14,7 @@ import {
   type PermissionResult,
   type PermissionUpdate,
   type SDKMessage,
+  type SDKControlGetContextUsageResponse,
   type SDKResultMessage,
   type SettingSource,
   type SDKUserMessage,
@@ -68,6 +69,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -309,6 +311,15 @@ interface ClaudeSessionContext {
   /** Task ids that have started and not yet reached a terminal state. */
   readonly liveTaskIds: Set<string>;
   turnState: ClaudeTurnState | undefined;
+  /**
+   * Auto-compact configuration for this SDK session. Claude reports it only
+   * through `getContextUsage`, whose token-count fallback can issue extra
+   * model requests, so it is asked for at most once per session and merged
+   * into every later usage snapshot instead of being re-queried per turn.
+   */
+  autoCompactSettings: ClaudeAutoCompactSettings | undefined;
+  /** True once `getContextUsage` has been attempted for this session. */
+  autoCompactSettingsQueried: boolean;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
@@ -321,6 +332,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
+  readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
   readonly close: () => void;
 }
 
@@ -605,6 +617,28 @@ function normalizeClaudeActiveTokenUsage(
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(totalProcessedTokens !== undefined ? { totalProcessedTokens } : {}),
   });
+}
+
+/**
+ * Auto-compact fields Claude only exposes through `getContextUsage`. They
+ * describe the session rather than a turn, so they are cached once and merged
+ * into every usage snapshot the adapter emits.
+ */
+interface ClaudeAutoCompactSettings {
+  readonly compactsAutomatically?: boolean;
+  readonly autoCompactThreshold?: number;
+}
+
+function normalizeClaudeAutoCompactSettings(
+  value: SDKControlGetContextUsageResponse,
+): ClaudeAutoCompactSettings {
+  const autoCompactThreshold = finitePositiveInteger(value.autoCompactThreshold);
+  return {
+    ...(typeof value.isAutoCompactEnabled === "boolean"
+      ? { compactsAutomatically: value.isAutoCompactEnabled }
+      : {}),
+    ...(autoCompactThreshold !== undefined ? { autoCompactThreshold } : {}),
+  };
 }
 
 function compactBoundaryTokenUsageSnapshot(
@@ -2089,9 +2123,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    context.lastKnownTokenUsage = usage;
+    // Auto-compact configuration is session-scoped and arrives from a separate
+    // query, so every producer's snapshot inherits it here. Snapshot-provided
+    // values win because they are never written as `undefined`.
+    const mergedUsage: ThreadTokenUsageSnapshot = context.autoCompactSettings
+      ? { ...context.autoCompactSettings, ...usage }
+      : usage;
+
+    context.lastKnownTokenUsage = mergedUsage;
     context.lastKnownTotalProcessedTokens =
-      usage.totalProcessedTokens ?? context.lastKnownTotalProcessedTokens;
+      mergedUsage.totalProcessedTokens ?? context.lastKnownTotalProcessedTokens;
 
     const turnState = context.turnState;
     const stamp = yield* makeEventStamp();
@@ -2103,7 +2144,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       threadId: context.session.threadId,
       ...(turnState ? { turnId: turnState.turnId } : {}),
       payload: {
-        usage,
+        usage: mergedUsage,
       },
       providerRefs: nativeProviderRefs(context),
       ...(options?.rawMethod || options?.rawPayload
@@ -2116,6 +2157,38 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           }
         : {}),
     });
+  });
+
+  /**
+   * Asks the SDK for auto-compact configuration at most once per session.
+   * `getContextUsage` is the only source for `compactsAutomatically` and
+   * `autoCompactThreshold`, but its token-count fallback can issue an extra
+   * model request, so it must not run after every turn (upstream #7338).
+   */
+  const ensureAutoCompactSettings = Effect.fn("ensureAutoCompactSettings")(function* (
+    context: ClaudeSessionContext,
+  ) {
+    if (context.autoCompactSettingsQueried || !context.query.getContextUsage) {
+      return;
+    }
+    context.autoCompactSettingsQueried = true;
+
+    const usage = yield* Effect.promise(async () => {
+      try {
+        return await context.query.getContextUsage?.();
+      } catch {
+        return undefined;
+      }
+    }).pipe(Effect.timeoutOption("1 second"));
+    if (Option.isNone(usage) || !usage.value) {
+      return;
+    }
+
+    const contextWindow = finitePositiveInteger(usage.value.maxTokens);
+    if (contextWindow !== undefined) {
+      context.lastKnownContextWindow = contextWindow;
+    }
+    context.autoCompactSettings = normalizeClaudeAutoCompactSettings(usage.value);
   });
 
   const emitProposedPlanCompleted = Effect.fn("emitProposedPlanCompleted")(function* (
@@ -2218,7 +2291,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context.lastKnownTotalProcessedTokens = accumulatedTotalProcessedTokens;
     }
 
-    // Avoid getContextUsage because its token-count fallback can make extra model requests.
+    // Completion usage comes from the turn's own frames; getContextUsage is
+    // only consulted once per session, for its auto-compact configuration.
+    yield* ensureAutoCompactSettings(context);
     const resultUsageRecord =
       result?.usage && typeof result.usage === "object" && !Array.isArray(result.usage)
         ? (result.usage as Record<string, unknown>)
@@ -4431,6 +4506,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         workflowMemberFingerprints,
         liveTaskIds,
         turnState: undefined,
+        autoCompactSettings: undefined,
+        autoCompactSettingsQueried: false,
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
