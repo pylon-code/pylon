@@ -35,7 +35,7 @@ Daemon mode is currently disabled on Windows. Prime Agent 0.8.1's named-pipe tra
 
 Prime supervisor ownership is recorded outside the agent home. Since Prime Agent 0.8.0, the daemon has retained the registry at `~/.prime/supervisor-owners` so macOS cleanup cannot delete a long-running supervisor's authority record, and the location is deliberately global per user rather than per agent directory. Pylon therefore writes ownership records there even when a provider instance sets its own agent home, and daemon start, stop, and renewal briefly take that registry's advisory lock alongside any other Prime daemon on the machine. This is safe for Pylon because ownership conflicts are keyed on socket path and worker descriptor directory: Pylon derives a unique socket per `(state directory, provider instance)` and the descriptor directory hashes that socket, so a Pylon daemon never claims ownership over a user's interactive `prime-agent` daemon even when both share the default `~/.prime/agent` home. Prime exposes an internal environment override for the registry location; Pylon does not use it, because it strips every `PRIME_AGENT_INTERNAL_*` variable from the daemon environment by design and will not build product behavior on an unsupported knob.
 
-Prime event queues are bounded to 256 entries and preserve FIFO delivery with backpressure during normal operation; no sliding or dropping queue is used. Pre-snapshot admission reserves capacity cumulatively and fails closed on overflow. Adapter teardown allows one second for a stalled consumer to drain, then logs a structured forced-shutdown outcome and every rejected terminal event's safe type/thread identity before closing. This explicit exceptional path prevents scope deadlock; it is not silent loss.
+Prime event queues are bounded to 256 entries and preserve FIFO delivery with backpressure during normal operation; no sliding or dropping queue is used. Nonterminal ordinary daemon callbacks wait behind that queue through a separately serialized staging tail bounded to 256 raw events and 64 MiB of conservative structural weight. Reconnect and native-close admission fence new input synchronously, before either callback can wait in that tail. One normalized native close waits for every route admitted before it, but its potentially long worker-recovery operation does not occupy the tail, so later bounded recovery evidence can progress. Events received while that close is still being classified remain provisional; only a bounded assistant-terminal fact is retained until the post-ready snapshot becomes authoritative. Exceeding the staging bound emits one fixed terminal and discards staged work before it can enter provider recovery instead of retaining unbounded callback promises. Pre-snapshot raw and decoded admission reserves count and weight cumulatively and fails closed without waiting for a consumer. Adapter teardown allows one second for a stalled consumer to drain, then logs a structured forced-shutdown outcome and every rejected terminal event's safe type/thread identity before closing. These explicit exceptional paths prevent memory or scope deadlock; they are not silent loss.
 
 Daemon assistant messages receive opaque subscriber-local segment identifiers so separate model/tool
 cycles within one Pylon turn retain their chronological positions without persisting Prime's native
@@ -112,6 +112,50 @@ correlated commands remain blocked until the adapter settles the exact resync sn
 fixed payload-free terminal failure, permanently rejects later native commands even if the SDK accessor
 returns true again, and discards later native close frames. Pylon never retries or downgrades an already-owned
 correlated prompt.
+
+Ordinary sessions preserve lossless FIFO delivery under transient decoded-queue pressure through a separately
+bounded 256-route, 64 MiB raw staging tail. Reconnect and close admission fence public input synchronously at
+the subscription boundary. Each recovery-sensitive ordinary frame carries its exact ingress-generation fence
+through managed-extension verification, scoped MCP replacement, decoded-queue waits, and the final event
+commit. A newer reconnect retires that fence and interrupts its Effect continuation; an older suspended
+snapshot can neither retain its raw generator, publish as the new generation, nor settle or clear its provider
+latches. Strict proof epochs use the same interruptible provider-route fence, including direct replacement
+snapshot reads. One session may have at most one unresolved physical provider-recovery operation across
+managed verification, scoped MCP replacement, direct replacement reads, worker-list classification, and
+worker snapshot reads. Managed
+verification starts each fixed-fanout child behind its own rejection boundary and waits for every child to
+settle, so one early rejection cannot release the slot while a sibling remains live. Retiring an Effect route
+does not release this slot; only physical Promise settlement does. Same-generation worker classification may
+share the one in-flight list read, while a newer generation fails closed rather than starting a second physical
+operation. Quiescence MCP reclamation uses generation-owned state plus the same cap
+and retirement fence. A settled successful recovery is inert for later same-generation barriers, and reconnect
+retirement clears its captured global object, so an older success cannot obstruct a later ordinary barrier. Restoration receives the exact owned recovery
+object and generation, so an older barrier cannot reclaim or settle its successor. Disposal releases its Effect waiter, gives the last issued
+physical replacement a bounded settlement grace, and then explicitly releases MCP ownership. If the physical
+replacement remains unresolved, the pinned negotiated daemon's client-claim identity check and detach path
+roll back any late replacement; daemon-client teardown is the terminal cleanup boundary. Proof loss
+publishes its one fixed terminal without waiting behind the retired provider tail. Fatal ingress and disposal
+retire both modes' waits so pending input and staged callbacks cannot remain hidden behind a provider promise.
+Both ordinary and strict close callbacks wait for proof/FIFO work admitted before the close, but do not place
+their longer worker-recovery promise in the shared tail. An ordinary close route singleflights only within its
+exact ingress fence; a close admitted after reconnect starts an independent generation-owned attempt, and the
+older route cannot clear its successor's latch. Generic frames also capture the close route present at their
+own admission. Reconnect synchronously clears the mutable global latch so current-generation recovery and
+new traffic cannot be suppressed by the retired route; frames admitted behind that old close still stay
+quarantined because their captured route no longer owns the latch, while traffic admitted before the close
+remains lossless. The captured close route also carries an interruptible retirement signal through managed and
+MCP tails, decoded-queue capacity waits, and the final atomic offer/commit. Reconnect, route settlement, fatal
+ingress, and disposal retire that signal, so a frame that passed its initial ownership check cannot resume stale. Strict close captures its exact proof epoch and
+connection generation at admission; a later proof can never authorize that older close. The same exact fence
+remains mandatory after worker recovery starts and through adapter settlement until authoritative quiescence
+finally clears the recovery: reconnect or replacement during list, snapshot, gate, or post-settlement waits
+fails with the fixed proof-loss terminal. Disposal retires a staged close before it can issue a later worker
+request. A capability-independent close latch rejects every
+public native operation except the authoritative quiescence barrier. Later native traffic remains provisional
+until worker-close classification; only one bounded assistant-terminal fact is retained, and private side
+questions fail generically before a matching late completion can resolve them. Fatal ordinary ingress also
+fails every active private side question, whose finalizer retains its bounded best-effort native abort. A settled recovery attempt is
+never reused for a later genuine close.
 
 Lifecycle records and bounded tombstones survive reconnect and worker recovery only when this current
 proof remains valid. The merged SDK invalidates proof before direct daemon replacement, so Pylon fails that
