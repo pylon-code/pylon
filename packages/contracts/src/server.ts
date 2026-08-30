@@ -574,11 +574,11 @@ export const ServerSignalProcessResult = Schema.Struct({
 export type ServerSignalProcessResult = typeof ServerSignalProcessResult.Type;
 
 /**
- * A palette the environment's machine publishes for T3 Code to follow, read
+ * A palette the environment's machine publishes for Pylon to follow, read
  * from a theme file next to the rest of the environment's state. Two seed
  * colors rather than a full palette: clients derive the remaining roles with
  * the same generator the guided theme editor uses, so a desktop theme carries
- * over as a coherent T3 Code palette instead of a foreign one.
+ * over as a coherent Pylon palette instead of a foreign one.
  */
 export const EnvironmentThemeColor = Schema.String.check(
   Schema.isPattern(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/),
@@ -611,10 +611,13 @@ const EnvironmentThemeColors = Schema.Record(
 
 const environmentThemeFields = {
   /**
-   * Standard exported theme files (the Download button's output) carry
-   * `version: 1`; the seeded short form a desktop generates has no version.
+   * Standard exported theme files (the Download button's output) carry the
+   * exporting build's theme-file version; the seeded short form a desktop
+   * generates has no version. Pylon exports `2` and still reads `1`, and the
+   * client drops roles it does not know, so both load without a translation
+   * step here.
    */
-  version: Schema.optional(Schema.Literal(1)),
+  version: Schema.optional(Schema.Literals([1, 2])),
   /** Shown on the theme card, e.g. the desktop theme's own name. */
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(48)),
   appearance: Schema.Literals(["light", "dark"]),

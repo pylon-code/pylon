@@ -31,6 +31,15 @@ const NIGHTFALL_THEME_JSON = `${JSON.stringify({
 })}\n`;
 const JUNK_THEME_JSON = `${JSON.stringify({ name: "Junk" })}\n`;
 
+/** What the Download button writes today: `version: 2` and an embedded id. */
+const PYLON_EXPORT_THEME_JSON = `${JSON.stringify({
+  version: 2,
+  id: "exported-elsewhere",
+  name: "Pylon Export",
+  appearance: "dark",
+  colors: { canvas: "oklch(0.18 0.02 265)", accent: "oklch(0.72 0.14 265)" },
+})}\n`;
+
 const readSettings = (baseDir: string): Record<string, unknown> => {
   const raw = NodeFS.readFileSync(settingsPathFor(baseDir), "utf8");
   return JSON.parse(raw) as Record<string, unknown>;
@@ -117,6 +126,24 @@ describe("t3 theme", () => {
         true,
       );
       assert.equal(readSettings(baseDir).defaultTheme, "nightfall");
+    }),
+  );
+
+  // A theme exported from this build has to be droppable in unchanged; the
+  // schema would otherwise reject Pylon's own export for its version alone.
+  it.effect("publishes a theme file exported by this build", () =>
+    Effect.gen(function* () {
+      const baseDir = makeBaseDir();
+      const themeFile = NodePath.join(baseDir, "pylon-export.json");
+      NodeFS.writeFileSync(themeFile, PYLON_EXPORT_THEME_JSON);
+
+      yield* runCli(["theme", "set", themeFile, "--base-dir", baseDir]);
+
+      assert.equal(
+        NodeFS.existsSync(NodePath.join(baseDir, "userdata", "themes", "pylon-export.json")),
+        true,
+      );
+      assert.equal(readSettings(baseDir).defaultTheme, "pylon-export");
     }),
   );
 

@@ -31,6 +31,33 @@ const SHARED_THEME: EnvironmentThemeFile = {
   colors: { canvas: "#eff1f5", accent: "#1e66f5" },
 };
 
+/**
+ * A theme exported by this build: Pylon's theme files carry `version: 2`, an
+ * embedded `id` the filename overrides, and roles a v1 build never wrote. The
+ * Download button's output has to be droppable into `themes/` unchanged.
+ */
+const PYLON_EXPORT_THEME_JSON = `${JSON.stringify({
+  version: 2,
+  id: "exported-elsewhere",
+  name: "Pylon Export",
+  appearance: "dark",
+  colors: { canvas: "oklch(0.18 0.02 265)", accent: "oklch(0.72 0.14 265)" },
+  variants: { light: { canvas: "oklch(0.98 0.01 265)" } },
+  collection: { id: "pylon", label: "Pylon" },
+})}\n`;
+
+/**
+ * A v1 export still carries the status roles Pylon retired. The schema keeps
+ * role-shaped keys and the client's lenient parse drops the ones it does not
+ * know, so an old file must publish rather than be rejected wholesale.
+ */
+const LEGACY_V1_THEME_JSON = `${JSON.stringify({
+  version: 1,
+  name: "Legacy",
+  appearance: "light",
+  colors: { canvas: "#eff1f5", accent: "#1e66f5", statusActive: "#40a02b" },
+})}\n`;
+
 /** Seeds theme files before the service starts, as a real machine would. */
 const withEnvironmentThemes = <A, E>(
   seeds: Readonly<Record<string, string>>,
@@ -92,6 +119,40 @@ it.layer(NodeServices.layer)("environment theme", (it) => {
         );
         assert.deepEqual(themes[0], { id: "nightfall", ...NIGHTFALL_THEME });
         assert.deepEqual(themes[1], { id: "shared-light", ...SHARED_THEME });
+      }),
+    ),
+  );
+
+  // Pylon's exporter writes `version: 2`; a file it produced must publish as
+  // it stands, with the filename winning over the id the export embedded.
+  it.effect("publishes a theme file exported by this build", () =>
+    withEnvironmentThemes(
+      { "pylon-export.json": PYLON_EXPORT_THEME_JSON },
+      Effect.gen(function* () {
+        const themes = yield* currentThemes;
+        assert.deepEqual(
+          themes.map((theme) => theme.id),
+          ["pylon-export"],
+        );
+        assert.equal(themes[0]?.version, 2);
+        assert.equal(themes[0]?.name, "Pylon Export");
+        assert.deepEqual(themes[0]?.colors, {
+          canvas: "oklch(0.18 0.02 265)",
+          accent: "oklch(0.72 0.14 265)",
+        });
+        assert.deepEqual(themes[0]?.variants, { light: { canvas: "oklch(0.98 0.01 265)" } });
+      }),
+    ),
+  );
+
+  it.effect("publishes a v1 export carrying roles this build retired", () =>
+    withEnvironmentThemes(
+      { "legacy.json": LEGACY_V1_THEME_JSON },
+      Effect.gen(function* () {
+        const themes = yield* currentThemes;
+        assert.equal(themes.length, 1);
+        assert.equal(themes[0]?.version, 1);
+        assert.equal(themes[0]?.colors?.statusActive, "#40a02b");
       }),
     ),
   );
