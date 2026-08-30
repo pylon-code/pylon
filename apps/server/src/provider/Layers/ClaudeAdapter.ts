@@ -145,6 +145,8 @@ interface ClaudeTurnState {
   readonly assistantTextBlocks: Map<number, AssistantTextBlockState>;
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
   readonly capturedProposedPlanKeys: Set<string>;
+  latestAssistantUsage: unknown | undefined;
+  compactedSinceLatestAssistantUsage: boolean;
   nextSyntheticAssistantBlockIndex: number;
 }
 
@@ -309,6 +311,15 @@ interface ClaudeSessionContext {
   /** Task ids that have started and not yet reached a terminal state. */
   readonly liveTaskIds: Set<string>;
   turnState: ClaudeTurnState | undefined;
+  /**
+   * Auto-compact configuration for this SDK session. Claude reports it only
+   * through `getContextUsage`, whose token-count fallback can issue extra
+   * model requests, so it is asked for at most once per session and merged
+   * into every later usage snapshot instead of being re-queried per turn.
+   */
+  autoCompactSettings: ClaudeAutoCompactSettings | undefined;
+  /** True once `getContextUsage` has been attempted for this session. */
+  autoCompactSettingsQueried: boolean;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
@@ -608,18 +619,26 @@ function normalizeClaudeActiveTokenUsage(
   });
 }
 
-function normalizeClaudeContextUsageApiSnapshot(
+/**
+ * Auto-compact fields Claude only exposes through `getContextUsage`. They
+ * describe the session rather than a turn, so they are cached once and merged
+ * into every usage snapshot the adapter emits.
+ */
+interface ClaudeAutoCompactSettings {
+  readonly compactsAutomatically?: boolean;
+  readonly autoCompactThreshold?: number;
+}
+
+function normalizeClaudeAutoCompactSettings(
   value: SDKControlGetContextUsageResponse,
-  totalProcessedTokens?: number,
-): ThreadTokenUsageSnapshot | undefined {
+): ClaudeAutoCompactSettings {
   const autoCompactThreshold = finitePositiveInteger(value.autoCompactThreshold);
-  return makeClaudeTokenUsageSnapshot({
-    activeTokens: value.totalTokens,
-    contextWindow: value.maxTokens,
-    ...(totalProcessedTokens !== undefined ? { totalProcessedTokens } : {}),
-    compactsAutomatically: value.isAutoCompactEnabled,
+  return {
+    ...(typeof value.isAutoCompactEnabled === "boolean"
+      ? { compactsAutomatically: value.isAutoCompactEnabled }
+      : {}),
     ...(autoCompactThreshold !== undefined ? { autoCompactThreshold } : {}),
-  });
+  };
 }
 
 function compactBoundaryTokenUsageSnapshot(
@@ -2104,9 +2123,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    context.lastKnownTokenUsage = usage;
+    // Auto-compact configuration is session-scoped and arrives from a separate
+    // query, so every producer's snapshot inherits it here. Snapshot-provided
+    // values win because they are never written as `undefined`.
+    const mergedUsage: ThreadTokenUsageSnapshot = context.autoCompactSettings
+      ? { ...context.autoCompactSettings, ...usage }
+      : usage;
+
+    context.lastKnownTokenUsage = mergedUsage;
     context.lastKnownTotalProcessedTokens =
-      usage.totalProcessedTokens ?? context.lastKnownTotalProcessedTokens;
+      mergedUsage.totalProcessedTokens ?? context.lastKnownTotalProcessedTokens;
 
     const turnState = context.turnState;
     const stamp = yield* makeEventStamp();
@@ -2118,7 +2144,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       threadId: context.session.threadId,
       ...(turnState ? { turnId: turnState.turnId } : {}),
       payload: {
-        usage,
+        usage: mergedUsage,
       },
       providerRefs: nativeProviderRefs(context),
       ...(options?.rawMethod || options?.rawPayload
@@ -2133,13 +2159,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
-  const queryCurrentContextUsage = Effect.fn("queryCurrentContextUsage")(function* (
+  /**
+   * Asks the SDK for auto-compact configuration at most once per session.
+   * `getContextUsage` is the only source for `compactsAutomatically` and
+   * `autoCompactThreshold`, but its token-count fallback can issue an extra
+   * model request, so it must not run after every turn (upstream #7338).
+   */
+  const ensureAutoCompactSettings = Effect.fn("ensureAutoCompactSettings")(function* (
     context: ClaudeSessionContext,
-    totalProcessedTokens?: number,
   ) {
-    if (!context.query.getContextUsage) {
-      return undefined;
+    if (context.autoCompactSettingsQueried || !context.query.getContextUsage) {
+      return;
     }
+    context.autoCompactSettingsQueried = true;
 
     const usage = yield* Effect.promise(async () => {
       try {
@@ -2149,11 +2181,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
     }).pipe(Effect.timeoutOption("1 second"));
     if (Option.isNone(usage) || !usage.value) {
-      return undefined;
+      return;
     }
 
-    context.lastKnownContextWindow = usage.value.maxTokens;
-    return normalizeClaudeContextUsageApiSnapshot(usage.value, totalProcessedTokens);
+    const contextWindow = finitePositiveInteger(usage.value.maxTokens);
+    if (contextWindow !== undefined) {
+      context.lastKnownContextWindow = contextWindow;
+    }
+    context.autoCompactSettings = normalizeClaudeAutoCompactSettings(usage.value);
   });
 
   const emitProposedPlanCompleted = Effect.fn("emitProposedPlanCompleted")(function* (
@@ -2245,6 +2280,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     errorMessage?: string,
     result?: SDKResultMessage,
   ) {
+    // Completion usage comes from the turn's own frames; getContextUsage is
+    // only consulted once per session, for its auto-compact configuration.
+    // It runs before the context window is resolved because the same response
+    // carries `maxTokens`: on a first turn whose result frame has no
+    // `modelUsage`, that is the only context window this snapshot can use.
+    yield* ensureAutoCompactSettings(context);
+
     const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
     if (resultContextWindow !== undefined) {
       context.lastKnownContextWindow = resultContextWindow;
@@ -2256,10 +2298,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context.lastKnownTotalProcessedTokens = accumulatedTotalProcessedTokens;
     }
 
-    const contextUsageSnapshot = yield* queryCurrentContextUsage(
-      context,
-      accumulatedTotalProcessedTokens ?? context.lastKnownTotalProcessedTokens,
-    );
     const resultUsageRecord =
       result?.usage && typeof result.usage === "object" && !Array.isArray(result.usage)
         ? (result.usage as Record<string, unknown>)
@@ -2281,24 +2319,31 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           accumulatedTotalProcessedTokens ?? context.lastKnownTotalProcessedTokens,
         )
       : undefined;
+    const latestAssistantSnapshot = normalizeClaudeActiveTokenUsage(
+      context.turnState?.latestAssistantUsage,
+      maxTokens,
+      accumulatedTotalProcessedTokens ?? context.lastKnownTotalProcessedTokens,
+    );
     const lastGoodUsage = context.lastKnownTokenUsage;
     const usageSnapshot: ThreadTokenUsageSnapshot | undefined =
-      contextUsageSnapshot ??
-      (resultTotalOnly && lastGoodUsage
-        ? {
-            ...lastGoodUsage,
-            ...(typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
-              ? { maxTokens }
-              : {}),
-            ...(typeof accumulatedTotalProcessedTokens === "number" &&
-            Number.isFinite(accumulatedTotalProcessedTokens) &&
-            accumulatedTotalProcessedTokens > lastGoodUsage.usedTokens
-              ? {
-                  totalProcessedTokens: accumulatedTotalProcessedTokens,
-                }
-              : {}),
-          }
-        : resultIterationSnapshot) ??
+      latestAssistantSnapshot ??
+      (context.turnState?.compactedSinceLatestAssistantUsage
+        ? undefined
+        : resultTotalOnly && lastGoodUsage
+          ? {
+              ...lastGoodUsage,
+              ...(typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
+                ? { maxTokens }
+                : {}),
+              ...(typeof accumulatedTotalProcessedTokens === "number" &&
+              Number.isFinite(accumulatedTotalProcessedTokens) &&
+              accumulatedTotalProcessedTokens > lastGoodUsage.usedTokens
+                ? {
+                    totalProcessedTokens: accumulatedTotalProcessedTokens,
+                  }
+                : {}),
+            }
+          : resultIterationSnapshot) ??
       (lastGoodUsage
         ? {
             ...lastGoodUsage,
@@ -2950,6 +2995,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         assistantTextBlocks: new Map(),
         assistantTextBlockOrder: [],
         capturedProposedPlanKeys: new Set(),
+        latestAssistantUsage: undefined,
+        compactedSinceLatestAssistantUsage: false,
         nextSyntheticAssistantBlockIndex: -1,
       };
       context.session = {
@@ -3010,6 +3057,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     if (context.turnState) {
       context.turnState.items.push(message.message);
+      if (
+        normalizeClaudeActiveTokenUsage(
+          message.message.usage,
+          context.lastKnownContextWindow,
+          context.lastKnownTotalProcessedTokens,
+        )
+      ) {
+        context.turnState.latestAssistantUsage = message.message.usage;
+        context.turnState.compactedSinceLatestAssistantUsage = false;
+      }
       yield* backfillAssistantTextBlocksFromSnapshot(context, message);
     }
 
@@ -3174,6 +3231,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "compact_boundary":
+        if (context.turnState) {
+          context.turnState.latestAssistantUsage = undefined;
+          context.turnState.compactedSinceLatestAssistantUsage = true;
+        }
         yield* emitThreadTokenUsage(
           context,
           compactBoundaryTokenUsageSnapshot(
@@ -4449,6 +4510,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         workflowMemberFingerprints,
         liveTaskIds,
         turnState: undefined,
+        autoCompactSettings: undefined,
+        autoCompactSettingsQueried: false,
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
@@ -4598,6 +4661,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         assistantTextBlocks: new Map(),
         assistantTextBlockOrder: [],
         capturedProposedPlanKeys: new Set(),
+        latestAssistantUsage: undefined,
+        compactedSinceLatestAssistantUsage: false,
         nextSyntheticAssistantBlockIndex: -1,
       };
 

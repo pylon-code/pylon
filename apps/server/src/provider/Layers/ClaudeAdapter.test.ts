@@ -19,6 +19,7 @@ import {
   ProviderRuntimeEvent,
   type RuntimeMode,
   ThreadId,
+  type ThreadTokenUsageSnapshot,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -1877,6 +1878,380 @@ describe("ClaudeAdapterLive", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(layer),
+    );
+  });
+
+  it.effect("completes with assistant usage rather than a per-turn context usage query", () => {
+    const harness = makeHarness();
+    let getContextUsageCalls = 0;
+    Object.assign(harness.query, {
+      getContextUsage: async () => {
+        getContextUsageCalls += 1;
+        return {
+          totalTokens: 999,
+          maxTokens: 200000,
+          isAutoCompactEnabled: true,
+          autoCompactThreshold: 160_000,
+        };
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-result-usage",
+        uuid: "assistant-result-usage-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-result-usage-1",
+          role: "assistant",
+          content: [],
+          usage: {
+            input_tokens: 80,
+            output_tokens: 20,
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-result-usage",
+        uuid: "assistant-result-usage-2",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-result-usage-2",
+          role: "assistant",
+          content: [],
+          usage: {
+            input_tokens: 180,
+            output_tokens: 20,
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-result-usage",
+        uuid: "assistant-result-usage-3",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-result-usage-3",
+          role: "assistant",
+          content: [],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 1234,
+        duration_api_ms: 1200,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-result-usage",
+        usage: {
+          input_tokens: 400,
+          output_tokens: 50,
+        },
+        modelUsage: {
+          "claude-opus-4-6": {
+            contextWindow: 200000,
+            maxOutputTokens: 64000,
+          },
+        },
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      // Queried once for the session's auto-compact configuration, not per turn.
+      assert.equal(getContextUsageCalls, 1);
+      const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
+      assert.equal(usageEvent?.type, "thread.token-usage.updated");
+      if (usageEvent?.type === "thread.token-usage.updated") {
+        assert.deepEqual(usageEvent.payload.usage, {
+          usedTokens: 200,
+          lastUsedTokens: 200,
+          totalProcessedTokens: 450,
+          inputTokens: 180,
+          outputTokens: 20,
+          maxTokens: 200000,
+          compactsAutomatically: true,
+          autoCompactThreshold: 160_000,
+        });
+      }
+      assert.equal(
+        runtimeEvents.find((event) => event.type === "turn.completed")?.type,
+        "turn.completed",
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "queries Claude context usage once per session and reuses auto-compact settings",
+    () => {
+      const harness = makeHarness();
+      let getContextUsageCalls = 0;
+      Object.assign(harness.query, {
+        getContextUsage: async () => {
+          getContextUsageCalls += 1;
+          return {
+            totalTokens: 999,
+            // Deliberately unlike the result frame's context window below, so
+            // the first turn's snapshot can only reach 180k through this query.
+            maxTokens: 180_000,
+            isAutoCompactEnabled: true,
+            autoCompactThreshold: 160_000,
+          };
+        },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const usageSnapshots: Array<ThreadTokenUsageSnapshot> = [];
+        const usageFiber = yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              if (event.type === "thread.token-usage.updated") {
+                usageSnapshots.push(event.payload.usage);
+              }
+            }),
+          ),
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        const runTurn = Effect.fn("runTurn")(function* (input: {
+          readonly prompt: string;
+          readonly uuid: string;
+          readonly assistantInputTokens: number;
+          readonly assistantOutputTokens: number;
+          readonly resultInputTokens: number;
+          readonly resultOutputTokens: number;
+          readonly resultContextWindow?: number;
+        }) {
+          yield* adapter.sendTurn({
+            threadId: session.threadId,
+            input: input.prompt,
+            attachments: [],
+          });
+          harness.query.emit({
+            type: "assistant",
+            session_id: "sdk-session-auto-compact",
+            uuid: `assistant-${input.uuid}`,
+            parent_tool_use_id: null,
+            message: {
+              id: `assistant-message-${input.uuid}`,
+              role: "assistant",
+              content: [],
+              usage: {
+                input_tokens: input.assistantInputTokens,
+                output_tokens: input.assistantOutputTokens,
+              },
+            },
+          } as unknown as SDKMessage);
+          harness.query.emit({
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            duration_ms: 1234,
+            duration_api_ms: 1200,
+            num_turns: 1,
+            result: "done",
+            stop_reason: "end_turn",
+            session_id: "sdk-session-auto-compact",
+            uuid: `result-${input.uuid}`,
+            usage: {
+              input_tokens: input.resultInputTokens,
+              output_tokens: input.resultOutputTokens,
+            },
+            ...(input.resultContextWindow !== undefined
+              ? {
+                  modelUsage: {
+                    "claude-opus-4-6": {
+                      contextWindow: input.resultContextWindow,
+                      maxOutputTokens: 64_000,
+                    },
+                  },
+                }
+              : {}),
+          } as unknown as SDKMessage);
+
+          // Let the adapter's message pump drain until the turn is closed, so
+          // the next sendTurn opens a new turn instead of steering this one.
+          for (let attempt = 0; attempt < 200; attempt += 1) {
+            yield* Effect.yieldNow;
+            if ((yield* adapter.listSessions())[0]?.activeTurnId === undefined) {
+              break;
+            }
+          }
+          assert.equal((yield* adapter.listSessions())[0]?.activeTurnId, undefined);
+        });
+
+        // First turn: no `modelUsage`, so the only context window this
+        // snapshot can reach is the one the session-scoped query returned.
+        yield* runTurn({
+          prompt: "hello",
+          uuid: "turn-1",
+          assistantInputTokens: 180,
+          assistantOutputTokens: 20,
+          resultInputTokens: 400,
+          resultOutputTokens: 50,
+        });
+        // Second turn: the result frame's own context window takes over.
+        yield* runTurn({
+          prompt: "and again",
+          uuid: "turn-2",
+          assistantInputTokens: 300,
+          assistantOutputTokens: 25,
+          resultInputTokens: 700,
+          resultOutputTokens: 80,
+          resultContextWindow: 200_000,
+        });
+
+        yield* Fiber.interrupt(usageFiber);
+
+        // The query is session-scoped: two turns, one call.
+        assert.equal(getContextUsageCalls, 1);
+        assert.equal(usageSnapshots.length, 2);
+        // The query runs before the context window is resolved, so the first
+        // completion snapshot uses the window it returned instead of falling
+        // back past it.
+        assert.deepEqual(usageSnapshots[0], {
+          usedTokens: 200,
+          lastUsedTokens: 200,
+          totalProcessedTokens: 450,
+          inputTokens: 180,
+          outputTokens: 20,
+          maxTokens: 180_000,
+          compactsAutomatically: true,
+          autoCompactThreshold: 160_000,
+        });
+        // The second turn still carries the cached auto-compact configuration,
+        // and its token counts come from that turn's assistant frame rather
+        // than from a fresh context-usage query.
+        assert.deepEqual(usageSnapshots[1], {
+          usedTokens: 325,
+          lastUsedTokens: 325,
+          totalProcessedTokens: 780,
+          inputTokens: 300,
+          outputTokens: 25,
+          maxTokens: 200_000,
+          compactsAutomatically: true,
+          autoCompactThreshold: 160_000,
+        });
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("preserves compacted usage when completion follows an older assistant frame", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 9).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-compacted-usage",
+        uuid: "assistant-compacted-usage",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-compacted-usage",
+          role: "assistant",
+          content: [],
+          usage: {
+            input_tokens: 180,
+            output_tokens: 20,
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: {
+          pre_tokens: 200,
+          post_tokens: 40,
+        },
+        session_id: "sdk-session-compacted-usage",
+        uuid: "compact-boundary-usage",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 1234,
+        duration_api_ms: 1200,
+        num_turns: 2,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-compacted-usage",
+        usage: {
+          input_tokens: 400,
+          output_tokens: 50,
+        },
+        modelUsage: {
+          "claude-opus-4-6": {
+            contextWindow: 200000,
+            maxOutputTokens: 64000,
+          },
+        },
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const finalUsageEvent = runtimeEvents.findLast(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      assert.equal(finalUsageEvent?.type, "thread.token-usage.updated");
+      if (finalUsageEvent?.type === "thread.token-usage.updated") {
+        assert.deepEqual(finalUsageEvent.payload.usage, {
+          usedTokens: 40,
+          lastUsedTokens: 200,
+          totalProcessedTokens: 450,
+          maxTokens: 200000,
+        });
+      }
+      assert.equal(
+        runtimeEvents.find((event) => event.type === "turn.completed")?.type,
+        "turn.completed",
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
     );
   });
 
