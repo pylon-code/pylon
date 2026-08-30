@@ -172,6 +172,9 @@ interface FakeCaptures {
   followUpFailure: boolean;
   inputRecoveryPending: boolean;
   inputAdmissionBusy: boolean;
+  correlatedPromptLifecycleAdmissionBlocked: boolean;
+  correlatedPromptLifecycleAdmissionBlockAfterReads: number | undefined;
+  correlatedPromptLifecycleAdmissionReads: number;
   correlatedPromptLifecycleAvailable: boolean;
   readonly correlatedPromptSubmissions: Array<{
     readonly text: string;
@@ -327,6 +330,9 @@ interface FakeCaptures {
   rlmQuiescenceFailure: boolean;
   rlmConnectionGeneration: number;
   rlmContinuityValid: boolean;
+  correlatedRecoveryProofCurrent: boolean;
+  correlatedRecoveryProofEpoch: number;
+  reconnectSnapshotResolutionAccepted: boolean;
   readonly reconnectResolutions: Array<{
     readonly generation: number;
     readonly reconciled: boolean;
@@ -356,6 +362,9 @@ function makeCaptures(): FakeCaptures {
     followUpFailure: false,
     inputRecoveryPending: false,
     inputAdmissionBusy: false,
+    correlatedPromptLifecycleAdmissionBlocked: false,
+    correlatedPromptLifecycleAdmissionBlockAfterReads: undefined,
+    correlatedPromptLifecycleAdmissionReads: 0,
     correlatedPromptLifecycleAvailable: false,
     correlatedPromptSubmissions: [],
     correlatedPromptCancellations: [],
@@ -477,6 +486,9 @@ function makeCaptures(): FakeCaptures {
     rlmQuiescenceFailure: false,
     rlmConnectionGeneration: 0,
     rlmContinuityValid: true,
+    correlatedRecoveryProofCurrent: true,
+    correlatedRecoveryProofEpoch: 1,
+    reconnectSnapshotResolutionAccepted: true,
     reconnectResolutions: [],
     retryWorkerRecoverySnapshots: false,
     retryWorkerRecoverySnapshotCalls: [],
@@ -836,7 +848,14 @@ function fakeRuntimeFactory(
           const resolution = { generation, reconciled, terminalResponseObserved };
           captures.reconnectResolutions.push(resolution);
           captures.reconnectSnapshotResolutionObserved?.(resolution);
-          if (generation !== captures.rlmConnectionGeneration) return false;
+          if (
+            generation !== captures.rlmConnectionGeneration ||
+            !captures.reconnectSnapshotResolutionAccepted ||
+            (captures.correlatedPromptLifecycleAvailable &&
+              !captures.correlatedRecoveryProofCurrent)
+          ) {
+            return false;
+          }
           captures.rlmContinuityValid = reconciled;
           return true;
         },
@@ -848,8 +867,12 @@ function fakeRuntimeFactory(
         noteWorkerRecoveryTerminalResponse: () => {
           captures.workerRecoveryTerminalResponseObserved?.();
         },
-        isConnectionGenerationCurrent: (generation) =>
-          generation === captures.rlmConnectionGeneration,
+        isConnectionGenerationCurrent: (generation, proofEpoch) =>
+          generation === captures.rlmConnectionGeneration &&
+          (!captures.correlatedPromptLifecycleAvailable ||
+            (captures.correlatedRecoveryProofCurrent &&
+              (proofEpoch ?? captures.correlatedRecoveryProofEpoch) ===
+                captures.correlatedRecoveryProofEpoch)),
         get correlatedPromptLifecycleAvailable() {
           return captures.correlatedPromptLifecycleAvailable;
         },
@@ -897,6 +920,15 @@ function fakeRuntimeFactory(
               }
             );
           }),
+        get correlatedPromptLifecycleAdmissionBlocked() {
+          captures.correlatedPromptLifecycleAdmissionReads += 1;
+          return (
+            captures.correlatedPromptLifecycleAdmissionBlocked ||
+            (captures.correlatedPromptLifecycleAdmissionBlockAfterReads !== undefined &&
+              captures.correlatedPromptLifecycleAdmissionReads >=
+                captures.correlatedPromptLifecycleAdmissionBlockAfterReads)
+          );
+        },
         get inputAdmissionBusy() {
           return captures.inputAdmissionBusy;
         },
@@ -1121,6 +1153,32 @@ function offer(captures: FakeCaptures, event: PrimeDaemonEvent) {
 }
 
 describe("PrimeAgentDaemonAdapter", () => {
+  it.effect("rechecks correlated recovery before committing a new strict turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptLifecycleAdmissionBlockAfterReads = 2;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+        const error = yield* adapter
+          .sendTurn({ threadId, input: "must not cross pending resync" })
+          .pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          reason: "busy",
+        });
+        expect(captures.correlatedPromptLifecycleAdmissionReads).toBeGreaterThanOrEqual(2);
+        expect(captures.correlatedPromptSubmissions).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("settles only the delivered correlated owner and uses terminal lifecycle usage", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1376,6 +1434,8 @@ describe("PrimeAgentDaemonAdapter", () => {
           ...initialSnapshot(),
           lastEventSequence: 2,
           replayContinuity: "complete",
+          connectionGeneration: 0,
+          correlatedProofEpoch: 1,
           promptLifecycles: {
             records: [lifecycleSnapshot(correlationId, "failed", 2, { usage })],
             expired: [],
@@ -1428,6 +1488,8 @@ describe("PrimeAgentDaemonAdapter", () => {
           ...initialSnapshot(),
           lastEventSequence: 2,
           replayContinuity: "complete",
+          connectionGeneration: 0,
+          correlatedProofEpoch: 1,
           children: [{ id: "background-child", label: "background", status: "running" }],
           promptLifecycles: {
             records: [lifecycleSnapshot(correlationId, "queued", 2)],
@@ -1927,6 +1989,69 @@ describe("PrimeAgentDaemonAdapter", () => {
           },
         });
         expect(encodeUnknownJson(turnEvents)).toContain("already observed answer");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("does not apply a terminal correlated snapshot when proof settlement is rejected", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        captures.reconnectSnapshotResolutionAccepted = false;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "retired proof must not settle" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+        });
+        const answer = assistantMessage("stale terminal answer");
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: answer,
+          attribution: { scope: "prompt", correlationId },
+        });
+
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, messageCount: 1 },
+          messages: [answer],
+          replayContinuity: "complete",
+          connectionGeneration: 1,
+          correlatedProofEpoch: 1,
+          promptLifecycles: {
+            records: [lifecycleSnapshot(correlationId, "completed", 3, { usage })],
+            expired: [],
+          },
+        });
+        yield* offer(captures, {
+          _tag: "SessionClosed",
+          error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+        });
+
+        const result = yield* Fiber.join(turnFiber);
+        expect(captures.reconnectResolutions).toContainEqual({
+          generation: 1,
+          reconciled: true,
+          terminalResponseObserved: false,
+        });
+        const terminal = subscription.events.findLast(
+          (event) => event.turnId === result.turnId && event.type === "turn.completed",
+        );
+        expect(terminal).toMatchObject({ payload: { state: "failed" } });
+        expect(terminal?.payload).not.toHaveProperty("usage");
+        expect(terminal?.payload).not.toHaveProperty("totalCostUsd");
       }),
     ).pipe(Effect.provide(testLayer)),
   );

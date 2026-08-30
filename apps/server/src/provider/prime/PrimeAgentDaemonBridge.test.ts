@@ -10,10 +10,14 @@ import {
   loadPrimeAgentDaemonBridge,
   PRIME_AGENT_DAEMON_PROTOCOL_NAME,
   PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION,
+  PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE,
   sanitizePrimeAgentDaemonEnvironment,
 } from "./PrimeAgentDaemonBridge.ts";
 
 const temporaryDirectories: Array<string> = [];
+const configuredNegotiatedProofArtifactBinary =
+  process.env.PYLON_PRIME_AGENT_NEGOTIATED_PROOF_ARTIFACT_BIN?.trim();
+const configuredStockArtifactBinary = process.env.PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN?.trim();
 
 function makeTemporaryDirectory(): string {
   const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "pylon-prime-bridge-"));
@@ -32,13 +36,27 @@ function daemonModuleSource(options?: {
   readonly omitModelCatalog?: boolean;
   readonly omitAvailableModels?: boolean;
   readonly omitSideQuestions?: boolean;
+  readonly sdkFeatureRegistry?: "frozen" | "mutable";
+  readonly extraSdkFeatures?: ReadonlyArray<string>;
+  readonly omitNegotiatedCapabilityAccessor?: boolean;
 }): string {
+  const sdkFeatures = [
+    PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE,
+    ...(options?.extraSdkFeatures ?? []),
+  ];
+  const sdkFeatureSource =
+    options?.sdkFeatureRegistry === undefined
+      ? ""
+      : `export const PRIME_AGENT_SDK_FEATURES = ${
+          options.sdkFeatureRegistry === "frozen" ? "Object.freeze" : ""
+        }(${JSON.stringify(sdkFeatures)});`;
   return `
 export const VERSION = ${JSON.stringify(options?.version ?? "0.7.1")};
 export const DAEMON_PROTOCOL_NAME = ${JSON.stringify(
     options?.protocolName ?? PRIME_AGENT_DAEMON_PROTOCOL_NAME,
   )};
 export const DAEMON_PROTOCOL_VERSION = ${options?.protocolVersion ?? PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION};
+${sdkFeatureSource}
 export class DaemonClient {
   constructor(socketPath) { this.socketPath = socketPath; this.isConnected = false; }
   async connect() { this.isConnected = true; }
@@ -61,6 +79,7 @@ ${
   async promptAndWait() {}
   ${options?.omitAgentMessaging ? "" : 'async sendAgentMessage(targetActiveSessionId, message) { return { deliveryStatus: "delivered", targetActiveSessionId, message }; }'}
   ${options?.omitSideQuestions ? "" : "async startSideQuestion(nativeId, question) { return { nativeId, question }; } async abortSideQuestion(nativeId) { return nativeId === 'known'; }"}
+  ${options?.omitNegotiatedCapabilityAccessor ? "" : "supportsNegotiatedCapability(capability) { return capability === 'correlated_prompt_lifecycle_v1'; }"}
   async abort() {}
   async dispose() {}
 }`
@@ -168,6 +187,85 @@ describe("PrimeAgentDaemonBridge", () => {
       ).toEqual({ nativeId: "native-id", question: "question" });
       expect(yield* Effect.promise(() => connection.abortSideQuestion!("known"))).toBe(true);
       expect(client.isConnected).toBe(false);
+    }),
+  );
+
+  it.effect("does not infer negotiated daemon proof support from accessor presence", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage();
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+
+      expect(bridge.negotiatedDaemonSessionCapabilitiesAvailable).toBe(false);
+    }),
+  );
+
+  it.effect("accepts the frozen negotiated daemon capability feature contract", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({ sdkFeatureRegistry: "frozen" }),
+      });
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+
+      expect(bridge.negotiatedDaemonSessionCapabilitiesAvailable).toBe(true);
+    }),
+  );
+
+  it.effect("rejects a frozen registry containing malformed feature values", () =>
+    Effect.gen(function* () {
+      const moduleSource = daemonModuleSource().replace(
+        "export class DaemonClient",
+        `export const PRIME_AGENT_SDK_FEATURES = Object.freeze(["${PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE}", 7]);
+export class DaemonClient`,
+      );
+      const pkg = makePackage({ moduleSource });
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+
+      expect(bridge.negotiatedDaemonSessionCapabilitiesAvailable).toBe(false);
+    }),
+  );
+
+  it.effect("accepts the exact frozen feature alongside future feature tokens", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({
+          sdkFeatureRegistry: "frozen",
+          extraSdkFeatures: ["future_sdk_feature_v1"],
+        }),
+      });
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+
+      expect(bridge.negotiatedDaemonSessionCapabilitiesAvailable).toBe(true);
+    }),
+  );
+
+  it.effect("rejects a mutable feature claim for the strict negotiated proof path", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({ sdkFeatureRegistry: "mutable" }),
+      });
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+
+      expect(bridge.negotiatedDaemonSessionCapabilitiesAvailable).toBe(false);
+    }),
+  );
+
+  it.effect("rejects a frozen feature contract missing its proof accessor", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({
+        moduleSource: daemonModuleSource({
+          sdkFeatureRegistry: "frozen",
+          omitNegotiatedCapabilityAccessor: true,
+        }),
+      });
+
+      const error = yield* Effect.flip(loadPrimeAgentDaemonBridge(pkg.cliPath));
+
+      expect(error.reason).toBe("incompatible-exports");
     }),
   );
 
@@ -295,6 +393,33 @@ describe("PrimeAgentDaemonBridge", () => {
 
       expect(error.reason).toBe("incompatible-exports");
     }),
+  );
+
+  it.effect.skipIf(!configuredNegotiatedProofArtifactBinary)(
+    "loads the pinned negotiated-proof artifact through the public package bridge",
+    () =>
+      Effect.gen(function* () {
+        const bridge = yield* loadPrimeAgentDaemonBridge(configuredNegotiatedProofArtifactBinary!);
+
+        expect(bridge.version).toBe("0.8.1");
+        expect(bridge.protocolVersion).toBe(PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION);
+        expect(bridge.negotiatedDaemonSessionCapabilitiesAvailable).toBe(true);
+        expect(typeof bridge.DaemonAgentConnection.prototype.supportsNegotiatedCapability).toBe(
+          "function",
+        );
+      }),
+  );
+
+  it.effect.skipIf(!configuredStockArtifactBinary)(
+    "keeps the stock artifact on the compatible ordinary capability path",
+    () =>
+      Effect.gen(function* () {
+        const bridge = yield* loadPrimeAgentDaemonBridge(configuredStockArtifactBinary!);
+
+        expect(bridge.version).toBe("0.8.1");
+        expect(bridge.protocolVersion).toBe(PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION);
+        expect(bridge.negotiatedDaemonSessionCapabilitiesAvailable).toBe(false);
+      }),
   );
 
   it("strips every inherited Prime Agent internal daemon variable", () => {

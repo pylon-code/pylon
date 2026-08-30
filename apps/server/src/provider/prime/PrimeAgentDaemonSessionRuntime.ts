@@ -1055,7 +1055,10 @@ export interface PrimeAgentDaemonSessionRuntime {
   /** Requests a fresh explicit snapshot without weakening reconnect validation. */
   readonly retryWorkerRecoverySnapshot: (generation: number) => boolean;
   readonly noteWorkerRecoveryTerminalResponse: () => void;
-  readonly isConnectionGenerationCurrent: (generation: number) => boolean;
+  readonly isConnectionGenerationCurrent: (
+    generation: number,
+    correlatedProofEpoch?: number,
+  ) => boolean;
   /** True only when the daemon explicitly negotiated correlated prompt lifecycle support. */
   readonly correlatedPromptLifecycleAvailable: boolean;
   readonly submitCorrelatedPrompt: (
@@ -1067,7 +1070,9 @@ export interface PrimeAgentDaemonSessionRuntime {
     PrimeDaemonPromptLifecycleCancellationResult,
     PrimeAgentDaemonSessionRuntimeError
   >;
-  /** True while native background work makes a new supervised prompt unsafe to admit. */
+  /** True while strict correlated recovery or terminal failure forbids new turn admission. */
+  readonly correlatedPromptLifecycleAdmissionBlocked: boolean;
+  /** True while native background work or strict recovery makes a prompt unsafe to admit. */
   readonly inputAdmissionBusy: boolean;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
@@ -1339,8 +1344,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           runtimeError("open-client", "request-failed", "Could not open the shared daemon client."),
         ),
       );
-    const correlatedPromptLifecycleAvailable =
-      client.supportsServerCapability?.("correlated_prompt_lifecycle_v1") === true;
+    // Server hello is only an offer. Strict correlated mode is decided after the
+    // exact attachment commits its public negotiated-capability proof.
+    let correlatedPromptLifecycleAvailable = false;
     let connection: PrimeAgentDaemonAgentConnection | undefined;
     let unsubscribe: (() => void) | undefined;
     let disposed = false;
@@ -1387,6 +1393,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       readonly generation: number;
       readonly promise: Promise<boolean>;
       readonly resolve: (reconciled: boolean) => void;
+      correlatedProofEpoch?: number;
+      snapshotPublished: boolean;
       settled: boolean;
     };
     let reconnectResolution: ReconnectResolution | undefined;
@@ -1394,6 +1402,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       | {
           readonly resolution: ReconnectResolution;
           readonly baselineMessageCount: number;
+          readonly correlatedProofEpoch?: number;
           terminalResponseObserved: boolean;
           explicitSnapshotRaw?: object;
           explicitSnapshotOffered: boolean;
@@ -1483,12 +1492,49 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return true;
     };
 
+    const workerRecoveryCorrelatedProofIsCurrent = (
+      recovery: NonNullable<typeof activeWorkerRecovery>,
+    ): boolean =>
+      !correlatedPromptLifecycleAvailable ||
+      (recovery.correlatedProofEpoch !== undefined &&
+        correlatedPromptLifecycleProofFenceIsCurrent(recovery.correlatedProofEpoch));
+    const rejectRetiredWorkerRecoveryProof = (
+      recovery: NonNullable<typeof activeWorkerRecovery>,
+    ): boolean => {
+      if (workerRecoveryCorrelatedProofIsCurrent(recovery)) return false;
+      recovery.provisionalSnapshot = undefined;
+      settleReconnectResolution(recovery.resolution.generation, false);
+      void failCorrelatedProofRecovery().catch(() => undefined);
+      return true;
+    };
+
     const resolveReconnectSnapshot = (
       generation: number,
       reconciled: boolean,
       terminalResponseObserved = false,
     ) => {
       const recovery = activeWorkerRecovery;
+      const pending = reconnectResolution;
+      if (
+        correlatedPromptLifecycleAvailable &&
+        pending?.generation === generation &&
+        (pending.correlatedProofEpoch === undefined ||
+          !correlatedPromptLifecycleProofFenceIsCurrent(pending.correlatedProofEpoch))
+      ) {
+        if (recovery?.resolution.generation === generation) {
+          recovery.provisionalSnapshot = undefined;
+        }
+        settleReconnectResolution(generation, false);
+        void failCorrelatedProofRecovery().catch(() => undefined);
+        return false;
+      }
+      if (
+        recovery !== undefined &&
+        recovery.resolution.generation === generation &&
+        rejectRetiredWorkerRecoveryProof(recovery)
+      ) {
+        return false;
+      }
       if (
         recovery !== undefined &&
         recovery.resolution.generation === generation &&
@@ -1504,6 +1550,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
       }
       const settled = settleReconnectResolution(generation, reconciled);
+      if (settled && correlatedPromptLifecycleAvailable && !reconciled) {
+        void failCorrelatedProofRecovery().catch(() => undefined);
+      }
       if (
         settled &&
         reconciled &&
@@ -1522,6 +1571,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       if (
         recovery === undefined ||
         recovery.resolution.generation !== generation ||
+        rejectRetiredWorkerRecoveryProof(recovery) ||
         recovery.resolution.settled ||
         (!recovery.explicitSnapshotOffered && !rejectedExplicitSnapshot) ||
         retry === undefined ||
@@ -1540,6 +1590,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       if (
         recovery !== undefined &&
         recovery.resolution.generation === connectionGeneration &&
+        !rejectRetiredWorkerRecoveryProof(recovery) &&
         (!recovery.resolution.settled || rlmEventContinuityValid)
       ) {
         // The adapter can observe the terminal response before the catch-up snapshot.
@@ -1561,6 +1612,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         generation: connectionGeneration,
         promise,
         resolve,
+        snapshotPublished: false,
         settled: false,
       };
       reconnectResolution = pending;
@@ -1735,20 +1787,237 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         ),
     }).pipe(Effect.onError(() => completeUnattachedOwnedSession));
 
+    const closeUnusableAttachedConnection = Effect.promise(async () => {
+      await connection?.dispose().catch(() => undefined);
+      client.close();
+    });
+    if (input.manager.bridge.negotiatedDaemonSessionCapabilitiesAvailable) {
+      if (!Predicate.isFunction(connection.supportsNegotiatedCapability)) {
+        yield* closeUnusableAttachedConnection;
+        return yield* runtimeError(
+          "attach-session",
+          "invalid-response",
+          "Prime Agent advertised negotiated daemon capabilities without its proof accessor.",
+        );
+      }
+      correlatedPromptLifecycleAvailable = yield* Effect.try({
+        try: () =>
+          connection!.supportsNegotiatedCapability!("correlated_prompt_lifecycle_v1") === true,
+        catch: () =>
+          runtimeError(
+            "attach-session",
+            "invalid-response",
+            "Prime Agent could not verify its negotiated daemon capability proof.",
+          ),
+      }).pipe(Effect.onError(() => closeUnusableAttachedConnection));
+    }
     if (
       correlatedPromptLifecycleAvailable &&
       (!Predicate.isFunction(connection.submitCorrelatedPrompt) ||
         !Predicate.isFunction(connection.cancelPromptLifecycle) ||
         !Predicate.isFunction(connection.getPromptLifecycles))
     ) {
-      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
-      client.close();
+      yield* closeUnusableAttachedConnection;
       return yield* runtimeError(
         "attach-session",
         "invalid-response",
         "Prime Agent negotiated correlated prompt lifecycle without its required connection methods.",
       );
     }
+
+    let correlatedProofEpoch = 0;
+    let correlatedProofRecoveryPending = false;
+    let correlatedProofRecoveryFailed = false;
+    const CORRELATED_PROOF_FENCE_RETIRED = Symbol("correlated-proof-fence-retired");
+    const MAX_CORRELATED_PROOF_ROUTES = PRIME_AGENT_EVENT_BUFFER_CAPACITY;
+    const MAX_CORRELATED_PROOF_ROUTE_WEIGHT = 64 * 1024 * 1024;
+    const boundedCorrelatedProofRouteWeight = (root: unknown): number => {
+      const stack: unknown[] = [root];
+      const seen = new WeakSet<object>();
+      let weight = 0;
+      try {
+        while (stack.length > 0 && weight <= MAX_CORRELATED_PROOF_ROUTE_WEIGHT) {
+          const value = stack.pop();
+          if (value === null || value === undefined) {
+            weight += 4;
+          } else if (typeof value === "string") {
+            weight += value.length * 2 + 8;
+          } else if (typeof value === "number" || typeof value === "bigint") {
+            weight += 16;
+          } else if (typeof value === "boolean") {
+            weight += 4;
+          } else if (typeof value === "object") {
+            if (seen.has(value)) continue;
+            seen.add(value);
+            weight += 16;
+            if (Array.isArray(value)) {
+              for (let index = 0; index < value.length; index += 1) {
+                stack.push(value[index]);
+                if (stack.length > MAX_CORRELATED_PROOF_ROUTES * 1024) {
+                  return MAX_CORRELATED_PROOF_ROUTE_WEIGHT + 1;
+                }
+              }
+            } else {
+              for (const key in value) {
+                if (!Object.hasOwn(value, key)) continue;
+                weight += key.length * 2 + 8;
+                stack.push((value as Record<string, unknown>)[key]);
+                if (stack.length > MAX_CORRELATED_PROOF_ROUTES * 1024) {
+                  return MAX_CORRELATED_PROOF_ROUTE_WEIGHT + 1;
+                }
+                if (weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT) break;
+              }
+            }
+          } else {
+            weight += 8;
+          }
+        }
+      } catch {
+        return MAX_CORRELATED_PROOF_ROUTE_WEIGHT + 1;
+      }
+      return weight;
+    };
+    interface QueuedRuntimeEvent {
+      readonly event: PrimeDaemonEvent;
+      readonly weight: number;
+    }
+    let queuedRuntimeEventWeight = 0;
+    let runtimeEventIngressFailed = false;
+    let runtimeEventCapacityFailed = false;
+    let runtimeEventWeightCapacityAvailable: Queue.Queue<void>;
+    const releaseQueuedRuntimeEventWeight = (weight: number): void => {
+      queuedRuntimeEventWeight = Math.max(0, queuedRuntimeEventWeight - weight);
+      if (runtimeEventWeightCapacityAvailable !== undefined) {
+        Queue.offerUnsafe(runtimeEventWeightCapacityAvailable, undefined);
+      }
+    };
+    // Only one terminal event may wait for existing queue capacity. Normal ingress
+    // always uses the nonblocking admission below, so noisy callbacks cannot create
+    // an unbounded set of suspended decoded events outside the accounted queue.
+    const offerTerminalRuntimeEvent = (
+      queued: QueuedRuntimeEvent,
+    ): Effect.Effect<boolean, typeof CORRELATED_PROOF_FENCE_RETIRED> =>
+      Effect.suspend(() => {
+        if (queued.weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT) {
+          return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+        if (initializing) {
+          if (queuedRuntimeEventWeight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - queued.weight) {
+            initializationOverflow = true;
+            return Effect.succeed(false);
+          }
+          queuedRuntimeEventWeight += queued.weight;
+          if (!Queue.offerUnsafe(eventQueue, queued)) {
+            releaseQueuedRuntimeEventWeight(queued.weight);
+            initializationOverflow = true;
+            return Effect.succeed(false);
+          }
+          return Effect.succeed(true);
+        }
+        if (queuedRuntimeEventWeight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - queued.weight) {
+          return Queue.take(runtimeEventWeightCapacityAvailable).pipe(
+            Effect.flatMap(() => offerTerminalRuntimeEvent(queued)),
+          );
+        }
+        queuedRuntimeEventWeight += queued.weight;
+        return Queue.offer(eventQueue, queued).pipe(
+          Effect.tap((offered) =>
+            Effect.sync(() => {
+              if (!offered) releaseQueuedRuntimeEventWeight(queued.weight);
+            }),
+          ),
+        );
+      });
+
+    const hasCurrentCorrelatedPromptLifecycleProof = (): boolean => {
+      if (
+        correlatedProofRecoveryFailed ||
+        !correlatedPromptLifecycleAvailable ||
+        !Predicate.isFunction(connection?.supportsNegotiatedCapability)
+      ) {
+        return false;
+      }
+      try {
+        return connection.supportsNegotiatedCapability("correlated_prompt_lifecycle_v1") === true;
+      } catch {
+        return false;
+      }
+    };
+    const captureCorrelatedPromptLifecycleProofFence = (): number | undefined =>
+      hasCurrentCorrelatedPromptLifecycleProof() ? correlatedProofEpoch : undefined;
+    const correlatedPromptLifecycleProofFenceIsCurrent = (epoch: number): boolean =>
+      epoch === correlatedProofEpoch && hasCurrentCorrelatedPromptLifecycleProof();
+    const correlatedPromptLifecycleAdmissionBlocked = (): boolean =>
+      correlatedPromptLifecycleAvailable &&
+      (correlatedProofRecoveryPending ||
+        correlatedProofRecoveryFailed ||
+        (reconnectResolution !== undefined && !reconnectResolution.settled));
+    const failRuntimeEventIngress = () =>
+      Effect.suspend(() => {
+        if (runtimeEventIngressFailed) return Effect.void;
+        runtimeEventIngressFailed = true;
+        runtimeEventCapacityFailed = true;
+        if (initializing) {
+          initializationOverflow = true;
+          return Effect.void;
+        }
+        settleReconnectResolution(connectionGeneration, false);
+        const terminalEvent = {
+          _tag: "SessionClosed",
+          error: "Prime Agent event ingress exceeded its bounded capacity.",
+        } satisfies PrimeDaemonEvent;
+        return offerTerminalRuntimeEvent({
+          event: terminalEvent,
+          weight: boundedCorrelatedProofRouteWeight(terminalEvent),
+        }).pipe(Effect.asVoid);
+      });
+    const offerRuntimeEvent = (
+      event: PrimeDaemonEvent,
+      proofEpoch?: number,
+      onCommit: () => void = () => undefined,
+    ) => {
+      if (runtimeEventIngressFailed) {
+        return proofEpoch === undefined ? Effect.void : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+      }
+      const weight = boundedCorrelatedProofRouteWeight(event);
+      const queued = { event, weight } satisfies QueuedRuntimeEvent;
+      if (event._tag === "SessionClosed") {
+        runtimeEventIngressFailed = true;
+        settleReconnectResolution(connectionGeneration, false);
+        return offerTerminalRuntimeEvent(queued).pipe(
+          Effect.tap((offered) => (offered ? Effect.sync(onCommit) : Effect.void)),
+          Effect.asVoid,
+        );
+      }
+      if (weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT) {
+        if (initializing) initializationOverflow = true;
+        return proofEpoch === undefined
+          ? failRuntimeEventIngress()
+          : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+      }
+      return Effect.suspend(() => {
+        const proofRetired =
+          proofEpoch !== undefined && !correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch);
+        const weightExceeded =
+          queuedRuntimeEventWeight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - weight;
+        if (proofRetired || weightExceeded) {
+          if (initializing && weightExceeded) initializationOverflow = true;
+          return proofEpoch === undefined
+            ? failRuntimeEventIngress()
+            : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+        queuedRuntimeEventWeight += weight;
+        if (!Queue.offerUnsafe(eventQueue, queued)) {
+          releaseQueuedRuntimeEventWeight(weight);
+          if (initializing) initializationOverflow = true;
+          return proofEpoch === undefined
+            ? failRuntimeEventIngress()
+            : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+        onCommit();
+        return Effect.void;
+      });
+    };
 
     let mcpAttached = false;
     const releaseMcpServer = Effect.suspend(() => {
@@ -1906,12 +2175,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }).pipe(Effect.onError(() => closeAttachedSession));
     }
 
-    const eventQueue = yield* Queue.bounded<PrimeDaemonEvent>(PRIME_AGENT_EVENT_BUFFER_CAPACITY);
+    const eventQueue = yield* Queue.bounded<QueuedRuntimeEvent>(PRIME_AGENT_EVENT_BUFFER_CAPACITY);
+    runtimeEventWeightCapacityAvailable = yield* Queue.sliding<void>(1);
     const runtimeContext = yield* Effect.context<never>();
     const runPromise = Effect.runPromiseWith(runtimeContext);
     let initializing = true;
     let initializationOverflow = false;
+    let initializationCorrelatedProofInvalidated = false;
     let initializationAcceptedEventCount = 0;
+    let initializationAcceptedEventWeight = 0;
     const bufferedEvents: unknown[] = [];
     let lastSnapshotSequence: number | undefined;
     let lastSnapshotConnectionGeneration = 0;
@@ -2206,19 +2478,32 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
     };
 
-    const observePromptLifecycle = (
+    const planPromptLifecycleObservation = (
       lifecycle: PrimeDaemonPromptLifecycleSnapshot,
-    ): "accepted" | "duplicate" | "invalid" => {
-      if (expiredPromptLifecycles.has(lifecycle.correlationId)) return "invalid";
+    ):
+      | { readonly observation: "duplicate" | "invalid" }
+      | {
+          readonly observation: "accepted";
+          readonly plan: ReturnType<typeof boundPromptLifecycleState>;
+        } => {
+      if (expiredPromptLifecycles.has(lifecycle.correlationId)) {
+        return { observation: "invalid" };
+      }
       const current = promptLifecycles.get(lifecycle.correlationId);
       if (current !== undefined) {
-        if (primeAgentPromptLifecycleIsSame(current, lifecycle)) return "duplicate";
-        if (!primeAgentPromptLifecycleIsSuccessor(current, lifecycle)) return "invalid";
+        if (primeAgentPromptLifecycleIsSame(current, lifecycle)) {
+          return { observation: "duplicate" };
+        }
+        if (!primeAgentPromptLifecycleIsSuccessor(current, lifecycle)) {
+          return { observation: "invalid" };
+        }
       }
       const records = new Map(promptLifecycles);
       records.set(lifecycle.correlationId, lifecycle);
-      commitPromptLifecycleStateMerge(boundPromptLifecycleState(records, expiredPromptLifecycles));
-      return "accepted";
+      return {
+        observation: "accepted",
+        plan: boundPromptLifecycleState(records, expiredPromptLifecycles),
+      };
     };
 
     const planPromptLifecycleStateMerge = (state: PrimeDaemonPromptLifecycleStateSnapshot) => {
@@ -2275,7 +2560,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return boundPromptLifecycleState(snapshotRecords, snapshotExpired);
     };
 
-    const offerDecoded = (raw: unknown) => {
+    const offerDecoded = (raw: unknown, correlatedProofIngressEpoch?: number) => {
       let decoded = safeEvent(
         decodePrimeAgentDaemonEvent(raw, {
           correlatedPromptLifecycle: correlatedPromptLifecycleAvailable,
@@ -2296,15 +2581,32 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       ) {
         decoded = { ...decoded, replacementSnapshot: true };
       }
+      let promptLifecycleObservation: ReturnType<typeof planPromptLifecycleObservation> | undefined;
       if (correlatedPromptLifecycleAvailable && decoded._tag === "PromptLifecycleUpdated") {
-        const observation = observePromptLifecycle(decoded.lifecycle);
-        if (observation === "duplicate") return Effect.void;
-        if (observation === "invalid") decoded = { _tag: "CorrelatedProtocolViolation" };
+        promptLifecycleObservation = planPromptLifecycleObservation(decoded.lifecycle);
+        if (promptLifecycleObservation.observation === "duplicate") return Effect.void;
+        if (promptLifecycleObservation.observation === "invalid") {
+          decoded = { _tag: "CorrelatedProtocolViolation" };
+          promptLifecycleObservation = undefined;
+        }
       }
       const eventConnectionGeneration = connectionGeneration;
       const workerRecovery = activeWorkerRecovery;
       const workerRecoveryRequiresExplicitSnapshot =
         workerRecovery !== undefined && workerRecovery.resolution === reconnectResolution;
+      const rawSessionResynced =
+        Predicate.isObject(raw) && "type" in raw && raw.type === "session_resynced";
+      const nonWorkerCorrelatedResyncAdmission =
+        correlatedPromptLifecycleAvailable &&
+        rawSessionResynced &&
+        reconnectResolution !== undefined &&
+        reconnectResolution.generation === eventConnectionGeneration &&
+        !reconnectResolution.settled &&
+        !workerRecoveryRequiresExplicitSnapshot;
+      if (nonWorkerCorrelatedResyncAdmission && decoded._tag === "CorrelatedProtocolViolation") {
+        settleReconnectResolution(eventConnectionGeneration, false);
+        return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+      }
       if (
         decoded._tag === "SessionResynced" &&
         workerRecoveryRequiresExplicitSnapshot &&
@@ -2341,64 +2643,45 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         return Effect.void;
       }
       const reconciledSnapshot = reconnectSnapshot;
+      if (
+        correlatedPromptLifecycleAvailable &&
+        reconciledSnapshot &&
+        correlatedProofIngressEpoch === undefined
+      ) {
+        return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+      }
+      if (
+        correlatedPromptLifecycleAvailable &&
+        reconciledSnapshot &&
+        reconnectResolution !== undefined &&
+        correlatedProofIngressEpoch !== undefined
+      ) {
+        if (
+          reconnectResolution.correlatedProofEpoch !== undefined &&
+          reconnectResolution.correlatedProofEpoch !== correlatedProofIngressEpoch
+        ) {
+          return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+        if (
+          workerRecoverySnapshot &&
+          workerRecovery?.correlatedProofEpoch !== correlatedProofIngressEpoch
+        ) {
+          return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+      }
       const event =
         reconciledSnapshot && decoded._tag === "SessionResynced"
-          ? { ...decoded, connectionGeneration: eventConnectionGeneration }
+          ? {
+              ...decoded,
+              connectionGeneration: eventConnectionGeneration,
+              ...(correlatedProofIngressEpoch === undefined
+                ? {}
+                : { correlatedProofEpoch: correlatedProofIngressEpoch }),
+            }
           : decoded;
       const prompt = activePromptRecovery;
       const inputActivityRevisionAtOffer = nativeInputActivityRevision;
-      if (event._tag === "RunStarted") {
-        nativeRunObservedActive = true;
-        nativeInputRunActive = true;
-      } else if (event._tag === "RunCompleted") {
-        nativeInputRunActive = false;
-        if (!rlmQuiescenceAvailable) nativeRunObservedActive = false;
-      } else if (event._tag === "CompactionStarted") {
-        nativeInputCompactionActive = true;
-        if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
-      } else if (event._tag === "CompactionCompleted") {
-        nativeInputCompactionActive = false;
-      } else if (event._tag === "BashStarted" || event._tag === "BashOutput") {
-        nativeInputBashActive = true;
-        if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
-      } else if (event._tag === "BashCompleted") {
-        nativeInputBashActive = false;
-      } else if (event._tag === "RetryStarted") {
-        nativeInputRetryAttempt = event.attempt;
-        if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
-      } else if (event._tag === "RetryCompleted") {
-        nativeInputRetryAttempt = 0;
-      } else if (event._tag === "QueueChanged") {
-        nativeInputQueuedCount = event.queuedCount;
-        nativeInputQueueActionActive = event.active !== undefined;
-        if (rlmQuiescenceAvailable && (event.queuedCount > 0 || event.active !== undefined)) {
-          nativeRunObservedActive = true;
-        }
-      } else if (
-        event._tag === "ChildUpdated" &&
-        (event.child.status === "queued" || event.child.status === "running")
-      ) {
-        if (rlmQuiescenceAvailable) {
-          nativeRunObservedActive = true;
-        } else {
-          nativeDescendantQuiescenceUncertain = true;
-        }
-      }
-      if (
-        event._tag === "RunStarted" ||
-        event._tag === "RunCompleted" ||
-        event._tag === "CompactionStarted" ||
-        event._tag === "CompactionCompleted" ||
-        event._tag === "BashStarted" ||
-        event._tag === "BashOutput" ||
-        event._tag === "BashCompleted" ||
-        event._tag === "RetryStarted" ||
-        event._tag === "RetryCompleted" ||
-        event._tag === "QueueChanged" ||
-        event._tag === "ChildUpdated"
-      ) {
-        nativeInputActivityRevision += 1;
-      }
+      let sessionLifecyclePlan: ReturnType<typeof planPromptLifecycleStateMerge> | undefined;
       if (event._tag === "SessionResynced") {
         if (
           !workerRecoverySnapshot &&
@@ -2407,64 +2690,156 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           lastSnapshotConnectionGeneration === eventConnectionGeneration &&
           event.lastEventSequence <= lastSnapshotSequence
         ) {
-          return Effect.void;
+          return correlatedPromptLifecycleAvailable && reconciledSnapshot
+            ? Effect.fail(CORRELATED_PROOF_FENCE_RETIRED)
+            : Effect.void;
         }
         if (correlatedPromptLifecycleAvailable && event.promptLifecycles !== undefined) {
-          const lifecyclePlan = planPromptLifecycleStateMerge(event.promptLifecycles);
-          if (lifecyclePlan === undefined) {
-            if (workerRecoverySnapshot) {
-              settleReconnectResolution(eventConnectionGeneration, false);
+          sessionLifecyclePlan = planPromptLifecycleStateMerge(event.promptLifecycles);
+          if (sessionLifecyclePlan === undefined) {
+            if (reconciledSnapshot && !workerRecoverySnapshot) {
+              return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
             }
-            return Queue.offer(eventQueue, { _tag: "CorrelatedProtocolViolation" }).pipe(
-              Effect.asVoid,
+            const snapshotResolution = reconciledSnapshot ? reconnectResolution : undefined;
+            return offerRuntimeEvent(
+              { _tag: "CorrelatedProtocolViolation" },
+              correlatedProofIngressEpoch,
+              () => {
+                if (
+                  snapshotResolution !== undefined &&
+                  reconnectResolution === snapshotResolution
+                ) {
+                  settleReconnectResolution(eventConnectionGeneration, false);
+                }
+              },
             );
           }
-          commitPromptLifecycleStateMerge(lifecyclePlan);
         }
-        if (workerRecoverySnapshot && workerRecovery !== undefined) {
-          workerRecovery.explicitSnapshotOffered = true;
-          workerRecovery.provisionalSnapshot = {
-            event,
-            rosterRevisionAtOffer: knownAgentRosterRevision,
-            inputActivityRevisionAtOffer,
-          };
-        } else {
-          commitSessionResyncedMetadata(
-            event,
-            knownAgentRosterRevision,
-            inputActivityRevisionAtOffer,
-            false,
-          );
-        }
-      } else if (event._tag === "MessageCompleted") {
+      }
+
+      const snapshotResolution = reconciledSnapshot ? reconnectResolution : undefined;
+      return offerRuntimeEvent(event, correlatedProofIngressEpoch, () => {
         if (
-          prompt !== undefined &&
-          event.message.role === "user" &&
-          !prompt.firstUserMessageObserved
+          correlatedPromptLifecycleAvailable &&
+          reconciledSnapshot &&
+          reconnectResolution !== undefined &&
+          correlatedProofIngressEpoch !== undefined
         ) {
-          prompt.firstUserMessageObserved = true;
-          prompt.promptAdmissionObserved = messageMatchesPromptAdmission(prompt, event.message);
-          if (prompt.promptAdmissionObserved) nativeRunObservedActive = true;
-          settlePromptAdmissionEvidence(prompt, prompt.promptAdmissionObserved);
-          if (
-            prompt.promptAdmissionObserved &&
-            prompt.reconnectGeneration === eventConnectionGeneration &&
-            reconnectResolution?.generation === eventConnectionGeneration
-          ) {
-            prompt.snapshotProvesAdmission = true;
-            settlePromptRecoveryIfProven();
+          reconnectResolution.correlatedProofEpoch = correlatedProofIngressEpoch;
+        }
+        if (promptLifecycleObservation?.observation === "accepted") {
+          commitPromptLifecycleStateMerge(promptLifecycleObservation.plan);
+        }
+        if (event._tag === "RunStarted") {
+          nativeRunObservedActive = true;
+          nativeInputRunActive = true;
+        } else if (event._tag === "RunCompleted") {
+          nativeInputRunActive = false;
+          if (!rlmQuiescenceAvailable) nativeRunObservedActive = false;
+        } else if (event._tag === "CompactionStarted") {
+          nativeInputCompactionActive = true;
+          if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
+        } else if (event._tag === "CompactionCompleted") {
+          nativeInputCompactionActive = false;
+        } else if (event._tag === "BashStarted" || event._tag === "BashOutput") {
+          nativeInputBashActive = true;
+          if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
+        } else if (event._tag === "BashCompleted") {
+          nativeInputBashActive = false;
+        } else if (event._tag === "RetryStarted") {
+          nativeInputRetryAttempt = event.attempt;
+          if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
+        } else if (event._tag === "RetryCompleted") {
+          nativeInputRetryAttempt = 0;
+        } else if (event._tag === "QueueChanged") {
+          nativeInputQueuedCount = event.queuedCount;
+          nativeInputQueueActionActive = event.active !== undefined;
+          if (rlmQuiescenceAvailable && (event.queuedCount > 0 || event.active !== undefined)) {
+            nativeRunObservedActive = true;
+          }
+        } else if (
+          event._tag === "ChildUpdated" &&
+          (event.child.status === "queued" || event.child.status === "running")
+        ) {
+          if (rlmQuiescenceAvailable) {
+            nativeRunObservedActive = true;
+          } else {
+            nativeDescendantQuiescenceUncertain = true;
           }
         }
-        observedCompletedMessageCount += 1;
-      }
-      if (event._tag !== "SessionResynced") trackAgentRoster(event);
-
-      return Queue.offer(eventQueue, event).pipe(Effect.asVoid);
+        if (
+          event._tag === "RunStarted" ||
+          event._tag === "RunCompleted" ||
+          event._tag === "CompactionStarted" ||
+          event._tag === "CompactionCompleted" ||
+          event._tag === "BashStarted" ||
+          event._tag === "BashOutput" ||
+          event._tag === "BashCompleted" ||
+          event._tag === "RetryStarted" ||
+          event._tag === "RetryCompleted" ||
+          event._tag === "QueueChanged" ||
+          event._tag === "ChildUpdated"
+        ) {
+          nativeInputActivityRevision += 1;
+        }
+        if (event._tag === "SessionResynced") {
+          if (sessionLifecyclePlan !== undefined) {
+            commitPromptLifecycleStateMerge(sessionLifecyclePlan);
+          }
+          if (workerRecoverySnapshot && workerRecovery !== undefined) {
+            workerRecovery.explicitSnapshotOffered = true;
+            workerRecovery.provisionalSnapshot = {
+              event,
+              rosterRevisionAtOffer: knownAgentRosterRevision,
+              inputActivityRevisionAtOffer,
+            };
+          } else {
+            commitSessionResyncedMetadata(
+              event,
+              knownAgentRosterRevision,
+              inputActivityRevisionAtOffer,
+              false,
+            );
+          }
+          if (snapshotResolution !== undefined && reconnectResolution === snapshotResolution) {
+            snapshotResolution.snapshotPublished = true;
+          }
+        } else if (event._tag === "MessageCompleted") {
+          if (
+            prompt !== undefined &&
+            event.message.role === "user" &&
+            !prompt.firstUserMessageObserved
+          ) {
+            prompt.firstUserMessageObserved = true;
+            prompt.promptAdmissionObserved = messageMatchesPromptAdmission(prompt, event.message);
+            if (prompt.promptAdmissionObserved) nativeRunObservedActive = true;
+            settlePromptAdmissionEvidence(prompt, prompt.promptAdmissionObserved);
+            if (
+              prompt.promptAdmissionObserved &&
+              prompt.reconnectGeneration === eventConnectionGeneration &&
+              reconnectResolution?.generation === eventConnectionGeneration
+            ) {
+              prompt.snapshotProvesAdmission = true;
+              settlePromptRecoveryIfProven();
+            }
+          }
+          observedCompletedMessageCount += 1;
+        }
+        if (event._tag !== "SessionResynced") trackAgentRoster(event);
+      });
     };
-    const routeRawEvent = (raw: unknown) =>
-      handlePrivateSideQuestionEvent(raw).pipe(
-        Effect.flatMap((handled) => (handled ? Effect.void : offerDecoded(raw))),
-      );
+    const routeRawEvent = (raw: unknown, correlatedProofIngressEpoch?: number) =>
+      runtimeEventIngressFailed
+        ? Effect.void
+        : handlePrivateSideQuestionEvent(raw).pipe(
+            Effect.flatMap((handled) =>
+              handled ? Effect.void : offerDecoded(raw, correlatedProofIngressEpoch),
+            ),
+          );
+    const routeRawEventWithCorrelatedProofFence = (raw: unknown, proofEpoch: number | undefined) =>
+      proofEpoch === undefined || correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)
+        ? routeRawEvent(raw, proofEpoch)
+        : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
     let mcpRecoveryTail = Promise.resolve();
     let mcpRecoveryPending = false;
     let mcpRecoveryFailed = false;
@@ -2510,7 +2885,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       recovery.provisionalSnapshot = undefined;
       settleReconnectResolution(recovery.resolution.generation, false);
     };
-    const routeMcpAwareRawEvent = (raw: unknown): Promise<void> => {
+    const routeMcpAwareRawEvent = (
+      raw: unknown,
+      correlatedProofIngressEpoch?: number,
+    ): Promise<void> => {
+      if (
+        correlatedProofIngressEpoch !== undefined &&
+        !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+      ) {
+        return Promise.reject(CORRELATED_PROOF_FENCE_RETIRED);
+      }
       const rawType =
         typeof raw === "object" && raw !== null && "type" in raw && typeof raw.type === "string"
           ? raw.type
@@ -2522,9 +2906,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           ? (raw as { readonly status: string }).status
           : undefined;
       if (connectionStatus === "reconnecting") {
-        connectionGeneration += 1;
-        rlmEventContinuityValid = false;
-        beginReconnectResolution();
+        if (!correlatedPromptLifecycleAvailable) {
+          connectionGeneration += 1;
+          rlmEventContinuityValid = false;
+          beginReconnectResolution();
+        }
       } else if (rawType === "closed") {
         markActiveWorkerRecoveryTerminal();
         settleReconnectResolution(connectionGeneration, false);
@@ -2535,11 +2921,17 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         input.mcpServer === undefined ||
         (rawType !== "session_resynced" && rawType !== "connection_status" && rawType !== "closed")
       ) {
-        return runPromise(routeRawEvent(raw));
+        return runPromise(routeRawEventWithCorrelatedProofFence(raw, correlatedProofIngressEpoch));
       }
       const delivery = mcpRecoveryTail.then(() =>
         runPromise(
           Effect.gen(function* () {
+            if (
+              correlatedProofIngressEpoch !== undefined &&
+              !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+            ) {
+              return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+            }
             if (rawType === "connection_status") {
               const status = connectionStatus;
               if (status === "reconnecting") {
@@ -2557,7 +2949,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 return;
               }
               if (status === "connected" && mcpRecoveryFailed) return;
-              yield* routeRawEvent(raw);
+              yield* routeRawEventWithCorrelatedProofFence(raw, correlatedProofIngressEpoch);
               return;
             }
             if (rawType === "session_resynced" && mcpRecoveryPending && !mcpRecoveryFailed) {
@@ -2574,10 +2966,19 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                   Effect.as(true),
                   Effect.orElseSucceed(() => false),
                 );
+                if (
+                  correlatedProofIngressEpoch !== undefined &&
+                  !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+                ) {
+                  return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+                }
                 mcpRecoveryPending = false;
                 if (!restored) {
                   mcpRecoveryFailed = true;
                   markActiveWorkerRecoveryTerminal();
+                  if (correlatedProofIngressEpoch !== undefined) {
+                    return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+                  }
                   yield* routeRawEvent({
                     type: "closed",
                     error:
@@ -2592,7 +2993,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               mcpRecoveryFailed = true;
               settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
             }
-            if (!mcpRecoveryFailed || rawType === "closed") yield* routeRawEvent(raw);
+            if (!mcpRecoveryFailed || rawType === "closed") {
+              yield* routeRawEventWithCorrelatedProofFence(raw, correlatedProofIngressEpoch);
+            }
           }),
         ),
       );
@@ -2706,7 +3109,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     };
     const managedRecoveryPending = () =>
       managedRecoveryResolution !== undefined && !managedRecoveryResolution.settled;
-    const routeManagedAwareRawEvent = (raw: unknown): Promise<void> => {
+    const routeManagedAwareRawEvent = (
+      raw: unknown,
+      correlatedProofIngressEpoch?: number,
+    ): Promise<void> => {
+      if (
+        correlatedProofIngressEpoch !== undefined &&
+        !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+      ) {
+        return Promise.reject(CORRELATED_PROOF_FENCE_RETIRED);
+      }
       const rawType =
         typeof raw === "object" && raw !== null && "type" in raw && typeof raw.type === "string"
           ? raw.type
@@ -2717,7 +3129,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         typeof (raw as { readonly status?: unknown }).status === "string"
           ? (raw as { readonly status: string }).status
           : undefined;
-      if (connectionStatus === "reconnecting" && expectedExtension !== undefined) {
+      if (
+        connectionStatus === "reconnecting" &&
+        expectedExtension !== undefined &&
+        !managedRecoveryPending()
+      ) {
         beginManagedRecovery();
       }
       const recovery = managedRecoveryResolution;
@@ -2741,14 +3157,21 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           rawType !== "connection_status" &&
           rawType !== "closed")
       ) {
-        return routeMcpAwareRawEvent(raw);
+        return routeMcpAwareRawEvent(raw, correlatedProofIngressEpoch);
       }
       const delivery = managedRecoveryTail.then(() =>
         runPromise(
           Effect.gen(function* () {
             if (
+              correlatedProofIngressEpoch !== undefined &&
+              !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+            ) {
+              return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+            }
+            if (
               rawType === "session_resynced" &&
               !workerRecoveryExplicitSnapshot &&
+              correlatedProofIngressEpoch === undefined &&
               (recovery === undefined || recovery !== managedRecoveryResolution || recovery.settled)
             ) {
               return;
@@ -2766,10 +3189,19 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             }
             if (rawType === "session_resynced" && recovery !== undefined && !recovery.settled) {
               const restored = yield* verifyManagedExtensionAfterReconnect;
+              if (
+                correlatedProofIngressEpoch !== undefined &&
+                !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+              ) {
+                return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+              }
               if (!restored) {
                 markActiveWorkerRecoveryTerminal();
                 settleManagedRecovery(recovery, false);
                 settleReconnectResolution(connectionGeneration, false);
+                if (correlatedProofIngressEpoch !== undefined) {
+                  return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+                }
                 yield* routeRawEvent({
                   type: "closed",
                   error:
@@ -2783,7 +3215,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               managedRecoveryFailed = true;
             }
             if (!managedRecoveryFailed || rawType === "closed") {
-              yield* Effect.promise(() => routeMcpAwareRawEvent(raw));
+              yield* Effect.promise(() => routeMcpAwareRawEvent(raw, correlatedProofIngressEpoch));
               if (rawType === "session_resynced") {
                 settleManagedRecovery(recovery, true);
               }
@@ -2792,7 +3224,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         ),
       );
       const guarded = delivery.catch((cause) => {
-        settleManagedRecovery(recovery, false);
+        if (cause !== CORRELATED_PROOF_FENCE_RETIRED) settleManagedRecovery(recovery, false);
         throw cause;
       });
       managedRecoveryTail = guarded.catch(() => undefined);
@@ -2879,6 +3311,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     );
     const inputAdmissionAfterRecovery = (operation: "steer" | "follow-up") =>
       Effect.suspend(() => {
+        if (correlatedPromptLifecycleAvailable && correlatedProofRecoveryFailed) {
+          return Effect.fail(
+            runtimeError(
+              operation,
+              "request-failed",
+              "Prime Agent correlated prompt capability proof is unavailable for the current attachment.",
+            ),
+          );
+        }
         if (
           managedRecoveryPending() ||
           mcpRecoveryPending ||
@@ -2898,30 +3339,159 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         return Effect.succeed("ready" as const);
       });
+    const failCorrelatedProofRecovery = (
+      error = "Prime Agent correlated prompt capability proof was lost during recovery.",
+    ): Promise<void> => {
+      correlatedProofRecoveryPending = false;
+      if (correlatedProofRecoveryFailed) return Promise.resolve();
+      correlatedProofRecoveryFailed = true;
+      correlatedProofEpoch += 1;
+      return routeManagedAwareRawEvent({ type: "closed", error });
+    };
+    const routeProvedCorrelatedRawEvent = (raw: unknown, proofEpoch: number): Promise<void> =>
+      routeManagedAwareRawEvent(raw, proofEpoch).catch((cause) => {
+        if (cause !== CORRELATED_PROOF_FENCE_RETIRED) return Promise.reject(cause);
+        if (initializing && initializationOverflow) return Promise.resolve();
+        return proofEpoch === correlatedProofEpoch
+          ? failCorrelatedProofRecovery()
+          : Promise.resolve();
+      });
+    let correlatedProofRouteTail = Promise.resolve();
+    let correlatedProofRouteCount = 0;
+    let correlatedProofRouteWeight = 0;
+    const serializeCorrelatedProofRoute = (
+      raw: unknown,
+      route: () => Promise<void>,
+    ): Promise<void> => {
+      const weight = boundedCorrelatedProofRouteWeight(raw);
+      if (
+        weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT ||
+        correlatedProofRouteCount >= MAX_CORRELATED_PROOF_ROUTES ||
+        correlatedProofRouteWeight + weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT
+      ) {
+        return failCorrelatedProofRecovery();
+      }
+      correlatedProofRouteCount += 1;
+      correlatedProofRouteWeight += weight;
+      const delivery = correlatedProofRouteTail.then(route);
+      const accounted = delivery.finally(() => {
+        correlatedProofRouteCount -= 1;
+        correlatedProofRouteWeight -= weight;
+      });
+      correlatedProofRouteTail = accounted.catch(() => undefined);
+      return accounted;
+    };
     const routeCorrelatedReplacementAwareRawEvent = (raw: unknown): Promise<void> => {
       const rawType =
         Predicate.isObject(raw) && "type" in raw && Predicate.isString(raw.type)
           ? raw.type
           : undefined;
-      if (!correlatedPromptLifecycleAvailable || rawType !== "session_replaced") {
-        return routeManagedAwareRawEvent(raw);
+      if (!correlatedPromptLifecycleAvailable) return routeManagedAwareRawEvent(raw);
+      if (correlatedProofRecoveryFailed) return Promise.resolve();
+      const connectionStatus =
+        rawType === "connection_status" &&
+        Predicate.isObject(raw) &&
+        "status" in raw &&
+        Predicate.isString(raw.status)
+          ? raw.status
+          : undefined;
+      if (connectionStatus === "reconnecting") {
+        correlatedProofEpoch += 1;
+        correlatedProofRecoveryPending = true;
+        connectionGeneration += 1;
+        rlmEventContinuityValid = false;
+        beginReconnectResolution();
+        if (expectedExtension !== undefined) beginManagedRecovery();
+        if (input.mcpServer !== undefined) {
+          mcpAttached = false;
+          mcpRecoveryPending = true;
+        }
+        return serializeCorrelatedProofRoute(raw, () => routeManagedAwareRawEvent(raw));
       }
-      return connection!
-        .getInitialSnapshot()
-        .then((snapshot) =>
-          routeManagedAwareRawEvent({
-            type: "session_resynced",
-            snapshot,
-            pylonReplacementSnapshot: true,
-          }),
-        )
-        .catch(() =>
-          routeManagedAwareRawEvent({
-            type: "closed",
-            error: "Prime Agent replacement lifecycle state could not be reconciled.",
-          }),
-        );
+      if (rawType === "closed") return failCorrelatedProofRecovery();
+      if (rawType === "session_replaced") {
+        correlatedProofEpoch += 1;
+        correlatedProofRecoveryPending = true;
+        connectionGeneration += 1;
+        rlmEventContinuityValid = false;
+        const snapshotResolution = beginReconnectResolution();
+        if (expectedExtension !== undefined) beginManagedRecovery();
+        if (input.mcpServer !== undefined) {
+          mcpAttached = false;
+          mcpRecoveryPending = true;
+        }
+        const proofEpoch = captureCorrelatedPromptLifecycleProofFence();
+        if (proofEpoch === undefined) return failCorrelatedProofRecovery();
+        return serializeCorrelatedProofRoute(raw, async () => {
+          if (!correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)) {
+            if (proofEpoch === correlatedProofEpoch) await failCorrelatedProofRecovery();
+            return;
+          }
+          try {
+            const snapshot = await connection!.getInitialSnapshot();
+            if (!correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)) {
+              if (proofEpoch === correlatedProofEpoch) await failCorrelatedProofRecovery();
+              return;
+            }
+            await routeProvedCorrelatedRawEvent(
+              {
+                type: "session_resynced",
+                snapshot,
+                pylonReplacementSnapshot: true,
+              },
+              proofEpoch,
+            );
+            if (proofEpoch !== correlatedProofEpoch) return;
+            if (!snapshotResolution.snapshotPublished) {
+              settleReconnectResolution(snapshotResolution.generation, false);
+              await failCorrelatedProofRecovery();
+              return;
+            }
+            correlatedProofRecoveryPending = false;
+          } catch {
+            if (proofEpoch !== correlatedProofEpoch) return;
+            await failCorrelatedProofRecovery(
+              "Prime Agent replacement lifecycle state could not be reconciled.",
+            );
+          }
+        });
+      }
+      if (
+        rawType === "session_resynced" &&
+        !correlatedProofRecoveryPending &&
+        (reconnectResolution === undefined || reconnectResolution.settled)
+      ) {
+        correlatedProofRecoveryPending = true;
+        beginReconnectResolution();
+      }
+      const snapshotResolution =
+        rawType === "session_resynced" &&
+        reconnectResolution?.generation === connectionGeneration &&
+        !reconnectResolution.settled
+          ? reconnectResolution
+          : undefined;
+      const proofEpoch = captureCorrelatedPromptLifecycleProofFence();
+      if (proofEpoch === undefined) return failCorrelatedProofRecovery();
+      return serializeCorrelatedProofRoute(raw, async () => {
+        if (!correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)) {
+          await routeProvedCorrelatedRawEvent(raw, proofEpoch);
+          return;
+        }
+        if (connectionStatus === "connected" && correlatedProofRecoveryPending) {
+          await failCorrelatedProofRecovery();
+          return;
+        }
+        await routeProvedCorrelatedRawEvent(raw, proofEpoch);
+        if (rawType !== "session_resynced" || proofEpoch !== correlatedProofEpoch) return;
+        if (snapshotResolution !== undefined && !snapshotResolution.snapshotPublished) {
+          settleReconnectResolution(snapshotResolution.generation, false);
+          await failCorrelatedProofRecovery();
+          return;
+        }
+        correlatedProofRecoveryPending = false;
+      });
     };
+
     let routeWorkerAwareRawEvent: (raw: unknown) => Promise<void> =
       routeCorrelatedReplacementAwareRawEvent;
 
@@ -2930,14 +3500,31 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     // This keeps overlapping fire-and-forget daemon callbacks bounded too.
     unsubscribe = connection.subscribe((event) => {
       if (initializing) {
-        if (initializationAcceptedEventCount >= PRIME_AGENT_EVENT_BUFFER_CAPACITY - 1) {
+        if (
+          correlatedPromptLifecycleAvailable &&
+          Predicate.isObject(event) &&
+          "type" in event &&
+          (event.type === "session_replaced" ||
+            (event.type === "connection_status" &&
+              "status" in event &&
+              event.status === "reconnecting"))
+        ) {
+          initializationCorrelatedProofInvalidated = true;
+        }
+        const eventWeight = boundedCorrelatedProofRouteWeight(event);
+        if (
+          initializationAcceptedEventCount >= PRIME_AGENT_EVENT_BUFFER_CAPACITY - 1 ||
+          eventWeight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - initializationAcceptedEventWeight
+        ) {
           initializationOverflow = true;
           return;
         }
         initializationAcceptedEventCount += 1;
+        initializationAcceptedEventWeight += eventWeight;
         bufferedEvents.push(event);
         return;
       }
+      if (runtimeEventIngressFailed) return;
       return routeWorkerAwareRawEvent(event);
     });
 
@@ -2958,6 +3545,12 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }),
       ),
     );
+    const rawSnapshotWeight = boundedCorrelatedProofRouteWeight(rawSnapshot);
+    if (rawSnapshotWeight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - initializationAcceptedEventWeight) {
+      initializationOverflow = true;
+    } else {
+      initializationAcceptedEventWeight += rawSnapshotWeight;
+    }
     if (initializationOverflow) {
       unsubscribe();
       yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
@@ -2966,6 +3559,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         "initial-snapshot",
         "request-failed",
         "The daemon emitted too many events while initializing the session.",
+      );
+    }
+    if (correlatedPromptLifecycleAvailable && !hasCurrentCorrelatedPromptLifecycleProof()) {
+      unsubscribe();
+      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+      client.close();
+      return yield* runtimeError(
+        "initial-snapshot",
+        "invalid-response",
+        "Prime Agent lost its negotiated daemon capability proof during initialization.",
       );
     }
     const initialEvent = safeEvent(
@@ -3217,7 +3820,20 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     ): Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError> =>
       disposed || disposeStarted
         ? Effect.fail(runtimeError(operation, "disposed", "The daemon session is disposed."))
-        : Effect.void;
+        : runtimeEventIngressFailed ||
+            (correlatedPromptLifecycleAvailable && correlatedProofRecoveryFailed)
+          ? Effect.fail(
+              runtimeError(
+                operation,
+                "request-failed",
+                runtimeEventCapacityFailed
+                  ? "Prime Agent event ingress exceeded its bounded capacity."
+                  : correlatedProofRecoveryFailed
+                    ? "Prime Agent correlated prompt capability proof is unavailable for the current attachment."
+                    : "The Prime Agent daemon session is closed.",
+              ),
+            )
+          : Effect.void;
 
     const callVoid = (
       operation: PrimeAgentDaemonSessionRuntimeError["operation"],
@@ -3654,7 +4270,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     });
 
     const watchAgentActivityAvailable =
-      input.requiredExtension === undefined && Predicate.isFunction(connection!.watchSession);
+      !correlatedPromptLifecycleAvailable &&
+      input.requiredExtension === undefined &&
+      Predicate.isFunction(connection!.watchSession);
 
     const watchAgentActivity: PrimeAgentDaemonSessionRuntime["watchAgentActivity"] = (
       rawActiveSessionId,
@@ -3676,6 +4294,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 "watch-agent-activity",
                 "incompatible-api",
                 "Live agent activity is unavailable in supervised sessions.",
+              );
+            }
+            if (correlatedPromptLifecycleAvailable) {
+              return yield* runtimeError(
+                "watch-agent-activity",
+                "incompatible-api",
+                "Live agent activity is unavailable in correlated prompt sessions.",
               );
             }
             const method = connection!.watchSession;
@@ -4167,7 +4792,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         !disposeStarted &&
         !signal.aborted &&
         connectionGeneration === expectedGeneration &&
-        activeWorkerRecovery?.resolution === resolution;
+        activeWorkerRecovery?.resolution === resolution &&
+        workerRecoveryCorrelatedProofIsCurrent(activeWorkerRecovery);
       const gate = Effect.gen(function* () {
         if (!ownsRecovery()) return false;
         yield* Effect.promise(() => beginManagedWorkerRecovery());
@@ -4214,7 +4840,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           recovery.explicitSnapshotOffered = false;
           const explicitSnapshot = { type: "session_resynced", snapshot: snapshot.value } as const;
           recovery.explicitSnapshotRaw = explicitSnapshot;
-          yield* Effect.promise(() => routeManagedAwareRawEvent(explicitSnapshot));
+          yield* Effect.promise(() =>
+            recovery.correlatedProofEpoch === undefined
+              ? routeManagedAwareRawEvent(explicitSnapshot)
+              : routeProvedCorrelatedRawEvent(explicitSnapshot, recovery.correlatedProofEpoch),
+          );
           const snapshotOutcome = yield* Effect.promise(() =>
             Promise.race([
               resolution.promise.then((reconciled) => ({ kind: "resolved" as const, reconciled })),
@@ -4258,12 +4888,21 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     ) => {
       if (recovery.terminalFallbackRouted) return;
       recovery.terminalFallbackRouted = true;
-      await routeManagedAwareRawEvent(
-        recovery.fallbackCloseRaw ?? {
+      const fallback =
+        recovery.fallbackCloseRaw ??
+        ({
           type: "closed",
           error: "Prime Agent replacement-worker recovery ended before Pylon could verify it.",
-        },
-      );
+        } as const);
+      if (recovery.correlatedProofEpoch === undefined) {
+        await routeManagedAwareRawEvent(fallback);
+        return;
+      }
+      if (!correlatedPromptLifecycleProofFenceIsCurrent(recovery.correlatedProofEpoch)) {
+        await failCorrelatedProofRecovery();
+        return;
+      }
+      await routeProvedCorrelatedRawEvent(fallback, recovery.correlatedProofEpoch);
     };
     const finishSuccessfulWorkerCloseRecovery = (
       recovery: NonNullable<typeof activeWorkerRecovery>,
@@ -4280,12 +4919,25 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           ? raw.type
           : undefined;
       if (rawType !== "closed") return routeCorrelatedReplacementAwareRawEvent(raw);
+      const correlatedWorkerProofEpoch = correlatedPromptLifecycleAvailable
+        ? captureCorrelatedPromptLifecycleProofFence()
+        : undefined;
+      if (
+        correlatedPromptLifecycleAvailable &&
+        (correlatedProofRecoveryFailed || correlatedWorkerProofEpoch === undefined)
+      ) {
+        return routeCorrelatedReplacementAwareRawEvent(raw);
+      }
+      const routeWorkerRaw = (workerRaw: unknown): Promise<void> =>
+        correlatedWorkerProofEpoch === undefined
+          ? routeManagedAwareRawEvent(workerRaw)
+          : routeProvedCorrelatedRawEvent(workerRaw, correlatedWorkerProofEpoch);
       const generation = connectionGeneration;
       if (workerCloseRecoveryAttempt?.generation === generation) {
         return workerCloseRecoveryAttempt.promise;
       }
       if (!nativeRunObservedActive && activePromptRecovery?.promptAdmissionObserved !== true) {
-        return routeManagedAwareRawEvent(raw);
+        return routeWorkerRaw(raw);
       }
       const delivery = (async () => {
         const existing = activeWorkerRecovery;
@@ -4314,7 +4966,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           summary === undefined ||
           summary.state !== "recovering"
         ) {
-          await routeManagedAwareRawEvent(raw);
+          await routeWorkerRaw(raw);
           return;
         }
         const concurrentRecovery = activeWorkerRecovery;
@@ -4342,6 +4994,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         const recovery: NonNullable<typeof activeWorkerRecovery> = {
           resolution,
           baselineMessageCount: observedCompletedMessageCount,
+          ...(correlatedWorkerProofEpoch === undefined
+            ? {}
+            : { correlatedProofEpoch: correlatedWorkerProofEpoch }),
           terminalResponseObserved: false,
           explicitSnapshotOffered: false,
           snapshotRetry: undefined,
@@ -4378,6 +5033,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             "Prime Agent descendant quiescence wait was cancelled.",
           );
         let workerRecoveryResolution: ReconnectResolution | undefined;
+        let quiescenceCorrelatedProofEpoch: number | undefined;
         let successfulBarrierInputActivityRevision: number | undefined;
         const wait = Effect.gen(function* () {
           yield* ensureOpen("rlm-quiescence");
@@ -4388,6 +5044,17 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           const waitGeneration = yield* awaitReconnectResolution();
           if (signal.aborted) {
             return yield* cancellationError();
+          }
+          if (correlatedPromptLifecycleAvailable) {
+            quiescenceCorrelatedProofEpoch = captureCorrelatedPromptLifecycleProofFence();
+            if (quiescenceCorrelatedProofEpoch === undefined) {
+              yield* Effect.promise(() => failCorrelatedProofRecovery());
+              return yield* runtimeError(
+                "rlm-quiescence",
+                "request-failed",
+                "Prime Agent could not confirm descendant quiescence.",
+              );
+            }
           }
           const waitForHeadlessCompletion = yield* requireMethod(
             "rlm-quiescence",
@@ -4404,6 +5071,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               "request-failed",
               "Prime Agent could not confirm descendant quiescence.",
             );
+          const requireCurrentWorkerRecoveryProof = (
+            recovery: NonNullable<typeof activeWorkerRecovery>,
+          ) =>
+            Effect.suspend(() => {
+              if (workerRecoveryCorrelatedProofIsCurrent(recovery)) return Effect.void;
+              rejectRetiredWorkerRecoveryProof(recovery);
+              return Effect.promise(() => failCorrelatedProofRecovery()).pipe(
+                Effect.flatMap(() => workerRecoveryFailure()),
+              );
+            });
           const adoptConcurrentWorkerRecovery = Effect.gen(function* () {
             const closeAttempt = workerCloseRecoveryAttempt;
             if (closeAttempt?.generation === waitGeneration && activeWorkerRecovery === undefined) {
@@ -4418,6 +5095,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             ) {
               return;
             }
+            yield* requireCurrentWorkerRecoveryProof(current);
             if (workerRecoveryResolution === undefined) {
               workerRecoveryResolution = current.resolution;
               workerRecoveryAttempted = true;
@@ -4437,15 +5115,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 return yield* workerRecoveryFailure();
               }
             }
+            yield* requireCurrentWorkerRecoveryProof(current);
           });
           const requireWorkerRecoveryTerminalResponse = Effect.gen(function* () {
             yield* adoptConcurrentWorkerRecovery;
             const resolution = workerRecoveryResolution;
             if (resolution === undefined) return;
             const current = activeWorkerRecovery;
-            if (current?.resolution !== resolution || !current.terminalResponseObserved) {
-              return yield* workerRecoveryFailure();
-            }
+            if (current?.resolution !== resolution) return yield* workerRecoveryFailure();
+            yield* requireCurrentWorkerRecoveryProof(current);
+            if (!current.terminalResponseObserved) return yield* workerRecoveryFailure();
           });
           while (true) {
             const waitResult = yield* Effect.promise(async () => {
@@ -4480,6 +5159,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               workerRecoveryAttempted = true;
               rlmEventContinuityValid = false;
               const concurrentRecovery = activeWorkerRecovery;
+              if (
+                concurrentRecovery !== undefined &&
+                concurrentRecovery.resolution.generation === waitGeneration &&
+                !concurrentRecovery.terminalFallbackRouted
+              ) {
+                yield* requireCurrentWorkerRecoveryProof(concurrentRecovery);
+              }
               const resolution =
                 concurrentRecovery !== undefined &&
                 concurrentRecovery.resolution.generation === waitGeneration &&
@@ -4492,9 +5178,22 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                   ? concurrentRecovery.gatePromise
                   : undefined;
               if (gatePromise === undefined) {
+                const correlatedRecoveryProofEpoch = correlatedPromptLifecycleAvailable
+                  ? captureCorrelatedPromptLifecycleProofFence()
+                  : undefined;
+                if (
+                  correlatedPromptLifecycleAvailable &&
+                  correlatedRecoveryProofEpoch === undefined
+                ) {
+                  yield* Effect.promise(() => failCorrelatedProofRecovery());
+                  return yield* workerRecoveryFailure();
+                }
                 const recovery: NonNullable<typeof activeWorkerRecovery> = {
                   resolution,
                   baselineMessageCount: observedCompletedMessageCount,
+                  ...(correlatedRecoveryProofEpoch === undefined
+                    ? {}
+                    : { correlatedProofEpoch: correlatedRecoveryProofEpoch }),
                   terminalResponseObserved: false,
                   explicitSnapshotOffered: false,
                   snapshotRetry: undefined,
@@ -4510,6 +5209,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 recovery.gatePromise = gatePromise;
               }
               const recovery = yield* Effect.promise(() => gatePromise);
+              const completedWorkerRecovery = activeWorkerRecovery;
+              if (completedWorkerRecovery?.resolution === resolution) {
+                yield* requireCurrentWorkerRecoveryProof(completedWorkerRecovery);
+              }
               if (signal.aborted || recovery.kind === "aborted") {
                 return yield* cancellationError();
               }
@@ -4581,6 +5284,34 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           }
           yield* requireWorkerRecoveryTerminalResponse;
           const completedRecovery = activeWorkerRecovery;
+          const publicationProofEpoch =
+            workerRecoveryResolution?.correlatedProofEpoch ?? quiescenceCorrelatedProofEpoch;
+          if (
+            correlatedPromptLifecycleAvailable &&
+            (publicationProofEpoch === undefined ||
+              !correlatedPromptLifecycleProofFenceIsCurrent(publicationProofEpoch))
+          ) {
+            yield* Effect.promise(() => failCorrelatedProofRecovery());
+            return yield* workerRecoveryFailure();
+          }
+          const usage = subtractCumulativeUsage(currentUsage, rlmTurnUsageBaseline);
+          yield* offerRuntimeEvent(
+            {
+              _tag: "RlmQuiesced",
+              token,
+              connectionGeneration: completedConnectionGeneration,
+              ...(usage === undefined ? {} : { usage }),
+            },
+            publicationProofEpoch,
+          ).pipe(
+            Effect.catch((cause) =>
+              cause === CORRELATED_PROOF_FENCE_RETIRED
+                ? Effect.promise(() => failCorrelatedProofRecovery()).pipe(
+                    Effect.flatMap(() => workerRecoveryFailure()),
+                  )
+                : Effect.fail(cause),
+            ),
+          );
           if (
             workerRecoveryResolution !== undefined &&
             completedRecovery?.resolution === workerRecoveryResolution
@@ -4600,13 +5331,6 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             nativeInputRunActive = false;
             nativeInputActivityRevision += 1;
           }
-          const usage = subtractCumulativeUsage(currentUsage, rlmTurnUsageBaseline);
-          yield* Queue.offer(eventQueue, {
-            _tag: "RlmQuiesced",
-            token,
-            connectionGeneration: completedConnectionGeneration,
-            ...(usage === undefined ? {} : { usage }),
-          });
         }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {
@@ -4734,15 +5458,76 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       },
     );
 
-    const emitPromptLifecycle = (lifecycle: PrimeDaemonPromptLifecycleSnapshot) =>
-      Queue.offer(eventQueue, {
-        _tag: "PromptLifecycleUpdated",
-        lifecycle,
+    const CORRELATED_PROOF_UNAVAILABLE_ERROR =
+      "Prime Agent correlated prompt capability proof is unavailable for the current attachment.";
+    const correlatedProofUnavailable = (operation: "prompt" | "abort") =>
+      Effect.promise(() => failCorrelatedProofRecovery()).pipe(
+        Effect.flatMap(() =>
+          runtimeError(operation, "request-failed", CORRELATED_PROOF_UNAVAILABLE_ERROR),
+        ),
+      );
+    const requireCorrelatedPromptLifecycleAdmission = (operation: "prompt" | "abort") =>
+      Effect.suspend(() => {
+        if (correlatedProofRecoveryFailed) return correlatedProofUnavailable(operation);
+        return correlatedProofRecoveryPending ||
+          (reconnectResolution !== undefined && !reconnectResolution.settled)
+          ? runtimeError(
+              operation,
+              "request-failed",
+              "Prime Agent correlated prompt lifecycle recovery is still pending.",
+            )
+          : Effect.void;
       });
+    const requireCurrentCorrelatedPromptLifecycleProof = (operation: "prompt" | "abort") =>
+      Effect.suspend(() => {
+        if (!correlatedPromptLifecycleAvailable) {
+          return runtimeError(
+            operation,
+            "invalid-input",
+            "Correlated prompt lifecycle was not negotiated for this session.",
+          );
+        }
+        const proofEpoch = captureCorrelatedPromptLifecycleProofFence();
+        return proofEpoch === undefined
+          ? correlatedProofUnavailable(operation)
+          : Effect.succeed(proofEpoch);
+      });
+    const requireUnchangedCorrelatedPromptLifecycleProof = (
+      operation: "prompt" | "abort",
+      proofEpoch: number,
+    ) =>
+      Effect.suspend(() =>
+        correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)
+          ? Effect.void
+          : correlatedProofUnavailable(operation),
+      );
+
+    const emitPromptLifecycle = (
+      lifecycle: PrimeDaemonPromptLifecycleSnapshot,
+      proofEpoch: number,
+      operation: "prompt" | "abort",
+      onCommit: () => void = () => undefined,
+    ) =>
+      offerRuntimeEvent(
+        {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle,
+        },
+        proofEpoch,
+        onCommit,
+      ).pipe(
+        Effect.catch((cause) =>
+          cause === CORRELATED_PROOF_FENCE_RETIRED
+            ? correlatedProofUnavailable(operation)
+            : Effect.fail(cause),
+        ),
+      );
 
     const reconcileCorrelatedPromptLifecycle = Effect.fn(
       "PrimeAgentDaemonSessionRuntime.reconcileCorrelatedPromptLifecycle",
     )(function* (correlationId: string) {
+      yield* requireCorrelatedPromptLifecycleAdmission("prompt");
+      const proofEpoch = yield* requireCurrentCorrelatedPromptLifecycleProof("prompt");
       const raw = yield* Effect.tryPromise({
         try: () => connection!.getPromptLifecycles!(),
         catch: () =>
@@ -4752,6 +5537,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             "Could not reconcile the correlated Prime Agent prompt lifecycle.",
           ),
       });
+      yield* requireUnchangedCorrelatedPromptLifecycleProof("prompt", proofEpoch);
       const state = decodePrimeAgentPromptLifecycleStateSnapshot(raw);
       if (state === undefined) {
         return yield* runtimeError(
@@ -4768,14 +5554,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "Prime Agent returned a regressing correlated prompt lifecycle snapshot.",
         );
       }
-      commitPromptLifecycleStateMerge(lifecyclePlan);
       const lifecycle = state.records.find(
         (candidate) => candidate.correlationId === correlationId,
       );
       if (lifecycle !== undefined) {
-        yield* emitPromptLifecycle(lifecycle);
+        yield* emitPromptLifecycle(lifecycle, proofEpoch, "prompt", () => {
+          commitPromptLifecycleStateMerge(lifecyclePlan);
+        });
         return lifecycle;
       }
+      commitPromptLifecycleStateMerge(lifecyclePlan);
       return yield* runtimeError(
         "prompt",
         "invalid-response",
@@ -4787,16 +5575,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       "PrimeAgentDaemonSessionRuntime.submitCorrelatedPrompt",
     )(function* (promptInput: PrimeAgentDaemonCorrelatedPromptInput) {
       yield* ensureOpen("prompt");
-      if (!correlatedPromptLifecycleAvailable) {
-        return yield* runtimeError(
-          "prompt",
-          "invalid-input",
-          "Correlated prompt lifecycle was not negotiated for this session.",
-        );
-      }
+      yield* requireCorrelatedPromptLifecycleAdmission("prompt");
+      yield* requireCurrentCorrelatedPromptLifecycleProof("prompt");
       yield* awaitProviderRecovery;
+      yield* requireCorrelatedPromptLifecycleAdmission("prompt");
+      const proofEpoch = yield* requireCurrentCorrelatedPromptLifecycleProof("prompt");
       const images = yield* validateImages("prompt", promptInput.images);
       yield* validatePromptContent("prompt", promptInput.text, images);
+      yield* requireCorrelatedPromptLifecycleAdmission("prompt");
+      yield* requireUnchangedCorrelatedPromptLifecycleProof("prompt", proofEpoch);
       const attempted = yield* Effect.tryPromise({
         try: () =>
           connection!.submitCorrelatedPrompt!(promptInput.text, {
@@ -4815,6 +5602,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         Effect.map((value) => ({ ok: true as const, value })),
         Effect.orElseSucceed(() => ({ ok: false as const })),
       );
+      yield* requireUnchangedCorrelatedPromptLifecycleProof("prompt", proofEpoch);
       if (!attempted.ok) {
         return yield* reconcileCorrelatedPromptLifecycle(promptInput.correlationId);
       }
@@ -4840,28 +5628,29 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         return current;
       }
-      const observation = observePromptLifecycle(result.lifecycle);
-      if (observation === "invalid") {
+      const observation = planPromptLifecycleObservation(result.lifecycle);
+      if (observation.observation === "invalid") {
         return yield* runtimeError(
           "prompt",
           "invalid-response",
           "Prime Agent returned a regressing correlated prompt lifecycle.",
         );
       }
-      if (observation === "accepted") yield* emitPromptLifecycle(result.lifecycle);
+      if (observation.observation === "accepted") {
+        yield* emitPromptLifecycle(result.lifecycle, proofEpoch, "prompt", () => {
+          commitPromptLifecycleStateMerge(observation.plan);
+        });
+      }
       return promptLifecycles.get(promptInput.correlationId) ?? result.lifecycle;
     });
 
     const cancelPromptLifecycle = Effect.fn("PrimeAgentDaemonSessionRuntime.cancelPromptLifecycle")(
       function* (correlationId: string) {
         yield* ensureOpen("abort");
-        if (!correlatedPromptLifecycleAvailable) {
-          return yield* runtimeError(
-            "abort",
-            "invalid-input",
-            "Correlated prompt lifecycle was not negotiated for this session.",
-          );
-        }
+        yield* requireCorrelatedPromptLifecycleAdmission("abort");
+        const proofEpoch = yield* requireCurrentCorrelatedPromptLifecycleProof("abort");
+        yield* requireCorrelatedPromptLifecycleAdmission("abort");
+        yield* requireUnchangedCorrelatedPromptLifecycleProof("abort", proofEpoch);
         const raw = yield* Effect.tryPromise({
           try: () => connection!.cancelPromptLifecycle!(correlationId),
           catch: () =>
@@ -4871,6 +5660,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               "Could not cancel the correlated Prime Agent prompt lifecycle.",
             ),
         });
+        yield* requireUnchangedCorrelatedPromptLifecycleProof("abort", proofEpoch);
         const result = decodePrimeAgentPromptLifecycleCancellationResult(raw, correlationId);
         if (result === undefined) {
           return yield* runtimeError(
@@ -4890,15 +5680,19 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               );
             }
           } else {
-            const observation = observePromptLifecycle(result.lifecycle);
-            if (observation === "invalid") {
+            const observation = planPromptLifecycleObservation(result.lifecycle);
+            if (observation.observation === "invalid") {
               return yield* runtimeError(
                 "abort",
                 "invalid-response",
                 "Prime Agent returned a regressing correlated prompt cancellation lifecycle.",
               );
             }
-            if (observation === "accepted") yield* emitPromptLifecycle(result.lifecycle);
+            if (observation.observation === "accepted") {
+              yield* emitPromptLifecycle(result.lifecycle, proofEpoch, "abort", () => {
+                commitPromptLifecycleStateMerge(observation.plan);
+              });
+            }
           }
         }
         return result;
@@ -4909,6 +5703,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
       yield* ensureOpen("prompt");
+      if (correlatedPromptLifecycleAvailable) {
+        yield* requireCorrelatedPromptLifecycleAdmission("prompt");
+      }
       yield* awaitProviderRecovery;
       const resumedAfterAbort = yield* resumeAfterAbort();
       const images = yield* validateImages("prompt", promptInput.images);
@@ -5256,11 +6053,17 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
 
     const abort = Effect.gen(function* () {
       yield* ensureOpen("abort");
+      if (correlatedPromptLifecycleAvailable) {
+        yield* requireCorrelatedPromptLifecycleAdmission("abort");
+      }
       yield* callVoid("abort", () => connection!.abort());
     });
 
     const abortAndClearQueue = Effect.gen(function* () {
       yield* ensureOpen("abort-and-clear-queue");
+      if (correlatedPromptLifecycleAvailable) {
+        yield* requireCorrelatedPromptLifecycleAdmission("abort");
+      }
       const method = yield* requireMethod("abort-and-clear-queue", connection!.abortAndClearQueue);
       // Prime suspends new session input as soon as abort begins. Keep this set
       // even when the response is lost because the native side effect may have run.
@@ -5709,9 +6512,45 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       } satisfies PrimeAgentDaemonSessionStats;
     });
 
+    // The initial proof cannot survive any overlapping attachment generation, even
+    // if a newer proof has already appeared by the end of these asynchronous reads.
+    if (
+      correlatedPromptLifecycleAvailable &&
+      (initializationCorrelatedProofInvalidated || !hasCurrentCorrelatedPromptLifecycleProof())
+    ) {
+      unsubscribe();
+      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+      client.close();
+      yield* Queue.shutdown(eventQueue);
+      yield* Queue.shutdown(runtimeEventWeightCapacityAvailable);
+      return yield* runtimeError(
+        "initial-snapshot",
+        "invalid-response",
+        "Prime Agent lost its negotiated daemon capability proof during initialization.",
+      );
+    }
     // Keep initialization admission active through every control-plane read.
-    // The cumulative cap guarantees this entire flush fits without a consumer.
-    yield* Queue.offer(eventQueue, { ...initialEvent, initialSnapshot: true });
+    // Raw staging and decoded queue weight are checked independently. A decoded
+    // projection that cannot commit without a consumer marks initialization overflow.
+    const initialRuntimeEvent = { ...initialEvent, initialSnapshot: true };
+    yield* offerTerminalRuntimeEvent({
+      event: initialRuntimeEvent,
+      weight: boundedCorrelatedProofRouteWeight(initialRuntimeEvent),
+    }).pipe(
+      Effect.asVoid,
+      Effect.catch(() =>
+        Effect.gen(function* () {
+          unsubscribe();
+          yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+          client.close();
+          return yield* runtimeError(
+            "initial-snapshot",
+            "request-failed",
+            "The daemon emitted too much data while initializing the session.",
+          );
+        }),
+      ),
+    );
     while (bufferedEvents.length > 0) {
       const batch = bufferedEvents.splice(0);
       for (const bufferedEvent of batch) {
@@ -5723,6 +6562,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
       client.close();
       yield* Queue.shutdown(eventQueue);
+      yield* Queue.shutdown(runtimeEventWeightCapacityAvailable);
       return yield* runtimeError(
         "initial-snapshot",
         "request-failed",
@@ -5781,6 +6621,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             recentlySettledSideQuestionIds.clear();
             client.close();
             yield* Queue.shutdown(eventQueue);
+            yield* Queue.shutdown(runtimeEventWeightCapacityAvailable);
           }),
         ),
       );
@@ -5821,7 +6662,12 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       messageAgent,
       watchAgentActivityAvailable,
       watchAgentActivity,
-      events: Stream.fromQueue(eventQueue),
+      events: Stream.fromQueue(eventQueue).pipe(
+        Stream.map((queued) => {
+          releaseQueuedRuntimeEventWeight(queued.weight);
+          return queued.event;
+        }),
+      ),
       rlmQuiescenceAvailable,
       waitForRlmQuiescence,
       isRlmQuiescenceGenerationCurrent: (generation) =>
@@ -5829,12 +6675,27 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       resolveReconnectSnapshot,
       retryWorkerRecoverySnapshot,
       noteWorkerRecoveryTerminalResponse,
-      isConnectionGenerationCurrent: (generation) => generation === connectionGeneration,
+      isConnectionGenerationCurrent: (generation, proofEpoch) => {
+        if (generation !== connectionGeneration) return false;
+        if (!correlatedPromptLifecycleAvailable) return true;
+        const pending = reconnectResolution;
+        return (
+          pending?.generation === generation &&
+          proofEpoch !== undefined &&
+          pending.correlatedProofEpoch === proofEpoch &&
+          correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)
+        );
+      },
       correlatedPromptLifecycleAvailable,
+      get correlatedPromptLifecycleAdmissionBlocked() {
+        return correlatedPromptLifecycleAdmissionBlocked();
+      },
       submitCorrelatedPrompt,
       cancelPromptLifecycle,
       get inputAdmissionBusy() {
         return (
+          runtimeEventIngressFailed ||
+          correlatedPromptLifecycleAdmissionBlocked() ||
           nativeRunObservedActive ||
           nativeInputRunActive ||
           nativeInputCompactionActive ||
