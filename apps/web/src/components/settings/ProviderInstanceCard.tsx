@@ -472,7 +472,7 @@ export function ProviderInstanceCard({
   isUpdating = false,
   timestampFormat,
 }: ProviderInstanceCardProps) {
-  const [activeTab, setActiveTab] = useState<"models" | "configuration">("configuration");
+  const [activeTab, setActiveTab] = useState<"configuration" | "models">("configuration");
   const enabled = resolveProviderInstanceEnabled(instance);
   // A locally disabled provider stays neutral even if its last server status
   // is stale. Enabled providers use the server status when one is available.
@@ -501,17 +501,10 @@ export function ProviderInstanceCard({
     enabled &&
     liveProvider?.auth.status === "unauthenticated" &&
     instance.driver === "claudeAgent";
-  // Upstream hides this line unless something is wrong, because for a healthy
-  // account it only repeats the list row. Everything else belongs here: the
-  // account email that tells two accounts of one driver apart, a sign-in to
-  // offer, and a disabled account's reason — deciding which of two disabled
-  // accounts to re-enable is exactly when you need to read its email.
-  const showEditorStatus =
-    !enabled ||
-    statusKey === "warning" ||
-    statusKey === "error" ||
-    Boolean(authEmail?.trim()) ||
-    canSignIn;
+  // Trouble states carry the server's explanation (a failed probe, a shadow
+  // home entry that is not a symlink, a missing binary). It shows wherever the
+  // headline shows, so a broken provider is actionable from the list.
+  const needsAttention = statusKey === "warning" || statusKey === "error";
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
@@ -717,11 +710,21 @@ export function ProviderInstanceCard({
     </>
   );
 
+  // Healthy and disabled rows read fine from their text; only trouble gets a dot.
+  const statusDotNode = needsAttention ? (
+    <span className={cn("size-1.5 shrink-0 rounded-full", statusStyle.dot)} aria-hidden />
+  ) : null;
+  const statusLineClassName =
+    "flex min-w-0 flex-wrap items-center gap-x-1.5 text-[13px] leading-[1.45] text-muted-foreground/80";
+
   // The editor's status line. It doubles as the account identity row, so the
   // redacted email lives here rather than in the list, where a masked address
-  // on every row would be noise you cannot act on.
+  // on every row would be noise you cannot act on. The line stays outside the
+  // read-only inert wrapper so the email reveal keeps working; only the
+  // sign-in write action freezes.
   const editorStatusNode = (
-    <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+    <p className={statusLineClassName}>
+      {statusDotNode}
       {hasAuthenticatedEmail ? (
         <>
           <span>Authenticated as</span>
@@ -734,16 +737,22 @@ export function ProviderInstanceCard({
           <ProviderAuthEmail email={authEmail} separator prefix="Email" />
         </>
       )}
-      {summary.detail ? <span>· {summary.detail}</span> : null}
+      {summary.detail && !needsAttention ? <span>· {summary.detail}</span> : null}
       {canSignIn ? (
-        <Button
-          variant="outline"
-          size="sm"
-          className="ms-1 h-6 px-2 text-xs"
-          onClick={() => setIsSignInOpen(true)}
+        <span
+          inert={readOnly}
+          aria-disabled={readOnly || undefined}
+          className={cn("inline-flex", readOnly && "opacity-50")}
         >
-          Sign in
-        </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ms-1 h-6 px-2 text-xs"
+            onClick={() => setIsSignInOpen(true)}
+          >
+            Sign in
+          </Button>
+        </span>
       ) : null}
     </p>
   );
@@ -772,15 +781,19 @@ export function ProviderInstanceCard({
     return (
       <div
         className={cn(
-          "group relative flex min-h-16 items-center gap-3 border-b border-border/60 px-3 py-2.5 transition-colors last:border-b-0",
-          selected ? "bg-muted/50" : "hover:bg-muted/25",
+          // Sidebar-style selection with an even row floor; the status line
+          // clamps to two lines instead of growing. Pylon keeps a minimum
+          // rather than a fixed height because a row may also carry the usage
+          // summary, which upstream's card has no equivalent of.
+          "group flex min-h-19 items-start gap-3 rounded-md px-3 py-2 transition-colors",
+          // Foreground-alpha tint so the fill reads the same in light and dark themes.
+          selected ? "bg-foreground/8" : "hover:bg-foreground/4",
         )}
       >
-        {selected ? <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" /> : null}
         <button
           type="button"
           className={cn(
-            "flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-sm text-left outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
+            "flex min-w-0 flex-1 cursor-pointer items-start gap-3 rounded-sm text-left outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
             !enabled && !selected && "opacity-60 group-hover:opacity-100",
           )}
           onClick={onSelect}
@@ -790,151 +803,175 @@ export function ProviderInstanceCard({
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-2">
               <span className="truncate text-sm font-medium text-foreground">{displayName}</span>
+              {String(instanceId) !== String(instance.driver) ? (
+                <code className="min-w-0 truncate rounded bg-muted/60 px-1 py-0.5 text-[10px] text-muted-foreground">
+                  {instanceId}
+                </code>
+              ) : null}
               {versionCodeNode}
               {listUpdateMarkerNode}
             </span>
-            <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <span className={cn("size-1.5 shrink-0 rounded-full", statusStyle.dot)} />
-              <span className="truncate">{summary.headline}</span>
+            <span className="mt-0.5 flex items-start gap-1.5 text-[13px] leading-[1.45] text-muted-foreground/80">
+              {statusDotNode ? (
+                <span className="flex h-[1.45em] shrink-0 items-center">{statusDotNode}</span>
+              ) : null}
+              <span className="line-clamp-2 [overflow-wrap:anywhere]">
+                {summary.headline}
+                {needsAttention && summary.detail ? ` · ${summary.detail}` : null}
+              </span>
             </span>
             {enabled && liveProvider?.usageLimits ? (
               <span className="mt-0.5 block min-w-0">
                 <ProviderUsageSummary usageLimits={liveProvider.usageLimits} />
               </span>
             ) : null}
-            {String(instanceId) !== String(instance.driver) ? (
-              <code className="mt-0.5 block truncate text-[10px] text-muted-foreground/70">
-                {instanceId}
-              </code>
-            ) : null}
           </span>
         </button>
-        <Switch
-          checked={enabled}
-          disabled={readOnly}
-          onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
-          aria-label={`Enable ${displayName}`}
-        />
+        <span className="flex h-5 shrink-0 items-center">
+          <Switch
+            checked={enabled}
+            disabled={readOnly}
+            onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
+            aria-label={`Enable ${displayName}`}
+          />
+        </span>
       </div>
     );
   }
 
   return (
     <div className="min-w-0 lg:flex lg:h-full lg:min-h-0 lg:flex-col">
-      <div
-        inert={readOnly}
-        aria-disabled={readOnly || undefined}
-        className={cn(
-          "flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/70 px-4 py-3",
-          readOnly && "opacity-50 select-none",
-        )}
-      >
+      <div className="flex min-h-16 shrink-0 items-start justify-between gap-3 border-b border-border/70 px-4 py-3">
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             {titleHeadNode}
             {versionCodeNode}
-            {versionAdvisory ? (
-              <Popover>
-                <PopoverTrigger
-                  render={
-                    <Button
-                      type="button"
-                      size="icon-xs"
-                      variant="ghost"
-                      className={cn(
-                        "size-5 rounded-sm p-0",
-                        versionAdvisory.emphasis === "strong"
-                          ? "text-warning hover:text-warning"
-                          : "text-update-foreground hover:text-update-foreground",
-                      )}
-                      aria-label="Update available — view details"
-                    >
-                      <ArrowUpCircleIcon className="size-3.5" />
-                    </Button>
-                  }
-                />
-                <PopoverPopup
-                  side="bottom"
-                  align="start"
-                  className="w-[min(21rem,calc(100vw-1.5rem))] [--popup-width:min(21rem,calc(100vw-1.5rem))]"
-                >
-                  <div className="grid min-w-0 gap-3">
-                    <div className="grid gap-0.5">
-                      <p className="text-[13px] font-semibold leading-tight text-foreground">
-                        Update available
-                      </p>
-                      <p
-                        className={cn(
-                          "text-xs leading-snug",
-                          versionAdvisory.emphasis === "strong"
-                            ? "text-warning"
-                            : "text-muted-foreground",
-                        )}
-                      >
-                        {versionAdvisory.detail}
-                      </p>
-                    </div>
-                    {onRunUpdate ? (
+            {/*
+              Only the write actions go inert on read-only sessions — the
+              update popover, the drain-order chevrons, and the delete button.
+              The status line below keeps its email reveal clickable.
+            */}
+            <span
+              inert={readOnly}
+              aria-disabled={readOnly || undefined}
+              className={cn("inline-flex items-center gap-2", readOnly && "opacity-50")}
+            >
+              {versionAdvisory ? (
+                <Popover>
+                  <PopoverTrigger
+                    render={
                       <Button
                         type="button"
-                        size="xs"
-                        variant="default"
-                        className="w-full"
-                        disabled={isUpdating}
-                        onClick={onRunUpdate}
+                        size="icon-xs"
+                        variant="ghost"
+                        className={cn(
+                          "size-5 rounded-sm p-0",
+                          versionAdvisory.emphasis === "strong"
+                            ? "text-warning hover:text-warning"
+                            : "text-update-foreground hover:text-update-foreground",
+                        )}
+                        aria-label="Update available — view details"
                       >
-                        {isUpdating ? <LoaderIcon className="animate-spin" /> : <DownloadIcon />}
-                        {isUpdating ? "Updating" : "Update now"}
+                        <ArrowUpCircleIcon className="size-3.5" />
                       </Button>
-                    ) : null}
-                    {onRunUpdate && updateCommand ? (
-                      <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                        <span aria-hidden className="h-px flex-1 bg-border" />
-                        or, update manually using
-                        <span aria-hidden className="h-px flex-1 bg-border" />
+                    }
+                  />
+                  <PopoverPopup
+                    side="bottom"
+                    align="start"
+                    className="w-[min(21rem,calc(100vw-1.5rem))] [--popup-width:min(21rem,calc(100vw-1.5rem))]"
+                  >
+                    <div className="grid min-w-0 gap-3">
+                      <div className="grid gap-0.5">
+                        <p className="text-[13px] font-semibold leading-tight text-foreground">
+                          Update available
+                        </p>
+                        <p
+                          className={cn(
+                            "text-xs leading-snug",
+                            versionAdvisory.emphasis === "strong"
+                              ? "text-warning"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          {versionAdvisory.detail}
+                        </p>
                       </div>
-                    ) : null}
-                    {updateCommand ? (
-                      <div className="flex min-w-0 items-center gap-1 rounded-md border border-border/70 bg-muted/40 py-0.5 pr-0.5 pl-2">
-                        <ScrollArea scrollFade className="h-8 min-w-0 flex-1 rounded-none">
-                          <code className="flex h-full w-max items-center whitespace-nowrap pr-3 font-mono text-[11px] text-foreground">
-                            {updateCommand}
-                          </code>
-                        </ScrollArea>
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <Button
-                                type="button"
-                                size="icon-xs"
-                                variant="ghost"
-                                className="size-6 shrink-0 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                                onClick={() =>
-                                  copyToClipboard(updateCommand, {
-                                    providerName: displayName,
-                                  })
-                                }
-                                aria-label="Copy update command"
-                              >
-                                <CopyIcon className="size-3" />
-                              </Button>
-                            }
-                          />
-                          <TooltipPopup side="top">Copy command</TooltipPopup>
-                        </Tooltip>
-                      </div>
-                    ) : null}
-                  </div>
-                </PopoverPopup>
-              </Popover>
-            ) : null}
-            {titleTailNode}
+                      {onRunUpdate ? (
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="default"
+                          className="w-full"
+                          disabled={isUpdating}
+                          onClick={onRunUpdate}
+                        >
+                          {isUpdating ? <LoaderIcon className="animate-spin" /> : <DownloadIcon />}
+                          {isUpdating ? "Updating" : "Update now"}
+                        </Button>
+                      ) : null}
+                      {onRunUpdate && updateCommand ? (
+                        <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                          <span aria-hidden className="h-px flex-1 bg-border" />
+                          or, update manually using
+                          <span aria-hidden className="h-px flex-1 bg-border" />
+                        </div>
+                      ) : null}
+                      {updateCommand ? (
+                        <div className="flex min-w-0 items-center gap-1 rounded-md border border-border/70 bg-muted/40 py-0.5 pr-0.5 pl-2">
+                          <ScrollArea scrollFade className="h-8 min-w-0 flex-1 rounded-none">
+                            <code className="flex h-full w-max items-center whitespace-nowrap pr-3 font-mono text-[11px] text-foreground">
+                              {updateCommand}
+                            </code>
+                          </ScrollArea>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <Button
+                                  type="button"
+                                  size="icon-xs"
+                                  variant="ghost"
+                                  className="size-6 shrink-0 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                                  onClick={() =>
+                                    copyToClipboard(updateCommand, {
+                                      providerName: displayName,
+                                    })
+                                  }
+                                  aria-label="Copy update command"
+                                >
+                                  <CopyIcon className="size-3" />
+                                </Button>
+                              }
+                            />
+                            <TooltipPopup side="top">Copy command</TooltipPopup>
+                          </Tooltip>
+                        </div>
+                      ) : null}
+                    </div>
+                  </PopoverPopup>
+                </Popover>
+              ) : null}
+              {titleTailNode}
+            </span>
           </div>
-          {showEditorStatus ? editorStatusNode : null}
+          {editorStatusNode}
+          {summary.detail && needsAttention ? (
+            <p className="text-[13px] leading-[1.45] text-muted-foreground/80 [overflow-wrap:anywhere]">
+              {summary.detail}
+            </p>
+          ) : null}
         </div>
       </div>
 
       <div className="flex h-11 shrink-0 border-b border-border/70 px-1">
+        <button
+          type="button"
+          aria-pressed={visibleTab === "configuration"}
+          className={providerSettingsTabClassName(visibleTab === "configuration")}
+          onClick={() => setActiveTab("configuration")}
+        >
+          Configuration
+        </button>
         {driverOption !== undefined ? (
           <button
             type="button"
@@ -945,91 +982,92 @@ export function ProviderInstanceCard({
             Models
           </button>
         ) : null}
-        <button
-          type="button"
-          aria-pressed={visibleTab === "configuration"}
-          className={providerSettingsTabClassName(visibleTab === "configuration")}
-          onClick={() => setActiveTab("configuration")}
-        >
-          Configuration
-        </button>
       </div>
 
-      <div
-        inert={readOnly}
-        aria-disabled={readOnly || undefined}
-        className={cn("lg:min-h-0 lg:flex-1", readOnly && "opacity-50 select-none")}
-      >
-        <div
-          className="space-y-5 px-4 py-5 lg:h-full lg:overflow-y-auto"
+      <div className="lg:min-h-0 lg:flex-1">
+        <ScrollArea
+          scrollFade
+          chainVerticalScroll
+          className="lg:h-full"
           hidden={visibleTab !== "configuration"}
         >
-          {enabled && liveProvider?.usageLimits ? (
-            <div className="grid max-w-lg gap-2.5">
-              <p className="text-xs font-medium text-foreground">Provider usage</p>
-              <ProviderUsageRows
-                usageLimits={liveProvider.usageLimits}
-                timestampFormat={timestampFormat}
-              />
-            </div>
-          ) : null}
-          <div>
-            <label htmlFor={`provider-instance-${instanceId}-display-name`} className="block">
-              <span className="text-xs font-medium text-foreground">Display name</span>
-              <DraftInput
-                id={`provider-instance-${instanceId}-display-name`}
-                className="mt-1.5"
-                value={instance.displayName ?? ""}
-                onCommit={updateDisplayName}
-                placeholder={driverOption?.label ?? "Instance label"}
-                spellCheck={false}
-              />
-              <span className="mt-1 block text-xs text-muted-foreground">
-                Optional label shown in the provider list.
-              </span>
-            </label>
-          </div>
-
-          <div>
-            <ProviderAccentColorPicker
-              displayName={displayName}
-              value={accentColor}
-              onCommit={updateAccentColor}
-              commitDelayMs={120}
-              description="Used to distinguish this instance in picker rails and model lists."
-            />
-          </div>
-
-          <div>
-            <ProviderEnvironmentSection
-              environment={instance.environment ?? []}
-              onChange={updateEnvironment}
-            />
-          </div>
-
-          {driverOption ? (
-            <ProviderSettingsForm
-              definition={driverOption}
-              value={instance.config}
-              idPrefix={`provider-instance-${instanceId}`}
-              variant="card"
-              onChange={updateConfig}
-            />
-          ) : null}
-
-          {driverOption === undefined ? (
+          <div
+            inert={readOnly}
+            aria-disabled={readOnly || undefined}
+            className={cn("space-y-5 px-4 py-5", readOnly && "opacity-50 select-none")}
+          >
+            {enabled && liveProvider?.usageLimits ? (
+              <div className="grid max-w-lg gap-2.5">
+                <p className="text-xs font-medium text-foreground">Provider usage</p>
+                <ProviderUsageRows
+                  usageLimits={liveProvider.usageLimits}
+                  timestampFormat={timestampFormat}
+                />
+              </div>
+            ) : null}
             <div>
-              <p className="text-xs text-muted-foreground">
-                This instance uses a driver (
-                <code className="text-foreground">{String(instance.driver)}</code>) that is not
-                shipped with the current build. Configuration values are preserved but cannot be
-                edited from this surface.
-              </p>
+              <label htmlFor={`provider-instance-${instanceId}-display-name`} className="block">
+                <span className="text-xs font-medium text-foreground">Display name</span>
+                <DraftInput
+                  id={`provider-instance-${instanceId}-display-name`}
+                  className="mt-1.5"
+                  value={instance.displayName ?? ""}
+                  onCommit={updateDisplayName}
+                  placeholder={driverOption?.label ?? "Instance label"}
+                  spellCheck={false}
+                />
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  Optional label shown in the provider list.
+                </span>
+              </label>
             </div>
-          ) : null}
-        </div>
+
+            <div>
+              <ProviderAccentColorPicker
+                displayName={displayName}
+                value={accentColor}
+                onCommit={updateAccentColor}
+                commitDelayMs={120}
+                description="Used to distinguish this instance in picker rails and model lists."
+              />
+            </div>
+
+            <div>
+              <ProviderEnvironmentSection
+                environment={instance.environment ?? []}
+                onChange={updateEnvironment}
+              />
+            </div>
+
+            {driverOption ? (
+              <ProviderSettingsForm
+                definition={driverOption}
+                value={instance.config}
+                idPrefix={`provider-instance-${instanceId}`}
+                variant="card"
+                onChange={updateConfig}
+              />
+            ) : null}
+
+            {driverOption === undefined ? (
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  This instance uses a driver (
+                  <code className="text-foreground">{String(instance.driver)}</code>) that is not
+                  shipped with the current build. Configuration values are preserved but cannot be
+                  edited from this surface.
+                </p>
+              </div>
+            ) : null}
+          </div>
+        </ScrollArea>
         {driverOption !== undefined ? (
-          <div className="px-4 py-5 lg:h-full lg:min-h-0" hidden={visibleTab !== "models"}>
+          <div
+            inert={readOnly}
+            aria-disabled={readOnly || undefined}
+            className={cn("px-4 py-5 lg:h-full lg:min-h-0", readOnly && "opacity-50 select-none")}
+            hidden={visibleTab !== "models"}
+          >
             <ProviderModelsSection
               instanceId={instanceId}
               driverKind={driverKind}
