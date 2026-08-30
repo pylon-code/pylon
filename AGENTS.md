@@ -181,6 +181,15 @@ while work lands from elsewhere.
 - Put durable architecture, constraints, and decisions in `docs/internals/`. Update those docs when the product changes so agents find current facts instead of abandoned intentions.
 - A merged PR is the implementation record. Close or update its tracking item when the work lands; do not preserve a second checklist in the repository.
 
+## Durable project facts
+
+`.agents/durable-facts.jsonl` is the append-only fact log for coding agents. It is an index of stable project knowledge, not a replacement for canonical code and documentation.
+
+- Never edit, delete, or reorder an existing line. Append new records at the end of the file.
+- Each line is one JSON object with a unique `id`, UTC `recorded_at`, focused `scope`, concise current `fact`, full `source_commits`, repository-relative `source_paths` verified at the current head, and a `supersedes` array.
+- Record non-obvious, durable product behavior, architecture, compatibility boundaries, and maintainer constraints. Do not record plans, task status, debugging chronology, guesses, or short-lived implementation details.
+- When a fact changes, update its canonical code or documentation and append a complete replacement whose `supersedes` array names the old record IDs. Readers must prefer the replacement; history stays intact.
+
 ## How it works
 
 Clients send typed WebSocket requests. The server turns them into _commands_, a pure _decider_ turns commands into persisted _events_, and a _projector_ derives the read model the UI renders. Provider CLIs run as subprocesses; per-provider _adapters_ translate their native protocols into orchestration events. Side effects run in queue-backed _reactors_ that emit _receipts_ when milestones land. Each turn ends with a _checkpoint_, a hidden git ref, so the app can diff and restore.
