@@ -127,6 +127,10 @@ function renderPanel(options?: {
   }) as ReactElement<Record<string, unknown>>;
 }
 
+function isAddProviderButton(element: ReactElement<Record<string, unknown>>): boolean {
+  return element.props["aria-label"] === "Add provider";
+}
+
 async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -212,14 +216,10 @@ describe("EnvironmentProviderSettings routing", () => {
     const notice = visitElements(panel, (element) => element.props.title === "Limited permissions");
     expect(notice).not.toBeNull();
 
-    const providersSection = visitElements(
-      panel,
-      (element) => element.props.title === "Providers" && "headerAction" in element.props,
-    );
-    expect(providersSection?.props.headerAction).toBeNull();
     expect(
       visitElements(panel, (element) => element.props["aria-label"] === "Refresh provider status"),
     ).toBeNull();
+    expect(visitElements(panel, isAddProviderButton)).toBeNull();
   });
 
   it("keeps the editable layout interactive when not read only", () => {
@@ -229,12 +229,10 @@ describe("EnvironmentProviderSettings routing", () => {
     expect(
       visitElements(panel, (element) => element.props.title === "Limited permissions"),
     ).toBeNull();
-    const providersSection = visitElements(
-      panel,
-      (element) => element.props.title === "Providers" && "headerAction" in element.props,
-    );
-    expect(providersSection).not.toBeNull();
-    expect(providersSection?.props.headerAction).not.toBeNull();
+    expect(
+      visitElements(panel, (element) => element.props["aria-label"] === "Refresh provider status"),
+    ).not.toBeNull();
+    expect(visitElements(panel, isAddProviderButton)).not.toBeNull();
   });
 
   it("keeps drain-order controls on the editor for a driver with several accounts", () => {
