@@ -1240,6 +1240,8 @@ export type PrimeDaemonEvent = (
       readonly replayContinuity?: "complete" | "unavailable" | "unknown" | undefined;
       /** Local Pylon transport generation, attached by the session runtime. */
       readonly connectionGeneration?: number | undefined;
+      /** Runtime-local authority for a proved correlated recovery snapshot. */
+      readonly correlatedProofEpoch?: number | undefined;
       /** A connection-level replacement normalized through its authoritative cached snapshot. */
       readonly replacementSnapshot?: boolean | undefined;
       /** The startup snapshot already installed synchronously before this queued projection. */

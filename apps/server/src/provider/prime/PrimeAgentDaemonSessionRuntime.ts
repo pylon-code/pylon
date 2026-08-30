@@ -79,6 +79,7 @@ import {
 export { PRIME_AGENT_DAEMON_RESUME_CURSOR } from "./PrimeAgentResumeCursor.ts";
 
 const COMMAND_TIMEOUT_MS = 30_000;
+const MCP_REPLACEMENT_DISPOSE_GRACE_MS = 100;
 const RLM_QUIESCENCE_STATS_TIMEOUT_MS = 2_000;
 const RLM_QUIESCENCE_CANCELLATION_MAX_RETRIES = 3;
 const RLM_WORKER_RECOVERY_TIMEOUT_MS = 60_000;
@@ -1055,7 +1056,10 @@ export interface PrimeAgentDaemonSessionRuntime {
   /** Requests a fresh explicit snapshot without weakening reconnect validation. */
   readonly retryWorkerRecoverySnapshot: (generation: number) => boolean;
   readonly noteWorkerRecoveryTerminalResponse: () => void;
-  readonly isConnectionGenerationCurrent: (generation: number) => boolean;
+  readonly isConnectionGenerationCurrent: (
+    generation: number,
+    correlatedProofEpoch?: number,
+  ) => boolean;
   /** True only when the daemon explicitly negotiated correlated prompt lifecycle support. */
   readonly correlatedPromptLifecycleAvailable: boolean;
   readonly submitCorrelatedPrompt: (
@@ -1067,7 +1071,9 @@ export interface PrimeAgentDaemonSessionRuntime {
     PrimeDaemonPromptLifecycleCancellationResult,
     PrimeAgentDaemonSessionRuntimeError
   >;
-  /** True while native background work makes a new supervised prompt unsafe to admit. */
+  /** True while strict correlated recovery or terminal failure forbids new turn admission. */
+  readonly correlatedPromptLifecycleAdmissionBlocked: boolean;
+  /** True while native background work or strict recovery makes a prompt unsafe to admit. */
   readonly inputAdmissionBusy: boolean;
   readonly prompt: (
     input: PrimeAgentDaemonPromptInput,
@@ -1339,14 +1345,73 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           runtimeError("open-client", "request-failed", "Could not open the shared daemon client."),
         ),
       );
-    const correlatedPromptLifecycleAvailable =
-      client.supportsServerCapability?.("correlated_prompt_lifecycle_v1") === true;
+    // Server hello is only an offer. Strict correlated mode is decided after the
+    // exact attachment commits its public negotiated-capability proof.
+    let correlatedPromptLifecycleAvailable = false;
     let connection: PrimeAgentDaemonAgentConnection | undefined;
     let unsubscribe: (() => void) | undefined;
     let disposed = false;
     let disposeStarted = false;
     let needsResumeAfterAbort = false;
     let connectionGeneration = 0;
+    type RouteRetirementSignal = {
+      readonly listeners: Set<() => void>;
+      retired: boolean;
+    };
+    type OrdinaryIngressFence = RouteRetirementSignal & {
+      readonly generation: number;
+    };
+    const makeOrdinaryIngressFence = (generation: number): OrdinaryIngressFence => ({
+      generation,
+      listeners: new Set(),
+      retired: false,
+    });
+    const retireRouteSignal = (signal: RouteRetirementSignal) => {
+      if (signal.retired) return;
+      signal.retired = true;
+      const listeners = [...signal.listeners];
+      signal.listeners.clear();
+      for (const listener of listeners) listener();
+    };
+    const awaitRouteRetirement = (signal: RouteRetirementSignal) =>
+      Effect.callback<void>((resume) => {
+        if (signal.retired) {
+          resume(Effect.void);
+          return;
+        }
+        const listener = () => resume(Effect.void);
+        signal.listeners.add(listener);
+        return Effect.sync(() => signal.listeners.delete(listener));
+      });
+    let currentOrdinaryIngressFence = makeOrdinaryIngressFence(connectionGeneration);
+    const retireOrdinaryIngressFence = (fence = currentOrdinaryIngressFence) =>
+      retireRouteSignal(fence);
+    type ProviderRouteRetirement = RouteRetirementSignal;
+    const makeProviderRouteRetirement = (): ProviderRouteRetirement => ({
+      listeners: new Set(),
+      retired: false,
+    });
+    const retireProviderRoute = (retirement: ProviderRouteRetirement) =>
+      retireRouteSignal(retirement);
+    const providerRouteRetirementIsCurrent = (retirement: ProviderRouteRetirement | undefined) =>
+      retirement?.retired !== true;
+    let correlatedProviderRouteRetirement = makeProviderRouteRetirement();
+    const rotateCorrelatedProviderRouteRetirement = () => {
+      retireProviderRoute(correlatedProviderRouteRetirement);
+      correlatedProviderRouteRetirement = makeProviderRouteRetirement();
+    };
+    let currentOrdinaryWorkerCloseRetirement: ProviderRouteRetirement | undefined;
+    const retireCurrentOrdinaryWorkerCloseRoute = () => {
+      const retirement = currentOrdinaryWorkerCloseRetirement;
+      currentOrdinaryWorkerCloseRetirement = undefined;
+      if (retirement !== undefined) retireProviderRoute(retirement);
+    };
+    const ordinaryIngressFenceIsCurrent = (fence: OrdinaryIngressFence | undefined) =>
+      fence === undefined ||
+      (!correlatedPromptLifecycleAvailable &&
+        !fence.retired &&
+        fence === currentOrdinaryIngressFence &&
+        fence.generation === connectionGeneration);
     let rlmEventContinuityValid = true;
     let rlmTurnUsageBaseline: PrimeDaemonUsage | undefined;
     let observedCompletedMessageCount = 0;
@@ -1387,14 +1452,20 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       readonly generation: number;
       readonly promise: Promise<boolean>;
       readonly resolve: (reconciled: boolean) => void;
+      correlatedProofEpoch?: number;
+      snapshotPublished: boolean;
       settled: boolean;
     };
     let reconnectResolution: ReconnectResolution | undefined;
+    const ordinaryReconnectPreflightGenerations = new WeakMap<object, number>();
     let activeWorkerRecovery:
       | {
           readonly resolution: ReconnectResolution;
           readonly baselineMessageCount: number;
+          readonly correlatedProofEpoch?: number;
+          readonly ordinaryIngressFence?: OrdinaryIngressFence;
           terminalResponseObserved: boolean;
+          closePreflightTerminalResponseObserved: boolean;
           explicitSnapshotRaw?: object;
           explicitSnapshotOffered: boolean;
           snapshotRetry:
@@ -1422,6 +1493,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             | undefined;
         }
       | undefined;
+    const workerCloseClassificationIsPending = () => {
+      const recovery = activeWorkerRecovery;
+      return (
+        recovery !== undefined &&
+        recovery.resolution === reconnectResolution &&
+        !recovery.resolution.settled &&
+        recovery.gatePromise === undefined
+      );
+    };
     let commitWorkerRecoverySnapshotMetadata: (
       recovery: NonNullable<typeof activeWorkerRecovery>,
     ) => void = () => undefined;
@@ -1483,12 +1563,49 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return true;
     };
 
+    const workerRecoveryCorrelatedProofIsCurrent = (
+      recovery: NonNullable<typeof activeWorkerRecovery>,
+    ): boolean =>
+      !correlatedPromptLifecycleAvailable ||
+      (recovery.correlatedProofEpoch !== undefined &&
+        correlatedPromptLifecycleProofFenceIsCurrent(recovery.correlatedProofEpoch));
+    const rejectRetiredWorkerRecoveryProof = (
+      recovery: NonNullable<typeof activeWorkerRecovery>,
+    ): boolean => {
+      if (workerRecoveryCorrelatedProofIsCurrent(recovery)) return false;
+      recovery.provisionalSnapshot = undefined;
+      settleReconnectResolution(recovery.resolution.generation, false);
+      void failCorrelatedProofRecovery().catch(() => undefined);
+      return true;
+    };
+
     const resolveReconnectSnapshot = (
       generation: number,
       reconciled: boolean,
       terminalResponseObserved = false,
     ) => {
       const recovery = activeWorkerRecovery;
+      const pending = reconnectResolution;
+      if (
+        correlatedPromptLifecycleAvailable &&
+        pending?.generation === generation &&
+        (pending.correlatedProofEpoch === undefined ||
+          !correlatedPromptLifecycleProofFenceIsCurrent(pending.correlatedProofEpoch))
+      ) {
+        if (recovery?.resolution.generation === generation) {
+          recovery.provisionalSnapshot = undefined;
+        }
+        settleReconnectResolution(generation, false);
+        void failCorrelatedProofRecovery().catch(() => undefined);
+        return false;
+      }
+      if (
+        recovery !== undefined &&
+        recovery.resolution.generation === generation &&
+        rejectRetiredWorkerRecoveryProof(recovery)
+      ) {
+        return false;
+      }
       if (
         recovery !== undefined &&
         recovery.resolution.generation === generation &&
@@ -1504,14 +1621,19 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
       }
       const settled = settleReconnectResolution(generation, reconciled);
+      if (settled && correlatedPromptLifecycleAvailable && !reconciled) {
+        void failCorrelatedProofRecovery().catch(() => undefined);
+      }
       if (
         settled &&
         reconciled &&
         recovery !== undefined &&
         recovery.resolution.generation === generation
       ) {
-        // Snapshot reconciliation makes the adapter's current terminal state authoritative.
-        recovery.terminalResponseObserved = terminalResponseObserved;
+        // The adapter snapshot is authoritative except for bounded terminal evidence
+        // captured while a raw close was still awaiting worker classification.
+        recovery.terminalResponseObserved =
+          terminalResponseObserved || recovery.closePreflightTerminalResponseObserved;
       }
       return settled;
     };
@@ -1522,6 +1644,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       if (
         recovery === undefined ||
         recovery.resolution.generation !== generation ||
+        rejectRetiredWorkerRecoveryProof(recovery) ||
         recovery.resolution.settled ||
         (!recovery.explicitSnapshotOffered && !rejectedExplicitSnapshot) ||
         retry === undefined ||
@@ -1540,11 +1663,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       if (
         recovery !== undefined &&
         recovery.resolution.generation === connectionGeneration &&
+        !rejectRetiredWorkerRecoveryProof(recovery) &&
         (!recovery.resolution.settled || rlmEventContinuityValid)
       ) {
         // The adapter can observe the terminal response before the catch-up snapshot.
         // Keep early proof provisional; the gate still requires that snapshot to reconcile.
         recovery.terminalResponseObserved = true;
+        if (recovery.gatePromise === undefined) {
+          recovery.closePreflightTerminalResponseObserved = true;
+        }
       }
     };
 
@@ -1561,6 +1688,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         generation: connectionGeneration,
         promise,
         resolve,
+        snapshotPublished: false,
         settled: false,
       };
       reconnectResolution = pending;
@@ -1735,14 +1863,37 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         ),
     }).pipe(Effect.onError(() => completeUnattachedOwnedSession));
 
+    const closeUnusableAttachedConnection = Effect.promise(async () => {
+      await connection?.dispose().catch(() => undefined);
+      client.close();
+    });
+    if (input.manager.bridge.negotiatedDaemonSessionCapabilitiesAvailable) {
+      if (!Predicate.isFunction(connection.supportsNegotiatedCapability)) {
+        yield* closeUnusableAttachedConnection;
+        return yield* runtimeError(
+          "attach-session",
+          "invalid-response",
+          "Prime Agent advertised negotiated daemon capabilities without its proof accessor.",
+        );
+      }
+      correlatedPromptLifecycleAvailable = yield* Effect.try({
+        try: () =>
+          connection!.supportsNegotiatedCapability!("correlated_prompt_lifecycle_v1") === true,
+        catch: () =>
+          runtimeError(
+            "attach-session",
+            "invalid-response",
+            "Prime Agent could not verify its negotiated daemon capability proof.",
+          ),
+      }).pipe(Effect.onError(() => closeUnusableAttachedConnection));
+    }
     if (
       correlatedPromptLifecycleAvailable &&
       (!Predicate.isFunction(connection.submitCorrelatedPrompt) ||
         !Predicate.isFunction(connection.cancelPromptLifecycle) ||
         !Predicate.isFunction(connection.getPromptLifecycles))
     ) {
-      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
-      client.close();
+      yield* closeUnusableAttachedConnection;
       return yield* runtimeError(
         "attach-session",
         "invalid-response",
@@ -1750,26 +1901,314 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       );
     }
 
+    let correlatedProofEpoch = 0;
+    let correlatedProofRecoveryPending = false;
+    let correlatedProofRecoveryFailed = false;
+    const CORRELATED_PROOF_FENCE_RETIRED = Symbol("correlated-proof-fence-retired");
+    const MAX_CORRELATED_PROOF_ROUTES = PRIME_AGENT_EVENT_BUFFER_CAPACITY;
+    const MAX_CORRELATED_PROOF_ROUTE_WEIGHT = 64 * 1024 * 1024;
+    const boundedCorrelatedProofRouteWeight = (root: unknown): number => {
+      const stack: unknown[] = [root];
+      const seen = new WeakSet<object>();
+      let weight = 0;
+      try {
+        while (stack.length > 0 && weight <= MAX_CORRELATED_PROOF_ROUTE_WEIGHT) {
+          const value = stack.pop();
+          if (value === null || value === undefined) {
+            weight += 4;
+          } else if (typeof value === "string") {
+            weight += value.length * 2 + 8;
+          } else if (typeof value === "number" || typeof value === "bigint") {
+            weight += 16;
+          } else if (typeof value === "boolean") {
+            weight += 4;
+          } else if (typeof value === "object") {
+            if (seen.has(value)) continue;
+            seen.add(value);
+            weight += 16;
+            if (Array.isArray(value)) {
+              for (let index = 0; index < value.length; index += 1) {
+                stack.push(value[index]);
+                if (stack.length > MAX_CORRELATED_PROOF_ROUTES * 1024) {
+                  return MAX_CORRELATED_PROOF_ROUTE_WEIGHT + 1;
+                }
+              }
+            } else {
+              for (const key in value) {
+                if (!Object.hasOwn(value, key)) continue;
+                weight += key.length * 2 + 8;
+                stack.push((value as Record<string, unknown>)[key]);
+                if (stack.length > MAX_CORRELATED_PROOF_ROUTES * 1024) {
+                  return MAX_CORRELATED_PROOF_ROUTE_WEIGHT + 1;
+                }
+                if (weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT) break;
+              }
+            }
+          } else {
+            weight += 8;
+          }
+        }
+      } catch {
+        return MAX_CORRELATED_PROOF_ROUTE_WEIGHT + 1;
+      }
+      return weight;
+    };
+    interface QueuedRuntimeEvent {
+      readonly event: PrimeDaemonEvent;
+      readonly weight: number;
+    }
+    let queuedRuntimeEventWeight = 0;
+    let runtimeEventIngressFailed = false;
+    let runtimeEventCapacityFailed = false;
+    let runtimeEventWeightCapacityAvailable: Queue.Queue<void>;
+    const releaseQueuedRuntimeEventWeight = (weight: number): void => {
+      queuedRuntimeEventWeight = Math.max(0, queuedRuntimeEventWeight - weight);
+      if (runtimeEventWeightCapacityAvailable !== undefined) {
+        Queue.offerUnsafe(runtimeEventWeightCapacityAvailable, undefined);
+      }
+    };
+    // Ordinary raw routes are serialized behind a separate bounded staging tail, so
+    // at most one decoded event waits here for queue capacity. Initialization never
+    // waits because no stream consumer exists until runtime creation returns.
+    const offerBackpressuredRuntimeEvent = (
+      queued: QueuedRuntimeEvent,
+      isCurrent: () => boolean = () => true,
+      onOffer: () => void = () => undefined,
+      retirement?: RouteRetirementSignal,
+    ): Effect.Effect<boolean, typeof CORRELATED_PROOF_FENCE_RETIRED> =>
+      Effect.suspend(() => {
+        if (!isCurrent()) return Effect.succeed(false);
+        if (queued.weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT) {
+          return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+        if (initializing) {
+          if (
+            Queue.sizeUnsafe(eventQueue) >= PRIME_AGENT_EVENT_BUFFER_CAPACITY ||
+            queuedRuntimeEventWeight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - queued.weight
+          ) {
+            initializationOverflow = true;
+            return Effect.succeed(false);
+          }
+          queuedRuntimeEventWeight += queued.weight;
+          if (!Queue.offerUnsafe(eventQueue, queued)) {
+            releaseQueuedRuntimeEventWeight(queued.weight);
+            initializationOverflow = true;
+            return Effect.succeed(false);
+          }
+          onOffer();
+          return Effect.succeed(true);
+        }
+        if (
+          Queue.sizeUnsafe(eventQueue) >= PRIME_AGENT_EVENT_BUFFER_CAPACITY ||
+          queuedRuntimeEventWeight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - queued.weight
+        ) {
+          const capacityAvailable = Queue.take(runtimeEventWeightCapacityAvailable).pipe(
+            Effect.as(true),
+          );
+          return (
+            retirement === undefined
+              ? capacityAvailable
+              : Effect.raceFirst(
+                  capacityAvailable,
+                  awaitRouteRetirement(retirement).pipe(Effect.as(false)),
+                )
+          ).pipe(
+            Effect.flatMap((available) =>
+              available
+                ? offerBackpressuredRuntimeEvent(queued, isCurrent, onOffer, retirement)
+                : Effect.succeed(false),
+            ),
+          );
+        }
+        if (!isCurrent()) return Effect.succeed(false);
+        queuedRuntimeEventWeight += queued.weight;
+        if (!Queue.offerUnsafe(eventQueue, queued)) {
+          releaseQueuedRuntimeEventWeight(queued.weight);
+          return Effect.succeed(false);
+        }
+        onOffer();
+        return Effect.succeed(true);
+      });
+
+    const hasCurrentCorrelatedPromptLifecycleProof = (): boolean => {
+      if (
+        correlatedProofRecoveryFailed ||
+        !correlatedPromptLifecycleAvailable ||
+        !Predicate.isFunction(connection?.supportsNegotiatedCapability)
+      ) {
+        return false;
+      }
+      try {
+        return connection.supportsNegotiatedCapability("correlated_prompt_lifecycle_v1") === true;
+      } catch {
+        return false;
+      }
+    };
+    const captureCorrelatedPromptLifecycleProofFence = (): number | undefined =>
+      hasCurrentCorrelatedPromptLifecycleProof() ? correlatedProofEpoch : undefined;
+    const correlatedPromptLifecycleProofFenceIsCurrent = (epoch: number): boolean =>
+      epoch === correlatedProofEpoch && hasCurrentCorrelatedPromptLifecycleProof();
+    const correlatedPromptLifecycleAdmissionBlocked = (): boolean =>
+      correlatedPromptLifecycleAvailable &&
+      (correlatedProofRecoveryPending ||
+        correlatedProofRecoveryFailed ||
+        (reconnectResolution !== undefined && !reconnectResolution.settled));
+    const failRuntimeEventIngress = () =>
+      Effect.suspend(() => {
+        if (runtimeEventIngressFailed) return Effect.void;
+        runtimeEventIngressFailed = true;
+        runtimeEventCapacityFailed = true;
+        retireOrdinaryIngressFence();
+        retireCurrentOrdinaryWorkerCloseRoute();
+        retireProviderRoute(correlatedProviderRouteRetirement);
+        if (initializing) {
+          initializationOverflow = true;
+          return Effect.void;
+        }
+        settleReconnectResolution(connectionGeneration, false);
+        settleManagedRecovery(managedRecoveryResolution, false);
+        mcpRecoveryPending = false;
+        mcpRecoveryFailed = true;
+        settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
+        const workerRecovery = activeWorkerRecovery;
+        if (workerRecovery !== undefined) {
+          workerRecovery.provisionalSnapshot = undefined;
+          settleReconnectResolution(workerRecovery.resolution.generation, false);
+          if (activeWorkerRecovery === workerRecovery) activeWorkerRecovery = undefined;
+        }
+        const terminalEvent = {
+          _tag: "SessionClosed",
+          error: "Prime Agent event ingress exceeded its bounded capacity.",
+        } satisfies PrimeDaemonEvent;
+        return failActivePrivateSideQuestions().pipe(
+          Effect.andThen(
+            offerBackpressuredRuntimeEvent({
+              event: terminalEvent,
+              weight: boundedCorrelatedProofRouteWeight(terminalEvent),
+            }),
+          ),
+          Effect.asVoid,
+        );
+      });
+    const offerRuntimeEvent = (
+      event: PrimeDaemonEvent,
+      proofEpoch?: number,
+      onCommit: () => void = () => undefined,
+      ordinaryIngressFence?: OrdinaryIngressFence,
+      providerRouteRetirement?: ProviderRouteRetirement,
+    ) => {
+      const routeIsCurrent = () =>
+        ordinaryIngressFenceIsCurrent(ordinaryIngressFence) &&
+        providerRouteRetirementIsCurrent(providerRouteRetirement);
+      const routeRetirement = providerRouteRetirement ?? ordinaryIngressFence;
+      if (!routeIsCurrent()) return Effect.void;
+      if (runtimeEventIngressFailed) {
+        return proofEpoch === undefined ? Effect.void : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+      }
+      const weight = boundedCorrelatedProofRouteWeight(event);
+      const queued = { event, weight } satisfies QueuedRuntimeEvent;
+      if (event._tag === "SessionClosed") {
+        runtimeEventIngressFailed = true;
+        settleReconnectResolution(connectionGeneration, false);
+        const commitTerminal = () => {
+          onCommit();
+          retireOrdinaryIngressFence();
+          retireCurrentOrdinaryWorkerCloseRoute();
+          retireProviderRoute(correlatedProviderRouteRetirement);
+        };
+        return offerBackpressuredRuntimeEvent(
+          queued,
+          routeIsCurrent,
+          commitTerminal,
+          routeRetirement,
+        ).pipe(Effect.asVoid);
+      }
+
+      if (weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT) {
+        if (initializing) initializationOverflow = true;
+        return proofEpoch === undefined
+          ? failRuntimeEventIngress()
+          : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+      }
+      if (proofEpoch === undefined) {
+        return offerBackpressuredRuntimeEvent(
+          queued,
+          routeIsCurrent,
+          onCommit,
+          routeRetirement,
+        ).pipe(Effect.asVoid);
+      }
+      return Effect.suspend(() => {
+        const proofRetired =
+          !routeIsCurrent() ||
+          (proofEpoch !== undefined && !correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch));
+        const weightExceeded =
+          queuedRuntimeEventWeight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - weight;
+        if (proofRetired || weightExceeded) {
+          if (initializing && weightExceeded) initializationOverflow = true;
+          return proofEpoch === undefined
+            ? failRuntimeEventIngress()
+            : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+        queuedRuntimeEventWeight += weight;
+        if (!Queue.offerUnsafe(eventQueue, queued)) {
+          releaseQueuedRuntimeEventWeight(weight);
+          if (initializing) initializationOverflow = true;
+          return proofEpoch === undefined
+            ? failRuntimeEventIngress()
+            : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+        onCommit();
+        return Effect.void;
+      });
+    };
+
     let mcpAttached = false;
+    let mcpReplacementIssued = false;
+    let mcpReplacementSettlement = Promise.resolve();
     const releaseMcpServer = Effect.suspend(() => {
       const configured = input.mcpServer;
       const release = connection?.releaseAcpMcpServers;
-      if (!mcpAttached || configured === undefined || !Predicate.isFunction(release)) {
+      if (
+        (!mcpAttached && !mcpReplacementIssued) ||
+        configured === undefined ||
+        !Predicate.isFunction(release)
+      ) {
         return Effect.void;
       }
-      mcpAttached = false;
-      return Effect.tryPromise({
-        try: () =>
-          release
-            .call(connection, configured.ownerId, [configured.server.name])
-            .then(() => undefined),
-        catch: () =>
-          runtimeError(
-            "configure-mcp",
-            "request-failed",
-            "Could not release Pylon's scoped MCP server from the Prime Agent session.",
-          ),
-      }).pipe(
+      const replacementSettlement = mcpReplacementSettlement;
+      return Effect.promise(
+        () =>
+          new Promise<void>((resolve) => {
+            // This cleanup grace must advance after the owning Effect clock is retired.
+            // @effect-diagnostics-next-line globalTimers:off
+            const timeout = setTimeout(resolve, MCP_REPLACEMENT_DISPOSE_GRACE_MS);
+            void replacementSettlement.then(() => {
+              clearTimeout(timeout);
+              resolve();
+            });
+          }),
+      ).pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: () =>
+              release
+                .call(connection, configured.ownerId, [configured.server.name])
+                .then(() => undefined),
+            catch: () =>
+              runtimeError(
+                "configure-mcp",
+                "request-failed",
+                "Could not release Pylon's scoped MCP server from the Prime Agent session.",
+              ),
+          }),
+        ),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            mcpAttached = false;
+            mcpReplacementIssued = false;
+          }),
+        ),
         Effect.catch((error) =>
           Effect.logWarning("Could not release Prime Agent's Pylon MCP session.", {
             operation: error.operation,
@@ -1786,36 +2225,74 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }),
       ),
     );
-    const configureMcpServer = Effect.gen(function* () {
-      const configured = input.mcpServer;
-      if (configured === undefined) return;
-      const supports = connection?.supportsAcpMcpServers;
-      const replace = connection?.replaceAcpMcpServers;
-      const release = connection?.releaseAcpMcpServers;
-      if (
-        !Predicate.isFunction(supports) ||
-        !Predicate.isFunction(replace) ||
-        !Predicate.isFunction(release) ||
-        supports.call(connection) !== true
-      ) {
-        return yield* runtimeError(
-          "configure-mcp",
-          "incompatible-api",
-          "The installed Prime Agent daemon cannot attach Pylon's scoped MCP server. Upgrade Prime Agent or disable agent browser access for this session.",
-        );
+    const MAX_PHYSICAL_PROVIDER_RECOVERY_OPERATIONS = 1;
+    let physicalProviderRecoveryOperations = 0;
+    const startPhysicalProviderRecoveryOperation = <A>(
+      start: () => Promise<A>,
+    ): Promise<A> | undefined => {
+      if (physicalProviderRecoveryOperations >= MAX_PHYSICAL_PROVIDER_RECOVERY_OPERATIONS) {
+        return undefined;
       }
-      yield* Effect.tryPromise({
-        try: () => replace.call(connection, [configured.server], configured.ownerId),
-        catch: () =>
-          runtimeError(
+      physicalProviderRecoveryOperations += 1;
+      try {
+        return Promise.resolve(start()).finally(() => {
+          physicalProviderRecoveryOperations -= 1;
+        });
+      } catch (cause) {
+        physicalProviderRecoveryOperations -= 1;
+        return Promise.reject(cause);
+      }
+    };
+    const configureMcpServer = (mayCommit: () => boolean = () => true, providerRecovery = false) =>
+      Effect.gen(function* () {
+        const configured = input.mcpServer;
+        if (configured === undefined) return;
+        const supports = connection?.supportsAcpMcpServers;
+        const replace = connection?.replaceAcpMcpServers;
+        const release = connection?.releaseAcpMcpServers;
+        if (
+          !Predicate.isFunction(supports) ||
+          !Predicate.isFunction(replace) ||
+          !Predicate.isFunction(release) ||
+          supports.call(connection) !== true
+        ) {
+          return yield* runtimeError(
+            "configure-mcp",
+            "incompatible-api",
+            "The installed Prime Agent daemon cannot attach Pylon's scoped MCP server. Upgrade Prime Agent or disable agent browser access for this session.",
+          );
+        }
+        const startReplacement = () => {
+          mcpReplacementIssued = true;
+          const replacement = replace.call(connection, [configured.server], configured.ownerId);
+          mcpReplacementSettlement = Promise.resolve(replacement).then(
+            () => undefined,
+            () => undefined,
+          );
+          return replacement;
+        };
+        const replacement = providerRecovery
+          ? startPhysicalProviderRecoveryOperation(startReplacement)
+          : startReplacement();
+        if (replacement === undefined) {
+          return yield* runtimeError(
             "configure-mcp",
             "request-failed",
             "Prime Agent rejected Pylon's scoped MCP server configuration.",
-          ),
+          );
+        }
+        yield* Effect.tryPromise({
+          try: () => replacement,
+          catch: () =>
+            runtimeError(
+              "configure-mcp",
+              "request-failed",
+              "Prime Agent rejected Pylon's scoped MCP server configuration.",
+            ),
+        });
+        if (mayCommit()) mcpAttached = true;
       });
-      mcpAttached = true;
-    });
-    yield* configureMcpServer.pipe(Effect.onError(() => closeAttachedSession));
+    yield* configureMcpServer().pipe(Effect.onError(() => closeAttachedSession));
     let verifiedInventory:
       | readonly [typeof resourceSnapshotSchema.Type, typeof commandsSchema.Type]
       | undefined;
@@ -1906,12 +2383,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }).pipe(Effect.onError(() => closeAttachedSession));
     }
 
-    const eventQueue = yield* Queue.bounded<PrimeDaemonEvent>(PRIME_AGENT_EVENT_BUFFER_CAPACITY);
+    const eventQueue = yield* Queue.bounded<QueuedRuntimeEvent>(PRIME_AGENT_EVENT_BUFFER_CAPACITY);
+    runtimeEventWeightCapacityAvailable = yield* Queue.sliding<void>(1);
     const runtimeContext = yield* Effect.context<never>();
     const runPromise = Effect.runPromiseWith(runtimeContext);
     let initializing = true;
     let initializationOverflow = false;
+    let initializationCorrelatedProofInvalidated = false;
     let initializationAcceptedEventCount = 0;
+    let initializationAcceptedEventWeight = 0;
     const bufferedEvents: unknown[] = [];
     let lastSnapshotSequence: number | undefined;
     let lastSnapshotConnectionGeneration = 0;
@@ -2206,19 +2686,32 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
     };
 
-    const observePromptLifecycle = (
+    const planPromptLifecycleObservation = (
       lifecycle: PrimeDaemonPromptLifecycleSnapshot,
-    ): "accepted" | "duplicate" | "invalid" => {
-      if (expiredPromptLifecycles.has(lifecycle.correlationId)) return "invalid";
+    ):
+      | { readonly observation: "duplicate" | "invalid" }
+      | {
+          readonly observation: "accepted";
+          readonly plan: ReturnType<typeof boundPromptLifecycleState>;
+        } => {
+      if (expiredPromptLifecycles.has(lifecycle.correlationId)) {
+        return { observation: "invalid" };
+      }
       const current = promptLifecycles.get(lifecycle.correlationId);
       if (current !== undefined) {
-        if (primeAgentPromptLifecycleIsSame(current, lifecycle)) return "duplicate";
-        if (!primeAgentPromptLifecycleIsSuccessor(current, lifecycle)) return "invalid";
+        if (primeAgentPromptLifecycleIsSame(current, lifecycle)) {
+          return { observation: "duplicate" };
+        }
+        if (!primeAgentPromptLifecycleIsSuccessor(current, lifecycle)) {
+          return { observation: "invalid" };
+        }
       }
       const records = new Map(promptLifecycles);
       records.set(lifecycle.correlationId, lifecycle);
-      commitPromptLifecycleStateMerge(boundPromptLifecycleState(records, expiredPromptLifecycles));
-      return "accepted";
+      return {
+        observation: "accepted",
+        plan: boundPromptLifecycleState(records, expiredPromptLifecycles),
+      };
     };
 
     const planPromptLifecycleStateMerge = (state: PrimeDaemonPromptLifecycleStateSnapshot) => {
@@ -2275,7 +2768,18 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return boundPromptLifecycleState(snapshotRecords, snapshotExpired);
     };
 
-    const offerDecoded = (raw: unknown) => {
+    const offerDecoded = (
+      raw: unknown,
+      correlatedProofIngressEpoch?: number,
+      ordinaryIngressFence?: OrdinaryIngressFence,
+      providerRouteRetirement?: ProviderRouteRetirement,
+    ) => {
+      if (
+        !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+        !providerRouteRetirementIsCurrent(providerRouteRetirement)
+      ) {
+        return Effect.void;
+      }
       let decoded = safeEvent(
         decodePrimeAgentDaemonEvent(raw, {
           correlatedPromptLifecycle: correlatedPromptLifecycleAvailable,
@@ -2296,15 +2800,47 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       ) {
         decoded = { ...decoded, replacementSnapshot: true };
       }
+      let promptLifecycleObservation: ReturnType<typeof planPromptLifecycleObservation> | undefined;
       if (correlatedPromptLifecycleAvailable && decoded._tag === "PromptLifecycleUpdated") {
-        const observation = observePromptLifecycle(decoded.lifecycle);
-        if (observation === "duplicate") return Effect.void;
-        if (observation === "invalid") decoded = { _tag: "CorrelatedProtocolViolation" };
+        promptLifecycleObservation = planPromptLifecycleObservation(decoded.lifecycle);
+        if (promptLifecycleObservation.observation === "duplicate") return Effect.void;
+        if (promptLifecycleObservation.observation === "invalid") {
+          decoded = { _tag: "CorrelatedProtocolViolation" };
+          promptLifecycleObservation = undefined;
+        }
       }
       const eventConnectionGeneration = connectionGeneration;
       const workerRecovery = activeWorkerRecovery;
       const workerRecoveryRequiresExplicitSnapshot =
         workerRecovery !== undefined && workerRecovery.resolution === reconnectResolution;
+      const rawSessionResynced =
+        Predicate.isObject(raw) && "type" in raw && raw.type === "session_resynced";
+      if (workerRecovery !== undefined && workerCloseClassificationIsPending()) {
+        if (
+          decoded._tag === "MessageCompleted" &&
+          decoded.message.role === "assistant" &&
+          decoded.message.text.trim().length > 0 &&
+          decoded.message.stopReason !== "toolUse" &&
+          decoded.message.toolCalls.length === 0
+        ) {
+          // Preserve only the bounded terminal fact. The event and its payload stay
+          // provisional until the post-ready snapshot becomes authoritative.
+          workerRecovery.terminalResponseObserved = true;
+          workerRecovery.closePreflightTerminalResponseObserved = true;
+        }
+        return Effect.void;
+      }
+      const nonWorkerCorrelatedResyncAdmission =
+        correlatedPromptLifecycleAvailable &&
+        rawSessionResynced &&
+        reconnectResolution !== undefined &&
+        reconnectResolution.generation === eventConnectionGeneration &&
+        !reconnectResolution.settled &&
+        !workerRecoveryRequiresExplicitSnapshot;
+      if (nonWorkerCorrelatedResyncAdmission && decoded._tag === "CorrelatedProtocolViolation") {
+        settleReconnectResolution(eventConnectionGeneration, false);
+        return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+      }
       if (
         decoded._tag === "SessionResynced" &&
         workerRecoveryRequiresExplicitSnapshot &&
@@ -2341,64 +2877,45 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         return Effect.void;
       }
       const reconciledSnapshot = reconnectSnapshot;
+      if (
+        correlatedPromptLifecycleAvailable &&
+        reconciledSnapshot &&
+        correlatedProofIngressEpoch === undefined
+      ) {
+        return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+      }
+      if (
+        correlatedPromptLifecycleAvailable &&
+        reconciledSnapshot &&
+        reconnectResolution !== undefined &&
+        correlatedProofIngressEpoch !== undefined
+      ) {
+        if (
+          reconnectResolution.correlatedProofEpoch !== undefined &&
+          reconnectResolution.correlatedProofEpoch !== correlatedProofIngressEpoch
+        ) {
+          return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+        if (
+          workerRecoverySnapshot &&
+          workerRecovery?.correlatedProofEpoch !== correlatedProofIngressEpoch
+        ) {
+          return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+      }
       const event =
         reconciledSnapshot && decoded._tag === "SessionResynced"
-          ? { ...decoded, connectionGeneration: eventConnectionGeneration }
+          ? {
+              ...decoded,
+              connectionGeneration: eventConnectionGeneration,
+              ...(correlatedProofIngressEpoch === undefined
+                ? {}
+                : { correlatedProofEpoch: correlatedProofIngressEpoch }),
+            }
           : decoded;
       const prompt = activePromptRecovery;
       const inputActivityRevisionAtOffer = nativeInputActivityRevision;
-      if (event._tag === "RunStarted") {
-        nativeRunObservedActive = true;
-        nativeInputRunActive = true;
-      } else if (event._tag === "RunCompleted") {
-        nativeInputRunActive = false;
-        if (!rlmQuiescenceAvailable) nativeRunObservedActive = false;
-      } else if (event._tag === "CompactionStarted") {
-        nativeInputCompactionActive = true;
-        if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
-      } else if (event._tag === "CompactionCompleted") {
-        nativeInputCompactionActive = false;
-      } else if (event._tag === "BashStarted" || event._tag === "BashOutput") {
-        nativeInputBashActive = true;
-        if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
-      } else if (event._tag === "BashCompleted") {
-        nativeInputBashActive = false;
-      } else if (event._tag === "RetryStarted") {
-        nativeInputRetryAttempt = event.attempt;
-        if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
-      } else if (event._tag === "RetryCompleted") {
-        nativeInputRetryAttempt = 0;
-      } else if (event._tag === "QueueChanged") {
-        nativeInputQueuedCount = event.queuedCount;
-        nativeInputQueueActionActive = event.active !== undefined;
-        if (rlmQuiescenceAvailable && (event.queuedCount > 0 || event.active !== undefined)) {
-          nativeRunObservedActive = true;
-        }
-      } else if (
-        event._tag === "ChildUpdated" &&
-        (event.child.status === "queued" || event.child.status === "running")
-      ) {
-        if (rlmQuiescenceAvailable) {
-          nativeRunObservedActive = true;
-        } else {
-          nativeDescendantQuiescenceUncertain = true;
-        }
-      }
-      if (
-        event._tag === "RunStarted" ||
-        event._tag === "RunCompleted" ||
-        event._tag === "CompactionStarted" ||
-        event._tag === "CompactionCompleted" ||
-        event._tag === "BashStarted" ||
-        event._tag === "BashOutput" ||
-        event._tag === "BashCompleted" ||
-        event._tag === "RetryStarted" ||
-        event._tag === "RetryCompleted" ||
-        event._tag === "QueueChanged" ||
-        event._tag === "ChildUpdated"
-      ) {
-        nativeInputActivityRevision += 1;
-      }
+      let sessionLifecyclePlan: ReturnType<typeof planPromptLifecycleStateMerge> | undefined;
       if (event._tag === "SessionResynced") {
         if (
           !workerRecoverySnapshot &&
@@ -2407,82 +2924,255 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           lastSnapshotConnectionGeneration === eventConnectionGeneration &&
           event.lastEventSequence <= lastSnapshotSequence
         ) {
-          return Effect.void;
+          return correlatedPromptLifecycleAvailable && reconciledSnapshot
+            ? Effect.fail(CORRELATED_PROOF_FENCE_RETIRED)
+            : Effect.void;
         }
         if (correlatedPromptLifecycleAvailable && event.promptLifecycles !== undefined) {
-          const lifecyclePlan = planPromptLifecycleStateMerge(event.promptLifecycles);
-          if (lifecyclePlan === undefined) {
-            if (workerRecoverySnapshot) {
-              settleReconnectResolution(eventConnectionGeneration, false);
+          sessionLifecyclePlan = planPromptLifecycleStateMerge(event.promptLifecycles);
+          if (sessionLifecyclePlan === undefined) {
+            if (reconciledSnapshot && !workerRecoverySnapshot) {
+              return Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
             }
-            return Queue.offer(eventQueue, { _tag: "CorrelatedProtocolViolation" }).pipe(
-              Effect.asVoid,
+            const snapshotResolution = reconciledSnapshot ? reconnectResolution : undefined;
+            return offerRuntimeEvent(
+              { _tag: "CorrelatedProtocolViolation" },
+              correlatedProofIngressEpoch,
+              () => {
+                if (
+                  snapshotResolution !== undefined &&
+                  reconnectResolution === snapshotResolution
+                ) {
+                  settleReconnectResolution(eventConnectionGeneration, false);
+                }
+              },
+              ordinaryIngressFence,
+              providerRouteRetirement,
             );
           }
-          commitPromptLifecycleStateMerge(lifecyclePlan);
         }
-        if (workerRecoverySnapshot && workerRecovery !== undefined) {
-          workerRecovery.explicitSnapshotOffered = true;
-          workerRecovery.provisionalSnapshot = {
-            event,
-            rosterRevisionAtOffer: knownAgentRosterRevision,
-            inputActivityRevisionAtOffer,
-          };
-        } else {
-          commitSessionResyncedMetadata(
-            event,
-            knownAgentRosterRevision,
-            inputActivityRevisionAtOffer,
-            false,
+      }
+
+      const snapshotResolution = reconciledSnapshot ? reconnectResolution : undefined;
+      return offerRuntimeEvent(
+        event,
+        correlatedProofIngressEpoch,
+        () => {
+          if (
+            correlatedPromptLifecycleAvailable &&
+            reconciledSnapshot &&
+            reconnectResolution !== undefined &&
+            correlatedProofIngressEpoch !== undefined
+          ) {
+            reconnectResolution.correlatedProofEpoch = correlatedProofIngressEpoch;
+          }
+          if (promptLifecycleObservation?.observation === "accepted") {
+            commitPromptLifecycleStateMerge(promptLifecycleObservation.plan);
+          }
+          if (event._tag === "RunStarted") {
+            nativeRunObservedActive = true;
+            nativeInputRunActive = true;
+          } else if (event._tag === "RunCompleted") {
+            nativeInputRunActive = false;
+            if (!rlmQuiescenceAvailable) nativeRunObservedActive = false;
+          } else if (event._tag === "CompactionStarted") {
+            nativeInputCompactionActive = true;
+            if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
+          } else if (event._tag === "CompactionCompleted") {
+            nativeInputCompactionActive = false;
+          } else if (event._tag === "BashStarted" || event._tag === "BashOutput") {
+            nativeInputBashActive = true;
+            if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
+          } else if (event._tag === "BashCompleted") {
+            nativeInputBashActive = false;
+          } else if (event._tag === "RetryStarted") {
+            nativeInputRetryAttempt = event.attempt;
+            if (rlmQuiescenceAvailable) nativeRunObservedActive = true;
+          } else if (event._tag === "RetryCompleted") {
+            nativeInputRetryAttempt = 0;
+          } else if (event._tag === "QueueChanged") {
+            nativeInputQueuedCount = event.queuedCount;
+            nativeInputQueueActionActive = event.active !== undefined;
+            if (rlmQuiescenceAvailable && (event.queuedCount > 0 || event.active !== undefined)) {
+              nativeRunObservedActive = true;
+            }
+          } else if (
+            event._tag === "ChildUpdated" &&
+            (event.child.status === "queued" || event.child.status === "running")
+          ) {
+            if (rlmQuiescenceAvailable) {
+              nativeRunObservedActive = true;
+            } else {
+              nativeDescendantQuiescenceUncertain = true;
+            }
+          }
+          if (
+            event._tag === "RunStarted" ||
+            event._tag === "RunCompleted" ||
+            event._tag === "CompactionStarted" ||
+            event._tag === "CompactionCompleted" ||
+            event._tag === "BashStarted" ||
+            event._tag === "BashOutput" ||
+            event._tag === "BashCompleted" ||
+            event._tag === "RetryStarted" ||
+            event._tag === "RetryCompleted" ||
+            event._tag === "QueueChanged" ||
+            event._tag === "ChildUpdated"
+          ) {
+            nativeInputActivityRevision += 1;
+          }
+          if (event._tag === "SessionResynced") {
+            if (sessionLifecyclePlan !== undefined) {
+              commitPromptLifecycleStateMerge(sessionLifecyclePlan);
+            }
+            if (workerRecoverySnapshot && workerRecovery !== undefined) {
+              workerRecovery.explicitSnapshotOffered = true;
+              workerRecovery.provisionalSnapshot = {
+                event,
+                rosterRevisionAtOffer: knownAgentRosterRevision,
+                inputActivityRevisionAtOffer,
+              };
+            } else {
+              commitSessionResyncedMetadata(
+                event,
+                knownAgentRosterRevision,
+                inputActivityRevisionAtOffer,
+                false,
+              );
+            }
+            if (snapshotResolution !== undefined && reconnectResolution === snapshotResolution) {
+              snapshotResolution.snapshotPublished = true;
+            }
+          } else if (event._tag === "MessageCompleted") {
+            if (
+              prompt !== undefined &&
+              event.message.role === "user" &&
+              !prompt.firstUserMessageObserved
+            ) {
+              prompt.firstUserMessageObserved = true;
+              prompt.promptAdmissionObserved = messageMatchesPromptAdmission(prompt, event.message);
+              if (prompt.promptAdmissionObserved) nativeRunObservedActive = true;
+              settlePromptAdmissionEvidence(prompt, prompt.promptAdmissionObserved);
+              if (
+                prompt.promptAdmissionObserved &&
+                prompt.reconnectGeneration === eventConnectionGeneration &&
+                reconnectResolution?.generation === eventConnectionGeneration
+              ) {
+                prompt.snapshotProvesAdmission = true;
+                settlePromptRecoveryIfProven();
+              }
+            }
+            observedCompletedMessageCount += 1;
+          }
+          if (event._tag !== "SessionResynced") trackAgentRoster(event);
+        },
+        ordinaryIngressFence,
+        providerRouteRetirement,
+      );
+    };
+    const routeRawEvent = (
+      raw: unknown,
+      correlatedProofIngressEpoch?: number,
+      ordinaryIngressFence?: OrdinaryIngressFence,
+      providerRouteRetirement?: ProviderRouteRetirement,
+    ) =>
+      Effect.suspend(() => {
+        if (
+          runtimeEventIngressFailed ||
+          disposeStarted ||
+          disposed ||
+          !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+          !providerRouteRetirementIsCurrent(providerRouteRetirement)
+        ) {
+          return Effect.void;
+        }
+        const privateSideQuestionRaw =
+          Predicate.isObject(raw) && "type" in raw && raw.type === "side_question_event";
+        if (workerCloseAdmissionIsPending() && privateSideQuestionRaw) return Effect.void;
+        if (workerCloseClassificationIsPending()) {
+          return offerDecoded(
+            raw,
+            correlatedProofIngressEpoch,
+            ordinaryIngressFence,
+            providerRouteRetirement,
           );
         }
-      } else if (event._tag === "MessageCompleted") {
+        const workerCloseRaw = Predicate.isObject(raw) && "type" in raw && raw.type === "closed";
         if (
-          prompt !== undefined &&
-          event.message.role === "user" &&
-          !prompt.firstUserMessageObserved
+          workerCloseRoutingHasStarted() &&
+          activeWorkerRecovery === undefined &&
+          !workerCloseRaw
         ) {
-          prompt.firstUserMessageObserved = true;
-          prompt.promptAdmissionObserved = messageMatchesPromptAdmission(prompt, event.message);
-          if (prompt.promptAdmissionObserved) nativeRunObservedActive = true;
-          settlePromptAdmissionEvidence(prompt, prompt.promptAdmissionObserved);
-          if (
-            prompt.promptAdmissionObserved &&
-            prompt.reconnectGeneration === eventConnectionGeneration &&
-            reconnectResolution?.generation === eventConnectionGeneration
-          ) {
-            prompt.snapshotProvesAdmission = true;
-            settlePromptRecoveryIfProven();
-          }
+          return Effect.void;
         }
-        observedCompletedMessageCount += 1;
-      }
-      if (event._tag !== "SessionResynced") trackAgentRoster(event);
-
-      return Queue.offer(eventQueue, event).pipe(Effect.asVoid);
-    };
-    const routeRawEvent = (raw: unknown) =>
-      handlePrivateSideQuestionEvent(raw).pipe(
-        Effect.flatMap((handled) => (handled ? Effect.void : offerDecoded(raw))),
-      );
+        return handlePrivateSideQuestionEvent(raw).pipe(
+          Effect.flatMap((handled) =>
+            handled
+              ? Effect.void
+              : offerDecoded(
+                  raw,
+                  correlatedProofIngressEpoch,
+                  ordinaryIngressFence,
+                  providerRouteRetirement,
+                ),
+          ),
+        );
+      });
+    const routeRawEventWithCorrelatedProofFence = (
+      raw: unknown,
+      proofEpoch: number | undefined,
+      ordinaryIngressFence?: OrdinaryIngressFence,
+      providerRouteRetirement?: ProviderRouteRetirement,
+    ) =>
+      !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+      !providerRouteRetirementIsCurrent(providerRouteRetirement)
+        ? Effect.void
+        : proofEpoch === undefined || correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)
+          ? routeRawEvent(raw, proofEpoch, ordinaryIngressFence, providerRouteRetirement)
+          : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
     let mcpRecoveryTail = Promise.resolve();
     let mcpRecoveryPending = false;
     let mcpRecoveryFailed = false;
     type QuiescenceMcpRecovery = {
+      readonly generation: number;
       readonly promise: Promise<boolean>;
       readonly resolve: (restored: boolean) => void;
       settled: boolean;
       restored?: boolean;
     };
     let quiescenceMcpRecovery: QuiescenceMcpRecovery | undefined;
+    const retireQuiescenceMcpRecovery = () => {
+      const recovery = quiescenceMcpRecovery;
+      if (recovery === undefined) return false;
+      const wasPending = !recovery.settled;
+      if (wasPending) {
+        recovery.settled = true;
+        recovery.restored = false;
+        recovery.resolve(false);
+      }
+      if (quiescenceMcpRecovery === recovery) quiescenceMcpRecovery = undefined;
+      return wasPending;
+    };
     const beginQuiescenceMcpRecovery = () => {
       const current = quiescenceMcpRecovery;
-      if (current !== undefined && !current.settled) return current;
+      if (
+        current !== undefined &&
+        !current.settled &&
+        current.generation === connectionGeneration
+      ) {
+        return current;
+      }
+      if (current !== undefined && !current.settled) retireQuiescenceMcpRecovery();
       let resolve!: (restored: boolean) => void;
       const promise = new Promise<boolean>((complete) => {
         resolve = complete;
       });
-      const recovery = { promise, resolve, settled: false };
+      const recovery = {
+        generation: connectionGeneration,
+        promise,
+        resolve,
+        settled: false,
+      };
       quiescenceMcpRecovery = recovery;
       return recovery;
     };
@@ -2494,7 +3184,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       recovery.settled = true;
       recovery.restored = restored;
       recovery.resolve(restored);
-      if (!restored) mcpRecoveryFailed = true;
+      if (
+        !restored &&
+        quiescenceMcpRecovery === recovery &&
+        recovery.generation === connectionGeneration
+      ) {
+        mcpRecoveryFailed = true;
+      }
       return true;
     };
     const markActiveWorkerRecoveryTerminal = () => {
@@ -2510,7 +3206,24 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       recovery.provisionalSnapshot = undefined;
       settleReconnectResolution(recovery.resolution.generation, false);
     };
-    const routeMcpAwareRawEvent = (raw: unknown): Promise<void> => {
+    const routeMcpAwareRawEvent = (
+      raw: unknown,
+      correlatedProofIngressEpoch?: number,
+      ordinaryIngressFence?: OrdinaryIngressFence,
+      providerRouteRetirement?: ProviderRouteRetirement,
+    ): Promise<void> => {
+      if (
+        !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+        providerRouteRetirement?.retired === true
+      ) {
+        return Promise.resolve();
+      }
+      if (
+        correlatedProofIngressEpoch !== undefined &&
+        !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+      ) {
+        return Promise.reject(CORRELATED_PROOF_FENCE_RETIRED);
+      }
       const rawType =
         typeof raw === "object" && raw !== null && "type" in raw && typeof raw.type === "string"
           ? raw.type
@@ -2522,9 +3235,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           ? (raw as { readonly status: string }).status
           : undefined;
       if (connectionStatus === "reconnecting") {
-        connectionGeneration += 1;
-        rlmEventContinuityValid = false;
-        beginReconnectResolution();
+        if (
+          !correlatedPromptLifecycleAvailable &&
+          (!Predicate.isObject(raw) || !ordinaryReconnectPreflightGenerations.has(raw))
+        ) {
+          connectionGeneration += 1;
+          rlmEventContinuityValid = false;
+          beginReconnectResolution();
+        }
       } else if (rawType === "closed") {
         markActiveWorkerRecoveryTerminal();
         settleReconnectResolution(connectionGeneration, false);
@@ -2535,75 +3253,155 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         input.mcpServer === undefined ||
         (rawType !== "session_resynced" && rawType !== "connection_status" && rawType !== "closed")
       ) {
-        return runPromise(routeRawEvent(raw));
+        return runPromise(
+          routeRawEventWithCorrelatedProofFence(
+            raw,
+            correlatedProofIngressEpoch,
+            ordinaryIngressFence,
+            providerRouteRetirement,
+          ),
+        );
       }
-      const delivery = mcpRecoveryTail.then(() =>
-        runPromise(
-          Effect.gen(function* () {
-            if (rawType === "connection_status") {
-              const status = connectionStatus;
-              if (status === "reconnecting") {
-                mcpAttached = false;
-                mcpRecoveryPending = true;
-              }
-              if (status === "connected" && mcpRecoveryPending) {
-                mcpRecoveryPending = false;
-                mcpRecoveryFailed = true;
-                markActiveWorkerRecoveryTerminal();
-                yield* routeRawEvent({
-                  type: "closed",
-                  error: "Prime Agent reconnected without restoring Pylon's scoped browser tools.",
-                });
-                return;
-              }
-              if (status === "connected" && mcpRecoveryFailed) return;
-              yield* routeRawEvent(raw);
+      const routeEffect = Effect.gen(function* () {
+        if (
+          !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+          !providerRouteRetirementIsCurrent(providerRouteRetirement)
+        ) {
+          return;
+        }
+        if (
+          correlatedProofIngressEpoch !== undefined &&
+          !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+        ) {
+          return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+        if (rawType === "connection_status") {
+          const status = connectionStatus;
+          if (status === "reconnecting") {
+            mcpAttached = false;
+            mcpRecoveryPending = true;
+          }
+          if (status === "connected" && mcpRecoveryPending) {
+            mcpRecoveryPending = false;
+            mcpRecoveryFailed = true;
+            markActiveWorkerRecoveryTerminal();
+            yield* routeRawEvent(
+              {
+                type: "closed",
+                error: "Prime Agent reconnected without restoring Pylon's scoped browser tools.",
+              },
+              undefined,
+              ordinaryIngressFence,
+              providerRouteRetirement,
+            );
+            return;
+          }
+          if (status === "connected" && mcpRecoveryFailed) return;
+          yield* routeRawEventWithCorrelatedProofFence(
+            raw,
+            correlatedProofIngressEpoch,
+            ordinaryIngressFence,
+            providerRouteRetirement,
+          );
+          return;
+        }
+        if (rawType === "session_resynced" && mcpRecoveryPending && !mcpRecoveryFailed) {
+          const recoveringWorkerSnapshot = activeWorkerRecovery?.explicitSnapshotRaw === raw;
+          if (recoveringWorkerSnapshot && rlmQuiescenceAvailable) {
+            // Prime ties MCP ownership to the exact daemon client and rejects replacement
+            // while an agent is streaming. Reconcile this same-worker snapshot now, but do
+            // not make the session usable until the authoritative barrier reaches idle and
+            // the new client reclaims scoped MCP ownership.
+            beginQuiescenceMcpRecovery();
+            mcpRecoveryPending = false;
+          } else {
+            const restored = yield* configureMcpServer(
+              () =>
+                ordinaryIngressFenceIsCurrent(ordinaryIngressFence) &&
+                providerRouteRetirementIsCurrent(providerRouteRetirement),
+              true,
+            ).pipe(
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
+            );
+            if (
+              !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+              !providerRouteRetirementIsCurrent(providerRouteRetirement)
+            ) {
               return;
             }
-            if (rawType === "session_resynced" && mcpRecoveryPending && !mcpRecoveryFailed) {
-              const recoveringWorkerSnapshot = activeWorkerRecovery?.explicitSnapshotRaw === raw;
-              if (recoveringWorkerSnapshot && rlmQuiescenceAvailable) {
-                // Prime ties MCP ownership to the exact daemon client and rejects replacement
-                // while an agent is streaming. Reconcile this same-worker snapshot now, but do
-                // not make the session usable until the authoritative barrier reaches idle and
-                // the new client reclaims scoped MCP ownership.
-                beginQuiescenceMcpRecovery();
-                mcpRecoveryPending = false;
-              } else {
-                const restored = yield* configureMcpServer.pipe(
-                  Effect.as(true),
-                  Effect.orElseSucceed(() => false),
-                );
-                mcpRecoveryPending = false;
-                if (!restored) {
-                  mcpRecoveryFailed = true;
-                  markActiveWorkerRecoveryTerminal();
-                  yield* routeRawEvent({
-                    type: "closed",
-                    error:
-                      "Pylon browser tools could not be restored after the Prime Agent daemon reconnected.",
-                  });
-                  return;
-                }
-              }
+            if (
+              correlatedProofIngressEpoch !== undefined &&
+              !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+            ) {
+              return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
             }
-            if (rawType === "closed") {
-              mcpRecoveryPending = false;
+            mcpRecoveryPending = false;
+            if (!restored) {
               mcpRecoveryFailed = true;
-              settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
+              markActiveWorkerRecoveryTerminal();
+              if (correlatedProofIngressEpoch !== undefined) {
+                return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+              }
+              yield* routeRawEvent(
+                {
+                  type: "closed",
+                  error:
+                    "Pylon browser tools could not be restored after the Prime Agent daemon reconnected.",
+                },
+                undefined,
+                ordinaryIngressFence,
+                providerRouteRetirement,
+              );
+              return;
             }
-            if (!mcpRecoveryFailed || rawType === "closed") yield* routeRawEvent(raw);
-          }),
-        ),
-      );
+          }
+        }
+        if (rawType === "closed") {
+          mcpRecoveryPending = false;
+          mcpRecoveryFailed = true;
+          settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
+        }
+        if (!mcpRecoveryFailed || rawType === "closed") {
+          yield* routeRawEventWithCorrelatedProofFence(
+            raw,
+            correlatedProofIngressEpoch,
+            ordinaryIngressFence,
+            providerRouteRetirement,
+          );
+        }
+      });
+      const interruptibleRoute =
+        providerRouteRetirement === undefined
+          ? routeEffect
+          : Effect.raceFirst(routeEffect, awaitRouteRetirement(providerRouteRetirement));
+      const delivery = mcpRecoveryTail.then(() => runPromise(interruptibleRoute));
       mcpRecoveryTail = delivery.catch(() => undefined);
       return delivery;
     };
     const restoreMcpAfterQuiescence = Effect.fn(
       "PrimeAgentDaemonSessionRuntime.restoreMcpAfterQuiescence",
-    )(function* () {
-      const recovery = quiescenceMcpRecovery;
-      if (recovery === undefined) return;
+    )(function* (recovery: QuiescenceMcpRecovery | undefined, expectedGeneration: number) {
+      if (recovery === undefined) {
+        const current = quiescenceMcpRecovery;
+        if (current === undefined || (current.settled && current.restored === true)) return;
+        return yield* runtimeError(
+          "configure-mcp",
+          "request-failed",
+          "Pylon browser tools are unavailable after worker recovery.",
+        );
+      }
+      if (
+        recovery.generation !== expectedGeneration ||
+        connectionGeneration !== expectedGeneration ||
+        quiescenceMcpRecovery !== recovery
+      ) {
+        return yield* runtimeError(
+          "configure-mcp",
+          "request-failed",
+          "Pylon browser tools are unavailable after worker recovery.",
+        );
+      }
       if (recovery.settled) {
         if (recovery.restored === true) return;
         return yield* runtimeError(
@@ -2612,12 +3410,37 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "Pylon browser tools are unavailable after worker recovery.",
         );
       }
-      const restored = yield* configureMcpServer.pipe(
-        Effect.as(true),
-        Effect.orElseSucceed(() => false),
+      const routeRetirement: RouteRetirementSignal = correlatedPromptLifecycleAvailable
+        ? correlatedProviderRouteRetirement
+        : (activeWorkerRecovery?.ordinaryIngressFence ?? currentOrdinaryIngressFence);
+      const restore = Effect.suspend(() =>
+        disposeStarted || disposed || runtimeEventIngressFailed || routeRetirement.retired
+          ? Effect.succeed(false)
+          : configureMcpServer(
+              () =>
+                !disposeStarted &&
+                !disposed &&
+                !runtimeEventIngressFailed &&
+                !routeRetirement.retired,
+              true,
+            ).pipe(
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
+            ),
       );
-      settleQuiescenceMcpRecovery(recovery, restored);
-      if (!restored) {
+      const outcome = yield* Effect.raceFirst(
+        restore.pipe(Effect.map((restored) => ({ kind: "restore" as const, restored }))),
+        awaitRouteRetirement(routeRetirement).pipe(Effect.as({ kind: "retired" as const })),
+      );
+      if (outcome.kind === "retired") {
+        return yield* runtimeError(
+          "configure-mcp",
+          "request-failed",
+          "Pylon browser tools could not be reclaimed after worker recovery.",
+        );
+      }
+      settleQuiescenceMcpRecovery(recovery, outcome.restored);
+      if (!outcome.restored) {
         markActiveWorkerRecoveryTerminal();
         return yield* runtimeError(
           "configure-mcp",
@@ -2626,26 +3449,41 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         );
       }
     });
-    const verifyManagedExtensionAfterReconnect = Effect.tryPromise({
-      try: async () => {
+    const runManagedExtensionVerification = async (): Promise<boolean> => {
+      try {
         if (expectedExtension === undefined) return true;
-        const [rawResources, rawCommands, rawToolDefinition, sourceVerified, rawDepth] =
-          await Promise.all([
-            connection!.getResourceSnapshot(),
-            connection!.getCommands(),
-            connection!.getToolDefinition!(PRIME_AGENT_PLAN_TOOL_NAME),
-            expectedExtension.verifySource(),
-            input.requiredExtension === undefined
-              ? Promise.resolve(undefined)
-              : connection!.getRlmMaxDepthStatus!(),
-          ]);
-        const resources = decodeResourceSnapshot(rawResources);
-        const commands = decodeCommands(rawCommands);
+        const [resourcesResult, commandsResult, toolResult, sourceResult, depthResult] =
+          await Promise.allSettled([
+            Promise.resolve().then(() => connection!.getResourceSnapshot()),
+            Promise.resolve().then(() => connection!.getCommands()),
+            Promise.resolve().then(() =>
+              connection!.getToolDefinition!(PRIME_AGENT_PLAN_TOOL_NAME),
+            ),
+            Promise.resolve().then(() => expectedExtension.verifySource()),
+            Promise.resolve().then(() =>
+              input.requiredExtension === undefined
+                ? undefined
+                : connection!.getRlmMaxDepthStatus!(),
+            ),
+          ] as const);
+        if (
+          resourcesResult.status === "rejected" ||
+          commandsResult.status === "rejected" ||
+          toolResult.status === "rejected" ||
+          sourceResult.status === "rejected" ||
+          depthResult.status === "rejected"
+        ) {
+          return false;
+        }
+        const resources = decodeResourceSnapshot(resourcesResult.value);
+        const commands = decodeCommands(commandsResult.value);
         if (Option.isNone(resources) || Option.isNone(commands)) return false;
         const depth =
-          input.requiredExtension === undefined ? undefined : decodeRlmMaxDepthStatus(rawDepth);
+          input.requiredExtension === undefined
+            ? undefined
+            : decodeRlmMaxDepthStatus(depthResult.value);
         return (
-          sourceVerified === true &&
+          sourceResult.value === true &&
           (depth === undefined || (Option.isSome(depth) && depth.value.maxDepth === 0)) &&
           resources.value.extensions.filter(
             (extension) => extension.path === expectedExtension.path,
@@ -2662,10 +3500,17 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               ? diagnostic.type !== "warning" && diagnostic.path === expectedExtension.path
               : diagnostic.type !== "warning",
           ) &&
-          managedPlanToolDefinitionMatches(rawToolDefinition)
+          managedPlanToolDefinitionMatches(toolResult.value)
         );
-      },
-      catch: () => false,
+      } catch {
+        return false;
+      }
+    };
+    const verifyManagedExtensionAfterReconnect = Effect.suspend(() => {
+      const verification = startPhysicalProviderRecoveryOperation(runManagedExtensionVerification);
+      return verification === undefined
+        ? Effect.succeed(false)
+        : Effect.promise(() => verification);
     });
     type ManagedRecoveryResolution = {
       readonly promise: Promise<boolean>;
@@ -2706,7 +3551,24 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     };
     const managedRecoveryPending = () =>
       managedRecoveryResolution !== undefined && !managedRecoveryResolution.settled;
-    const routeManagedAwareRawEvent = (raw: unknown): Promise<void> => {
+    const routeManagedAwareRawEvent = (
+      raw: unknown,
+      correlatedProofIngressEpoch?: number,
+      ordinaryIngressFence?: OrdinaryIngressFence,
+      providerRouteRetirement?: ProviderRouteRetirement,
+    ): Promise<void> => {
+      if (
+        !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+        !providerRouteRetirementIsCurrent(providerRouteRetirement)
+      ) {
+        return Promise.resolve();
+      }
+      if (
+        correlatedProofIngressEpoch !== undefined &&
+        !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+      ) {
+        return Promise.reject(CORRELATED_PROOF_FENCE_RETIRED);
+      }
       const rawType =
         typeof raw === "object" && raw !== null && "type" in raw && typeof raw.type === "string"
           ? raw.type
@@ -2717,7 +3579,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         typeof (raw as { readonly status?: unknown }).status === "string"
           ? (raw as { readonly status: string }).status
           : undefined;
-      if (connectionStatus === "reconnecting" && expectedExtension !== undefined) {
+      if (
+        connectionStatus === "reconnecting" &&
+        expectedExtension !== undefined &&
+        !managedRecoveryPending()
+      ) {
         beginManagedRecovery();
       }
       const recovery = managedRecoveryResolution;
@@ -2741,58 +3607,115 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           rawType !== "connection_status" &&
           rawType !== "closed")
       ) {
-        return routeMcpAwareRawEvent(raw);
+        return routeMcpAwareRawEvent(
+          raw,
+          correlatedProofIngressEpoch,
+          ordinaryIngressFence,
+          providerRouteRetirement,
+        );
       }
-      const delivery = managedRecoveryTail.then(() =>
-        runPromise(
-          Effect.gen(function* () {
-            if (
-              rawType === "session_resynced" &&
-              !workerRecoveryExplicitSnapshot &&
-              (recovery === undefined || recovery !== managedRecoveryResolution || recovery.settled)
-            ) {
-              return;
+      const routeEffect = Effect.gen(function* () {
+        if (
+          !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+          !providerRouteRetirementIsCurrent(providerRouteRetirement)
+        ) {
+          return;
+        }
+        if (
+          correlatedProofIngressEpoch !== undefined &&
+          !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+        ) {
+          return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+        }
+        if (
+          rawType === "session_resynced" &&
+          !workerRecoveryExplicitSnapshot &&
+          correlatedProofIngressEpoch === undefined &&
+          (recovery === undefined || recovery !== managedRecoveryResolution || recovery.settled)
+        ) {
+          return;
+        }
+        if (connectionStatus === "connected" && managedRecoveryPending()) {
+          markActiveWorkerRecoveryTerminal();
+          settleManagedRecovery(recovery, false);
+          settleReconnectResolution(connectionGeneration, false);
+          yield* routeRawEvent(
+            {
+              type: "closed",
+              error:
+                "Prime Agent reconnected without restoring Pylon's managed provider extension.",
+            },
+            undefined,
+            ordinaryIngressFence,
+            providerRouteRetirement,
+          );
+          return;
+        }
+        if (rawType === "session_resynced" && recovery !== undefined && !recovery.settled) {
+          const restored = yield* verifyManagedExtensionAfterReconnect;
+          if (
+            !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+            !providerRouteRetirementIsCurrent(providerRouteRetirement)
+          ) {
+            return;
+          }
+          if (
+            correlatedProofIngressEpoch !== undefined &&
+            !correlatedPromptLifecycleProofFenceIsCurrent(correlatedProofIngressEpoch)
+          ) {
+            return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+          }
+          if (!restored) {
+            markActiveWorkerRecoveryTerminal();
+            settleManagedRecovery(recovery, false);
+            settleReconnectResolution(connectionGeneration, false);
+            if (correlatedProofIngressEpoch !== undefined) {
+              return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
             }
-            if (connectionStatus === "connected" && managedRecoveryPending()) {
-              markActiveWorkerRecoveryTerminal();
-              settleManagedRecovery(recovery, false);
-              settleReconnectResolution(connectionGeneration, false);
-              yield* routeRawEvent({
+            yield* routeRawEvent(
+              {
                 type: "closed",
                 error:
-                  "Prime Agent reconnected without restoring Pylon's managed provider extension.",
-              });
-              return;
-            }
-            if (rawType === "session_resynced" && recovery !== undefined && !recovery.settled) {
-              const restored = yield* verifyManagedExtensionAfterReconnect;
-              if (!restored) {
-                markActiveWorkerRecoveryTerminal();
-                settleManagedRecovery(recovery, false);
-                settleReconnectResolution(connectionGeneration, false);
-                yield* routeRawEvent({
-                  type: "closed",
-                  error:
-                    "Pylon's managed provider extension could not be verified after Prime Agent reconnected.",
-                });
-                return;
-              }
-            }
-            if (rawType === "closed") {
-              settleManagedRecovery(recovery, false);
-              managedRecoveryFailed = true;
-            }
-            if (!managedRecoveryFailed || rawType === "closed") {
-              yield* Effect.promise(() => routeMcpAwareRawEvent(raw));
-              if (rawType === "session_resynced") {
-                settleManagedRecovery(recovery, true);
-              }
-            }
-          }),
-        ),
-      );
+                  "Pylon's managed provider extension could not be verified after Prime Agent reconnected.",
+              },
+              undefined,
+              ordinaryIngressFence,
+              providerRouteRetirement,
+            );
+            return;
+          }
+        }
+        if (rawType === "closed") {
+          settleManagedRecovery(recovery, false);
+          managedRecoveryFailed = true;
+        }
+        if (!managedRecoveryFailed || rawType === "closed") {
+          yield* Effect.promise(() =>
+            routeMcpAwareRawEvent(
+              raw,
+              correlatedProofIngressEpoch,
+              ordinaryIngressFence,
+              providerRouteRetirement,
+            ),
+          );
+          if (
+            !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+            !providerRouteRetirementIsCurrent(providerRouteRetirement)
+          ) {
+            return;
+          }
+          if (rawType === "session_resynced") {
+            settleManagedRecovery(recovery, true);
+          }
+        }
+      });
+      const interruptibleRoute =
+        providerRouteRetirement === undefined
+          ? routeEffect
+          : Effect.raceFirst(routeEffect, awaitRouteRetirement(providerRouteRetirement));
+      const delivery = managedRecoveryTail.then(() => runPromise(interruptibleRoute));
       const guarded = delivery.catch((cause) => {
-        settleManagedRecovery(recovery, false);
+        if (cause !== CORRELATED_PROOF_FENCE_RETIRED) settleManagedRecovery(recovery, false);
         throw cause;
       });
       managedRecoveryTail = guarded.catch(() => undefined);
@@ -2804,13 +3727,22 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       mcpRecoveryPending = true;
       if (rlmQuiescenceAvailable) beginQuiescenceMcpRecovery();
     };
-    const beginManagedWorkerRecovery = (): Promise<void> => {
+    const beginManagedWorkerRecovery = (
+      ordinaryIngressFence?: OrdinaryIngressFence,
+    ): Promise<void> => {
       beginWorkerRecoveryInputBlock();
       if (expectedExtension === undefined) return Promise.resolve();
       const recovery = beginManagedRecovery();
       const delivery = managedRecoveryTail
         .then(() =>
-          runPromise(routeRawEvent({ type: "connection_status", status: "reconnecting" })),
+          runPromise(
+            routeRawEvent(
+              { type: "connection_status", status: "reconnecting" },
+              undefined,
+              ordinaryIngressFence,
+              ordinaryIngressFence,
+            ),
+          ),
         )
         .catch((cause) => {
           settleManagedRecovery(recovery, false);
@@ -2874,11 +3806,36 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             ),
           ),
     );
+    const awaitReconnectInputRecovery = Effect.suspend(() => {
+      const recovery = reconnectResolution;
+      if (recovery === undefined || recovery.settled) return Effect.void;
+      return Effect.promise(() => recovery.promise).pipe(
+        Effect.flatMap((reconciled) =>
+          reconciled && reconnectResolution === recovery
+            ? Effect.void
+            : runtimeError(
+                "prompt",
+                "request-failed",
+                "Prime Agent recovery did not reconcile before input admission.",
+              ),
+        ),
+      );
+    });
     const awaitProviderRecovery = Effect.all([awaitManagedRecovery, awaitMcpRecovery]).pipe(
+      Effect.andThen(awaitReconnectInputRecovery),
       Effect.asVoid,
     );
     const inputAdmissionAfterRecovery = (operation: "steer" | "follow-up") =>
       Effect.suspend(() => {
+        if (correlatedPromptLifecycleAvailable && correlatedProofRecoveryFailed) {
+          return Effect.fail(
+            runtimeError(
+              operation,
+              "request-failed",
+              "Prime Agent correlated prompt capability proof is unavailable for the current attachment.",
+            ),
+          );
+        }
         if (
           managedRecoveryPending() ||
           mcpRecoveryPending ||
@@ -2898,47 +3855,443 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         return Effect.succeed("ready" as const);
       });
-    const routeCorrelatedReplacementAwareRawEvent = (raw: unknown): Promise<void> => {
+    const failCorrelatedProofRecovery = (
+      error = "Prime Agent correlated prompt capability proof was lost during recovery.",
+    ): Promise<void> => {
+      correlatedProofRecoveryPending = false;
+      if (correlatedProofRecoveryFailed) return Promise.resolve();
+      correlatedProofRecoveryFailed = true;
+      retireProviderRoute(correlatedProviderRouteRetirement);
+      correlatedProofEpoch += 1;
+      settleManagedRecovery(managedRecoveryResolution, false);
+      managedRecoveryFailed = true;
+      mcpRecoveryPending = false;
+      mcpRecoveryFailed = true;
+      settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
+      const workerRecovery = activeWorkerRecovery;
+      if (workerRecovery !== undefined) {
+        workerRecovery.provisionalSnapshot = undefined;
+        settleReconnectResolution(workerRecovery.resolution.generation, false);
+        if (activeWorkerRecovery === workerRecovery) activeWorkerRecovery = undefined;
+      }
+      settleReconnectResolution(connectionGeneration, false);
+      const terminal = {
+        _tag: "SessionClosed",
+        error,
+      } satisfies PrimeDaemonEvent;
+      return runPromise(
+        failActivePrivateSideQuestions().pipe(Effect.andThen(offerRuntimeEvent(terminal))),
+      );
+    };
+    const routeProvedCorrelatedRawEvent = (raw: unknown, proofEpoch: number): Promise<void> =>
+      routeManagedAwareRawEvent(
+        raw,
+        proofEpoch,
+        undefined,
+        correlatedProviderRouteRetirement,
+      ).catch((cause) => {
+        if (cause !== CORRELATED_PROOF_FENCE_RETIRED) return Promise.reject(cause);
+        if (initializing && initializationOverflow) return Promise.resolve();
+        return proofEpoch === correlatedProofEpoch
+          ? failCorrelatedProofRecovery()
+          : Promise.resolve();
+      });
+    let ordinaryRawRouteTail = Promise.resolve();
+    let ordinaryRawRouteCount = 0;
+    let ordinaryRawRouteWeight = 0;
+    const serializeOrdinaryRawRoute = (raw: unknown, route: () => Promise<void>): Promise<void> => {
+      if (runtimeEventIngressFailed) return Promise.resolve();
+      const weight = boundedCorrelatedProofRouteWeight(raw);
+      if (
+        weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT ||
+        ordinaryRawRouteCount >= MAX_CORRELATED_PROOF_ROUTES ||
+        ordinaryRawRouteWeight + weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT
+      ) {
+        return runPromise(failRuntimeEventIngress());
+      }
+      ordinaryRawRouteCount += 1;
+      ordinaryRawRouteWeight += weight;
+      const delivery = ordinaryRawRouteTail.then(() =>
+        runtimeEventIngressFailed || disposeStarted || disposed ? undefined : route(),
+      );
+      const accounted = delivery.finally(() => {
+        ordinaryRawRouteCount -= 1;
+        ordinaryRawRouteWeight -= weight;
+      });
+      ordinaryRawRouteTail = accounted.catch(() => undefined);
+      return accounted;
+    };
+    let correlatedProofRouteTail = Promise.resolve();
+    let correlatedProofRouteCount = 0;
+    let correlatedProofRouteWeight = 0;
+    const serializeCorrelatedProofRoute = (
+      raw: unknown,
+      route: () => Promise<void>,
+    ): Promise<void> => {
+      const weight = boundedCorrelatedProofRouteWeight(raw);
+      if (
+        weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT ||
+        correlatedProofRouteCount >= MAX_CORRELATED_PROOF_ROUTES ||
+        correlatedProofRouteWeight + weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT
+      ) {
+        return failCorrelatedProofRecovery();
+      }
+      correlatedProofRouteCount += 1;
+      correlatedProofRouteWeight += weight;
+      const delivery = correlatedProofRouteTail.then(route);
+      const accounted = delivery.finally(() => {
+        correlatedProofRouteCount -= 1;
+        correlatedProofRouteWeight -= weight;
+      });
+      correlatedProofRouteTail = accounted.catch(() => undefined);
+      return accounted;
+    };
+    const routeCorrelatedReplacementAwareRawEvent = (
+      raw: unknown,
+      ordinaryIngressFence?: OrdinaryIngressFence,
+      providerRouteRetirement?: ProviderRouteRetirement,
+    ): Promise<void> => {
       const rawType =
         Predicate.isObject(raw) && "type" in raw && Predicate.isString(raw.type)
           ? raw.type
           : undefined;
-      if (!correlatedPromptLifecycleAvailable || rawType !== "session_replaced") {
-        return routeManagedAwareRawEvent(raw);
-      }
-      return connection!
-        .getInitialSnapshot()
-        .then((snapshot) =>
-          routeManagedAwareRawEvent({
-            type: "session_resynced",
-            snapshot,
-            pylonReplacementSnapshot: true,
-          }),
-        )
-        .catch(() =>
-          routeManagedAwareRawEvent({
-            type: "closed",
-            error: "Prime Agent replacement lifecycle state could not be reconciled.",
-          }),
+      if (!correlatedPromptLifecycleAvailable) {
+        return routeManagedAwareRawEvent(
+          raw,
+          undefined,
+          ordinaryIngressFence,
+          providerRouteRetirement ?? ordinaryIngressFence,
         );
+      }
+      if (correlatedProofRecoveryFailed) return Promise.resolve();
+      const connectionStatus =
+        rawType === "connection_status" &&
+        Predicate.isObject(raw) &&
+        "status" in raw &&
+        Predicate.isString(raw.status)
+          ? raw.status
+          : undefined;
+      if (connectionStatus === "reconnecting") {
+        const pendingStrictWorkerRecovery =
+          activeWorkerRecovery?.correlatedProofEpoch !== undefined;
+        retireQuiescenceMcpRecovery();
+        rotateCorrelatedProviderRouteRetirement();
+        correlatedProofEpoch += 1;
+        correlatedProofRecoveryPending = true;
+        connectionGeneration += 1;
+        rlmEventContinuityValid = false;
+        beginReconnectResolution();
+        if (expectedExtension !== undefined) beginManagedRecovery();
+        if (input.mcpServer !== undefined) {
+          mcpAttached = false;
+          mcpRecoveryPending = true;
+        }
+        if (pendingStrictWorkerRecovery) return failCorrelatedProofRecovery();
+        const providerRouteRetirement = correlatedProviderRouteRetirement;
+        return serializeCorrelatedProofRoute(raw, () =>
+          routeManagedAwareRawEvent(raw, undefined, undefined, providerRouteRetirement),
+        );
+      }
+      if (rawType === "closed") return failCorrelatedProofRecovery();
+      if (rawType === "session_replaced") {
+        const pendingStrictWorkerRecovery =
+          activeWorkerRecovery?.correlatedProofEpoch !== undefined;
+        retireQuiescenceMcpRecovery();
+        rotateCorrelatedProviderRouteRetirement();
+        correlatedProofEpoch += 1;
+        correlatedProofRecoveryPending = true;
+        connectionGeneration += 1;
+        rlmEventContinuityValid = false;
+        const snapshotResolution = beginReconnectResolution();
+        if (expectedExtension !== undefined) beginManagedRecovery();
+        if (input.mcpServer !== undefined) {
+          mcpAttached = false;
+          mcpRecoveryPending = true;
+        }
+        if (pendingStrictWorkerRecovery) return failCorrelatedProofRecovery();
+        const proofEpoch = captureCorrelatedPromptLifecycleProofFence();
+        if (proofEpoch === undefined) return failCorrelatedProofRecovery();
+        const providerRouteRetirement = correlatedProviderRouteRetirement;
+        return serializeCorrelatedProofRoute(raw, () => {
+          const replacementRoute = Effect.gen(function* () {
+            if (
+              disposeStarted ||
+              disposed ||
+              !providerRouteRetirementIsCurrent(providerRouteRetirement)
+            ) {
+              return;
+            }
+            if (!correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)) {
+              if (proofEpoch === correlatedProofEpoch) {
+                yield* Effect.promise(() => failCorrelatedProofRecovery());
+              }
+              return;
+            }
+            const snapshotRead = startPhysicalProviderRecoveryOperation(() =>
+              connection!.getInitialSnapshot(),
+            );
+            if (snapshotRead === undefined) {
+              return yield* Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
+            }
+            const snapshot = yield* Effect.tryPromise({
+              try: () => snapshotRead,
+              catch: () => undefined,
+            });
+            if (!correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)) {
+              if (proofEpoch === correlatedProofEpoch) {
+                yield* Effect.promise(() => failCorrelatedProofRecovery());
+              }
+              return;
+            }
+            yield* Effect.tryPromise({
+              try: () =>
+                routeProvedCorrelatedRawEvent(
+                  {
+                    type: "session_resynced",
+                    snapshot,
+                    pylonReplacementSnapshot: true,
+                  },
+                  proofEpoch,
+                ),
+              catch: () => undefined,
+            });
+            if (proofEpoch !== correlatedProofEpoch) return;
+            if (!snapshotResolution.snapshotPublished) {
+              settleReconnectResolution(snapshotResolution.generation, false);
+              yield* Effect.promise(() => failCorrelatedProofRecovery());
+              return;
+            }
+            correlatedProofRecoveryPending = false;
+          }).pipe(
+            Effect.catch(() =>
+              proofEpoch !== correlatedProofEpoch
+                ? Effect.void
+                : Effect.promise(() => failCorrelatedProofRecovery()),
+            ),
+          );
+          return runPromise(
+            Effect.raceFirst(replacementRoute, awaitRouteRetirement(providerRouteRetirement)),
+          );
+        });
+      }
+
+      if (
+        rawType === "session_resynced" &&
+        !correlatedProofRecoveryPending &&
+        (reconnectResolution === undefined || reconnectResolution.settled)
+      ) {
+        correlatedProofRecoveryPending = true;
+        beginReconnectResolution();
+      }
+      const snapshotResolution =
+        rawType === "session_resynced" &&
+        reconnectResolution?.generation === connectionGeneration &&
+        !reconnectResolution.settled
+          ? reconnectResolution
+          : undefined;
+      const proofEpoch = captureCorrelatedPromptLifecycleProofFence();
+      if (proofEpoch === undefined) return failCorrelatedProofRecovery();
+      return serializeCorrelatedProofRoute(raw, async () => {
+        if (!correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)) {
+          await routeProvedCorrelatedRawEvent(raw, proofEpoch);
+          return;
+        }
+        if (connectionStatus === "connected" && correlatedProofRecoveryPending) {
+          await failCorrelatedProofRecovery();
+          return;
+        }
+        await routeProvedCorrelatedRawEvent(raw, proofEpoch);
+        if (rawType !== "session_resynced" || proofEpoch !== correlatedProofEpoch) return;
+        if (snapshotResolution !== undefined && !snapshotResolution.snapshotPublished) {
+          settleReconnectResolution(snapshotResolution.generation, false);
+          await failCorrelatedProofRecovery();
+          return;
+        }
+        correlatedProofRecoveryPending = false;
+      });
     };
-    let routeWorkerAwareRawEvent: (raw: unknown) => Promise<void> =
-      routeCorrelatedReplacementAwareRawEvent;
+
+    type WorkerCloseIngressFence = {
+      readonly generation: number;
+      readonly correlatedProofEpoch?: number;
+    };
+    let routeWorkerAwareRawEvent: (
+      raw: unknown,
+      ordinaryIngressFence?: OrdinaryIngressFence,
+      workerCloseIngressFence?: WorkerCloseIngressFence,
+      providerRouteRetirement?: ProviderRouteRetirement,
+    ) => Promise<void> = (
+      raw,
+      ordinaryIngressFence,
+      _workerCloseIngressFence,
+      providerRouteRetirement,
+    ) =>
+      routeCorrelatedReplacementAwareRawEvent(raw, ordinaryIngressFence, providerRouteRetirement);
+    type OrdinaryWorkerCloseRoute = {
+      readonly ingressFence: OrdinaryIngressFence | undefined;
+      readonly retirement: ProviderRouteRetirement;
+      readonly promise: Promise<void>;
+      routingStarted: boolean;
+    };
+    let ordinaryWorkerCloseRoute: OrdinaryWorkerCloseRoute | undefined;
+    let correlatedWorkerCloseRoute: Promise<void> | undefined;
+    let correlatedWorkerCloseRoutingStarted = false;
+    const workerCloseAdmissionIsPending = () =>
+      ordinaryWorkerCloseRoute !== undefined || correlatedWorkerCloseRoute !== undefined;
+    const workerCloseRoutingHasStarted = () =>
+      ordinaryWorkerCloseRoute?.routingStarted === true || correlatedWorkerCloseRoutingStarted;
+    const preflightOrdinaryReconnect = (raw: object) => {
+      ordinaryWorkerCloseRoute = undefined;
+      retireCurrentOrdinaryWorkerCloseRoute();
+      retireQuiescenceMcpRecovery();
+      const workerRecovery = activeWorkerRecovery;
+      if (workerRecovery !== undefined && workerRecovery.correlatedProofEpoch === undefined) {
+        workerRecovery.provisionalSnapshot = undefined;
+        settleReconnectResolution(workerRecovery.resolution.generation, false);
+        if (activeWorkerRecovery === workerRecovery) activeWorkerRecovery = undefined;
+      }
+      retireOrdinaryIngressFence();
+      connectionGeneration += 1;
+      currentOrdinaryIngressFence = makeOrdinaryIngressFence(connectionGeneration);
+      ordinaryReconnectPreflightGenerations.set(raw, connectionGeneration);
+      rlmEventContinuityValid = false;
+      beginReconnectResolution();
+      if (expectedExtension !== undefined) beginManagedRecovery();
+      if (input.mcpServer !== undefined) {
+        mcpAttached = false;
+        mcpRecoveryPending = true;
+      }
+    };
+    const routeSubscribedRawEvent = (raw: unknown): Promise<void> => {
+      if (runtimeEventIngressFailed || disposeStarted || disposed) return Promise.resolve();
+      const rawType =
+        Predicate.isObject(raw) && "type" in raw && Predicate.isString(raw.type)
+          ? raw.type
+          : undefined;
+      if (correlatedPromptLifecycleAvailable) {
+        if (rawType !== "closed") return routeWorkerAwareRawEvent(raw);
+        if (correlatedWorkerCloseRoute !== undefined) return correlatedWorkerCloseRoute;
+        const closeProofEpoch = captureCorrelatedPromptLifecycleProofFence();
+        const workerCloseIngressFence: WorkerCloseIngressFence = {
+          generation: connectionGeneration,
+          ...(closeProofEpoch === undefined ? {} : { correlatedProofEpoch: closeProofEpoch }),
+        };
+        const precedingProofRoutes = correlatedProofRouteTail;
+        const delivery = precedingProofRoutes.then(() => {
+          if (runtimeEventIngressFailed || disposeStarted || disposed) return;
+          correlatedWorkerCloseRoutingStarted = true;
+          return routeWorkerAwareRawEvent({ type: "closed" }, undefined, workerCloseIngressFence);
+        });
+        const accounted = delivery.finally(() => {
+          if (correlatedWorkerCloseRoute === accounted) {
+            correlatedWorkerCloseRoute = undefined;
+            correlatedWorkerCloseRoutingStarted = false;
+          }
+        });
+        correlatedWorkerCloseRoute = accounted;
+        void runPromise(failActivePrivateSideQuestions());
+        return accounted;
+      }
+      const connectionStatus =
+        rawType === "connection_status" &&
+        Predicate.isObject(raw) &&
+        "status" in raw &&
+        Predicate.isString(raw.status)
+          ? raw.status
+          : undefined;
+      if (connectionStatus === "reconnecting" && Predicate.isObject(raw)) {
+        preflightOrdinaryReconnect(raw);
+      }
+      const ingressFence =
+        rawType === "session_resynced" || rawType === "connection_status" || rawType === "closed"
+          ? currentOrdinaryIngressFence
+          : undefined;
+      if (rawType !== "closed") {
+        const admittedWorkerCloseRoute =
+          ingressFence === undefined ? ordinaryWorkerCloseRoute : undefined;
+        return serializeOrdinaryRawRoute(raw, () =>
+          ordinaryIngressFenceIsCurrent(ingressFence) &&
+          (admittedWorkerCloseRoute === undefined ||
+            (ordinaryWorkerCloseRoute === admittedWorkerCloseRoute &&
+              ordinaryIngressFenceIsCurrent(admittedWorkerCloseRoute.ingressFence) &&
+              providerRouteRetirementIsCurrent(admittedWorkerCloseRoute.retirement)))
+            ? routeWorkerAwareRawEvent(
+                raw,
+                ingressFence,
+                undefined,
+                admittedWorkerCloseRoute?.retirement,
+              )
+            : Promise.resolve(),
+        );
+      }
+      const currentCloseRoute = ordinaryWorkerCloseRoute;
+      if (currentCloseRoute !== undefined && currentCloseRoute.ingressFence === ingressFence) {
+        return currentCloseRoute.promise;
+      }
+      const precedingRawRoutes = ordinaryRawRouteTail;
+      let closeRoute!: OrdinaryWorkerCloseRoute;
+      const delivery = precedingRawRoutes.then(() => {
+        if (
+          runtimeEventIngressFailed ||
+          disposeStarted ||
+          disposed ||
+          !ordinaryIngressFenceIsCurrent(ingressFence)
+        ) {
+          return;
+        }
+        closeRoute.routingStarted = true;
+        return routeWorkerAwareRawEvent({ type: "closed" }, ingressFence);
+      });
+      const accounted = delivery.finally(() => {
+        retireProviderRoute(closeRoute.retirement);
+        if (currentOrdinaryWorkerCloseRetirement === closeRoute.retirement) {
+          currentOrdinaryWorkerCloseRetirement = undefined;
+        }
+        if (ordinaryWorkerCloseRoute === closeRoute) ordinaryWorkerCloseRoute = undefined;
+      });
+      closeRoute = {
+        ingressFence,
+        retirement: makeProviderRouteRetirement(),
+        promise: accounted,
+        routingStarted: false,
+      };
+      ordinaryWorkerCloseRoute = closeRoute;
+      currentOrdinaryWorkerCloseRetirement = closeRoute.retirement;
+      void runPromise(failActivePrivateSideQuestions());
+      return accounted;
+    };
 
     // The initial snapshot reserves one queue slot. Admission is cumulative for
     // the whole initialization phase: draining a batch never reopens capacity.
     // This keeps overlapping fire-and-forget daemon callbacks bounded too.
     unsubscribe = connection.subscribe((event) => {
       if (initializing) {
-        if (initializationAcceptedEventCount >= PRIME_AGENT_EVENT_BUFFER_CAPACITY - 1) {
+        if (
+          correlatedPromptLifecycleAvailable &&
+          Predicate.isObject(event) &&
+          "type" in event &&
+          (event.type === "session_replaced" ||
+            (event.type === "connection_status" &&
+              "status" in event &&
+              event.status === "reconnecting"))
+        ) {
+          initializationCorrelatedProofInvalidated = true;
+        }
+        const eventWeight = boundedCorrelatedProofRouteWeight(event);
+        if (
+          initializationAcceptedEventCount >= PRIME_AGENT_EVENT_BUFFER_CAPACITY - 1 ||
+          eventWeight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - initializationAcceptedEventWeight
+        ) {
           initializationOverflow = true;
           return;
         }
         initializationAcceptedEventCount += 1;
+        initializationAcceptedEventWeight += eventWeight;
         bufferedEvents.push(event);
         return;
       }
-      return routeWorkerAwareRawEvent(event);
+      if (runtimeEventIngressFailed) return;
+      return routeSubscribedRawEvent(event);
     });
 
     const rawSnapshot = yield* Effect.tryPromise({
@@ -2958,6 +4311,12 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }),
       ),
     );
+    const rawSnapshotWeight = boundedCorrelatedProofRouteWeight(rawSnapshot);
+    if (rawSnapshotWeight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - initializationAcceptedEventWeight) {
+      initializationOverflow = true;
+    } else {
+      initializationAcceptedEventWeight += rawSnapshotWeight;
+    }
     if (initializationOverflow) {
       unsubscribe();
       yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
@@ -2966,6 +4325,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         "initial-snapshot",
         "request-failed",
         "The daemon emitted too many events while initializing the session.",
+      );
+    }
+    if (correlatedPromptLifecycleAvailable && !hasCurrentCorrelatedPromptLifecycleProof()) {
+      unsubscribe();
+      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+      client.close();
+      return yield* runtimeError(
+        "initial-snapshot",
+        "invalid-response",
+        "Prime Agent lost its negotiated daemon capability proof during initialization.",
       );
     }
     const initialEvent = safeEvent(
@@ -3217,7 +4586,28 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     ): Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError> =>
       disposed || disposeStarted
         ? Effect.fail(runtimeError(operation, "disposed", "The daemon session is disposed."))
-        : Effect.void;
+        : runtimeEventIngressFailed ||
+            (correlatedPromptLifecycleAvailable && correlatedProofRecoveryFailed)
+          ? Effect.fail(
+              runtimeError(
+                operation,
+                "request-failed",
+                runtimeEventCapacityFailed
+                  ? "Prime Agent event ingress exceeded its bounded capacity."
+                  : correlatedProofRecoveryFailed
+                    ? "Prime Agent correlated prompt capability proof is unavailable for the current attachment."
+                    : "The Prime Agent daemon session is closed.",
+              ),
+            )
+          : workerCloseAdmissionIsPending() && operation !== "rlm-quiescence"
+            ? Effect.fail(
+                runtimeError(
+                  operation,
+                  "request-failed",
+                  "Prime Agent worker recovery is pending.",
+                ),
+              )
+            : Effect.void;
 
     const callVoid = (
       operation: PrimeAgentDaemonSessionRuntimeError["operation"],
@@ -3654,7 +5044,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     });
 
     const watchAgentActivityAvailable =
-      input.requiredExtension === undefined && Predicate.isFunction(connection!.watchSession);
+      !correlatedPromptLifecycleAvailable &&
+      input.requiredExtension === undefined &&
+      Predicate.isFunction(connection!.watchSession);
 
     const watchAgentActivity: PrimeAgentDaemonSessionRuntime["watchAgentActivity"] = (
       rawActiveSessionId,
@@ -3676,6 +5068,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 "watch-agent-activity",
                 "incompatible-api",
                 "Live agent activity is unavailable in supervised sessions.",
+              );
+            }
+            if (correlatedPromptLifecycleAvailable) {
+              return yield* runtimeError(
+                "watch-agent-activity",
+                "incompatible-api",
+                "Live agent activity is unavailable in correlated prompt sessions.",
               );
             }
             const method = connection!.watchSession;
@@ -4110,15 +5509,38 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       return generation;
     });
 
+    let physicalWorkerListOperation:
+      | { readonly generation: number; readonly promise: Promise<unknown> }
+      | undefined;
     const readWorkerRecoverySummary = Effect.fn(
       "PrimeAgentDaemonSessionRuntime.readWorkerRecoverySummary",
     )(function* () {
-      const output = yield* Effect.promise(async () => {
-        try {
-          return await client.request(
+      const generation = connectionGeneration;
+      const currentOperation = physicalWorkerListOperation;
+      let request: Promise<unknown>;
+      if (currentOperation !== undefined) {
+        if (currentOperation.generation !== generation) return undefined;
+        request = currentOperation.promise;
+      } else {
+        const started = startPhysicalProviderRecoveryOperation(() =>
+          client.request(
             { type: "list", includeClientOwned: true },
             RLM_WORKER_RECOVERY_LIST_TIMEOUT_MS,
-          );
+          ),
+        );
+        if (started === undefined) return undefined;
+        const operation = { generation, promise: started };
+        physicalWorkerListOperation = operation;
+        void started
+          .finally(() => {
+            if (physicalWorkerListOperation === operation) physicalWorkerListOperation = undefined;
+          })
+          .catch(() => undefined);
+        request = started;
+      }
+      const output = yield* Effect.promise(async () => {
+        try {
+          return await request;
         } catch {
           return undefined;
         }
@@ -4167,10 +5589,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         !disposeStarted &&
         !signal.aborted &&
         connectionGeneration === expectedGeneration &&
-        activeWorkerRecovery?.resolution === resolution;
+        activeWorkerRecovery?.resolution === resolution &&
+        ordinaryIngressFenceIsCurrent(activeWorkerRecovery?.ordinaryIngressFence) &&
+        workerRecoveryCorrelatedProofIsCurrent(activeWorkerRecovery);
       const gate = Effect.gen(function* () {
         if (!ownsRecovery()) return false;
-        yield* Effect.promise(() => beginManagedWorkerRecovery());
+        yield* Effect.promise(() =>
+          beginManagedWorkerRecovery(activeWorkerRecovery?.ordinaryIngressFence),
+        );
         const first = initialSummary ?? (yield* readWorkerRecoverySummary());
         if (!ownsRecovery() || first?.state !== "recovering") return false;
         const workerPid = first.pid;
@@ -4192,9 +5618,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
 
         for (let attempt = 0; attempt < RLM_WORKER_RECOVERY_SNAPSHOT_MAX_ATTEMPTS; attempt += 1) {
           if (!ownsRecovery() || resolution.settled) return false;
-          const snapshot = yield* Effect.tryPromise({
-            try: () => connection!.getInitialSnapshot(),
-            catch: () => undefined,
+          const snapshot = yield* Effect.suspend(() => {
+            const snapshotRead = startPhysicalProviderRecoveryOperation(() =>
+              connection!.getInitialSnapshot(),
+            );
+            return snapshotRead === undefined
+              ? Effect.void
+              : Effect.tryPromise({
+                  try: () => snapshotRead,
+                  catch: () => undefined,
+                });
           }).pipe(Effect.timeoutOption(RLM_WORKER_RECOVERY_LIST_TIMEOUT_MS));
           if (
             Option.isNone(snapshot) ||
@@ -4214,7 +5647,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           recovery.explicitSnapshotOffered = false;
           const explicitSnapshot = { type: "session_resynced", snapshot: snapshot.value } as const;
           recovery.explicitSnapshotRaw = explicitSnapshot;
-          yield* Effect.promise(() => routeManagedAwareRawEvent(explicitSnapshot));
+          yield* Effect.promise(() =>
+            recovery.correlatedProofEpoch === undefined
+              ? routeManagedAwareRawEvent(
+                  explicitSnapshot,
+                  undefined,
+                  recovery.ordinaryIngressFence,
+                  recovery.ordinaryIngressFence,
+                )
+              : routeProvedCorrelatedRawEvent(explicitSnapshot, recovery.correlatedProofEpoch),
+          );
           const snapshotOutcome = yield* Effect.promise(() =>
             Promise.race([
               resolution.promise.then((reconciled) => ({ kind: "resolved" as const, reconciled })),
@@ -4251,19 +5693,45 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     });
 
     let workerCloseRecoveryAttempt:
-      | { readonly generation: number; readonly promise: Promise<void> }
+      | { readonly generation: number; readonly promise: Promise<void>; settled: boolean }
       | undefined;
+    const failRetiredWorkerRecoveryProof = async (
+      recovery: NonNullable<typeof activeWorkerRecovery>,
+    ): Promise<boolean> => {
+      if (
+        recovery.correlatedProofEpoch === undefined ||
+        correlatedPromptLifecycleProofFenceIsCurrent(recovery.correlatedProofEpoch)
+      ) {
+        return false;
+      }
+      await failCorrelatedProofRecovery();
+      return true;
+    };
     const routeWorkerRecoveryTerminal = async (
       recovery: NonNullable<typeof activeWorkerRecovery>,
     ) => {
       if (recovery.terminalFallbackRouted) return;
       recovery.terminalFallbackRouted = true;
-      await routeManagedAwareRawEvent(
-        recovery.fallbackCloseRaw ?? {
+      const fallback =
+        recovery.fallbackCloseRaw ??
+        ({
           type: "closed",
           error: "Prime Agent replacement-worker recovery ended before Pylon could verify it.",
-        },
-      );
+        } as const);
+      if (recovery.correlatedProofEpoch === undefined) {
+        await routeManagedAwareRawEvent(
+          fallback,
+          undefined,
+          recovery.ordinaryIngressFence,
+          recovery.ordinaryIngressFence,
+        );
+        return;
+      }
+      if (!correlatedPromptLifecycleProofFenceIsCurrent(recovery.correlatedProofEpoch)) {
+        await failCorrelatedProofRecovery();
+        return;
+      }
+      await routeProvedCorrelatedRawEvent(fallback, recovery.correlatedProofEpoch);
     };
     const finishSuccessfulWorkerCloseRecovery = (
       recovery: NonNullable<typeof activeWorkerRecovery>,
@@ -4274,30 +5742,90 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         workerCloseRecoveryAttempt = undefined;
       }
     };
-    routeWorkerAwareRawEvent = (raw: unknown): Promise<void> => {
+    routeWorkerAwareRawEvent = (
+      raw: unknown,
+      ordinaryIngressFence?: OrdinaryIngressFence,
+      workerCloseIngressFence?: WorkerCloseIngressFence,
+      providerRouteRetirement?: ProviderRouteRetirement,
+    ): Promise<void> => {
+      if (
+        runtimeEventIngressFailed ||
+        disposeStarted ||
+        disposed ||
+        !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+        !providerRouteRetirementIsCurrent(providerRouteRetirement)
+      ) {
+        return Promise.resolve();
+      }
       const rawType =
         typeof raw === "object" && raw !== null && "type" in raw && typeof raw.type === "string"
           ? raw.type
           : undefined;
-      if (rawType !== "closed") return routeCorrelatedReplacementAwareRawEvent(raw);
-      const generation = connectionGeneration;
-      if (workerCloseRecoveryAttempt?.generation === generation) {
+      if (rawType !== "closed") {
+        return routeCorrelatedReplacementAwareRawEvent(
+          raw,
+          ordinaryIngressFence,
+          providerRouteRetirement,
+        );
+      }
+      const correlatedWorkerProofEpoch = correlatedPromptLifecycleAvailable
+        ? workerCloseIngressFence?.correlatedProofEpoch
+        : undefined;
+      if (
+        correlatedPromptLifecycleAvailable &&
+        (correlatedProofRecoveryFailed ||
+          workerCloseIngressFence === undefined ||
+          workerCloseIngressFence.generation !== connectionGeneration ||
+          correlatedWorkerProofEpoch === undefined ||
+          !correlatedPromptLifecycleProofFenceIsCurrent(correlatedWorkerProofEpoch))
+      ) {
+        return failCorrelatedProofRecovery();
+      }
+      const routeWorkerRaw = (workerRaw: unknown): Promise<void> =>
+        correlatedWorkerProofEpoch === undefined
+          ? routeManagedAwareRawEvent(
+              workerRaw,
+              undefined,
+              ordinaryIngressFence,
+              ordinaryIngressFence,
+            )
+          : routeProvedCorrelatedRawEvent(workerRaw, correlatedWorkerProofEpoch);
+      const generation =
+        workerCloseIngressFence?.generation ??
+        ordinaryIngressFence?.generation ??
+        connectionGeneration;
+      if (
+        workerCloseRecoveryAttempt?.generation === generation &&
+        !workerCloseRecoveryAttempt.settled
+      ) {
         return workerCloseRecoveryAttempt.promise;
       }
       if (!nativeRunObservedActive && activePromptRecovery?.promptAdmissionObserved !== true) {
-        return routeManagedAwareRawEvent(raw);
+        return routeWorkerRaw(raw);
       }
       const delivery = (async () => {
         const existing = activeWorkerRecovery;
         if (existing !== undefined && existing.resolution.generation === generation) {
           existing.fallbackCloseRaw ??= raw;
           if (existing.resolution.settled) {
-            if (rlmEventContinuityValid) return;
+            rlmEventContinuityValid = false;
+            if (activeWorkerRecovery === existing) activeWorkerRecovery = undefined;
             await routeWorkerRecoveryTerminal(existing);
             return;
           }
           const outcome =
             existing.gatePromise === undefined ? undefined : await existing.gatePromise;
+          if (await failRetiredWorkerRecoveryProof(existing)) return;
+          if (
+            runtimeEventIngressFailed ||
+            disposeStarted ||
+            disposed ||
+            activeWorkerRecovery !== existing ||
+            existing.resolution.generation !== connectionGeneration ||
+            !ordinaryIngressFenceIsCurrent(existing.ordinaryIngressFence)
+          ) {
+            return;
+          }
           if (outcome?.kind === "gate" && outcome.recovered) {
             finishSuccessfulWorkerCloseRecovery(existing);
             return;
@@ -4308,41 +5836,18 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           return;
         }
 
-        const summary = await runPromise(readWorkerRecoverySummary());
-        if (
-          generation !== connectionGeneration ||
-          summary === undefined ||
-          summary.state !== "recovering"
-        ) {
-          await routeManagedAwareRawEvent(raw);
-          return;
-        }
-        const concurrentRecovery = activeWorkerRecovery;
-        if (
-          concurrentRecovery !== undefined &&
-          concurrentRecovery.resolution.generation === generation
-        ) {
-          concurrentRecovery.fallbackCloseRaw ??= raw;
-          const outcome =
-            concurrentRecovery.gatePromise === undefined
-              ? undefined
-              : await concurrentRecovery.gatePromise;
-          if (outcome?.kind === "gate" && outcome.recovered) {
-            finishSuccessfulWorkerCloseRecovery(concurrentRecovery);
-            return;
-          }
-          settleReconnectResolution(generation, false);
-          if (activeWorkerRecovery === concurrentRecovery) activeWorkerRecovery = undefined;
-          await routeWorkerRecoveryTerminal(concurrentRecovery);
-          return;
-        }
         rlmEventContinuityValid = false;
         const resolution = beginReconnectResolution();
         const signal = new AbortController().signal;
         const recovery: NonNullable<typeof activeWorkerRecovery> = {
           resolution,
           baselineMessageCount: observedCompletedMessageCount,
+          ...(correlatedWorkerProofEpoch === undefined
+            ? {}
+            : { correlatedProofEpoch: correlatedWorkerProofEpoch }),
+          ...(ordinaryIngressFence === undefined ? {} : { ordinaryIngressFence }),
           terminalResponseObserved: false,
+          closePreflightTerminalResponseObserved: false,
           explicitSnapshotOffered: false,
           snapshotRetry: undefined,
           gatePromise: undefined,
@@ -4352,11 +5857,57 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         };
         activeWorkerRecovery = recovery;
         beginWorkerRecoveryInputBlock();
-        const gatePromise = runPromise(
-          awaitWorkerRecoveryGate(resolution, generation, signal, summary),
-        );
+        await runPromise(failActivePrivateSideQuestions());
+        if (await failRetiredWorkerRecoveryProof(recovery)) return;
+        if (
+          activeWorkerRecovery !== recovery ||
+          generation !== connectionGeneration ||
+          !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+          runtimeEventIngressFailed ||
+          disposeStarted ||
+          disposed
+        ) {
+          settleReconnectResolution(generation, false);
+          if (activeWorkerRecovery === recovery) activeWorkerRecovery = undefined;
+          return;
+        }
+
+        const summary = await runPromise(readWorkerRecoverySummary());
+        if (await failRetiredWorkerRecoveryProof(recovery)) return;
+        if (
+          activeWorkerRecovery !== recovery ||
+          generation !== connectionGeneration ||
+          !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
+          runtimeEventIngressFailed ||
+          disposeStarted ||
+          disposed
+        ) {
+          settleReconnectResolution(generation, false);
+          if (activeWorkerRecovery === recovery) activeWorkerRecovery = undefined;
+          return;
+        }
+        if (summary === undefined || summary.state !== "recovering") {
+          settleReconnectResolution(generation, false);
+          if (activeWorkerRecovery === recovery) activeWorkerRecovery = undefined;
+          await routeWorkerRecoveryTerminal(recovery);
+          return;
+        }
+        const gatePromise =
+          recovery.gatePromise ??
+          runPromise(awaitWorkerRecoveryGate(resolution, generation, signal, summary));
         recovery.gatePromise = gatePromise;
         const outcome = await gatePromise;
+        if (await failRetiredWorkerRecoveryProof(recovery)) return;
+        if (
+          runtimeEventIngressFailed ||
+          disposeStarted ||
+          disposed ||
+          activeWorkerRecovery !== recovery ||
+          generation !== connectionGeneration ||
+          !ordinaryIngressFenceIsCurrent(ordinaryIngressFence)
+        ) {
+          return;
+        }
         if (outcome.kind === "gate" && outcome.recovered) {
           finishSuccessfulWorkerCloseRecovery(recovery);
           return;
@@ -4365,7 +5916,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         if (activeWorkerRecovery === recovery) activeWorkerRecovery = undefined;
         await routeWorkerRecoveryTerminal(recovery);
       })();
-      workerCloseRecoveryAttempt = { generation, promise: delivery };
+      const attempt = { generation, promise: delivery, settled: false };
+      workerCloseRecoveryAttempt = attempt;
+      void delivery.then(
+        () => {
+          attempt.settled = true;
+        },
+        () => {
+          attempt.settled = true;
+        },
+      );
       return delivery;
     };
 
@@ -4378,6 +5938,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             "Prime Agent descendant quiescence wait was cancelled.",
           );
         let workerRecoveryResolution: ReconnectResolution | undefined;
+        let ownedQuiescenceMcpRecovery: QuiescenceMcpRecovery | undefined;
+        let quiescenceCorrelatedProofEpoch: number | undefined;
         let successfulBarrierInputActivityRevision: number | undefined;
         const wait = Effect.gen(function* () {
           yield* ensureOpen("rlm-quiescence");
@@ -4385,9 +5947,26 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             return yield* cancellationError();
           }
           if (!rlmQuiescenceAvailable) return;
-          const waitGeneration = yield* awaitReconnectResolution();
+          const pendingWorkerRecovery = activeWorkerRecovery;
+          const waitGeneration =
+            pendingWorkerRecovery !== undefined &&
+            pendingWorkerRecovery.resolution === reconnectResolution &&
+            !pendingWorkerRecovery.resolution.settled
+              ? connectionGeneration
+              : yield* awaitReconnectResolution();
           if (signal.aborted) {
             return yield* cancellationError();
+          }
+          if (correlatedPromptLifecycleAvailable) {
+            quiescenceCorrelatedProofEpoch = captureCorrelatedPromptLifecycleProofFence();
+            if (quiescenceCorrelatedProofEpoch === undefined) {
+              yield* Effect.promise(() => failCorrelatedProofRecovery());
+              return yield* runtimeError(
+                "rlm-quiescence",
+                "request-failed",
+                "Prime Agent could not confirm descendant quiescence.",
+              );
+            }
           }
           const waitForHeadlessCompletion = yield* requireMethod(
             "rlm-quiescence",
@@ -4404,6 +5983,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               "request-failed",
               "Prime Agent could not confirm descendant quiescence.",
             );
+          const requireCurrentWorkerRecoveryProof = (
+            recovery: NonNullable<typeof activeWorkerRecovery>,
+          ) =>
+            Effect.suspend(() => {
+              if (workerRecoveryCorrelatedProofIsCurrent(recovery)) return Effect.void;
+              rejectRetiredWorkerRecoveryProof(recovery);
+              return Effect.promise(() => failCorrelatedProofRecovery()).pipe(
+                Effect.flatMap(() => workerRecoveryFailure()),
+              );
+            });
           const adoptConcurrentWorkerRecovery = Effect.gen(function* () {
             const closeAttempt = workerCloseRecoveryAttempt;
             if (closeAttempt?.generation === waitGeneration && activeWorkerRecovery === undefined) {
@@ -4418,6 +6007,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             ) {
               return;
             }
+            yield* requireCurrentWorkerRecoveryProof(current);
             if (workerRecoveryResolution === undefined) {
               workerRecoveryResolution = current.resolution;
               workerRecoveryAttempted = true;
@@ -4437,15 +6027,19 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 return yield* workerRecoveryFailure();
               }
             }
+            yield* requireCurrentWorkerRecoveryProof(current);
+            if (quiescenceMcpRecovery?.generation === waitGeneration) {
+              ownedQuiescenceMcpRecovery = quiescenceMcpRecovery;
+            }
           });
           const requireWorkerRecoveryTerminalResponse = Effect.gen(function* () {
             yield* adoptConcurrentWorkerRecovery;
             const resolution = workerRecoveryResolution;
             if (resolution === undefined) return;
             const current = activeWorkerRecovery;
-            if (current?.resolution !== resolution || !current.terminalResponseObserved) {
-              return yield* workerRecoveryFailure();
-            }
+            if (current?.resolution !== resolution) return yield* workerRecoveryFailure();
+            yield* requireCurrentWorkerRecoveryProof(current);
+            if (!current.terminalResponseObserved) return yield* workerRecoveryFailure();
           });
           while (true) {
             const waitResult = yield* Effect.promise(async () => {
@@ -4466,7 +6060,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             if (waitResult === "completed") {
               successfulBarrierInputActivityRevision = nativeInputActivityRevision;
               yield* adoptConcurrentWorkerRecovery;
-              yield* restoreMcpAfterQuiescence();
+              if (quiescenceMcpRecovery?.generation === waitGeneration) {
+                ownedQuiescenceMcpRecovery = quiescenceMcpRecovery;
+              }
+              yield* restoreMcpAfterQuiescence(ownedQuiescenceMcpRecovery, waitGeneration);
               break;
             }
             if (waitResult === "worker-recovering") {
@@ -4480,6 +6077,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               workerRecoveryAttempted = true;
               rlmEventContinuityValid = false;
               const concurrentRecovery = activeWorkerRecovery;
+              if (
+                concurrentRecovery !== undefined &&
+                concurrentRecovery.resolution.generation === waitGeneration &&
+                !concurrentRecovery.terminalFallbackRouted
+              ) {
+                yield* requireCurrentWorkerRecoveryProof(concurrentRecovery);
+              }
               const resolution =
                 concurrentRecovery !== undefined &&
                 concurrentRecovery.resolution.generation === waitGeneration &&
@@ -4487,29 +6091,49 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                   ? concurrentRecovery.resolution
                   : beginReconnectResolution();
               workerRecoveryResolution = resolution;
-              let gatePromise =
-                concurrentRecovery?.resolution === resolution
-                  ? concurrentRecovery.gatePromise
-                  : undefined;
+              let recoveryState =
+                concurrentRecovery?.resolution === resolution ? concurrentRecovery : undefined;
+              let gatePromise = recoveryState?.gatePromise;
               if (gatePromise === undefined) {
-                const recovery: NonNullable<typeof activeWorkerRecovery> = {
+                const correlatedRecoveryProofEpoch =
+                  recoveryState === undefined
+                    ? correlatedPromptLifecycleAvailable
+                      ? captureCorrelatedPromptLifecycleProofFence()
+                      : undefined
+                    : recoveryState.correlatedProofEpoch;
+                if (
+                  correlatedPromptLifecycleAvailable &&
+                  correlatedRecoveryProofEpoch === undefined
+                ) {
+                  yield* Effect.promise(() => failCorrelatedProofRecovery());
+                  return yield* workerRecoveryFailure();
+                }
+                recoveryState ??= {
                   resolution,
                   baselineMessageCount: observedCompletedMessageCount,
+                  ...(correlatedRecoveryProofEpoch === undefined
+                    ? {}
+                    : { correlatedProofEpoch: correlatedRecoveryProofEpoch }),
                   terminalResponseObserved: false,
+                  closePreflightTerminalResponseObserved: false,
                   explicitSnapshotOffered: false,
                   snapshotRetry: undefined,
                   gatePromise: undefined,
                   terminalFallbackRouted: false,
                   provisionalSnapshot: undefined,
                 };
-                activeWorkerRecovery = recovery;
+                activeWorkerRecovery = recoveryState;
                 beginWorkerRecoveryInputBlock();
                 gatePromise = runPromise(
                   awaitWorkerRecoveryGate(resolution, waitGeneration, signal),
                 );
-                recovery.gatePromise = gatePromise;
+                recoveryState.gatePromise = gatePromise;
               }
               const recovery = yield* Effect.promise(() => gatePromise);
+              const completedWorkerRecovery = activeWorkerRecovery;
+              if (completedWorkerRecovery?.resolution === resolution) {
+                yield* requireCurrentWorkerRecoveryProof(completedWorkerRecovery);
+              }
               if (signal.aborted || recovery.kind === "aborted") {
                 return yield* cancellationError();
               }
@@ -4525,6 +6149,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                     ? "Prime Agent could not confirm descendant quiescence."
                     : "Prime Agent reconnected before descendant quiescence could be confirmed.",
                 );
+              }
+              if (quiescenceMcpRecovery?.generation === waitGeneration) {
+                ownedQuiescenceMcpRecovery = quiescenceMcpRecovery;
               }
               barrierRetried = true;
               continue;
@@ -4581,6 +6208,34 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           }
           yield* requireWorkerRecoveryTerminalResponse;
           const completedRecovery = activeWorkerRecovery;
+          const publicationProofEpoch =
+            workerRecoveryResolution?.correlatedProofEpoch ?? quiescenceCorrelatedProofEpoch;
+          if (
+            correlatedPromptLifecycleAvailable &&
+            (publicationProofEpoch === undefined ||
+              !correlatedPromptLifecycleProofFenceIsCurrent(publicationProofEpoch))
+          ) {
+            yield* Effect.promise(() => failCorrelatedProofRecovery());
+            return yield* workerRecoveryFailure();
+          }
+          const usage = subtractCumulativeUsage(currentUsage, rlmTurnUsageBaseline);
+          yield* offerRuntimeEvent(
+            {
+              _tag: "RlmQuiesced",
+              token,
+              connectionGeneration: completedConnectionGeneration,
+              ...(usage === undefined ? {} : { usage }),
+            },
+            publicationProofEpoch,
+          ).pipe(
+            Effect.catch((cause) =>
+              cause === CORRELATED_PROOF_FENCE_RETIRED
+                ? Effect.promise(() => failCorrelatedProofRecovery()).pipe(
+                    Effect.flatMap(() => workerRecoveryFailure()),
+                  )
+                : Effect.fail(cause),
+            ),
+          );
           if (
             workerRecoveryResolution !== undefined &&
             completedRecovery?.resolution === workerRecoveryResolution
@@ -4600,17 +6255,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             nativeInputRunActive = false;
             nativeInputActivityRevision += 1;
           }
-          const usage = subtractCumulativeUsage(currentUsage, rlmTurnUsageBaseline);
-          yield* Queue.offer(eventQueue, {
-            _tag: "RlmQuiesced",
-            token,
-            connectionGeneration: completedConnectionGeneration,
-            ...(usage === undefined ? {} : { usage }),
-          });
         }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {
-              settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
+              settleQuiescenceMcpRecovery(ownedQuiescenceMcpRecovery, false);
               const resolution = workerRecoveryResolution;
               if (resolution === undefined) return;
               const workerRecoveryWasUnsettled = !resolution.settled;
@@ -4734,15 +6382,76 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       },
     );
 
-    const emitPromptLifecycle = (lifecycle: PrimeDaemonPromptLifecycleSnapshot) =>
-      Queue.offer(eventQueue, {
-        _tag: "PromptLifecycleUpdated",
-        lifecycle,
+    const CORRELATED_PROOF_UNAVAILABLE_ERROR =
+      "Prime Agent correlated prompt capability proof is unavailable for the current attachment.";
+    const correlatedProofUnavailable = (operation: "prompt" | "abort") =>
+      Effect.promise(() => failCorrelatedProofRecovery()).pipe(
+        Effect.flatMap(() =>
+          runtimeError(operation, "request-failed", CORRELATED_PROOF_UNAVAILABLE_ERROR),
+        ),
+      );
+    const requireCorrelatedPromptLifecycleAdmission = (operation: "prompt" | "abort") =>
+      Effect.suspend(() => {
+        if (correlatedProofRecoveryFailed) return correlatedProofUnavailable(operation);
+        return correlatedProofRecoveryPending ||
+          (reconnectResolution !== undefined && !reconnectResolution.settled)
+          ? runtimeError(
+              operation,
+              "request-failed",
+              "Prime Agent correlated prompt lifecycle recovery is still pending.",
+            )
+          : Effect.void;
       });
+    const requireCurrentCorrelatedPromptLifecycleProof = (operation: "prompt" | "abort") =>
+      Effect.suspend(() => {
+        if (!correlatedPromptLifecycleAvailable) {
+          return runtimeError(
+            operation,
+            "invalid-input",
+            "Correlated prompt lifecycle was not negotiated for this session.",
+          );
+        }
+        const proofEpoch = captureCorrelatedPromptLifecycleProofFence();
+        return proofEpoch === undefined
+          ? correlatedProofUnavailable(operation)
+          : Effect.succeed(proofEpoch);
+      });
+    const requireUnchangedCorrelatedPromptLifecycleProof = (
+      operation: "prompt" | "abort",
+      proofEpoch: number,
+    ) =>
+      Effect.suspend(() =>
+        correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)
+          ? Effect.void
+          : correlatedProofUnavailable(operation),
+      );
+
+    const emitPromptLifecycle = (
+      lifecycle: PrimeDaemonPromptLifecycleSnapshot,
+      proofEpoch: number,
+      operation: "prompt" | "abort",
+      onCommit: () => void = () => undefined,
+    ) =>
+      offerRuntimeEvent(
+        {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle,
+        },
+        proofEpoch,
+        onCommit,
+      ).pipe(
+        Effect.catch((cause) =>
+          cause === CORRELATED_PROOF_FENCE_RETIRED
+            ? correlatedProofUnavailable(operation)
+            : Effect.fail(cause),
+        ),
+      );
 
     const reconcileCorrelatedPromptLifecycle = Effect.fn(
       "PrimeAgentDaemonSessionRuntime.reconcileCorrelatedPromptLifecycle",
     )(function* (correlationId: string) {
+      yield* requireCorrelatedPromptLifecycleAdmission("prompt");
+      const proofEpoch = yield* requireCurrentCorrelatedPromptLifecycleProof("prompt");
       const raw = yield* Effect.tryPromise({
         try: () => connection!.getPromptLifecycles!(),
         catch: () =>
@@ -4752,6 +6461,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             "Could not reconcile the correlated Prime Agent prompt lifecycle.",
           ),
       });
+      yield* requireUnchangedCorrelatedPromptLifecycleProof("prompt", proofEpoch);
       const state = decodePrimeAgentPromptLifecycleStateSnapshot(raw);
       if (state === undefined) {
         return yield* runtimeError(
@@ -4768,14 +6478,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "Prime Agent returned a regressing correlated prompt lifecycle snapshot.",
         );
       }
-      commitPromptLifecycleStateMerge(lifecyclePlan);
       const lifecycle = state.records.find(
         (candidate) => candidate.correlationId === correlationId,
       );
       if (lifecycle !== undefined) {
-        yield* emitPromptLifecycle(lifecycle);
+        yield* emitPromptLifecycle(lifecycle, proofEpoch, "prompt", () => {
+          commitPromptLifecycleStateMerge(lifecyclePlan);
+        });
         return lifecycle;
       }
+      commitPromptLifecycleStateMerge(lifecyclePlan);
       return yield* runtimeError(
         "prompt",
         "invalid-response",
@@ -4787,16 +6499,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       "PrimeAgentDaemonSessionRuntime.submitCorrelatedPrompt",
     )(function* (promptInput: PrimeAgentDaemonCorrelatedPromptInput) {
       yield* ensureOpen("prompt");
-      if (!correlatedPromptLifecycleAvailable) {
-        return yield* runtimeError(
-          "prompt",
-          "invalid-input",
-          "Correlated prompt lifecycle was not negotiated for this session.",
-        );
-      }
+      yield* requireCorrelatedPromptLifecycleAdmission("prompt");
+      yield* requireCurrentCorrelatedPromptLifecycleProof("prompt");
       yield* awaitProviderRecovery;
+      yield* requireCorrelatedPromptLifecycleAdmission("prompt");
+      const proofEpoch = yield* requireCurrentCorrelatedPromptLifecycleProof("prompt");
       const images = yield* validateImages("prompt", promptInput.images);
       yield* validatePromptContent("prompt", promptInput.text, images);
+      yield* requireCorrelatedPromptLifecycleAdmission("prompt");
+      yield* requireUnchangedCorrelatedPromptLifecycleProof("prompt", proofEpoch);
       const attempted = yield* Effect.tryPromise({
         try: () =>
           connection!.submitCorrelatedPrompt!(promptInput.text, {
@@ -4815,6 +6526,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         Effect.map((value) => ({ ok: true as const, value })),
         Effect.orElseSucceed(() => ({ ok: false as const })),
       );
+      yield* requireUnchangedCorrelatedPromptLifecycleProof("prompt", proofEpoch);
       if (!attempted.ok) {
         return yield* reconcileCorrelatedPromptLifecycle(promptInput.correlationId);
       }
@@ -4840,28 +6552,29 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         return current;
       }
-      const observation = observePromptLifecycle(result.lifecycle);
-      if (observation === "invalid") {
+      const observation = planPromptLifecycleObservation(result.lifecycle);
+      if (observation.observation === "invalid") {
         return yield* runtimeError(
           "prompt",
           "invalid-response",
           "Prime Agent returned a regressing correlated prompt lifecycle.",
         );
       }
-      if (observation === "accepted") yield* emitPromptLifecycle(result.lifecycle);
+      if (observation.observation === "accepted") {
+        yield* emitPromptLifecycle(result.lifecycle, proofEpoch, "prompt", () => {
+          commitPromptLifecycleStateMerge(observation.plan);
+        });
+      }
       return promptLifecycles.get(promptInput.correlationId) ?? result.lifecycle;
     });
 
     const cancelPromptLifecycle = Effect.fn("PrimeAgentDaemonSessionRuntime.cancelPromptLifecycle")(
       function* (correlationId: string) {
         yield* ensureOpen("abort");
-        if (!correlatedPromptLifecycleAvailable) {
-          return yield* runtimeError(
-            "abort",
-            "invalid-input",
-            "Correlated prompt lifecycle was not negotiated for this session.",
-          );
-        }
+        yield* requireCorrelatedPromptLifecycleAdmission("abort");
+        const proofEpoch = yield* requireCurrentCorrelatedPromptLifecycleProof("abort");
+        yield* requireCorrelatedPromptLifecycleAdmission("abort");
+        yield* requireUnchangedCorrelatedPromptLifecycleProof("abort", proofEpoch);
         const raw = yield* Effect.tryPromise({
           try: () => connection!.cancelPromptLifecycle!(correlationId),
           catch: () =>
@@ -4871,6 +6584,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               "Could not cancel the correlated Prime Agent prompt lifecycle.",
             ),
         });
+        yield* requireUnchangedCorrelatedPromptLifecycleProof("abort", proofEpoch);
         const result = decodePrimeAgentPromptLifecycleCancellationResult(raw, correlationId);
         if (result === undefined) {
           return yield* runtimeError(
@@ -4890,15 +6604,19 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               );
             }
           } else {
-            const observation = observePromptLifecycle(result.lifecycle);
-            if (observation === "invalid") {
+            const observation = planPromptLifecycleObservation(result.lifecycle);
+            if (observation.observation === "invalid") {
               return yield* runtimeError(
                 "abort",
                 "invalid-response",
                 "Prime Agent returned a regressing correlated prompt cancellation lifecycle.",
               );
             }
-            if (observation === "accepted") yield* emitPromptLifecycle(result.lifecycle);
+            if (observation.observation === "accepted") {
+              yield* emitPromptLifecycle(result.lifecycle, proofEpoch, "abort", () => {
+                commitPromptLifecycleStateMerge(observation.plan);
+              });
+            }
           }
         }
         return result;
@@ -4909,6 +6627,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       promptInput: PrimeAgentDaemonPromptInput,
     ) {
       yield* ensureOpen("prompt");
+      if (correlatedPromptLifecycleAvailable) {
+        yield* requireCorrelatedPromptLifecycleAdmission("prompt");
+      }
       yield* awaitProviderRecovery;
       const resumedAfterAbort = yield* resumeAfterAbort();
       const images = yield* validateImages("prompt", promptInput.images);
@@ -5256,11 +6977,17 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
 
     const abort = Effect.gen(function* () {
       yield* ensureOpen("abort");
+      if (correlatedPromptLifecycleAvailable) {
+        yield* requireCorrelatedPromptLifecycleAdmission("abort");
+      }
       yield* callVoid("abort", () => connection!.abort());
     });
 
     const abortAndClearQueue = Effect.gen(function* () {
       yield* ensureOpen("abort-and-clear-queue");
+      if (correlatedPromptLifecycleAvailable) {
+        yield* requireCorrelatedPromptLifecycleAdmission("abort");
+      }
       const method = yield* requireMethod("abort-and-clear-queue", connection!.abortAndClearQueue);
       // Prime suspends new session input as soon as abort begins. Keep this set
       // even when the response is lost because the native side effect may have run.
@@ -5709,13 +7436,49 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       } satisfies PrimeAgentDaemonSessionStats;
     });
 
+    // The initial proof cannot survive any overlapping attachment generation, even
+    // if a newer proof has already appeared by the end of these asynchronous reads.
+    if (
+      correlatedPromptLifecycleAvailable &&
+      (initializationCorrelatedProofInvalidated || !hasCurrentCorrelatedPromptLifecycleProof())
+    ) {
+      unsubscribe();
+      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+      client.close();
+      yield* Queue.shutdown(eventQueue);
+      yield* Queue.shutdown(runtimeEventWeightCapacityAvailable);
+      return yield* runtimeError(
+        "initial-snapshot",
+        "invalid-response",
+        "Prime Agent lost its negotiated daemon capability proof during initialization.",
+      );
+    }
     // Keep initialization admission active through every control-plane read.
-    // The cumulative cap guarantees this entire flush fits without a consumer.
-    yield* Queue.offer(eventQueue, { ...initialEvent, initialSnapshot: true });
+    // Raw staging and decoded queue weight are checked independently. A decoded
+    // projection that cannot commit without a consumer marks initialization overflow.
+    const initialRuntimeEvent = { ...initialEvent, initialSnapshot: true };
+    yield* offerBackpressuredRuntimeEvent({
+      event: initialRuntimeEvent,
+      weight: boundedCorrelatedProofRouteWeight(initialRuntimeEvent),
+    }).pipe(
+      Effect.asVoid,
+      Effect.catch(() =>
+        Effect.gen(function* () {
+          unsubscribe();
+          yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+          client.close();
+          return yield* runtimeError(
+            "initial-snapshot",
+            "request-failed",
+            "The daemon emitted too much data while initializing the session.",
+          );
+        }),
+      ),
+    );
     while (bufferedEvents.length > 0) {
       const batch = bufferedEvents.splice(0);
       for (const bufferedEvent of batch) {
-        yield* Effect.promise(() => routeWorkerAwareRawEvent(bufferedEvent));
+        yield* Effect.promise(() => routeSubscribedRawEvent(bufferedEvent));
       }
     }
     if (initializationOverflow) {
@@ -5723,6 +7486,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
       client.close();
       yield* Queue.shutdown(eventQueue);
+      yield* Queue.shutdown(runtimeEventWeightCapacityAvailable);
       return yield* runtimeError(
         "initial-snapshot",
         "request-failed",
@@ -5736,8 +7500,20 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     const dispose = Effect.suspend(() => {
       if (disposed || disposeStarted) return Effect.void;
       disposeStarted = true;
+      retireOrdinaryIngressFence();
+      retireCurrentOrdinaryWorkerCloseRoute();
+      retireProviderRoute(correlatedProviderRouteRetirement);
       settleReconnectResolution(connectionGeneration, false);
+      settleManagedRecovery(managedRecoveryResolution, false);
+      mcpRecoveryPending = false;
+      mcpRecoveryFailed = true;
       settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
+      const workerRecovery = activeWorkerRecovery;
+      if (workerRecovery !== undefined) {
+        workerRecovery.provisionalSnapshot = undefined;
+        settleReconnectResolution(workerRecovery.resolution.generation, false);
+        if (activeWorkerRecovery === workerRecovery) activeWorkerRecovery = undefined;
+      }
       unsubscribe?.();
       const nativeSideQuestions = [...activePrivateSideQuestions.entries()];
       return Effect.forEach(nativeSideQuestions, ([nativeId, active]) =>
@@ -5781,6 +7557,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             recentlySettledSideQuestionIds.clear();
             client.close();
             yield* Queue.shutdown(eventQueue);
+            yield* Queue.shutdown(runtimeEventWeightCapacityAvailable);
           }),
         ),
       );
@@ -5821,7 +7598,12 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       messageAgent,
       watchAgentActivityAvailable,
       watchAgentActivity,
-      events: Stream.fromQueue(eventQueue),
+      events: Stream.fromQueue(eventQueue).pipe(
+        Stream.map((queued) => {
+          releaseQueuedRuntimeEventWeight(queued.weight);
+          return queued.event;
+        }),
+      ),
       rlmQuiescenceAvailable,
       waitForRlmQuiescence,
       isRlmQuiescenceGenerationCurrent: (generation) =>
@@ -5829,12 +7611,29 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       resolveReconnectSnapshot,
       retryWorkerRecoverySnapshot,
       noteWorkerRecoveryTerminalResponse,
-      isConnectionGenerationCurrent: (generation) => generation === connectionGeneration,
+      isConnectionGenerationCurrent: (generation, proofEpoch) => {
+        if (generation !== connectionGeneration) return false;
+        if (!correlatedPromptLifecycleAvailable) return true;
+        const pending = reconnectResolution;
+        return (
+          pending?.generation === generation &&
+          proofEpoch !== undefined &&
+          pending.correlatedProofEpoch === proofEpoch &&
+          correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)
+        );
+      },
       correlatedPromptLifecycleAvailable,
+      get correlatedPromptLifecycleAdmissionBlocked() {
+        return correlatedPromptLifecycleAdmissionBlocked();
+      },
       submitCorrelatedPrompt,
       cancelPromptLifecycle,
       get inputAdmissionBusy() {
         return (
+          runtimeEventIngressFailed ||
+          workerCloseAdmissionIsPending() ||
+          (reconnectResolution !== undefined && !reconnectResolution.settled) ||
+          correlatedPromptLifecycleAdmissionBlocked() ||
           nativeRunObservedActive ||
           nativeInputRunActive ||
           nativeInputCompactionActive ||

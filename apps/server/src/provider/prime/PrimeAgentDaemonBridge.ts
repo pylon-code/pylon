@@ -12,6 +12,8 @@ import { sanitizePrimeAgentTopLevelEnvironment } from "./PrimeAgentEnvironment.t
 
 export const PRIME_AGENT_DAEMON_PROTOCOL_NAME = "prime-agent.daemon" as const;
 export const PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION = 7 as const;
+export const PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE =
+  "negotiated_daemon_session_capabilities_v1" as const;
 
 const bridgeErrorReason = Schema.Literals([
   "path-not-found",
@@ -137,6 +139,7 @@ export interface PrimeAgentDaemonAgentConnection {
   ) => Promise<unknown>;
   readonly cancelPromptLifecycle?: (correlationId: string) => Promise<unknown>;
   readonly getPromptLifecycles?: () => Promise<unknown>;
+  readonly supportsNegotiatedCapability?: (capability: "correlated_prompt_lifecycle_v1") => boolean;
   readonly waitForHeadlessCompletion?: (options?: {
     readonly waitForRlmQuiescence?: boolean;
   }) => Promise<unknown>;
@@ -228,6 +231,8 @@ export interface PrimeAgentDaemonBridge {
   readonly version: string;
   readonly protocolName: typeof PRIME_AGENT_DAEMON_PROTOCOL_NAME;
   readonly protocolVersion: number;
+  /** True only for the frozen Prime SDK feature contract, never from method presence. */
+  readonly negotiatedDaemonSessionCapabilitiesAvailable: boolean;
   readonly DaemonClient: PrimeAgentDaemonClientConstructor;
   readonly DaemonAgentConnection: PrimeAgentDaemonAgentConnectionConstructor;
   readonly defaultDaemonSocketPath: () => string;
@@ -411,6 +416,17 @@ async function resolvePublicEntry(binaryPath: string, located: LocatedPackage): 
   }
 }
 
+function hasFrozenNegotiatedDaemonSessionCapabilitiesFeature(loadedModule: unknown): boolean {
+  if (!Predicate.isObject(loadedModule)) return false;
+  const features = loadedModule.PRIME_AGENT_SDK_FEATURES;
+  return (
+    Array.isArray(features) &&
+    Object.isFrozen(features) &&
+    features.every(Predicate.isString) &&
+    features.includes(PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE)
+  );
+}
+
 function requireDaemonExports(input: {
   readonly binaryPath: string;
   readonly loadedModule: unknown;
@@ -455,6 +471,8 @@ function requireDaemonExports(input: {
   const daemonClient = input.loadedModule.DaemonClient;
   const daemonAgentConnection = input.loadedModule.DaemonAgentConnection;
   const defaultDaemonSocketPath = input.loadedModule.defaultDaemonSocketPath;
+  const negotiatedDaemonSessionCapabilitiesAvailable =
+    hasFrozenNegotiatedDaemonSessionCapabilitiesFeature(input.loadedModule);
   if (
     !Predicate.isFunction(daemonClient) ||
     !Predicate.isObject(daemonClient.prototype) ||
@@ -475,6 +493,8 @@ function requireDaemonExports(input: {
     !Predicate.isFunction(daemonAgentConnection.prototype.promptAndWait) ||
     !Predicate.isFunction(daemonAgentConnection.prototype.abort) ||
     !Predicate.isFunction(daemonAgentConnection.prototype.dispose) ||
+    (negotiatedDaemonSessionCapabilitiesAvailable &&
+      !Predicate.isFunction(daemonAgentConnection.prototype.supportsNegotiatedCapability)) ||
     !Predicate.isFunction(defaultDaemonSocketPath)
   ) {
     throw bridgeError(
@@ -507,6 +527,7 @@ function requireDaemonExports(input: {
     version: metadata.value.VERSION,
     protocolName: PRIME_AGENT_DAEMON_PROTOCOL_NAME,
     protocolVersion: metadata.value.DAEMON_PROTOCOL_VERSION,
+    negotiatedDaemonSessionCapabilitiesAvailable,
     DaemonClient: daemonClient as PrimeAgentDaemonClientConstructor,
     DaemonAgentConnection:
       daemonAgentConnection as unknown as PrimeAgentDaemonAgentConnectionConstructor,

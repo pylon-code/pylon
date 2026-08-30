@@ -187,6 +187,7 @@ function fakeBridge(input: {
     version: "0.7.1",
     protocolName: "prime-agent.daemon",
     protocolVersion: 7,
+    negotiatedDaemonSessionCapabilitiesAvailable: false,
     DaemonClient: FakeClient,
     DaemonAgentConnection: FakeAgentConnection,
     defaultDaemonSocketPath: () => "/tmp/user-prime-agent.sock",

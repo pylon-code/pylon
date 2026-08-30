@@ -2004,6 +2004,16 @@ export function makePrimeAgentDaemonAdapter(
             context.threadId,
             Effect.gen(function* () {
               if (sessions.get(context.threadId) === context && !context.stopped) {
+                const reconnectGeneration = event.connectionGeneration;
+                if (
+                  reconnectGeneration !== undefined &&
+                  !context.runtime.isConnectionGenerationCurrent(
+                    reconnectGeneration,
+                    event.correlatedProofEpoch,
+                  )
+                ) {
+                  return;
+                }
                 if (!managedSourceVerified) {
                   const activeTurn = context.activeTurn;
                   if (activeTurn !== undefined) {
@@ -2017,13 +2027,6 @@ export function makePrimeAgentDaemonAdapter(
                   }
                   context.stopRequested = true;
                   reconnectRecoveryFailed = true;
-                  return;
-                }
-                const reconnectGeneration = event.connectionGeneration;
-                if (
-                  reconnectGeneration !== undefined &&
-                  !context.runtime.isConnectionGenerationCurrent(reconnectGeneration)
-                ) {
                   return;
                 }
                 context.managedPlanProjectionEnabled = true;
@@ -2047,35 +2050,38 @@ export function makePrimeAgentDaemonAdapter(
                       reconnectRecoveryFailed = true;
                       return;
                     }
-                    if (activeTurn?.correlationId !== undefined) {
-                      const lifecycle = event.promptLifecycles?.records.find(
-                        (candidate) => candidate.correlationId === activeTurn.correlationId,
-                      );
-                      if (lifecycle === undefined) {
-                        if (reconnectGeneration !== undefined) {
-                          context.runtime.resolveReconnectSnapshot(
-                            reconnectGeneration,
-                            false,
-                            false,
+                    const lifecycle =
+                      activeTurn?.correlationId === undefined
+                        ? undefined
+                        : event.promptLifecycles?.records.find(
+                            (candidate) => candidate.correlationId === activeTurn.correlationId,
                           );
-                        }
-                        yield* settleActiveTurnLocked(context, activeTurn, {
-                          state: "failed",
-                          errorMessage:
-                            "Prime Agent could not recover the correlated prompt lifecycle after synchronizing.",
-                          runtimeErrorMessage:
-                            "Prime Agent could not recover the correlated prompt lifecycle after synchronizing.",
-                        });
-                        context.stopRequested = true;
-                        reconnectRecoveryFailed = true;
-                        return;
+                    if (activeTurn?.correlationId !== undefined && lifecycle === undefined) {
+                      if (reconnectGeneration !== undefined) {
+                        context.runtime.resolveReconnectSnapshot(reconnectGeneration, false, false);
                       }
+                      yield* settleActiveTurnLocked(context, activeTurn, {
+                        state: "failed",
+                        errorMessage:
+                          "Prime Agent could not recover the correlated prompt lifecycle after synchronizing.",
+                        runtimeErrorMessage:
+                          "Prime Agent could not recover the correlated prompt lifecycle after synchronizing.",
+                      });
+                      context.stopRequested = true;
+                      reconnectRecoveryFailed = true;
+                      return;
+                    }
+                    if (
+                      reconnectGeneration === undefined ||
+                      !context.runtime.resolveReconnectSnapshot(reconnectGeneration, true, false)
+                    ) {
+                      reconnectRecoveryFailed = true;
+                      return;
+                    }
+                    if (lifecycle !== undefined) {
                       yield* applyCorrelatedPromptLifecycleLocked(context, lifecycle, {
                         authoritativeSnapshot: true,
                       });
-                    }
-                    if (reconnectGeneration !== undefined) {
-                      context.runtime.resolveReconnectSnapshot(reconnectGeneration, true, false);
                     }
                   }
                 } else if (reconnectGeneration !== undefined) {
@@ -3876,13 +3882,16 @@ export function makePrimeAgentDaemonAdapter(
               const knownCompactionBusy =
                 context.activeCompactionScope !== undefined ||
                 context.manualCompactionRequestActive;
+              const correlatedRecoveryBusy =
+                context.runtime.correlatedPromptLifecycleAdmissionBlocked;
               const nativeInputBusy = context.runtime.inputAdmissionBusy;
               const admissionBusy =
                 nativeInputBusy ||
                 (context.runtime.correlatedPromptLifecycleAvailable && knownCompactionBusy);
               if (
-                admissionBusy &&
-                (!context.runtime.correlatedPromptLifecycleAvailable || !controlsMatchCurrent)
+                correlatedRecoveryBusy ||
+                (admissionBusy &&
+                  (!context.runtime.correlatedPromptLifecycleAvailable || !controlsMatchCurrent))
               ) {
                 return yield* new ProviderAdapterValidationError({
                   provider: PROVIDER,
@@ -3961,6 +3970,14 @@ export function makePrimeAgentDaemonAdapter(
                 projectedPlanToolCallIds: new Set(),
                 ...(/^\/compact(?:\s|$)/.test(text) ? { command: "compact" as const } : {}),
               };
+              if (context.runtime.correlatedPromptLifecycleAdmissionBlocked) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "sendTurn",
+                  reason: "busy",
+                  issue: "Prime Agent is still reconciling its correlated prompt lifecycle.",
+                });
+              }
               context.activeTurn = turn;
               context.session = {
                 ...context.session,
