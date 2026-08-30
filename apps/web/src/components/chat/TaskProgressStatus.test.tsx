@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   keyedTaskProgressSteps,
+  MAX_TASK_PROGRESS_SEGMENTS,
   TaskProgressSegments,
   TaskStatusIndicator,
 } from "./TaskProgressStatus";
@@ -24,6 +25,24 @@ describe("TaskProgressStatus", () => {
     );
 
     expect(markup).toBe("");
+  });
+
+  it("keeps the segments at the cap and drops them past it", () => {
+    const steps = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        step: `Step ${index + 1}`,
+        status: "pending" as const,
+      }));
+
+    const atCap = renderToStaticMarkup(
+      <TaskProgressSegments steps={steps(MAX_TASK_PROGRESS_SEGMENTS)} />,
+    );
+    const pastCap = renderToStaticMarkup(
+      <TaskProgressSegments fit className="w-20" steps={steps(MAX_TASK_PROGRESS_SEGMENTS + 1)} />,
+    );
+
+    expect(atCap).toContain('data-task-progress-segments="true"');
+    expect(pastCap).toBe("");
   });
 
   it("renders the original solid segments in collapsed progress", () => {

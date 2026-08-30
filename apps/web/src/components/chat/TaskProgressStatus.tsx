@@ -49,6 +49,12 @@ export const TASK_PROGRESS_STATUS_LABEL: Record<TaskProgressStatus, string> = {
   completed: "Completed",
 };
 
+/**
+ * Past this many steps the segment bars collapse into slivers that read as a
+ * blank gap, so the strip is dropped and the numeric count carries the state.
+ */
+export const MAX_TASK_PROGRESS_SEGMENTS = 10;
+
 export function keyedTaskProgressSteps<const Step extends TaskProgressStep>(
   steps: readonly Step[],
 ): ReadonlyArray<{ readonly key: string; readonly step: Step }> {
@@ -69,7 +75,7 @@ export function TaskProgressSegments({
   readonly fit?: boolean;
   readonly steps: readonly TaskProgressStep[];
 }) {
-  if (steps.length <= 1) return null;
+  if (steps.length <= 1 || steps.length > MAX_TASK_PROGRESS_SEGMENTS) return null;
 
   return (
     <span
