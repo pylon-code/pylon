@@ -2280,6 +2280,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     errorMessage?: string,
     result?: SDKResultMessage,
   ) {
+    // Completion usage comes from the turn's own frames; getContextUsage is
+    // only consulted once per session, for its auto-compact configuration.
+    // It runs before the context window is resolved because the same response
+    // carries `maxTokens`: on a first turn whose result frame has no
+    // `modelUsage`, that is the only context window this snapshot can use.
+    yield* ensureAutoCompactSettings(context);
+
     const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
     if (resultContextWindow !== undefined) {
       context.lastKnownContextWindow = resultContextWindow;
@@ -2291,9 +2298,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context.lastKnownTotalProcessedTokens = accumulatedTotalProcessedTokens;
     }
 
-    // Completion usage comes from the turn's own frames; getContextUsage is
-    // only consulted once per session, for its auto-compact configuration.
-    yield* ensureAutoCompactSettings(context);
     const resultUsageRecord =
       result?.usage && typeof result.usage === "object" && !Array.isArray(result.usage)
         ? (result.usage as Record<string, unknown>)

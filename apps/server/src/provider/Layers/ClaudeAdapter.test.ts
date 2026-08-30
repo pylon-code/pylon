@@ -2012,7 +2012,9 @@ describe("ClaudeAdapterLive", () => {
           getContextUsageCalls += 1;
           return {
             totalTokens: 999,
-            maxTokens: 200_000,
+            // Deliberately unlike the result frame's context window below, so
+            // the first turn's snapshot can only reach 180k through this query.
+            maxTokens: 180_000,
             isAutoCompactEnabled: true,
             autoCompactThreshold: 160_000,
           };
@@ -2045,6 +2047,7 @@ describe("ClaudeAdapterLive", () => {
           readonly assistantOutputTokens: number;
           readonly resultInputTokens: number;
           readonly resultOutputTokens: number;
+          readonly resultContextWindow?: number;
         }) {
           yield* adapter.sendTurn({
             threadId: session.threadId,
@@ -2081,12 +2084,16 @@ describe("ClaudeAdapterLive", () => {
               input_tokens: input.resultInputTokens,
               output_tokens: input.resultOutputTokens,
             },
-            modelUsage: {
-              "claude-opus-4-6": {
-                contextWindow: 200_000,
-                maxOutputTokens: 64_000,
-              },
-            },
+            ...(input.resultContextWindow !== undefined
+              ? {
+                  modelUsage: {
+                    "claude-opus-4-6": {
+                      contextWindow: input.resultContextWindow,
+                      maxOutputTokens: 64_000,
+                    },
+                  },
+                }
+              : {}),
           } as unknown as SDKMessage);
 
           // Let the adapter's message pump drain until the turn is closed, so
@@ -2100,6 +2107,8 @@ describe("ClaudeAdapterLive", () => {
           assert.equal((yield* adapter.listSessions())[0]?.activeTurnId, undefined);
         });
 
+        // First turn: no `modelUsage`, so the only context window this
+        // snapshot can reach is the one the session-scoped query returned.
         yield* runTurn({
           prompt: "hello",
           uuid: "turn-1",
@@ -2108,6 +2117,7 @@ describe("ClaudeAdapterLive", () => {
           resultInputTokens: 400,
           resultOutputTokens: 50,
         });
+        // Second turn: the result frame's own context window takes over.
         yield* runTurn({
           prompt: "and again",
           uuid: "turn-2",
@@ -2115,6 +2125,7 @@ describe("ClaudeAdapterLive", () => {
           assistantOutputTokens: 25,
           resultInputTokens: 700,
           resultOutputTokens: 80,
+          resultContextWindow: 200_000,
         });
 
         yield* Fiber.interrupt(usageFiber);
@@ -2122,6 +2133,19 @@ describe("ClaudeAdapterLive", () => {
         // The query is session-scoped: two turns, one call.
         assert.equal(getContextUsageCalls, 1);
         assert.equal(usageSnapshots.length, 2);
+        // The query runs before the context window is resolved, so the first
+        // completion snapshot uses the window it returned instead of falling
+        // back past it.
+        assert.deepEqual(usageSnapshots[0], {
+          usedTokens: 200,
+          lastUsedTokens: 200,
+          totalProcessedTokens: 450,
+          inputTokens: 180,
+          outputTokens: 20,
+          maxTokens: 180_000,
+          compactsAutomatically: true,
+          autoCompactThreshold: 160_000,
+        });
         // The second turn still carries the cached auto-compact configuration,
         // and its token counts come from that turn's assistant frame rather
         // than from a fresh context-usage query.
