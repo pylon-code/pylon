@@ -335,7 +335,10 @@ describe("ChatMarkdown Windows file links", () => {
 
   it("keeps external link labels breakable when they mix text and formatting", () => {
     const markup = renderToStaticMarkup(
-      <ChatMarkdown text="[a very long external link label that should wrap **bold**](https://example.com/x)" />,
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text="[a very long external link label that should wrap **bold**](https://example.com/x)"
+      />,
     );
 
     // The leading text is split with <wbr/> so a long label wraps inside the
