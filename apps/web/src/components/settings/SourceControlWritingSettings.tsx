@@ -18,6 +18,7 @@ import {
 } from "../../modelSelection";
 import { primaryServerProvidersAtom } from "../../state/server";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { TraitsPicker } from "../chat/TraitsPicker";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
@@ -80,6 +81,21 @@ export function SourceControlWritingSettingsSection() {
     activeSelection.instanceId,
     activeSelection.model,
   );
+  const activeInstanceEntry = instanceEntries.find(
+    (entry) => entry.instanceId === activeSelection.instanceId,
+  );
+  const normalizeDedicatedSelection = (
+    instanceId: typeof activeSelection.instanceId,
+    model: string,
+    options?: typeof activeSelection.options,
+  ) =>
+    resolveAppModelSelectionState(
+      {
+        ...settings,
+        textGenerationModelSelection: createModelSelection(instanceId, model, options),
+      },
+      serverProviders,
+    );
 
   return (
     <SettingsSection title="Text generation">
@@ -185,21 +201,50 @@ export function SourceControlWritingSettingsSection() {
         control={
           <div className="flex flex-wrap items-center justify-end gap-2">
             {usesDedicatedModel ? (
-              <ProviderModelPicker
-                activeInstanceId={activeSelection.instanceId}
-                model={activeSelection.model}
-                lockedProvider={null}
-                instanceEntries={instanceEntries}
-                modelOptionsByInstance={modelOptionsByInstance}
-                triggerVariant="outline"
-                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                triggerAriaLabel="Source control writer model"
-                onInstanceModelChange={(instanceId, model) => {
-                  updateSettings({
-                    sourceControlWriterModelSelection: createModelSelection(instanceId, model),
-                  });
-                }}
-              />
+              <>
+                <ProviderModelPicker
+                  activeInstanceId={activeSelection.instanceId}
+                  model={activeSelection.model}
+                  lockedProvider={null}
+                  instanceEntries={instanceEntries}
+                  modelOptionsByInstance={modelOptionsByInstance}
+                  triggerVariant="outline"
+                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                  triggerAriaLabel="Source control writer model"
+                  onInstanceModelChange={(instanceId, model) => {
+                    updateSettings({
+                      sourceControlWriterModelSelection: normalizeDedicatedSelection(
+                        instanceId,
+                        model,
+                      ),
+                    });
+                  }}
+                />
+                {activeInstanceEntry ? (
+                  <TraitsPicker
+                    provider={activeInstanceEntry.driverKind}
+                    models={activeInstanceEntry.models}
+                    model={activeSelection.model}
+                    prompt=""
+                    onPromptChange={() => {}}
+                    modelOptions={activeSelection.options}
+                    allowPromptInjectedEffort={false}
+                    planModeEnabled={settings.planModeEnabled}
+                    capabilityContext="background-text-generation"
+                    triggerVariant="outline"
+                    triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                    onModelOptionsChange={(nextOptions) => {
+                      updateSettings({
+                        sourceControlWriterModelSelection: normalizeDedicatedSelection(
+                          activeSelection.instanceId,
+                          activeSelection.model,
+                          nextOptions,
+                        ),
+                      });
+                    }}
+                  />
+                ) : null}
+              </>
             ) : null}
             <Switch
               checked={usesDedicatedModel}

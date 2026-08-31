@@ -40,7 +40,7 @@ const PRIME_AGENT_PRESENTATION = {
   showInteractionModeToggle: false,
   requiresNewThreadForModelChange: true,
   supportedRuntimeModes: ["full-access"],
-  supportsBackgroundTextGeneration: false,
+  supportsBackgroundTextGeneration: true,
   supportsConversationRollback: false,
 } as const;
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
@@ -91,7 +91,11 @@ export function stampPrimeAgentBackendSnapshot(
     models:
       backend.runtime === "daemon"
         ? snapshot.models
-        : snapshot.models.map((model) => ({ ...model, capabilities: EMPTY_CAPABILITIES })),
+        : snapshot.models.map((model) => ({
+            ...model,
+            backgroundTextGenerationCapabilities: model.capabilities,
+            capabilities: EMPTY_CAPABILITIES,
+          })),
     requiresNewThreadForModelChange: backend.runtime === "acp",
     supportedRuntimeModes:
       backend.runtime === "daemon"

@@ -77,15 +77,21 @@ export function resolveSelectableProvider(
   return providers.find((candidate) => candidate.enabled)?.driver ?? DEFAULT_DRIVER_KIND;
 }
 
+export type ProviderModelCapabilityContext = "interactive" | "background-text-generation";
+
 export function getProviderModelCapabilities(
   models: ReadonlyArray<ServerProviderModel>,
   model: string | null | undefined,
   provider: ProviderDriverKind,
   planModeEnabled = true,
+  context: ProviderModelCapabilityContext = "interactive",
 ): ModelCapabilities {
   const slug = normalizeModelSlug(model, provider);
+  const selectedModel = models.find((candidate) => candidate.slug === slug);
   const caps =
-    models.find((candidate) => candidate.slug === slug)?.capabilities ?? EMPTY_CAPABILITIES;
+    (context === "background-text-generation"
+      ? (selectedModel?.backgroundTextGenerationCapabilities ?? selectedModel?.capabilities)
+      : selectedModel?.capabilities) ?? EMPTY_CAPABILITIES;
   if (planModeEnabled) {
     return caps;
   }

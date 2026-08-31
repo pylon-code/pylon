@@ -225,10 +225,13 @@ export interface PrimeAgentDaemonAgentConnectionConstructor {
   ) => Promise<PrimeAgentDaemonAgentConnection>;
 }
 
-export interface PrimeAgentDaemonBridge {
+export interface PrimeAgentPublicPackage {
   readonly packageRoot: string;
   readonly moduleEntryPath: string;
   readonly version: string;
+}
+
+export interface PrimeAgentDaemonBridge extends PrimeAgentPublicPackage {
   readonly protocolName: typeof PRIME_AGENT_DAEMON_PROTOCOL_NAME;
   readonly protocolVersion: number;
   /** True only for the frozen Prime SDK feature contract, never from method presence. */
@@ -246,6 +249,7 @@ const packageIdentitySchema = Schema.Struct({
 const primeAgentPackageSchema = Schema.Struct({
   name: Schema.Literal("prime-agent"),
   version: Schema.String,
+  bin: Schema.optional(Schema.Union([Schema.String, Schema.Record(Schema.String, Schema.String)])),
   exports: Schema.Union([
     Schema.String,
     Schema.Struct({ ".": Schema.String }),
@@ -288,6 +292,93 @@ async function readJson(filePath: string): Promise<unknown> {
   return JSON.parse(source) as unknown;
 }
 
+function packageBinEntry(
+  manifest: LocatedPackage["manifest"],
+  commandName: string,
+): string | undefined {
+  if (Predicate.isString(manifest.bin)) {
+    return commandName === "prime-agent" ? manifest.bin : undefined;
+  }
+  return manifest.bin?.[commandName];
+}
+
+async function locatePrimeAgentWrapperPackage(
+  binaryPath: string,
+  canonicalWrapperPath: string,
+): Promise<LocatedPackage | undefined> {
+  const wrapperName = NodePath.basename(binaryPath).replace(/\.(?:cmd|ps1)$/iu, "");
+  if (wrapperName.toLowerCase() !== "prime-agent") return undefined;
+
+  const siblingRoot = NodePath.join(
+    NodePath.dirname(NodePath.resolve(binaryPath)),
+    "node_modules",
+    "prime-agent",
+  );
+  let rawManifest: unknown;
+  try {
+    rawManifest = await readJson(NodePath.join(siblingRoot, "package.json"));
+  } catch (cause) {
+    if (
+      Predicate.isObject(cause) &&
+      "code" in cause &&
+      (cause.code === "ENOENT" || cause.code === "ENOTDIR")
+    ) {
+      return undefined;
+    }
+    throw bridgeError(
+      binaryPath,
+      "invalid-package-manifest",
+      `Could not read the wrapper-owned prime-agent package at '${siblingRoot}'.`,
+      cause,
+    );
+  }
+
+  const manifest = decodePrimeAgentPackage(rawManifest);
+  if (Option.isNone(manifest)) {
+    throw bridgeError(
+      binaryPath,
+      "invalid-package-manifest",
+      `The wrapper-owned package at '${siblingRoot}' is not a valid prime-agent public package.`,
+    );
+  }
+  const binEntry = packageBinEntry(manifest.value, wrapperName.toLowerCase());
+  if (!binEntry) {
+    throw bridgeError(
+      binaryPath,
+      "wrong-package",
+      "The Prime Agent wrapper is not bound to the package's prime-agent bin entry.",
+    );
+  }
+
+  try {
+    const [canonicalRoot, canonicalBin, wrapperSource] = await Promise.all([
+      NodeFSP.realpath(siblingRoot),
+      NodeFSP.realpath(NodePath.resolve(siblingRoot, binEntry)),
+      NodeFSP.readFile(canonicalWrapperPath, "utf8"),
+    ]);
+    const binStat = await NodeFSP.stat(canonicalBin);
+    const expectedReference = `node_modules/prime-agent/${binEntry.replace(/^\.\//u, "")}`
+      .replaceAll("\\", "/")
+      .toLowerCase();
+    const normalizedWrapperSource = wrapperSource.replaceAll("\\", "/").toLowerCase();
+    if (
+      !binStat.isFile() ||
+      !isPathInside(canonicalRoot, canonicalBin) ||
+      !normalizedWrapperSource.includes(expectedReference)
+    ) {
+      throw new Error("wrapper does not reference its package-owned bin file");
+    }
+    return { root: canonicalRoot, manifest: manifest.value };
+  } catch (cause) {
+    throw bridgeError(
+      binaryPath,
+      "wrong-package",
+      "The Prime Agent wrapper is not safely bound to its sibling package.",
+      cause,
+    );
+  }
+}
+
 async function locatePrimeAgentPackage(binaryPath: string): Promise<LocatedPackage> {
   let canonicalPath: string;
   try {
@@ -302,6 +393,10 @@ async function locatePrimeAgentPackage(binaryPath: string): Promise<LocatedPacka
   }
 
   const canonicalStat = await NodeFSP.stat(canonicalPath);
+  if (canonicalStat.isFile()) {
+    const wrapperPackage = await locatePrimeAgentWrapperPackage(binaryPath, canonicalPath);
+    if (wrapperPackage) return wrapperPackage;
+  }
   let directory = canonicalStat.isDirectory() ? canonicalPath : NodePath.dirname(canonicalPath);
   let nearestWrongPackage: { readonly root: string; readonly name: string } | undefined;
   let nearestInvalidManifest: { readonly root: string; readonly cause: unknown } | undefined;
@@ -375,9 +470,22 @@ function packagePublicEntry(manifest: LocatedPackage["manifest"]): string {
   return Predicate.isString(rootExport) ? rootExport : rootExport.import;
 }
 
-function isPathInside(root: string, candidate: string): boolean {
-  const relative = NodePath.relative(root, candidate);
-  return relative === "" || (!relative.startsWith(`..${NodePath.sep}`) && relative !== "..");
+interface PathContainmentApi {
+  readonly relative: (from: string, to: string) => string;
+  readonly isAbsolute: (path: string) => boolean;
+  readonly sep: string;
+}
+
+export function isPathInside(
+  root: string,
+  candidate: string,
+  pathApi: PathContainmentApi = NodePath,
+): boolean {
+  const relative = pathApi.relative(root, candidate);
+  return (
+    relative === "" ||
+    (!pathApi.isAbsolute(relative) && !relative.startsWith(`..${pathApi.sep}`) && relative !== "..")
+  );
 }
 
 async function resolvePublicEntry(binaryPath: string, located: LocatedPackage): Promise<string> {
@@ -415,6 +523,39 @@ async function resolvePublicEntry(binaryPath: string, located: LocatedPackage): 
     );
   }
 }
+
+async function locatePrimeAgentPublicPackagePromise(
+  binaryPath: string,
+): Promise<PrimeAgentPublicPackage> {
+  const located = await locatePrimeAgentPackage(binaryPath);
+  const moduleEntryPath = await resolvePublicEntry(binaryPath, located);
+  return {
+    packageRoot: located.root,
+    moduleEntryPath,
+    version: located.manifest.version,
+  };
+}
+
+/**
+ * Locate the selected Prime Agent installation's package-owned public ESM
+ * entry. Consumers must import this entry rather than package internals.
+ */
+export const locatePrimeAgentPublicPackage = Effect.fn("locatePrimeAgentPublicPackage")(function* (
+  binaryPath: string,
+): Effect.fn.Return<PrimeAgentPublicPackage, PrimeAgentDaemonBridgeError> {
+  return yield* Effect.tryPromise({
+    try: () => locatePrimeAgentPublicPackagePromise(binaryPath),
+    catch: (cause) =>
+      isPrimeAgentDaemonBridgeError(cause)
+        ? cause
+        : bridgeError(
+            binaryPath,
+            "package-not-found",
+            "Unexpected public package location failure.",
+            cause,
+          ),
+  });
+});
 
 function hasFrozenNegotiatedDaemonSessionCapabilitiesFeature(loadedModule: unknown): boolean {
   if (!Predicate.isObject(loadedModule)) return false;
@@ -538,8 +679,8 @@ function requireDaemonExports(input: {
 async function loadPrimeAgentDaemonBridgePromise(
   binaryPath: string,
 ): Promise<PrimeAgentDaemonBridge> {
-  const located = await locatePrimeAgentPackage(binaryPath);
-  const moduleEntryPath = await resolvePublicEntry(binaryPath, located);
+  const located = await locatePrimeAgentPublicPackagePromise(binaryPath);
+  const moduleEntryPath = located.moduleEntryPath;
 
   let loadedModule: unknown;
   try {
@@ -554,12 +695,11 @@ async function loadPrimeAgentDaemonBridgePromise(
   }
 
   return {
-    packageRoot: located.root,
-    moduleEntryPath,
+    ...located,
     ...requireDaemonExports({
       binaryPath,
       loadedModule,
-      manifestVersion: located.manifest.version,
+      manifestVersion: located.version,
     }),
   };
 }

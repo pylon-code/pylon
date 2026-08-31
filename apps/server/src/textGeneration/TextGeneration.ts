@@ -5,6 +5,7 @@ import type { ChatAttachment, ModelSelection, ProviderInstanceId } from "@t3tool
 import { TextGenerationError } from "@t3tools/contracts";
 
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
 
@@ -135,11 +136,11 @@ const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
   operation: TextGenerationOp,
   instanceId: ProviderInstanceId,
-): Effect.Effect<ProviderInstance["textGeneration"], TextGenerationError> =>
+): Effect.Effect<ProviderInstance, TextGenerationError> =>
   registry.getInstance(instanceId).pipe(
     Effect.flatMap((instance) =>
       instance
-        ? Effect.succeed(instance.textGeneration)
+        ? Effect.succeed(instance)
         : Effect.fail(
             new TextGenerationError({
               operation,
@@ -151,29 +152,49 @@ const resolveInstance = (
 
 export const makeTextGenerationFromRegistry = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
-): TextGeneration["Service"] =>
-  TextGeneration.of({
+  refreshProviderCapacity: (instanceId: ProviderInstanceId) => Effect.Effect<void> = () =>
+    Effect.void,
+): TextGeneration["Service"] => {
+  const afterAttempt = <A, E>(
+    instance: ProviderInstance,
+    effect: Effect.Effect<A, E>,
+  ): Effect.Effect<A, E> =>
+    instance.driverKind === "primeAgent"
+      ? effect.pipe(Effect.ensuring(refreshProviderCapacity(instance.instanceId)))
+      : effect;
+
+  return TextGeneration.of({
     generateCommitMessage: (input) =>
       resolveInstance(registry, "generateCommitMessage", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.generateCommitMessage(input)),
+        Effect.flatMap((instance) =>
+          afterAttempt(instance, instance.textGeneration.generateCommitMessage(input)),
+        ),
       ),
     generatePrContent: (input) =>
       resolveInstance(registry, "generatePrContent", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.generatePrContent(input)),
+        Effect.flatMap((instance) =>
+          afterAttempt(instance, instance.textGeneration.generatePrContent(input)),
+        ),
       ),
     generateBranchName: (input) =>
       resolveInstance(registry, "generateBranchName", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.generateBranchName(input)),
+        Effect.flatMap((instance) =>
+          afterAttempt(instance, instance.textGeneration.generateBranchName(input)),
+        ),
       ),
     generateThreadTitle: (input) =>
       resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.generateThreadTitle(input)),
+        Effect.flatMap((instance) =>
+          afterAttempt(instance, instance.textGeneration.generateThreadTitle(input)),
+        ),
       ),
   });
+};
 
 export const make = Effect.gen(function* () {
-  const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
-  return makeTextGenerationFromRegistry(registry);
+  const instanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+  const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+  return makeTextGenerationFromRegistry(instanceRegistry, providerRegistry.refreshProviderCapacity);
 });
 
 export const layer = Layer.effect(TextGeneration, make);

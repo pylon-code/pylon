@@ -45,7 +45,7 @@ describe("PrimeAgentFeatureCapabilities", () => {
     });
     expect(capabilities.automation).toMatchObject({
       support: "read-write",
-      operations: ["side-questions"],
+      operations: ["background-text-generation", "side-questions"],
     });
     expect(capabilities.automation?.reason).toContain("approval-required");
     expect(capabilities.resources).toMatchObject({
@@ -100,7 +100,10 @@ describe("PrimeAgentFeatureCapabilities", () => {
       operations: [],
     });
     expect(capabilities.goals).toMatchObject({ support: "unavailable", operations: [] });
-    expect(capabilities.automation).toMatchObject({ support: "unavailable", operations: [] });
+    expect(capabilities.automation).toMatchObject({
+      support: "read-write",
+      operations: ["background-text-generation"],
+    });
     expect(capabilities.agents?.operations).not.toContain("live-activity");
   });
 
@@ -154,6 +157,10 @@ describe("PrimeAgentFeatureCapabilities", () => {
     });
     expect(capabilities.planning?.reason).toContain("standard ACP PlanUpdated");
     expect(capabilities.model?.operations).toEqual(["select"]);
+    expect(capabilities.automation).toMatchObject({
+      support: "read-write",
+      operations: ["background-text-generation"],
+    });
     expect(capabilities.agents?.support).toBe("unavailable");
     expect(capabilities.goals?.support).toBe("unavailable");
     expect(capabilities.reasoning).toMatchObject({ support: "unavailable", operations: [] });

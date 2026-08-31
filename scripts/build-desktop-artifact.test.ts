@@ -30,8 +30,10 @@ import {
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   InvalidMockUpdateServerPortError,
+  makePrimeAgentPackagedSmokeEnvironment,
   UnsupportedDesktopBuildArchitectureError,
   isMacPasskeySigningConfigurationError,
+  isNativePrimeAgentPackagedSmokeTarget,
   LinuxIconResizeError,
   MacPasskeySigningConfigurationResolutionError,
   MissingMacPasskeyProvisioningProfileError,
@@ -49,6 +51,8 @@ import {
   resolveDesktopUpdateChannel,
   resolveDesktopWebAssetBrand,
   resolveResourceMonitorRustTargets,
+  resolveUnpackedDesktopExecutable,
+  runPrimeAgentPackagedExternalEsmSmoke,
   resolveWindowsServerAsarIgnoreGlobs,
   resourceMonitorExecutableName,
   resolveGitHubPublishConfig,
@@ -117,6 +121,27 @@ function mockProcess(exitCode: number) {
     all: Stream.empty,
     getInputFd: () => Sink.drain,
     getOutputFd: () => Stream.empty,
+  });
+}
+
+function mockProcessWithOutput(
+  output: string,
+  exitCode = 0,
+  stdin?: Sink.Sink<void, Uint8Array, never, never, never>,
+) {
+  const bytes = new TextEncoder().encode(output);
+  return ChildProcessSpawner.makeHandle({
+    pid: ChildProcessSpawner.ProcessId(2),
+    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
+    isRunning: Effect.succeed(false),
+    kill: () => Effect.void,
+    unref: Effect.succeed(Effect.void),
+    stdin: stdin ?? Sink.drain,
+    stdout: Stream.make(bytes),
+    stderr: Stream.empty,
+    all: Stream.make(bytes),
+    getInputFd: () => stdin ?? Sink.drain,
+    getOutputFd: () => Stream.make(bytes),
   });
 }
 
@@ -255,6 +280,227 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopProductName("0.0.17"), "Pylon (Alpha)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "Pylon (Nightly)");
   });
+
+  it("runs packaged smoke only for a native Linux or Windows platform and architecture", () => {
+    assert.equal(
+      isNativePrimeAgentPackagedSmokeTarget({
+        targetPlatform: "linux",
+        targetArchitecture: "x64",
+        hostPlatform: "linux",
+        hostArchitecture: "x64",
+      }),
+      true,
+    );
+    assert.equal(
+      isNativePrimeAgentPackagedSmokeTarget({
+        targetPlatform: "linux",
+        targetArchitecture: "arm64",
+        hostPlatform: "linux",
+        hostArchitecture: "x64",
+      }),
+      false,
+    );
+    assert.equal(
+      isNativePrimeAgentPackagedSmokeTarget({
+        targetPlatform: "win",
+        targetArchitecture: "x64",
+        hostPlatform: "linux",
+        hostArchitecture: "x64",
+      }),
+      false,
+    );
+    assert.equal(
+      isNativePrimeAgentPackagedSmokeTarget({
+        targetPlatform: "mac",
+        targetArchitecture: "arm64",
+        hostPlatform: "darwin",
+        hostArchitecture: "arm64",
+      }),
+      false,
+    );
+  });
+
+  it("scrubs inherited Node, Electron, and helper controls from the packaged smoke env", () => {
+    const environment = makePrimeAgentPackagedSmokeEnvironment({
+      environment: {
+        PATH: "/safe/bin",
+        NODE_OPTIONS: "--require=poison.cjs",
+        NODE_PATH: "/poison/modules",
+        NoDe_OpTiOnS: "--require=mixed.cjs",
+        nOdE_pAtH: "/mixed/modules",
+        FORCE_COLOR: "3",
+        No_CoLoR: "poison-no-color",
+        cLiCoLoR_fOrCe: "1",
+        ELECTRON_ENABLE_LOGGING: "1",
+        eLeCtRoN_mIxEd: "poison",
+        pRiMe_AgEnT_cOdInG_aGeNt_DiR: "/poison/global",
+        ELECTRON_RUN_AS_NODE: "poison",
+        PYLON_PRIME_SDK_ENTRY: "poison-sdk",
+        PYLON_PRIME_AGENT_DIR: "poison-home",
+        PYLON_PRIME_MODEL: "poison/model",
+        PYLON_PRIME_THINKING: "poison-thinking",
+        PYLON_PRIME_SERVICE_TIER: "poison-tier",
+        PYLON_PRIME_SMOKE_CAPTURE: "poison-capture",
+        pYlOn_PrImE_mIxEd: "poison-mixed",
+      },
+      sdkEntryPath: "/smoke/sdk.mjs",
+      selectedAgentDir: "/smoke/selected-home",
+      sdkGlobalAgentDir: "/smoke/empty-global-home",
+      capturePath: "/smoke/capture.json",
+    });
+
+    assert.deepStrictEqual(environment, {
+      PATH: "/safe/bin",
+      NO_COLOR: "1",
+      ELECTRON_RUN_AS_NODE: "1",
+      PRIME_AGENT_CODING_AGENT_DIR: "/smoke/empty-global-home",
+      PYLON_PRIME_SDK_ENTRY: "/smoke/sdk.mjs",
+      PYLON_PRIME_AGENT_DIR: "/smoke/selected-home",
+      PYLON_PRIME_MODEL: "openai-codex/org/models/gpt-5.6",
+      PYLON_PRIME_THINKING: "high",
+      PYLON_PRIME_SERVICE_TIER: "priority",
+      PYLON_PRIME_SMOKE_CAPTURE: "/smoke/capture.json",
+    });
+  });
+
+  it.effect("discovers unpacked Linux and Windows executables", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "desktop-unpacked-paths-" });
+      const linuxExecutable = path.join(root, "linux-unpacked", "pylon");
+      const windowsExecutable = path.join(root, "win-unpacked", "Pylon (Alpha).exe");
+      yield* fs.makeDirectory(path.dirname(linuxExecutable), { recursive: true });
+      yield* fs.makeDirectory(path.dirname(windowsExecutable), { recursive: true });
+      yield* fs.writeFileString(linuxExecutable, "linux");
+      yield* fs.writeFileString(windowsExecutable, "windows");
+
+      assert.equal(
+        yield* resolveUnpackedDesktopExecutable({
+          stageDistDir: root,
+          platform: "linux",
+          productName: "Pylon (Alpha)",
+        }),
+        yield* fs.realPath(linuxExecutable),
+      );
+      assert.equal(
+        yield* resolveUnpackedDesktopExecutable({
+          stageDistDir: root,
+          platform: "win",
+          productName: "Pylon (Alpha)",
+        }),
+        yield* fs.realPath(windowsExecutable),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("runs the packaged Prime external-ESM smoke with isolated env and cleanup", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "desktop-prime-smoke-test-" });
+      const executablePath = path.join(root, "win-unpacked", "Pylon (Alpha).exe");
+      yield* fs.makeDirectory(path.dirname(executablePath), { recursive: true });
+      yield* fs.writeFileString(executablePath, "electron");
+      const commands: Array<{
+        readonly command: string;
+        readonly args: ReadonlyArray<string>;
+        readonly options: {
+          readonly cwd?: string;
+          readonly env?: NodeJS.ProcessEnv;
+          readonly extendEnv?: boolean;
+          readonly shell?: boolean;
+          readonly killSignal?: string;
+          readonly forceKillAfter?: unknown;
+        };
+      }> = [];
+      let stdinText = "";
+      const stdin = Sink.forEach((bytes: Uint8Array) =>
+        Effect.sync(() => {
+          stdinText += new TextDecoder().decode(bytes);
+        }),
+      );
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          const captured = command as unknown as (typeof commands)[number];
+          commands.push(captured);
+          return Effect.gen(function* () {
+            const capturePath = captured.options.env?.PYLON_PRIME_SMOKE_CAPTURE;
+            const sdkEntryPath = captured.options.env?.PYLON_PRIME_SDK_ENTRY;
+            if (!capturePath || !sdkEntryPath || !captured.options.cwd) {
+              return assert.fail("packaged smoke did not provide capture affinity");
+            }
+            yield* fs.writeFileString(
+              capturePath,
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify({
+                sdkEntryPath,
+                cwd: captured.options.cwd,
+                execPath: captured.command,
+                model: captured.options.env?.PYLON_PRIME_MODEL,
+                thinking: captured.options.env?.PYLON_PRIME_THINKING,
+                serviceTier: captured.options.env?.PYLON_PRIME_SERVICE_TIER,
+                selectedAgentDir: captured.options.env?.PYLON_PRIME_AGENT_DIR,
+                sdkGlobalAgentDir: captured.options.env?.PRIME_AGENT_CODING_AGENT_DIR,
+                electronRunAsNode: captured.options.env?.ELECTRON_RUN_AS_NODE,
+                noColor: captured.options.env?.NO_COLOR,
+                colorForcingEnvironment: Object.keys(captured.options.env ?? {}).filter((name) => {
+                  const normalized = name.toUpperCase();
+                  return normalized === "FORCE_COLOR" || normalized === "CLICOLOR_FORCE";
+                }),
+                nodeOptionsPresent: "NODE_OPTIONS" in (captured.options.env ?? {}),
+                nodePathPresent: "NODE_PATH" in (captured.options.env ?? {}),
+                unexpectedElectronEnvironment: Object.keys(captured.options.env ?? {}).filter(
+                  (name) =>
+                    name.toUpperCase().startsWith("ELECTRON_") &&
+                    name.toUpperCase() !== "ELECTRON_RUN_AS_NODE",
+                ),
+              }),
+            );
+            return mockProcessWithOutput('{"title":"Packaged Prime Smoke"}', 0, stdin);
+          });
+        }),
+      );
+
+      yield* runPrimeAgentPackagedExternalEsmSmoke({
+        stageDistDir: root,
+        platform: "win",
+        productName: "Pylon (Alpha)",
+      }).pipe(Effect.provide(spawnerLayer));
+
+      assert.equal(commands.length, 1);
+      const command = commands[0]!;
+      assert.equal(command.command, yield* fs.realPath(executablePath));
+      assert.equal(command.args.length, 1);
+      assert.equal(command.options.extendEnv, false);
+      assert.equal(command.options.shell, false);
+      assert.equal(command.options.killSignal, "SIGTERM");
+      assert.equal(command.options.forceKillAfter, "2 seconds");
+      assert.equal(command.options.env?.ELECTRON_RUN_AS_NODE, "1");
+      assert.equal(typeof command.options.env?.PRIME_AGENT_CODING_AGENT_DIR, "string");
+      assert.equal(typeof command.options.env?.PYLON_PRIME_AGENT_DIR, "string");
+      assert.notEqual(
+        command.options.env?.PRIME_AGENT_CODING_AGENT_DIR,
+        command.options.env?.PYLON_PRIME_AGENT_DIR,
+      );
+      assert.deepStrictEqual(
+        Object.keys(command.options.env ?? {}).filter(
+          (name) =>
+            name.toUpperCase().startsWith("ELECTRON_") &&
+            name.toUpperCase() !== "ELECTRON_RUN_AS_NODE",
+        ),
+        [],
+      );
+      assert.equal(command.options.env?.NODE_OPTIONS, undefined);
+      assert.equal(command.options.env?.NODE_PATH, undefined);
+      assert.equal(command.options.env?.PYLON_PRIME_MODEL, "openai-codex/org/models/gpt-5.6");
+      assert.equal(command.options.env?.PYLON_PRIME_THINKING, "high");
+      assert.equal(command.options.env?.PYLON_PRIME_SERVICE_TIER, "priority");
+      assert.equal(stdinText, '{"prompt":"Return the smoke-test title.","images":[]}');
+      assert.equal(yield* fs.exists(command.args[0]!), false);
+    }).pipe(Effect.scoped),
+  );
 
   // A shared bundle id makes the OS treat nightly as another copy of the
   // stable app: same launch-services registration, same per-app state, and the
@@ -1872,6 +2118,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         outputDir: Option.none(),
         skipBuild: Option.none(),
         keepStage: Option.none(),
+        smokeOnly: Option.none(),
         signed: Option.none(),
         verbose: Option.none(),
         mockUpdates: Option.none(),
@@ -1912,6 +2159,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             outputDir: Option.none(),
             skipBuild: Option.none(),
             keepStage: Option.none(),
+            smokeOnly: Option.none(),
             signed: Option.none(),
             verbose: Option.none(),
             mockUpdates: Option.none(),
@@ -1936,6 +2184,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         outputDir: Option.some("release-test"),
         skipBuild: Option.some(false),
         keepStage: Option.some(false),
+        smokeOnly: Option.some(false),
         signed: Option.some(false),
         verbose: Option.some(false),
         mockUpdates: Option.some(false),
@@ -1966,6 +2215,29 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("forces smoke-only unpacked builds to stay unsigned", () =>
+    Effect.gen(function* () {
+      const resolved = yield* resolveBuildOptions({
+        platform: Option.some("linux"),
+        target: Option.none(),
+        arch: Option.some("x64"),
+        buildVersion: Option.none(),
+        outputDir: Option.some("release-test"),
+        skipBuild: Option.some(false),
+        keepStage: Option.some(false),
+        smokeOnly: Option.some(true),
+        signed: Option.some(true),
+        verbose: Option.some(false),
+        mockUpdates: Option.some(false),
+        mockUpdateServerPort: Option.none(),
+        wslPrebuild: Option.none(),
+      });
+
+      assert.equal(resolved.smokeOnly, true);
+      assert.equal(resolved.signed, false);
+    }),
+  );
+
   it.effect("resolves the Pylon local macOS signing identity from the environment", () =>
     Effect.gen(function* () {
       const resolved = yield* resolveBuildOptions({
@@ -1976,6 +2248,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         outputDir: Option.some("release-test"),
         skipBuild: Option.none(),
         keepStage: Option.none(),
+        smokeOnly: Option.none(),
         signed: Option.none(),
         verbose: Option.none(),
         mockUpdates: Option.none(),

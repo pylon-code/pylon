@@ -140,6 +140,39 @@ describe("ServerProvider", () => {
     expect(parsed.models[0]?.isLegacy).toBe(true);
   });
 
+  it("decodes optional background-only model capabilities", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      models: [
+        {
+          slug: "openai-codex/gpt-5.6",
+          name: "GPT-5.6",
+          isCustom: false,
+          capabilities: { optionDescriptors: [] },
+          backgroundTextGenerationCapabilities: {
+            optionDescriptors: [
+              {
+                id: "thinkingLevel",
+                label: "Thinking",
+                type: "select",
+                options: [
+                  { id: "prime-default", label: "Prime default", isDefault: true },
+                  { id: "high", label: "High" },
+                ],
+                currentValue: "prime-default",
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(parsed.models[0]?.capabilities?.optionDescriptors).toEqual([]);
+    expect(parsed.models[0]?.backgroundTextGenerationCapabilities?.optionDescriptors?.[0]?.id).toBe(
+      "thinkingLevel",
+    );
+  });
+
   it("decodes dynamic provider usage windows", () => {
     const parsed = decodeServerProvider({
       instanceId: "claudeAgent",

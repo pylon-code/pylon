@@ -271,7 +271,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
       expect(snapshot.requiresNewThreadForModelChange).toBe(true);
       expect(snapshot.supportedRuntimeModes).toEqual(["full-access"]);
       expect(snapshot.showInteractionModeToggle).toBe(false);
-      expect(snapshot.supportsBackgroundTextGeneration).toBe(false);
+      expect(snapshot.supportsBackgroundTextGeneration).toBe(true);
       expect(snapshot.supportsConversationRollback).toBe(false);
     }),
   );
@@ -302,7 +302,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
       });
       expect(snapshot.featureCapabilities?.automation).toMatchObject({
         support: "read-write",
-        operations: ["side-questions"],
+        operations: ["background-text-generation", "side-questions"],
       });
       const withoutSideQuestionMethods = stampPrimeAgentBackendSnapshot(initial, {
         runtime: "daemon",
@@ -319,8 +319,8 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         sideQuestions: false,
       });
       expect(withoutSideQuestionMethods.featureCapabilities?.automation).toMatchObject({
-        support: "unavailable",
-        operations: [],
+        support: "read-write",
+        operations: ["background-text-generation"],
       });
       expect(snapshot.featureCapabilities?.agents?.operations).toContain("message");
       expect(snapshot.featureCapabilities?.reasoning?.support).toBe("read-only");
@@ -364,8 +364,17 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
 
       expect(snapshot.featureCapabilities?.version).toBe(1);
       expect(snapshot.featureCapabilities?.agents?.support).toBe("unavailable");
+      expect(snapshot.featureCapabilities?.automation).toMatchObject({
+        support: "read-write",
+        operations: ["background-text-generation"],
+      });
       expect(snapshot.featureCapabilities?.sessionUi?.support).toBe("unavailable");
       expect(snapshot.models[0]?.capabilities?.optionDescriptors).toEqual([]);
+      expect(
+        snapshot.models[0]?.backgroundTextGenerationCapabilities?.optionDescriptors?.map(
+          (descriptor) => descriptor.id,
+        ),
+      ).toEqual(["thinkingLevel", "serviceTier"]);
       expect(snapshot.requiresNewThreadForModelChange).toBe(true);
       expect(snapshot.supportedRuntimeModes).toEqual(["full-access"]);
       expect(snapshot.message).toBe(

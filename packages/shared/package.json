@@ -19,6 +19,10 @@
       "types": "./src/model.ts",
       "import": "./src/model.ts"
     },
+    "./primeAgentTextGenerationHelper": {
+      "types": "./src/primeAgentTextGenerationHelper.ts",
+      "import": "./src/primeAgentTextGenerationHelper.ts"
+    },
     "./advertisedEndpoint": {
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"

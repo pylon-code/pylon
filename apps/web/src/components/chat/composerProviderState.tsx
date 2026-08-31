@@ -15,7 +15,10 @@ import {
 import type { ReactNode } from "react";
 
 import type { DraftId } from "../../composerDraftStore";
-import { getProviderModelCapabilities } from "../../providerModels";
+import {
+  getProviderModelCapabilities,
+  type ProviderModelCapabilityContext,
+} from "../../providerModels";
 import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 
 export type ComposerProviderStateInput = {
@@ -25,6 +28,7 @@ export type ComposerProviderStateInput = {
   promptInjectionState?: ComposerPromptInjectionState;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined;
   planModeEnabled: boolean;
+  capabilityContext?: ProviderModelCapabilityContext;
 };
 
 export type ComposerPromptInjectionState = "none" | "ultrathink";
@@ -63,6 +67,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     modelOptions,
     promptInjectionState = "none",
     planModeEnabled,
+    capabilityContext = "interactive",
   } = input;
   if (provider === "opencode") {
     const normalizedModel = normalizeModelSlug(model, provider);
@@ -79,7 +84,13 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
       };
     }
   }
-  const caps = getProviderModelCapabilities(models, model, provider, planModeEnabled);
+  const caps = getProviderModelCapabilities(
+    models,
+    model,
+    provider,
+    planModeEnabled,
+    capabilityContext,
+  );
   const descriptors = getProviderOptionDescriptors({ caps, selections: modelOptions });
   const primarySelectDescriptor = descriptors.find(
     (descriptor): descriptor is Extract<(typeof descriptors)[number], { type: "select" }> =>

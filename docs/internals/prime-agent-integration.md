@@ -116,7 +116,7 @@ Health probing should:
 4. leave auth `unknown` for the MVP unless a reliable Prime auth-status API is added;
 5. show the terminal install/login instructions when no usable model can run.
 
-Every `ProviderInstance` must supply a text-generation service. The first slice may return a typed unsupported error and prevent Prime from being chosen for titles/branches/PR copy; full support can use a short-lived ACP or RPC process with the requested model and Pylon's existing structured-output prompts.
+Every `ProviderInstance` supplies a text-generation service. The shipped follow-up uses a short-lived isolated Node helper that imports the selected Prime installation's package-owned public SDK entry. It reads only Prime's saved model, thinking, and service-tier defaults through the public settings manager, copies them into an in-memory manager, and creates a tool-free session for one model request. It receives Pylon's bounded structured-output prompt on stdin and disposes without joining ACP or daemon conversation state. The helper disables resource discovery, MCP, persistence, goals, autonomy, kernels, retries, refinement, compaction, and telemetry; the server validates attachment-store images and structured output at the provider boundary.
 
 ### Web, desktop, and mobile
 

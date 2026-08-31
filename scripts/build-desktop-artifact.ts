@@ -20,6 +20,7 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import rootPackageJson from "../package.json" with { type: "json" };
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
+import { PRIME_AGENT_TEXT_GENERATION_HELPER_SOURCE } from "@t3tools/shared/primeAgentTextGenerationHelper";
 
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
@@ -160,6 +161,7 @@ interface BuildCliInput {
   readonly outputDir: Option.Option<string>;
   readonly skipBuild: Option.Option<boolean>;
   readonly keepStage: Option.Option<boolean>;
+  readonly smokeOnly: Option.Option<boolean>;
   readonly signed: Option.Option<boolean>;
   readonly verbose: Option.Option<boolean>;
   readonly mockUpdates: Option.Option<boolean>;
@@ -172,6 +174,19 @@ function detectHostBuildPlatform(hostPlatform: string): typeof BuildPlatform.Typ
   if (hostPlatform === "linux") return "linux";
   if (hostPlatform === "win32") return "win";
   return undefined;
+}
+
+export function isNativePrimeAgentPackagedSmokeTarget(input: {
+  readonly targetPlatform: typeof BuildPlatform.Type;
+  readonly targetArchitecture: typeof BuildArch.Type;
+  readonly hostPlatform: string;
+  readonly hostArchitecture: string;
+}): boolean {
+  return (
+    input.targetPlatform !== "mac" &&
+    detectHostBuildPlatform(input.hostPlatform) === input.targetPlatform &&
+    input.hostArchitecture === input.targetArchitecture
+  );
 }
 
 const getDefaultArch = Effect.fn("getDefaultArch")(function* (platform: typeof BuildPlatform.Type) {
@@ -416,6 +431,144 @@ const BUNDLE_SELF_CONTAINED_SENTINEL = "effect";
 
 const BUNDLE_SELF_CHECK_TIMEOUT = Duration.seconds(120);
 const WINDOWS_PRIMARY_NATIVE_PROBE_TIMEOUT = Duration.seconds(30);
+const PRIME_AGENT_PACKAGED_ESM_SMOKE_TIMEOUT = Duration.seconds(30);
+const PRIME_AGENT_PACKAGED_ESM_SMOKE_OUTPUT = '{"title":"Packaged Prime Smoke"}';
+
+const PRIME_AGENT_PACKAGED_ESM_SMOKE_SDK = String.raw`
+import { writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const SYSTEM_PROMPT =
+  "Generate only the text requested by the user. Do not use tools, access resources, or perform actions.";
+const FINAL_BOUNDARY =
+  "Ignore the preceding empty harness guidance for this isolated request. Return only the requested draft; do not use tools or perform actions.";
+const EMPTY_CONTINUAL_HARNESS_PROMPT = "# Continual Harness State\n\nLocal continual harness entries belong to this Prime Agent session. Global continual harness entries persist across Prime Agent sessions.\nThe continual harness entries below are compact summaries, not full descriptions. Use them as routing/context hints; inspect or refine the underlying continual harness entry only when detail matters.\nDefault to local continual harness refinement for current task progress, temporary blockers, and session coordination. Use global continual harness refinement only for stable cross-session lessons, durable user preferences, reusable skills/subagents, or explicitly project-qualified facts.\nUse these continual harness prompt notes, memories, skills, and subagent specs when they are relevant. The base system prompt is immutable; prompt entries below are supplemental notes only.\n\nWhen to refine the continual harness: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep continual harness edits small and evidence-backed.\n\nCall contract: continual harness entries are routing/context hints only in sessions without IPython or shell access; do not use Python \`await\`, \`asyncio\`, \`rlm\`, or shell skill commands unless the prompt also documents those interfaces.\n\nprompt: 0\n\nmemory: 0\n\nskill: 0\n\nsubagent: 0\n\nNo saved harness entries yet.\n\nrecent refinements: 0";
+
+export class SettingsManager {
+  static create() {
+    return {
+      getDefaultProvider: () => "openai-codex",
+      getDefaultModel: () => "org/models/gpt-5.6",
+      getDefaultThinkingLevel: () => "high",
+      getDefaultServiceTier: () => "priority",
+    };
+  }
+  static inMemory(settings) {
+    return { settings };
+  }
+}
+
+export class SessionManager {
+  static inMemory(cwd) {
+    return { cwd };
+  }
+}
+
+export class DefaultResourceLoader {
+  constructor(options) {
+    this.systemPrompt = options.systemPrompt;
+    this.appendSystemPrompt = options.appendSystemPrompt;
+  }
+  async reload() {}
+  getExtensions() { return { extensions: [], errors: [] }; }
+  getLoadedExtensionPaths() { return []; }
+  getSkills() { return { skills: [], diagnostics: [] }; }
+  getPrompts() { return { prompts: [], diagnostics: [] }; }
+  getThemes() { return { themes: [], diagnostics: [] }; }
+  getAgentsFiles() { return { agentsFiles: [] }; }
+  getSystemPrompt() { return this.systemPrompt; }
+  getAppendSystemPrompt() { return this.appendSystemPrompt; }
+}
+
+export async function createAgentSession(options) {
+  const settings = options.settingsManager.settings;
+  const now = new Date();
+  const currentDate =
+    String(now.getFullYear()) +
+    "-" +
+    String(now.getMonth() + 1).padStart(2, "0") +
+    "-" +
+    String(now.getDate()).padStart(2, "0");
+  const cwd = process.cwd().replace(/\\/gu, "/");
+  const session = {
+    model: { provider: settings.defaultProvider, id: settings.defaultModel },
+    thinkingLevel: options.thinkingLevel,
+    serviceTier: options.serviceTier,
+    messages: [],
+    sessionFile: undefined,
+    rlmMaxDepth: 0,
+    systemPrompt:
+      SYSTEM_PROMPT +
+      "\nCurrent date: " +
+      currentDate +
+      "\nCurrent working directory: " +
+      cwd +
+      "\n\n" +
+      EMPTY_CONTINUAL_HARNESS_PROMPT +
+      "\n\n" +
+      options.resourceLoader.getAppendSystemPrompt()[0],
+    getActiveToolNames() { return []; },
+    async promptAndWait(prompt, promptOptions) {
+      writeFileSync(
+        process.env.PYLON_PRIME_SMOKE_CAPTURE,
+        JSON.stringify({
+          sdkEntryPath: fileURLToPath(import.meta.url),
+          cwd: process.cwd(),
+          execPath: process.execPath,
+          model: process.env.PYLON_PRIME_MODEL,
+          thinking: process.env.PYLON_PRIME_THINKING,
+          serviceTier: process.env.PYLON_PRIME_SERVICE_TIER,
+          selectedAgentDir: process.env.PYLON_PRIME_AGENT_DIR,
+          sdkGlobalAgentDir: process.env.PRIME_AGENT_CODING_AGENT_DIR,
+          electronRunAsNode: process.env.ELECTRON_RUN_AS_NODE,
+          noColor: process.env.NO_COLOR,
+          colorForcingEnvironment: Object.keys(process.env).filter((name) => {
+            const normalized = name.toUpperCase();
+            return normalized === "FORCE_COLOR" || normalized === "CLICOLOR_FORCE";
+          }),
+          nodeOptionsPresent: "NODE_OPTIONS" in process.env,
+          nodePathPresent: "NODE_PATH" in process.env,
+          unexpectedElectronEnvironment: Object.keys(process.env).filter(
+            (name) => name.startsWith("ELECTRON_") && name !== "ELECTRON_RUN_AS_NODE",
+          ),
+        }),
+      );
+      this.messages.push({
+        role: "user",
+        content: promptOptions?.images?.length
+          ? [{ type: "text", text: prompt }, ...promptOptions.images]
+          : prompt,
+      });
+      this.messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: "{\"title\":\"Packaged Prime Smoke\"}" }],
+      });
+    },
+    async disposeAsync() {},
+  };
+  return { session, extensionsResult: { extensions: [], errors: [] } };
+}
+`;
+
+const PackagedPrimeSmokeCapture = Schema.Struct({
+  sdkEntryPath: Schema.String,
+  cwd: Schema.String,
+  execPath: Schema.String,
+  model: Schema.String,
+  thinking: Schema.String,
+  serviceTier: Schema.String,
+  selectedAgentDir: Schema.String,
+  sdkGlobalAgentDir: Schema.String,
+  electronRunAsNode: Schema.String,
+  noColor: Schema.String,
+  colorForcingEnvironment: Schema.Array(Schema.String),
+  nodeOptionsPresent: Schema.Boolean,
+  nodePathPresent: Schema.Boolean,
+  unexpectedElectronEnvironment: Schema.Array(Schema.String),
+});
+const decodePackagedPrimeSmokeCapture = Schema.decodeEffect(
+  Schema.fromJsonString(PackagedPrimeSmokeCapture),
+);
 
 const WINDOWS_PRIMARY_FFF_PROBE_SOURCE = `
 const { join } = await import("node:path");
@@ -567,6 +720,28 @@ const WindowsPackagedPayloadValidationReason = Schema.Literals([
   "wsl-runtime-invalid",
   "file-limit-exceeded",
 ]);
+
+const PrimeAgentPackagedEsmSmokeReason = Schema.Literals([
+  "executable-missing",
+  "process-failed",
+  "timeout",
+  "capture-invalid",
+  "non-native-target",
+]);
+
+export class PrimeAgentPackagedEsmSmokeError extends Schema.TaggedErrorClass<PrimeAgentPackagedEsmSmokeError>()(
+  "PrimeAgentPackagedEsmSmokeError",
+  {
+    reason: PrimeAgentPackagedEsmSmokeReason,
+    executablePath: Schema.String,
+    detail: Schema.optionalKey(Schema.String),
+    cause: Schema.optionalKey(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Packaged Prime Agent external-ESM smoke failed (${this.reason}) for ${this.executablePath}${this.detail ? `: ${this.detail}` : ""}.`;
+  }
+}
 
 export class WindowsPackagedPayloadValidationError extends Schema.TaggedErrorClass<WindowsPackagedPayloadValidationError>()(
   "WindowsPackagedPayloadValidationError",
@@ -770,6 +945,7 @@ interface ResolvedBuildOptions {
   readonly outputDir: string;
   readonly skipBuild: boolean;
   readonly keepStage: boolean;
+  readonly smokeOnly: boolean;
   readonly signed: boolean;
   readonly localMacSigningIdentity: string | undefined;
   readonly verbose: boolean;
@@ -1349,6 +1525,7 @@ const BuildEnvConfig = Config.all({
   outputDir: Config.string("T3CODE_DESKTOP_OUTPUT_DIR").pipe(Config.option),
   skipBuild: Config.boolean("T3CODE_DESKTOP_SKIP_BUILD").pipe(Config.withDefault(false)),
   keepStage: Config.boolean("T3CODE_DESKTOP_KEEP_STAGE").pipe(Config.withDefault(false)),
+  smokeOnly: Config.boolean("T3CODE_DESKTOP_SMOKE_ONLY").pipe(Config.withDefault(false)),
   signed: Config.boolean("T3CODE_DESKTOP_SIGNED").pipe(Config.withDefault(false)),
   localMacSigningIdentity: Config.string("PYLON_DESKTOP_LOCAL_SIGNING_IDENTITY").pipe(
     Config.option,
@@ -1437,7 +1614,8 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
 
   const skipBuild = resolveBooleanFlag(input.skipBuild, env.skipBuild);
   const keepStage = resolveBooleanFlag(input.keepStage, env.keepStage);
-  const signed = resolveBooleanFlag(input.signed, env.signed);
+  const smokeOnly = resolveBooleanFlag(input.smokeOnly, env.smokeOnly);
+  const signed = smokeOnly ? false : resolveBooleanFlag(input.signed, env.signed);
   const localMacSigningIdentity = Option.getOrUndefined(env.localMacSigningIdentity)?.trim();
   const verbose = resolveBooleanFlag(input.verbose, env.verbose);
 
@@ -1464,6 +1642,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     outputDir,
     skipBuild,
     keepStage,
+    smokeOnly,
     signed,
     localMacSigningIdentity:
       localMacSigningIdentity && localMacSigningIdentity.length > 0
@@ -1474,6 +1653,235 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     mockUpdateServerPort,
     wslPrebuild,
   } satisfies ResolvedBuildOptions;
+});
+
+function collectBoundedSmokeOutput<E>(stream: Stream.Stream<Uint8Array, E>, maxBytes: number) {
+  return stream.pipe(
+    Stream.runFold(
+      () => ({ chunks: [] as Uint8Array[], bytes: 0, truncated: false }),
+      (state, chunk) => {
+        const remaining = Math.max(0, maxBytes - state.bytes);
+        const kept = chunk.subarray(0, remaining);
+        return {
+          chunks: kept.byteLength > 0 ? [...state.chunks, kept] : state.chunks,
+          bytes: state.bytes + kept.byteLength,
+          truncated: state.truncated || kept.byteLength !== chunk.byteLength,
+        };
+      },
+    ),
+    Effect.map((collected) => {
+      const bytes = new Uint8Array(collected.bytes);
+      let offset = 0;
+      for (const chunk of collected.chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      try {
+        return {
+          text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+          invalidUtf8: false,
+          truncated: collected.truncated,
+        };
+      } catch {
+        return { text: "", invalidUtf8: true, truncated: collected.truncated };
+      }
+    }),
+  );
+}
+
+export function makePrimeAgentPackagedSmokeEnvironment(input: {
+  readonly environment: NodeJS.ProcessEnv;
+  readonly sdkEntryPath: string;
+  readonly selectedAgentDir: string;
+  readonly sdkGlobalAgentDir: string;
+  readonly capturePath: string;
+}): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...input.environment };
+  for (const name of Object.keys(environment)) {
+    const normalizedName = name.toUpperCase();
+    if (
+      normalizedName === "NODE_OPTIONS" ||
+      normalizedName === "NODE_PATH" ||
+      normalizedName === "FORCE_COLOR" ||
+      normalizedName === "NO_COLOR" ||
+      normalizedName === "CLICOLOR_FORCE" ||
+      normalizedName === "PRIME_AGENT_CODING_AGENT_DIR" ||
+      normalizedName.startsWith("ELECTRON_") ||
+      normalizedName.startsWith("PYLON_PRIME_")
+    ) {
+      delete environment[name];
+    }
+  }
+  return {
+    ...environment,
+    NO_COLOR: "1",
+    ELECTRON_RUN_AS_NODE: "1",
+    PRIME_AGENT_CODING_AGENT_DIR: input.sdkGlobalAgentDir,
+    PYLON_PRIME_SDK_ENTRY: input.sdkEntryPath,
+    PYLON_PRIME_AGENT_DIR: input.selectedAgentDir,
+    PYLON_PRIME_MODEL: "openai-codex/org/models/gpt-5.6",
+    PYLON_PRIME_THINKING: "high",
+    PYLON_PRIME_SERVICE_TIER: "priority",
+    PYLON_PRIME_SMOKE_CAPTURE: input.capturePath,
+  };
+}
+
+export const resolveUnpackedDesktopExecutable = Effect.fn(
+  "desktopArtifact.resolveUnpackedDesktopExecutable",
+)(function* (input: {
+  readonly stageDistDir: string;
+  readonly platform: "linux" | "win";
+  readonly productName: string;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const executablePath =
+    input.platform === "win"
+      ? path.join(input.stageDistDir, "win-unpacked", `${input.productName}.exe`)
+      : path.join(input.stageDistDir, "linux-unpacked", "pylon");
+  if (!(yield* fs.exists(executablePath))) {
+    return yield* new PrimeAgentPackagedEsmSmokeError({
+      reason: "executable-missing",
+      executablePath,
+    });
+  }
+  return yield* fs.realPath(executablePath).pipe(
+    Effect.mapError(
+      (cause) =>
+        new PrimeAgentPackagedEsmSmokeError({
+          reason: "executable-missing",
+          executablePath,
+          cause,
+        }),
+    ),
+  );
+});
+
+export const runPrimeAgentPackagedExternalEsmSmoke = Effect.fn(
+  "desktopArtifact.runPrimeAgentPackagedExternalEsmSmoke",
+)(function* (input: {
+  readonly stageDistDir: string;
+  readonly platform: "linux" | "win";
+  readonly productName: string;
+}) {
+  return yield* Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const executablePath = yield* resolveUnpackedDesktopExecutable(input);
+    const smokeRoot = yield* fs.makeTempDirectoryScoped({
+      prefix: "pylon packaged prime esm smoke with spaces ",
+    });
+    const cwd = path.join(smokeRoot, "Working Directory With Spaces");
+    const selectedAgentDir = path.join(smokeRoot, "Selected Prime Agent Home With Spaces");
+    const sdkGlobalAgentDir = path.join(smokeRoot, "Empty SDK Global Home With Spaces");
+    const helperPath = path.join(smokeRoot, "Prime Text Helper With Spaces.mjs");
+    const sdkEntryPath = path.join(smokeRoot, "External Prime Public SDK With Spaces.mjs");
+    const capturePath = path.join(smokeRoot, "External SDK Capture With Spaces.json");
+    yield* fs.makeDirectory(cwd, { recursive: true });
+    yield* fs.makeDirectory(selectedAgentDir, { recursive: true });
+    yield* fs.makeDirectory(sdkGlobalAgentDir, { recursive: true });
+    yield* fs.writeFileString(helperPath, PRIME_AGENT_TEXT_GENERATION_HELPER_SOURCE);
+    yield* fs.writeFileString(sdkEntryPath, PRIME_AGENT_PACKAGED_ESM_SMOKE_SDK);
+    const canonicalCwd = yield* fs.realPath(cwd);
+    const canonicalSelectedAgentDir = yield* fs.realPath(selectedAgentDir);
+    const canonicalSdkGlobalAgentDir = yield* fs.realPath(sdkGlobalAgentDir);
+    const canonicalSdkEntryPath = yield* fs.realPath(sdkEntryPath);
+
+    const environment = makePrimeAgentPackagedSmokeEnvironment({
+      environment: process.env,
+      sdkEntryPath: canonicalSdkEntryPath,
+      selectedAgentDir: canonicalSelectedAgentDir,
+      sdkGlobalAgentDir: canonicalSdkGlobalAgentDir,
+      capturePath,
+    });
+    const command = ChildProcess.make(executablePath, [helperPath], {
+      cwd: canonicalCwd,
+      env: environment,
+      extendEnv: false,
+      shell: false,
+      killSignal: "SIGTERM",
+      forceKillAfter: "2 seconds",
+    });
+    const child = yield* spawner.spawn(command).pipe(
+      Effect.mapError(
+        (cause) =>
+          new PrimeAgentPackagedEsmSmokeError({
+            reason: "process-failed",
+            executablePath,
+            cause,
+          }),
+      ),
+    );
+    const encodedInput = yield* encodeJsonString({
+      prompt: "Return the smoke-test title.",
+      images: [],
+    });
+    const completed = yield* Effect.all(
+      [
+        collectBoundedSmokeOutput(child.stdout, 64 * 1024),
+        collectBoundedSmokeOutput(child.stderr, 4 * 1024),
+        child.exitCode.pipe(Effect.map(Number)),
+        Stream.run(Stream.encodeText(Stream.make(encodedInput)), child.stdin),
+      ],
+      { concurrency: "unbounded" },
+    ).pipe(Effect.scoped, Effect.timeoutOption(PRIME_AGENT_PACKAGED_ESM_SMOKE_TIMEOUT));
+    if (Option.isNone(completed)) {
+      return yield* new PrimeAgentPackagedEsmSmokeError({
+        reason: "timeout",
+        executablePath,
+      });
+    }
+    const [stdout, stderr, exitCode] = completed.value;
+    if (
+      exitCode !== 0 ||
+      stdout.truncated ||
+      stderr.truncated ||
+      stdout.invalidUtf8 ||
+      stderr.invalidUtf8 ||
+      stdout.text !== PRIME_AGENT_PACKAGED_ESM_SMOKE_OUTPUT
+    ) {
+      return yield* new PrimeAgentPackagedEsmSmokeError({
+        reason: "process-failed",
+        executablePath,
+        detail: `exit=${String(exitCode)} stdout=${stdout.text.trim()} stderr=${stderr.text.trim()}`,
+      });
+    }
+
+    const capture = yield* fs.readFileString(capturePath).pipe(
+      Effect.flatMap(decodePackagedPrimeSmokeCapture),
+      Effect.mapError(
+        (cause) =>
+          new PrimeAgentPackagedEsmSmokeError({
+            reason: "capture-invalid",
+            executablePath,
+            cause,
+          }),
+      ),
+    );
+    if (
+      capture.sdkEntryPath !== canonicalSdkEntryPath ||
+      capture.cwd !== canonicalCwd ||
+      capture.execPath !== executablePath ||
+      capture.model !== "openai-codex/org/models/gpt-5.6" ||
+      capture.thinking !== "high" ||
+      capture.serviceTier !== "priority" ||
+      capture.selectedAgentDir !== canonicalSelectedAgentDir ||
+      capture.sdkGlobalAgentDir !== canonicalSdkGlobalAgentDir ||
+      capture.electronRunAsNode !== "1" ||
+      capture.noColor !== "1" ||
+      capture.colorForcingEnvironment.length !== 0 ||
+      capture.nodeOptionsPresent ||
+      capture.nodePathPresent ||
+      capture.unexpectedElectronEnvironment.length !== 0
+    ) {
+      return yield* new PrimeAgentPackagedEsmSmokeError({
+        reason: "capture-invalid",
+        executablePath,
+        detail: "The packaged runtime did not preserve the isolated SDK request boundary.",
+      });
+    }
+  }).pipe(Effect.scoped);
 });
 
 const runCommand = Effect.fn("runCommand")(function* (
@@ -2954,6 +3362,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
   const hostPlatform = yield* HostProcessPlatform;
+  const hostArchitecture = yield* HostProcessArchitecture;
   const workspaceConfig = yield* readWorkspaceConfig();
   const workspaceCatalog = workspaceConfig.catalog ?? {};
   const workspaceOverrides = workspaceConfig.overrides ?? {};
@@ -2964,6 +3373,20 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (!platformConfig) {
     return yield* new UnsupportedDesktopBuildPlatformError({
       platform: options.platform,
+    });
+  }
+
+  const nativePackagedSmokeTarget = isNativePrimeAgentPackagedSmokeTarget({
+    targetPlatform: options.platform,
+    targetArchitecture: options.arch,
+    hostPlatform,
+    hostArchitecture,
+  });
+  if (options.smokeOnly && !nativePackagedSmokeTarget) {
+    return yield* new PrimeAgentPackagedEsmSmokeError({
+      reason: "non-native-target",
+      executablePath: `${options.platform}/${options.arch}`,
+      detail: `Smoke-only requires a native Linux or Windows target; host is ${hostPlatform}/${hostArchitecture}.`,
     });
   }
 
@@ -3370,7 +3793,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     "electron-builder",
     "--projectDir",
     stageAppDir,
-    platformConfig.cliFlag,
+    ...(options.smokeOnly ? ["--dir"] : [platformConfig.cliFlag]),
     `--${options.arch}`,
     "--publish",
     "never",
@@ -3383,7 +3806,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       shell: builderCommand.shell,
     }),
     {
-      label: `vp exec --filter @t3tools/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,
+      label: `vp exec --filter @t3tools/desktop -- electron-builder --projectDir ${stageAppDir} ${options.smokeOnly ? "--dir" : platformConfig.cliFlag} --${options.arch} --publish never`,
       verbose: options.verbose,
     },
   );
@@ -3421,6 +3844,23 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       verbose: options.verbose,
     });
   }
+
+  if (nativePackagedSmokeTarget && options.platform !== "mac") {
+    const productName = resolveDesktopProductName(appVersion);
+    const unpackedExecutable =
+      options.platform === "win"
+        ? path.join(stageDistDir, "win-unpacked", `${productName}.exe`)
+        : path.join(stageDistDir, "linux-unpacked", "pylon");
+    if (options.smokeOnly || (yield* fs.exists(unpackedExecutable))) {
+      yield* runPrimeAgentPackagedExternalEsmSmoke({
+        stageDistDir,
+        platform: options.platform,
+        productName,
+      });
+      yield* Effect.log("[desktop-artifact] Packaged Prime Agent external-ESM smoke passed.");
+    }
+  }
+  if (options.smokeOnly) return;
 
   const stageEntries = yield* fs.readDirectory(stageDistDir);
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
@@ -3480,6 +3920,12 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   ),
   keepStage: Flag.boolean("keep-stage").pipe(
     Flag.withDescription("Keep temporary staging files (env: T3CODE_DESKTOP_KEEP_STAGE)."),
+    Flag.optional,
+  ),
+  smokeOnly: Flag.boolean("smoke-only").pipe(
+    Flag.withDescription(
+      "Build an unsigned unpacked app with electron-builder --dir and run the packaged Prime external-ESM smoke (env: T3CODE_DESKTOP_SMOKE_ONLY).",
+    ),
     Flag.optional,
   ),
   signed: Flag.boolean("signed").pipe(

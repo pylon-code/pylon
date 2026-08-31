@@ -25,7 +25,12 @@ const shared = {
   },
   goals: unavailable("Goal state is not projected into Pylon yet."),
   gates: unavailable("Autonomous gate mutation is not exposed by the loaded Prime Agent runtime."),
-  automation: unavailable("Prime Agent automations are not projected into Pylon yet."),
+  automation: {
+    support: "read-write" as const,
+    reason:
+      "Pylon can run isolated background text generation through the selected Prime Agent installation without joining an interactive session.",
+    operations: ["background-text-generation"] as const,
+  },
   resources: unavailable("Prime Agent resources are not projected into Pylon yet."),
   inputQueue: unavailable("Prime Agent input queues are not projected into Pylon yet."),
   context: unavailable("Prime Agent context controls are not projected into Pylon yet."),
@@ -100,10 +105,10 @@ export function makePrimeAgentFeatureCapabilities(input: {
       ? {
           support: "read-write",
           reason:
-            "Pylon can ask one bounded, ephemeral side question at a time only in fresh approval-required daemon sessions; full-access, restored, and ACP sessions are unavailable.",
-          operations: ["side-questions"],
+            "Pylon can run isolated background text generation and ask one bounded, ephemeral side question at a time in fresh approval-required daemon sessions.",
+          operations: ["background-text-generation", "side-questions"],
         }
-      : unavailable("The loaded Prime Agent daemon does not expose compatible side questions."),
+      : shared.automation,
     goals: input.goals
       ? {
           support: "read-only",
