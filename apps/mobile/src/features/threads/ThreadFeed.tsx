@@ -1,22 +1,12 @@
 import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
-import type {
-  ChatAttachment,
-  ChatFileAttachment,
-  ChatImageAttachment,
-  EnvironmentId,
-  MessageId,
-  ThreadId,
-  TurnId,
-} from "@t3tools/contracts";
+import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import {
   codexArtifactTemplatePresentationLabel,
   type CodexArtifactTemplate,
 } from "@t3tools/client-runtime/codex-artifact-templates";
-import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
-import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { renderCodexDirectivesForCopy } from "@t3tools/client-runtime/codex-markdown-directives";
 import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-images";
 import {
   renderCodexFileCitationsAsMarkdown,
@@ -1274,7 +1264,8 @@ function renderFeedEntry(
           <View className="mt-1 flex-row items-center gap-1">
             <CopyTextButton
               accessibilityLabel="Copy message"
-              text={renderedText}
+              // Copy the rendered form, not the raw directive markup, matching web.
+              text={renderCodexDirectivesForCopy(renderedText)}
               tintColor={iconSubtleColor}
               buttonSize={28}
               iconSize={13}
