@@ -19,6 +19,7 @@ const atomHooks = vi.hoisted(() => ({
 const reactHooks = vi.hoisted(() => {
   let cursor = 0;
   let refs: Array<{ current: unknown }> = [];
+  let cleanups: Array<(() => void) | undefined> = [];
   const nextIndex = () => cursor++;
 
   return {
@@ -28,14 +29,18 @@ const reactHooks = vi.hoisted(() => {
     reset() {
       cursor = 0;
       refs = [];
+      cleanups = [];
     },
     useCallback<A>(callback: A): A {
       nextIndex();
       return callback;
     },
-    useEffect(effect: () => void): void {
-      nextIndex();
-      effect();
+    // Runs the previous cleanup before re-running, as React does: an effect
+    // that schedules a timer relies on it to coalesce successive renders.
+    useEffect(effect: () => void | (() => void)): void {
+      const index = nextIndex();
+      cleanups[index]?.();
+      cleanups[index] = effect() ?? undefined;
     },
     useRef<A>(initialValue: A): { current: A } {
       const index = nextIndex();
@@ -70,7 +75,10 @@ vi.mock("~/state/queries", () => ({
   useProjectPathSearch: vi.fn(),
 }));
 
-import { useWorkspaceMutationRefresh } from "~/hooks/useWorkspaceMutationRefresh";
+import {
+  WORKSPACE_MUTATION_REFRESH_COALESCE_MS,
+  useWorkspaceMutationRefresh,
+} from "~/hooks/useWorkspaceMutationRefresh";
 import { useProjectFileQuery } from "./projectFilesQueryState";
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -100,13 +108,14 @@ async function flushEffects(): Promise<void> {
 
 describe("project file query refresh", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
     projectMocks.listEntries.mockReset();
     projectMocks.optimisticFile.mockReset();
     projectMocks.readFile.mockReset();
     reactHooks.reset();
   });
 
-  it("replaces an in-flight initial read when a workspace mutation arrives", async () => {
+  it("coalesces a burst of mutations into one refresh of the initial read", async () => {
     const requests: Array<ReturnType<typeof deferred<ProjectReadFileResult>>> = [];
     const readAtom = Atom.make(
       Effect.promise(() => {
@@ -138,18 +147,25 @@ describe("project file query refresh", () => {
       await flushEffects();
       expect(requests).toHaveLength(1);
 
+      // A burst of mutations lands one trailing refresh, not one per mutation.
       render("mutation-1");
+      await flushEffects();
+      render("mutation-2");
+      await flushEffects();
+      expect(requests).toHaveLength(1);
+
+      vi.advanceTimersByTime(WORKSPACE_MUTATION_REFRESH_COALESCE_MS);
       await flushEffects();
       expect(requests).toHaveLength(2);
 
       requests[1]!.resolve(file("fresh"));
       await flushEffects();
-      render("mutation-1");
+      render("mutation-2");
       expect(renderedContents).toBe("fresh");
 
       requests[0]!.resolve(file("stale"));
       await flushEffects();
-      render("mutation-1");
+      render("mutation-2");
       expect(renderedContents).toBe("fresh");
     } finally {
       unmount();

@@ -136,7 +136,6 @@ function WorkspaceImagePreview(props: {
   readonly threadRef: ScopedThreadRef;
   readonly absolutePath: string;
   readonly alt: string;
-  readonly workspaceMutationId: string | null;
 }) {
   const assetUrl = useAssetUrlState(props.environmentId, {
     _tag: "workspace-file",
@@ -144,11 +143,7 @@ function WorkspaceImagePreview(props: {
     path: props.absolutePath,
   });
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  const revisionSuffix =
-    props.workspaceMutationId === null
-      ? ""
-      : `${assetUrl._tag === "Success" && assetUrl.url.includes("?") ? "&" : "?"}workspace-revision=${encodeURIComponent(props.workspaceMutationId)}`;
-  const imageUrl = assetUrl._tag === "Success" ? `${assetUrl.url}${revisionSuffix}` : null;
+  const imageUrl = assetUrl._tag === "Success" ? assetUrl.url : null;
 
   if (assetUrl._tag === "Failure" || (imageUrl !== null && failedUrl === imageUrl)) {
     return (
@@ -1018,7 +1013,6 @@ export default function FilePreviewPanel({
               threadRef={threadRef}
               absolutePath={absolutePath}
               alt={relativePath}
-              workspaceMutationId={workspaceMutationId}
             />
           ) : relativePath && file.error && file.data === null ? (
             <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
@@ -1098,7 +1092,6 @@ export default function FilePreviewPanel({
               selectedPath={relativePath}
               selectedPathRevealId={revealRequestId}
               onOpenFile={onOpenFile}
-              workspaceMutationId={workspaceMutationId}
               {...(relativePath && !isImage ? { onRefreshSelectedFile: file.refresh } : {})}
             />
           </aside>
