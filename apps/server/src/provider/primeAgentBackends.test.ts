@@ -21,6 +21,7 @@ import {
   readPrimeAgentBackends,
   readPrimeAgentCapacity,
   readPrimeAgentCodexWindows,
+  resolvePrimeAgentHomePath,
 } from "./primeAgentBackends.ts";
 
 const NOW = Date.parse("2026-08-06T12:00:00.000Z");
@@ -199,9 +200,125 @@ it.effect("logs only a sanitized prerequisite when the Codex process cannot star
   );
 });
 
+it.effect("resolves Prime capacity homes from the merged instance environment", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    assert.equal(
+      resolvePrimeAgentHomePath({ agentHomePath: "" }, path, {
+        processEnv: { HOME: "/instance/home" },
+        platform: "linux",
+      }),
+      "/instance/home/.prime/agent",
+    );
+    assert.equal(
+      resolvePrimeAgentHomePath({ agentHomePath: "" }, path, {
+        processEnv: {
+          HOME: "/instance/home",
+          PRIME_AGENT_CODING_AGENT_DIR: "/instance/prime-home",
+        },
+        platform: "linux",
+      }),
+      "/instance/prime-home",
+    );
+    assert.equal(
+      resolvePrimeAgentHomePath({ agentHomePath: "" }, path, {
+        processEnv: {
+          HOME: "/instance/home",
+          PRIME_AGENT_CODING_AGENT_DIR: "~/.prime-alt",
+        },
+        platform: "linux",
+      }),
+      "/instance/home/.prime-alt",
+    );
+    assert.equal(
+      resolvePrimeAgentHomePath({ agentHomePath: "" }, path, {
+        processEnv: {
+          UserProfile: "C:\\Users\\Instance",
+          HomeDrive: "D:",
+          HomePath: "\\Ignored",
+        },
+        platform: "win32",
+      }),
+      "C:\\Users\\Instance\\.prime\\agent",
+    );
+    assert.equal(
+      resolvePrimeAgentHomePath({ agentHomePath: "" }, path, {
+        processEnv: { HOMEDRIVE: "D:", HOMEPATH: "\\Profiles\\DriveUser" },
+        platform: "win32",
+      }),
+      "D:\\Profiles\\DriveUser\\.prime\\agent",
+    );
+    assert.equal(
+      resolvePrimeAgentHomePath({ agentHomePath: "" }, path, {
+        processEnv: {
+          USERPROFILE: "C:\\Users\\Base",
+          PRIME_AGENT_CODING_AGENT_DIR: "C:\\prime-base",
+          UserProfile: "D:\\Users\\Instance",
+          prime_agent_coding_agent_dir: "~\\prime-instance",
+        },
+        platform: "win32",
+      }),
+      "D:\\Users\\Instance\\prime-instance",
+    );
+    assert.equal(
+      resolvePrimeAgentHomePath({ agentHomePath: "/explicit/prime-home" }, path, {
+        processEnv: {
+          HOME: "/instance/home",
+          PRIME_AGENT_CODING_AGENT_DIR: "relative-home",
+        },
+        platform: "linux",
+      }),
+      "/explicit/prime-home",
+    );
+    assert.equal(
+      resolvePrimeAgentHomePath({ agentHomePath: "" }, path, {
+        processEnv: {
+          HOME: "/instance/home",
+          PRIME_AGENT_CODING_AGENT_DIR: "relative-home",
+        },
+        platform: "linux",
+      }),
+      undefined,
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.layer(Layer.mergeAll(NodeServices.layer, UnreachableHttpClient))(
   "readPrimeAgentBackends",
   (it) => {
+    it.effect("reads auth from the HOME-derived instance account", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-prime-env-home-" });
+        const agentDir = path.join(home, ".prime", "agent");
+        yield* fs.makeDirectory(agentDir, { recursive: true });
+        yield* fs.writeFileString(path.join(agentDir, "auth.json"), "{}");
+
+        const result = yield* readPrimeAgentCapacity(
+          { agentHomePath: "" },
+          { processEnv: { HOME: home }, platform: "linux" },
+        );
+        assert.deepStrictEqual(result, { backends: [] });
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("fails closed for a relative environment agent dir without a provider cwd", () =>
+      Effect.gen(function* () {
+        const result = yield* readPrimeAgentCapacity(
+          { agentHomePath: "" },
+          {
+            processEnv: {
+              HOME: "/server/account",
+              PRIME_AGENT_CODING_AGENT_DIR: "relative-prime-home",
+            },
+            platform: "linux",
+          },
+        );
+        assert.equal(result, undefined);
+      }),
+    );
+
     it.effect("reads Prime's own ChatGPT capacity and skips an expired Anthropic token", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

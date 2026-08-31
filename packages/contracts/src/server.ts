@@ -79,6 +79,8 @@ export const ServerProviderModel = Schema.Struct({
   isDefault: Schema.optional(Schema.Boolean),
   isLegacy: Schema.optional(Schema.Boolean),
   capabilities: Schema.NullOr(ModelCapabilities),
+  /** Optional controls used only by background text generation pickers. */
+  backgroundTextGenerationCapabilities: Schema.optional(Schema.NullOr(ModelCapabilities)),
 });
 export type ServerProviderModel = typeof ServerProviderModel.Type;
 

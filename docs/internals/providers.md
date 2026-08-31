@@ -46,7 +46,33 @@ fallback warning. Cached models never override a disabled, missing, or unhealthy
 state. A healthy non-empty native catalog can report configured-provider readiness; an empty catalog
 leaves authentication unknown because it is not a credential-status API. No session is created only for model discovery. The synthetic `default` model means
 “do not force a model,” while discovered model metadata drives generic thinking and service-tier
-composer options. The daemon adapter can switch
+composer options.
+
+Background text generation is deliberately independent of both interactive backends. The instance-bound
+factory resolves the configured executable through the instance's merged environment, locates that exact
+installation's package-owned public ESM entry with the daemon bridge's safe locator, and spawns a fresh
+Node helper with an explicit non-extending environment and cwd. The bounded prompt and validated
+attachment-store image bytes travel over stdin; no prompt is placed in argv. The helper uses only Prime's
+public session and resource-loader APIs. The selected home remains explicit for credentials and models;
+the file-backed settings manager can read that home, but Pylon calls only its four provider, model,
+thinking-level, and service-tier default getters before copying those values into an in-memory manager.
+The child overrides Prime's SDK-global home with a separate scoped empty directory, so selected continual
+harness entries cannot load. Prime Agent 0.8.1 still adds its fixed zero-entry harness guidance; Pylon
+bounds and validates that exact empty block, adds an exact final isolation boundary, and rejects nonzero
+entries or extra prompt text. That fixed block has real input-token overhead. The helper disables tools and
+every optional resource, persistence, autonomous, retry, refinement, compaction, kernel, MCP, and telemetry
+path. It permits one model request and proves the transcript contains exactly one user and one assistant
+message with no tool content. Named selectors split only at the first `/`, while `default` omits a model override. Thinking
+and service-tier inheritance stay distinct from an explicit `default` tier; Prime may clamp inherited
+values to the selected model's supported controls. The parent owns the exact child
+in an Effect scope with a 180-second deadline, bounded output, and bounded TERM-to-KILL cleanup, then applies
+the shared JSON extraction, schemas, and text sanitizers. Expected SDK, model, auth, quota, timeout, crash,
+and output failures cross the boundary only as safe `TextGenerationError` details. Prime attempts ask the
+provider registry to refresh capacity, so its existing volatile overlay and snapshot stream remain the only
+usage publication path; other providers retain their existing background-generation behavior. Both daemon and ACP snapshots advertise versioned `background-text-generation`;
+daemon snapshots add `side-questions` when that public API is present.
+
+The daemon adapter can switch
 models before a turn, steer an active turn, admit
 explicit follow-ups, choose all-at-once or one-at-a-time delivery independently for steering and
 follow-up inputs, clear pending inputs, and remove the sole item in either lane without aborting

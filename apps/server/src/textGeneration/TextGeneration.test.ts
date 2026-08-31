@@ -5,7 +5,7 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { describe, expect } from "vite-plus/test";
 
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
@@ -116,6 +116,71 @@ describe("makeTextGenerationFromRegistry", () => {
         expect(result.failure.operation).toBe("generateBranchName");
         expect(result.failure.detail).toContain("missing_instance");
       }
+    }),
+  );
+
+  it.effect("does not refresh capacity after non-Prime background attempts", () =>
+    Effect.gen(function* () {
+      const codexId = ProviderInstanceId.make("codex");
+      const refreshes: string[] = [];
+      const codex = makeStubInstance(
+        codexId,
+        makeStubTextGeneration({
+          generateBranchName: () => Effect.succeed({ branch: "codex-branch" }),
+        }),
+      );
+      const tg = TextGeneration.makeTextGenerationFromRegistry(
+        makeStubRegistry([codex]),
+        (instanceId) => Effect.sync(() => refreshes.push(instanceId)),
+      );
+
+      const generated = yield* tg.generateBranchName({
+        cwd: process.cwd(),
+        message: "Generate a branch",
+        modelSelection: createModelSelection(codexId, "gpt-5"),
+      });
+
+      expect(generated).toEqual({ branch: "codex-branch" });
+      expect(refreshes).toEqual([]);
+    }),
+  );
+
+  it.effect("refreshes Prime capacity after successful and failed background attempts", () =>
+    Effect.gen(function* () {
+      const primeId = ProviderInstanceId.make("primeAgent");
+      const refreshes: string[] = [];
+      const prime = makeStubInstance(
+        primeId,
+        makeStubTextGeneration({
+          generateBranchName: () => Effect.succeed({ branch: "prime-branch" }),
+          generateThreadTitle: () =>
+            Effect.fail(
+              new TextGenerationError({
+                operation: "generateThreadTitle",
+                detail: "safe failure",
+              }),
+            ),
+        }),
+      );
+      const tg = TextGeneration.makeTextGenerationFromRegistry(
+        makeStubRegistry([prime]),
+        (instanceId) => Effect.sync(() => refreshes.push(instanceId)),
+      );
+
+      yield* tg.generateBranchName({
+        cwd: process.cwd(),
+        message: "Generate a branch",
+        modelSelection: createModelSelection(primeId, "default"),
+      });
+      yield* tg
+        .generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Generate a title",
+          modelSelection: createModelSelection(primeId, "default"),
+        })
+        .pipe(Effect.ignore);
+
+      expect(refreshes).toEqual([primeId, primeId]);
     }),
   );
 });

@@ -57,6 +57,82 @@ jobs:
           grep -nE "desktopBridge|getLocalEnvironmentBootstrap|PICK_FOLDER_CHANNEL|wsUrl" apps/desktop/dist-electron/preload.cjs
           grep -n "__clerk_internal_electron_passkeys" apps/desktop/dist-electron/preload.cjs
 
+  prime_background_platform:
+    name: Prime Background Platform (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Test Prime background subprocess on the host platform
+        run: vp test run apps/server/src/textGeneration/PrimeAgentTextGeneration.platform.test.ts
+
+  desktop_prime_packaged_smoke:
+    name: Desktop Prime Packaged Smoke (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-2025
+            platform: win
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Install ImageMagick
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y imagemagick
+          fi
+
+          if command -v magick >/dev/null 2>&1; then
+              magick -version
+          else
+              convert -version
+          fi
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Build unpacked app and run packaged Prime external-ESM smoke
+        run: node scripts/build-desktop-artifact.ts --platform ${{ matrix.platform }} --arch x64 --smoke-only
+
   # Everything except `t3` (apps/server). `--fail-if-no-match` is Pylon's:
   # without it a filter that matches nothing only warns and exits 0, so a
   # renamed package would turn this job into a green no-op.

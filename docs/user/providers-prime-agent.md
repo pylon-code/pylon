@@ -166,6 +166,40 @@ In the main thread, each Prime tool call uses one activity row as it starts, upd
 
 For an active agent, **Live activity** opens an on-demand view on web, desktop, or mobile. It is a bounded replacement snapshot from Prime's public live-session watcher, not a durable transcript: Pylon does not persist it in the thread, share it with clients that did not open the view, or keep it after the panel closes. The panel shows assistant text plus a coarse tool timeline containing only a friendly label and **Started**, **Completed**, or **Failed**; IPython appears as **Code**. It also repeats the safe aggregate status already shown in the agent roster, such as token or tool counts. Child prompts, tool arguments, partial and final results, thinking, paths, timestamps, native identifiers and metadata, error text, attachments, and usage details are excluded. **No activity yet** means the agent may still be thinking; it does not mean the agent is inactive. The subscription closes when the view closes, the agent exits, the thread or provider changes, or the client disconnects. Pylon can build a bounded coarse skeleton from committed messages returned by the public watcher, but Prime Agent 0.8.1 cannot reopen an exited child, provide lossless historical child activity, or atomically expose activity that was already streaming when the view opened, so Pylon labels the view **Live only** rather than implying complete history.
 
+## Background Writing
+
+Prime Agent can be selected for thread titles and for source-control writing in Settings. Each title,
+branch name, commit message, or change-request draft uses the selected model, thinking level, service
+tier, Prime Agent home, and environment. The global **Text generation** setting and the optional
+**Source control writer model** setting each show the selected model's background-only thinking and
+service-tier controls, including when interactive Prime threads use ACP compatibility mode. Inherited
+thinking levels and service tiers are clamped by Prime to the selected model's supported controls.
+**Prime Agent Default** preserves Prime's default model selection. A named model keeps its complete
+`provider/model` identifier, including model ids that contain additional `/` characters. Pylon never falls back to another provider or credential when the
+selection cannot run.
+
+Pylon runs this work in a short-lived, tool-free Node process through the selected Prime installation's
+public SDK. The process has no session history, extensions, skills, prompt templates, themes, project
+context files, MCP servers, goals, autonomy, kernels, retries, refinement, compaction, or telemetry.
+No installed, user, or project prompt resource is loaded. The selected Prime home supplies credentials,
+models, and persisted settings; Pylon calls only the four provider, model, thinking-level, and service-tier
+default getters and copies those values into an in-memory manager. A separate scoped empty SDK-global
+home prevents the selected home's continual-harness entries from loading. Prime Agent 0.8.1 still appends
+its fixed empty-harness guidance, with zero prompt, memory, skill, subagent, and recent-refinement counts,
+after Pylon's short instruction and date/working-directory lines. Pylon adds a final instruction to ignore
+that empty guidance for the isolated draft and rejects any nonempty harness state. This fixed text consumes
+some input tokens on every request. The bounded writing prompt is sent through standard input rather than
+the process command line, and the session is disposed after one model request. Images are included only when their attachment-store files
+still validate; ordinary file attachments and arbitrary filesystem paths are not read.
+
+Each title, branch, commit message, and change-request draft is a real model request. It consumes tokens
+and can incur charges from the selected model provider. A timeout, missing or incompatible SDK,
+unavailable model, authentication failure, spent quota, process crash, or invalid response fails that
+writing action without adding provider-native errors or partial text to the thread. Pylon does not write
+per-action usage or cost into thread history, but it refreshes Prime's account capacity after the attempt
+through the normal provider snapshot path. This background support is available whether interactive Prime threads
+use the native daemon or ACP compatibility mode.
+
 Supervised daemon sessions also expose **Quick question** in the composer. It asks the selected session model one tool-free question against a snapshot of the current conversation, then returns one temporary answer. The question and answer are sent only to the requesting client: Pylon does not add them to the thread, checkpoint them, synchronize them to other clients, or retry them after a disconnect. Closing or cancelling the request makes one best-effort native abort, and a timeout or uncertain outcome stays explicit. Quick questions can still consume model tokens and incur provider charges.
 
 Quick question is intentionally unavailable in Full access. Prime Agent 0.8.1 gives a side question no model tools, but it still inherits provider hooks from discovered extensions; those hooks can run outside Pylon's normal turn and checkpoint ownership. Supervised sessions disable extension discovery and use only Pylon's verified approval gate, whose hooks do not run for a tool-free side answer. Restored sessions and ACP compatibility mode also fail closed.
@@ -230,7 +264,10 @@ also mean the selected model has no registered price.
 ## Subscription Capacity
 
 Prime Agent runs each model on that backend's own subscription, so the capacity readout beside the
-composer follows the selected model. Pylon reads Prime's sign-ins to show the right account: Prime's
+composer follows the selected model. Pylon resolves those sign-ins from the selected instance's explicit
+Agent home or merged `PRIME_AGENT_CODING_AGENT_DIR` and home environment; an unresolved relative
+environment path leaves capacity unknown rather than reading the Pylon server account. Pylon reads
+Prime's sign-ins to show the right account: Prime's
 own Anthropic or ChatGPT reading while Prime has used that backend recently — re-read after every
 Prime turn — or the configured Codex account whose identity matches Prime's. A failed refresh keeps
 its last good same-account reading for up to thirty minutes. Reading Prime's own ChatGPT capacity
@@ -288,7 +325,7 @@ access off withholds both the tools and their instructions; it does not affect b
   explicitly supports Pylon's correlated lifecycle extension and the live model controls already match.
   Stock Prime Agent 0.8.1 instead returns a retryable busy result when Pylon can observe native activity;
   it cannot close the narrow race where native work starts before ordinary prompt admission completes.
-- Prime Agent is not used for Pylon's background text-generation helpers in Early Access.
+- Background title, branch, commit, and change-request writing runs in a separate one-request Prime Agent process. It does not join or modify the interactive thread.
 - Quick questions are one-shot and temporary because Prime cannot recover or list them after reconnect.
   They are available only under the Supervised safeguards described above. Native scoped-model cycling
   and transport controls are also omitted: Pylon's durable model picker and environment connection remain authoritative. Direct session bash, system-prompt and

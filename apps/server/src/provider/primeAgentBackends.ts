@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - capacity home resolution must model Windows paths while tests run on other hosts.
 /**
  * What Prime Agent is signed in to, per backend.
  *
@@ -26,6 +27,7 @@
  */
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import type {
   PrimeAgentSettings,
@@ -48,6 +50,7 @@ import type * as CodexSchema from "effect-codex-app-server/schema";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { resolveProviderHomePath } from "../pathExpansion.ts";
+import { PRIME_AGENT_HOME_ENV } from "./acp/PrimeAgentAcpSupport.ts";
 import {
   providerBackendsFromCapacityRefresh,
   type ProviderBackendCapacityRead,
@@ -159,15 +162,70 @@ export function primeAgentSignInsFromAuthFile(
   return signIns;
 }
 
-/** Prime's agent home: the configured path, or Prime's own default. */
+export interface PrimeAgentHomeResolutionOptions {
+  readonly processEnv?: NodeJS.ProcessEnv | undefined;
+  /** Test seam for Windows path semantics on non-Windows hosts. */
+  readonly platform?: NodeJS.Platform | undefined;
+}
+
+function environmentValue(
+  environment: NodeJS.ProcessEnv,
+  name: string,
+  platform: NodeJS.Platform,
+): string | undefined {
+  if (platform !== "win32") return environment[name];
+  const entries = Object.entries(environment);
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const [candidate, value] = entries[index]!;
+    if (candidate.toUpperCase() === name.toUpperCase()) return value;
+  }
+  return undefined;
+}
+
+function environmentHome(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string | undefined {
+  const pathApi = platform === "win32" ? NodePath.win32 : NodePath.posix;
+  const candidates =
+    platform === "win32"
+      ? [
+          environmentValue(environment, "USERPROFILE", platform)?.trim(),
+          `${environmentValue(environment, "HOMEDRIVE", platform)?.trim() ?? ""}${environmentValue(environment, "HOMEPATH", platform)?.trim() ?? ""}`,
+        ]
+      : [environment.HOME?.trim()];
+  return candidates.find((candidate): candidate is string =>
+    Boolean(candidate && pathApi.isAbsolute(candidate)),
+  );
+}
+
+/** Prime's effective agent home for the selected instance environment. */
 export function resolvePrimeAgentHomePath(
   settings: Pick<PrimeAgentSettings, "agentHomePath">,
   path: Path.Path,
-): string {
+  options: PrimeAgentHomeResolutionOptions = {},
+): string | undefined {
   const configured = settings.agentHomePath.trim();
-  return configured
-    ? resolveProviderHomePath(configured)
-    : path.join(NodeOS.homedir(), ".prime", "agent");
+  if (configured) return resolveProviderHomePath(configured);
+  if (!options.processEnv) return path.join(NodeOS.homedir(), ".prime", "agent");
+
+  const platform = options.platform;
+  if (!platform) return undefined;
+  const pathApi = platform === "win32" ? NodePath.win32 : NodePath.posix;
+  const home = environmentHome(options.processEnv, platform);
+  const environmentAgentDir = environmentValue(
+    options.processEnv,
+    PRIME_AGENT_HOME_ENV,
+    platform,
+  )?.trim();
+  if (!environmentAgentDir) return home ? pathApi.join(home, ".prime", "agent") : undefined;
+  if (environmentAgentDir === "~") return home;
+  if (environmentAgentDir.startsWith("~/") || environmentAgentDir.startsWith("~\\")) {
+    return home ? pathApi.join(home, environmentAgentDir.slice(2)) : undefined;
+  }
+  return pathApi.isAbsolute(environmentAgentDir)
+    ? pathApi.normalize(environmentAgentDir)
+    : undefined;
 }
 
 /**
@@ -327,7 +385,7 @@ const readPrimeAgentCodexCapacity = Effect.fn("readPrimeAgentCodexCapacity")(fun
   }).pipe(Effect.ensuring(releaseSharedUsageLock(cacheDir, cacheKey)));
 });
 
-export interface ReadPrimeAgentBackendsOptions {
+export interface ReadPrimeAgentBackendsOptions extends PrimeAgentHomeResolutionOptions {
   readonly sharedCacheDir?: string | undefined;
   /**
    * How recent a shared reading must be to be served instead of read again.
@@ -364,7 +422,8 @@ export const readPrimeAgentCapacity = Effect.fn("readPrimeAgentCapacity")(functi
 > {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const homePath = resolvePrimeAgentHomePath(settings, path);
+  const homePath = resolvePrimeAgentHomePath(settings, path, options);
+  if (!homePath) return undefined;
   const raw = yield* fileSystem.readFileString(path.join(homePath, "auth.json")).pipe(
     Effect.map(Option.some),
     Effect.catchCause(() => Effect.succeed(Option.none<string>())),

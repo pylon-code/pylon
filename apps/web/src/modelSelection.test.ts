@@ -19,6 +19,7 @@ function provider(input: {
   instanceId: string;
   models?: ReadonlyArray<string>;
   supportsBackgroundTextGeneration?: boolean;
+  featureCapabilities?: ServerProvider["featureCapabilities"];
 }): ServerProvider {
   const driver =
     input.provider ??
@@ -44,6 +45,9 @@ function provider(input: {
     skills: [],
     ...(input.supportsBackgroundTextGeneration !== undefined
       ? { supportsBackgroundTextGeneration: input.supportsBackgroundTextGeneration }
+      : {}),
+    ...(input.featureCapabilities !== undefined
+      ? { featureCapabilities: input.featureCapabilities }
       : {}),
   };
 }
@@ -306,13 +310,146 @@ describe("instance-scoped model selection", () => {
     ).toBe("claude-sonnet-4-6");
   });
 
-  it("excludes providers that cannot perform background text generation", () => {
+  it("keeps Prime Agent selected for versioned background text generation", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("primeAgent"),
+        instanceId: "primeAgent",
+        models: ["default", "openai-codex/gpt-5.6"],
+        supportsBackgroundTextGeneration: true,
+        featureCapabilities: {
+          version: 1,
+          automation: {
+            support: "read-write",
+            operations: ["background-text-generation"],
+          },
+        },
+      }),
+      provider({ instanceId: "codex", models: ["gpt-5.4-mini"] }),
+    ];
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("primeAgent"),
+        model: "openai-codex/gpt-5.6",
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers)).toMatchObject({
+      instanceId: ProviderInstanceId.make("primeAgent"),
+      model: "openai-codex/gpt-5.6",
+    });
+  });
+
+  it("uses ACP Prime controls only for background selection normalization", () => {
+    const basePrime = provider({
+      provider: ProviderDriverKind.make("primeAgent"),
+      instanceId: "primeAgent",
+      models: ["openai-codex/gpt-5.6"],
+      supportsBackgroundTextGeneration: true,
+      featureCapabilities: {
+        version: 1,
+        automation: {
+          support: "read-write",
+          operations: ["background-text-generation"],
+        },
+      },
+    });
+    const capabilities = {
+      optionDescriptors: [
+        {
+          id: "thinkingLevel",
+          label: "Thinking",
+          type: "select" as const,
+          options: [
+            { id: "prime-default", label: "Prime default", isDefault: true },
+            { id: "high", label: "High" },
+          ],
+          currentValue: "prime-default",
+        },
+      ],
+    };
+    const prime: ServerProvider = {
+      ...basePrime,
+      models: [
+        {
+          ...basePrime.models[0]!,
+          capabilities: { optionDescriptors: [] },
+          backgroundTextGenerationCapabilities: capabilities,
+        },
+      ],
+    };
+    const providers = [prime];
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      textGenerationModelSelection: createModelSelection(
+        ProviderInstanceId.make("primeAgent"),
+        "openai-codex/gpt-5.6",
+      ),
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers).options).toEqual([
+      { id: "thinkingLevel", value: "prime-default" },
+    ]);
+    expect(
+      getComposerProviderState({
+        provider: ProviderDriverKind.make("primeAgent"),
+        model: "openai-codex/gpt-5.6",
+        models: prime.models,
+        modelOptions: undefined,
+        planModeEnabled: false,
+      }).modelOptionsForDispatch,
+    ).toBeUndefined();
+    expect(
+      getComposerProviderState({
+        provider: ProviderDriverKind.make("primeAgent"),
+        model: "openai-codex/gpt-5.6",
+        models: prime.models,
+        modelOptions: undefined,
+        planModeEnabled: false,
+        capabilityContext: "background-text-generation",
+      }).modelOptionsForDispatch,
+    ).toEqual([{ id: "thinkingLevel", value: "prime-default" }]);
+  });
+
+  it("falls back when Prime's legacy background-writing flag is disabled", () => {
     const providers = [
       provider({
         provider: ProviderDriverKind.make("primeAgent"),
         instanceId: "primeAgent",
         models: ["default"],
         supportsBackgroundTextGeneration: false,
+      }),
+      provider({ instanceId: "codex", models: ["gpt-5.4-mini"] }),
+    ];
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("primeAgent"),
+        model: "default",
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers)).toMatchObject({
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.4-mini",
+    });
+  });
+
+  it("treats versioned automation as authoritative over a contradictory legacy flag", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("primeAgent"),
+        instanceId: "primeAgent",
+        models: ["default"],
+        supportsBackgroundTextGeneration: true,
+        featureCapabilities: {
+          version: 1,
+          automation: {
+            support: "read-write",
+            operations: ["side-questions"],
+          },
+        },
       }),
       provider({ instanceId: "codex", models: ["gpt-5.4-mini"] }),
     ];

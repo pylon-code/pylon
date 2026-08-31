@@ -421,6 +421,7 @@ export function resolveAppModelSelectionState(
       models: entry.models,
       modelOptions: selectedEntry ? selection.options : undefined,
       planModeEnabled: settings.planModeEnabled,
+      capabilityContext: "background-text-generation",
     });
 
     return createModelSelection(entry.instanceId, model, modelOptionsForDispatch);
@@ -439,6 +440,7 @@ export function resolveAppModelSelectionState(
     models: getProviderModels(selectableProviders, provider),
     modelOptions: keptSelectedProvider ? selection.options : undefined,
     planModeEnabled: settings.planModeEnabled,
+    capabilityContext: "background-text-generation",
   });
 
   return createModelSelection(defaultInstanceIdForDriver(provider), model, modelOptionsForDispatch);

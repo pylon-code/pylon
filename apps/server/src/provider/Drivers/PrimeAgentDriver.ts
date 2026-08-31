@@ -1,4 +1,5 @@
 import { PrimeAgentSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -97,6 +98,7 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const hostPlatform = yield* HostProcessPlatform;
       const httpClient = yield* HttpClient.HttpClient;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -198,7 +200,6 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         );
       const stampSnapshot = (snapshot: ServerProviderDraft) =>
         stampIdentity(stampBackendSnapshot(snapshot));
-      const textGeneration = makePrimeAgentTextGeneration();
 
       // What Prime is signed in to, so the composer can show the capacity of
       // the account Prime actually uses rather than assume it.
@@ -219,16 +220,21 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
-      const readBackends = provideBackendServices(readPrimeAgentBackends(effectiveConfig));
+      const readBackends = provideBackendServices(
+        readPrimeAgentBackends(effectiveConfig, { processEnv, platform: hostPlatform }),
+      );
       // After a turn the credential Prime just used is fresh and the number
       // just changed: read again unless a reading under a minute old exists.
       const capacity = {
         refresh: provideBackendServices(
           readPrimeAgentCapacity(effectiveConfig, {
+            processEnv,
+            platform: hostPlatform,
             freshForMs: PRIME_AGENT_TURN_END_CAPACITY_FRESH_MS,
           }),
         ),
       };
+      const textGeneration = yield* makePrimeAgentTextGeneration(effectiveConfig, processEnv);
       const checkProvider = checkPrimeAgentProviderStatus(effectiveConfig, processEnv, {
         readBackends,
       }).pipe(
