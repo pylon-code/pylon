@@ -44,6 +44,9 @@ function finiteNumber(value: unknown): number | null {
  * Entries without both an input and an output rate are dropped: a half-priced
  * model would silently under-report cost, which is worse than reporting the
  * model as unpriced.
+ *
+ * Entries keep their full normalized key; a bare name is aliased only when no
+ * canonical entry exists and every qualified entry has the same rate.
  */
 export function parseRateTable(document: unknown): RateTable {
   const table = new Map<string, ModelRate>();
@@ -56,7 +59,9 @@ export function parseRateTable(document: unknown): RateTable {
     const output = finiteNumber(entry.output_cost_per_token);
     if (input === null || output === null) continue;
 
-    table.set(normalizeModelName(name), {
+    const key = normalizeRateKey(name);
+    if (key.length === 0) continue;
+    table.set(key, {
       inputCostPerToken: input,
       outputCostPerToken: output,
       // Anthropic bills cache reads at a discount and cache writes at a
@@ -66,20 +71,49 @@ export function parseRateTable(document: unknown): RateTable {
       cacheCreationCostPerToken: finiteNumber(entry.cache_creation_input_token_cost) ?? input,
     });
   }
+
+  // A bare name always resolves to something. Requiring unanimity among
+  // qualified entries would strip pricing from every model LiteLLM publishes
+  // only under provider prefixes — all the Grok models among them, whose
+  // xai/, azure_ai/ and replicate/ rates disagree.
+  //
+  // The rule is precedence, not agreement: a canonical unqualified entry wins,
+  // and otherwise the shallowest qualified key does, which is the first-party
+  // publisher rather than a reseller (`xai/grok-4` over `replicate/xai/grok-4`).
+  // That is what keeps a resale entry with no cache discount from overwriting
+  // the canonical Anthropic rate, which is the bug this all started from.
+  const aliasCandidates = new Map<string, { readonly depth: number; readonly rate: ModelRate }>();
+  for (const [key, rate] of table) {
+    const alias = bareModelName(key);
+    if (alias.length === 0 || alias === key || table.has(alias)) continue;
+    const depth = key.split("/").length;
+    const held = aliasCandidates.get(alias);
+    if (held === undefined || depth < held.depth) {
+      aliasCandidates.set(alias, { depth, rate });
+    }
+  }
+  for (const [alias, candidate] of aliasCandidates) {
+    table.set(alias, candidate.rate);
+  }
+
   return table;
 }
 
+function normalizeRateKey(model: string): string {
+  return model.trim().toLowerCase();
+}
+
 /**
- * Canonicalises a model name for lookup.
- *
- * Strips a `provider/` prefix (LiteLLM publishes both `claude-opus-5` and
- * `anthropic/claude-opus-5`) and lowercases, since transcripts are inconsistent
- * about casing.
+ * The bare model name a lookup falls back to: a `provider/` prefix stripped and
+ * lowercased, since transcripts are inconsistent about both.
  */
 export function normalizeModelName(model: string): string {
-  const trimmed = model.trim().toLowerCase();
-  const slash = trimmed.lastIndexOf("/");
-  return slash === -1 ? trimmed : trimmed.slice(slash + 1);
+  return bareModelName(normalizeRateKey(model));
+}
+
+function bareModelName(key: string): string {
+  const slash = key.lastIndexOf("/");
+  return slash === -1 ? key : key.slice(slash + 1);
 }
 
 /**
@@ -98,10 +132,28 @@ const UNPRICEABLE_MODELS = new Set([
   "fable",
 ]);
 
+/**
+ * How many distinct models the table can price, which is the count of bare
+ * names. The map also holds every provider-qualified restatement, so its raw
+ * size roughly doubles the figure a user would recognise.
+ */
+export function countKnownModels(table: RateTable): number {
+  let count = 0;
+  for (const key of table.keys()) {
+    if (!key.includes("/")) count += 1;
+  }
+  return count;
+}
+
 export function lookupRate(table: RateTable, model: string): ModelRate | null {
-  const normalized = normalizeModelName(model);
-  if (normalized.length === 0 || UNPRICEABLE_MODELS.has(normalized)) return null;
-  return table.get(normalized) ?? null;
+  const key = normalizeRateKey(model);
+  const bareName = normalizeModelName(model);
+  if (bareName.length === 0 || UNPRICEABLE_MODELS.has(bareName)) return null;
+  // Exact first, so a reseller's own key keeps its own rate. Then the bare name,
+  // because transcripts record gateway-proxied ids LiteLLM has no key for —
+  // `anthropic/claude-sonnet-4-5`, `x-ai/grok-code-fast-1` — and those should
+  // price as the model they are rather than reporting unpriced.
+  return table.get(key) ?? table.get(bareName) ?? null;
 }
 
 export interface PricedUsage {

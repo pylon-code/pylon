@@ -40,7 +40,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
-import { parseRateTable, type RateTable } from "./usagePricing.ts";
+import { countKnownModels, parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -453,7 +453,7 @@ export const make = Effect.gen(function* () {
           ratesFetchedAtMs === null
             ? null
             : DateTime.formatIso(DateTime.makeUnsafe(ratesFetchedAtMs)),
-        knownModels: rates.size,
+        knownModels: countKnownModels(rates),
       },
       scanDurationMs: Math.max(0, finishedAtMs - startedAtMs),
     } satisfies UsageSummary;
