@@ -73,7 +73,6 @@ import {
 import {
   ActivityIndicator,
   Alert,
-  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -100,9 +99,12 @@ import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/re
 import { scopedThreadKey } from "../../lib/scopedEntities";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
-import { SymbolView } from "../../components/AppSymbol";
 import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
-import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
+import {
+  ComposerAttachmentStrip,
+  ComposerAttachmentThumbnail,
+} from "../../components/ComposerAttachmentStrip";
+import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
 import { GlassSurface } from "../../components/GlassSurface";
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
 import {
@@ -113,7 +115,10 @@ import {
 } from "../../components/ComposerToolbar";
 import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
-import type { DraftComposerAttachment } from "../../lib/composerImages";
+import type {
+  DraftComposerAttachment,
+  DraftComposerFileAttachment,
+} from "../../lib/composerImages";
 import {
   buildModelOptions,
   type ModelOption,
@@ -492,6 +497,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const { onExpandedChange } = props;
 
   const [previewImageUri, setPreviewImageUri] = useState<string | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const hasContent = props.draftMessage.trim().length > 0 || props.draftAttachments.length > 0;
   // Opening and presentation count as active so the composer stays expanded
   // while focus moves between its native editor and the settings picker.
@@ -507,6 +513,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const onPressImage = useCallback(
     (uri: string) => {
       wasExpandedBeforePreviewRef.current = isFocused;
+      setPreviewVideo(null);
       setPreviewImageUri(uri);
     },
     [isFocused],
@@ -514,10 +521,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
 
   const closePreview = useCallback(() => {
     setPreviewImageUri(null);
+    setPreviewVideo(null);
     if (wasExpandedBeforePreviewRef.current) {
-      setTimeout(() => inputRef.current?.focus(), 100);
+      setTimeout(() => {
+        if (navigation.isFocused()) inputRef.current?.focus();
+      }, 100);
     }
-  }, [inputRef]);
+  }, [inputRef, navigation]);
+
+  const onPressVideo = useCallback(
+    (attachment: DraftComposerFileAttachment, sourceIdentifier: string) => {
+      wasExpandedBeforePreviewRef.current = isFocused;
+      setPreviewImageUri(null);
+      setPreviewVideo((current) => current ?? { type: "local", attachment, sourceIdentifier });
+    },
+    [isFocused],
+  );
 
   const onEditorFocusChange = props.onEditorFocusChange;
   const handleFocus = useCallback(() => {
@@ -1667,6 +1686,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   attachments={props.draftAttachments}
                   onRemove={voiceInput.isBusy ? () => undefined : props.onRemoveDraftImage}
                   onPressImage={voiceInput.isBusy ? undefined : onPressImage}
+                  onPressVideo={voiceInput.isBusy ? undefined : onPressVideo}
                 />
               </Animated.View>
             ) : null}
@@ -1712,32 +1732,17 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             </View>
             {!isExpanded && props.draftAttachments.length > 0 ? (
               <View className="flex-row gap-1 pl-1">
-                {props.draftAttachments.slice(0, 3).map((attachment) =>
-                  attachment.type === "image" ? (
-                    <Pressable
-                      key={attachment.id}
-                      onPress={() => onPressImage(attachment.previewUri)}
-                    >
-                      <Image
-                        source={{ uri: attachment.previewUri }}
-                        className="size-[30px] rounded-lg bg-subtle"
-                        resizeMode="cover"
-                      />
-                    </Pressable>
-                  ) : (
-                    <View
-                      key={attachment.id}
-                      className="size-[30px] items-center justify-center rounded-lg bg-subtle"
-                    >
-                      <SymbolView
-                        name="doc.text"
-                        size={15}
-                        tintColorClassName="accent-icon-subtle"
-                        type="monochrome"
-                      />
-                    </View>
-                  ),
-                )}
+                {props.draftAttachments.slice(0, 3).map((attachment) => (
+                  <ComposerAttachmentThumbnail
+                    key={attachment.id}
+                    attachment={attachment}
+                    size={30}
+                    borderRadius={8}
+                    compact
+                    onPressImage={onPressImage}
+                    onPressVideo={onPressVideo}
+                  />
+                ))}
                 {props.draftAttachments.length > 3 ? (
                   <View className="size-[30px] items-center justify-center rounded-lg bg-subtle-strong">
                     <Text className="text-foreground-muted text-2xs font-t3-bold">
@@ -2178,6 +2183,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      <VideoPreviewModal source={previewVideo} onRequestClose={closePreview} />
       <ImageViewing
         images={previewImageUri ? [{ uri: previewImageUri }] : []}
         imageIndex={0}
