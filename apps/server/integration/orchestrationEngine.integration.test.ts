@@ -704,7 +704,7 @@ it.live("records failed turn runtime state and checkpoint status as error", () =
   ),
 );
 
-it.live("reverts to an earlier checkpoint and trims checkpoint projections + git refs", () =>
+it.live("fails closed before checkpoint, workspace, or provider rollback mutation", () =>
   withHarness((harness) =>
     Effect.gen(function* () {
       yield* seedProjectAndThread(harness);
@@ -763,9 +763,11 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
         createdAt: "2026-02-24T10:04:59.900Z",
       });
 
-      yield* harness.waitForThread(
-        THREAD_ID,
-        (entry) => entry.session?.threadId === "thread-1" && entry.checkpoints.length === 1,
+      yield* harness.waitForReceipt(
+        (receipt): receipt is TurnProcessingQuiescedReceipt =>
+          receipt.type === "turn.processing.quiesced" &&
+          receipt.threadId === THREAD_ID &&
+          receipt.checkpointTurnCount === 1,
       );
 
       yield* harness.adapterHarness!.queueTurnResponse(THREAD_ID, {
@@ -822,13 +824,11 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
         createdAt: "2026-02-24T10:05:00.900Z",
       });
 
-      yield* harness.waitForThread(
-        THREAD_ID,
-        (entry) =>
-          entry.latestTurn?.turnId === "turn-2" &&
-          entry.checkpoints.length === 2 &&
-          entry.activities.some((activity) => activity.turnId === "turn-2"),
-        8000,
+      yield* harness.waitForReceipt(
+        (receipt): receipt is TurnProcessingQuiescedReceipt =>
+          receipt.type === "turn.processing.quiesced" &&
+          receipt.threadId === THREAD_ID &&
+          receipt.checkpointTurnCount === 2,
       );
 
       yield* harness.engine.dispatch({
@@ -839,50 +839,32 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
         createdAt: nowIso(),
       });
 
-      yield* harness.waitForDomainEvent((event) => event.type === "thread.reverted");
-      const revertedThread = yield* harness.waitForThread(
-        THREAD_ID,
-        (entry) =>
-          entry.checkpoints.length === 1 && entry.checkpoints[0]?.checkpointTurnCount === 1,
-      );
-      assert.equal(revertedThread.checkpoints[0]?.checkpointTurnCount, 1);
-      assert.deepEqual(
-        revertedThread.messages.map((message) => ({ role: message.role, text: message.text })),
-        [
-          { role: "user", text: "First edit" },
-          { role: "assistant", text: "Updated README to v2.\n" },
-        ],
-      );
+      yield* harness.drainCheckpointReactor;
+      const snapshot = yield* harness.snapshotQuery.getSnapshot();
+      const unchangedThread = snapshot.threads.find((entry) => entry.id === THREAD_ID);
+
+      assert.equal(unchangedThread?.checkpoints.length, 2);
+      assert.equal(unchangedThread?.latestTurn?.turnId, "turn-2");
       assert.equal(
-        revertedThread.activities.some((activity) => activity.turnId === "turn-2"),
-        false,
-      );
-      assert.equal(
-        revertedThread.activities.some(
-          (activity) => activity.turnId === "turn-1" && activity.kind === "tool.started",
-        ),
-        true,
-      );
-      assert.equal(
-        revertedThread.activities.some(
-          (activity) => activity.turnId === "turn-1" && activity.kind === "tool.completed",
+        unchangedThread?.activities.some(
+          (activity) => activity.kind === "checkpoint.revert.failed",
         ),
         true,
       );
       assert.equal(
         NodeFS.readFileSync(NodePath.join(harness.workspaceDir, "README.md"), "utf8"),
-        "v2\n",
+        "v3\n",
       );
       assert.equal(
         gitRefExists(harness.workspaceDir, checkpointRefForThreadTurn(THREAD_ID, 2)),
-        false,
+        true,
       );
-      assert.deepEqual(harness.adapterHarness!.getRollbackCalls(THREAD_ID), [1]);
+      assert.deepEqual(harness.adapterHarness!.getRollbackCalls(THREAD_ID), []);
 
       const checkpointRows = yield* harness.checkpointRepository.listByThreadId({
         threadId: THREAD_ID,
       });
-      assert.equal(checkpointRows.length, 1);
+      assert.equal(checkpointRows.length, 2);
     }),
   ),
 );
@@ -902,15 +884,10 @@ it.live(
           createdAt: nowIso(),
         });
 
-        const thread = yield* harness.waitForThread(THREAD_ID, (entry) =>
-          entry.activities.some(
-            (activity) =>
-              activity.kind === "checkpoint.revert.failed" &&
-              typeof activity.payload === "object" &&
-              activity.payload !== null,
-          ),
-        );
-        const failureActivity = thread.activities.find(
+        yield* harness.drainCheckpointReactor;
+        const snapshot = yield* harness.snapshotQuery.getSnapshot();
+        const thread = snapshot.threads.find((entry) => entry.id === THREAD_ID);
+        const failureActivity = thread?.activities.find(
           (activity) => activity.kind === "checkpoint.revert.failed",
         );
         assert.equal(failureActivity !== undefined, true);
@@ -1292,7 +1269,7 @@ it.live("forwards thread.turn.interrupt to claudeAgent provider sessions", () =>
   ),
 );
 
-it.live("reverts claudeAgent turns and rolls back provider conversation state", () =>
+it.live("fails closed for relative claudeAgent rollback", () =>
   withHarness(
     (harness) =>
       Effect.gen(function* () {
@@ -1350,10 +1327,11 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
           },
         });
 
-        yield* harness.waitForThread(
-          THREAD_ID,
-          (entry) =>
-            entry.latestTurn?.turnId === "turn-1" && entry.session?.threadId === "thread-1",
+        yield* harness.waitForReceipt(
+          (receipt): receipt is TurnProcessingQuiescedReceipt =>
+            receipt.type === "turn.processing.quiesced" &&
+            receipt.threadId === THREAD_ID &&
+            receipt.checkpointTurnCount === 1,
         );
 
         yield* harness.adapterHarness!.queueTurnResponse(THREAD_ID, {
@@ -1404,12 +1382,11 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
           text: "Second Claude edit",
         });
 
-        yield* harness.waitForThread(
-          THREAD_ID,
-          (entry) =>
-            entry.latestTurn?.turnId === "turn-2" &&
-            entry.checkpoints.length === 2 &&
-            entry.session?.providerName === "claudeAgent",
+        yield* harness.waitForReceipt(
+          (receipt): receipt is TurnProcessingQuiescedReceipt =>
+            receipt.type === "turn.processing.quiesced" &&
+            receipt.threadId === THREAD_ID &&
+            receipt.checkpointTurnCount === 2,
         );
 
         yield* harness.engine.dispatch({
@@ -1420,21 +1397,26 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
           createdAt: nowIso(),
         });
 
-        const revertedThread = yield* harness.waitForThread(
-          THREAD_ID,
-          (entry) =>
-            entry.checkpoints.length === 1 && entry.checkpoints[0]?.checkpointTurnCount === 1,
+        yield* harness.drainCheckpointReactor;
+        const snapshot = yield* harness.snapshotQuery.getSnapshot();
+        const unchangedThread = snapshot.threads.find((entry) => entry.id === THREAD_ID);
+
+        assert.equal(unchangedThread?.checkpoints.length, 2);
+        assert.equal(
+          unchangedThread?.activities.some(
+            (activity) => activity.kind === "checkpoint.revert.failed",
+          ),
+          true,
         );
-        assert.equal(revertedThread.checkpoints[0]?.checkpointTurnCount, 1);
         assert.equal(
           gitRefExists(harness.workspaceDir, checkpointRefForThreadTurn(THREAD_ID, 1)),
           true,
         );
         assert.equal(
           gitRefExists(harness.workspaceDir, checkpointRefForThreadTurn(THREAD_ID, 2)),
-          false,
+          true,
         );
-        assert.deepEqual(harness.adapterHarness!.getRollbackCalls(THREAD_ID), [1]);
+        assert.deepEqual(harness.adapterHarness!.getRollbackCalls(THREAD_ID), []);
       }),
     CLAUDE_AGENT_PROVIDER,
   ),

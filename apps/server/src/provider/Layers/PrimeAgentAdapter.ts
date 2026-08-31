@@ -50,6 +50,7 @@ import {
   type PrimeAgentAcpTerminalUpdate,
 } from "../acp/PrimeAgentAcpSupport.ts";
 import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
+import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
 import { canonicalPrimeToolItemId } from "../prime/PrimeAgentDaemonRuntimeEvents.ts";
 import {
   makePrimeAgentEventPubSub,
@@ -1172,7 +1173,10 @@ export function makePrimeAgentAdapter(
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "unsupported", conversationRollback: "unsupported" },
+      capabilities: {
+        sessionModelSwitch: "unsupported",
+        conversationRollback: BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.prime,
+      },
       startSession,
       sendTurn,
       interruptTurn,

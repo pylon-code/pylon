@@ -228,6 +228,7 @@ function buildProps() {
     onOpenTurnDiff: () => {},
     revertTurnCountByUserMessageId: new Map(),
     onRevertUserMessage: () => {},
+    supportsConversationRollback: true,
     isRevertingCheckpoint: false,
     onImageExpand: () => {},
     activeThreadEnvironmentId: ACTIVE_THREAD_ENVIRONMENT_ID,
@@ -600,19 +601,31 @@ describe("MessagesTimeline", () => {
     expect(onAnchorReady).not.toHaveBeenCalled();
   });
 
-  it("disables checkpoint revert with a provider capability explanation", () => {
+  it("hides checkpoint revert when the provider capability is unavailable", () => {
     const messageId = MessageId.make("message-1");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[buildUserTimelineEntry("Hello")]}
         revertTurnCountByUserMessageId={new Map([[messageId, 0]])}
-        revertDisabledReason="This provider cannot restore its conversation."
+        supportsConversationRollback={false}
       />,
     );
 
-    expect(markup).toContain('aria-label="This provider cannot restore its conversation."');
-    expect(markup).toContain("disabled");
+    expect(markup).not.toContain('aria-label="Revert to this message"');
+  });
+
+  it("renders checkpoint revert only when the provider capability is explicit", () => {
+    const messageId = MessageId.make("message-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildUserTimelineEntry("Hello")]}
+        revertTurnCountByUserMessageId={new Map([[messageId, 0]])}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Revert to this message"');
   });
 
   it("renders generic attachments as download links instead of image previews", () => {

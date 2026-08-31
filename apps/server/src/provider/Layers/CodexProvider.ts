@@ -60,6 +60,7 @@ const CODEX_RATE_LIMITS_PROBE_TIMEOUT = "5 seconds" as const;
 const CODEX_PRESENTATION = {
   displayName: "Codex",
   showInteractionModeToggle: true,
+  supportsConversationRollback: false,
 } as const;
 
 export interface CodexAppServerProviderSnapshot {

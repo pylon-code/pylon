@@ -234,7 +234,7 @@ describe("ProviderFeatureCapabilities", () => {
 });
 
 describe("ServerProvider capability compatibility", () => {
-  it("decodes legacy provider snapshots and preserves prior helper defaults", () => {
+  it("fails closed for legacy provider snapshots without rollback capability", () => {
     const provider = decodeProvider(legacyProviderSnapshot);
 
     expect(provider.featureCapabilities).toBeUndefined();
@@ -242,6 +242,15 @@ describe("ServerProvider capability compatibility", () => {
       DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
     );
     expect(supportsServerProviderBackgroundTextGeneration(provider)).toBe(true);
+    expect(supportsServerProviderConversationRollback(provider)).toBe(false);
+  });
+
+  it("preserves an explicit legacy rollback capability without feature groups", () => {
+    const provider = decodeProvider({
+      ...legacyProviderSnapshot,
+      supportsConversationRollback: true,
+    });
+
     expect(supportsServerProviderConversationRollback(provider)).toBe(true);
   });
 
@@ -250,7 +259,7 @@ describe("ServerProvider capability compatibility", () => {
       ...legacyProviderSnapshot,
       supportedRuntimeModes: ["approval-required"],
       supportsBackgroundTextGeneration: false,
-      supportsConversationRollback: false,
+      supportsConversationRollback: true,
       featureCapabilities: {
         version: 1,
         executionPolicy: {
@@ -308,6 +317,6 @@ describe("ServerProvider capability compatibility", () => {
       DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
     );
     expect(supportsServerProviderBackgroundTextGeneration(provider)).toBe(false);
-    expect(supportsServerProviderConversationRollback(provider)).toBe(true);
+    expect(supportsServerProviderConversationRollback(provider)).toBe(false);
   });
 });

@@ -17,9 +17,9 @@ import {
 } from "./providerSnapshot.ts";
 
 describe("buildServerProvider", () => {
-  it("includes usage limits from the provider probe", () => {
+  it("includes explicit presentation capabilities and probe usage limits", () => {
     const snapshot = buildServerProvider({
-      presentation: { displayName: "Codex" },
+      presentation: { displayName: "Codex", supportsConversationRollback: false },
       enabled: true,
       checkedAt: "2026-07-22T12:00:00.000Z",
       models: [],
@@ -37,6 +37,7 @@ describe("buildServerProvider", () => {
     });
 
     expect(snapshot.usageLimits?.windows[0]?.usedPercent).toBe(30);
+    expect(snapshot.supportsConversationRollback).toBe(false);
   });
 });
 

@@ -1,6 +1,5 @@
 import {
   CommandId,
-  type CheckpointRef,
   defaultInstanceIdForDriver,
   EventId,
   MessageId,
@@ -735,118 +734,27 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const currentTurnCount = thread.checkpoints.reduce(
-      (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
-      0,
-    );
+    const capabilities = yield* providerService
+      .getCapabilities(sessionRuntime.value.providerInstanceId)
+      .pipe(Effect.option);
+    const rollbackMode = Option.isSome(capabilities)
+      ? capabilities.value.conversationRollback
+      : undefined;
+    const detail =
+      rollbackMode === "unsupported"
+        ? "This provider cannot roll back its conversation. Start a new thread to continue from an earlier checkpoint."
+        : rollbackMode === "relative"
+          ? "This provider only supports relative conversation rollback, which cannot prove an exact checkpoint target. Coordinated checkpoint rollback is disabled."
+          : rollbackMode === "absolute"
+            ? "Exact provider rollback is classified but not implemented. Coordinated checkpoint rollback is disabled."
+            : "Provider rollback capability could not be verified. Coordinated checkpoint rollback is disabled.";
 
-    if (event.payload.turnCount > currentTurnCount) {
-      yield* appendRevertFailureActivity({
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        detail: `Checkpoint turn count ${event.payload.turnCount} exceeds current turn count ${currentTurnCount}.`,
-        createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
-
-    const targetCheckpointRef =
-      event.payload.turnCount === 0
-        ? checkpointRefForThreadTurn(event.payload.threadId, 0)
-        : thread.checkpoints.find(
-            (checkpoint) => checkpoint.checkpointTurnCount === event.payload.turnCount,
-          )?.checkpointRef;
-
-    if (!targetCheckpointRef) {
-      yield* appendRevertFailureActivity({
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        detail: `Checkpoint ref for turn ${event.payload.turnCount} is unavailable in read model.`,
-        createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
-
-    const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
-    if (rolledBackTurns > 0) {
-      const capabilities = yield* providerService
-        .getCapabilities(sessionRuntime.value.providerInstanceId)
-        .pipe(Effect.option);
-      if (
-        Option.isNone(capabilities) ||
-        capabilities.value.conversationRollback === "unsupported"
-      ) {
-        yield* appendRevertFailureActivity({
-          threadId: event.payload.threadId,
-          turnCount: event.payload.turnCount,
-          detail: Option.isNone(capabilities)
-            ? "Provider rollback capability could not be verified before restoring the filesystem."
-            : "This provider cannot roll back its conversation. Start a new thread to continue from an earlier checkpoint.",
-          createdAt: now,
-        }).pipe(Effect.catch(() => Effect.void));
-        return;
-      }
-    }
-
-    const restored = yield* checkpointStore.restoreCheckpoint({
-      cwd: sessionRuntime.value.cwd,
-      checkpointRef: targetCheckpointRef,
-      fallbackToHead: event.payload.turnCount === 0,
-    });
-    if (!restored) {
-      yield* appendRevertFailureActivity({
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
-        createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
-
-    // Refresh the workspace entry index so the @-mention file picker
-    // reflects the reverted filesystem state.
-    yield* workspaceEntries.refresh(sessionRuntime.value.cwd);
-
-    if (rolledBackTurns > 0) {
-      yield* providerService.rollbackConversation({
-        threadId: sessionRuntime.value.threadId,
-        numTurns: rolledBackTurns,
-      });
-    }
-
-    const staleCheckpointRefs: Array<CheckpointRef> = [];
-    for (const checkpoint of thread.checkpoints) {
-      if (checkpoint.checkpointTurnCount > event.payload.turnCount) {
-        staleCheckpointRefs.push(checkpoint.checkpointRef);
-      }
-    }
-
-    if (staleCheckpointRefs.length > 0) {
-      yield* checkpointStore.deleteCheckpointRefs({
-        cwd: sessionRuntime.value.cwd,
-        checkpointRefs: staleCheckpointRefs,
-      });
-    }
-
-    yield* orchestrationEngine
-      .dispatch({
-        type: "thread.revert.complete",
-        commandId: yield* serverCommandId("checkpoint-revert-complete"),
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        createdAt: now,
-      })
-      .pipe(
-        Effect.catch((error) =>
-          appendRevertFailureActivity({
-            threadId: event.payload.threadId,
-            turnCount: event.payload.turnCount,
-            detail: error.message,
-            createdAt: now,
-          }),
-        ),
-        Effect.asVoid,
-      );
+    yield* appendRevertFailureActivity({
+      threadId: event.payload.threadId,
+      turnCount: event.payload.turnCount,
+      detail,
+      createdAt: now,
+    }).pipe(Effect.catch(() => Effect.void));
   });
 
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (event: OrchestrationEvent) {

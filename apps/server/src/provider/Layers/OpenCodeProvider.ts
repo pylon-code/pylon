@@ -30,6 +30,7 @@ import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 const OPENCODE_PRESENTATION = {
   displayName: "OpenCode",
   showInteractionModeToggle: false,
+  supportsConversationRollback: false,
 } as const;
 
 class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
