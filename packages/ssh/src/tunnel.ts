@@ -456,6 +456,7 @@ export const REMOTE_LAUNCH_SCRIPT = `set -eu
 @@T3_NODE_ENV_SCRIPT@@
 STATE_KEY="$1"
 STATE_DIR="$HOME/.pylon-code/ssh-launch/$STATE_KEY"
+LEGACY_STATE_DIR="$HOME/.t3/ssh-launch/$STATE_KEY"
 DEFAULT_SERVER_HOME="$HOME/.pylon-code"
 DEFAULT_RUNTIME_FILE="$DEFAULT_SERVER_HOME/userdata/server-runtime.json"
 PORT_FILE="$STATE_DIR/port"
@@ -522,6 +523,25 @@ try {
 }
 NODE
 }
+# This launcher used to keep its state, and run its server, under $HOME/.t3.
+# A host set up by that version still has a server running from it, which the
+# new state dir cannot see and the new stop script no longer reaches. Retire it
+# here, once. Every step is best effort: a host that will not let us clean up
+# is still a host we should launch on.
+if [ -d "$LEGACY_STATE_DIR" ]; then
+  LEGACY_MANAGED="$(cat "$LEGACY_STATE_DIR/managed" 2>/dev/null || true)"
+  LEGACY_PID="$(cat "$LEGACY_STATE_DIR/pid" 2>/dev/null || true)"
+  if [ "$LEGACY_MANAGED" != "external" ] && [ -n "$LEGACY_PID" ] && kill -0 "$LEGACY_PID" 2>/dev/null; then
+    kill "$LEGACY_PID" 2>/dev/null || true
+    wait_for_pid_exit "$LEGACY_PID"
+  fi
+  rm -f "$LEGACY_STATE_DIR/pid" "$LEGACY_STATE_DIR/port" "$LEGACY_STATE_DIR/managed" || true
+  # Renamed rather than deleted so the old server.log survives, and so this
+  # block stops matching on the next launch.
+  rm -rf "$LEGACY_STATE_DIR.migrated" || true
+  mv "$LEGACY_STATE_DIR" "$LEGACY_STATE_DIR.migrated" 2>/dev/null || rm -rf "$LEGACY_STATE_DIR" || true
+  printf 'Pylon now runs remote servers from ~/.pylon-code on this host. Earlier remote state may still exist under ~/.t3; move that directory to ~/.pylon-code to keep using it.\\n' >&2
+fi
 REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 REMOTE_PORT="$(cat "$PORT_FILE" 2>/dev/null || true)"
 REMOTE_MANAGED="$(cat "$MANAGED_FILE" 2>/dev/null || true)"
