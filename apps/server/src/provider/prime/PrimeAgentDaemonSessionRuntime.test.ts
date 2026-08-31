@@ -4,12 +4,22 @@ import {
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
 } from "@t3tools/contracts";
 
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
+import * as Scheduler from "effect/Scheduler";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
+
+vi.mock("effect/Queue", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("effect/Queue")>();
+  return { ...actual, shutdown: vi.fn(actual.shutdown) };
+});
 
 import {
   type PrimeAgentDaemonAgentConnection,
@@ -289,6 +299,7 @@ function fixture(options?: {
   }) => Promise<unknown>;
   readonly omitRlmQuiescence?: boolean;
   readonly verifyManagedSourceImpl?: () => Promise<boolean>;
+  readonly unsubscribeImpl?: () => void;
   readonly disposeImpl?: () => Promise<unknown>;
 }) {
   const captures: Captures = {
@@ -424,6 +435,7 @@ function fixture(options?: {
     }
     close(): void {
       this.isConnected = false;
+      captures.order.push("close");
       captures.closeCount += 1;
     }
   }
@@ -484,7 +496,9 @@ function fixture(options?: {
       captures.order.push("subscribe");
       listener = next;
       return () => {
+        captures.order.push("unsubscribe");
         captures.unsubscribeCount += 1;
+        options?.unsubscribeImpl?.();
       };
     }
     async getInitialSnapshot(): Promise<unknown> {
@@ -923,6 +937,35 @@ function collectEvents(runtime: PrimeAgentDaemonSessionRuntime, count: number) {
     Stream.runCollect,
     Effect.map((events) => Array.from(events)),
   );
+}
+
+function expectDefectExit(exit: Exit.Exit<unknown, unknown>, defect: unknown): void {
+  expect(Exit.isFailure(exit)).toBe(true);
+  if (Exit.isSuccess(exit)) return;
+  const reason = exit.cause.reasons.find(Cause.isDieReason);
+  expect(reason).toBeDefined();
+  if (reason !== undefined && Cause.isDieReason(reason)) {
+    expect(reason.defect).toBe(defect);
+  }
+}
+
+function captureNextSetConstruction<A>(run: () => A): readonly [A, Set<unknown>] {
+  const NativeSet = globalThis.Set;
+  let captured: Set<unknown> | undefined;
+  class CapturingSet<T> extends NativeSet<T> {
+    constructor(values?: readonly T[] | null) {
+      super(values);
+      captured ??= this as Set<unknown>;
+    }
+  }
+  globalThis.Set = CapturingSet as SetConstructor;
+  try {
+    const value = run();
+    if (captured === undefined) throw new Error("Expected a Set to be constructed synchronously.");
+    return [value, captured];
+  } finally {
+    globalThis.Set = NativeSet;
+  }
 }
 
 describe("PrimeAgentDaemonSessionRuntime", () => {
@@ -12503,6 +12546,319 @@ describe("Prime Agent live activity privacy boundary", () => {
     ),
   );
 
+  it.effect("settles shared disposal when its owner is interrupted after election", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scheduledTasks: Array<() => void> = [];
+        let schedulerChecks = 0;
+        const electionYieldScheduler: Scheduler.Scheduler = {
+          executionMode: "async",
+          shouldYield: () => {
+            schedulerChecks += 1;
+            // The first checks enter dispose and elect this fiber. Yield once
+            // immediately afterward, before the returned owner onExit is installed.
+            return schedulerChecks === 3;
+          },
+          makeDispatcher: () => ({
+            scheduleTask: (task) => {
+              scheduledTasks.push(task);
+            },
+            flush: () => {
+              while (scheduledTasks.length > 0) scheduledTasks.shift()?.();
+            },
+          }),
+        };
+        const side = fixture();
+        const sessionScope = yield* Scope.make("sequential");
+        const runtime = yield* side.make().pipe(Scope.provide(sessionScope));
+        const [reconnecting, retirementListeners] = captureNextSetConstruction(() =>
+          side.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() => reconnecting);
+        let retirementCount = 0;
+        retirementListeners.add(() => {
+          side.captures.order.push("retire");
+          retirementCount += 1;
+        });
+        side.captures.order.length = 0;
+        const shutdownSpy = vi.mocked(Queue.shutdown);
+        const shutdownQueue = shutdownSpy.getMockImplementation();
+        if (shutdownQueue === undefined) throw new Error("Expected Queue.shutdown to be mocked.");
+        shutdownSpy.mockClear();
+        shutdownSpy.mockImplementation((queue) => {
+          side.captures.order.push("queue-shutdown");
+          return shutdownQueue(queue);
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            shutdownSpy.mockImplementation(shutdownQueue);
+            shutdownSpy.mockClear();
+          }),
+        );
+        let ownerFinalizers = 0;
+        let cancelledWaiterFinalizers = 0;
+        let sharedWaiterFinalizers = 0;
+
+        const owner = yield* runtime.dispose.pipe(
+          Effect.provideService(Scheduler.Scheduler, electionYieldScheduler),
+          Effect.ensuring(
+            Effect.sync(() => {
+              ownerFinalizers += 1;
+            }),
+          ),
+          Effect.forkChild({ startImmediately: true }),
+        );
+        expect(schedulerChecks).toBe(3);
+        expect(scheduledTasks).toHaveLength(1);
+
+        const cancelledWaiter = yield* runtime.dispose.pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              cancelledWaiterFinalizers += 1;
+            }),
+          ),
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Fiber.interrupt(cancelledWaiter);
+        expect(cancelledWaiterFinalizers).toBe(1);
+        const cancelledWaiterExit = cancelledWaiter.pollUnsafe();
+        expect(cancelledWaiterExit).toBeDefined();
+        if (cancelledWaiterExit !== undefined) {
+          expect(Exit.isFailure(cancelledWaiterExit)).toBe(true);
+          if (Exit.isFailure(cancelledWaiterExit)) {
+            expect(Cause.hasInterruptsOnly(cancelledWaiterExit.cause)).toBe(true);
+          }
+        }
+
+        const sharedWaiter = yield* runtime.dispose.pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              sharedWaiterFinalizers += 1;
+            }),
+          ),
+          Effect.forkChild({ startImmediately: true }),
+        );
+        expect(sharedWaiter.pollUnsafe()).toBeUndefined();
+
+        const interruptOwner = yield* Fiber.interrupt(owner).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        // Election and cleanup installation remain masked while the owner is yielded.
+        expect(owner.pollUnsafe()).toBeUndefined();
+        expect(ownerFinalizers).toBe(0);
+
+        yield* Effect.sync(() => {
+          const resumeOwner = scheduledTasks.shift();
+          if (resumeOwner === undefined)
+            throw new Error("Expected the dispose owner to be queued.");
+          resumeOwner();
+        });
+        yield* Fiber.join(interruptOwner);
+        const ownerExit = yield* Fiber.await(owner);
+        const sharedWaiterExit = yield* Fiber.await(sharedWaiter);
+        const lateExit = yield* runtime.dispose.pipe(Effect.exit);
+
+        expect(Exit.isFailure(ownerExit)).toBe(true);
+        if (Exit.isFailure(ownerExit)) expect(Cause.hasInterruptsOnly(ownerExit.cause)).toBe(true);
+        expect(sharedWaiterExit).toEqual(ownerExit);
+        expect(lateExit).toEqual(ownerExit);
+        const scopeCloseExit = yield* Scope.close(sessionScope, Exit.void).pipe(Effect.exit);
+        expect(Exit.isFailure(scopeCloseExit)).toBe(true);
+        if (Exit.isFailure(scopeCloseExit)) {
+          expect(Cause.hasInterruptsOnly(scopeCloseExit.cause)).toBe(true);
+        }
+        expect(scheduledTasks).toHaveLength(0);
+        expect(ownerFinalizers).toBe(1);
+        expect(sharedWaiterFinalizers).toBe(1);
+        expect(retirementCount).toBe(1);
+        expect(side.captures.unsubscribeCount).toBe(1);
+        expect(side.captures.disposeCount).toBe(1);
+        expect(side.captures.closeCount).toBe(1);
+        expect(shutdownSpy).toHaveBeenCalledTimes(2);
+        expect(side.captures.order).toEqual([
+          "retire",
+          "unsubscribe",
+          "dispose",
+          "close",
+          "queue-shutdown",
+          "queue-shutdown",
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("shares an unsubscribe defect across explicit and scope disposal", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const unsubscribeDefect = new Error("unsubscribe defect");
+        let reportNativeDisposeStarted!: () => void;
+        const nativeDisposeStarted = new Promise<void>((resolve) => {
+          reportNativeDisposeStarted = resolve;
+        });
+        let releaseNativeDispose!: () => void;
+        const nativeDisposeRelease = new Promise<void>((resolve) => {
+          releaseNativeDispose = resolve;
+        });
+        const side = fixture({
+          unsubscribeImpl: () => {
+            throw unsubscribeDefect;
+          },
+          disposeImpl: () => {
+            reportNativeDisposeStarted();
+            return nativeDisposeRelease;
+          },
+        });
+        const sessionScope = yield* Scope.make("sequential");
+        const runtime = yield* side.make().pipe(Scope.provide(sessionScope));
+
+        const owner = yield* runtime.dispose.pipe(
+          Effect.exit,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() => nativeDisposeStarted);
+        const scopeClose = yield* Scope.close(sessionScope, Exit.void).pipe(
+          Effect.exit,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const waiter = yield* runtime.dispose.pipe(
+          Effect.exit,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.yieldNow;
+
+        expect(owner.pollUnsafe()).toBeUndefined();
+        expect(waiter.pollUnsafe()).toBeUndefined();
+        expect(scopeClose.pollUnsafe()).toBeUndefined();
+        expect(side.captures.disposeCount).toBe(1);
+        expect(side.captures.closeCount).toBe(0);
+
+        releaseNativeDispose();
+        const ownerExit = yield* Fiber.join(owner);
+        const waiterExit = yield* Fiber.join(waiter);
+        const scopeExit = yield* Fiber.join(scopeClose);
+        const lateExit = yield* runtime.dispose.pipe(Effect.exit);
+
+        expectDefectExit(ownerExit, unsubscribeDefect);
+        expect(waiterExit).toEqual(ownerExit);
+        expectDefectExit(scopeExit, unsubscribeDefect);
+        expect(lateExit).toEqual(ownerExit);
+        expect(side.captures.disposeCount).toBe(1);
+        expect(side.captures.unsubscribeCount).toBe(1);
+        expect(side.captures.closeCount).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("shares a retirement listener defect across scope and explicit disposal", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const retirementDefect = new Error("retirement listener defect");
+        let reportNativeDisposeStarted!: () => void;
+        const nativeDisposeStarted = new Promise<void>((resolve) => {
+          reportNativeDisposeStarted = resolve;
+        });
+        let releaseNativeDispose!: () => void;
+        const nativeDisposeRelease = new Promise<void>((resolve) => {
+          releaseNativeDispose = resolve;
+        });
+        const side = fixture({
+          disposeImpl: () => {
+            reportNativeDisposeStarted();
+            return nativeDisposeRelease;
+          },
+        });
+        const sessionScope = yield* Scope.make("sequential");
+        const runtime = yield* side.make().pipe(Scope.provide(sessionScope));
+        // Reconnect synchronously replaces the private current-fence listener Set.
+        const [reconnecting, retirementListeners] = captureNextSetConstruction(() =>
+          side.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() => reconnecting);
+        retirementListeners.add(() => {
+          throw retirementDefect;
+        });
+
+        const scopeClose = yield* Scope.close(sessionScope, Exit.void).pipe(
+          Effect.exit,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() => nativeDisposeStarted);
+        const firstWaiter = yield* runtime.dispose.pipe(
+          Effect.exit,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const secondWaiter = yield* runtime.dispose.pipe(
+          Effect.exit,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.yieldNow;
+
+        expect(scopeClose.pollUnsafe()).toBeUndefined();
+        expect(firstWaiter.pollUnsafe()).toBeUndefined();
+        expect(secondWaiter.pollUnsafe()).toBeUndefined();
+        expect(side.captures.disposeCount).toBe(1);
+        expect(side.captures.closeCount).toBe(0);
+
+        releaseNativeDispose();
+        const firstExit = yield* Fiber.join(firstWaiter);
+        const secondExit = yield* Fiber.join(secondWaiter);
+        const scopeExit = yield* Fiber.join(scopeClose);
+        const lateExit = yield* runtime.dispose.pipe(Effect.exit);
+
+        expectDefectExit(firstExit, retirementDefect);
+        expect(secondExit).toEqual(firstExit);
+        expectDefectExit(scopeExit, retirementDefect);
+        expect(lateExit).toEqual(firstExit);
+        expect(side.captures.disposeCount).toBe(1);
+        expect(side.captures.unsubscribeCount).toBe(0);
+        expect(side.captures.closeCount).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("makes explicit disposal await scope-owned native cleanup", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let reportDisposeStarted!: () => void;
+        const disposeStarted = new Promise<void>((resolve) => {
+          reportDisposeStarted = resolve;
+        });
+        let releaseDispose!: () => void;
+        const disposeRelease = new Promise<void>((resolve) => {
+          releaseDispose = resolve;
+        });
+        const side = fixture({
+          disposeImpl: () => {
+            reportDisposeStarted();
+            return disposeRelease;
+          },
+        });
+        const sessionScope = yield* Scope.make("sequential");
+        const runtime = yield* side.make().pipe(Scope.provide(sessionScope));
+
+        const scopeClose = yield* Scope.close(sessionScope, Exit.void).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() => disposeStarted);
+        const explicitDispose = yield* runtime.dispose.pipe(
+          Effect.exit,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.yieldNow;
+
+        expect(side.captures.disposeCount).toBe(1);
+        expect(explicitDispose.pollUnsafe()).toBeUndefined();
+        expect(side.captures.closeCount).toBe(0);
+
+        releaseDispose();
+        expect(yield* Fiber.join(explicitDispose)).toEqual(Exit.void);
+        yield* Fiber.join(scopeClose);
+        expect(side.captures.disposeCount).toBe(1);
+        expect(side.captures.closeCount).toBe(1);
+      }),
+    ),
+  );
+
   it.effect("bounds daemon session disposal during a lost connection", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -12522,17 +12878,26 @@ describe("Prime Agent live activity privacy boundary", () => {
           Effect.forkChild({ startImmediately: true }),
         );
         yield* Effect.promise(() => disposeStarted);
+        const waiter = yield* runtime.dispose.pipe(
+          Effect.exit,
+          Effect.forkChild({ startImmediately: true }),
+        );
 
         yield* TestClock.adjust(29_999);
         expect(side.captures.closeCount).toBe(0);
+        expect(waiter.pollUnsafe()).toBeUndefined();
         yield* TestClock.adjust(1);
         const error = yield* Fiber.join(disposing);
+        const waiterExit = yield* Fiber.join(waiter);
+        const lateExit = yield* runtime.dispose.pipe(Effect.exit);
 
         expect(error).toMatchObject({
           operation: "dispose",
           reason: "request-timed-out",
           detail: "Timed out while disposing the daemon session.",
         });
+        expect(Exit.isFailure(waiterExit)).toBe(true);
+        expect(lateExit).toEqual(waiterExit);
         expect(side.captures.disposeCount).toBe(1);
         expect(side.captures.unsubscribeCount).toBe(1);
         expect(side.captures.closeCount).toBe(1);

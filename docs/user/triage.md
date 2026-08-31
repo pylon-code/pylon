@@ -59,3 +59,13 @@ export PYLON_TRIAGE_SOURCE_REPOSITORY=https://github.com/your-org/pylon
 Both are optional, and triage degrades gracefully without them: no source means
 diagnosis from logs and state alone, and no issue repository means the report
 lands in a file instead of a tracker.
+
+## A turn stays on Starting
+
+Pylon waits up to 60 seconds for a provider to confirm that a new turn started. If the provider does
+not confirm it, the thread changes to an error state instead of staying on **Starting** forever. You
+can retry the message after checking that the selected provider is signed in and available.
+
+If a late provider response arrives after that timeout, Pylon ignores it. The late response cannot
+revive the failed turn. If retries keep timing out, run the triage command above and include the
+provider name and the time of the failed attempt.

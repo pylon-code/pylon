@@ -96,6 +96,8 @@ interface PrimeAgentActiveTurn {
 interface PrimeAgentSessionContext {
   readonly threadId: ThreadId;
   session: ProviderSession;
+  /** Immutable identity captured before the context can be removed or replaced. */
+  readonly sessionIncarnationId: ProviderSession["sessionIncarnationId"];
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntime.AcpSessionRuntime["Service"];
   notificationFiber: Fiber.Fiber<void, never> | undefined;
@@ -226,8 +228,13 @@ export function makePrimeAgentAdapter(
     );
     const makeEventStamp = () =>
       Effect.all({ eventId: Effect.map(randomUUIDv4, EventId.make), createdAt: nowIso });
-    const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
-      PubSub.publish(runtimeEventPubSub, event).pipe(
+    const offerRuntimeEvent = (
+      sessionIncarnationId: ProviderSession["sessionIncarnationId"],
+      event: ProviderRuntimeEvent,
+    ) => {
+      const stampedEvent =
+        sessionIncarnationId === undefined ? event : { ...event, sessionIncarnationId };
+      return PubSub.publish(runtimeEventPubSub, stampedEvent).pipe(
         Effect.flatMap((accepted) =>
           accepted
             ? Effect.void
@@ -239,6 +246,7 @@ export function makePrimeAgentAdapter(
               }),
         ),
       );
+    };
 
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
@@ -348,7 +356,7 @@ export function makePrimeAgentAdapter(
               effectiveOutcome.nativeTerminalFailure === true));
         if (shouldEmitMissingFinalResponseNotice) {
           const failed = effectiveOutcome.state === "failed";
-          yield* offerRuntimeEvent({
+          yield* offerRuntimeEvent(ctx.sessionIncarnationId, {
             type: failed ? "runtime.error" : "runtime.warning",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -371,7 +379,7 @@ export function makePrimeAgentAdapter(
           updatedAt: yield* nowIso,
         };
 
-        yield* offerRuntimeEvent({
+        yield* offerRuntimeEvent(ctx.sessionIncarnationId, {
           type: "turn.completed",
           ...(yield* makeEventStamp()),
           provider: PROVIDER,
@@ -440,11 +448,14 @@ export function makePrimeAgentAdapter(
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
         if (sessions.get(ctx.threadId) !== ctx) return;
         sessions.delete(ctx.threadId);
-        yield* offerRuntimeEvent({
+        yield* offerRuntimeEvent(ctx.sessionIncarnationId, {
           type: "session.exited",
           ...(yield* makeEventStamp()),
           provider: PROVIDER,
           threadId: ctx.threadId,
+          ...(ctx.sessionIncarnationId !== undefined
+            ? { sessionIncarnationId: ctx.sessionIncarnationId }
+            : {}),
           payload: { exitKind: "graceful" },
         });
       });
@@ -589,6 +600,9 @@ export function makePrimeAgentAdapter(
           const session: ProviderSession = {
             provider: PROVIDER,
             providerInstanceId: boundInstanceId,
+            ...(input.sessionIncarnationId !== undefined
+              ? { sessionIncarnationId: input.sessionIncarnationId }
+              : {}),
             status: "ready",
             runtimeMode: "full-access",
             cwd,
@@ -601,6 +615,7 @@ export function makePrimeAgentAdapter(
           const ctx: PrimeAgentSessionContext = {
             threadId: input.threadId,
             session,
+            sessionIncarnationId: input.sessionIncarnationId,
             scope: sessionScope,
             acp,
             notificationFiber: undefined,
@@ -627,6 +642,7 @@ export function makePrimeAgentAdapter(
                   case "AssistantItemStarted":
                   case "AssistantItemCompleted":
                     yield* offerRuntimeEvent(
+                      input.sessionIncarnationId,
                       makeAcpAssistantItemEvent({
                         stamp: yield* makeEventStamp(),
                         provider: PROVIDER,
@@ -648,6 +664,7 @@ export function makePrimeAgentAdapter(
                     if (ctx.lastPlanFingerprint === fingerprint) return;
                     ctx.lastPlanFingerprint = fingerprint;
                     yield* offerRuntimeEvent(
+                      input.sessionIncarnationId,
                       makeAcpPlanUpdatedEvent({
                         stamp: yield* makeEventStamp(),
                         provider: PROVIDER,
@@ -666,6 +683,7 @@ export function makePrimeAgentAdapter(
                       ctx.activeTurn.hasPublicAssistantTextAfterLatestToolBoundary = false;
                     }
                     yield* offerRuntimeEvent(
+                      input.sessionIncarnationId,
                       makeAcpToolCallEvent({
                         stamp: yield* makeEventStamp(),
                         provider: PROVIDER,
@@ -691,6 +709,7 @@ export function makePrimeAgentAdapter(
                     }
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     yield* offerRuntimeEvent(
+                      input.sessionIncarnationId,
                       makeAcpContentDeltaEvent({
                         stamp: yield* makeEventStamp(),
                         provider: PROVIDER,
@@ -715,14 +734,14 @@ export function makePrimeAgentAdapter(
           sessions.set(input.threadId, ctx);
           sessionScopeTransferred = true;
 
-          yield* offerRuntimeEvent({
+          yield* offerRuntimeEvent(input.sessionIncarnationId, {
             type: "session.started",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
             threadId: input.threadId,
             payload: { resume: started.initializeResult },
           });
-          yield* offerRuntimeEvent({
+          yield* offerRuntimeEvent(input.sessionIncarnationId, {
             type: "session.resources.updated",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -730,7 +749,7 @@ export function makePrimeAgentAdapter(
             threadId: input.threadId,
             payload: { available: false, skills: [], prompts: [], commands: [] },
           });
-          yield* offerRuntimeEvent({
+          yield* offerRuntimeEvent(input.sessionIncarnationId, {
             type: "session.compaction.updated",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -744,7 +763,7 @@ export function makePrimeAgentAdapter(
               manualCompactionSettable: false,
             },
           });
-          yield* offerRuntimeEvent({
+          yield* offerRuntimeEvent(input.sessionIncarnationId, {
             type: "session.goal.updated",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -759,14 +778,14 @@ export function makePrimeAgentAdapter(
               continuationsUsed: 0,
             },
           });
-          yield* offerRuntimeEvent({
+          yield* offerRuntimeEvent(input.sessionIncarnationId, {
             type: "session.state.changed",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
             threadId: input.threadId,
             payload: { state: "ready", reason: "Prime Agent ACP session ready" },
           });
-          yield* offerRuntimeEvent({
+          yield* offerRuntimeEvent(input.sessionIncarnationId, {
             type: "thread.started",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -774,7 +793,7 @@ export function makePrimeAgentAdapter(
             payload: { providerThreadId: started.sessionId },
           });
           if (options?.startupWarning) {
-            yield* offerRuntimeEvent({
+            yield* offerRuntimeEvent(input.sessionIncarnationId, {
               type: "runtime.warning",
               ...(yield* makeEventStamp()),
               provider: PROVIDER,
@@ -883,6 +902,9 @@ export function makePrimeAgentAdapter(
               ctx.session = {
                 ...ctx.session,
                 activeTurnId: turnId,
+                ...(input.admissionRequestId !== undefined
+                  ? { activeTurnRequestId: input.admissionRequestId }
+                  : {}),
                 status: "running",
                 updatedAt: yield* nowIso,
               };
@@ -892,12 +914,18 @@ export function makePrimeAgentAdapter(
           const { ctx, activeTurn, turnId, prompt } = prepared;
 
           const promptEffect = Effect.gen(function* () {
-            yield* offerRuntimeEvent({
+            yield* offerRuntimeEvent(ctx.sessionIncarnationId, {
               type: "turn.started",
               ...(yield* makeEventStamp()),
               provider: PROVIDER,
               threadId: input.threadId,
               turnId,
+              ...(input.admissionRequestId !== undefined
+                ? { admissionRequestId: input.admissionRequestId }
+                : {}),
+              ...(input.sessionIncarnationId !== undefined
+                ? { sessionIncarnationId: input.sessionIncarnationId }
+                : {}),
               payload: { model: ctx.session.model ?? "default" },
             });
             const promptExit = yield* Effect.raceFirst(

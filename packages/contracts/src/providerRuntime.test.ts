@@ -24,6 +24,40 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.providerInstanceId).toBe("ollama_local");
   });
 
+  it("keeps legacy turn.started events compatible without admission metadata", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "turn.started",
+      eventId: "event-legacy-turn-started",
+      provider: "codex",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      payload: {},
+    });
+
+    expect(parsed.admissionRequestId).toBeUndefined();
+    expect(parsed.sessionIncarnationId).toBeUndefined();
+  });
+
+  it("round-trips exact turn admission correlation", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "turn.started",
+      eventId: "event-correlated-turn-started",
+      provider: "codex",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      admissionRequestId: "command-turn-start",
+      sessionIncarnationId: "2026-02-28T00:00:00.000Z",
+      payload: {},
+    });
+
+    expect(encodeRuntimeEvent(parsed)).toMatchObject({
+      admissionRequestId: "command-turn-start",
+      sessionIncarnationId: "2026-02-28T00:00:00.000Z",
+    });
+  });
+
   it("decodes turn.plan.updated for plan rendering", () => {
     const parsed = decodeRuntimeEvent({
       type: "turn.plan.updated",

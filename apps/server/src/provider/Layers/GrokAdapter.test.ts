@@ -20,6 +20,7 @@ import {
   GrokSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  RuntimeSessionId,
   ThreadId,
   TurnId,
   type ProviderRuntimeEvent,
@@ -234,6 +235,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-mock-thread");
+      const sessionIncarnationId = RuntimeSessionId.make("grok-mock-incarnation");
       const wrapperPath = yield* Effect.promise(() => makeMockGrokWrapper());
       const adapter = yield* makeTestAdapter(wrapperPath);
 
@@ -256,6 +258,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
+        sessionIncarnationId,
         modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-mock-alt" },
       });
 
@@ -275,6 +278,9 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       yield* Deferred.await(turnCompleted);
       yield* Fiber.interrupt(runtimeEventsFiber);
       const types = runtimeEvents.map((e) => e.type);
+      assert.isTrue(
+        runtimeEvents.every((event) => event.sessionIncarnationId === sessionIncarnationId),
+      );
 
       assert.includeMembers(types, [
         "session.started",

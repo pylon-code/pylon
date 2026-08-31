@@ -17,6 +17,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
+  CommandId,
   EnvironmentId,
   EventId,
   ProviderDriverKind,
@@ -25,6 +26,7 @@ import {
   ProviderSessionSideQuestionRequestId,
   SessionInteractionRequestId,
   RuntimeTaskId,
+  RuntimeSessionId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -108,27 +110,31 @@ function makeFakeCodexAdapter(
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
-  const startSession = vi.fn((input: ProviderSessionStartInput) =>
-    Effect.sync(() => {
-      const now = "2026-01-01T00:00:00.000Z";
-      const session: ProviderSession = {
-        provider,
-        ...(input.providerInstanceId !== undefined
-          ? { providerInstanceId: input.providerInstanceId }
-          : {}),
-        status: "ready",
-        runtimeMode: input.runtimeMode,
-        threadId: input.threadId,
-        resumeCursor: input.resumeCursor ?? {
-          opaque: `resume-${String(input.threadId)}`,
-        },
-        cwd: input.cwd ?? process.cwd(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      sessions.set(session.threadId, session);
-      return session;
-    }),
+  const startSession = vi.fn(
+    (input: ProviderSessionStartInput): Effect.Effect<ProviderSession, ProviderAdapterError> =>
+      Effect.sync(() => {
+        const now = "2026-01-01T00:00:00.000Z";
+        const session: ProviderSession = {
+          provider,
+          ...(input.providerInstanceId !== undefined
+            ? { providerInstanceId: input.providerInstanceId }
+            : {}),
+          ...(input.sessionIncarnationId !== undefined
+            ? { sessionIncarnationId: input.sessionIncarnationId }
+            : {}),
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          threadId: input.threadId,
+          resumeCursor: input.resumeCursor ?? {
+            opaque: `resume-${String(input.threadId)}`,
+          },
+          cwd: input.cwd ?? process.cwd(),
+          createdAt: now,
+          updatedAt: now,
+        };
+        sessions.set(session.threadId, session);
+        return session;
+      }),
   );
 
   const sendTurn = vi.fn(
@@ -429,6 +435,10 @@ function makeFakeCodexAdapter(
     Effect.runSync(PubSub.publish(runtimeEventPubSub, event as unknown as ProviderRuntimeEvent));
   };
 
+  const removeSession = (threadId: ThreadId): void => {
+    sessions.delete(threadId);
+  };
+
   const updateSession = (
     threadId: ThreadId,
     update: (session: ProviderSession) => ProviderSession,
@@ -443,6 +453,7 @@ function makeFakeCodexAdapter(
   return {
     adapter,
     emit,
+    removeSession,
     updateSession,
     startSession,
     sendTurn,
@@ -914,12 +925,21 @@ it.effect("ProviderServiceLive writes canonical events to the emitting thread se
     );
 
     yield* Effect.gen(function* () {
-      yield* ProviderService.ProviderService;
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-canonical-thread-segment");
+      const session = yield* provider.startSession(threadId, {
+        threadId,
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        cwd: "/tmp/provider-canonical-thread-segment",
+        runtimeMode: "full-access",
+      });
       yield* advanceTestClock(10);
       codex.emit({
         eventId: asEventId("evt-canonical-thread-segment"),
         provider: ProviderDriverKind.make("codex"),
-        threadId: asThreadId("thread-canonical-thread-segment"),
+        threadId,
+        sessionIncarnationId: session.sessionIncarnationId,
         createdAt: "2026-01-01T00:00:00.000Z",
         type: "turn.completed",
         payload: {
@@ -1223,6 +1243,44 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.instanceOf(error, ProviderUnsupportedError);
       assert.equal(routing.cursor.askSessionSideQuestion.mock.calls.length, 0);
       yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("recovers exact running admission lineage from per-instance inventory", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-inventory-admission-lineage");
+      const requestId = CommandId.make("cmd-inventory-admission-lineage");
+      const turnId = asTurnId("turn-inventory-admission-lineage");
+      const session = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-inventory-admission-lineage",
+        runtimeMode: "full-access",
+      });
+      assert.isDefined(session.sessionIncarnationId);
+      yield* provider.sendTurn({
+        threadId,
+        input: "persist exact admission",
+        attachments: [],
+        admissionRequestId: requestId,
+        sessionIncarnationId: session.sessionIncarnationId,
+      });
+      routing.codex.updateSession(threadId, (current) => ({
+        ...current,
+        status: "running",
+        activeTurnId: turnId,
+      }));
+
+      const sessions = yield* provider.listSessionsForInstance!(codexInstanceId);
+      const inventoried = sessions.find((candidate) => candidate.threadId === threadId);
+      assert.equal(inventoried?.status, "running");
+      assert.equal(inventoried?.activeTurnId, turnId);
+      assert.equal(inventoried?.activeTurnRequestId, requestId);
+      assert.equal(inventoried?.sessionIncarnationId, session.sessionIncarnationId);
+      yield* provider.stopSession({ threadId });
+      routing.codex.sendTurn.mockClear();
     }),
   );
 
@@ -1846,11 +1904,14 @@ routing.layer("ProviderServiceLive routing", (it) => {
           cwd?: string;
           resumeCursor?: unknown;
           threadId?: string;
+          sessionIncarnationId?: string;
         };
         assert.equal(startPayload.provider, "codex");
         assert.equal(startPayload.cwd, "/tmp/project-send-turn");
         assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
         assert.equal(startPayload.threadId, initial.threadId);
+        assert.equal(typeof startPayload.sessionIncarnationId, "string");
+        assert.notEqual(startPayload.sessionIncarnationId, initial.sessionIncarnationId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
     }),
@@ -2251,6 +2312,258 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
 const fanout = makeProviderServiceLayer();
 fanout.layer("ProviderServiceLive fanout", (it) => {
+  it.effect("serializes same-thread starts and quarantines the superseded result", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-concurrent-start");
+      const firstEntered = yield* Deferred.make<void>();
+      const releaseFirst = yield* Deferred.make<ProviderSession>();
+      let firstInput: ProviderSessionStartInput | undefined;
+      fanout.codex.startSession.mockImplementationOnce((input) => {
+        firstInput = input;
+        return Deferred.succeed(firstEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseFirst)),
+        );
+      });
+
+      const firstFiber = yield* provider
+        .startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(firstEntered);
+      const secondFiber = yield* provider
+        .startSession(threadId, {
+          provider: CLAUDE_AGENT_DRIVER,
+          providerInstanceId: claudeAgentInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      assert.isDefined(firstInput);
+      const now = "2026-01-01T00:00:00.000Z";
+      yield* Deferred.succeed(releaseFirst, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        sessionIncarnationId: firstInput?.sessionIncarnationId,
+        status: "ready",
+        runtimeMode: "full-access",
+        threadId,
+        cwd: process.cwd(),
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const firstExit = yield* Fiber.await(firstFiber);
+      const second = yield* Fiber.join(secondFiber);
+      assert.equal(Exit.isFailure(firstExit), true);
+      assert.equal(second.provider, CLAUDE_AGENT_DRIVER);
+      assert.equal(fanout.codex.stopSession.mock.calls.length, 1);
+      assert.equal(fanout.claude.startSession.mock.calls.length, 1);
+      const sessions = yield* provider.listSessions();
+      assert.deepEqual(
+        sessions
+          .filter((session) => session.threadId === threadId)
+          .map((session) => session.provider),
+        [CLAUDE_AGENT_DRIVER],
+      );
+    }),
+  );
+
+  it.effect("retains a stopping incarnation until its delayed exit is ingested", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-delayed-stop-exit");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const releaseExit = yield* Deferred.make<void>();
+      fanout.codex.stopSession.mockImplementationOnce((stoppedThreadId) =>
+        Effect.gen(function* () {
+          fanout.codex.removeSession(stoppedThreadId);
+          yield* Deferred.await(releaseExit).pipe(
+            Effect.andThen(
+              Effect.sync(() =>
+                fanout.codex.emit({
+                  type: "session.exited",
+                  eventId: asEventId("evt-delayed-stop-exit"),
+                  provider: CODEX_DRIVER,
+                  threadId,
+                  sessionIncarnationId: session.sessionIncarnationId,
+                  createdAt: "2026-01-01T00:00:00.000Z",
+                  payload: { exitKind: "graceful" },
+                }),
+              ),
+            ),
+            Effect.forkChild,
+          );
+        }),
+      );
+      const received = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const consumer = yield* Stream.take(provider.streamEvents, 1).pipe(
+        Stream.runForEach((event) => Ref.update(received, (events) => [...events, event])),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      yield* provider.stopSession({ threadId });
+      yield* Deferred.succeed(releaseExit, undefined);
+      yield* Fiber.join(consumer);
+
+      assert.deepEqual(
+        (yield* Ref.get(received)).map((event) => event.eventId),
+        [asEventId("evt-delayed-stop-exit")],
+      );
+    }),
+  );
+
+  it.effect("clears a destroyed incarnation when its same-adapter replacement fails", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-destroyed-replacement");
+      const oldSession = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      fanout.codex.startSession.mockImplementationOnce(() =>
+        Effect.sync(() => fanout.codex.removeSession(threadId)).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: CODEX_DRIVER,
+                method: "startSession",
+                detail: "replacement failed after destroying the old session",
+              }),
+            ),
+          ),
+        ),
+      );
+
+      const replacement = yield* provider
+        .startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(replacement), true);
+
+      const barrierThreadId = asThreadId("thread-destroyed-replacement-barrier");
+      const barrierSession = yield* provider.startSession(barrierThreadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId: barrierThreadId,
+        runtimeMode: "full-access",
+      });
+      const received = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const consumer = yield* Stream.take(provider.streamEvents, 1).pipe(
+        Stream.runForEach((event) => Ref.update(received, (events) => [...events, event])),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      fanout.codex.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-destroyed-old-output"),
+        provider: CODEX_DRIVER,
+        threadId,
+        sessionIncarnationId: oldSession.sessionIncarnationId,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        delta: "stale",
+      });
+      fanout.codex.emit({
+        type: "session.exited",
+        eventId: asEventId("evt-destroyed-old-exit"),
+        provider: CODEX_DRIVER,
+        threadId,
+        sessionIncarnationId: oldSession.sessionIncarnationId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        payload: { exitKind: "graceful" },
+      });
+      fanout.codex.emit({
+        type: "session.started",
+        eventId: asEventId("evt-destroyed-replacement-barrier"),
+        provider: CODEX_DRIVER,
+        threadId: barrierThreadId,
+        sessionIncarnationId: barrierSession.sessionIncarnationId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        payload: {},
+      });
+      yield* Fiber.join(consumer);
+
+      assert.deepEqual(
+        (yield* Ref.get(received)).map((event) => event.eventId),
+        [asEventId("evt-destroyed-replacement-barrier")],
+      );
+    }),
+  );
+
+  it.effect(
+    "restores only an exact old incarnation that remains live after replacement failure",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const threadId = asThreadId("thread-live-replacement");
+        const oldSession = yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+        fanout.codex.startSession.mockImplementationOnce(() =>
+          Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: CODEX_DRIVER,
+              method: "startSession",
+              detail: "replacement failed without touching the old session",
+            }),
+          ),
+        );
+
+        const replacement = yield* provider
+          .startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            runtimeMode: "full-access",
+          })
+          .pipe(Effect.exit);
+        assert.equal(Exit.isFailure(replacement), true);
+
+        const received = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+        const consumer = yield* Stream.take(provider.streamEvents, 1).pipe(
+          Stream.runForEach((event) => Ref.update(received, (events) => [...events, event])),
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        fanout.codex.emit({
+          type: "content.delta",
+          eventId: asEventId("evt-restored-live-output"),
+          provider: CODEX_DRIVER,
+          threadId,
+          sessionIncarnationId: oldSession.sessionIncarnationId,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          delta: "still current",
+        });
+        yield* Fiber.join(consumer);
+
+        assert.deepEqual(
+          (yield* Ref.get(received)).map((event) => event.eventId),
+          [asEventId("evt-restored-live-output")],
+        );
+      }),
+  );
+
   it.effect("fans out adapter turn completion events", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
@@ -2274,6 +2587,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         createdAt: "2026-01-01T00:00:00.000Z",
         threadId: session.threadId,
         turnId: asTurnId("turn-1"),
+        sessionIncarnationId: session.sessionIncarnationId,
         status: "completed",
       };
 
@@ -2294,6 +2608,225 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         ),
         true,
       );
+    }),
+  );
+
+  it.effect("preserves admission correlation and rejects an unstamped aware event", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const session = yield* provider.startSession(asThreadId("thread-admission"), {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-admission"),
+        runtimeMode: "full-access",
+      });
+      const admissionRequestId = CommandId.make("cmd-thread-admission");
+      const sessionIncarnationId = RuntimeSessionId.make(String(session.sessionIncarnationId));
+      yield* provider.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        admissionRequestId,
+        sessionIncarnationId,
+      });
+
+      const receivedRef = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const consumer = yield* Stream.take(provider.streamEvents, 1).pipe(
+        Stream.runForEach((event) => Ref.update(receivedRef, (current) => [...current, event])),
+        Effect.forkChild,
+      );
+      yield* advanceTestClock(50);
+      fanout.codex.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-correlated-admission"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: sessionIncarnationId,
+        threadId: session.threadId,
+        turnId: asTurnId("turn-correlated-admission"),
+        admissionRequestId,
+        sessionIncarnationId,
+        payload: {},
+      });
+      fanout.codex.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-legacy-admission"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: sessionIncarnationId,
+        threadId: session.threadId,
+        turnId: asTurnId("turn-legacy-admission"),
+        payload: {},
+      });
+      yield* Fiber.join(consumer);
+
+      const events = yield* Ref.get(receivedRef);
+      assert.equal(events[0]?.providerInstanceId, codexInstanceId);
+      assert.equal(events[0]?.admissionRequestId, admissionRequestId);
+      assert.equal(events[0]?.sessionIncarnationId, sessionIncarnationId);
+      assert.equal(events.length, 1);
+    }),
+  );
+
+  it.effect("drops late events from a replaced provider adapter incarnation", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-replaced-adapter");
+      const oldSession = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/provider-replaced-adapter",
+        runtimeMode: "full-access",
+      });
+      const currentSession = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: "/tmp/provider-replaced-adapter",
+        runtimeMode: "full-access",
+      });
+
+      const receivedRef = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const consumer = yield* Stream.take(provider.streamEvents, 1).pipe(
+        Stream.runForEach((event) => Ref.update(receivedRef, (current) => [...current, event])),
+        Effect.forkChild,
+      );
+      yield* advanceTestClock(50);
+      fanout.codex.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-replaced-adapter-stale"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        turnId: asTurnId("turn-replaced-adapter-stale"),
+        sessionIncarnationId: oldSession.sessionIncarnationId,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: {},
+      });
+      fanout.claude.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-replaced-adapter-current"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        threadId,
+        turnId: asTurnId("turn-replaced-adapter-current"),
+        sessionIncarnationId: currentSession.sessionIncarnationId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        payload: {},
+      });
+      yield* Fiber.join(consumer);
+
+      const events = yield* Ref.get(receivedRef);
+      assert.deepEqual(
+        events.map((event) => event.eventId),
+        ["evt-replaced-adapter-current"],
+      );
+    }),
+  );
+
+  it.effect("filters an old same-instance adapter after registry rebuild", () =>
+    Effect.gen(function* () {
+      const oldCodex = makeFakeCodexAdapter();
+      const rebuiltCodex = makeFakeCodexAdapter();
+      const changes = yield* PubSub.unbounded<void>();
+      const rebuiltSubscribed = yield* Deferred.make<void>();
+      const rebuiltAdapter: ProviderAdapterShape<ProviderAdapterError> = {
+        ...rebuiltCodex.adapter,
+        streamEvents: rebuiltCodex.adapter.streamEvents.pipe(
+          Stream.onStart(Deferred.succeed(rebuiltSubscribed, undefined)),
+        ),
+      };
+      let currentAdapter: ProviderAdapterShape<ProviderAdapterError> = oldCodex.adapter;
+      const registry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = {
+        getByInstance: () => Effect.succeed(currentAdapter),
+        getInstanceInfo: (instanceId) =>
+          Effect.succeed({
+            instanceId,
+            driverKind: ProviderDriverKind.make("codex"),
+            displayName: undefined,
+            enabled: true,
+            continuationIdentity: {
+              driverKind: ProviderDriverKind.make("codex"),
+              continuationKey: "codex:instance:codex",
+            },
+          }),
+        listInstances: () => Effect.succeed([codexInstanceId]),
+        listProviders: () => Effect.succeed([ProviderDriverKind.make("codex")]),
+        streamChanges: Stream.empty,
+        subscribeChanges: PubSub.subscribe(changes),
+      };
+      const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = Layer.mergeAll(
+        makeProviderServiceLive().pipe(
+          Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+          Layer.provide(directoryLayer),
+          Layer.provide(defaultServerSettingsLayer),
+          Layer.provide(serverConfigTestLayer),
+          Layer.provideMerge(AnalyticsService.layerTest),
+          Layer.provide(
+            Layer.succeed(
+              ProviderEventLoggers.ProviderEventLoggers,
+              ProviderEventLoggers.NoOpProviderEventLoggers,
+            ),
+          ),
+        ),
+        directoryLayer,
+        runtimeRepositoryLayer,
+        NodeServices.layer,
+      );
+      const scope = yield* Scope.make();
+      const services = yield* Layer.build(providerLayer).pipe(Scope.provide(scope));
+      const provider = yield* ProviderService.ProviderService.pipe(Effect.provide(services));
+      const threadId = asThreadId("thread-same-instance-rebuild");
+      const oldSession = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      currentAdapter = rebuiltAdapter;
+      yield* PubSub.publish(changes, undefined);
+      yield* Deferred.await(rebuiltSubscribed);
+      const currentSession = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const received = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const consumer = yield* Stream.take(provider.streamEvents, 1).pipe(
+        Stream.runForEach((event) => Ref.update(received, (events) => [...events, event])),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      oldCodex.emit({
+        type: "session.exited",
+        eventId: asEventId("evt-old-same-instance-after-rebuild"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        sessionIncarnationId: oldSession.sessionIncarnationId,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: { exitKind: "graceful" },
+      });
+      rebuiltCodex.emit({
+        type: "session.started",
+        eventId: asEventId("evt-current-same-instance-after-rebuild"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        sessionIncarnationId: currentSession.sessionIncarnationId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        payload: {},
+      });
+      yield* Fiber.join(consumer);
+
+      assert.deepEqual(
+        (yield* Ref.get(received)).map((event) => event.eventId),
+        ["evt-current-same-instance-after-rebuild"],
+      );
+      yield* Scope.close(scope, Exit.void);
     }),
   );
 
@@ -2321,6 +2854,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         createdAt: "2026-01-01T00:00:00.000Z",
         threadId: session.threadId,
         turnId: asTurnId("turn-1"),
+        sessionIncarnationId: session.sessionIncarnationId,
         toolKind: "command",
         title: "Ran command",
       });
@@ -2331,6 +2865,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         createdAt: "2026-01-01T00:00:00.000Z",
         threadId: session.threadId,
         turnId: asTurnId("turn-1"),
+        sessionIncarnationId: session.sessionIncarnationId,
         toolKind: "command",
         title: "Ran command",
       });
@@ -2341,6 +2876,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         createdAt: "2026-01-01T00:00:00.000Z",
         threadId: session.threadId,
         turnId: asTurnId("turn-1"),
+        sessionIncarnationId: session.sessionIncarnationId,
         status: "completed",
       });
 
@@ -2412,7 +2948,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
       ];
 
       for (const event of events) {
-        fanout.codex.emit(event);
+        fanout.codex.emit({ ...event, sessionIncarnationId: session.sessionIncarnationId });
       }
       const failingResult = yield* Effect.result(Fiber.join(failingFiber));
       assert.equal(failingResult._tag, "Failure");
@@ -2786,7 +3322,7 @@ describe("agent browser access", () => {
 
       yield* Effect.gen(function* () {
         const provider = yield* ProviderService.ProviderService;
-        yield* provider.startSession(threadId, {
+        const session = yield* provider.startSession(threadId, {
           provider: CODEX_DRIVER,
           providerInstanceId: codexInstanceId,
           threadId,
@@ -2801,6 +3337,7 @@ describe("agent browser access", () => {
           provider: CODEX_DRIVER,
           createdAt: "2026-01-01T00:00:00.000Z",
           threadId,
+          sessionIncarnationId: session.sessionIncarnationId,
           payload: { exitKind: "error" },
         });
 

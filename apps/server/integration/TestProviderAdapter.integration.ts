@@ -265,6 +265,9 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
           ...(input.providerInstanceId !== undefined
             ? { providerInstanceId: input.providerInstanceId }
             : {}),
+          ...(input.sessionIncarnationId !== undefined
+            ? { sessionIncarnationId: input.sessionIncarnationId }
+            : {}),
           status: "ready",
           runtimeMode: input.runtimeMode,
           threadId,
@@ -316,6 +319,12 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
             eventId: nextEventId(input.threadId),
             provider,
             sessionId: RuntimeSessionId.make(String(input.threadId)),
+            ...(state.session.sessionIncarnationId !== undefined
+              ? { sessionIncarnationId: state.session.sessionIncarnationId }
+              : {}),
+            ...(input.admissionRequestId !== undefined
+              ? { admissionRequestId: input.admissionRequestId }
+              : {}),
           };
           rawEvent.threadId = state.snapshot.threadId;
           if (Object.hasOwn(rawEvent, "turnId")) {
@@ -375,6 +384,12 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
             createdAt: nowIso(),
             threadId: state.snapshot.threadId,
             turnId,
+            ...(state.session.sessionIncarnationId !== undefined
+              ? { sessionIncarnationId: state.session.sessionIncarnationId }
+              : {}),
+            ...(input.admissionRequestId !== undefined
+              ? { admissionRequestId: input.admissionRequestId }
+              : {}),
             payload: {
               state: "completed",
             },

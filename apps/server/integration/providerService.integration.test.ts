@@ -1,5 +1,5 @@
 import type { ProviderRuntimeEvent } from "@t3tools/contracts";
-import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { CommandId, ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, assert } from "@effect/vitest";
@@ -136,6 +136,7 @@ const runTurn = (input: {
   readonly threadId: ThreadId;
   readonly userText: string;
   readonly response: TestTurnResponse;
+  readonly admissionRequestId?: CommandId;
 }) =>
   Effect.gen(function* () {
     yield* input.harness.queueTurnResponse(input.threadId, input.response);
@@ -146,6 +147,9 @@ const runTurn = (input: {
         threadId: input.threadId,
         input: input.userText,
         attachments: [],
+        ...(input.admissionRequestId !== undefined
+          ? { admissionRequestId: input.admissionRequestId }
+          : {}),
       }),
     );
   });
@@ -164,6 +168,7 @@ it.live("replays typed runtime fixture events", () =>
         runtimeMode: "full-access",
       });
       assert.equal((session.threadId ?? "").length > 0, true);
+      const admissionRequestId = CommandId.make("cmd-integration-typed");
 
       const observedEvents = yield* runTurn({
         provider,
@@ -171,6 +176,7 @@ it.live("replays typed runtime fixture events", () =>
         threadId: session.threadId,
         userText: "hello",
         response: { events: codexTurnTextFixture },
+        admissionRequestId,
       });
 
       assert.deepEqual(
@@ -180,6 +186,14 @@ it.live("replays typed runtime fixture events", () =>
       assert.deepEqual(
         observedEvents.map((event) => event.providerInstanceId),
         codexTurnTextFixture.map(() => codexInstanceId),
+      );
+      assert.deepEqual(
+        observedEvents.map((event) => event.admissionRequestId),
+        codexTurnTextFixture.map(() => admissionRequestId),
+      );
+      assert.deepEqual(
+        observedEvents.map((event) => event.sessionIncarnationId),
+        codexTurnTextFixture.map(() => session.sessionIncarnationId),
       );
     }).pipe(Effect.provide(fixture.layer));
   }).pipe(Effect.provide(NodeServices.layer)),

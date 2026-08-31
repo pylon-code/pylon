@@ -59,6 +59,7 @@ import Migration0044 from "./Migrations/044_RepairProjectsDefaultThreadEnvMode.t
 import Migration0045 from "./Migrations/045_AuthSessionClientConnection.ts";
 import Migration0046 from "./Migrations/046_ProjectionThreadLinkedPullRequest.ts";
 import Migration0047 from "./Migrations/047_ProjectionThreadsUnsettledAt.ts";
+import Migration0048 from "./Migrations/048_ProjectionThreadSessionPendingTurnRequest.ts";
 /**
  * Migration loader with all migrations defined inline.
  *
@@ -140,6 +141,7 @@ export const migrationEntries = [
   // already recorded the session lifecycle migration silently skip the
   // `unsettled_at` column.
   [47, "ProjectionThreadsUnsettledAt", Migration0047],
+  [48, "ProjectionThreadSessionPendingTurnRequest", Migration0048],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

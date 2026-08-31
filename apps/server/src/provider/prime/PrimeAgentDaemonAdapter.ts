@@ -21,6 +21,7 @@ import {
   ProviderInstanceId,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeSessionId,
   SessionInteractionRequest,
   SessionInteractionRequestId,
   SessionInteractionResponse,
@@ -36,9 +37,11 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -46,6 +49,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
@@ -133,6 +137,9 @@ const PRIME_AGENT_DEFAULT_MODEL = "default";
 const SESSION_STATS_TIMEOUT_MS = 1_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 export const PRIME_AGENT_FAILED_RUN_SETTLEMENT_GRACE_MS = 3_000;
+export const PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS = 5_000;
+const PRIME_AGENT_SESSION_CLEANUP_CONCURRENCY = 4;
+const PRIME_AGENT_TERMINAL_EVENT_TIMEOUT_MS = 100;
 export const PRIME_AGENT_SIDE_QUESTION_TIMEOUT_MS = 2 * 60_000;
 const PRIME_AGENT_SIDE_QUESTION_MAX_ACTIVE = 4;
 const unavailableSessionGoal: SessionGoalUpdatedPayload = {
@@ -319,6 +326,7 @@ interface PrimeAgentDaemonSharedActivityStream {
 
 interface PrimeAgentDaemonSessionContext {
   readonly threadId: ThreadId;
+  readonly sessionIncarnationId: RuntimeSessionId;
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly runtime: PrimeAgentDaemonSessionRuntime;
@@ -378,7 +386,12 @@ interface PrimeAgentDaemonSessionContext {
   compactionAbortRequested: boolean;
   stopRequested: boolean;
   stopped: boolean;
-  exitEmitted: boolean;
+  exitEnqueued: boolean;
+  exitPublished: boolean;
+  readonly exitPublicationSemaphore: Semaphore.Semaphore;
+  teardownStarted: boolean;
+  readonly teardownCompletion: Deferred.Deferred<void>;
+  readonly teardownResourcesStarted: Deferred.Deferred<void>;
 }
 
 function observeNativeRunStarted(
@@ -654,12 +667,100 @@ export function makePrimeAgentDaemonAdapter(
     void options?.environment;
 
     const sessions = new Map<ThreadId, PrimeAgentDaemonSessionContext>();
+    const activeTeardowns = new Map<
+      ThreadId,
+      {
+        readonly context: PrimeAgentDaemonSessionContext;
+        readonly completion: Deferred.Deferred<void>;
+        readonly run: Effect.Effect<void>;
+        started: boolean;
+      }
+    >();
     const activeSideQuestions = new Map<ThreadId, PrimeAgentDaemonActiveSideQuestion>();
     let nextModelDiscoveryGeneration = 0;
     let publishedModelDiscoveryGeneration = 0;
     const modelPublicationSemaphore = yield* Semaphore.make(1);
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* makePrimeAgentEventPubSub<ProviderRuntimeEvent>();
+    type OrderedRuntimeEvent = {
+      readonly event: ProviderRuntimeEvent;
+      readonly terminalDelivery?:
+        | {
+            readonly delivered: Deferred.Deferred<void>;
+            readonly markPublished: () => void;
+          }
+        | undefined;
+    };
+    // Preserve the direct bounded handoff while subscribers are keeping up.
+    // Once backpressure appears, atomically queue this event and every successor
+    // so mutation permits never suspend and the relay preserves exact FIFO.
+    const orderedRuntimeEventQueue = yield* Queue.unbounded<OrderedRuntimeEvent>();
+    let pendingOrderedRuntimeEvents = 0;
+    const pendingTerminalDeliveries = new Set<Deferred.Deferred<void>>();
+    const completeTerminalDelivery = (
+      terminalDelivery: OrderedRuntimeEvent["terminalDelivery"],
+      accepted: boolean,
+    ) =>
+      terminalDelivery === undefined
+        ? Effect.void
+        : Effect.sync(() => {
+            pendingTerminalDeliveries.delete(terminalDelivery.delivered);
+            if (accepted) terminalDelivery.markPublished();
+          }).pipe(
+            Effect.andThen(Deferred.succeed(terminalDelivery.delivered, undefined)),
+            Effect.ignore,
+          );
+    const logRejectedRuntimeEvent = (event: ProviderRuntimeEvent) =>
+      Effect.logError("Prime Agent runtime event was not accepted.", {
+        component: "daemon",
+        eventType: event.type,
+        threadId: event.threadId,
+        outcome: "forced-drop-after-shutdown",
+      });
+    yield* Queue.take(orderedRuntimeEventQueue).pipe(
+      Effect.flatMap(({ event, terminalDelivery }) =>
+        PubSub.publish(runtimeEventPubSub, event).pipe(
+          Effect.flatMap((accepted) =>
+            Effect.sync(() => {
+              pendingOrderedRuntimeEvents -= 1;
+            }).pipe(
+              Effect.andThen(completeTerminalDelivery(terminalDelivery, accepted)),
+              Effect.andThen(accepted ? Effect.void : logRejectedRuntimeEvent(event)),
+            ),
+          ),
+        ),
+      ),
+      Effect.forever,
+      Effect.forkScoped,
+    );
+
+    const offerOrderedRuntimeEvent = (entry: OrderedRuntimeEvent) =>
+      Effect.sync(() => {
+        if (
+          pendingOrderedRuntimeEvents === 0 &&
+          PubSub.publishUnsafe(runtimeEventPubSub, entry.event)
+        ) {
+          return "published" as const;
+        }
+        pendingOrderedRuntimeEvents += 1;
+        if (Queue.offerUnsafe(orderedRuntimeEventQueue, entry)) return "queued" as const;
+        pendingOrderedRuntimeEvents -= 1;
+        return "rejected" as const;
+      }).pipe(
+        Effect.flatMap((outcome) =>
+          outcome === "published"
+            ? completeTerminalDelivery(entry.terminalDelivery, true).pipe(
+                Effect.andThen(Effect.yieldNow),
+                Effect.as(true),
+              )
+            : outcome === "queued"
+              ? Effect.yieldNow.pipe(Effect.as(true))
+              : completeTerminalDelivery(entry.terminalDelivery, false).pipe(
+                  Effect.andThen(logRejectedRuntimeEvent(entry.event)),
+                  Effect.as(false),
+                ),
+        ),
+      );
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
@@ -676,18 +777,17 @@ export function makePrimeAgentDaemonAdapter(
     const makeEventStamp = () =>
       Effect.all({ eventId: Effect.map(randomUUIDv4, EventId.make), createdAt: nowIso });
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
-      PubSub.publish(runtimeEventPubSub, event).pipe(
-        Effect.flatMap((accepted) =>
-          accepted
-            ? Effect.void
-            : Effect.logError("Prime Agent runtime event was not accepted.", {
-                component: "daemon",
-                eventType: event.type,
-                threadId: event.threadId,
-                outcome: "forced-drop-after-shutdown",
-              }),
-        ),
-      );
+      offerOrderedRuntimeEvent({ event }).pipe(Effect.asVoid);
+    const publishRuntimeEvent = (
+      context: PrimeAgentDaemonSessionContext,
+      event: ProviderRuntimeEvent,
+    ) =>
+      offerRuntimeEvent({
+        ...event,
+        // The immutable context owns the event even after its session map entry
+        // is deleted or replaced. Never infer incarnation from mutable routing.
+        sessionIncarnationId: context.sessionIncarnationId,
+      });
 
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
@@ -704,8 +804,27 @@ export function makePrimeAgentDaemonAdapter(
           onSome: (semaphore) => Effect.succeed([semaphore, current] as const),
         });
       });
-    const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
-      Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
+    const drainActiveTeardown = (threadId: ThreadId) =>
+      Effect.suspend(() => {
+        const teardown = activeTeardowns.get(threadId);
+        if (teardown === undefined || teardown.started) return Effect.void;
+        teardown.started = true;
+        return teardown.run.pipe(
+          Effect.forkDetach,
+          Effect.andThen(
+            Effect.raceFirst(
+              Deferred.await(teardown.context.teardownResourcesStarted),
+              Deferred.await(teardown.completion),
+            ),
+          ),
+          Effect.andThen(Effect.yieldNow),
+          Effect.asVoid,
+        );
+      });
+    const withThreadLock = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
+      Effect.flatMap(getThreadSemaphore(threadId), (semaphore) =>
+        semaphore.withPermit(effect).pipe(Effect.ensuring(drainActiveTeardown(threadId))),
+      );
 
     const withThreadMutationLock = <A, E, R>(
       threadId: ThreadId,
@@ -826,102 +945,92 @@ export function makePrimeAgentDaemonAdapter(
         return true;
       });
 
-    /** Must be called with the thread lock held. */
-    const endActiveSideQuestionLocked = (context: PrimeAgentDaemonSessionContext) =>
-      Effect.gen(function* () {
-        const active = activeSideQuestions.get(context.threadId);
-        if (active === undefined || active.context !== context) return false;
-        if (!active.cancelRequested) {
-          active.cancelRequested = true;
-          yield* context.runtime.abortSideQuestion(active.nativeId).pipe(Effect.ignore);
-        }
-        yield* Deferred.succeed(active.sessionEnded, undefined);
-        return true;
-      });
-
     const publishSessionResources = (
-      threadId: ThreadId,
+      context: PrimeAgentDaemonSessionContext,
       payload: PrimeAgentDaemonSessionRuntime["initialResources"],
     ) =>
       Effect.flatMap(makeEventStamp(), (eventStamp) =>
-        offerRuntimeEvent({
+        publishRuntimeEvent(context, {
           type: "session.resources.updated",
           ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
-          threadId,
+          threadId: context.threadId,
           payload,
         }),
       );
 
     const publishSessionAgentDepth = (
-      threadId: ThreadId,
+      context: PrimeAgentDaemonSessionContext,
       payload: SessionAgentDepthUpdatedPayload,
     ) =>
       Effect.flatMap(makeEventStamp(), (eventStamp) =>
-        offerRuntimeEvent({
+        publishRuntimeEvent(context, {
           type: "session.agent-depth.updated",
           ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
-          threadId,
+          threadId: context.threadId,
           payload,
         }),
       );
 
     const publishSessionCompaction = (
-      threadId: ThreadId,
+      context: PrimeAgentDaemonSessionContext,
       payload: SessionCompactionUpdatedPayload,
     ) =>
       Effect.flatMap(makeEventStamp(), (eventStamp) =>
-        offerRuntimeEvent({
+        publishRuntimeEvent(context, {
           type: "session.compaction.updated",
           ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
-          threadId,
+          threadId: context.threadId,
           payload,
         }),
       );
 
     const publishSessionHarnessRefinement = (
-      threadId: ThreadId,
+      context: PrimeAgentDaemonSessionContext,
       payload: SessionHarnessRefinementUpdatedPayload,
     ) =>
       Effect.flatMap(makeEventStamp(), (eventStamp) =>
-        offerRuntimeEvent({
+        publishRuntimeEvent(context, {
           type: "session.harness-refinement.updated",
           ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
-          threadId,
+          threadId: context.threadId,
           payload,
         }),
       );
 
-    const publishSessionGoal = (threadId: ThreadId, payload: SessionGoalUpdatedPayload) =>
+    const publishSessionGoal = (
+      context: PrimeAgentDaemonSessionContext,
+      payload: SessionGoalUpdatedPayload,
+    ) =>
       Effect.flatMap(makeEventStamp(), (eventStamp) =>
-        offerRuntimeEvent({
+        publishRuntimeEvent(context, {
           type: "session.goal.updated",
           ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
-          threadId,
+          threadId: context.threadId,
           payload,
         }),
       );
 
     const publishSessionInputQueue = (
-      threadId: ThreadId,
+      context: PrimeAgentDaemonSessionContext,
       payload: SessionInputQueueUpdatedPayload,
     ) =>
       Effect.flatMap(makeEventStamp(), (eventStamp) =>
-        offerRuntimeEvent({
+        publishRuntimeEvent(context, {
           type: "session.input-queue.updated",
           ...eventStamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
-          threadId,
+          threadId: context.threadId,
           payload,
         }),
       );
@@ -950,7 +1059,7 @@ export function makePrimeAgentDaemonAdapter(
           context.inputQueue.steeringMode !== resolved.steeringMode ||
           context.inputQueue.followUpMode !== resolved.followUpMode;
         context.inputQueue = resolved;
-        if (changed) yield* publishSessionInputQueue(context.threadId, resolved);
+        if (changed) yield* publishSessionInputQueue(context, resolved);
       });
 
     /** Must be called with the thread lock held. */
@@ -969,7 +1078,7 @@ export function makePrimeAgentDaemonAdapter(
           context.goal.timeUsedSeconds !== next.timeUsedSeconds ||
           context.goal.continuationsUsed !== next.continuationsUsed;
         context.goal = next;
-        if (changed) yield* publishSessionGoal(context.threadId, next);
+        if (changed) yield* publishSessionGoal(context, next);
       });
 
     const isAgentDepthSettable = (context: PrimeAgentDaemonSessionContext): boolean =>
@@ -991,7 +1100,7 @@ export function makePrimeAgentDaemonAdapter(
         const settable = isAgentDepthSettable(context);
         if (context.agentDepth.settable === settable) return;
         context.agentDepth = { ...context.agentDepth, settable };
-        yield* publishSessionAgentDepth(context.threadId, context.agentDepth);
+        yield* publishSessionAgentDepth(context, context.agentDepth);
       });
 
     const isManualCompactionSettable = (context: PrimeAgentDaemonSessionContext): boolean =>
@@ -1035,7 +1144,7 @@ export function makePrimeAgentDaemonAdapter(
           context.compaction.autoCompactionScope !== next.autoCompactionScope;
         context.compaction = next;
         context.autoCompactionEnabled = next.autoCompactionEnabled ?? false;
-        if (changed) yield* publishSessionCompaction(context.threadId, next);
+        if (changed) yield* publishSessionCompaction(context, next);
       });
 
     const publishDrafts = (
@@ -1090,7 +1199,7 @@ export function makePrimeAgentDaemonAdapter(
           runtimeTurnId !== undefined &&
           turn?.activeAssistantItemId !== undefined
         ) {
-          yield* offerRuntimeEvent({
+          yield* publishRuntimeEvent(context, {
             type: "item.started",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -1131,7 +1240,7 @@ export function makePrimeAgentDaemonAdapter(
           ) {
             continue;
           }
-          yield* offerRuntimeEvent({ ...draft, ...(yield* makeEventStamp()) });
+          yield* publishRuntimeEvent(context, { ...draft, ...(yield* makeEventStamp()) });
           if (draft.type === "turn.plan.updated" && planUpdate !== undefined) {
             turn?.projectedPlanToolCallIds.add(planUpdate.toolCallId);
           }
@@ -1490,7 +1599,7 @@ export function makePrimeAgentDaemonAdapter(
           stats: statsOption.value,
           compactsAutomatically: context.autoCompactionEnabled,
         });
-        yield* offerRuntimeEvent({ ...draft, ...(yield* makeEventStamp()) });
+        yield* publishRuntimeEvent(context, { ...draft, ...(yield* makeEventStamp()) });
       });
 
     /** Must be called with the thread lock held. */
@@ -1498,10 +1607,11 @@ export function makePrimeAgentDaemonAdapter(
       context: PrimeAgentDaemonSessionContext,
       turn: PrimeAgentDaemonActiveTurn,
       outcome: TurnOutcome,
+      options?: { readonly preserveOutcomeDuringTeardown?: boolean },
     ) =>
       Effect.gen(function* () {
         if (
-          sessions.get(context.threadId) !== context ||
+          (!context.teardownStarted && sessions.get(context.threadId) !== context) ||
           context.stopped ||
           context.activeTurn !== turn ||
           context.session.activeTurnId !== turn.id
@@ -1510,7 +1620,9 @@ export function makePrimeAgentDaemonAdapter(
         }
 
         const effectiveOutcome: TurnOutcome =
-          context.stopRequested || (turn.correlationId === undefined && turn.cancellationRequested)
+          !options?.preserveOutcomeDuringTeardown &&
+          (context.stopRequested ||
+            (turn.correlationId === undefined && turn.cancellationRequested))
             ? { state: "cancelled" }
             : outcome;
         turn.pendingRunCompletionHandoff = undefined;
@@ -1519,7 +1631,7 @@ export function makePrimeAgentDaemonAdapter(
           (!turn.lastAssistantHadRenderableText ||
             effectiveOutcome.runtimeErrorMessage !== undefined)
         ) {
-          yield* offerRuntimeEvent({
+          yield* publishRuntimeEvent(context, {
             type: "runtime.error",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -1540,7 +1652,7 @@ export function makePrimeAgentDaemonAdapter(
           yield* publishDrafts(context, effectiveOutcome.event, turn);
           context.turns.push({ id: turn.id, items: [] });
         } else {
-          yield* offerRuntimeEvent({
+          yield* publishRuntimeEvent(context, {
             type: "turn.completed",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -1781,7 +1893,7 @@ export function makePrimeAgentDaemonAdapter(
               .pipe(Effect.ignore);
           }
           if (!context.pendingInteractions.delete(requestId)) continue;
-          yield* offerRuntimeEvent({
+          yield* publishRuntimeEvent(context, {
             type: "interaction.resolved",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -1809,7 +1921,7 @@ export function makePrimeAgentDaemonAdapter(
               .pipe(Effect.ignore);
           }
           if (!context.pendingApprovals.delete(requestId)) continue;
-          yield* offerRuntimeEvent({
+          yield* publishRuntimeEvent(context, {
             type: "request.resolved",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -1844,7 +1956,7 @@ export function makePrimeAgentDaemonAdapter(
             yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
           }
         }
-        yield* offerRuntimeEvent({
+        yield* publishRuntimeEvent(context, {
           type: "runtime.error",
           ...(yield* makeEventStamp()),
           provider: PROVIDER,
@@ -2302,7 +2414,7 @@ export function makePrimeAgentDaemonAdapter(
                       false,
                     );
                     if (delivered) {
-                      yield* offerRuntimeEvent({
+                      yield* publishRuntimeEvent(context, {
                         type: "runtime.error",
                         ...(yield* makeEventStamp()),
                         provider: PROVIDER,
@@ -2350,7 +2462,7 @@ export function makePrimeAgentDaemonAdapter(
                           context.pendingApprovals.delete(requestId);
                           yield* syncAgentDepthSettableLocked(context);
                           yield* updateCompactionProjectionLocked(context);
-                          yield* offerRuntimeEvent({
+                          yield* publishRuntimeEvent(context, {
                             type: "request.resolved",
                             ...(yield* makeEventStamp()),
                             provider: PROVIDER,
@@ -2372,7 +2484,7 @@ export function makePrimeAgentDaemonAdapter(
                     Effect.provideService(Scope.Scope, context.scope),
                   );
                 }
-                yield* offerRuntimeEvent({
+                yield* publishRuntimeEvent(context, {
                   type: "request.opened",
                   ...stamp,
                   provider: PROVIDER,
@@ -2433,7 +2545,7 @@ export function makePrimeAgentDaemonAdapter(
                             }
                             return exit;
                           });
-                    yield* offerRuntimeEvent({
+                    yield* publishRuntimeEvent(context, {
                       type: "runtime.error",
                       ...(yield* makeEventStamp()),
                       provider: PROVIDER,
@@ -2463,7 +2575,7 @@ export function makePrimeAgentDaemonAdapter(
                 if (!capturedExtensionOwnerIsCurrentLocked(context, event, capturedOwner)) {
                   return;
                 }
-                yield* offerRuntimeEvent({
+                yield* publishRuntimeEvent(context, {
                   type: "runtime.warning",
                   ...(yield* makeEventStamp()),
                   provider: PROVIDER,
@@ -2493,7 +2605,7 @@ export function makePrimeAgentDaemonAdapter(
                   yield* rejectExtensionRequest(context, event);
                   return;
                 }
-                yield* offerRuntimeEvent({
+                yield* publishRuntimeEvent(context, {
                   type: "session-presentation.updated",
                   ...(yield* makeEventStamp()),
                   provider: PROVIDER,
@@ -2541,7 +2653,7 @@ export function makePrimeAgentDaemonAdapter(
                         context.pendingInteractions.delete(requestId);
                         yield* syncAgentDepthSettableLocked(context);
                         yield* updateCompactionProjectionLocked(context);
-                        yield* offerRuntimeEvent({
+                        yield* publishRuntimeEvent(context, {
                           type: "interaction.resolved",
                           ...(yield* makeEventStamp()),
                           provider: PROVIDER,
@@ -2560,7 +2672,7 @@ export function makePrimeAgentDaemonAdapter(
                   Effect.provideService(Scope.Scope, context.scope),
                 );
               }
-              yield* offerRuntimeEvent({
+              yield* publishRuntimeEvent(context, {
                 type: "interaction.requested",
                 ...stamp,
                 provider: PROVIDER,
@@ -2783,62 +2895,23 @@ export function makePrimeAgentDaemonAdapter(
         }
 
         if (event._tag === "SessionClosed") {
-          yield* withThreadLock(
+          const completion = yield* withThreadLock(
             context.threadId,
             Effect.gen(function* () {
-              if (sessions.get(context.threadId) !== context || context.stopped) return;
-              yield* clearPendingApprovalsLocked(context, false);
-              yield* clearPendingInteractionsLocked(context, false);
-              const turn = context.activeTurn;
-              if (turn !== undefined) {
-                yield* settleActiveTurnLocked(
-                  context,
-                  turn,
-                  context.stopRequested ||
-                    (turn.correlationId === undefined && turn.cancellationRequested)
-                    ? { state: "cancelled" }
-                    : {
-                        state: "failed",
-                        errorMessage:
-                          "Prime Agent daemon session closed before the turn completed.",
-                      },
-                );
+              if (
+                context.teardownStarted ||
+                context.stopped ||
+                sessions.get(context.threadId) !== context
+              ) {
+                return undefined;
               }
-              context.inputQueueClearPending = false;
-              context.nativeQueueActionActive = false;
-              yield* updateInputQueueProjection(
+              return yield* stopSessionInternal(
                 context,
-                { steeringCount: 0, followUpCount: 0 },
-                { preserveModes: false },
+                "Prime Agent session closed unexpectedly.",
               );
-              if (context.activeRefinement !== undefined) {
-                const activeRefinement = context.activeRefinement;
-                context.activeRefinement = undefined;
-                yield* Deferred.fail(
-                  activeRefinement.completion,
-                  new ProviderAdapterRequestError({
-                    provider: PROVIDER,
-                    method: "session/refine-harness",
-                    detail: "Prime Agent session stopped before harness refinement completed.",
-                  }),
-                );
-              }
-              const disposeExit = yield* context.runtime.dispose.pipe(Effect.exit);
-              context.stopped = true;
-              context.stopRequested = true;
-              sessions.delete(context.threadId);
-              yield* Scope.close(context.scope, Exit.void);
-              if (!context.exitEmitted) {
-                context.exitEmitted = true;
-                yield* publishDrafts(context, event, undefined);
-              }
-              if (Exit.isFailure(disposeExit)) {
-                yield* Effect.logError("Failed to dispose a terminal Prime Agent daemon session.", {
-                  threadId: context.threadId,
-                });
-              }
             }),
           );
+          void completion;
           return;
         }
 
@@ -3045,41 +3118,104 @@ export function makePrimeAgentDaemonAdapter(
         ),
       );
 
-    /** Must be called with the thread lock held. */
-    const stopSessionInternal = (
+    const runSessionTeardown = (
       context: PrimeAgentDaemonSessionContext,
-      terminalReason?: string,
-    ) =>
-      Effect.gen(function* () {
-        if (sessions.get(context.threadId) !== context || context.stopped) return;
-        context.stopRequested = true;
+      terminalReason: string | undefined,
+      pendingApprovalNativeIds: ReadonlyArray<string>,
+      pendingInteractionNativeIds: ReadonlyArray<string>,
+      sideQuestionNativeId: string | undefined,
+      abortNativeQueue: boolean,
+      closedUnexpectedly: boolean,
+    ) => {
+      const publishTerminalOnce = context.exitPublicationSemaphore.withPermit(
+        Effect.suspend(() => {
+          if (context.exitEnqueued) return Effect.void;
+          return makeEventStamp().pipe(
+            Effect.flatMap((stamp) =>
+              Effect.gen(function* () {
+                const delivered = yield* Deferred.make<void>();
+                pendingTerminalDeliveries.add(delivered);
+                const accepted = yield* offerOrderedRuntimeEvent({
+                  event: {
+                    type: "session.exited",
+                    ...stamp,
+                    provider: PROVIDER,
+                    providerInstanceId: boundInstanceId,
+                    threadId: context.threadId,
+                    sessionIncarnationId: context.sessionIncarnationId,
+                    payload: {
+                      exitKind: terminalReason === undefined ? "graceful" : "error",
+                      ...(terminalReason === undefined ? {} : { reason: terminalReason }),
+                    },
+                  },
+                  terminalDelivery: {
+                    delivered,
+                    markPublished: () => {
+                      context.exitPublished = true;
+                    },
+                  },
+                });
+                if (accepted) {
+                  // Enqueueing is not delivery. The handoff marks exitPublished
+                  // only after the bounded public stream accepts this exact event.
+                  context.exitEnqueued = true;
+                  yield* Effect.yieldNow;
+                  yield* Effect.yieldNow;
+                }
+              }),
+            ),
+            Effect.catchCause((cause) =>
+              Effect.logError("Prime Agent terminal runtime event publication failed.", {
+                component: "daemon",
+                threadId: context.threadId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
+        }),
+      );
+
+      const lifecycleWork = Effect.gen(function* () {
         context.backgroundQuiescenceController?.abort();
         context.backgroundQuiescenceController = undefined;
         context.backgroundQuiescencePending = false;
-        yield* endActiveSideQuestionLocked(context);
+
+        const activeSideQuestion = activeSideQuestions.get(context.threadId);
+        if (activeSideQuestion?.context === context) {
+          activeSideQuestion.cancelRequested = true;
+          yield* Deferred.succeed(activeSideQuestion.sessionEnded, undefined).pipe(Effect.ignore);
+        }
         for (const watchedAgentId of new Set([
           ...context.activityWatchStops.keys(),
           ...context.sharedActivityStreams.keys(),
         ])) {
-          yield* signalInactiveActivityWatchesLocked(context, watchedAgentId);
+          yield* signalInactiveActivityWatchesLocked(context, watchedAgentId).pipe(Effect.ignore);
         }
-        yield* clearPendingApprovalsLocked(context, true);
-        yield* clearPendingInteractionsLocked(context, true);
+        yield* clearPendingApprovalsLocked(context, false).pipe(Effect.ignore);
+        yield* clearPendingInteractionsLocked(context, false).pipe(Effect.ignore);
         const turn = context.activeTurn;
         if (turn !== undefined) {
           turn.cancellationRequested = true;
           turn.controller.abort();
-          yield* context.runtime.abortAndClearQueue.pipe(Effect.ignore);
-          yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
+          yield* settleActiveTurnLocked(
+            context,
+            turn,
+            closedUnexpectedly
+              ? {
+                  state: "failed",
+                  errorMessage: "Prime Agent daemon session closed before the turn completed.",
+                }
+              : { state: "cancelled" },
+            closedUnexpectedly ? { preserveOutcomeDuringTeardown: true } : undefined,
+          ).pipe(Effect.ignore);
         }
-
         context.inputQueueClearPending = false;
         context.nativeQueueActionActive = false;
         yield* updateInputQueueProjection(
           context,
           { steeringCount: 0, followUpCount: 0 },
           { preserveModes: false },
-        );
+        ).pipe(Effect.ignore);
         if (context.activeRefinement !== undefined) {
           const activeRefinement = context.activeRefinement;
           context.activeRefinement = undefined;
@@ -3090,41 +3226,170 @@ export function makePrimeAgentDaemonAdapter(
               method: "session/refine-harness",
               detail: "Prime Agent session stopped before harness refinement completed.",
             }),
-          );
+          ).pipe(Effect.ignore);
         }
-        const disposeExit = yield* context.runtime.dispose.pipe(Effect.exit);
-        context.stopped = true;
-        if (context.eventFiber !== undefined) yield* Fiber.interrupt(context.eventFiber);
-        yield* Scope.close(context.scope, Exit.void);
-        if (sessions.get(context.threadId) !== context) return;
-        sessions.delete(context.threadId);
-        if (!context.exitEmitted) {
-          context.exitEmitted = true;
-          yield* offerRuntimeEvent({
-            type: "session.exited",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            providerInstanceId: boundInstanceId,
+      }).pipe(
+        Effect.timeoutOption(Duration.millis(PRIME_AGENT_TERMINAL_EVENT_TIMEOUT_MS)),
+        Effect.catchCause((cause) =>
+          Effect.logError("Prime Agent local session teardown failed.", {
             threadId: context.threadId,
-            payload: {
-              exitKind:
-                Exit.isSuccess(disposeExit) && terminalReason === undefined ? "graceful" : "error",
-              ...(terminalReason !== undefined
-                ? { reason: terminalReason }
-                : Exit.isSuccess(disposeExit)
-                  ? {}
-                  : { reason: "Prime Agent daemon session disposal failed." }),
-            },
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(Option.none())),
+        ),
+        Effect.ensuring(
+          publishTerminalOnce.pipe(Effect.ensuring(Effect.sync(() => (context.stopped = true)))),
+        ),
+        Effect.asVoid,
+      );
+
+      const cancellationSteps = [
+        ...pendingApprovalNativeIds.map((nativeId) => ({
+          label: "approval-cancel",
+          effect: context.runtime.respondToExtensionUiRequest(nativeId, { cancelled: true }),
+        })),
+        ...pendingInteractionNativeIds.map((nativeId) => ({
+          label: "interaction-cancel",
+          effect: context.runtime.respondToExtensionUiRequest(nativeId, { cancelled: true }),
+        })),
+        ...(sideQuestionNativeId === undefined
+          ? []
+          : [
+              {
+                label: "side-question-abort",
+                effect: context.runtime.abortSideQuestion(sideQuestionNativeId),
+              },
+            ]),
+        ...(abortNativeQueue
+          ? [{ label: "queue-abort", effect: context.runtime.abortAndClearQueue }]
+          : []),
+      ];
+      const runCleanupStep = (cleanup: {
+        readonly label: string;
+        readonly effect: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+      }) =>
+        cleanup.effect.pipe(
+          Effect.exit,
+          Effect.flatMap((exit) =>
+            Exit.isSuccess(exit)
+              ? Effect.void
+              : Effect.logError("Prime Agent daemon session teardown step failed.", {
+                  threadId: context.threadId,
+                  step: cleanup.label,
+                  cause: Cause.pretty(exit.cause),
+                }),
+          ),
+        );
+      const resourceWork = Deferred.succeed(context.teardownResourcesStarted, undefined).pipe(
+        Effect.andThen(
+          Effect.all(
+            [
+              // Dispose owns its own lane so a full batch of hung native
+              // cancellation calls cannot delay process/resource teardown.
+              runCleanupStep({ label: "runtime-dispose", effect: context.runtime.dispose }),
+              Effect.forEach(cancellationSteps, runCleanupStep, {
+                concurrency: PRIME_AGENT_SESSION_CLEANUP_CONCURRENCY,
+                discard: true,
+              }),
+            ],
+            { concurrency: 2, discard: true },
+          ),
+        ),
+      );
+      const teardownWork = Effect.all([lifecycleWork, resourceWork], {
+        concurrency: 2,
+        discard: true,
+      });
+
+      return Effect.gen(function* () {
+        yield* Scope.close(context.scope, Exit.void).pipe(
+          Effect.timeoutOption(Duration.millis(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS)),
+          Effect.catchCause((cause) =>
+            Effect.logError("Prime Agent daemon session scope cleanup failed.", {
+              threadId: context.threadId,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(Option.none())),
+          ),
+          Effect.forkDetach,
+        );
+        const workFiber = yield* teardownWork.pipe(Effect.forkDetach);
+        const workResult = yield* Fiber.join(workFiber).pipe(
+          Effect.exit,
+          Effect.timeoutOption(Duration.millis(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS)),
+        );
+        if (Option.isNone(workResult)) {
+          yield* Effect.logWarning("Prime Agent daemon session teardown timed out.", {
+            threadId: context.threadId,
+            timeoutMs: PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS,
+          });
+          yield* Fiber.interrupt(workFiber).pipe(Effect.forkDetach);
+        } else if (Exit.isFailure(workResult.value)) {
+          yield* Effect.logError("Prime Agent daemon session teardown finalization failed.", {
+            threadId: context.threadId,
+            cause: Cause.pretty(workResult.value.cause),
           });
         }
-        if (Exit.isFailure(disposeExit)) {
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "session/dispose",
-            detail: "Prime Agent daemon session disposal failed.",
-            cause: disposeExit.cause,
-          });
-        }
+        yield* publishTerminalOnce;
+      }).pipe(
+        Effect.ensuring(
+          Deferred.succeed(context.teardownCompletion, undefined).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                const activeTeardown = activeTeardowns.get(context.threadId);
+                if (activeTeardown?.context === context) {
+                  activeTeardowns.delete(context.threadId);
+                }
+              }),
+            ),
+            Effect.ignore,
+          ),
+        ),
+      );
+    };
+
+    /** Must be called with the thread lock held. Teardown starts outside the permit. */
+    const stopSessionInternal = (
+      context: PrimeAgentDaemonSessionContext,
+      terminalReason?: string,
+    ) =>
+      Effect.sync(() => {
+        if (context.teardownStarted) return context.teardownCompletion;
+        if (context.stopped) return context.teardownCompletion;
+
+        const activeSideQuestion = activeSideQuestions.get(context.threadId);
+        const sideQuestionNativeId =
+          activeSideQuestion?.context === context ? activeSideQuestion.nativeId : undefined;
+        const pendingApprovalNativeIds = Array.from(
+          context.pendingApprovals.values(),
+          (pending) => pending.nativeId,
+        );
+        const pendingInteractionNativeIds = Array.from(
+          context.pendingInteractions.values(),
+          (pending) => pending.nativeId,
+        );
+        const runtimeAlreadyClosed = terminalReason === "Prime Agent session closed unexpectedly.";
+        const closedUnexpectedly = runtimeAlreadyClosed && !context.stopRequested;
+        const abortNativeQueue = !runtimeAlreadyClosed && context.activeTurn !== undefined;
+
+        context.teardownStarted = true;
+        context.stopRequested = true;
+        if (sessions.get(context.threadId) === context) sessions.delete(context.threadId);
+        activeTeardowns.set(context.threadId, {
+          context,
+          completion: context.teardownCompletion,
+          run: Effect.suspend(() =>
+            runSessionTeardown(
+              context,
+              terminalReason,
+              runtimeAlreadyClosed ? [] : pendingApprovalNativeIds,
+              runtimeAlreadyClosed ? [] : pendingInteractionNativeIds,
+              runtimeAlreadyClosed ? undefined : sideQuestionNativeId,
+              abortNativeQueue,
+              closedUnexpectedly,
+            ),
+          ),
+          started: false,
+        });
+        return context.teardownCompletion;
       });
 
     const awaitRlmQuiescence = (
@@ -3185,10 +3450,17 @@ export function makePrimeAgentDaemonAdapter(
         );
       });
 
-    const startSession: PrimeAgentAdapterShape["startSession"] = (input) =>
+    const startSessionAttempt = (input: Parameters<PrimeAgentAdapterShape["startSession"]>[0]) =>
       withThreadMutationLock(
         input.threadId,
         Effect.gen(function* () {
+          const activeTeardown = activeTeardowns.get(input.threadId);
+          if (activeTeardown !== undefined) {
+            return {
+              _tag: "AwaitTeardown" as const,
+              completion: activeTeardown.completion,
+            };
+          }
           if (input.provider !== undefined && input.provider !== PROVIDER) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
@@ -3213,7 +3485,12 @@ export function makePrimeAgentDaemonAdapter(
           const approvalRequired = input.runtimeMode === "approval-required";
 
           const existing = sessions.get(input.threadId);
-          if (existing !== undefined && !existing.stopped) yield* stopSessionInternal(existing);
+          if (existing !== undefined && !existing.stopped) {
+            return {
+              _tag: "AwaitTeardown" as const,
+              completion: yield* stopSessionInternal(existing),
+            };
+          }
 
           const cwd = path.resolve(input.cwd.trim());
           const selectedModel =
@@ -3520,6 +3797,8 @@ export function makePrimeAgentDaemonAdapter(
           );
 
           const now = yield* nowIso;
+          const sessionIncarnationId =
+            input.sessionIncarnationId ?? RuntimeSessionId.make(yield* randomUUIDv4);
           const session: ProviderSession = {
             provider: PROVIDER,
             providerInstanceId: boundInstanceId,
@@ -3530,11 +3809,13 @@ export function makePrimeAgentDaemonAdapter(
             threadId: input.threadId,
             resumeCursor: runtime.resumeCursor,
             ...(input.resumeCursor !== undefined ? { restored: true } : {}),
+            sessionIncarnationId,
             createdAt: now,
             updatedAt: now,
           };
           const context: PrimeAgentDaemonSessionContext = {
             threadId: input.threadId,
+            sessionIncarnationId,
             session,
             scope: sessionScope,
             runtime,
@@ -3608,7 +3889,12 @@ export function makePrimeAgentDaemonAdapter(
             compactionAbortRequested: false,
             stopRequested: false,
             stopped: false,
-            exitEmitted: false,
+            exitEnqueued: false,
+            exitPublished: false,
+            exitPublicationSemaphore: yield* Semaphore.make(1),
+            teardownStarted: false,
+            teardownCompletion: yield* Deferred.make<void>(),
+            teardownResourcesStarted: yield* Deferred.make<void>(),
           };
           context.agentDepth = {
             ...context.agentDepth,
@@ -3620,7 +3906,7 @@ export function makePrimeAgentDaemonAdapter(
           };
           sessions.set(input.threadId, context);
           scopeTransferred = true;
-          yield* offerRuntimeEvent({
+          yield* publishRuntimeEvent(context, {
             type: "session.started",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -3628,12 +3914,12 @@ export function makePrimeAgentDaemonAdapter(
             threadId: input.threadId,
             payload: { resume: input.resumeCursor !== undefined },
           });
-          yield* publishSessionResources(input.threadId, runtime.initialResources);
-          yield* publishSessionAgentDepth(input.threadId, context.agentDepth);
-          yield* publishSessionCompaction(input.threadId, context.compaction);
-          yield* publishSessionGoal(input.threadId, context.goal);
-          yield* publishSessionInputQueue(input.threadId, context.inputQueue);
-          yield* offerRuntimeEvent({
+          yield* publishSessionResources(context, runtime.initialResources);
+          yield* publishSessionAgentDepth(context, context.agentDepth);
+          yield* publishSessionCompaction(context, context.compaction);
+          yield* publishSessionGoal(context, context.goal);
+          yield* publishSessionInputQueue(context, context.inputQueue);
+          yield* publishRuntimeEvent(context, {
             type: "session.state.changed",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -3641,7 +3927,7 @@ export function makePrimeAgentDaemonAdapter(
             threadId: input.threadId,
             payload: { state: "ready", reason: "Prime Agent daemon session ready" },
           });
-          yield* offerRuntimeEvent({
+          yield* publishRuntimeEvent(context, {
             type: "thread.started",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -3668,9 +3954,23 @@ export function makePrimeAgentDaemonAdapter(
           context.lifecycleStarted = true;
           yield* refreshContextUsage(context).pipe(Effect.forkDetach);
           yield* refreshDiscoveredModels(context);
-          return session;
+          return { _tag: "Started" as const, session };
         }).pipe(Effect.scoped),
       );
+
+    const startSession: PrimeAgentAdapterShape["startSession"] = (input) =>
+      Effect.gen(function* () {
+        const pendingTeardown = activeTeardowns.get(input.threadId);
+        if (pendingTeardown !== undefined) {
+          yield* Deferred.await(pendingTeardown.completion);
+        }
+        const attempt = yield* startSessionAttempt(input);
+        if (attempt._tag === "AwaitTeardown") {
+          yield* Deferred.await(attempt.completion);
+          return yield* startSession(input);
+        }
+        return attempt.session;
+      });
 
     const applyTurnSelection = (
       context: PrimeAgentDaemonSessionContext,
@@ -3982,6 +4282,9 @@ export function makePrimeAgentDaemonAdapter(
               context.session = {
                 ...context.session,
                 activeTurnId: turnId,
+                ...(input.admissionRequestId !== undefined
+                  ? { activeTurnRequestId: input.admissionRequestId }
+                  : {}),
                 status: "running",
                 updatedAt: yield* nowIso,
               };
@@ -4008,13 +4311,16 @@ export function makePrimeAgentDaemonAdapter(
           const initialRlmQuiescenceToken = turn.terminalQuiescenceToken;
           const runPrompt = Effect.gen(function* () {
             const turnModel = requestedModel || context.session.model || "default";
-            yield* offerRuntimeEvent({
+            yield* publishRuntimeEvent(context, {
               type: "turn.started",
               ...(yield* makeEventStamp()),
               provider: PROVIDER,
               providerInstanceId: boundInstanceId,
               threadId: input.threadId,
               turnId: turn.id,
+              ...(input.admissionRequestId !== undefined
+                ? { admissionRequestId: input.admissionRequestId }
+                : {}),
               payload: { model: turnModel },
             });
             if (turn.correlationId !== undefined) {
@@ -4190,7 +4496,7 @@ export function makePrimeAgentDaemonAdapter(
             context.approvalsAcceptedForSession = true;
           yield* syncAgentDepthSettableLocked(context);
           yield* updateCompactionProjectionLocked(context);
-          yield* offerRuntimeEvent({
+          yield* publishRuntimeEvent(context, {
             type: "request.resolved",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -4313,7 +4619,7 @@ export function makePrimeAgentDaemonAdapter(
           context.pendingInteractions.delete(requestId);
           yield* syncAgentDepthSettableLocked(context);
           yield* updateCompactionProjectionLocked(context);
-          yield* offerRuntimeEvent({
+          yield* publishRuntimeEvent(context, {
             type: "interaction.resolved",
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
@@ -4362,7 +4668,7 @@ export function makePrimeAgentDaemonAdapter(
           context.agentDepth.settable !== projected.settable ||
           context.agentDepth.maxSettableDepth !== projected.maxSettableDepth;
         context.agentDepth = projected;
-        if (changed) yield* publishSessionAgentDepth(context.threadId, projected);
+        if (changed) yield* publishSessionAgentDepth(context, projected);
       });
 
     const askSessionSideQuestion: NonNullable<PrimeAgentAdapterShape["askSessionSideQuestion"]> = (
@@ -5400,7 +5706,7 @@ export function makePrimeAgentDaemonAdapter(
           ),
         );
 
-        yield* publishSessionHarnessRefinement(threadId, {
+        yield* publishSessionHarnessRefinement(reserved, {
           sessionStartedAt: reserved.session.createdAt,
           status: "running",
         });
@@ -5410,7 +5716,7 @@ export function makePrimeAgentDaemonAdapter(
               // A rejected or timed-out public request is outcome-ambiguous. Keep the
               // reservation until session stop so a late apply cannot overlap a newer call.
               Effect.gen(function* () {
-                yield* publishSessionHarnessRefinement(threadId, {
+                yield* publishSessionHarnessRefinement(reserved, {
                   sessionStartedAt: reserved.session.createdAt,
                   status: "outcome-unknown",
                 });
@@ -5447,7 +5753,7 @@ export function makePrimeAgentDaemonAdapter(
                     ) {
                       reserved.activeRefinement = undefined;
                     }
-                    yield* publishSessionHarnessRefinement(threadId, {
+                    yield* publishSessionHarnessRefinement(reserved, {
                       sessionStartedAt: reserved.session.createdAt,
                       status: "available",
                     });
@@ -5458,7 +5764,7 @@ export function makePrimeAgentDaemonAdapter(
           }),
           Effect.catchCause(() =>
             Effect.gen(function* () {
-              yield* publishSessionHarnessRefinement(threadId, {
+              yield* publishSessionHarnessRefinement(reserved, {
                 sessionStartedAt: reserved.session.createdAt,
                 status: "outcome-unknown",
               });
@@ -5618,7 +5924,7 @@ export function makePrimeAgentDaemonAdapter(
                     ) {
                       return;
                     }
-                    yield* offerRuntimeEvent({
+                    yield* publishRuntimeEvent(reserved, {
                       type: "runtime.error",
                       ...(yield* makeEventStamp()),
                       provider: PROVIDER,
@@ -5885,7 +6191,7 @@ export function makePrimeAgentDaemonAdapter(
                 const payload = Exit.isSuccess(outcome)
                   ? outcome.value.resources
                   : { available: false as const, skills: [], prompts: [], commands: [] };
-                yield* publishSessionResources(threadId, payload);
+                yield* publishSessionResources(context, payload);
                 if (Exit.isSuccess(outcome)) {
                   yield* updateAgentDepthProjection(context, outcome.value.agentDepth);
                 }
@@ -5919,27 +6225,42 @@ export function makePrimeAgentDaemonAdapter(
 
     const stopSession: PrimeAgentAdapterShape["stopSession"] = (threadId) =>
       Effect.uninterruptible(
-        withThreadMutationLock(
-          threadId,
-          Effect.gen(function* () {
-            const context = sessions.get(threadId);
-            if (context === undefined || context.stopped) {
+        Effect.gen(function* () {
+          const outcome = yield* withThreadMutationLock(
+            threadId,
+            Effect.gen(function* () {
+              const context = sessions.get(threadId);
+              if (context !== undefined && !context.stopped && !context.stopRequested) {
+                return {
+                  _tag: "Stopping" as const,
+                  completion: yield* stopSessionInternal(context),
+                };
+              }
+              const teardown = activeTeardowns.get(threadId);
+              if (teardown !== undefined) {
+                return { _tag: "AlreadyStopping" as const, completion: teardown.completion };
+              }
               return yield* new ProviderAdapterSessionNotFoundError({
                 provider: PROVIDER,
                 threadId,
               });
-            }
-            context.stopRequested = true;
-            if (context.activeTurn !== undefined) {
-              context.activeTurn.cancellationRequested = true;
-              context.activeTurn.controller.abort();
-            }
-            yield* stopSessionInternal(context);
-          }),
-        ),
+            }),
+          );
+          yield* Deferred.await(outcome.completion);
+          if (outcome._tag === "AlreadyStopping") {
+            return yield* new ProviderAdapterSessionNotFoundError({
+              provider: PROVIDER,
+              threadId,
+            });
+          }
+        }),
       );
     const listSessions: PrimeAgentAdapterShape["listSessions"] = () =>
-      Effect.sync(() => Array.from(sessions.values(), (context) => ({ ...context.session })));
+      Effect.sync(() =>
+        Array.from(sessions.values())
+          .filter((context) => !context.stopRequested && !context.stopped)
+          .map((context) => ({ ...context.session })),
+      );
     const hasSession: PrimeAgentAdapterShape["hasSession"] = (threadId) =>
       Effect.sync(() => {
         const context = sessions.get(threadId);
@@ -5948,31 +6269,52 @@ export function makePrimeAgentDaemonAdapter(
     const stopAll: PrimeAgentAdapterShape["stopAll"] = () =>
       Effect.gen(function* () {
         const contexts = Array.from(sessions.values());
-        yield* Effect.forEach(
+        const started = yield* Effect.forEach(
           contexts,
           (context) =>
             withThreadMutationLock(
               context.threadId,
               Effect.gen(function* () {
-                if (sessions.get(context.threadId) !== context || context.stopped) return;
-                context.stopRequested = true;
-                if (context.activeTurn !== undefined) {
-                  context.activeTurn.cancellationRequested = true;
-                  context.activeTurn.controller.abort();
-                }
-                yield* stopSessionInternal(context);
+                if (sessions.get(context.threadId) !== context || context.stopped) return undefined;
+                return yield* stopSessionInternal(context);
               }),
             ),
-          { discard: true },
+          { concurrency: "unbounded" },
         );
-      }).pipe(Effect.uninterruptible);
+        const completions = new Set([
+          ...started.filter((completion) => completion !== undefined),
+          ...Array.from(activeTeardowns.values(), (teardown) => teardown.completion),
+        ]);
+        const drained = yield* Effect.forEach(completions, Deferred.await, {
+          concurrency: "unbounded",
+          discard: true,
+        }).pipe(Effect.timeoutOption(Duration.millis(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS)));
+        if (Option.isNone(drained) && completions.size > 0) {
+          yield* Effect.logWarning("Prime Agent stopAll reached its global teardown bound.", {
+            sessionCount: completions.size,
+            timeoutMs: PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS,
+          });
+        }
+      });
 
     yield* Effect.addFinalizer(() =>
       shutdownPrimeAgentEventPubSub({
         component: "daemon",
         pubSub: runtimeEventPubSub,
-        drain: stopAll(),
-      }).pipe(Effect.ensuring(managedNativeEventLogger?.close() ?? Effect.void)),
+        drain: stopAll().pipe(
+          Effect.andThen(
+            Effect.suspend(() =>
+              Effect.forEach(Array.from(pendingTerminalDeliveries), Deferred.await, {
+                concurrency: "unbounded",
+                discard: true,
+              }),
+            ),
+          ),
+        ),
+      }).pipe(
+        Effect.ensuring(Queue.shutdown(orderedRuntimeEventQueue)),
+        Effect.ensuring(managedNativeEventLogger?.close() ?? Effect.void),
+      ),
     );
 
     return {

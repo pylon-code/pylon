@@ -17,6 +17,7 @@ import {
   ProviderDriverKind,
   ProviderItemId,
   ProviderRuntimeEvent,
+  RuntimeSessionId,
   type RuntimeMode,
   ThreadId,
   type ThreadTokenUsageSnapshot,
@@ -852,6 +853,7 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
+      const sessionIncarnationId = RuntimeSessionId.make("claude-stream-incarnation");
 
       const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 10).pipe(
         Stream.runCollect,
@@ -866,6 +868,7 @@ describe("ClaudeAdapterLive", () => {
           model: "claude-sonnet-4-5",
         },
         runtimeMode: "full-access",
+        sessionIncarnationId,
       });
 
       const turn = yield* adapter.sendTurn({
@@ -966,6 +969,9 @@ describe("ClaudeAdapterLive", () => {
       } as unknown as SDKMessage);
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.isTrue(
+        runtimeEvents.every((event) => event.sessionIncarnationId === sessionIncarnationId),
+      );
       assert.deepEqual(
         runtimeEvents.map((event) => event.type),
         [
@@ -1830,10 +1836,12 @@ describe("ClaudeAdapterLive", () => {
         Stream.runCollect,
         Effect.forkChild,
       );
+      const firstSessionIncarnationId = RuntimeSessionId.make("claude-old-incarnation");
       const firstSession = yield* adapter.startSession({
         threadId: THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
         runtimeMode: "full-access",
+        sessionIncarnationId: firstSessionIncarnationId,
       });
       yield* adapter.sendTurn({
         threadId: firstSession.threadId,
@@ -1847,11 +1855,13 @@ describe("ClaudeAdapterLive", () => {
       yield* Effect.promise(() => usageStarted);
       assert.equal(queries[0]?.closeCalls, 1);
 
+      const replacementIncarnationId = RuntimeSessionId.make("claude-replacement-incarnation");
       const replacement = yield* adapter.startSession({
         threadId: THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
         runtimeMode: "full-access",
         resumeCursor: firstSession.resumeCursor,
+        sessionIncarnationId: replacementIncarnationId,
       });
       yield* TestClock.adjust("1 second");
       yield* Fiber.join(interruptFiber);
@@ -1862,10 +1872,9 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(queries[1]?.closeCalls, 0);
       assert.equal(activeSessions.length, 1);
       assert.deepEqual(activeSessions[0]?.resumeCursor, replacement.resumeCursor);
+      const sessionEvents = runtimeEvents.filter((event) => event.type.startsWith("session."));
       assert.deepEqual(
-        runtimeEvents
-          .filter((event) => event.type.startsWith("session."))
-          .map((event) => event.type),
+        sessionEvents.map((event) => event.type),
         [
           "session.started",
           "session.configured",
@@ -1875,6 +1884,18 @@ describe("ClaudeAdapterLive", () => {
           "session.state.changed",
         ],
       );
+      assert.deepEqual(
+        sessionEvents.map((event) => event.sessionIncarnationId),
+        [
+          firstSessionIncarnationId,
+          firstSessionIncarnationId,
+          firstSessionIncarnationId,
+          replacementIncarnationId,
+          replacementIncarnationId,
+          replacementIncarnationId,
+        ],
+      );
+      assert.equal(runtimeEvents.at(-1)?.sessionIncarnationId, firstSessionIncarnationId);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(layer),

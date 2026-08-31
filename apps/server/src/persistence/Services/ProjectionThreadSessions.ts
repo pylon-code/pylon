@@ -7,11 +7,14 @@
  * @module ProjectionThreadSessionRepository
  */
 import {
+  CommandId,
   RuntimeMode,
   IsoDateTime,
+  MessageId,
   OrchestrationSessionStatus,
   SessionHarnessRefinementStatus,
   ProviderInstanceId,
+  RuntimeSessionId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -30,7 +33,17 @@ export const ProjectionThreadSession = Schema.Struct({
   runtimeMode: RuntimeMode,
   restored: Schema.Boolean,
   startedAt: Schema.NullOr(IsoDateTime),
+  sessionIncarnationId: Schema.NullOr(RuntimeSessionId),
   harnessRefinementStatus: Schema.NullOr(SessionHarnessRefinementStatus),
+  pendingTurnRequestId: Schema.NullOr(CommandId),
+  /** Internal replay state: duplicate legacy events cannot identify one exact request. */
+  pendingTurnRequestAmbiguous: Schema.Boolean,
+  pendingTurnMessageId: Schema.NullOr(MessageId),
+  pendingTurnRequestedAt: Schema.NullOr(IsoDateTime),
+  pendingTurnDeadlineAt: Schema.NullOr(IsoDateTime),
+  pendingTurnSessionId: Schema.NullOr(RuntimeSessionId),
+  activeTurnRequestId: Schema.NullOr(CommandId),
+  failedTurnRequestId: Schema.NullOr(CommandId),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(Schema.String),
   updatedAt: IsoDateTime,

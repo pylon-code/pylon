@@ -8,6 +8,9 @@
  */
 import type {
   CheckpointRef,
+  CommandId,
+  IsoDateTime,
+  MessageId,
   OrchestrationCheckpointSummary,
   OrchestrationProject,
   OrchestrationProjectShell,
@@ -20,6 +23,8 @@ import type {
   OrchestrationThreadDetailWindow,
   OrchestrationThreadShell,
   ProjectId,
+  ProviderInstanceId,
+  RuntimeSessionId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -52,6 +57,16 @@ export interface ProjectionFullThreadDiffContext {
   readonly worktreePath: string | null;
   readonly latestCheckpointTurnCount: number;
   readonly toCheckpointRef: CheckpointRef | null;
+}
+
+export interface ProjectionPendingTurnAdmission {
+  readonly threadId: ThreadId;
+  readonly requestId: CommandId;
+  readonly messageId: MessageId;
+  readonly requestedAt: IsoDateTime;
+  readonly deadlineAt: IsoDateTime;
+  readonly providerInstanceId: ProviderInstanceId | null;
+  readonly sessionIncarnationId: RuntimeSessionId | null;
 }
 
 /**
@@ -118,6 +133,12 @@ export interface ProjectionSnapshotQueryShape {
    * Read aggregate projection counts without hydrating the full read model.
    */
   readonly getCounts: () => Effect.Effect<ProjectionSnapshotCounts, ProjectionRepositoryError>;
+
+  /** Indexed startup query for durable provider admissions still in starting state. */
+  readonly listPendingTurnAdmissions?: () => Effect.Effect<
+    ReadonlyArray<ProjectionPendingTurnAdmission>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Read the active project for an exact workspace root match.

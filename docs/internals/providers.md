@@ -324,6 +324,23 @@ synchronization.
 3. [`CheckpointReactor`][checkpoint] captures workspace checkpoints on turn start and completion, and
    performs reverts.
 
+### Turn-start admission and reconciliation
+
+`thread.turn.start` records a durable pending admission before the provider call begins. The pending
+record contains the command id, message id, a server-observed request time and deadline, and the
+provider session incarnation once a session is bound. The provider command reactor restores these
+records at startup and either observes the matching `turn.started` event or dispatches one correlated
+failure after the deadline. Client-supplied `createdAt` values are not used to extend the deadline.
+
+Adapters carry the admission command id and provider-session start time from `sendTurn` to the exact
+`turn.started` event. Runtime ingestion accepts a start for a durable admission only when both values
+match. A completion, timeout, retry, or stop clears the pending record, so a late event cannot revive
+an old request. Older projected session payloads without an incarnation remain readable; their
+uncorrelated runtime events are accepted only while a matching pending turn row still exists, or from
+an idle legacy session with no pending turn. Migration backfill joins the current pending turn to one
+unambiguous historical request and leaves ambiguous rows unset. Projection replay reconstructs the
+same pending state from the event log.
+
 ### Buffered assistant delivery
 
 A thread in `buffered` assistant delivery mode accumulates assistant text instead of streaming each

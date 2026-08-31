@@ -199,6 +199,11 @@ export interface ProviderServiceShape {
    */
   readonly listSessions: () => Effect.Effect<ReadonlyArray<ProviderSession>>;
 
+  /** Inventory exactly one configured provider instance without coupling failures. */
+  readonly listSessionsForInstance?: (
+    instanceId: ProviderInstanceId,
+  ) => Effect.Effect<ReadonlyArray<ProviderSession>, ProviderServiceError>;
+
   /**
    * Read capabilities for the adapter bound to a configured provider instance.
    */

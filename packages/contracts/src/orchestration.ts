@@ -17,6 +17,7 @@ import {
   PositiveInt,
   ProjectId,
   ProviderItemId,
+  RuntimeSessionId,
   ThreadId,
   ProviderApprovalDecision,
   TrimmedNonEmptyString,
@@ -359,7 +360,23 @@ export const OrchestrationSession = Schema.Struct({
   restored: Schema.optional(Schema.Boolean),
   /** Start time of the current provider-session incarnation. */
   startedAt: Schema.optional(IsoDateTime),
+  /** Immutable identity of the current provider-session incarnation. */
+  sessionIncarnationId: Schema.optional(RuntimeSessionId),
   harnessRefinementStatus: Schema.optional(SessionHarnessRefinementStatus),
+  /** Correlates the user message currently waiting for provider turn admission. */
+  pendingTurnRequestId: Schema.optional(CommandId),
+  /** Exact user message owned by the pending admission. */
+  pendingTurnMessageId: Schema.optional(MessageId),
+  /** Server-observed durable admission time. */
+  pendingTurnRequestedAt: Schema.optional(IsoDateTime),
+  /** Absolute durable provider admission deadline. */
+  pendingTurnDeadlineAt: Schema.optional(IsoDateTime),
+  /** Provider-session incarnation that must emit the matching turn start. */
+  pendingTurnSessionId: Schema.optional(RuntimeSessionId),
+  /** Accepted admission lineage for the active provider turn. */
+  activeTurnRequestId: Schema.optional(CommandId),
+  /** Failed admission lineage retained until an exact retry or explicit stop. */
+  failedTurnRequestId: Schema.optional(CommandId),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
@@ -1053,6 +1070,10 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /** Server-observed durable time; absent on historical/frozen-client events. */
+  admissionRequestedAt: Schema.optional(IsoDateTime),
+  /** Absolute durable provider admission deadline. */
+  admissionDeadlineAt: Schema.optional(IsoDateTime),
   createdAt: IsoDateTime,
 });
 
@@ -1072,6 +1093,10 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /** Server-observed durable time; absent on historical/frozen-client events. */
+  admissionRequestedAt: Schema.optional(IsoDateTime),
+  /** Absolute durable provider admission deadline. */
+  admissionDeadlineAt: Schema.optional(IsoDateTime),
   createdAt: IsoDateTime,
 });
 
@@ -1217,6 +1242,35 @@ const ThreadSessionSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Applies provider lifecycle state only while the observed session lineage is still exact. */
+const ThreadSessionApplyLifecycleCommand = Schema.Struct({
+  type: Schema.Literal("thread.session.apply-lifecycle"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  expectedStatus: Schema.NullOr(OrchestrationSessionStatus),
+  expectedProviderInstanceId: Schema.NullOr(ProviderInstanceId),
+  expectedSessionIncarnationId: Schema.NullOr(RuntimeSessionId),
+  expectedPendingTurnRequestId: Schema.NullOr(CommandId),
+  expectedPendingTurnSessionId: Schema.NullOr(RuntimeSessionId),
+  expectedActiveTurnRequestId: Schema.NullOr(CommandId),
+  expectedActiveTurnId: Schema.NullOr(TurnId),
+  expectedFailedTurnRequestId: Schema.NullOr(CommandId),
+  allowFailedTurnRequestClear: Schema.optionalKey(Schema.Literal(true)),
+  session: OrchestrationSession,
+  createdAt: IsoDateTime,
+});
+
+/** Atomically binds a provider session only while the exact admission is current. */
+const ThreadSessionBindPendingCommand = Schema.Struct({
+  type: Schema.Literal("thread.session.bind-pending"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CommandId,
+  messageId: MessageId,
+  session: OrchestrationSession,
+  createdAt: IsoDateTime,
+});
+
 const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   type: Schema.Literal("thread.message.assistant.delta"),
   commandId: CommandId,
@@ -1274,6 +1328,28 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadTurnAdmissionAcceptCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.admission.accept"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CommandId,
+  messageId: MessageId,
+  providerInstanceId: ProviderInstanceId,
+  sessionIncarnationId: RuntimeSessionId,
+  turnId: TurnId,
+  createdAt: IsoDateTime,
+});
+
+const ThreadTurnAdmissionFailCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.admission.fail"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CommandId,
+  messageId: MessageId,
+  detail: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
 const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.title.regeneration.complete"),
   commandId: CommandId,
@@ -1284,12 +1360,16 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
 
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
+  ThreadSessionApplyLifecycleCommand,
+  ThreadSessionBindPendingCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
+  ThreadTurnAdmissionAcceptCommand,
+  ThreadTurnAdmissionFailCommand,
   ThreadTitleRegenerationCompleteCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
@@ -1503,6 +1583,10 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /** Server-observed durable time; absent on historical/frozen-client events. */
+  admissionRequestedAt: Schema.optional(IsoDateTime),
+  /** Absolute durable provider admission deadline. */
+  admissionDeadlineAt: Schema.optional(IsoDateTime),
   createdAt: IsoDateTime,
 });
 

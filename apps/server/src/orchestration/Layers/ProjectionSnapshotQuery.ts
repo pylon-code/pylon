@@ -1,6 +1,7 @@
 import {
   ChatAttachment,
   CheckpointRef,
+  CommandId,
   IsoDateTime,
   MessageId,
   NonNegativeInt,
@@ -12,6 +13,8 @@ import {
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
   ProjectScript,
+  ProviderInstanceId,
+  RuntimeSessionId,
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationLatestTurn,
@@ -63,6 +66,7 @@ import {
   ProjectionSnapshotQuery,
   type ProjectionFullThreadDiffContext,
   type ProjectionSnapshotCounts,
+  type ProjectionPendingTurnAdmission,
   type ProjectionThreadCheckpointContext,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
@@ -102,6 +106,16 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 const ProjectionThreadSessionDbRowSchema = Schema.Struct({
   ...ProjectionThreadSession.fields,
   restored: Schema.Number,
+  pendingTurnRequestAmbiguous: Schema.Number,
+});
+const ProjectionPendingTurnAdmissionRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  requestId: CommandId,
+  messageId: MessageId,
+  requestedAt: IsoDateTime,
+  deadlineAt: IsoDateTime,
+  providerInstanceId: Schema.NullOr(ProviderInstanceId),
+  sessionIncarnationId: Schema.NullOr(RuntimeSessionId),
 });
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
@@ -311,9 +325,29 @@ function mapSessionRow(
     runtimeMode: row.runtimeMode,
     ...(row.restored === 1 ? { restored: true } : {}),
     ...(row.startedAt !== null ? { startedAt: row.startedAt } : {}),
+    ...(row.sessionIncarnationId !== null
+      ? { sessionIncarnationId: row.sessionIncarnationId }
+      : {}),
     ...(row.harnessRefinementStatus !== null
       ? { harnessRefinementStatus: row.harnessRefinementStatus }
       : {}),
+    ...(row.pendingTurnRequestId !== null
+      ? { pendingTurnRequestId: row.pendingTurnRequestId }
+      : {}),
+    ...(row.pendingTurnMessageId !== null
+      ? { pendingTurnMessageId: row.pendingTurnMessageId }
+      : {}),
+    ...(row.pendingTurnRequestedAt !== null
+      ? { pendingTurnRequestedAt: row.pendingTurnRequestedAt }
+      : {}),
+    ...(row.pendingTurnDeadlineAt !== null
+      ? { pendingTurnDeadlineAt: row.pendingTurnDeadlineAt }
+      : {}),
+    ...(row.pendingTurnSessionId !== null
+      ? { pendingTurnSessionId: row.pendingTurnSessionId }
+      : {}),
+    ...(row.activeTurnRequestId !== null ? { activeTurnRequestId: row.activeTurnRequestId } : {}),
+    ...(row.failedTurnRequestId !== null ? { failedTurnRequestId: row.failedTurnRequestId } : {}),
     activeTurnId: row.activeTurnId,
     lastError: row.lastError,
     updatedAt: row.updatedAt,
@@ -617,7 +651,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           restored,
           started_at AS "startedAt",
+          session_incarnation_id AS "sessionIncarnationId",
           harness_refinement_status AS "harnessRefinementStatus",
+          pending_turn_request_id AS "pendingTurnRequestId",
+          pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
+          pending_turn_message_id AS "pendingTurnMessageId",
+          pending_turn_requested_at AS "pendingTurnRequestedAt",
+          pending_turn_deadline_at AS "pendingTurnDeadlineAt",
+          pending_turn_session_id AS "pendingTurnSessionId",
+          active_turn_request_id AS "activeTurnRequestId",
+          failed_turn_request_id AS "failedTurnRequestId",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           updated_at AS "updatedAt"
@@ -641,7 +684,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.runtime_mode AS "runtimeMode",
           sessions.restored,
           sessions.started_at AS "startedAt",
+          sessions.session_incarnation_id AS "sessionIncarnationId",
           sessions.harness_refinement_status AS "harnessRefinementStatus",
+          sessions.pending_turn_request_id AS "pendingTurnRequestId",
+          sessions.pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
+          sessions.pending_turn_message_id AS "pendingTurnMessageId",
+          sessions.pending_turn_requested_at AS "pendingTurnRequestedAt",
+          sessions.pending_turn_deadline_at AS "pendingTurnDeadlineAt",
+          sessions.pending_turn_session_id AS "pendingTurnSessionId",
+          sessions.active_turn_request_id AS "activeTurnRequestId",
+          sessions.failed_turn_request_id AS "failedTurnRequestId",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
@@ -669,7 +721,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.runtime_mode AS "runtimeMode",
           sessions.restored,
           sessions.started_at AS "startedAt",
+          sessions.session_incarnation_id AS "sessionIncarnationId",
           sessions.harness_refinement_status AS "harnessRefinementStatus",
+          sessions.pending_turn_request_id AS "pendingTurnRequestId",
+          sessions.pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
+          sessions.pending_turn_message_id AS "pendingTurnMessageId",
+          sessions.pending_turn_requested_at AS "pendingTurnRequestedAt",
+          sessions.pending_turn_deadline_at AS "pendingTurnDeadlineAt",
+          sessions.pending_turn_session_id AS "pendingTurnSessionId",
+          sessions.active_turn_request_id AS "activeTurnRequestId",
+          sessions.failed_turn_request_id AS "failedTurnRequestId",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
@@ -679,6 +740,30 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE threads.deleted_at IS NULL
           AND threads.archived_at IS NOT NULL
         ORDER BY sessions.thread_id ASC
+      `,
+  });
+
+  const listPendingTurnAdmissionRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionPendingTurnAdmissionRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          pending_turn_request_id AS "requestId",
+          pending_turn_message_id AS "messageId",
+          pending_turn_requested_at AS "requestedAt",
+          pending_turn_deadline_at AS "deadlineAt",
+          provider_instance_id AS "providerInstanceId",
+          pending_turn_session_id AS "sessionIncarnationId"
+        FROM projection_thread_sessions
+        WHERE status = 'starting'
+          AND pending_turn_request_id IS NOT NULL
+          AND pending_turn_request_ambiguous = 0
+          AND pending_turn_message_id IS NOT NULL
+          AND pending_turn_requested_at IS NOT NULL
+          AND pending_turn_deadline_at IS NOT NULL
+        ORDER BY pending_turn_deadline_at ASC, thread_id ASC
       `,
   });
 
@@ -1089,7 +1174,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           restored,
           started_at AS "startedAt",
+          session_incarnation_id AS "sessionIncarnationId",
           harness_refinement_status AS "harnessRefinementStatus",
+          pending_turn_request_id AS "pendingTurnRequestId",
+          pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
+          pending_turn_message_id AS "pendingTurnMessageId",
+          pending_turn_requested_at AS "pendingTurnRequestedAt",
+          pending_turn_deadline_at AS "pendingTurnDeadlineAt",
+          pending_turn_session_id AS "pendingTurnSessionId",
+          active_turn_request_id AS "activeTurnRequestId",
+          failed_turn_request_id AS "failedTurnRequestId",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           updated_at AS "updatedAt"
@@ -1713,8 +1807,32 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   runtimeMode: row.runtimeMode,
                   ...(row.restored === 1 ? { restored: true } : {}),
                   ...(row.startedAt !== null ? { startedAt: row.startedAt } : {}),
+                  ...(row.sessionIncarnationId !== null
+                    ? { sessionIncarnationId: row.sessionIncarnationId }
+                    : {}),
                   ...(row.harnessRefinementStatus !== null
                     ? { harnessRefinementStatus: row.harnessRefinementStatus }
+                    : {}),
+                  ...(row.pendingTurnRequestId !== null
+                    ? { pendingTurnRequestId: row.pendingTurnRequestId }
+                    : {}),
+                  ...(row.pendingTurnMessageId !== null
+                    ? { pendingTurnMessageId: row.pendingTurnMessageId }
+                    : {}),
+                  ...(row.pendingTurnRequestedAt !== null
+                    ? { pendingTurnRequestedAt: row.pendingTurnRequestedAt }
+                    : {}),
+                  ...(row.pendingTurnDeadlineAt !== null
+                    ? { pendingTurnDeadlineAt: row.pendingTurnDeadlineAt }
+                    : {}),
+                  ...(row.pendingTurnSessionId !== null
+                    ? { pendingTurnSessionId: row.pendingTurnSessionId }
+                    : {}),
+                  ...(row.activeTurnRequestId !== null
+                    ? { activeTurnRequestId: row.activeTurnRequestId }
+                    : {}),
+                  ...(row.failedTurnRequestId !== null
+                    ? { failedTurnRequestId: row.failedTurnRequestId }
                     : {}),
                   activeTurnId: row.activeTurnId,
                   lastError: row.lastError,
@@ -2315,6 +2433,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       })),
     );
 
+  const listPendingTurnAdmissions: ProjectionSnapshotQueryShape["listPendingTurnAdmissions"] = () =>
+    listPendingTurnAdmissionRows(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listPendingTurnAdmissions:query",
+          "ProjectionSnapshotQuery.listPendingTurnAdmissions:decodeRows",
+        ),
+      ),
+      Effect.map((rows): ReadonlyArray<ProjectionPendingTurnAdmission> => rows),
+    );
+
   const getCounts: ProjectionSnapshotQueryShape["getCounts"] = () =>
     readProjectionCounts(undefined).pipe(
       Effect.mapError(
@@ -2905,6 +3034,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     searchThreads,
     getSnapshotSequence,
     getCounts,
+    listPendingTurnAdmissions,
     getActiveProjectByWorkspaceRoot,
     getProjectShellById,
     getFirstActiveThreadIdByProjectId,

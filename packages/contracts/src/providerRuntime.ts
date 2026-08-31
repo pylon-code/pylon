@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
+  CommandId,
   EventId,
   IsoDateTime,
   NonNegativeInt,
@@ -8,6 +9,7 @@ import {
   PositiveInt,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeSessionId,
   RuntimeTaskId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -286,6 +288,10 @@ const ProviderRuntimeEventBase = Schema.Struct({
   threadId: ThreadId,
   createdAt: IsoDateTime,
   turnId: Schema.optional(TurnId),
+  /** Exact orchestration request admitted by a provider turn start. */
+  admissionRequestId: Schema.optional(CommandId),
+  /** Immutable provider-session incarnation that emitted this event. */
+  sessionIncarnationId: Schema.optional(RuntimeSessionId),
   itemId: Schema.optional(RuntimeItemId),
   requestId: Schema.optional(RuntimeRequestId),
   providerRefs: Schema.optional(ProviderRefs),

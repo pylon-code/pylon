@@ -553,6 +553,116 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
 );
 
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
+  it.effect("keeps duplicate legacy pending admission ambiguity through a full rebuild", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-legacy-admission-rebuild");
+      const requestId = CommandId.make("cmd-legacy-admission-rebuild");
+      const createdAt = "2025-01-01T00:00:00.000Z";
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-legacy-admission-thread"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-legacy-admission-thread"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-legacy-admission-thread"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-legacy-admission-rebuild"),
+          title: "Legacy admission",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.turn-start-requested",
+        eventId: EventId.make("evt-legacy-admission-turn"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: requestId,
+        causationEventId: null,
+        correlationId: requestId,
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-legacy-admission-rebuild"),
+          text: "legacy pending admission",
+          attachments: [],
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          createdAt,
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.turn-start-requested",
+        eventId: EventId.make("evt-legacy-admission-turn-duplicate"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-legacy-admission-rebuild-duplicate"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-legacy-admission-rebuild-duplicate"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-legacy-admission-rebuild"),
+          text: "legacy pending admission",
+          attachments: [],
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          createdAt,
+        },
+      });
+      const assertLegacyFence = Effect.gen(function* () {
+        const rows = yield* sql<{
+          readonly requestId: string | null;
+          readonly ambiguous: number;
+          readonly requestedAt: string | null;
+          readonly deadlineAt: string | null;
+          readonly failedRequestId: string | null;
+        }>`
+          SELECT pending_turn_request_id AS "requestId",
+            pending_turn_request_ambiguous AS "ambiguous",
+            pending_turn_requested_at AS "requestedAt",
+            pending_turn_deadline_at AS "deadlineAt",
+            failed_turn_request_id AS "failedRequestId"
+          FROM projection_thread_sessions
+          WHERE thread_id = ${threadId}
+        `;
+        assert.deepStrictEqual(rows[0], {
+          requestId: null,
+          ambiguous: 1,
+          requestedAt: createdAt,
+          deadlineAt: "1970-01-01T00:00:00.000Z",
+          failedRequestId: null,
+        });
+      });
+      yield* projectionPipeline.bootstrap;
+      yield* assertLegacyFence;
+      yield* sql`DELETE FROM projection_thread_sessions WHERE thread_id = ${threadId}`;
+      yield* sql`DELETE FROM projection_turns WHERE thread_id = ${threadId}`;
+      yield* sql`
+        DELETE FROM projection_state
+        WHERE projector IN ('projection.thread-sessions', 'projection.thread-turns')
+      `;
+      yield* projectionPipeline.bootstrap;
+      yield* assertLegacyFence;
+    }),
+  );
+
   it.effect(
     "passes explicit empty attachment arrays through the projection pipeline to clear attachments",
     () =>
@@ -2927,6 +3037,7 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
     yield* Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
 
       yield* eventStore.append({
         type: "thread.turn-start-requested",
@@ -2951,6 +3062,25 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
       });
 
       yield* projectionPipeline.bootstrap;
+      const pendingSessions = yield* sql<{
+        readonly requestId: string | null;
+        readonly messageId: string | null;
+        readonly deadlineAt: string | null;
+      }>`
+        SELECT
+          pending_turn_request_id AS "requestId",
+          pending_turn_message_id AS "messageId",
+          pending_turn_deadline_at AS "deadlineAt"
+        FROM projection_thread_sessions
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(pendingSessions, [
+        {
+          requestId: "cmd-restart-1",
+          messageId: "message-restart",
+          deadlineAt: "1970-01-01T00:00:00.000Z",
+        },
+      ]);
     }).pipe(Effect.provide(firstProjectionLayer));
 
     const turnRows = yield* Effect.gen(function* () {
