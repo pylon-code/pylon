@@ -235,12 +235,27 @@ describe("browser recording", () => {
     expect(stopTrack).toHaveBeenCalledOnce();
   });
 
-  it("uses the best supported encoder and saves the recorder's actual format", async () => {
+  it("prefers a hardware-encodable format over software av1", async () => {
     FakeMediaRecorder.supportedTypes = new Set([
       "video/mp4;codecs=avc1.42e01e",
       "video/webm;codecs=vp9",
       "video/webm;codecs=av1",
     ]);
+    FakeMediaRecorder.outputMimeType = "video/mp4";
+
+    await startBrowserRecording("recording-tab");
+    await stopBrowserRecording("recording-tab");
+
+    // av1 is supported here but encodes in software; H.264 wins.
+    expect(FakeMediaRecorder.instances[0]?.options).toEqual({
+      mimeType: "video/mp4;codecs=avc1.42e01e",
+      videoBitsPerSecond: 4_000_000,
+    });
+    expect(save).toHaveBeenCalledWith("recording-tab", "video/mp4", expect.any(Uint8Array));
+  });
+
+  it("falls back to av1 only when nothing hardware-encodable is offered", async () => {
+    FakeMediaRecorder.supportedTypes = new Set(["video/webm;codecs=av1"]);
     FakeMediaRecorder.outputMimeType = "video/webm;codecs=av01";
 
     await startBrowserRecording("recording-tab");
@@ -248,12 +263,8 @@ describe("browser recording", () => {
 
     expect(FakeMediaRecorder.instances[0]?.options).toEqual({
       mimeType: "video/webm;codecs=av1",
+      videoBitsPerSecond: 4_000_000,
     });
-    expect(save).toHaveBeenCalledWith(
-      "recording-tab",
-      "video/webm;codecs=av01",
-      expect.any(Uint8Array),
-    );
   });
 
   it("lets the browser select the format when no preferred encoding is supported", async () => {
@@ -263,7 +274,8 @@ describe("browser recording", () => {
     await startBrowserRecording("recording-tab");
     await stopBrowserRecording("recording-tab");
 
-    expect(FakeMediaRecorder.instances[0]?.options).toBeUndefined();
+    // No mimeType, but the bitrate still applies: Chromium's default is thin.
+    expect(FakeMediaRecorder.instances[0]?.options).toEqual({ videoBitsPerSecond: 4_000_000 });
     expect(save).toHaveBeenCalledWith(
       "recording-tab",
       "video/platform-default",

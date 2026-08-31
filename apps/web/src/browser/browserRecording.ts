@@ -170,18 +170,31 @@ export function findActiveBrowserRecordingRuntimeTabId(
   );
 }
 
+/**
+ * Hardware-encodable codecs first. Chromium reports av1 as supported and would
+ * win on compression, but it encodes in software: at 60 fps on a machine already
+ * running agents that drops frames and burns CPU, which is the opposite of what
+ * a recording is for.
+ */
 const preferredMimeTypes = [
-  "video/webm;codecs=av1",
-  "video/webm;codecs=vp9",
   "video/mp4;codecs=avc1.640028",
   "video/mp4;codecs=avc1.42e01e",
+  "video/webm;codecs=vp9",
   "video/webm;codecs=vp8",
+  "video/webm;codecs=av1",
   "video/webm",
 ] as const;
 
-const createMediaRecorder = (stream: MediaStream): MediaRecorder => {
+/** Chromium's default sits near 2.5 Mbps, which is thin for a 60 fps screen capture. */
+const recordingBitsPerSecond = (frameRate: number): number =>
+  frameRate >= 60 ? 8_000_000 : 4_000_000;
+
+const createMediaRecorder = (stream: MediaStream, frameRate: number): MediaRecorder => {
   const mimeType = preferredMimeTypes.find((candidate) => MediaRecorder.isTypeSupported(candidate));
-  return mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+  const options = { videoBitsPerSecond: recordingBitsPerSecond(frameRate) };
+  return mimeType
+    ? new MediaRecorder(stream, { ...options, mimeType })
+    : new MediaRecorder(stream, options);
 };
 
 const captureTabMediaStream = (
@@ -453,11 +466,18 @@ export async function startBrowserRecording(
               ),
       });
     }
-    await throwIfStartupCancelled();
+    try {
+      await throwIfStartupCancelled();
+    } catch (cause) {
+      // Every other failure branch releases the capture through
+      // cleanupFailedRecordingStart; this one owns a live tab stream too.
+      await cleanupFailedRecordingStart(bridge, recording);
+      throw cause;
+    }
 
     let recorder: MediaRecorder;
     try {
-      recorder = createMediaRecorder(recording.stream);
+      recorder = createMediaRecorder(recording.stream, frameRate);
       recording.recorder = recorder;
       recorder.addEventListener("dataavailable", (event) => {
         if (event.data.size > 0) chunks.push(event.data);

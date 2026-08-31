@@ -37,6 +37,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -111,6 +112,12 @@ const MAX_INTERACTIVE_ELEMENTS = 200;
 const MAX_SCREENSHOT_WIDTH = 1280;
 const RECORDING_SOURCE_SIZE_EXPRESSION =
   "({ width: Math.round(globalThis.innerWidth), height: Math.round(globalThis.innerHeight) })";
+// Both Electron calls in startRecording run under the tab lifecycle lock. A guest
+// with a wedged main thread — infinite loop, modal dialog, attached debugger —
+// never settles them, which would hold the permit forever and turn every later
+// closeTab into a silent no-op that leaks the webContents.
+const RECORDING_SOURCE_MEASURE_TIMEOUT_MS = 2_000;
+const RECORDING_SOURCE_WARM_TIMEOUT_MS = 2_000;
 const PICTURE_IN_PICTURE_FRAME_INTERVAL_MS = Math.ceil(1_000 / 12);
 const PICTURE_IN_PICTURE_JPEG_QUALITY = 80;
 const PICTURE_IN_PICTURE_INITIAL_WIDTH = 480;
@@ -3124,6 +3131,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             webContentsId: wc.id,
           },
           () => wc.executeJavaScript(RECORDING_SOURCE_SIZE_EXPRESSION, true),
+        ).pipe(
+          Effect.timeout(Duration.millis(RECORDING_SOURCE_MEASURE_TIMEOUT_MS)),
+          // A timed-out measure falls through to the unavailable-size error below.
+          Effect.orElseSucceed(() => null),
         );
         if (
           typeof measuredSize !== "object" ||
@@ -3149,7 +3160,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             webContentsId: wc.id,
           },
           () => wc.capturePage().then(() => undefined),
-        ).pipe(Effect.retry({ times: 1 }), Effect.ignore);
+        ).pipe(
+          Effect.timeout(Duration.millis(RECORDING_SOURCE_WARM_TIMEOUT_MS)),
+          Effect.retry({ times: 1 }),
+          Effect.ignore,
+        );
         const currentWebContents = yield* requireWebContents(tabId);
         if (currentWebContents !== wc || wc.isDestroyed()) {
           return yield* new PreviewWebContentsNotFoundError({
