@@ -585,14 +585,8 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
-      terminalAssistantMessageIds: new Set(["assistant-final" as never]),
-      latestTurn: {
-        turnId: "turn-1" as never,
-        state: "completed",
-        startedAt: "2026-01-01T00:00:00Z",
-        completedAt: "2026-01-01T00:00:06Z",
-      },
       isWorking: false,
+      activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });
