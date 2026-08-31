@@ -44,8 +44,8 @@ authenticated.
   when `T3CODE_HOME` is set, storing state in `<worktree>/.t3/userdata`. Pass `--home-dir <path>` to
   choose another isolated directory explicitly. Submodules are not worktrees and keep the normal
   precedence.
-- From the **main checkout**, dev commands implicitly use `~/.t3/dev`, keeping development state
-  separate from `~/.t3/userdata`. An explicit `--home-dir <path>` stores state under
+- From the **main checkout**, dev commands implicitly use `~/.pylon-code/dev`, keeping development
+  state separate from `~/.pylon-code/userdata`. An explicit `--home-dir <path>` stores state under
   `<path>/userdata`; the base directory remains available for caches, worktrees, and other shared
   data.
 
@@ -62,7 +62,11 @@ authenticated.
 - `vp run test`: Runs workspace tests.
 - `vp run lint:mobile`: Mobile native static analysis (`scripts/mobile-native-static-check.ts`).
 - `node apps/server/scripts/t3-sqlite-state.ts <query|exec> --base-dir <path> ...`: Inspects or seeds
-  an isolated T3 SQLite database; writes create a private backup first.
+  an isolated SQLite database; writes create a private backup first. It refuses to write to either
+  runtime home, `~/.pylon-code` or `~/.t3`.
+- `node apps/server/scripts/migrate-dev-db.ts ...`: Seeds a worktree's dev database from a trimmed
+  copy of `~/.pylon-code/userdata/state.sqlite`. Pass `--source <path>` to read a different database;
+  never point it at `~/.t3`, which may be T3 Code's.
 
 ## Desktop artifacts
 

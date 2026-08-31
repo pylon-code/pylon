@@ -2,7 +2,7 @@
 
 /**
  * Rebuild an isolated dev database from a pruned snapshot of the real
- * ~/.t3 database, then run this checkout's migrations against it.
+ * ~/.pylon-code database, then run this checkout's migrations against it.
  *
  * `vp run migrate-dev-db` from a worktree:
  *   1. Nukes `<worktree>/.t3/userdata/state.sqlite`.
@@ -24,7 +24,7 @@
  * cursors never rewind.
  */
 
-// @effect-diagnostics nodeBuiltinImport:off - node:os resolves the shared T3 home guard.
+// @effect-diagnostics nodeBuiltinImport:off - node:os resolves the runtime home guard.
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeOS from "node:os";
@@ -55,7 +55,7 @@ export class MigrateDevDbSharedHomeError extends Schema.TaggedErrorClass<Migrate
   {},
 ) {
   override get message(): string {
-    return "Refusing to rebuild the shared ~/.t3 database. Use an isolated --base-dir.";
+    return "Refusing to rebuild a shared runtime home database (~/.pylon-code or ~/.t3). Use an isolated --base-dir.";
   }
 }
 
@@ -144,15 +144,20 @@ export class MigrateDevDbPhaseError extends Schema.TaggedErrorClass<MigrateDevDb
 export interface RunMigrateDevDbInput {
   /** Isolated .t3 directory. Defaults to `<worktree>/.t3` of the cwd. */
   readonly baseDir?: string | undefined;
-  /** Source database. Defaults to `~/.t3/userdata/state.sqlite`. */
+  /** Source database. Defaults to `~/.pylon-code/userdata/state.sqlite`. */
   readonly source?: string | undefined;
   readonly projects: number;
   readonly threadsPerProject: number;
 }
 
 export interface RunMigrateDevDbOptions {
-  /** Overridable for tests; the directory writes must never target. */
+  /**
+   * Overridable for tests. Replaces both the home the default `--source` is
+   * read from and the sole directory `--base-dir` may not name.
+   */
   readonly sharedHome?: string | undefined;
+  /** Injected by tests so they never read the developer's own home. */
+  readonly homeDir?: string | undefined;
 }
 
 interface KeptProject {
@@ -361,10 +366,27 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
-  const sharedHome = path.resolve(options.sharedHome ?? path.join(NodeOS.homedir(), ".t3"));
+  const homeDir = options.homeDir ?? NodeOS.homedir();
+
+  // Where a default `--source` is read from. Pylon's runtime home, never
+  // `~/.t3`: seeding a dev database from T3 Code's would copy a schema carrying
+  // upstream's migration numbering into a Pylon server that then dies on its
+  // first query.
+  const sourceHome = path.resolve(options.sharedHome ?? path.join(homeDir, ".pylon-code"));
   const sourcePath = path.resolve(
-    input.source ?? path.join(sharedHome, "userdata", "state.sqlite"),
+    input.source ?? path.join(sourceHome, "userdata", "state.sqlite"),
   );
+
+  // Which directories `--base-dir` may not name. Deliberately *not* the same
+  // list as the source home: this run deletes its destination database, so
+  // narrowing the guard to wherever the source happens to live would leave the
+  // other runtime home writable. `~/.t3` may be T3 Code's install, and this is
+  // the only thing standing between `--base-dir ~/.t3` and removeDatabaseFiles.
+  const protectedHomes = (
+    options.sharedHome === undefined
+      ? [path.join(homeDir, ".pylon-code"), path.join(homeDir, ".t3")]
+      : [options.sharedHome]
+  ).map((home) => path.resolve(home));
 
   const baseDir =
     input.baseDir !== undefined
@@ -377,15 +399,21 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   const databasePath = path.join(stateDir, "state.sqlite");
   const snapshotPath = `${databasePath}.migrate-dev-db-tmp`;
 
+  // Ahead of every other check, including whether a source exists: someone who
+  // aimed --base-dir at a live install needs to be told that, not handed an
+  // unrelated complaint about the source they never chose.
+  //
+  // Compared canonically so a symlink pointing at a protected home cannot slip
+  // past the guard.
+  const canonicalBaseDir = yield* fs.realPath(baseDir).pipe(Effect.orElseSucceed(() => baseDir));
+  const canonicalProtectedHomes = yield* Effect.all(
+    protectedHomes.map((home) => fs.realPath(home).pipe(Effect.orElseSucceed(() => home))),
+  );
+  if (canonicalProtectedHomes.includes(canonicalBaseDir)) {
+    return yield* new MigrateDevDbSharedHomeError();
+  }
   if (!(yield* fs.exists(sourcePath))) {
     return yield* new MigrateDevDbSourceMissingError({ sourcePath });
-  }
-  const [canonicalBaseDir, canonicalSharedHome] = yield* Effect.all([
-    fs.realPath(baseDir).pipe(Effect.orElseSucceed(() => baseDir)),
-    fs.realPath(sharedHome).pipe(Effect.orElseSucceed(() => sharedHome)),
-  ]);
-  if (canonicalBaseDir === canonicalSharedHome) {
-    return yield* new MigrateDevDbSharedHomeError();
   }
   // The destination db and snapshot both get deleted below; a --source that
   // resolves to either (e.g. a leftover snapshot file) would be destroyed
@@ -521,7 +549,7 @@ export const migrateDevDbCommand = Command.make(
     ),
     source: Flag.string("source").pipe(
       Flag.optional,
-      Flag.withDescription("Source database. Defaults to ~/.t3/userdata/state.sqlite."),
+      Flag.withDescription("Source database. Defaults to ~/.pylon-code/userdata/state.sqlite."),
     ),
   },
   ({ projects, threadsPerProject, baseDir, source }) =>
@@ -548,7 +576,7 @@ export const migrateDevDbCommand = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Rebuild the worktree dev database from a pruned snapshot of the real ~/.t3 data, then run migrations.",
+    "Rebuild the worktree dev database from a pruned snapshot of the real ~/.pylon-code data, then run migrations.",
   ),
 );
 

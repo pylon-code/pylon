@@ -15,6 +15,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { SshPasswordPrompt } from "./auth.ts";
 import {
   buildRemoteLaunchScript,
+  buildRemoteLogTailScript,
   buildRemotePairingScript,
   buildRemoteStopScript,
   buildRemoteT3RunnerScript,
@@ -234,6 +235,152 @@ describe("ssh tunnel scripts", () => {
       buildRemoteLaunchScript().indexOf('DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port'),
       buildRemoteLaunchScript().indexOf('elif [ -n "$REMOTE_PID" ]'),
     );
+  });
+
+  const SSH_TARGET = {
+    alias: "devbox",
+    hostname: "devbox.example.com",
+    username: "julius",
+    port: 2222,
+  } as const;
+
+  const generatedRemoteScripts = () => ({
+    launch: buildRemoteLaunchScript(),
+    pairing: buildRemotePairingScript(SSH_TARGET),
+    stop: buildRemoteStopScript(SSH_TARGET),
+    logTail: buildRemoteLogTailScript(SSH_TARGET),
+    runner: buildRemoteT3RunnerScript(),
+  });
+
+  /**
+   * Every line that decides where a remote server keeps its state: the state
+   * dir the launcher owns, the home it hands `serve` and `auth pairing
+   * create`, and any literal `--base-dir` argument. The legacy cleanup block
+   * still names `.t3`, so the check is about what a script points a server at
+   * rather than whether the string appears at all.
+   */
+  const serverHomeDeclarations = (script: string) =>
+    script
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(
+        (line) =>
+          /^(STATE_DIR|DEFAULT_SERVER_HOME|DEFAULT_RUNTIME_FILE|PAIRING_BASE_DIR)=/.test(line) ||
+          line.includes("--base-dir"),
+      );
+
+  // `~/.t3` is T3 Code's runtime home, and its database carries upstream's
+  // migration numbering. A remote server pointed at it would adopt another
+  // product's install.
+  it("keeps every generated remote script under the Pylon runtime home", () => {
+    const scripts = generatedRemoteScripts();
+
+    assert.include(scripts.launch, 'STATE_DIR="$HOME/.pylon-code/ssh-launch/$STATE_KEY"');
+    assert.include(scripts.launch, 'DEFAULT_SERVER_HOME="$HOME/.pylon-code"');
+    assert.include(scripts.pairing, '"$HOME/.pylon-code/ssh-launch/');
+    assert.include(scripts.pairing, 'DEFAULT_SERVER_HOME="$HOME/.pylon-code"');
+    assert.include(scripts.stop, '"$HOME/.pylon-code/ssh-launch/');
+    assert.include(scripts.logTail, '"$HOME/.pylon-code/ssh-launch/');
+
+    for (const [name, script] of Object.entries(scripts)) {
+      const declarations = serverHomeDeclarations(script);
+      for (const declaration of declarations) {
+        assert.notMatch(declaration, /\.t3\b/, `${name}: ${declaration}`);
+      }
+    }
+
+    // Guards the guard: the check is worthless if it matches nothing.
+    assert.isAbove(serverHomeDeclarations(scripts.launch).length, 0);
+    assert.isAbove(serverHomeDeclarations(scripts.pairing).length, 0);
+  });
+
+  // A host set up by the previous launcher is still running a server from
+  // `~/.t3` that the new state dir cannot see and the new stop script no
+  // longer reaches. The launch script retires it once, best effort.
+  it("retires a previous launcher's state directory on the remote host", () => {
+    const launch = buildRemoteLaunchScript();
+
+    assert.include(launch, 'LEGACY_SERVER_HOME="$HOME/.t3"');
+    assert.include(launch, 'LEGACY_STATE_DIR="$LEGACY_SERVER_HOME/ssh-launch/$STATE_KEY"');
+    assert.include(launch, 'if [ -d "$LEGACY_STATE_DIR" ]; then');
+    // Same mechanism as REMOTE_STOP_SCRIPT: never touch a server the user owns.
+    assert.include(
+      launch,
+      '[ "$LEGACY_MANAGED" != "external" ] && [ -n "$LEGACY_PID" ] && kill -0 "$LEGACY_PID" 2>/dev/null && legacy_pid_is_stale_launcher_server "$LEGACY_PID"',
+    );
+    assert.include(launch, 'kill "$LEGACY_PID" 2>/dev/null || true');
+    assert.include(launch, 'wait_for_pid_exit "$LEGACY_PID"');
+    assert.include(
+      launch,
+      'rm -f "$LEGACY_STATE_DIR/pid" "$LEGACY_STATE_DIR/port" "$LEGACY_STATE_DIR/managed" || true',
+    );
+    assert.include(
+      launch,
+      'mv "$LEGACY_STATE_DIR" "$LEGACY_STATE_DIR.migrated" 2>/dev/null || rm -rf "$LEGACY_STATE_DIR" || true',
+    );
+    assert.include(launch, "Earlier remote state may still exist under ~/.t3");
+    // The hint is diagnostic output; stdout carries the launch JSON the
+    // desktop parses. `|| true` because under `set -e` a closed stderr would
+    // otherwise take the whole launch down.
+    assert.include(launch, "to keep using it.\\n' >&2 || true");
+
+    // Every step in the block is best effort; none may abort the launch.
+    const legacyBlock = launch.slice(
+      launch.indexOf('if [ -d "$LEGACY_STATE_DIR" ]; then'),
+      launch.indexOf('REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"'),
+    );
+    for (const line of legacyBlock.split("\n").map((entry) => entry.trim())) {
+      if (line.startsWith("rm ") || line.startsWith("mv ") || line.startsWith("printf ")) {
+        assert.match(line, /\|\| true$/, line);
+      }
+    }
+  });
+
+  // A pid file outlives the process it names. After a remote reboot the number
+  // in it may belong to something else this user owns, so the block confirms
+  // identity before it signals anything.
+  it("checks the stale pid still looks like the old launcher's server", () => {
+    const launch = buildRemoteLaunchScript();
+
+    assert.include(launch, "legacy_pid_is_stale_launcher_server() {");
+    assert.include(launch, 'LEGACY_ARGS="$(ps -p "$1" -o args= 2>/dev/null || true)"');
+    // The two markers the old launcher's own `serve` invocation always carried.
+    assert.include(
+      launch,
+      '*"serve --host 127.0.0.1"*"--base-dir $LEGACY_SERVER_HOME"*) return 0 ;;',
+    );
+    assert.include(launch, "*) return 1 ;;");
+    // Defined before the block that calls it.
+    assert.isBelow(
+      launch.indexOf("legacy_pid_is_stale_launcher_server() {"),
+      launch.indexOf('if [ -d "$LEGACY_STATE_DIR" ]; then'),
+    );
+
+    // wait_for_pid_exit has to be defined before the block calls it.
+    assert.isBelow(
+      launch.indexOf("wait_for_pid_exit() {"),
+      launch.indexOf('if [ -d "$LEGACY_STATE_DIR" ]; then'),
+    );
+    // And the retirement has to happen before the current state is read, or
+    // the launch decides what to reuse from a host we have not cleaned up.
+    assert.isBelow(
+      launch.indexOf('if [ -d "$LEGACY_STATE_DIR" ]; then'),
+      launch.indexOf('REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"'),
+    );
+  });
+
+  // Only the launch script retires the old directory. A stop or log-tail run
+  // that also cleaned up would delete state the launch script may still need
+  // to report on, and the stop script must never resurrect the old path.
+  it("keeps the legacy cleanup out of the stop and log-tail scripts", () => {
+    for (const script of [
+      buildRemoteStopScript(SSH_TARGET),
+      buildRemoteLogTailScript(SSH_TARGET),
+      buildRemotePairingScript(SSH_TARGET),
+    ]) {
+      assert.notInclude(script, "LEGACY_STATE_DIR");
+      assert.notInclude(script, ".t3/ssh-launch");
+    }
   });
 
   it.effect("accepts launch JSON after remote shell startup noise", () => {

@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import { assert, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -17,6 +18,10 @@ import {
 } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as TestConsole from "effect/testing/TestConsole";
+import { Command } from "effect/unstable/cli";
+
+import { cli } from "../bin.ts";
 import { deriveServerPaths } from "../config.ts";
 import { resolveServerConfig } from "./config.ts";
 
@@ -620,3 +625,59 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     }),
   );
 });
+
+/**
+ * `auth`, `connect`, and `project` resolve their base dir through
+ * `resolveServerConfig`, so the legacy runtime home hint fires on their
+ * `--json` paths too — and it fires before `quietLogs` raises the log level,
+ * so that guard cannot suppress it. A sentence prepended to a JSON payload
+ * breaks every parser reading it.
+ */
+it.effect("keeps the legacy runtime home hint off a --json command's output", () =>
+  Effect.gen(function* () {
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-json-hint-"));
+    // The hint's exact trigger: legacy state present, Pylon state absent.
+    NodeFS.mkdirSync(NodePath.join(home, ".t3", "userdata"), { recursive: true });
+
+    const originalHome = process.env.HOME;
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    const stderr: Array<string> = [];
+
+    process.env.HOME = home;
+    (process.stderr as unknown as { write: unknown }).write = (chunk: unknown) => {
+      stderr.push(String(chunk));
+      return true;
+    };
+    const restore = Effect.sync(() => {
+      (process.stderr as unknown as { write: unknown }).write = originalStderrWrite;
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+    });
+
+    // TestConsole captures the stream the `--json` payload is written to, and
+    // the one the default Effect logger writes to. Routing the hint through
+    // the logger instead of stderr puts a sentence in here, ahead of the JSON.
+    const stdout = yield* Command.runWith(cli, { version: "0.0.0" })([
+      "auth",
+      "pairing",
+      "list",
+      "--json",
+    ]).pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NetService.layer, TestConsole.layer)),
+      Effect.ensuring(restore),
+      Effect.andThen(TestConsole.logLines),
+    );
+
+    // Guards the guard: without this the run may simply never have met the
+    // hint's conditions, and a clean payload would prove nothing.
+    assert.include(stderr.join(""), "An older state directory exists at");
+
+    const payload = stdout.map(String).join("\n");
+    assert.notInclude(payload, "state directory");
+    assert.notInclude(payload, ".t3");
+    expect(() => JSON.parse(payload)).not.toThrow();
+  }),
+);

@@ -28,7 +28,7 @@ import { Command, Flag } from "effect/unstable/cli";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
-import { resolveBaseDir } from "../os-jank.ts";
+import { resolveBaseDir, warnAboutLegacyRuntimeHome } from "../os-jank.ts";
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { baseDirFlag } from "./config.ts";
 import { resolveCliCommand } from "./invocation.ts";
@@ -78,11 +78,6 @@ export class TriageAgentSpawnError extends Schema.TaggedErrorClass<TriageAgentSp
 
 // signal 0 delivers nothing; it only reports whether the pid exists. EPERM
 // means it exists but belongs to another user, which still counts as alive.
-/**
- * Pylon's runtime home. `~/.t3` belongs to T3 Code; triage must never default
- * to inspecting — or writing into — another product's install.
- */
-const PYLON_RUNTIME_HOME_DIR_NAME = ".pylon-code";
 
 /**
  * Reads an optional URL-ish setting, treating blank as absent. `Config.string`
@@ -203,17 +198,10 @@ export const triageCommand = Command.make("triage", {
       const explicitBaseDir = Option.getOrUndefined(flags.baseDir);
       const envHome = yield* Config.string("T3CODE_HOME").pipe(Config.option);
       const requestedBaseDir = explicitBaseDir ?? Option.getOrUndefined(envHome);
-      // `resolveBaseDir` falls back to `~/.t3`, which is T3 Code's runtime
-      // home, not Pylon's. Handing an agent that path would point it at another
-      // product's database, logs, and secrets — and creating the scratch dir
-      // under it would write into a live T3 install. So when nothing is
-      // specified, prefer Pylon's own home if it is actually there.
-      const baseDir = yield* requestedBaseDir
-        ? resolveBaseDir(requestedBaseDir)
-        : Effect.gen(function* () {
-            const pylonHome = path.join(NodeOS.homedir(), PYLON_RUNTIME_HOME_DIR_NAME);
-            return (yield* fs.exists(pylonHome)) ? pylonHome : yield* resolveBaseDir(undefined);
-          });
+      // Unset lands on `~/.pylon-code`. Never `~/.t3`: handing an agent T3
+      // Code's home would point it at another product's database, logs, and
+      // secrets, and the scratch dir below would write into a live T3 install.
+      const baseDir = yield* resolveBaseDir(requestedBaseDir);
 
       // Unset by default. `pylon-code/pylon` is private, so pointing triage at
       // it would send users to a tracker they cannot open; inheriting T3's
@@ -225,6 +213,11 @@ export const triageCommand = Command.make("triage", {
       const issueRepository = yield* readOptionalUrlConfig("PYLON_TRIAGE_REPOSITORY");
       const sourceRepository = yield* readOptionalUrlConfig("PYLON_TRIAGE_SOURCE_REPOSITORY");
       const paths = yield* ServerConfig.deriveServerPaths(baseDir, undefined, {});
+      yield* warnAboutLegacyRuntimeHome({
+        baseDir,
+        stateDir: paths.stateDir,
+        baseDirIsExplicit: requestedBaseDir !== undefined,
+      });
 
       const now = yield* DateTime.now;
       const scratchDir = path.join(

@@ -455,8 +455,10 @@ exit 1
 export const REMOTE_LAUNCH_SCRIPT = `set -eu
 @@T3_NODE_ENV_SCRIPT@@
 STATE_KEY="$1"
-STATE_DIR="$HOME/.t3/ssh-launch/$STATE_KEY"
-DEFAULT_SERVER_HOME="$HOME/.t3"
+STATE_DIR="$HOME/.pylon-code/ssh-launch/$STATE_KEY"
+LEGACY_SERVER_HOME="$HOME/.t3"
+LEGACY_STATE_DIR="$LEGACY_SERVER_HOME/ssh-launch/$STATE_KEY"
+DEFAULT_SERVER_HOME="$HOME/.pylon-code"
 DEFAULT_RUNTIME_FILE="$DEFAULT_SERVER_HOME/userdata/server-runtime.json"
 PORT_FILE="$STATE_DIR/port"
 PID_FILE="$STATE_DIR/pid"
@@ -522,6 +524,37 @@ try {
 }
 NODE
 }
+# This launcher used to keep its state, and run its server, under $HOME/.t3.
+# A host set up by that version still has a server running from it, which the
+# new state dir cannot see and the new stop script no longer reaches. Retire it
+# here, once. Every step is best effort: a host that will not let us clean up
+# is still a host we should launch on.
+# A pid file outlives the process it names. After a remote reboot that number is
+# very likely to have been handed to some other process this user owns, so
+# liveness is not identity: confirm it still looks like the server the old
+# launcher started before signalling it. No match, or no ps output, means we
+# leave the process alone and only retire the directory.
+legacy_pid_is_stale_launcher_server() {
+  LEGACY_ARGS="$(ps -p "$1" -o args= 2>/dev/null || true)"
+  case "$LEGACY_ARGS" in
+    *"serve --host 127.0.0.1"*"--base-dir $LEGACY_SERVER_HOME"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+if [ -d "$LEGACY_STATE_DIR" ]; then
+  LEGACY_MANAGED="$(cat "$LEGACY_STATE_DIR/managed" 2>/dev/null || true)"
+  LEGACY_PID="$(cat "$LEGACY_STATE_DIR/pid" 2>/dev/null || true)"
+  if [ "$LEGACY_MANAGED" != "external" ] && [ -n "$LEGACY_PID" ] && kill -0 "$LEGACY_PID" 2>/dev/null && legacy_pid_is_stale_launcher_server "$LEGACY_PID"; then
+    kill "$LEGACY_PID" 2>/dev/null || true
+    wait_for_pid_exit "$LEGACY_PID"
+  fi
+  rm -f "$LEGACY_STATE_DIR/pid" "$LEGACY_STATE_DIR/port" "$LEGACY_STATE_DIR/managed" || true
+  # Renamed rather than deleted so the old server.log survives, and so this
+  # block stops matching on the next launch.
+  rm -rf "$LEGACY_STATE_DIR.migrated" || true
+  mv "$LEGACY_STATE_DIR" "$LEGACY_STATE_DIR.migrated" 2>/dev/null || rm -rf "$LEGACY_STATE_DIR" || true
+  printf 'Pylon now runs remote servers from ~/.pylon-code on this host. Earlier remote state may still exist under ~/.t3; move that directory to ~/.pylon-code to keep using it.\\n' >&2 || true
+fi
 REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 REMOTE_PORT="$(cat "$PORT_FILE" 2>/dev/null || true)"
 REMOTE_MANAGED="$(cat "$MANAGED_FILE" 2>/dev/null || true)"
@@ -612,8 +645,8 @@ printf '{"remotePort":%s,"serverKind":"%s"}\\n' "$REMOTE_PORT" "\${REMOTE_MANAGE
 `;
 
 export const REMOTE_PAIRING_SCRIPT = `set -eu
-STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
-DEFAULT_SERVER_HOME="$HOME/.t3"
+STATE_DIR="$HOME/.pylon-code/ssh-launch/@@T3_STATE_KEY@@"
+DEFAULT_SERVER_HOME="$HOME/.pylon-code"
 RUNNER_FILE="$STATE_DIR/run-t3.sh"
 mkdir -p "$STATE_DIR"
 cat >"$RUNNER_FILE" <<'SH'
@@ -625,7 +658,7 @@ PAIRING_BASE_DIR="$DEFAULT_SERVER_HOME"
 `;
 
 export const REMOTE_STOP_SCRIPT = `set -eu
-STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
+STATE_DIR="$HOME/.pylon-code/ssh-launch/@@T3_STATE_KEY@@"
 PID_FILE="$STATE_DIR/pid"
 PORT_FILE="$STATE_DIR/port"
 MANAGED_FILE="$STATE_DIR/managed"
@@ -644,7 +677,7 @@ printf '{"stopped":true}\\n'
 `;
 
 const REMOTE_LOG_TAIL_SCRIPT = `set -eu
-STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
+STATE_DIR="$HOME/.pylon-code/ssh-launch/@@T3_STATE_KEY@@"
 LOG_FILE="$STATE_DIR/server.log"
 if [ -f "$LOG_FILE" ]; then
   tail -n 80 "$LOG_FILE" 2>/dev/null || true
@@ -702,7 +735,7 @@ export function buildRemoteStopScript(target: DesktopSshEnvironmentTarget): stri
   });
 }
 
-function buildRemoteLogTailScript(target: DesktopSshEnvironmentTarget): string {
+export function buildRemoteLogTailScript(target: DesktopSshEnvironmentTarget): string {
   return applyScriptPlaceholders(REMOTE_LOG_TAIL_SCRIPT, {
     T3_STATE_KEY: remoteStateKey(target),
   });

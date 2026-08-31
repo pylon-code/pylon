@@ -102,10 +102,97 @@ export const expandHomePath = Effect.fn(function* (input: string) {
   return input;
 });
 
+/**
+ * Pylon's runtime home. `~/.t3` is T3 Code's: its database carries upstream's
+ * migration numbering, so a Pylon server that opened it would record those ids
+ * as applied and then fail on the first query. Nothing here ever falls back to
+ * it — `--base-dir` or `T3CODE_HOME` is how a user points Pylon somewhere else.
+ */
+export const RUNTIME_HOME_DIR_NAME = ".pylon-code";
+
+/** T3 Code's runtime home. Only ever named, never opened by default. */
+export const LEGACY_RUNTIME_HOME_DIR_NAME = ".t3";
+
 export const resolveBaseDir = Effect.fn(function* (raw: string | undefined) {
   const { join, resolve } = yield* Path.Path;
   if (!raw || raw.trim().length === 0) {
-    return join(NodeOS.homedir(), ".t3");
+    return join(NodeOS.homedir(), RUNTIME_HOME_DIR_NAME);
   }
   return resolve(yield* expandHomePath(raw.trim()));
 });
+
+/**
+ * Names the state directories rather than their parents. `userdata` is the
+ * whole migration — settings and secrets live inside it — while the parent also
+ * holds caches and worktrees that are either disposable or referenced by
+ * absolute path, so telling someone to move the parent would be wrong.
+ */
+export const formatLegacyRuntimeHomeHint = (paths: {
+  readonly stateDir: string;
+  readonly legacyStateDir: string;
+  readonly legacyBaseDir: string;
+}) =>
+  `Starting with a new state directory at ${paths.stateDir} — nothing was there yet. ` +
+  `An older state directory exists at ${paths.legacyStateDir}, and Pylon does not adopt it automatically because it may belong to T3 Code. ` +
+  `To keep using it, pass --base-dir ${paths.legacyBaseDir} or set T3CODE_HOME=${paths.legacyBaseDir}; ` +
+  `otherwise move ${paths.legacyStateDir} to ${paths.stateDir}, which brings your settings and secrets with it.`;
+
+/**
+ * Points a user whose state predates the move to `~/.pylon-code` at the
+ * directory they already have. It says its piece once: the launch that emits it
+ * goes on to create `<default>/userdata`, so the next one no longer qualifies.
+ *
+ * Deliberately silent whenever the user already said where their state lives,
+ * and for dev runs, whose state lives in `<base>/dev` rather than `userdata`.
+ *
+ * Written straight to stderr rather than through the logger, and never to
+ * stdout. `auth`, `connect`, and `project` resolve their base dir through the
+ * same helper, and they emit machine-readable payloads under `--json`; a
+ * sentence prepended to that stream breaks every parser reading it. Their
+ * `quietLogs` handling cannot help either, because it installs its log level
+ * after the base dir has already been resolved.
+ */
+export const warnAboutLegacyRuntimeHome = Effect.fn("warnAboutLegacyRuntimeHome")(
+  function* (options: {
+    readonly baseDir: string;
+    readonly stateDir: string;
+    readonly baseDirIsExplicit: boolean;
+    /** Injected by tests so they never read the developer's own home. */
+    readonly homeDir?: string;
+    /** Injected by tests. Defaults to stderr. */
+    readonly write?: (message: string) => void;
+  }) {
+    if (options.baseDirIsExplicit) return;
+    const { join } = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const homeDir = options.homeDir ?? NodeOS.homedir();
+    const defaultBaseDir = join(homeDir, RUNTIME_HOME_DIR_NAME);
+    if (options.baseDir !== defaultBaseDir) return;
+    if (options.stateDir !== join(defaultBaseDir, "userdata")) return;
+
+    const alreadyMigrated = yield* fs
+      .exists(options.stateDir)
+      .pipe(Effect.orElseSucceed(() => true));
+    if (alreadyMigrated) return;
+
+    const legacyBaseDir = join(homeDir, LEGACY_RUNTIME_HOME_DIR_NAME);
+    const legacyStateDir = join(legacyBaseDir, "userdata");
+    const legacyExists = yield* fs.exists(legacyStateDir).pipe(Effect.orElseSucceed(() => false));
+    if (!legacyExists) return;
+
+    const write =
+      options.write ??
+      ((message: string) => {
+        process.stderr.write(message);
+      });
+    yield* Effect.sync(() =>
+      write(
+        `${formatLegacyRuntimeHomeHint({
+          stateDir: options.stateDir,
+          legacyStateDir,
+          legacyBaseDir,
+        })}\n`,
+      ),
+    );
+  },
+);

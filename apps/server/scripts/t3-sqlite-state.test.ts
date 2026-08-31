@@ -116,4 +116,49 @@ it.layer(NodeServices.layer)("t3-sqlite-state", (it) => {
       assert.equal(aliasError._tag, "SqliteStateSharedHomeMutationError");
     }),
   );
+
+  // Both runtime homes are off limits by default: `~/.pylon-code` is Pylon's
+  // live install, and `~/.t3` may be T3 Code's database entirely.
+  it.effect("refuses both runtime homes when no shared home is configured", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // An injected home, so this never reads or writes the real one.
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-sqlite-state-home-" });
+
+      for (const name of [".pylon-code", ".t3"]) {
+        const baseDir = path.join(homeDir, name);
+        yield* createFixtureDatabase(baseDir);
+        const error = yield* runSqliteState(
+          { operation: "exec", baseDir, sql: "DELETE FROM fixtures" },
+          { homeDir },
+        ).pipe(Effect.flip);
+        assert.equal(error._tag, "SqliteStateSharedHomeMutationError", name);
+        assert.equal(
+          error.message,
+          "Refusing to mutate a shared runtime home database (~/.pylon-code or ~/.t3). Use an isolated --base-dir.",
+        );
+      }
+
+      // Reads are still fine against a protected home, and an isolated base
+      // dir under the same home is still writable.
+      const readOnly = yield* runSqliteState(
+        {
+          operation: "query",
+          baseDir: path.join(homeDir, ".pylon-code"),
+          sql: "SELECT id FROM fixtures",
+        },
+        { homeDir },
+      );
+      assert.equal(readOnly.operation, "query");
+
+      const isolated = path.join(homeDir, "scratch");
+      yield* createFixtureDatabase(isolated);
+      const allowed = yield* runSqliteState(
+        { operation: "exec", baseDir: isolated, sql: "DELETE FROM fixtures" },
+        { homeDir },
+      );
+      assert.equal(allowed.operation, "exec");
+    }),
+  );
 });
