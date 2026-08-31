@@ -70,6 +70,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
+import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 import { primeAgentSessionDirectory } from "../Layers/PrimeAgentAdapter.ts";
 import type {
@@ -6319,7 +6320,10 @@ export function makePrimeAgentDaemonAdapter(
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session", conversationRollback: "unsupported" },
+      capabilities: {
+        sessionModelSwitch: "in-session",
+        conversationRollback: BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.primeDaemon,
+      },
       startSession,
       sendTurn,
       interruptTurn,

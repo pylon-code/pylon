@@ -93,7 +93,8 @@ does not define turn end.
 Follow-up work runs asynchronously in queue-backed workers built on [`DrainableWorker`][worker]:
 [`ProviderRuntimeIngestion`][ingest] normalizes provider runtime streams into orchestration commands,
 [`ProviderCommandReactor`][cmd] dispatches provider calls in response to intent events, and
-[`CheckpointReactor`][checkpoint] captures and reverts workspace checkpoints.
+[`CheckpointReactor`][checkpoint] captures workspace checkpoints and rejects coordinated rollback
+requests while rollback is disabled.
 
 `DrainableWorker` pairs a transactional queue with a transactional count of outstanding items.
 `enqueue` atomically offers and increments; processing always decrements. `drain` retries until the
@@ -114,11 +115,13 @@ which agent is behind them. See [providers.md](./providers.md).
 
 ## Checkpointing
 
-Each turn is bracketed by workspace checkpoints so diffs and reverts are exact. `CheckpointStore`
-captures state as hidden Git refs through the VCS driver's checkpoint operations;
-`CheckpointDiffQuery` answers turn and full-thread diff requests; `CheckpointReactor` coordinates
-baseline capture, completed-turn capture, diff projection, and reverting both the workspace and the
-provider conversation. The storage contract is `VcsCheckpointOps` in
+Each turn is bracketed by workspace checkpoints so diffs are exact. `CheckpointStore` captures
+state as hidden Git refs through the VCS driver's checkpoint operations; `CheckpointDiffQuery`
+answers turn and full-thread diff requests; and `CheckpointReactor` coordinates baseline capture,
+completed-turn capture, and diff projection. Coordinated rollback is intentionally disabled until
+exact immutable filesystem and provider anchors, complete canonical writer fencing, postcondition
+proof, and restart recovery ship. Server-side leases cannot fence writes from external
+terminals, editors, or processes. The storage contract is `VcsCheckpointOps` in
 [`VcsDriver.ts`](../../apps/server/src/vcs/VcsDriver.ts), implemented for Git in the same directory.
 
 ## Startup

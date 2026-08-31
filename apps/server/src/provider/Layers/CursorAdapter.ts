@@ -75,6 +75,7 @@ import {
   extractTodosAsPlan,
 } from "../acp/CursorAcpExtension.ts";
 import { type CursorAdapterShape } from "../Services/CursorAdapter.ts";
+import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
 import { resolveCursorAcpBaseModelId } from "./CursorProvider.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
@@ -1206,7 +1207,10 @@ export function makeCursorAdapter(
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: {
+        sessionModelSwitch: "in-session",
+        conversationRollback: BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.cursor,
+      },
       startSession,
       sendTurn,
       interruptTurn,

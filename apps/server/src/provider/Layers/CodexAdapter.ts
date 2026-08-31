@@ -54,6 +54,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
+import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -2070,6 +2071,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      conversationRollback: BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.codex,
     },
     startSession,
     sendTurn,

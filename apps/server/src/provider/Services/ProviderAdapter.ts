@@ -44,7 +44,17 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
-export type ProviderConversationRollbackMode = "supported" | "unsupported";
+export type ProviderConversationRollbackMode = "absolute" | "relative" | "unsupported";
+
+export const BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES = {
+  codex: "relative",
+  claude: "relative",
+  cursor: "unsupported",
+  grok: "unsupported",
+  openCode: "relative",
+  prime: "unsupported",
+  primeDaemon: "unsupported",
+} as const satisfies Record<string, ProviderConversationRollbackMode>;
 
 export interface ProviderAdapterCapabilities {
   /**
@@ -52,8 +62,8 @@ export interface ProviderAdapterCapabilities {
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
   /**
-   * Optional for adapter compatibility. Absence preserves the legacy behavior
-   * where provider conversation rollback is assumed to be supported.
+   * Optional for adapter compatibility. An absent declaration is unsupported;
+   * callers must never assume legacy rollback support.
    */
   readonly conversationRollback?: ProviderConversationRollbackMode;
 }

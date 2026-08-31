@@ -168,7 +168,7 @@ ACP session ids are transient random UUIDs and Prime advertises `loadSession: fa
 
 Prime ACP permits only one prompt at a time and has no steering method. Pylon must reject or queue a second message during a running Prime turn instead of issuing a concurrent `session/prompt`. Prime also ignores the `mcpServers` supplied in ACP `session/new`; Prime's own configured MCP resources work, but Pylon's per-session MCP bridge does not.
 
-Pylon checkpoint revert can restore workspace files, but Prime ACP cannot roll its conversation back. The MVP must mark provider-conversation rollback unsupported or restart a fresh Prime session after a file restore; it must not report a fully synchronized revert when only git state changed.
+Coordinated checkpoint rollback is disabled for every provider. Pylon rejects the request before restoring workspace files or changing provider conversation state. Prime ACP and the native Prime adapter both remain classified as unsupported until an exact immutable filesystem/provider anchor and verified postcondition exist; Pylon must never report a synchronized revert when only one side changed.
 
 ### Prime-native UI
 

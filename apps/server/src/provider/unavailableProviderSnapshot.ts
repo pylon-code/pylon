@@ -50,7 +50,7 @@ export function buildUnavailableProviderSnapshot(
     const displayName = input.displayName?.trim() || (input.driverKind as string);
 
     const base = buildServerProvider({
-      presentation: { displayName },
+      presentation: { displayName, supportsConversationRollback: false },
       enabled: false,
       checkedAt,
       models: [],

@@ -347,8 +347,8 @@ synchronization.
    commands.
 2. [`ProviderCommandReactor`][cmd] reacts to orchestration intent events and dispatches provider
    calls.
-3. [`CheckpointReactor`][checkpoint] captures workspace checkpoints on turn start and completion, and
-   performs reverts.
+3. [`CheckpointReactor`][checkpoint] captures workspace checkpoints on turn start and completion. It
+   rejects coordinated rollback requests while rollback is disabled.
 
 ### Turn-start admission and reconciliation
 

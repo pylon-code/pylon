@@ -8208,12 +8208,9 @@ function ChatViewContent(props: ChatViewProps) {
                 onOpenTurnDiff={onOpenTurnDiff}
                 revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
                 onRevertUserMessage={onRevertUserMessage}
-                {...(supportsServerProviderConversationRollback(activeProviderStatus)
-                  ? {}
-                  : {
-                      revertDisabledReason:
-                        "This provider cannot restore its conversation. Start a new thread to continue from an earlier checkpoint.",
-                    })}
+                supportsConversationRollback={supportsServerProviderConversationRollback(
+                  activeProviderStatus,
+                )}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
                 onFileDownload={downloadFileAttachment}

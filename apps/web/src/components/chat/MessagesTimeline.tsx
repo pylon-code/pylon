@@ -162,6 +162,7 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
+  supportsConversationRollback: boolean;
   revertDisabledReason?: string;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onFileDownload: (attachment: ChatFileAttachment) => void;
@@ -244,6 +245,7 @@ interface MessagesTimelineProps {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
+  supportsConversationRollback: boolean;
   revertDisabledReason?: string;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -293,6 +295,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
+  supportsConversationRollback,
   revertDisabledReason,
   isRevertingCheckpoint,
   onImageExpand,
@@ -556,6 +559,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      supportsConversationRollback,
       ...(revertDisabledReason ? { revertDisabledReason } : {}),
       onImageExpand,
       onFileDownload,
@@ -574,6 +578,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      supportsConversationRollback,
       revertDisabledReason,
       onImageExpand,
       onFileDownload,
@@ -1048,7 +1053,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   ];
   const previewImages = userImages.filter((image) => image.name.startsWith("preview-annotation-"));
   const regularImages = userImages.filter((image) => !image.name.startsWith("preview-annotation-"));
-  const canRevertAgentWork = typeof row.revertTurnCount === "number";
+  const canRevertAgentWork =
+    ctx.supportsConversationRollback && typeof row.revertTurnCount === "number";
 
   return (
     <div className="group flex flex-col items-end gap-1">

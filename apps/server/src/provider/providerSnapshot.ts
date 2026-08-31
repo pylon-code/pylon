@@ -64,7 +64,7 @@ export interface ServerProviderPresentation {
   readonly requiresNewThreadForModelChange?: boolean;
   readonly supportedRuntimeModes?: ServerProvider["supportedRuntimeModes"];
   readonly supportsBackgroundTextGeneration?: boolean;
-  readonly supportsConversationRollback?: boolean;
+  readonly supportsConversationRollback: false;
 }
 
 export type ServerProviderDraft = Omit<ServerProvider, "instanceId" | "driver">;
@@ -255,9 +255,7 @@ export function buildServerProvider(input: {
           supportsBackgroundTextGeneration: input.presentation.supportsBackgroundTextGeneration,
         }
       : {}),
-    ...(typeof input.presentation.supportsConversationRollback === "boolean"
-      ? { supportsConversationRollback: input.presentation.supportsConversationRollback }
-      : {}),
+    supportsConversationRollback: input.presentation.supportsConversationRollback,
     enabled: input.enabled,
     installed: input.probe.installed,
     version: input.probe.version,

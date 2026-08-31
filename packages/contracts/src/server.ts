@@ -364,11 +364,14 @@ export const supportsServerProviderBackgroundTextGeneration = (
 export const supportsServerProviderConversationRollback = (
   snapshot: ServerProviderConversationRollbackSnapshot | null | undefined,
 ): boolean => {
-  const history = snapshot?.featureCapabilities?.history;
+  if (snapshot?.supportsConversationRollback !== true) {
+    return false;
+  }
+  const history = snapshot.featureCapabilities?.history;
   if (history !== undefined) {
     return history.support === "read-write" && history.operations.includes("rollback");
   }
-  return snapshot?.supportsConversationRollback !== false;
+  return true;
 };
 
 export const ServerObservability = Schema.Struct({

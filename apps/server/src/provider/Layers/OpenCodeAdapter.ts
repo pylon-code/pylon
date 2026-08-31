@@ -42,6 +42,7 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
+import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
 import {
   buildOpenCodePermissionRules,
   OpenCodeRuntime,
@@ -3168,6 +3169,7 @@ export function makeOpenCodeAdapter(
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
+        conversationRollback: BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.openCode,
       },
       startSession,
       sendTurn,

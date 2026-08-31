@@ -54,7 +54,7 @@ describe("ServerProvider", () => {
       DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
     );
     expect(supportsServerProviderBackgroundTextGeneration(parsed)).toBe(true);
-    expect(supportsServerProviderConversationRollback(parsed)).toBe(true);
+    expect(supportsServerProviderConversationRollback(parsed)).toBe(false);
   });
 
   it("decodes provider presentation capability restrictions", () => {
