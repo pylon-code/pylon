@@ -596,9 +596,24 @@ function deriveTurnFolds(input: {
     if (group.hasStreamingMessage) {
       continue;
     }
+    // Folding everything before the terminal message assumes that message is
+    // the answer. A turn that ends with no text at all renders as "Worked for
+    // 22s" above "(empty response)" with the actual answer folded out of sight,
+    // so the first assistant message stays visible in that case.
+    const terminalText =
+      group.terminalEntry?.kind === "message"
+        ? (group.terminalEntry.message.text?.trim() ?? "")
+        : "";
+    const keepFirstAssistantEntry = group.terminalEntry !== null && terminalText.length === 0;
+    const firstAssistantEntry = keepFirstAssistantEntry
+      ? group.entries.find(
+          (entry): entry is Extract<TimelineEntry, { kind: "message" }> => entry.kind === "message",
+        )
+      : undefined;
+
     const hiddenEntryIds = new Set<string>();
     for (const entry of group.entries) {
-      if (entry.id === group.terminalEntry?.id) {
+      if (entry.id === group.terminalEntry?.id || entry.id === firstAssistantEntry?.id) {
         continue;
       }
       // Agent-spawn CTA rows never fold: workflows outlive their launching

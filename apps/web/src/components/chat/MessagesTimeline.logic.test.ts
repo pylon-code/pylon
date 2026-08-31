@@ -553,6 +553,55 @@ describe("deriveMessagesTimelineRows", () => {
     ).toBeDefined();
   });
 
+  it("keeps the first assistant message when the turn ends with no text", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "assistant-first-entry",
+          kind: "message" as const,
+          createdAt: "2026-01-01T00:00:01Z",
+          message: {
+            id: "assistant-first" as never,
+            role: "assistant" as const,
+            text: "The main result is ready.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:01Z",
+            updatedAt: "2026-01-01T00:00:02Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "assistant-final-entry",
+          kind: "message" as const,
+          createdAt: "2026-01-01T00:00:05Z",
+          message: {
+            id: "assistant-final" as never,
+            role: "assistant" as const,
+            text: "",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:05Z",
+            updatedAt: "2026-01-01T00:00:06Z",
+            streaming: false,
+          },
+        },
+      ],
+      terminalAssistantMessageIds: new Set(["assistant-final" as never]),
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: "2026-01-01T00:00:06Z",
+      },
+      isWorking: false,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    // Folding here would leave "Worked for 6s" above an empty response with the
+    // answer nowhere on screen.
+    expect(rows.map((row) => row.id)).toContain("assistant-first-entry");
+  });
+
   it("folds all assistant messages before the terminal message", () => {
     const timelineEntries = [
       {
