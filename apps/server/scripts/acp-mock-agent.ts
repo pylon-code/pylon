@@ -53,6 +53,7 @@ const emitStaleXAiPromptCompleteBeforeSecondHang =
 const emitOverlappingXAiPromptCompleteOutOfOrder =
   process.env.T3_ACP_EMIT_OVERLAPPING_XAI_PROMPT_COMPLETE_OUT_OF_ORDER === "1";
 const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
+const failPromptMessage = process.env.T3_ACP_FAIL_PROMPT_MESSAGE?.trim() || "Mock prompt failure";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
@@ -64,6 +65,8 @@ const primeTerminalQuiescenceDelayMs = Number(
 );
 const primeTerminalQuiescenceOutcome =
   process.env.T3_ACP_PRIME_TERMINAL_QUIESCENCE_OUTCOME === "error" ? "error" : "result";
+const primeTerminalQuiescenceResponseText =
+  process.env.T3_ACP_PRIME_TERMINAL_QUIESCENCE_RESPONSE_TEXT ?? "before terminal quiescence";
 if (process.env.T3_ACP_ASSERT_TOP_LEVEL_ENV === "1") {
   const inheritedInternal = Object.keys(process.env).find(
     (name) => name.startsWith("PRIME_AGENT_INTERNAL_") || name === "RLM_DEPTH",
@@ -506,7 +509,7 @@ const program = Effect.gen(function* () {
       }
 
       if (failPrompt) {
-        return yield* AcpError.AcpRequestError.internalError("Mock prompt failure");
+        return yield* AcpError.AcpRequestError.internalError(failPromptMessage);
       }
 
       if (Number.isFinite(primeTerminalQuiescenceDelayMs) && primeTerminalQuiescenceDelayMs > 0) {
@@ -515,7 +518,7 @@ const program = Effect.gen(function* () {
           sessionId: requestedSessionId,
           update: {
             sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "before terminal quiescence" },
+            content: { type: "text", text: primeTerminalQuiescenceResponseText },
           },
         });
         writeJsonRpcNotification("session/update", {

@@ -55,6 +55,7 @@ export interface AcpSessionEventStreamBarrier {
 
 export type AcpSessionRuntimeEvent = AcpParsedSessionEvent | AcpSessionEventStreamBarrier;
 
+const defaultStartupRpcTimeout = Duration.seconds(90);
 const defaultSessionLoadTimeout = Duration.seconds(90);
 const defaultSessionLoadReplayIdleGap = Duration.seconds(2);
 
@@ -71,6 +72,8 @@ export interface AcpSessionRuntimeOptions {
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
   readonly resumeSessionId?: string;
+  /** Maximum time allowed for each initialize, authenticate, and session/new RPC. */
+  readonly startupRpcTimeout?: Duration.Input;
   readonly sessionLoadTimeout?: Duration.Input;
   readonly sessionLoadReplayIdleGap?: Duration.Input;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
@@ -318,6 +321,9 @@ export const make = (
     >(Option.none());
     const sessionLoadGateRef = yield* Ref.make<Option.Option<SessionLoadGate>>(Option.none());
 
+    const startupRpcTimeout = Duration.fromInputUnsafe(
+      options.startupRpcTimeout ?? defaultStartupRpcTimeout,
+    );
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger ? options.requestLogger(event) : Effect.void;
 
@@ -346,6 +352,28 @@ export const make = (
               }),
             ),
           ),
+        ),
+      );
+
+    const runStartupRpc = <A>(
+      method: string,
+      effect: Effect.Effect<A, EffectAcpErrors.AcpError>,
+    ): Effect.Effect<A, EffectAcpErrors.AcpError> =>
+      effect.pipe(
+        Effect.timeoutOption(startupRpcTimeout),
+        Effect.flatMap(
+          Option.match({
+            onNone: () =>
+              Effect.fail(
+                new EffectAcpErrors.AcpTransportError({
+                  operation: "call-rpc",
+                  method,
+                  detail: `${method} timed out waiting for RPC response`,
+                  cause: undefined,
+                }),
+              ),
+            onSome: Effect.succeed,
+          }),
         ),
       );
 
@@ -568,7 +596,7 @@ export const make = (
       const initializeResult = yield* runLoggedRequest(
         "initialize",
         initializePayload,
-        acp.agent.initialize(initializePayload),
+        runStartupRpc("initialize", acp.agent.initialize(initializePayload)),
       );
 
       if (options.authMethodId !== undefined) {
@@ -579,7 +607,7 @@ export const make = (
         yield* runLoggedRequest(
           "authenticate",
           authenticatePayload,
-          acp.agent.authenticate(authenticatePayload),
+          runStartupRpc("authenticate", acp.agent.authenticate(authenticatePayload)),
         );
       }
 
@@ -670,7 +698,7 @@ export const make = (
         const created = yield* runLoggedRequest(
           "session/new",
           createPayload,
-          acp.agent.createSession(createPayload),
+          runStartupRpc("session/new", acp.agent.createSession(createPayload)),
         );
         sessionId = created.sessionId;
         sessionSetupResult = created;
