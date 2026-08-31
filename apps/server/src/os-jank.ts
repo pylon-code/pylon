@@ -102,10 +102,61 @@ export const expandHomePath = Effect.fn(function* (input: string) {
   return input;
 });
 
+/**
+ * Pylon's runtime home. `~/.t3` is T3 Code's: its database carries upstream's
+ * migration numbering, so a Pylon server that opened it would record those ids
+ * as applied and then fail on the first query. Nothing here ever falls back to
+ * it — `--base-dir` or `T3CODE_HOME` is how a user points Pylon somewhere else.
+ */
+export const RUNTIME_HOME_DIR_NAME = ".pylon-code";
+
+/** T3 Code's runtime home. Only ever named, never opened by default. */
+export const LEGACY_RUNTIME_HOME_DIR_NAME = ".t3";
+
 export const resolveBaseDir = Effect.fn(function* (raw: string | undefined) {
   const { join, resolve } = yield* Path.Path;
   if (!raw || raw.trim().length === 0) {
-    return join(NodeOS.homedir(), ".t3");
+    return join(NodeOS.homedir(), RUNTIME_HOME_DIR_NAME);
   }
   return resolve(yield* expandHomePath(raw.trim()));
+});
+
+export const formatLegacyRuntimeHomeHint = (baseDir: string, legacyBaseDir: string) =>
+  `Starting with a new state directory at ${baseDir} — nothing was there yet. ` +
+  `An older state directory exists at ${legacyBaseDir}, and Pylon does not adopt it automatically because it may belong to T3 Code. ` +
+  `To keep using it, pass --base-dir ${legacyBaseDir} or set T3CODE_HOME=${legacyBaseDir}; otherwise move that directory to ${baseDir}.`;
+
+/**
+ * Points a user whose state predates the move to `~/.pylon-code` at the
+ * directory they already have. It says its piece once: the launch that logs it
+ * goes on to create `<default>/userdata`, so the next one no longer qualifies.
+ *
+ * Deliberately silent whenever the user already said where their state lives,
+ * and for dev runs, whose state lives in `<base>/dev` rather than `userdata`.
+ */
+export const logLegacyRuntimeHomeHint = Effect.fn("logLegacyRuntimeHomeHint")(function* (options: {
+  readonly baseDir: string;
+  readonly stateDir: string;
+  readonly baseDirIsExplicit: boolean;
+  /** Injected by tests so they never read the developer's own home. */
+  readonly homeDir?: string;
+}) {
+  if (options.baseDirIsExplicit) return;
+  const { join } = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const homeDir = options.homeDir ?? NodeOS.homedir();
+  const defaultBaseDir = join(homeDir, RUNTIME_HOME_DIR_NAME);
+  if (options.baseDir !== defaultBaseDir) return;
+  if (options.stateDir !== join(defaultBaseDir, "userdata")) return;
+
+  const alreadyMigrated = yield* fs.exists(options.stateDir).pipe(Effect.orElseSucceed(() => true));
+  if (alreadyMigrated) return;
+
+  const legacyBaseDir = join(homeDir, LEGACY_RUNTIME_HOME_DIR_NAME);
+  const legacyExists = yield* fs
+    .exists(join(legacyBaseDir, "userdata"))
+    .pipe(Effect.orElseSucceed(() => false));
+  if (!legacyExists) return;
+
+  yield* Effect.logInfo(formatLegacyRuntimeHomeHint(defaultBaseDir, legacyBaseDir));
 });

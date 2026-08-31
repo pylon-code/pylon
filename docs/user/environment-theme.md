@@ -40,10 +40,9 @@ Close the editor to show the latest selected theme.
 ## Publishing themes
 
 A machine publishes themes by writing files into the `themes` directory of the Pylon state
-directory. For a server the Pylon app started, that is `~/.pylon-code/userdata/themes/`. A server
-started from the command line uses the base directory it was given — `--base-dir`, or `T3CODE_HOME`
-— and publishes into `userdata/themes` inside it; run `t3 theme show` to have it name that directory
-while nothing is published there yet. The filename is the theme id — `nightfall.json` appears as
+directory, which is `~/.pylon-code/userdata/themes/` by default. A server given a base directory —
+`--base-dir`, or `T3CODE_HOME` — publishes into `userdata/themes` inside that instead; run
+`t3 theme show` to have it name the directory while nothing is published there yet. The filename is the theme id — `nightfall.json` appears as
 `nightfall` — and stays stable while the machine rewrites the colors underneath, so selections and
 defaults keep pointing at it.
 

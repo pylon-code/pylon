@@ -15,7 +15,7 @@ import { Argument, Flag } from "effect/unstable/cli";
 
 import { readBootstrapEnvelope } from "../bootstrap.ts";
 import * as ServerConfig from "../config.ts";
-import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
+import { expandHomePath, logLegacyRuntimeHomeHint, resolveBaseDir } from "../os-jank.ts";
 
 export const modeFlag = Flag.choice("mode", ServerConfig.RuntimeMode.literals).pipe(
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
@@ -274,16 +274,25 @@ export const resolveServerConfig = (
       normalizedFlags.baseDir,
       Option.fromUndefinedOr(env.t3Home),
     ).pipe(Option.filter((value) => value.trim().length > 0));
-    const baseDir = yield* resolveBaseDir(
-      Option.getOrUndefined(
-        resolveOptionPrecedence(explicitBaseDir, Option.fromUndefinedOr(bootstrap?.t3Home)),
-      ),
+    // The desktop passes its home through the bootstrap envelope rather than a
+    // flag, so it counts as "the user told us where their state is" too.
+    const requestedBaseDir = resolveOptionPrecedence(
+      explicitBaseDir,
+      Option.fromUndefinedOr(bootstrap?.t3Home),
     );
+    const baseDir = yield* resolveBaseDir(Option.getOrUndefined(requestedBaseDir));
     const rawCwd = Option.getOrElse(normalizedFlags.cwd, () => process.cwd());
     const cwd = path.resolve(yield* expandHomePath(rawCwd.trim()));
     yield* fs.makeDirectory(cwd, { recursive: true });
     const derivedPaths = yield* ServerConfig.deriveServerPaths(baseDir, devUrl, {
       baseDirIsExplicit: Option.isSome(explicitBaseDir),
+    });
+    // Before ensureServerDirectories: creating `<default>/userdata` is exactly
+    // what tells the hint it has nothing left to say.
+    yield* logLegacyRuntimeHomeHint({
+      baseDir,
+      stateDir: derivedPaths.stateDir,
+      baseDirIsExplicit: Option.isSome(requestedBaseDir),
     });
     yield* ServerConfig.ensureServerDirectories(derivedPaths);
     const persistedObservabilitySettings = yield* loadPersistedObservabilitySettings(

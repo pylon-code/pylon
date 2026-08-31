@@ -82,7 +82,7 @@ We need to be on the same page with terminology. When communicating, use this la
 - **project** means an environment-local workspace record rooted at a directory.
 - **thread** means the durable conversation and work history for a project.
 - **turn** means one user-to-agent cycle, including follow-up work such as checkpointing.
-- **runtime home** means the base data directory. It currently uses T3-compatible paths and environment variables; runtime state normally lives below its `userdata` directory.
+- **runtime home** means the base data directory. It defaults to `~/.pylon-code` on every launch path, while the override names stay T3-compatible (`--base-dir`, `T3CODE_HOME`); runtime state normally lives below its `userdata` directory.
 
 ## The three ways to hurt yourself
 

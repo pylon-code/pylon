@@ -44,8 +44,8 @@ authenticated.
   when `T3CODE_HOME` is set, storing state in `<worktree>/.t3/userdata`. Pass `--home-dir <path>` to
   choose another isolated directory explicitly. Submodules are not worktrees and keep the normal
   precedence.
-- From the **main checkout**, dev commands implicitly use `~/.t3/dev`, keeping development state
-  separate from `~/.t3/userdata`. An explicit `--home-dir <path>` stores state under
+- From the **main checkout**, dev commands implicitly use `~/.pylon-code/dev`, keeping development
+  state separate from `~/.pylon-code/userdata`. An explicit `--home-dir <path>` stores state under
   `<path>/userdata`; the base directory remains available for caches, worktrees, and other shared
   data.
 
