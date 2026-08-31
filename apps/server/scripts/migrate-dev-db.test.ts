@@ -193,6 +193,43 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
     }),
   );
 
+  // The source home and the write guard are separate concerns. This run
+  // deletes its destination database, so narrowing the guard to wherever the
+  // source lives would leave the other runtime home writable — and `~/.t3` may
+  // be a live T3 Code install.
+  it.effect("refuses to rebuild either runtime home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-protected-" });
+      // The source check runs before the guard, so give it a real source.
+      const sourceDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-src-" });
+      const source = yield* createFixtureSource(sourceDir);
+
+      for (const name of [".t3", ".pylon-code"]) {
+        const baseDir = path.join(homeDir, name);
+        yield* fs.makeDirectory(path.join(baseDir, "userdata"), { recursive: true });
+        const error = yield* runMigrateDevDb(
+          { baseDir, source, projects: 5, threadsPerProject: 10 },
+          { homeDir },
+        ).pipe(Effect.flip);
+        assert.equal(error._tag, "MigrateDevDbSharedHomeError", name);
+        assert.equal(
+          error.message,
+          "Refusing to rebuild a shared runtime home database (~/.pylon-code or ~/.t3). Use an isolated --base-dir.",
+        );
+      }
+
+      // An isolated directory under the same home is still a valid target.
+      const isolated = path.join(homeDir, "scratch");
+      const result = yield* runMigrateDevDb(
+        { baseDir: isolated, source, projects: 5, threadsPerProject: 10 },
+        { homeDir },
+      );
+      assert.equal(result.databasePath, path.join(isolated, "userdata", "state.sqlite"));
+    }),
+  );
+
   // `~/.t3` may be T3 Code's database, whose schema carries upstream's
   // migration numbering; seeding a Pylon dev database from it is the hazard
   // AGENTS.md "Test data" exists to prevent.

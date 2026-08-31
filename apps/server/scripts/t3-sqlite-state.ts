@@ -54,7 +54,7 @@ export class SqliteStateDatabaseMissingError extends Schema.TaggedErrorClass<Sql
   },
 ) {
   override get message(): string {
-    return `Database does not exist at '${this.databasePath}'. Start T3 once to run migrations.`;
+    return `Database does not exist at '${this.databasePath}'. Start Pylon once to run migrations.`;
   }
 }
 
