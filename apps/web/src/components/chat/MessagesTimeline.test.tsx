@@ -1420,7 +1420,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Running pnpm");
     expect(markup).toContain("tool call failed");
-    expect(markup).toContain("lucide-x");
+    expect(markup).toContain("lucide-circle-alert");
     expect(markup).not.toContain('data-slot="dot-matrix"');
   });
 

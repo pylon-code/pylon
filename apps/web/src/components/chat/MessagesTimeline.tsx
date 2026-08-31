@@ -1596,7 +1596,7 @@ function LiveActivityContent({
   announceFailure?: boolean;
   highlighted?: boolean;
 }) {
-  const resolvedIconName = failed ? "x" : iconName;
+  const resolvedIconName = failed ? "circle-alert" : iconName;
 
   return (
     <div
