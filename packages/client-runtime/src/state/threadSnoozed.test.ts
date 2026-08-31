@@ -311,3 +311,22 @@ describe("resolveSnoozePresets", () => {
     expect(tomorrow.getDay()).toBe(1);
   });
 });
+
+describe("snooze preset wake times are distinct", () => {
+  it("drops 'This evening' when 'In 3 hours' already reads the same minute", () => {
+    // 15:00 local: now + 3h is 18:00, and evening is 18:00.
+    const presets = resolveSnoozePresets(new Date("2026-09-02T15:00:30"));
+    const labels = presets.map((preset) => preset.whenLabel);
+
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(presets.map((preset) => preset.id)).not.toContain("evening");
+  });
+
+  it("keeps 'This evening' when it names a different time", () => {
+    const presets = resolveSnoozePresets(new Date("2026-09-02T09:15:00"));
+
+    expect(presets.map((preset) => preset.id)).toContain("evening");
+    const labels = presets.map((preset) => preset.whenLabel);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+});
