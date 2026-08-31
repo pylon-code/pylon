@@ -69,8 +69,10 @@ A Prime turn can contain several assistant segments around tool work. Pylon keep
 native order, so a final response appears after the work that preceded it instead of being appended
 to an older message higher in the thread. If Prime authoritatively finishes without public assistant
 text after its latest tool activity, Pylon shows **Prime Agent finished without sending a final
-response.** as a status row rather than inventing an assistant reply. Failures use the corresponding
-stopped status; cancellation remains cancellation. Prime Agent 0.8.1 waits for delegated descendants
+response.** as a status row rather than inventing an assistant reply. If the provider rejects a prompt,
+Pylon shows its mapped explanation when available. **Prime Agent stopped before sending a final
+response.** is reserved for an authoritative failed terminal with no public response rather than hiding
+an actionable provider failure. Cancellation remains cancellation. Prime Agent 0.8.1 waits for delegated descendants
 and resulting parent work before its standard ACP prompt completes. Pylon still validates Prime's
 correlated terminal-quiescence signal, including for 0.8.0 installations whose immediate ACP response can
 finish earlier, so the turn does not finish while causally admitted work remains active.
