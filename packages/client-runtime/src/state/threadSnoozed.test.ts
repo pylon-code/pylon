@@ -297,4 +297,36 @@ describe("resolveSnoozePresets", () => {
     expect(nextWeek.getDay()).toBe(1);
     expect(nextWeek.getDate()).toBe(13);
   });
+
+  it("drops next week on Sundays, when it lands on the same Monday as tomorrow", () => {
+    // Sunday 2026-08-30 07:01: "Tomorrow" and "Next week" are both Monday 9:00.
+    const presets = resolveSnoozePresets(localDate(2026, 8, 30, 7, 1));
+    expect(presets.map((preset) => preset.id)).toEqual([
+      "hour",
+      "three-hours",
+      "evening",
+      "tomorrow",
+    ]);
+    const tomorrow = new Date(presets.find((preset) => preset.id === "tomorrow")!.snoozedUntil);
+    expect(tomorrow.getDay()).toBe(1);
+  });
+});
+
+describe("snooze preset wake times are distinct", () => {
+  it("drops 'This evening' when 'In 3 hours' already reads the same minute", () => {
+    // 15:00 local: now + 3h is 18:00, and evening is 18:00.
+    const presets = resolveSnoozePresets(new Date("2026-09-02T15:00:30"));
+    const labels = presets.map((preset) => preset.whenLabel);
+
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(presets.map((preset) => preset.id)).not.toContain("evening");
+  });
+
+  it("keeps 'This evening' when it names a different time", () => {
+    const presets = resolveSnoozePresets(new Date("2026-09-02T09:15:00"));
+
+    expect(presets.map((preset) => preset.id)).toContain("evening");
+    const labels = presets.map((preset) => preset.whenLabel);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
 });

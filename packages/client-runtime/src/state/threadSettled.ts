@@ -393,8 +393,11 @@ function addSnoozeDays(base: Date, days: number): Date {
 
 /**
  * Shared "snooze until" choices for every client. "This evening" only
- * appears while it is meaningfully before evening; after that the calendar
- * choices start at "Tomorrow".
+ * appears while it is meaningfully before evening and does not repeat a wake
+ * time already on offer; after that the calendar choices start at "Tomorrow".
+ * Calendar presets that land on the same instant collapse: on Sundays
+ * "Tomorrow" and "Next week" are both Monday morning, so only "Tomorrow" is
+ * offered.
  */
 export function resolveSnoozePresets(now: Date): ReadonlyArray<SnoozePreset> {
   const inAnHour = new Date(now.getTime() + HOUR_MS);
@@ -415,11 +418,18 @@ export function resolveSnoozePresets(now: Date): ReadonlyArray<SnoozePreset> {
   ];
 
   const evening = snoozeAtHour(now, EVENING_HOUR);
-  if (evening.getTime() - now.getTime() > HOUR_MS) {
+  const eveningLabel = snoozeTimeOfDayLabel(evening);
+  // The hour guard keeps "This evening" meaningfully ahead of now. The label
+  // check catches the rest: between 15:00 and 15:59 "In 3 hours" already reads
+  // the same minute, so evening would repeat a wake time the menu just offered.
+  if (
+    evening.getTime() - now.getTime() > HOUR_MS &&
+    !presets.some((preset) => preset.whenLabel === eveningLabel)
+  ) {
     presets.push({
       id: "evening",
       label: "This evening",
-      whenLabel: snoozeTimeOfDayLabel(evening),
+      whenLabel: eveningLabel,
       snoozedUntil: evening.toISOString(),
     });
   }
@@ -434,12 +444,14 @@ export function resolveSnoozePresets(now: Date): ReadonlyArray<SnoozePreset> {
 
   const daysUntilMonday = (1 - now.getDay() + 7) % 7 || 7;
   const nextWeek = snoozeAtHour(addSnoozeDays(now, daysUntilMonday), MORNING_HOUR);
-  presets.push({
-    id: "next-week",
-    label: "Next week",
-    whenLabel: `${nextWeek.toLocaleDateString(undefined, { weekday: "short" })} ${snoozeTimeOfDayLabel(nextWeek)}`,
-    snoozedUntil: nextWeek.toISOString(),
-  });
+  if (nextWeek.getTime() !== tomorrow.getTime()) {
+    presets.push({
+      id: "next-week",
+      label: "Next week",
+      whenLabel: `${nextWeek.toLocaleDateString(undefined, { weekday: "short" })} ${snoozeTimeOfDayLabel(nextWeek)}`,
+      snoozedUntil: nextWeek.toISOString(),
+    });
+  }
 
   return presets;
 }
