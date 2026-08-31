@@ -17,7 +17,12 @@ const shared = {
       "Pylon reports whether Prime Agent has a configured model provider; sign-in and sign-out remain owned by the Prime Agent CLI.",
     operations: ["status"] as const,
   },
-  planning: unavailable("Prime Agent does not expose a Pylon-compatible plan mode."),
+  planning: {
+    support: "read-only" as const,
+    reason:
+      "Pylon shows bounded Prime plan progress from the managed daemon bridge or standard ACP PlanUpdated events. Prime does not expose a compatible formal Plan interaction mode.",
+    operations: ["observe"] as const,
+  },
   goals: unavailable("Goal state is not projected into Pylon yet."),
   gates: unavailable("Autonomous gate mutation is not exposed by the loaded Prime Agent runtime."),
   automation: unavailable("Prime Agent automations are not projected into Pylon yet."),
