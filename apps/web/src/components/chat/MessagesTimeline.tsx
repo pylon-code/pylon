@@ -184,8 +184,6 @@ interface TimelineRowActivityState {
   isRevertingCheckpoint: boolean;
   activeTurnInProgress: boolean;
   latestTurnId: TurnId | null;
-  /** Current plan step label for the working row, when the turn has a plan. */
-  workingStepLabel: string | null;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -611,7 +609,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isRevertingCheckpoint,
       activeTurnInProgress,
       latestTurnId: latestTurn?.turnId ?? null,
-      workingStepLabel,
     }),
     [activeTurnInProgress, isRevertingCheckpoint, isWorking, latestTurn?.turnId, workingStepLabel],
   );
@@ -1375,7 +1372,6 @@ function waitingOwnerLabel(waitingOn: "user" | "delegates" | "external"): string
 }
 
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const { workingStepLabel } = use(TimelineRowActivityCtx);
   return (
     <div>
       <div className="border-b border-border/60 pb-2 pt-1">
@@ -1389,11 +1385,6 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
               "Working..."
             )}
           </span>
-          {workingStepLabel ? (
-            <span className="ml-2 min-w-0 truncate text-muted-foreground/55">
-              · {workingStepLabel}
-            </span>
-          ) : null}
         </div>
       </div>
       {row.showThinking ? (
