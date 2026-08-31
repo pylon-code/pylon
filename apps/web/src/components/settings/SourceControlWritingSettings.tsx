@@ -28,7 +28,8 @@ const MODE_OPTIONS: Record<SourceControlWritingStyleMode, { label: string; descr
   {
     repo_conventions: {
       label: "Repository conventions",
-      description: "In each project, matches recent change descriptions and change request titles.",
+      description:
+        "In each project, matches recent change descriptions and change request titles. Also follows the project's AGENTS.md, and its CLAUDE.md when a Claude model writes.",
     },
     conventional_commits: {
       label: "Conventional Commits",

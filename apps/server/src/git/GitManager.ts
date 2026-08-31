@@ -606,9 +606,33 @@ export const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   const crypto = yield* Crypto.Crypto;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
 
   const sourceControlProvider = (cwd: string) => sourceControlProviders.resolve({ cwd });
   const serverSettingsService = yield* ServerSettings.ServerSettingsService;
+  const readRepositoryInstructions = (cwd: string, fileName: string) =>
+    Effect.gen(function* () {
+      const root = yield* fileSystem.realPath(cwd);
+      const instructionPath = yield* fileSystem.realPath(path.join(root, fileName));
+      if (!instructionPath.startsWith(`${root}${path.sep}`)) {
+        return "";
+      }
+      const info = yield* fileSystem.stat(instructionPath);
+      if (
+        info.type !== "File" ||
+        info.size > FileSystem.Size(MAX_REPOSITORY_INSTRUCTIONS_READ_BYTES)
+      ) {
+        return "";
+      }
+      const contents = (yield* fileSystem.readFileString(instructionPath)).trim();
+      // Conventions live near the top of these files, so keep the head. Dropping
+      // the file outright would silently disable the feature for any repository
+      // whose instructions grew past the budget — including this one.
+      return contents.length > MAX_REPOSITORY_INSTRUCTIONS_CHARS
+        ? `${contents.slice(0, MAX_REPOSITORY_INSTRUCTIONS_CHARS)}\n[Truncated]`
+        : contents;
+    }).pipe(Effect.orElseSucceed(() => ""));
 
   const readRecentCommitSubjects = (cwd: string) =>
     gitCore
@@ -627,26 +651,65 @@ export const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => []),
       );
 
-  const resolveStylePolicy = (cwd: string, style: SourceControlWritingStyleSettings) =>
+  /**
+   * Instruction files are read whole up to this size and then head-truncated, so a
+   * repository whose AGENTS.md grows does not silently lose the feature.
+   */
+  const MAX_REPOSITORY_INSTRUCTIONS_READ_BYTES = 128_000;
+  const MAX_REPOSITORY_INSTRUCTIONS_CHARS = 8_000;
+
+  /**
+   * `CLAUDE.md` commonly consists only of `@path` imports — this repository's is
+   * exactly `@AGENTS.md`. Sending the directive verbatim tells the model nothing,
+   * and resolving it would duplicate a file already included, so a CLAUDE.md that
+   * carries no prose of its own is skipped.
+   */
+  function repositoryInstructionsProse(contents: string): string {
+    const prose = contents
+      .split("\n")
+      .filter((line) => !/^\s*@\S+\s*$/.test(line))
+      .join("\n")
+      .trim();
+    return prose;
+  }
+
+  const resolveStylePolicy = (cwd: string, settings: SourceControlTextGenerationSettings) =>
     Effect.gen(function* () {
-      switch (style.mode) {
+      switch (settings.style.mode) {
         case "conventional_commits":
           return conventionalCommitsTextGenerationPolicy;
         case "custom":
           return customTextGenerationPolicy(
-            style.customInstructions
+            settings.style.customInstructions
               ? {
-                  commitInstructions: style.customInstructions,
-                  changeRequestInstructions: style.customInstructions,
+                  commitInstructions: settings.style.customInstructions,
+                  changeRequestInstructions: settings.style.customInstructions,
                 }
               : {},
           );
         case "repo_conventions": {
           const subjects = yield* readRecentCommitSubjects(cwd);
-          if (subjects.length === 0) {
+          const agentInstructions = yield* readRepositoryInstructions(cwd, "AGENTS.md");
+          const isClaudeWriter =
+            settings.modelSelection.instanceId === "claudeAgent" ||
+            (yield* providerRegistry.getProviders).some(
+              (provider) =>
+                provider.instanceId === settings.modelSelection.instanceId &&
+                provider.driver === "claudeAgent",
+            );
+          const claudeInstructions = isClaudeWriter
+            ? repositoryInstructionsProse(yield* readRepositoryInstructions(cwd, "CLAUDE.md"))
+            : "";
+          const examples = [
+            ...(subjects.length > 0
+              ? [["Recent commit subjects from this repository:", ...subjects].join("\n")]
+              : []),
+            ...(agentInstructions ? [`Local AGENTS.md:\n${agentInstructions}`] : []),
+            ...(claudeInstructions ? [`Local CLAUDE.md:\n${claudeInstructions}`] : []),
+          ].join("\n\n");
+          if (!examples) {
             return repositoryConventionsTextGenerationPolicy;
           }
-          const examples = ["Recent commit subjects from this repository:", ...subjects].join("\n");
           return {
             ...repositoryConventionsTextGenerationPolicy,
             commitInstructions: `${repositoryConventionsTextGenerationPolicy.commitInstructions}\n\n${examples}`,
@@ -848,9 +911,6 @@ export const make = Effect.gen(function* () {
           ),
       ),
     );
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-
   const tempDir = process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP ?? "/tmp";
   const canonicalizeExistingPath = (value: string) =>
     fileSystem.realPath(value).pipe(Effect.orElseSucceed(() => value));
@@ -1574,7 +1634,7 @@ export const make = Effect.gen(function* () {
         };
       }
 
-      const policy = yield* resolveStylePolicy(input.cwd, input.settings.style);
+      const policy = yield* resolveStylePolicy(input.cwd, input.settings);
 
       const generated = yield* textGeneration
         .generateCommitMessage({
@@ -1760,7 +1820,7 @@ export const make = Effect.gen(function* () {
     });
     const baseRangeRef = yield* resolveBaseRangeRef(cwd, baseBranch);
     const rangeContext = yield* gitCore.readRangeContext(cwd, baseRangeRef);
-    const policy = yield* resolveStylePolicy(cwd, settings.style);
+    const policy = yield* resolveStylePolicy(cwd, settings);
     const changeRequestTemplate =
       settings.style.followChangeRequestTemplates && provider.kind === "github"
         ? Option.getOrUndefined(yield* detectPrTemplate(cwd, baseRangeRef, gitCore.execute))
