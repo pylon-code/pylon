@@ -28,7 +28,7 @@ import { Command, Flag } from "effect/unstable/cli";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
-import { logLegacyRuntimeHomeHint, resolveBaseDir } from "../os-jank.ts";
+import { resolveBaseDir, warnAboutLegacyRuntimeHome } from "../os-jank.ts";
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { baseDirFlag } from "./config.ts";
 import { resolveCliCommand } from "./invocation.ts";
@@ -213,7 +213,7 @@ export const triageCommand = Command.make("triage", {
       const issueRepository = yield* readOptionalUrlConfig("PYLON_TRIAGE_REPOSITORY");
       const sourceRepository = yield* readOptionalUrlConfig("PYLON_TRIAGE_SOURCE_REPOSITORY");
       const paths = yield* ServerConfig.deriveServerPaths(baseDir, undefined, {});
-      yield* logLegacyRuntimeHomeHint({
+      yield* warnAboutLegacyRuntimeHome({
         baseDir,
         stateDir: paths.stateDir,
         baseDirIsExplicit: requestedBaseDir !== undefined,

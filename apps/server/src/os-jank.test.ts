@@ -6,13 +6,11 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Logger from "effect/Logger";
-import * as Path from "effect/Path";
 
 import {
   formatLegacyRuntimeHomeHint,
   hydratePosixHome,
-  logLegacyRuntimeHomeHint,
+  warnAboutLegacyRuntimeHome,
   resolveBaseDir,
 } from "./os-jank.ts";
 
@@ -81,22 +79,7 @@ describe("resolveBaseDir", () => {
   );
 });
 
-describe("logLegacyRuntimeHomeHint", () => {
-  const captureLogs = (
-    effect: Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>,
-  ): Effect.Effect<ReadonlyArray<unknown>, never, FileSystem.FileSystem | Path.Path> => {
-    const messages: Array<unknown> = [];
-    // A log call carries its arguments as an array; the hint only ever passes
-    // one, so flattening keeps the assertions about the text itself.
-    const logger = Logger.make<unknown, void>(({ message }) => {
-      messages.push(...(Array.isArray(message) ? message : [message]));
-    });
-    return effect.pipe(
-      Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
-      Effect.as(messages as ReadonlyArray<unknown>),
-    );
-  };
-
+describe("warnAboutLegacyRuntimeHome", () => {
   /**
    * A throwaway home directory. Nothing here may read the developer's real
    * `~/.pylon-code` or `~/.t3`, so the homedir is always injected.
@@ -127,15 +110,15 @@ describe("logLegacyRuntimeHomeHint", () => {
   }) {
     const homeDir = yield* makeHome(options);
     const baseDir = NodePath.join(homeDir, options.baseDirName ?? ".pylon-code");
-    const messages = yield* captureLogs(
-      logLegacyRuntimeHomeHint({
-        baseDir,
-        stateDir: NodePath.join(baseDir, options.stateDirName ?? "userdata"),
-        baseDirIsExplicit: options.baseDirIsExplicit ?? false,
-        homeDir,
-      }),
-    );
-    return { homeDir, baseDir, messages };
+    const written: Array<string> = [];
+    yield* warnAboutLegacyRuntimeHome({
+      baseDir,
+      stateDir: NodePath.join(baseDir, options.stateDirName ?? "userdata"),
+      baseDirIsExplicit: options.baseDirIsExplicit ?? false,
+      homeDir,
+      write: (message) => written.push(message),
+    });
+    return { homeDir, baseDir, messages: written };
   });
 
   it.effect("names the older state directory on a fresh default launch", () =>
@@ -145,7 +128,7 @@ describe("logLegacyRuntimeHomeHint", () => {
         legacyState: true,
       });
       assert.deepEqual(messages, [
-        formatLegacyRuntimeHomeHint(baseDir, NodePath.join(homeDir, ".t3")),
+        `${formatLegacyRuntimeHomeHint(baseDir, NodePath.join(homeDir, ".t3"))}\n`,
       ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );

@@ -128,35 +128,55 @@ export const formatLegacyRuntimeHomeHint = (baseDir: string, legacyBaseDir: stri
 
 /**
  * Points a user whose state predates the move to `~/.pylon-code` at the
- * directory they already have. It says its piece once: the launch that logs it
+ * directory they already have. It says its piece once: the launch that emits it
  * goes on to create `<default>/userdata`, so the next one no longer qualifies.
  *
  * Deliberately silent whenever the user already said where their state lives,
  * and for dev runs, whose state lives in `<base>/dev` rather than `userdata`.
+ *
+ * Written straight to stderr rather than through the logger, and never to
+ * stdout. `auth`, `connect`, and `project` resolve their base dir through the
+ * same helper, and they emit machine-readable payloads under `--json`; a
+ * sentence prepended to that stream breaks every parser reading it. Their
+ * `quietLogs` handling cannot help either, because it installs its log level
+ * after the base dir has already been resolved.
  */
-export const logLegacyRuntimeHomeHint = Effect.fn("logLegacyRuntimeHomeHint")(function* (options: {
-  readonly baseDir: string;
-  readonly stateDir: string;
-  readonly baseDirIsExplicit: boolean;
-  /** Injected by tests so they never read the developer's own home. */
-  readonly homeDir?: string;
-}) {
-  if (options.baseDirIsExplicit) return;
-  const { join } = yield* Path.Path;
-  const fs = yield* FileSystem.FileSystem;
-  const homeDir = options.homeDir ?? NodeOS.homedir();
-  const defaultBaseDir = join(homeDir, RUNTIME_HOME_DIR_NAME);
-  if (options.baseDir !== defaultBaseDir) return;
-  if (options.stateDir !== join(defaultBaseDir, "userdata")) return;
+export const warnAboutLegacyRuntimeHome = Effect.fn("warnAboutLegacyRuntimeHome")(
+  function* (options: {
+    readonly baseDir: string;
+    readonly stateDir: string;
+    readonly baseDirIsExplicit: boolean;
+    /** Injected by tests so they never read the developer's own home. */
+    readonly homeDir?: string;
+    /** Injected by tests. Defaults to stderr. */
+    readonly write?: (message: string) => void;
+  }) {
+    if (options.baseDirIsExplicit) return;
+    const { join } = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const homeDir = options.homeDir ?? NodeOS.homedir();
+    const defaultBaseDir = join(homeDir, RUNTIME_HOME_DIR_NAME);
+    if (options.baseDir !== defaultBaseDir) return;
+    if (options.stateDir !== join(defaultBaseDir, "userdata")) return;
 
-  const alreadyMigrated = yield* fs.exists(options.stateDir).pipe(Effect.orElseSucceed(() => true));
-  if (alreadyMigrated) return;
+    const alreadyMigrated = yield* fs
+      .exists(options.stateDir)
+      .pipe(Effect.orElseSucceed(() => true));
+    if (alreadyMigrated) return;
 
-  const legacyBaseDir = join(homeDir, LEGACY_RUNTIME_HOME_DIR_NAME);
-  const legacyExists = yield* fs
-    .exists(join(legacyBaseDir, "userdata"))
-    .pipe(Effect.orElseSucceed(() => false));
-  if (!legacyExists) return;
+    const legacyBaseDir = join(homeDir, LEGACY_RUNTIME_HOME_DIR_NAME);
+    const legacyExists = yield* fs
+      .exists(join(legacyBaseDir, "userdata"))
+      .pipe(Effect.orElseSucceed(() => false));
+    if (!legacyExists) return;
 
-  yield* Effect.logInfo(formatLegacyRuntimeHomeHint(defaultBaseDir, legacyBaseDir));
-});
+    const write =
+      options.write ??
+      ((message: string) => {
+        process.stderr.write(message);
+      });
+    yield* Effect.sync(() =>
+      write(`${formatLegacyRuntimeHomeHint(defaultBaseDir, legacyBaseDir)}\n`),
+    );
+  },
+);

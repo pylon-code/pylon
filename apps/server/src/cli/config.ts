@@ -15,7 +15,7 @@ import { Argument, Flag } from "effect/unstable/cli";
 
 import { readBootstrapEnvelope } from "../bootstrap.ts";
 import * as ServerConfig from "../config.ts";
-import { expandHomePath, logLegacyRuntimeHomeHint, resolveBaseDir } from "../os-jank.ts";
+import { expandHomePath, resolveBaseDir, warnAboutLegacyRuntimeHome } from "../os-jank.ts";
 
 export const modeFlag = Flag.choice("mode", ServerConfig.RuntimeMode.literals).pipe(
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
@@ -289,7 +289,7 @@ export const resolveServerConfig = (
     });
     // Before ensureServerDirectories: creating `<default>/userdata` is exactly
     // what tells the hint it has nothing left to say.
-    yield* logLegacyRuntimeHomeHint({
+    yield* warnAboutLegacyRuntimeHome({
       baseDir,
       stateDir: derivedPaths.stateDir,
       baseDirIsExplicit: Option.isSome(requestedBaseDir),
