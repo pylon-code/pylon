@@ -127,9 +127,21 @@ describe("warnAboutLegacyRuntimeHome", () => {
         pylonState: false,
         legacyState: true,
       });
+      const legacyBaseDir = NodePath.join(homeDir, ".t3");
       assert.deepEqual(messages, [
-        `${formatLegacyRuntimeHomeHint(baseDir, NodePath.join(homeDir, ".t3"))}\n`,
+        `${formatLegacyRuntimeHomeHint({
+          stateDir: NodePath.join(baseDir, "userdata"),
+          legacyStateDir: NodePath.join(legacyBaseDir, "userdata"),
+          legacyBaseDir,
+        })}\n`,
       ]);
+      // The migration is the state directory, not its parent: settings and
+      // secrets live inside `userdata`, while the parent also holds caches and
+      // worktrees that must not move.
+      const hint = messages[0] ?? "";
+      assert.include(hint, `move ${NodePath.join(legacyBaseDir, "userdata")}`);
+      assert.include(hint, `to ${NodePath.join(baseDir, "userdata")}`);
+      assert.notInclude(hint, `move that directory`);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

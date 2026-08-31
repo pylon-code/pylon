@@ -75,18 +75,31 @@ rollback and removes older caches automatically. If a cached runtime stops worki
 from the application files under `/mnt/c` instead and reinstalls the runtime on the next launch.
 
 The WSL backend keeps its projects and history inside the distro rather than on the Windows side,
-so it has its own runtime home separate from the one the Windows app uses. That home is now
-`~/.pylon-code` inside the distro. If you used a WSL backend before this change, its old state is
-still there under `~/.t3`; Pylon does not move or open it. To carry that work forward, move the
-directory inside the distro before the next launch:
+so it has its own state separate from the one the Windows app uses. That state now lives in
+`~/.pylon-code/userdata` inside the distro, alongside the `wsl-runtime` directory described above.
+If you ran a WSL backend before this change, your projects and history are still in `~/.t3/userdata`;
+Pylon neither moves nor opens them, so the backend starts empty and tells you where the older state
+is.
+
+To carry that work forward, stop the WSL backend and move the `userdata` directory across. Your
+settings and saved credentials live inside it and come along:
 
 ```bash
-wsl -d <distro> -- sh -c 'mv "$HOME/.t3" "$HOME/.pylon-code"'
+wsl -d <distro> -- sh -c '
+  [ -d "$HOME/.t3/userdata" ] || { echo "Nothing to move."; exit 0; }
+  [ -e "$HOME/.pylon-code/userdata" ] && { echo "Pylon already has state here; leaving both alone."; exit 1; }
+  mkdir -p "$HOME/.pylon-code" && mv "$HOME/.t3/userdata" "$HOME/.pylon-code/userdata"
+'
 ```
 
-Run it while the WSL backend is stopped, and only if `~/.pylon-code` does not already exist. If you
-would rather start fresh, do nothing: the backend creates an empty `~/.pylon-code` on its next
-launch and leaves `~/.t3` untouched.
+`~/.pylon-code` itself usually exists already, because that is where the server runtime is
+installed. What matters is that `~/.pylon-code/userdata` does not: the command refuses to run when
+it does, so it can never merge two sets of projects. Start the backend afterwards and your projects
+are back.
+
+Anything left in `~/.t3` is yours to delete once you are happy. If you would rather start fresh,
+do nothing: the backend creates an empty `~/.pylon-code/userdata` on its next launch and leaves
+`~/.t3` untouched.
 
 ## Providers
 

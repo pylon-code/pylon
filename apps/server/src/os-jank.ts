@@ -121,10 +121,21 @@ export const resolveBaseDir = Effect.fn(function* (raw: string | undefined) {
   return resolve(yield* expandHomePath(raw.trim()));
 });
 
-export const formatLegacyRuntimeHomeHint = (baseDir: string, legacyBaseDir: string) =>
-  `Starting with a new state directory at ${baseDir} — nothing was there yet. ` +
-  `An older state directory exists at ${legacyBaseDir}, and Pylon does not adopt it automatically because it may belong to T3 Code. ` +
-  `To keep using it, pass --base-dir ${legacyBaseDir} or set T3CODE_HOME=${legacyBaseDir}; otherwise move that directory to ${baseDir}.`;
+/**
+ * Names the state directories rather than their parents. `userdata` is the
+ * whole migration — settings and secrets live inside it — while the parent also
+ * holds caches and worktrees that are either disposable or referenced by
+ * absolute path, so telling someone to move the parent would be wrong.
+ */
+export const formatLegacyRuntimeHomeHint = (paths: {
+  readonly stateDir: string;
+  readonly legacyStateDir: string;
+  readonly legacyBaseDir: string;
+}) =>
+  `Starting with a new state directory at ${paths.stateDir} — nothing was there yet. ` +
+  `An older state directory exists at ${paths.legacyStateDir}, and Pylon does not adopt it automatically because it may belong to T3 Code. ` +
+  `To keep using it, pass --base-dir ${paths.legacyBaseDir} or set T3CODE_HOME=${paths.legacyBaseDir}; ` +
+  `otherwise move ${paths.legacyStateDir} to ${paths.stateDir}, which brings your settings and secrets with it.`;
 
 /**
  * Points a user whose state predates the move to `~/.pylon-code` at the
@@ -165,9 +176,8 @@ export const warnAboutLegacyRuntimeHome = Effect.fn("warnAboutLegacyRuntimeHome"
     if (alreadyMigrated) return;
 
     const legacyBaseDir = join(homeDir, LEGACY_RUNTIME_HOME_DIR_NAME);
-    const legacyExists = yield* fs
-      .exists(join(legacyBaseDir, "userdata"))
-      .pipe(Effect.orElseSucceed(() => false));
+    const legacyStateDir = join(legacyBaseDir, "userdata");
+    const legacyExists = yield* fs.exists(legacyStateDir).pipe(Effect.orElseSucceed(() => false));
     if (!legacyExists) return;
 
     const write =
@@ -176,7 +186,13 @@ export const warnAboutLegacyRuntimeHome = Effect.fn("warnAboutLegacyRuntimeHome"
         process.stderr.write(message);
       });
     yield* Effect.sync(() =>
-      write(`${formatLegacyRuntimeHomeHint(defaultBaseDir, legacyBaseDir)}\n`),
+      write(
+        `${formatLegacyRuntimeHomeHint({
+          stateDir: options.stateDir,
+          legacyStateDir,
+          legacyBaseDir,
+        })}\n`,
+      ),
     );
   },
 );
