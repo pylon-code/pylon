@@ -1489,7 +1489,16 @@ function appendPresentedFeedEntry(
     groupableRun = [];
   };
   for (const activity of activities) {
-    if (activity.workEntry.tone !== "error" && activity.workEntry.agentSpawn !== true) {
+    if (
+      activity.workEntry.tone !== "error" &&
+      activity.workEntry.agentSpawn !== true &&
+      // groupAdjacentActivities deliberately isolates the terminal-response
+      // notice so it survives the fold. Wrapping it back into a work toggle
+      // would announce "show 1 tool call" for something that is not one, and
+      // only for the info-toned outcome, so the two outcomes of one Pylon
+      // feature would render as different row species.
+      activity.terminalResponseNotice !== true
+    ) {
       groupableRun.push(activity);
       continue;
     }
@@ -1525,13 +1534,18 @@ function appendToolGroupRows(
       isWorking && activity.lifecycleStatus === "inProgress" && activity.turnId === unsettledTurnId,
   );
   const live = activeTail || latestInProgressActivity !== undefined;
-  const latestActivity = activeTail
-    ? activities.at(-1)!
-    : (latestInProgressActivity ?? activities.at(-1)!);
+  // The still-running activity wins even at the feed tail. Preferring the last
+  // activity there names a command that already finished and leaves shimmer
+  // off, which is the stale label / lying spinner case outright.
+  const latestActivity = latestInProgressActivity ?? activities.at(-1)!;
   const summary = live
     ? liveToolActivitySummary(latestActivity)
-    : activities.length === 1 && !activities[0]!.toolLike
-      ? activities[0]!.workEntry.label
+    : // For non-tool rows the text is the information: "Received 2 updates"
+      // tells the reader nothing the runtime warning or missing-response notice
+      // was trying to say. Any all-non-tool group shows its newest label, which
+      // is the rule web already documents and follows.
+      activities.every((activity) => !activity.toolLike)
+      ? activities.at(-1)!.workEntry.label
       : summarizeToolGroup(activities.map((activity) => activity.workEntry));
   result.push({
     type: "work-toggle",

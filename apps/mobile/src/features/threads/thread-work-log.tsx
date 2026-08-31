@@ -297,9 +297,13 @@ export function ThreadWorkLog(props: {
           // Warnings are not errors. Web reserves destructive red for
           // runtime.error and orchestration *.failed rows and paints warnings
           // amber; mobile matches that split rather than colouring both rose.
-          const iconIsDestructive = row.icon === "alert";
-          const iconIsWarning = row.icon === "warning";
           const failed = row.status === "failure";
+          // A failed tool call has to read as failed at a glance. Upstream
+          // moved that signal into an xmark replacing the tool glyph; Pylon
+          // keeps its icon vocabulary and paints the row destructive instead,
+          // which is the same reserve of red for failures web already uses.
+          const iconIsDestructive = row.icon === "alert" || failed;
+          const iconIsWarning = row.icon === "warning" && !failed;
           // Grouped tool detail hides its glyph unless the row carries a signal
           // worth surfacing on its own.
           const showIcon = !row.groupedToolDetail || iconIsDestructive || iconIsWarning || failed;

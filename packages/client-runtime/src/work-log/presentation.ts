@@ -36,6 +36,10 @@ export function normalizeCompactToolLabel(value: string): string {
 }
 
 function workLogEntryIsToolLike(entry: WorkLogPresentationEntry): boolean {
+  // A missing-response notice is not a tool call, and it arrives error-toned
+  // from runtime.error as well as info-toned from runtime.warning. Without
+  // this guard the error-toned variant summarises as "Used 1 tool".
+  if (entry.sourceActivityKind === "turn.response.missing") return false;
   if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") return true;
   if (entry.command !== undefined && entry.command.trim().length > 0) return true;
   if (entry.requestKind !== undefined) return true;

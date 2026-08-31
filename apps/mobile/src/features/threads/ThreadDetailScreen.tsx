@@ -101,6 +101,7 @@ import {
   COMPOSER_COLLAPSED_CHROME,
   COMPOSER_EXPANDED_CHROME,
   COMPOSER_LAYOUT_TRANSITION,
+  COMPOSER_TRANSITION_DURATION_MS,
   ThreadComposer,
 } from "./ThreadComposer";
 import { ThreadFeed } from "./ThreadFeed";
@@ -368,7 +369,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     threadSyncPhase === null &&
     props.connectionStateLabel === "connected" &&
     props.activePendingApproval === null &&
-    props.activePendingUserInput === null;
+    props.activePendingUserInput === null &&
+    // Pylon has a third blocking kind upstream lacks. Without it the pill
+    // keeps counting "Working for Xs" while a session interaction waits on
+    // the user, and its 52px coverage stays in the feed inset.
+    props.activePendingInteraction === null;
   const floatingWorkingStartedAt = showWorkingControl ? props.activeWorkStartedAt : null;
   const selectedThreadFeed = props.selectedThreadFeed;
   const composerChrome = composerExpanded ? COMPOSER_EXPANDED_CHROME : COMPOSER_COLLAPSED_CHROME;
@@ -423,6 +428,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     composerOverlayRef,
     Math.max(0, estimatedOverlayHeight - nativeInsetOvercount),
     -nativeInsetOvercount,
+    // Match the composer's own morph so the feed's end inset glides with the
+    // card instead of snapping a frame ahead of it. Android has no layout
+    // transition here, so it keeps the immediate inset.
+    Platform.OS === "ios" ? COMPOSER_TRANSITION_DURATION_MS : 0,
   );
   // The expanded questionnaire is an absolute overlay on iOS, so it never
   // changes the measured overlay height (that constancy is what keeps the

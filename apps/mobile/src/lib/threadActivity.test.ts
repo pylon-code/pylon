@@ -813,16 +813,26 @@ describe("buildThreadFeed", () => {
 
     const feed = buildThreadFeed(thread);
     const presented = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
-    // The notice stays outside the fold. #8793's grouping wraps it in a work
-    // toggle, but it is still its own row carrying the message.
-    expect(presented).toHaveLength(2);
-    expect(presented[0]?.id).toBe(`turn-fold:${turnId}`);
-    expect(presented[1]?.id).toContain(`missing-response-${fixture.outcome}`);
-    // Shape differs by tone: #8793 keeps error rows out of grouping entirely,
-    // so the failed notice stays an activity-group while the completed one
-    // becomes a toggle. Either way the notice text must be what the row shows,
-    // not a "Received N updates" count.
-    expect(JSON.stringify(presented[1])).toContain(fixture.message);
+    // The notice stays outside the fold AND outside tool grouping, so both
+    // outcomes render as the same row species. Asserting the activity itself
+    // rather than the serialised entry matters: workEntry.label carries the
+    // message either way, so a stringify check passes even when the row shows
+    // "Received 1 update".
+    expect(presented.map((entry) => entry.id)).toEqual([
+      `turn-fold:${turnId}`,
+      `missing-response-${fixture.outcome}`,
+    ]);
+    expect(presented[1]).toMatchObject({
+      type: "activity-group",
+      activities: [
+        {
+          summary: fixture.message,
+          status: fixture.status,
+          toolLike: false,
+          terminalResponseNotice: true,
+        },
+      ],
+    });
   });
 
   it("folds ordinary runtime activity instead of treating it as a terminal response notice", () => {
@@ -1152,6 +1162,127 @@ describe("buildThreadFeed", () => {
       live: true,
       shimmer: false,
     });
+  });
+
+  it("names the still-running tool at the active tail, not the finished one", () => {
+    const turnId = TurnId.make("turn-tail-inprogress");
+    const make = (
+      id: string,
+      lifecycleStatus: ThreadFeedActivity["lifecycleStatus"],
+      command: string,
+    ): ThreadFeedActivity => ({
+      id,
+      createdAt: `2026-04-01T00:00:0${id.at(-1)}.000Z`,
+      turnId,
+      summary: `Tool ${id}`,
+      detail: null,
+      canExpand: false,
+      getFullDetail: () => null,
+      getCopyText: () => id,
+      icon: "command",
+      toolLike: true,
+      status: lifecycleStatus === "inProgress" ? "neutral" : "success",
+      lifecycleStatus,
+      workEntry: {
+        id,
+        createdAt: `2026-04-01T00:00:0${id.at(-1)}.000Z`,
+        turnId,
+        label: `Tool ${id}`,
+        tone: "tool",
+        toolLifecycleStatus: lifecycleStatus,
+        command,
+        itemType: "command_execution" as const,
+      },
+    });
+    // The running command sits BEFORE a finished one in the same run. Reading
+    // the tail here would label the row with the command that already ended
+    // and leave shimmer off while work is still going.
+    const feed: ThreadFeedEntry[] = [
+      {
+        type: "activity-group",
+        id: "tail-group",
+        createdAt: "2026-04-01T00:00:01.000Z",
+        turnId,
+        activities: [
+          make("act-1", "inProgress", "pnpm build"),
+          make("act-2", "completed", "git status"),
+        ],
+      },
+    ];
+    const latestTurn = {
+      turnId,
+      state: "running" as const,
+      requestedAt: "2026-04-01T00:00:00.000Z",
+      startedAt: "2026-04-01T00:00:00.000Z",
+      completedAt: null,
+      assistantMessageId: null,
+    };
+
+    const rows = deriveThreadFeedPresentation(
+      feed,
+      latestTurn,
+      new Set(),
+      new Set(),
+      latestTurn.startedAt,
+    );
+    expect(rows[0]).toMatchObject({
+      type: "work-toggle",
+      summary: "Running pnpm",
+      live: true,
+      shimmer: true,
+    });
+  });
+
+  it("shows the newest label for an all-non-tool group instead of an update count", () => {
+    const turnId = TurnId.make("turn-non-tool-group");
+    const notice = (id: string, label: string): ThreadFeedActivity => ({
+      id,
+      createdAt: `2026-04-01T00:00:0${id.at(-1)}.000Z`,
+      turnId,
+      summary: label,
+      detail: null,
+      canExpand: false,
+      getFullDetail: () => null,
+      getCopyText: () => id,
+      icon: "message",
+      toolLike: false,
+      status: null,
+      lifecycleStatus: "completed",
+      workEntry: {
+        id,
+        createdAt: `2026-04-01T00:00:0${id.at(-1)}.000Z`,
+        turnId,
+        label,
+        tone: "info",
+      },
+    });
+    // Two runtime warnings in one group. "Received 2 updates" throws away the
+    // only thing either row was trying to say.
+    const feed: ThreadFeedEntry[] = [
+      {
+        type: "activity-group",
+        id: "notice-group",
+        createdAt: "2026-04-01T00:00:01.000Z",
+        turnId,
+        activities: [
+          notice("warn-1", "Model fell back to gpt-5.4-mini"),
+          notice("warn-2", "Sandbox network access was denied"),
+        ],
+      },
+    ];
+    const latestTurn = {
+      turnId,
+      state: "completed" as const,
+      requestedAt: "2026-04-01T00:00:00.000Z",
+      startedAt: "2026-04-01T00:00:00.000Z",
+      completedAt: "2026-04-01T00:00:09.000Z",
+      assistantMessageId: null,
+    };
+
+    // Expand the settled turn so the group is presented rather than folded.
+    const rows = deriveThreadFeedPresentation(feed, latestTurn, new Set([turnId]), new Set(), null);
+    const toggle = rows.find((entry) => entry.type === "work-toggle");
+    expect(toggle).toMatchObject({ summary: "Sandbox network access was denied" });
   });
 
   it("does not revive cached in-progress tools after work stops", () => {
