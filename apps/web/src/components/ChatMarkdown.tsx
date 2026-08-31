@@ -2229,9 +2229,15 @@ function ChatMarkdown({
               }}
             >
               {faviconHost && hastHasText(node) ? (
-                <MarkdownExternalLinkContent host={faviconHost} plainText={plainHastText(node)}>
-                  {linkChildren}
-                </MarkdownExternalLinkContent>
+                // The provider wraps the result rather than the children:
+                // MarkdownExternalLinkContent inspects its first child for the
+                // leading text it splits with <wbr/>, and an element there
+                // makes the whole label one unbreakable run.
+                <MarkdownLinkContext value>
+                  <MarkdownExternalLinkContent host={faviconHost} plainText={plainHastText(node)}>
+                    {children}
+                  </MarkdownExternalLinkContent>
+                </MarkdownLinkContext>
               ) : (
                 linkChildren
               )}
