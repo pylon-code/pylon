@@ -323,7 +323,17 @@ describe("mergePathValues", () => {
         undefined,
         "win32",
       ),
-    ).toBe("C:\\Windows\\System32;C:\\cloudflared.exe;C:;C:\\Program Files\\nodejs");
+      // The bare drive letter left behind is drive-relative: keeping it would add
+      // the child process's own directory to the executable search.
+    ).toBe("C:\\Windows\\System32;C:\\cloudflared.exe;C:\\Program Files\\nodejs");
+  });
+
+  it("keeps a quoted Windows entry that contains the delimiter", () => {
+    // The entry stays quoted on the way out, or consumers would split it back
+    // into "C:\\my" and a relative "dir".
+    expect(mergePathValues('C:\\bin;"C:\\my;dir";C:\\other', undefined, "win32")).toBe(
+      'C:\\bin;"C:\\my;dir";C:\\other',
+    );
   });
 
   it("dedupes case-sensitively on POSIX", () => {

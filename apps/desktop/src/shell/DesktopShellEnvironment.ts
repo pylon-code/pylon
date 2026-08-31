@@ -154,6 +154,47 @@ const pathComparisonKey = (entry: string, platform: NodeJS.Platform) => {
 const sanitizePathEntry = (entry: string, platform: NodeJS.Platform) =>
   platform === "win32" ? entry.replaceAll('"', "") : entry;
 
+/**
+ * Splits a PATH value, honouring Windows quoting. A quoted entry may contain the
+ * delimiter — `C:\\bin;"C:\\my;dir"` is two directories — so splitting on the raw
+ * delimiter would tear it apart and leave a relative `dir` entry behind.
+ */
+const splitPathValue = (value: string, delimiter: string, platform: NodeJS.Platform): string[] => {
+  if (platform !== "win32") return value.split(delimiter);
+  // Unbalanced quotes are stray characters, not quoting: honouring them would
+  // swallow every later entry into one. Fall back to a plain split there.
+  if ((value.match(/"/g)?.length ?? 0) % 2 !== 0) return value.split(delimiter);
+  const entries: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (const char of value) {
+    if (char === '"') {
+      quoted = !quoted;
+      current += char;
+      continue;
+    }
+    if (char === delimiter && !quoted) {
+      entries.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  entries.push(current);
+  return entries;
+};
+
+/**
+ * Re-quotes an entry containing the delimiter. Stripping its quotes and joining
+ * would hand consumers a value they split back into the wrong directories.
+ */
+const quotePathEntryIfNeeded = (entry: string, delimiter: string, platform: NodeJS.Platform) =>
+  platform === "win32" && entry.includes(delimiter) ? `"${entry}"` : entry;
+
+/** A bare drive letter is drive-relative, so it would add the child's cwd to the search. */
+const isUsablePathEntry = (entry: string, platform: NodeJS.Platform) =>
+  platform !== "win32" || !/^[A-Za-z]:$/.test(entry);
+
 const mergePaths = (
   platform: NodeJS.Platform,
   values: ReadonlyArray<Option.Option<string>>,
@@ -165,9 +206,9 @@ const mergePaths = (
   for (const value of values) {
     if (Option.isNone(value)) continue;
 
-    for (const entry of value.value.split(delimiter)) {
+    for (const entry of splitPathValue(value.value, delimiter, platform)) {
       const sanitized = sanitizePathEntry(entry.trim(), platform);
-      if (sanitized.length === 0) continue;
+      if (sanitized.length === 0 || !isUsablePathEntry(sanitized, platform)) continue;
 
       const key = pathComparisonKey(sanitized, platform);
       if (key.length === 0 || seen.has(key)) continue;
@@ -177,7 +218,11 @@ const mergePaths = (
     }
   }
 
-  return entries.length > 0 ? Option.some(entries.join(delimiter)) : Option.none();
+  return entries.length > 0
+    ? Option.some(
+        entries.map((entry) => quotePathEntryIfNeeded(entry, delimiter, platform)).join(delimiter),
+      )
+    : Option.none();
 };
 
 export const resolveDesktopLoginShellCandidates = (

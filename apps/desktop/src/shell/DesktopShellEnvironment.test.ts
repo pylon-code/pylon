@@ -351,7 +351,6 @@ describe("DesktopShellEnvironment", () => {
           "C:\\Users\\testuser\\.bun\\bin",
           "C:\\Users\\testuser\\scoop\\shims",
           "C:\\Custom\\Bin",
-          "C:",
         ].join(";"),
       );
       assert.equal(env.FNM_DIR, "C:\\Users\\testuser\\AppData\\Roaming\\fnm");
