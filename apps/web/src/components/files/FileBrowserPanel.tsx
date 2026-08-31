@@ -260,7 +260,6 @@ export default function FileBrowserPanel({
     entriesQuery.refresh();
     onRefreshSelectedFile?.();
   };
-
   useEffect(() => {
     if (previousTreePathsRef.current === treePaths) return;
     entryKindsRef.current = entryKinds;
