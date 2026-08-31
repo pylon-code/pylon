@@ -6,6 +6,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -142,9 +143,7 @@ it.layer(TestLayer)("PrimeAgentTextGeneration platform subprocess", (it) => {
         execPath: process.execPath,
         cwd: realCwd,
         argv: [],
-        sdkEntryPath: realSdkEntryPath,
         instanceEnvironment: "platform-instance-environment",
-        helperSdkEntryEnvironment: realSdkEntryPath,
         helperAgentDirEnvironment: agentDir,
         helperModelEnvironment: "openai-codex/org/models/gpt-5.6",
         helperThinkingEnvironment: "xhigh",
@@ -152,6 +151,13 @@ it.layer(TestLayer)("PrimeAgentTextGeneration platform subprocess", (it) => {
         requestCount: 1,
         disposed: true,
       });
+      expect(typeof capture.sdkEntryPath).toBe("string");
+      expect(capture.helperSdkEntryEnvironment).toBe(capture.sdkEntryPath);
+      const selectedSdkInfo = yield* fileSystem.stat(realSdkEntryPath);
+      const capturedSdkInfo = yield* fileSystem.stat(capture.sdkEntryPath as string);
+      expect(capturedSdkInfo.dev).toBe(selectedSdkInfo.dev);
+      expect(Option.isSome(selectedSdkInfo.ino)).toBe(true);
+      expect(capturedSdkInfo.ino).toEqual(selectedSdkInfo.ino);
       expect(typeof capture.primeHomeEnvironment).toBe("string");
       expect(capture.primeHomeEnvironment).not.toBe(agentDir);
       expect(capture.electronRunAsNodeEnvironment).toBe("1");
@@ -161,7 +167,7 @@ it.layer(TestLayer)("PrimeAgentTextGeneration platform subprocess", (it) => {
       expect(capture.mixedNodePathEnvironment).toBeUndefined();
       expect(capture.controlledEnvironment).toMatchObject({
         PRIME_AGENT_CODING_AGENT_DIR: capture.primeHomeEnvironment,
-        PYLON_PRIME_SDK_ENTRY: realSdkEntryPath,
+        PYLON_PRIME_SDK_ENTRY: capture.sdkEntryPath,
         PYLON_PRIME_AGENT_DIR: agentDir,
         PYLON_PRIME_MODEL: "openai-codex/org/models/gpt-5.6",
         PYLON_PRIME_THINKING: "xhigh",
