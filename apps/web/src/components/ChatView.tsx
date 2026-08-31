@@ -2445,9 +2445,13 @@ function ChatViewContent(props: ChatViewProps) {
           : {
               dismissLabel: "Dismiss update notice",
               onDismiss: () => {
+                // Dismissing a failed update clears that failure only. Writing
+                // the version-mismatch dismissal too would permanently bury the
+                // "update available" offer for this version pair.
                 if (updateFailed) {
                   dismissServerUpdateFailure(serverUpdateState);
                   setDismissedServerUpdateState(serverUpdateState);
+                  return;
                 }
                 dismissVersionMismatch(versionMismatchDismissKey);
                 setDismissedVersionMismatchKey(versionMismatchDismissKey);

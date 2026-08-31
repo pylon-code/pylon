@@ -913,11 +913,13 @@ export function deriveMessagesTimelineRows(input: {
             groupId,
             hiddenCount: visibleGroupedEntries.length,
             expanded,
-            summary:
-              visibleGroupedEntries.length === 1 &&
-              !workLogEntryIsToolLike(visibleGroupedEntries[0]!)
-                ? visibleGroupedEntries[0]!.label
-                : summarizeToolGroup(visibleGroupedEntries),
+            // For non-tool rows the text is the information: "Received 2
+            // updates" tells the reader nothing a runtime warning or a
+            // missing-response notice was trying to say. Any all-non-tool group
+            // shows its newest label, not just a group of one.
+            summary: visibleGroupedEntries.every((entry) => !workLogEntryIsToolLike(entry))
+              ? visibleGroupedEntries.at(-1)!.label
+              : summarizeToolGroup(visibleGroupedEntries),
             summaryKind,
             hasFailure:
               latestToolEntry !== undefined &&

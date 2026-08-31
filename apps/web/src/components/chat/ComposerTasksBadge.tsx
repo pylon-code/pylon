@@ -105,9 +105,19 @@ function tasksAriaLabel(input: {
   readonly steps: readonly ComposerTaskStep[];
   readonly delegatesLabel: string | null;
 }): string {
+  const currentStep = input.steps.find((step) => step.status === "inProgress");
   const waitingStep = input.steps.find((step) => step.status === "waiting");
+  const allDone = input.progress.completedSteps >= input.progress.totalSteps;
+  // "Current task" is a lie for a plan that is waiting, finished, or not started.
+  const labelContext = currentStep
+    ? "Current task"
+    : waitingStep
+      ? "Waiting task"
+      : allDone
+        ? "Completed plan"
+        : "Next task";
   return [
-    `${input.expanded ? "Collapse tasks" : "Tasks"}: ${input.progress.completedSteps} of ${input.progress.totalSteps} complete. Current task: ${input.progress.step}.`,
+    `${input.expanded ? "Collapse tasks" : "Tasks"}: ${input.progress.completedSteps} of ${input.progress.totalSteps} complete. ${labelContext}: ${input.progress.step}.`,
     waitingStep ? `${waitingOwnerLabel(waitingStep.waitingOn)}.` : null,
     input.delegatesLabel ? `${input.delegatesLabel}.` : null,
   ]
@@ -277,6 +287,7 @@ export const ComposerTasksContent = memo(function ComposerTasksContent({
                     waitingOn={step.status === "waiting" ? step.waitingOn : undefined}
                   />
                 </ComposerBanner.Icon>
+                <span className="sr-only">{TASK_PROGRESS_STATUS_LABEL[step.status]}: </span>
                 <ComposerBanner.Content
                   className={cn(
                     step.status === "completed"
@@ -303,7 +314,6 @@ export const ComposerTasksContent = memo(function ComposerTasksContent({
                           ? "now"
                           : null}
                   </span>
-                  <span className="sr-only">{TASK_PROGRESS_STATUS_LABEL[step.status]}: </span>
                 </ComposerBanner.Actions>
               </ComposerBanner.Row>
             ))}

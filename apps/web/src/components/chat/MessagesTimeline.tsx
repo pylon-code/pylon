@@ -128,12 +128,6 @@ import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
-import {
-  TASK_PROGRESS_STATUS_LABEL,
-  keyedTaskProgressSteps,
-  TaskProgressSegments,
-  TaskStatusIndicator,
-} from "./TaskProgressStatus";
 
 import {
   buildInlineTerminalContextText,
@@ -184,6 +178,8 @@ interface TimelineRowActivityState {
   isRevertingCheckpoint: boolean;
   activeTurnInProgress: boolean;
   latestTurnId: TurnId | null;
+  /** Current plan step for the working row, when the turn has a plan. */
+  workingStepLabel: string | null;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -609,6 +605,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isRevertingCheckpoint,
       activeTurnInProgress,
       latestTurnId: latestTurn?.turnId ?? null,
+      workingStepLabel,
     }),
     [activeTurnInProgress, isRevertingCheckpoint, isWorking, latestTurn?.turnId, workingStepLabel],
   );
@@ -1360,18 +1357,8 @@ function ProposedPlanTimelineRow({
   );
 }
 
-function waitingOwnerLabel(waitingOn: "user" | "delegates" | "external"): string {
-  switch (waitingOn) {
-    case "user":
-      return "Needs your input";
-    case "delegates":
-      return "Waiting on agents";
-    case "external":
-      return "Waiting on external system";
-  }
-}
-
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
+  const { workingStepLabel } = use(TimelineRowActivityCtx);
   return (
     <div>
       <div className="border-b border-border/60 pb-2 pt-1">
@@ -1385,6 +1372,11 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
               "Working..."
             )}
           </span>
+          {workingStepLabel ? (
+            <span className="ml-2 min-w-0 truncate text-muted-foreground/55">
+              · {workingStepLabel}
+            </span>
+          ) : null}
         </div>
       </div>
       {row.showThinking ? (

@@ -15,6 +15,8 @@ import { ComposerBanner } from "./ComposerBanner";
 export const ComposerStashBadge = memo(function ComposerStashBadge(props: {
   count: number;
   menuOpen: boolean;
+  /** `inline` drops the glass surface so the badge can sit in a compact toolbar. */
+  placement?: "inline" | "tab";
   pulseKey: number;
   pulsing: boolean;
   onToggleMenu: () => void;
@@ -33,29 +35,35 @@ export const ComposerStashBadge = memo(function ComposerStashBadge(props: {
     </ComposerBanner.Count>
   );
 
-  return (
+  const row = (
+    <ComposerBanner.Row
+      render={<button type="button" />}
+      data-prompt-stash-badge="true"
+      aria-label={`Stashed prompts: ${props.count}. Open stash.`}
+      aria-expanded={props.menuOpen}
+      className={cn(
+        "transition-colors duration-200",
+        props.placement === "inline" && "w-auto",
+        props.menuOpen && "pointer-events-none",
+        props.menuOpen || props.pulsing
+          ? "text-foreground"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+      onPointerDown={(event) => event.preventDefault()}
+      onClick={props.onToggleMenu}
+    >
+      <ComposerBanner.Icon>
+        <BookmarkIcon />
+      </ComposerBanner.Icon>
+      <ComposerBanner.Content>Stash</ComposerBanner.Content>
+      <ComposerBanner.Actions>{count}</ComposerBanner.Actions>
+    </ComposerBanner.Row>
+  );
+  return props.placement === "inline" ? (
+    row
+  ) : (
     <ComposerBanner.Root width="content" data-composer-shoulder-tab className="ml-auto">
-      <ComposerBanner.Row
-        render={<button type="button" />}
-        data-prompt-stash-badge="true"
-        aria-label={`Stashed prompts: ${props.count}. Open stash.`}
-        aria-expanded={props.menuOpen}
-        className={cn(
-          "transition-colors duration-200",
-          props.menuOpen && "pointer-events-none",
-          props.menuOpen || props.pulsing
-            ? "text-foreground"
-            : "text-muted-foreground hover:text-foreground",
-        )}
-        onPointerDown={(event) => event.preventDefault()}
-        onClick={props.onToggleMenu}
-      >
-        <ComposerBanner.Icon>
-          <BookmarkIcon />
-        </ComposerBanner.Icon>
-        <ComposerBanner.Content>Stash</ComposerBanner.Content>
-        <ComposerBanner.Actions>{count}</ComposerBanner.Actions>
-      </ComposerBanner.Row>
+      {row}
     </ComposerBanner.Root>
   );
 });
