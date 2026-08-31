@@ -456,7 +456,8 @@ export const REMOTE_LAUNCH_SCRIPT = `set -eu
 @@T3_NODE_ENV_SCRIPT@@
 STATE_KEY="$1"
 STATE_DIR="$HOME/.pylon-code/ssh-launch/$STATE_KEY"
-LEGACY_STATE_DIR="$HOME/.t3/ssh-launch/$STATE_KEY"
+LEGACY_SERVER_HOME="$HOME/.t3"
+LEGACY_STATE_DIR="$LEGACY_SERVER_HOME/ssh-launch/$STATE_KEY"
 DEFAULT_SERVER_HOME="$HOME/.pylon-code"
 DEFAULT_RUNTIME_FILE="$DEFAULT_SERVER_HOME/userdata/server-runtime.json"
 PORT_FILE="$STATE_DIR/port"
@@ -528,10 +529,22 @@ NODE
 # new state dir cannot see and the new stop script no longer reaches. Retire it
 # here, once. Every step is best effort: a host that will not let us clean up
 # is still a host we should launch on.
+# A pid file outlives the process it names. After a remote reboot that number is
+# very likely to have been handed to some other process this user owns, so
+# liveness is not identity: confirm it still looks like the server the old
+# launcher started before signalling it. No match, or no ps output, means we
+# leave the process alone and only retire the directory.
+legacy_pid_is_stale_launcher_server() {
+  LEGACY_ARGS="$(ps -p "$1" -o args= 2>/dev/null || true)"
+  case "$LEGACY_ARGS" in
+    *"serve --host 127.0.0.1"*"--base-dir $LEGACY_SERVER_HOME"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 if [ -d "$LEGACY_STATE_DIR" ]; then
   LEGACY_MANAGED="$(cat "$LEGACY_STATE_DIR/managed" 2>/dev/null || true)"
   LEGACY_PID="$(cat "$LEGACY_STATE_DIR/pid" 2>/dev/null || true)"
-  if [ "$LEGACY_MANAGED" != "external" ] && [ -n "$LEGACY_PID" ] && kill -0 "$LEGACY_PID" 2>/dev/null; then
+  if [ "$LEGACY_MANAGED" != "external" ] && [ -n "$LEGACY_PID" ] && kill -0 "$LEGACY_PID" 2>/dev/null && legacy_pid_is_stale_launcher_server "$LEGACY_PID"; then
     kill "$LEGACY_PID" 2>/dev/null || true
     wait_for_pid_exit "$LEGACY_PID"
   fi
@@ -540,7 +553,7 @@ if [ -d "$LEGACY_STATE_DIR" ]; then
   # block stops matching on the next launch.
   rm -rf "$LEGACY_STATE_DIR.migrated" || true
   mv "$LEGACY_STATE_DIR" "$LEGACY_STATE_DIR.migrated" 2>/dev/null || rm -rf "$LEGACY_STATE_DIR" || true
-  printf 'Pylon now runs remote servers from ~/.pylon-code on this host. Earlier remote state may still exist under ~/.t3; move that directory to ~/.pylon-code to keep using it.\\n' >&2
+  printf 'Pylon now runs remote servers from ~/.pylon-code on this host. Earlier remote state may still exist under ~/.t3; move that directory to ~/.pylon-code to keep using it.\\n' >&2 || true
 fi
 REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 REMOTE_PORT="$(cat "$PORT_FILE" 2>/dev/null || true)"

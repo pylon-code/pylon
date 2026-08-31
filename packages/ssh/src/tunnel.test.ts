@@ -300,12 +300,13 @@ describe("ssh tunnel scripts", () => {
   it("retires a previous launcher's state directory on the remote host", () => {
     const launch = buildRemoteLaunchScript();
 
-    assert.include(launch, 'LEGACY_STATE_DIR="$HOME/.t3/ssh-launch/$STATE_KEY"');
+    assert.include(launch, 'LEGACY_SERVER_HOME="$HOME/.t3"');
+    assert.include(launch, 'LEGACY_STATE_DIR="$LEGACY_SERVER_HOME/ssh-launch/$STATE_KEY"');
     assert.include(launch, 'if [ -d "$LEGACY_STATE_DIR" ]; then');
     // Same mechanism as REMOTE_STOP_SCRIPT: never touch a server the user owns.
     assert.include(
       launch,
-      '[ "$LEGACY_MANAGED" != "external" ] && [ -n "$LEGACY_PID" ] && kill -0 "$LEGACY_PID" 2>/dev/null',
+      '[ "$LEGACY_MANAGED" != "external" ] && [ -n "$LEGACY_PID" ] && kill -0 "$LEGACY_PID" 2>/dev/null && legacy_pid_is_stale_launcher_server "$LEGACY_PID"',
     );
     assert.include(launch, 'kill "$LEGACY_PID" 2>/dev/null || true');
     assert.include(launch, 'wait_for_pid_exit "$LEGACY_PID"');
@@ -319,8 +320,41 @@ describe("ssh tunnel scripts", () => {
     );
     assert.include(launch, "Earlier remote state may still exist under ~/.t3");
     // The hint is diagnostic output; stdout carries the launch JSON the
-    // desktop parses.
-    assert.include(launch, "to keep using it.\\n' >&2");
+    // desktop parses. `|| true` because under `set -e` a closed stderr would
+    // otherwise take the whole launch down.
+    assert.include(launch, "to keep using it.\\n' >&2 || true");
+
+    // Every step in the block is best effort; none may abort the launch.
+    const legacyBlock = launch.slice(
+      launch.indexOf('if [ -d "$LEGACY_STATE_DIR" ]; then'),
+      launch.indexOf('REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"'),
+    );
+    for (const line of legacyBlock.split("\n").map((entry) => entry.trim())) {
+      if (line.startsWith("rm ") || line.startsWith("mv ") || line.startsWith("printf ")) {
+        assert.match(line, /\|\| true$/, line);
+      }
+    }
+  });
+
+  // A pid file outlives the process it names. After a remote reboot the number
+  // in it may belong to something else this user owns, so the block confirms
+  // identity before it signals anything.
+  it("checks the stale pid still looks like the old launcher's server", () => {
+    const launch = buildRemoteLaunchScript();
+
+    assert.include(launch, "legacy_pid_is_stale_launcher_server() {");
+    assert.include(launch, 'LEGACY_ARGS="$(ps -p "$1" -o args= 2>/dev/null || true)"');
+    // The two markers the old launcher's own `serve` invocation always carried.
+    assert.include(
+      launch,
+      '*"serve --host 127.0.0.1"*"--base-dir $LEGACY_SERVER_HOME"*) return 0 ;;',
+    );
+    assert.include(launch, "*) return 1 ;;");
+    // Defined before the block that calls it.
+    assert.isBelow(
+      launch.indexOf("legacy_pid_is_stale_launcher_server() {"),
+      launch.indexOf('if [ -d "$LEGACY_STATE_DIR" ]; then'),
+    );
 
     // wait_for_pid_exit has to be defined before the block calls it.
     assert.isBelow(
