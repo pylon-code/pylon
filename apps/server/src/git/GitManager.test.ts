@@ -2065,8 +2065,12 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       });
       yield* runStackedAction(manager, { cwd: repoDir, action: "commit" });
 
-      expect(generatedPolicy?.commitInstructions).toContain("Use lowercase source control text.");
-      expect(generatedPolicy?.commitInstructions).toContain("[Truncated]");
+      expect(generatedPolicy).toMatchObject({
+        commitInstructions: expect.stringContaining("Use lowercase source control text."),
+      });
+      expect(generatedPolicy).toMatchObject({
+        commitInstructions: expect.stringContaining("[Truncated]"),
+      });
     }),
   );
 
@@ -2103,9 +2107,15 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       });
       yield* runStackedAction(manager, { cwd: repoDir, action: "commit" });
 
-      expect(generatedPolicy?.commitInstructions).toContain("Local AGENTS.md:");
-      expect(generatedPolicy?.commitInstructions).not.toContain("Local CLAUDE.md:");
-      expect(generatedPolicy?.commitInstructions).not.toContain("@AGENTS.md");
+      expect(generatedPolicy).toMatchObject({
+        commitInstructions: expect.stringContaining("Local AGENTS.md:"),
+      });
+      expect(generatedPolicy).toMatchObject({
+        commitInstructions: expect.not.stringContaining("Local CLAUDE.md:"),
+      });
+      expect(generatedPolicy).toMatchObject({
+        commitInstructions: expect.not.stringContaining("@AGENTS.md"),
+      });
     }),
   );
 
