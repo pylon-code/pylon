@@ -332,4 +332,17 @@ describe("ChatMarkdown Windows file links", () => {
     expect(html).not.toContain("d:alert");
     expect(html).not.toContain("chat-markdown-file-link");
   });
+
+  it("keeps external link labels breakable when they mix text and formatting", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text="[a very long external link label that should wrap **bold**](https://example.com/x)"
+      />,
+    );
+
+    // The leading text is split with <wbr/> so a long label wraps inside the
+    // chat column instead of overflowing it.
+    expect(markup).toContain("<wbr");
+  });
 });
