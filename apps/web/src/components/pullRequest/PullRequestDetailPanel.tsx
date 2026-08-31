@@ -12,7 +12,6 @@ import type {
 import {
   ArrowDownUpIcon,
   ArrowLeftIcon,
-  ArrowUpRightIcon,
   BookOpenIcon,
   CircleDotIcon,
   ChevronDownIcon,
@@ -1454,7 +1453,8 @@ export function PullRequestDetailPanel({
                     </>
                   ) : null}
                   <MenuItem onClick={() => void readLocalApi()?.shell.openExternal(detail.url)}>
-                    <ArrowUpRightIcon className="size-3.5" />
+                    {/* Same glyph as the inline link above: one action, one mark. */}
+                    <ExternalLinkIcon className="size-3.5" />
                     {openOnHostLabel(detail.provider)}
                   </MenuItem>
                   <MenuItem onClick={() => void writeTextToClipboard(detail.url)}>
