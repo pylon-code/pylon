@@ -74,6 +74,20 @@ reuse the Linux-local copy so startup does not depend on reading application fil
 rollback and removes older caches automatically. If a cached runtime stops working, Pylon launches
 from the application files under `/mnt/c` instead and reinstalls the runtime on the next launch.
 
+The WSL backend keeps its projects and history inside the distro rather than on the Windows side,
+so it has its own runtime home separate from the one the Windows app uses. That home is now
+`~/.pylon-code` inside the distro. If you used a WSL backend before this change, its old state is
+still there under `~/.t3`; Pylon does not move or open it. To carry that work forward, move the
+directory inside the distro before the next launch:
+
+```bash
+wsl -d <distro> -- sh -c 'mv "$HOME/.t3" "$HOME/.pylon-code"'
+```
+
+Run it while the WSL backend is stopped, and only if `~/.pylon-code` does not already exist. If you
+would rather start fresh, do nothing: the backend creates an empty `~/.pylon-code` on its next
+launch and leaves `~/.t3` untouched.
+
 ## Providers
 
 Pylon drives provider CLIs; it does not ship them. Install the CLI for each provider you want
