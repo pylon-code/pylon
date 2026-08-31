@@ -17,15 +17,13 @@ import {
   MIN_PROMPT_FONT_SIZE,
 } from "@t3tools/contracts";
 
-// Pylon's bundled brand faces lead both stacks; see the `@fontsource` imports
-// in `main.tsx`. The system faces stay behind them as fallbacks.
 export const DEFAULT_SANS_FONT_STACK =
-  '"DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
+  '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 
 // Concrete names first: some engines alias `ui-monospace` to the
 // proportional system UI font, which would break every code surface.
 export const DEFAULT_CODE_FONT_STACK =
-  '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace';
+  '"SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace';
 
 export const TYPOGRAPHY_ADVANCED_STORAGE_KEY = "t3code:typography-advanced";
 
