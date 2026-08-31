@@ -452,7 +452,7 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
   });
 
-  it("keeps the first and terminal assistant messages visible around settled work", () => {
+  it("folds the first assistant message and settled work before the terminal response", () => {
     const timelineEntries = [
       {
         id: "user-entry",
@@ -528,7 +528,6 @@ describe("deriveMessagesTimelineRows", () => {
     expect(foldRow?.label).toBe("Worked for 22s");
     expect(collapsedRows.map((row) => row.id)).toEqual([
       "user-entry",
-      "assistant-first-entry",
       "turn-fold:turn-1",
       "assistant-final-entry",
     ]);
@@ -544,8 +543,8 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(expandedRows.map((row) => row.id)).toEqual([
       "user-entry",
-      "assistant-first-entry",
       "turn-fold:turn-1",
+      "assistant-first-entry",
       "work-toggle:work-entry-1",
       "assistant-final-entry",
     ]);
@@ -554,7 +553,50 @@ describe("deriveMessagesTimelineRows", () => {
     ).toBeDefined();
   });
 
-  it("folds assistant messages between the first and terminal messages", () => {
+  it("keeps the first assistant message when the turn ends with no text", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "assistant-first-entry",
+          kind: "message" as const,
+          createdAt: "2026-01-01T00:00:01Z",
+          message: {
+            id: "assistant-first" as never,
+            role: "assistant" as const,
+            text: "The main result is ready.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:01Z",
+            updatedAt: "2026-01-01T00:00:02Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "assistant-final-entry",
+          kind: "message" as const,
+          createdAt: "2026-01-01T00:00:05Z",
+          message: {
+            id: "assistant-final" as never,
+            role: "assistant" as const,
+            text: "",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:05Z",
+            updatedAt: "2026-01-01T00:00:06Z",
+            streaming: false,
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    // Folding here would leave "Worked for 6s" above an empty response with the
+    // answer nowhere on screen.
+    expect(rows.map((row) => row.id)).toContain("assistant-first-entry");
+  });
+
+  it("folds all assistant messages before the terminal message", () => {
     const timelineEntries = [
       {
         id: "assistant-first-entry",
@@ -608,11 +650,7 @@ describe("deriveMessagesTimelineRows", () => {
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    expect(rows.map((row) => row.id)).toEqual([
-      "assistant-first-entry",
-      "turn-fold:turn-1",
-      "assistant-final-entry",
-    ]);
+    expect(rows.map((row) => row.id)).toEqual(["turn-fold:turn-1", "assistant-final-entry"]);
   });
 
   it("keeps a missing-response work row visible outside settled-turn folding", () => {
