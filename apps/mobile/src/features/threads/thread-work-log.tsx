@@ -49,13 +49,17 @@ function ShimmerWorkContent(props: {
   readonly onTextLayout?: ComponentProps<typeof Text>["onTextLayout"];
   readonly showIcon: boolean;
 }) {
+  // Metrics track the settled row exactly. Upstream grew all three work-log
+  // elements together; Pylon keeps its denser row, so matching only the live
+  // one here would visibly shrink every tool call the instant it completes —
+  // and the row wrapper carries a layout transition, so the shrink animates.
   return (
     <View className="flex-row items-center gap-1.5">
-      <View className="h-6 w-6 shrink-0 items-center justify-center">
+      <View className="h-[18px] w-5 shrink-0 items-center justify-center">
         {props.showIcon ? (
           <SymbolView
             name={props.icon}
-            size={14}
+            size={13}
             weight="medium"
             {...(props.highlighted
               ? { tintColorClassName: "accent-foreground" as const }
@@ -66,7 +70,7 @@ function ShimmerWorkContent(props: {
       </View>
       <Text
         className={cn(
-          "min-w-0 shrink text-sm",
+          "min-w-0 shrink text-xs",
           props.highlighted ? "text-foreground" : "text-foreground-muted",
         )}
         numberOfLines={1}
@@ -252,9 +256,10 @@ function isFreshRow(createdAt: string): boolean {
 
 // Pre-measurement heights for the feed's getFixedItemSize. Collapsed work-log
 // rows are single-line (numberOfLines={1}) inside a min-height that stays
-// taller than text-sm at every supported base font size, so row height is
-// deterministic. Values mirror the classNames below. A mismatch only costs a
-// one-time correction on measure.
+// taller than their text-xs body — and than the group toggle's text-sm — at
+// every supported base font size, so row height is deterministic. Values
+// mirror the classNames below. A mismatch only costs a one-time correction on
+// measure.
 const WORK_ROW_HEIGHT = 32; // min-h-8
 const WORK_ROW_GAP = 1; // gap-px
 const WORK_LOG_BOTTOM_MARGIN = 4; // mb-1
@@ -262,11 +267,14 @@ const WORK_LOG_BOTTOM_MARGIN = 4; // mb-1
 export const WORK_GROUP_TOGGLE_HEIGHT = 36; // min-h-8 (32) + mb-1 (4)
 
 export function collapsedWorkLogHeight(activities: ReadonlyArray<ThreadFeedActivity>): number {
-  const rows = activities;
-  if (rows.length === 0) {
+  if (activities.length === 0) {
     return 0;
   }
-  return WORK_LOG_BOTTOM_MARGIN + rows.length * WORK_ROW_HEIGHT + (rows.length - 1) * WORK_ROW_GAP;
+  return (
+    WORK_LOG_BOTTOM_MARGIN +
+    activities.length * WORK_ROW_HEIGHT +
+    (activities.length - 1) * WORK_ROW_GAP
+  );
 }
 
 export function ThreadWorkLog(props: {
