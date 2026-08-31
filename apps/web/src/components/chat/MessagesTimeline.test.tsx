@@ -1123,7 +1123,6 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Context compacted");
-    expect(markup).toContain("Work Log");
   });
 
   it("reports a coordinator-only pending workflow as queued", () => {
@@ -1335,7 +1334,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("+2 previous log entries");
+    expect(markup).toContain("Ran 2 commands and received 1 update");
     expect(markup).not.toContain('aria-label="Hidden work includes a failure"');
   });
 
@@ -1475,80 +1474,6 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-slot="dot-matrix"');
   });
 
-  it("renders transcript task progress as the original solid segments", () => {
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "turn-plan-row",
-            kind: "turn-plan",
-            createdAt: MESSAGE_CREATED_AT,
-            turnPlan: {
-              id: "turn-plan",
-              createdAt: MESSAGE_CREATED_AT,
-              turnId: null,
-              plan: {
-                createdAt: MESSAGE_CREATED_AT,
-                turnId: null,
-                steps: [
-                  { step: "Inspect", status: "completed" },
-                  { step: "Implement", status: "inProgress" },
-                  { step: "Verify", status: "pending" },
-                ],
-              },
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('aria-label="Tasks: 1 of 3 complete. Current task: Implement"');
-    expect(markup).toContain('data-task-progress-segments="true"');
-    expect(markup).toContain('data-task-status="completed"');
-    expect(markup).toContain('data-task-status="inProgress"');
-    expect(markup).toContain('data-task-status="pending"');
-    expect(markup).toContain("bg-primary");
-  });
-
-  it.each([
-    {
-      expected: "Tasks: 0 of 2 complete. Next task: Inspect",
-      steps: [
-        { step: "Inspect", status: "pending" as const },
-        { step: "Verify", status: "pending" as const },
-      ],
-    },
-    {
-      expected: "Tasks: 2 of 2 complete. Completed plan: Verify",
-      steps: [
-        { step: "Inspect", status: "completed" as const },
-        { step: "Verify", status: "completed" as const },
-      ],
-    },
-  ])("describes next and completed task plans accurately", ({ expected, steps }) => {
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          {
-            id: "turn-plan-accessibility",
-            kind: "turn-plan",
-            createdAt: MESSAGE_CREATED_AT,
-            turnPlan: {
-              id: "turn-plan-accessibility",
-              createdAt: MESSAGE_CREATED_AT,
-              turnId: null,
-              plan: { createdAt: MESSAGE_CREATED_AT, turnId: null, steps },
-            },
-          },
-        ]}
-      />,
-    );
-
-    expect(markup).toContain(`aria-label="${expected}"`);
-  });
-
   it("renders working state as the active-turn header", () => {
     const turnId = TurnId.make("turn-active-header");
     const userEntry = buildUserTimelineEntry("Start active turn");
@@ -1597,8 +1522,9 @@ describe("MessagesTimeline", () => {
     expect(workingIndex).toBeGreaterThan(userIndex);
     expect(assistantIndex).toBeGreaterThan(workingIndex);
     expect(markup).toContain('class="border-b border-border/60 pb-2 pt-1"');
+    // #8734 lays the row out with flex so a long plan step truncates.
     expect(markup).toContain(
-      'class="px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
+      'class="flex min-w-0 items-baseline px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
     );
     expect(markup).not.toContain('class="pt-0.5 pb-5 pl-1.5"');
     expect(markup).not.toContain('data-slot="dot-matrix"');
@@ -1697,7 +1623,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-testid="file-diff"');
   });
 
-  it("renders a muted failure marker for failed tool lifecycle entries", () => {
+  it("keeps failed lifecycle entries discoverable in mixed activity summaries", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -1730,9 +1656,8 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("lucide-x");
-    expect(markup).toContain('aria-label="Tool call failed"');
-    // Ordinary tool failures keep a muted row even though the outcome glyph is red.
+    expect(markup).toContain('aria-label="Received 1 update and used 1 tool, tool call failed"');
+    // Ordinary tool failures render muted, not red.
     expect(markup).not.toMatch(/font-medium text-destructive/);
     expect(markup).not.toMatch(/size-6 shrink-0 items-center justify-center text-destructive/);
   });

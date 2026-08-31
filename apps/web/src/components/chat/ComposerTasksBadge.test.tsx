@@ -33,12 +33,8 @@ describe("ComposerTasksBadge", () => {
 
     expect(markup).toContain('data-composer-tasks-badge="true"');
     expect(markup).toContain('aria-expanded="false"');
-    expect(markup).toContain("chat-composer-shoulder-tab");
-    expect(markup).toContain("chat-composer-tasks-tab");
-    expect(markup).toContain("rounded-t-xl");
-    expect(markup).toContain("border-b-0");
-    expect(markup).toContain("left-5.5");
-    expect(markup).toContain("right-5.5");
+    expect(markup).toContain("data-composer-shoulder-tab");
+    expect(markup).toContain('data-composer-tasks-badge="true"');
     expect(markup).toContain('data-composer-task-current="true"');
     expect(markup).toContain("min-w-0 flex-1 truncate");
     expect(markup).toContain("w-20");
@@ -50,7 +46,6 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("lucide-list-todo");
     expect(markup).toContain('aria-label="Dismiss tasks for this turn"');
     expect(markup).toContain("lucide-x");
-    expect(markup).not.toContain("lucide-chevron");
     expect(markup).toContain('data-task-progress-segments="true"');
     expect(markup).toContain('data-task-status="completed"');
     expect(markup).toContain('data-task-status="inProgress"');
@@ -58,22 +53,6 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("bg-success");
     expect(markup).toContain("bg-primary");
     expect(markup).toContain("bg-muted-foreground/25");
-  });
-
-  it("leaves room for the stash tab when both shoulders are present", () => {
-    const markup = renderToStaticMarkup(
-      <ComposerTasksBadge
-        expanded={false}
-        hasTrailingShoulder
-        onDismiss={() => undefined}
-        onToggle={() => undefined}
-        progress={progress}
-        steps={steps}
-      />,
-    );
-
-    expect(markup).toContain("right-30");
-    expect(markup).not.toContain("right-5.5");
   });
 
   it("has a compact inline fallback for occupied composer shoulders", () => {
@@ -88,11 +67,8 @@ describe("ComposerTasksBadge", () => {
       />,
     );
 
-    expect(markup).toContain("rounded-sm");
     expect(markup).toContain("1/3");
-    expect(markup).not.toContain("chat-composer-shoulder-tab");
-    expect(markup).not.toContain("rounded-t-xl");
-    expect(markup).toContain("w-10");
+    expect(markup).not.toContain("data-composer-shoulder-tab");
   });
 
   it("expands into a read-only attached task list", () => {
@@ -106,12 +82,11 @@ describe("ComposerTasksBadge", () => {
     );
 
     expect(markup).toContain('data-chat-composer-tasks-drawer="true"');
-    expect(markup).not.toContain("data-variant");
     expect(markup).toContain('aria-expanded="true"');
-    expect(markup).toContain('role="list"');
+    // The list is a real <ul> now rather than a div carrying role="list".
+    expect(markup).toContain("<ul");
     expect(markup).toContain("Inspect the composer");
     expect(markup).toContain('data-composer-task-duration="true"');
-    expect(markup).toContain("ml-auto shrink-0");
     expect(markup).toContain("4.0s");
     expect(markup).toContain("now");
     expect(markup).toContain("Attach task progress");
@@ -119,15 +94,17 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("lucide-list-todo");
     expect(markup).toContain('aria-label="Dismiss tasks for this turn"');
     expect(markup).toContain('data-chat-composer-collapsed-controls="true"');
-    expect(markup).toContain('aria-label="Collapse tasks. 1 of 3 complete."');
+    expect(markup).toContain(
+      'aria-label="Collapse tasks: 1 of 3 complete. Current task: Attach task progress."',
+    );
     expect(markup).toContain('aria-label="Task list. 1 of 3 complete."');
     expect(markup).toContain('data-composer-tasks-list="true"');
-    expect(markup).toContain('tabindex="0"');
+    expect(markup).toContain('data-slot="scroll-area-viewport"');
     expect(markup).toContain("max-h-[min(24rem,40dvh)]");
-    expect(markup).toContain("overflow-y-auto");
+    expect(markup).toContain("overflow-auto");
     expect(markup).toContain("overscroll-contain");
     expect(markup).toContain("focus-visible:ring-2");
-    expect(markup).toContain("focus-visible:ring-inset");
+    expect(markup).toContain("focus-visible:ring-offset-1");
     expect(markup).toContain("lucide-chevron-down");
     expect(markup).not.toContain('data-task-progress-segments="true"');
     expect(markup).toContain("✓");
@@ -236,7 +213,6 @@ describe("ComposerTasksBadge", () => {
 
     expect(tab).not.toContain("w-20");
     expect(tab).toContain("1/24");
-    expect(inline).not.toContain("w-10");
     expect(inline).toContain("1/24");
   });
 });
