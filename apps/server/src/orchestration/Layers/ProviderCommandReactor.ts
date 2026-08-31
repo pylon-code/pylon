@@ -1773,6 +1773,11 @@ const make = Effect.gen(function* () {
         if (!thread?.session || thread.session.status === "stopped") {
           return;
         }
+        // The persisted mode applies on the next session ensure. Replacing a
+        // starting session here would erase its exact pending-admission CAS.
+        if (thread.session.status === "starting") {
+          return;
+        }
         const cachedModelSelection = threadModelSelections.get(event.payload.threadId);
         yield* ensureSessionForThread(
           event.payload.threadId,
@@ -1835,16 +1840,32 @@ const make = Effect.gen(function* () {
       pending: PendingAdmission,
       inventory: AdmissionInventory,
     ) {
+      const deadlineMs = DateTime.toEpochMillis(DateTime.makeUnsafe(pending.deadlineAt));
+      const remainingMs = Math.max(0, deadlineMs - (yield* Clock.currentTimeMillis));
+      const failAtDeadline = (detail: string) => {
+        const fail = DateTime.now.pipe(
+          Effect.flatMap((failedAt) =>
+            failTurnAdmissionIfPending({
+              threadId: pending.threadId,
+              requestId: pending.requestId,
+              messageId: pending.messageId,
+              detail,
+              createdAt: DateTime.formatIso(failedAt),
+            }),
+          ),
+          Effect.asVoid,
+        );
+        return remainingMs === 0
+          ? fail
+          : forkParked(Effect.sleep(Duration.millis(remainingMs)).pipe(Effect.andThen(fail)));
+      };
+
       if (inventory._tag === "Unknown") {
-        // Unknown inventory is never evidence of absence. Record the distinct
-        // reconciliation error through the exact pending-admission CAS.
-        yield* failTurnAdmissionIfPending({
-          threadId: pending.threadId,
-          requestId: pending.requestId,
-          messageId: pending.messageId,
-          detail: `Provider turn admission reconciliation could not inventory its provider session: ${inventory.detail}`,
-          createdAt: yield* nowIso,
-        });
+        // Unknown inventory is never evidence of absence. Preserve the original
+        // admission window so a late exact lifecycle event can still settle it.
+        yield* failAtDeadline(
+          `Provider turn admission reconciliation could not inventory its provider session: ${inventory.detail}`,
+        );
         return;
       }
 
@@ -1872,25 +1893,7 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      const deadlineMs = DateTime.toEpochMillis(DateTime.makeUnsafe(pending.deadlineAt));
-      const remainingMs = Math.max(0, deadlineMs - (yield* Clock.currentTimeMillis));
-      const fail = DateTime.now.pipe(
-        Effect.flatMap((failedAt) =>
-          failTurnAdmissionIfPending({
-            threadId: pending.threadId,
-            requestId: pending.requestId,
-            messageId: pending.messageId,
-            detail: PROVIDER_TURN_ADMISSION_TIMEOUT_DETAIL,
-            createdAt: DateTime.formatIso(failedAt),
-          }),
-        ),
-        Effect.asVoid,
-      );
-      if (remainingMs === 0) {
-        yield* fail;
-        return;
-      }
-      yield* forkParked(Effect.sleep(Duration.millis(remainingMs)).pipe(Effect.andThen(fail)));
+      yield* failAtDeadline(PROVIDER_TURN_ADMISSION_TIMEOUT_DETAIL);
     });
 
     const byInstance = new Map<ProviderInstanceId | null, Array<PendingAdmission>>();

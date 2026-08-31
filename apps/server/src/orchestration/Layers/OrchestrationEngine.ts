@@ -211,7 +211,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               const acceptsStaleNoEvent =
                 envelope.command.type === "thread.turn.admission.accept" ||
                 envelope.command.type === "thread.turn.admission.fail" ||
-                envelope.command.type === "thread.session.bind-pending";
+                envelope.command.type === "thread.session.bind-pending" ||
+                envelope.command.type === "thread.session.apply-lifecycle";
               if (lastSavedEvent === null && !acceptsStaleNoEvent) {
                 return yield* new OrchestrationCommandInvariantError({
                   commandType: envelope.command.type,

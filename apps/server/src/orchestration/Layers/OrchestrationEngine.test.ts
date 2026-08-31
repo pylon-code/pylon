@@ -4,6 +4,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   MessageId,
   ProjectId,
+  RuntimeSessionId,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
@@ -241,6 +242,95 @@ describe("OrchestrationEngine", () => {
     expect(fullSnapshotReadCount).toBe(0);
 
     await runtime.dispose();
+  });
+
+  it("accepts a stale session lifecycle CAS without producing an event", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const projectId = asProjectId("project-stale-session-lifecycle");
+    const threadId = ThreadId.make("thread-stale-session-lifecycle");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const sessionIncarnationId = RuntimeSessionId.make("session-stale-lifecycle-current");
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-stale-session-lifecycle-create"),
+        projectId,
+        title: "Stale session lifecycle",
+        workspaceRoot: "/tmp/project-stale-session-lifecycle",
+        defaultModelSelection: {
+          instanceId: providerInstanceId,
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-stale-session-lifecycle-create"),
+        threadId,
+        projectId,
+        title: "Stale lifecycle",
+        modelSelection: {
+          instanceId: providerInstanceId,
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    const currentSession = {
+      threadId,
+      status: "ready" as const,
+      providerName: "codex",
+      providerInstanceId,
+      runtimeMode: "full-access" as const,
+      sessionIncarnationId,
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: createdAt,
+    };
+    await system.run(
+      engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-stale-lifecycle-set"),
+        threadId,
+        session: currentSession,
+        createdAt,
+      }),
+    );
+    const sequenceBeforeStaleLifecycle = await system.run(engine.latestSequence);
+
+    const result = await system.run(
+      engine.dispatch({
+        type: "thread.session.apply-lifecycle",
+        commandId: CommandId.make("cmd-session-stale-lifecycle-apply"),
+        threadId,
+        expectedStatus: "running",
+        expectedProviderInstanceId: providerInstanceId,
+        expectedSessionIncarnationId: sessionIncarnationId,
+        expectedPendingTurnRequestId: null,
+        expectedPendingTurnSessionId: null,
+        expectedActiveTurnRequestId: null,
+        expectedActiveTurnId: null,
+        expectedFailedTurnRequestId: null,
+        session: currentSession,
+        createdAt,
+      }),
+    );
+
+    expect(result).toEqual({ sequence: sequenceBeforeStaleLifecycle, eventCount: 0 });
+    expect(await system.run(engine.latestSequence)).toBe(sequenceBeforeStaleLifecycle);
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === threadId)?.session,
+    ).toEqual(currentSession);
+    await system.dispose();
   });
 
   it("persists deterministic read models for repeated snapshot reads", async () => {

@@ -1169,6 +1169,82 @@ describe("ProviderCommandReactor", () => {
     }),
   );
 
+  effectIt.effect(
+    "preserves a pending admission when runtime mode changes during provider start",
+    () =>
+      Effect.gen(function* () {
+        const startEntered = yield* Deferred.make<void>();
+        const releaseStart = yield* Deferred.make<void>();
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            startSessionEffect: (session) =>
+              Deferred.succeed(startEntered, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseStart)),
+                Effect.as(session),
+              ),
+          }),
+        );
+        const requestId = CommandId.make("cmd-turn-start-runtime-mode-race");
+        const messageId = asMessageId("user-message-runtime-mode-race");
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: requestId,
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId,
+            role: "user",
+            text: "keep this admission",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        yield* Deferred.await(startEntered);
+
+        yield* harness.engine.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("cmd-runtime-mode-set-during-admission"),
+          threadId: ThreadId.make("thread-1"),
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+        yield* Effect.promise(() => harness.drain());
+
+        let readModel = yield* Effect.promise(() => harness.readModel());
+        let thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+        expect(harness.startSession).toHaveBeenCalledTimes(1);
+        expect(thread?.session?.status).toBe("starting");
+        expect(thread?.session?.pendingTurnRequestId).toBe(requestId);
+        expect(thread?.session?.pendingTurnMessageId).toBe(messageId);
+
+        const subscriptionReady = yield* Deferred.make<void>();
+        const runningSession = yield* Stream.runHead(
+          harness.engine.streamDomainEvents.pipe(
+            Stream.onStart(Deferred.succeed(subscriptionReady, undefined)),
+            Stream.filter(
+              (event) =>
+                event.type === "thread.session-set" &&
+                event.payload.threadId === ThreadId.make("thread-1") &&
+                event.payload.session.status === "running" &&
+                event.payload.session.activeTurnRequestId === requestId,
+            ),
+          ),
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(subscriptionReady);
+        yield* Deferred.succeed(releaseStart, undefined);
+        yield* Fiber.join(runningSession);
+
+        readModel = yield* Effect.promise(() => harness.readModel());
+        thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+        expect(thread?.runtimeMode).toBe("full-access");
+        expect(thread?.session?.status).toBe("running");
+        expect(thread?.session?.activeTurnRequestId).toBe(requestId);
+        expect(harness.startSession).toHaveBeenCalledTimes(1);
+      }),
+  );
+
   effectIt.effect("interrupts a detached admission when the reactor layer closes", () =>
     Effect.gen(function* () {
       const providerStartInterrupted = yield* Deferred.make<void>();
@@ -1331,11 +1407,12 @@ describe("ProviderCommandReactor", () => {
   effectIt.effect("retries unknown per-instance inventory then records an inventory error", () =>
     Effect.gen(function* () {
       const testClock = yield* TestClock.make();
-      yield* testClock.setTime(PROVIDER_TURN_ADMISSION_TIMEOUT_MS + 1);
+      yield* testClock.setTime(0);
       const requestId = CommandId.make("cmd-boot-inventory-unknown");
       const harness = yield* Effect.promise(() =>
         createHarness({
           clock: testClock,
+          beforeReactorStart: testClock.adjust(PROVIDER_TURN_ADMISSION_TIMEOUT_MS + 1),
           overdueTurnStartBeforeReactor: {
             commandId: requestId,
             messageId: asMessageId("message-boot-inventory-unknown"),
@@ -1363,15 +1440,119 @@ describe("ProviderCommandReactor", () => {
     }),
   );
 
+  effectIt.effect("preserves a non-overdue admission when boot inventory is unknown", () =>
+    Effect.gen(function* () {
+      const testClock = yield* TestClock.make();
+      yield* testClock.setTime(0);
+      const requestId = CommandId.make("cmd-boot-inventory-unknown-not-overdue");
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          clock: testClock,
+          overdueTurnStartBeforeReactor: {
+            commandId: requestId,
+            messageId: asMessageId("message-boot-inventory-unknown-not-overdue"),
+            createdAt: isoAt(0),
+            sessionIncarnationId: RuntimeSessionId.make(
+              "session-boot-inventory-unknown-not-overdue",
+            ),
+          },
+          inventoryEffect: () =>
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "codex",
+                method: "listSessions",
+                detail: "inventory temporarily unavailable",
+              }),
+            ),
+        }),
+      );
+
+      let readModel = yield* Effect.promise(() => harness.readModel());
+      let thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(thread?.session?.status).toBe("starting");
+      expect(thread?.session?.pendingTurnRequestId).toBe(requestId);
+      expect(harness.listSessionsForInstance).toHaveBeenCalledTimes(3);
+
+      yield* testClock.adjust(PROVIDER_TURN_ADMISSION_TIMEOUT_MS - 1);
+      readModel = yield* Effect.promise(() => harness.readModel());
+      thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(thread?.session?.status).toBe("starting");
+
+      yield* testClock.adjust(1);
+      readModel = yield* Effect.promise(() => harness.readModel());
+      thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(thread?.session?.status).toBe("error");
+      expect(thread?.session?.failedTurnRequestId).toBe(requestId);
+      expect(thread?.session?.lastError).toContain("could not inventory");
+      expect(thread?.session?.lastError).toContain("inventory temporarily unavailable");
+    }),
+  );
+
+  effectIt.effect("keeps an exact late start after boot inventory was unknown", () =>
+    Effect.gen(function* () {
+      const testClock = yield* TestClock.make();
+      yield* testClock.setTime(0);
+      const requestId = CommandId.make("cmd-boot-inventory-unknown-late-start");
+      const messageId = asMessageId("message-boot-inventory-unknown-late-start");
+      const sessionIncarnationId = RuntimeSessionId.make(
+        "session-boot-inventory-unknown-late-start",
+      );
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          clock: testClock,
+          overdueTurnStartBeforeReactor: {
+            commandId: requestId,
+            messageId,
+            createdAt: isoAt(0),
+            sessionIncarnationId,
+          },
+          inventoryEffect: () =>
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "codex",
+                method: "listSessions",
+                detail: "inventory temporarily unavailable",
+              }),
+            ),
+        }),
+      );
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.admission.accept",
+        commandId: CommandId.make("cmd-boot-inventory-unknown-late-start-accept"),
+        threadId: ThreadId.make("thread-1"),
+        requestId,
+        messageId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        sessionIncarnationId,
+        turnId: asTurnId("turn-boot-inventory-unknown-late-start"),
+        createdAt: isoAt(1),
+      });
+      yield* testClock.adjust(PROVIDER_TURN_ADMISSION_TIMEOUT_MS);
+
+      const readModel = yield* Effect.promise(() => harness.readModel());
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(thread?.session?.status).toBe("running");
+      expect(thread?.session?.activeTurnRequestId).toBe(requestId);
+      expect(thread?.session?.activeTurnId).toBe(
+        asTurnId("turn-boot-inventory-unknown-late-start"),
+      );
+      expect(
+        thread?.activities.filter((activity) => activity.kind === "provider.turn.start.failed"),
+      ).toHaveLength(0);
+    }),
+  );
+
   effectIt.effect("bounds a hanging per-instance inventory retry chain", () =>
     Effect.gen(function* () {
       const testClock = yield* TestClock.make();
-      yield* testClock.setTime(PROVIDER_TURN_ADMISSION_TIMEOUT_MS + 1);
+      yield* testClock.setTime(0);
       const requestId = CommandId.make("cmd-boot-inventory-hangs");
       const inventoryEntered = yield* Deferred.make<void>();
       const harnessFiber = yield* Effect.promise(() =>
         createHarness({
           clock: testClock,
+          beforeReactorStart: testClock.adjust(PROVIDER_TURN_ADMISSION_TIMEOUT_MS + 1),
           overdueTurnStartBeforeReactor: {
             commandId: requestId,
             messageId: asMessageId("message-boot-inventory-hangs"),
