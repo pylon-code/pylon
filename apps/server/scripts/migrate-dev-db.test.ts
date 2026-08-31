@@ -192,4 +192,31 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
       assert.equal(error._tag, "MigrateDevDbSharedHomeError");
     }),
   );
+
+  // `~/.t3` may be T3 Code's database, whose schema carries upstream's
+  // migration numbering; seeding a Pylon dev database from it is the hazard
+  // AGENTS.md "Test data" exists to prevent.
+  it.effect("defaults its source to the Pylon runtime home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // An injected home with neither runtime directory present, so the run
+      // stops at "source missing" and names the path it looked in.
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-home-" });
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-target-" });
+
+      const error = yield* runMigrateDevDb(
+        { baseDir, projects: 1, threadsPerProject: 1 },
+        { homeDir },
+      ).pipe(Effect.flip);
+
+      assert.equal(error._tag, "MigrateDevDbSourceMissingError");
+      if (error._tag === "MigrateDevDbSourceMissingError") {
+        assert.equal(
+          error.sourcePath,
+          path.join(homeDir, ".pylon-code", "userdata", "state.sqlite"),
+        );
+      }
+    }),
+  );
 });

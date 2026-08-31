@@ -153,6 +153,8 @@ export interface RunMigrateDevDbInput {
 export interface RunMigrateDevDbOptions {
   /** Overridable for tests; the directory writes must never target. */
   readonly sharedHome?: string | undefined;
+  /** Injected by tests so they never read the developer's own home. */
+  readonly homeDir?: string | undefined;
 }
 
 interface KeptProject {
@@ -361,7 +363,12 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
-  const sharedHome = path.resolve(options.sharedHome ?? path.join(NodeOS.homedir(), ".t3"));
+  // Pylon's runtime home, never `~/.t3`: seeding a dev database from T3 Code's
+  // would copy a schema carrying upstream's migration numbering into a Pylon
+  // server that then dies on its first query.
+  const sharedHome = path.resolve(
+    options.sharedHome ?? path.join(options.homeDir ?? NodeOS.homedir(), ".pylon-code"),
+  );
   const sourcePath = path.resolve(
     input.source ?? path.join(sharedHome, "userdata", "state.sqlite"),
   );

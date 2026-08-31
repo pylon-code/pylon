@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// @effect-diagnostics nodeBuiltinImport:off - node:os resolves the shared T3 home guard.
+// @effect-diagnostics nodeBuiltinImport:off - node:os resolves the shared runtime home guard.
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeOS from "node:os";
@@ -63,7 +63,7 @@ export class SqliteStateSharedHomeMutationError extends Schema.TaggedErrorClass<
   {},
 ) {
   override get message(): string {
-    return "Refusing to mutate the shared ~/.t3 database. Use an isolated --base-dir.";
+    return "Refusing to mutate a shared runtime home database (~/.pylon-code or ~/.t3). Use an isolated --base-dir.";
   }
 }
 
@@ -125,7 +125,14 @@ export interface RunSqliteStateInput {
 }
 
 export interface RunSqliteStateOptions {
+  /**
+   * Overrides the directories this refuses to mutate. Unset guards both real
+   * runtime homes: `~/.pylon-code` is Pylon's live install, and `~/.t3` may be
+   * T3 Code's, which is someone else's database entirely.
+   */
   readonly sharedHome?: string | undefined;
+  /** Injected by tests so they never name the developer's own home. */
+  readonly homeDir?: string | undefined;
 }
 
 const resolveSqlSource = Effect.fn("resolveSqliteStateSqlSource")(function* (
@@ -182,7 +189,12 @@ export const runSqliteState = Effect.fn("runSqliteState")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const baseDir = path.resolve(input.baseDir);
-  const sharedHome = path.resolve(options.sharedHome ?? path.join(NodeOS.homedir(), ".t3"));
+  const homeDir = options.homeDir ?? NodeOS.homedir();
+  const protectedHomes = (
+    options.sharedHome === undefined
+      ? [path.join(homeDir, ".pylon-code"), path.join(homeDir, ".t3")]
+      : [options.sharedHome]
+  ).map((home) => path.resolve(home));
   const databasePath = path.join(baseDir, "userdata", "state.sqlite");
   const source = yield* resolveSqlSource(input.sql, input.file);
 
@@ -190,11 +202,13 @@ export const runSqliteState = Effect.fn("runSqliteState")(function* (
     return yield* new SqliteStateDatabaseMissingError({ databasePath });
   }
   if (input.operation === "exec") {
-    const [canonicalBaseDir, canonicalSharedHome] = yield* Effect.all([
-      fs.realPath(baseDir),
-      fs.realPath(sharedHome).pipe(Effect.orElseSucceed(() => sharedHome)),
-    ]);
-    if (canonicalBaseDir === canonicalSharedHome) {
+    // Compared canonically so a symlink pointing at a protected home cannot
+    // slip past the guard.
+    const canonicalBaseDir = yield* fs.realPath(baseDir);
+    const canonicalProtectedHomes = yield* Effect.all(
+      protectedHomes.map((home) => fs.realPath(home).pipe(Effect.orElseSucceed(() => home))),
+    );
+    if (canonicalProtectedHomes.includes(canonicalBaseDir)) {
       return yield* new SqliteStateSharedHomeMutationError();
     }
   }

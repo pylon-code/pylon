@@ -16,7 +16,7 @@ Use this skill for the web client. For iOS Simulator, Android Emulator, or physi
 3. Start the full web stack with `vp run dev`. Add `--share` when the user needs to open it from another tailnet device. In a linked worktree it defaults to that worktree's gitignored `.t3`; pass `--home-dir <base-dir>` only when the test needs a different isolated directory.
 4. Keep the terminal session alive and read the selected server port, web port, base directory, and pairing URL from its output.
 
-Treat a base directory as disposable only when it was created or deliberately selected for the current test. Never delete or directly seed the shared `~/.t3` directory. Prefer starting with a new temporary base directory over clearing state of uncertain ownership.
+Treat a base directory as disposable only when it was created or deliberately selected for the current test. Never delete or directly seed a shared runtime home: `~/.pylon-code` is Pylon's live install, and `~/.t3` may be T3 Code's. Prefer starting with a new temporary base directory over clearing state of uncertain ownership.
 
 The worktree-local default deliberately outranks an ambient `T3CODE_HOME`; do not pass the shared home through to a worktree dev server.
 
@@ -67,7 +67,7 @@ Read [references/sqlite-fixtures.md](references/sqlite-fixtures.md) before chang
 - Seed projection tables only for disposable UI fixtures. Use application commands and APIs when testing business behavior or projection correctness.
 - Use the auth CLI, not direct `auth_*` table edits, for pairing and sessions.
 
-The helper refuses to write to the shared `~/.t3` directory by default and creates a database backup before each mutation.
+The helper refuses to write to either runtime home, `~/.pylon-code` or `~/.t3`, by default and creates a database backup before each mutation.
 
 ## Tear down only when the testing loop is finished
 
