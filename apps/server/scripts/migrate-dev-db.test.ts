@@ -202,15 +202,15 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-protected-" });
-      // The source check runs before the guard, so give it a real source.
-      const sourceDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-src-" });
-      const source = yield* createFixtureSource(sourceDir);
 
+      // Deliberately no `source`: the guard runs first, so aiming --base-dir at
+      // a live install is refused as such rather than reported as a missing
+      // source the user never chose.
       for (const name of [".t3", ".pylon-code"]) {
         const baseDir = path.join(homeDir, name);
         yield* fs.makeDirectory(path.join(baseDir, "userdata"), { recursive: true });
         const error = yield* runMigrateDevDb(
-          { baseDir, source, projects: 5, threadsPerProject: 10 },
+          { baseDir, projects: 5, threadsPerProject: 10 },
           { homeDir },
         ).pipe(Effect.flip);
         assert.equal(error._tag, "MigrateDevDbSharedHomeError", name);
@@ -221,6 +221,8 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
       }
 
       // An isolated directory under the same home is still a valid target.
+      const sourceDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-src-" });
+      const source = yield* createFixtureSource(sourceDir);
       const isolated = path.join(homeDir, "scratch");
       const result = yield* runMigrateDevDb(
         { baseDir: isolated, source, projects: 5, threadsPerProject: 10 },

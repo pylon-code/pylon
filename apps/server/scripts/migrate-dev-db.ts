@@ -399,9 +399,10 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   const databasePath = path.join(stateDir, "state.sqlite");
   const snapshotPath = `${databasePath}.migrate-dev-db-tmp`;
 
-  if (!(yield* fs.exists(sourcePath))) {
-    return yield* new MigrateDevDbSourceMissingError({ sourcePath });
-  }
+  // Ahead of every other check, including whether a source exists: someone who
+  // aimed --base-dir at a live install needs to be told that, not handed an
+  // unrelated complaint about the source they never chose.
+  //
   // Compared canonically so a symlink pointing at a protected home cannot slip
   // past the guard.
   const canonicalBaseDir = yield* fs.realPath(baseDir).pipe(Effect.orElseSucceed(() => baseDir));
@@ -410,6 +411,9 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   );
   if (canonicalProtectedHomes.includes(canonicalBaseDir)) {
     return yield* new MigrateDevDbSharedHomeError();
+  }
+  if (!(yield* fs.exists(sourcePath))) {
+    return yield* new MigrateDevDbSourceMissingError({ sourcePath });
   }
   // The destination db and snapshot both get deleted below; a --source that
   // resolves to either (e.g. a leftover snapshot file) would be destroyed
