@@ -194,7 +194,10 @@ unavailable, and when custom Prime launch arguments are configured. Prime Agent 
 the managed bridge and drops custom tool-result `details`, so those sessions retain only Prime's standard
 ACP `PlanUpdated` handling. Matching managed-tool parity in ACP requires a separately reviewed bounded
 content envelope and credible extension verifier, or another scoped transport; it is not implied by this
-ledger's daemon support.
+ledger's daemon support. The provider feature snapshot advertises planning as read-only `observe` in both
+modes because bounded plan progress reaches Pylon. It does not advertise `propose`, `update`, or
+`select-mode`; Prime has no compatible formal Plan interaction mode, and Pylon keeps that composer control
+hidden instead of synthesizing one with a hidden prompt.
 
 Any transcript mismatch, incomplete streaming snapshot, MCP reattachment failure, or unvalidated barrier
 fails the canonical turn once and disposes the uncertain native session. This recovery is in-memory only;

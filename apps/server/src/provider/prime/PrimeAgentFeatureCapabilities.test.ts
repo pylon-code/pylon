@@ -30,6 +30,11 @@ describe("PrimeAgentFeatureCapabilities", () => {
       runtimeModes: ["approval-required", "full-access"],
       enforcement: "host-gated",
     });
+    expect(capabilities.planning).toMatchObject({
+      support: "read-only",
+      operations: ["observe"],
+    });
+    expect(capabilities.planning?.reason).toContain("formal Plan interaction mode");
     expect(capabilities.agents).toMatchObject({
       support: "read-write",
       operations: ["observe", "hierarchy", "live-activity", "message", "cancel", "set-depth"],
@@ -143,6 +148,11 @@ describe("PrimeAgentFeatureCapabilities", () => {
       runtimeModes: ["full-access"],
       enforcement: "none",
     });
+    expect(capabilities.planning).toMatchObject({
+      support: "read-only",
+      operations: ["observe"],
+    });
+    expect(capabilities.planning?.reason).toContain("standard ACP PlanUpdated");
     expect(capabilities.model?.operations).toEqual(["select"]);
     expect(capabilities.agents?.support).toBe("unavailable");
     expect(capabilities.goals?.support).toBe("unavailable");
