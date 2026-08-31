@@ -1,9 +1,9 @@
-import { ChevronDownIcon, ListTodoIcon, UsersIcon, XIcon } from "lucide-react";
-import { memo } from "react";
+import { ListTodoIcon, UsersIcon } from "lucide-react";
+import { memo, type ComponentProps } from "react";
 
 import { formatDuration } from "../../session-logic";
 import { cn } from "~/lib/utils";
-import { Button } from "../ui/button";
+import { ComposerBanner } from "./ComposerBanner";
 import {
   TASK_PROGRESS_STATUS_LABEL,
   keyedTaskProgressSteps,
@@ -17,6 +17,10 @@ export interface ComposerTasksProgress {
   readonly totalSteps: number;
 }
 
+/**
+ * A `waiting` step names who the turn is blocked on, which upstream's badge has
+ * no concept of. The union keeps `waitingOn` unreachable for other statuses.
+ */
 export type ComposerTaskStep =
   | {
       readonly durationMs?: number;
@@ -47,6 +51,11 @@ export function composerTasksWaitingKey(
   return waitingStep ? `${waitingStep.step}:${waitingStep.waitingOn}` : null;
 }
 
+/**
+ * A dismissal holds only for the turn it was made in, and only while the badge
+ * waits on the same thing: a fresh blocking question re-opens it rather than
+ * staying hidden behind an earlier dismissal.
+ */
 export function areComposerTasksDismissed(
   snapshot: ComposerTasksDismissalSnapshot | null,
   activeTurnId: string | null,
@@ -90,250 +99,232 @@ function waitingOwnerLabel(waitingOn: "user" | "delegates" | "external"): string
   }
 }
 
-export const ComposerTasksBadge = memo(function ComposerTasksBadge({
-  delegatedWork,
-  expanded,
-  hasTrailingShoulder = false,
-  onDismiss,
-  onToggle,
-  placement = "tab",
-  progress,
-  steps,
-}: {
-  readonly delegatedWork?: ComposerDelegatedWorkSummary | null;
+function tasksAriaLabel(input: {
   readonly expanded: boolean;
-  readonly hasTrailingShoulder?: boolean;
-  readonly onDismiss: () => void;
-  readonly onToggle: () => void;
-  readonly placement?: "inline" | "tab";
   readonly progress: ComposerTasksProgress;
   readonly steps: readonly ComposerTaskStep[];
-}) {
-  if (progress.totalSteps <= 0) return null;
-
-  const allDone = progress.completedSteps >= progress.totalSteps;
-  const currentStep = steps.find((step) => step.status === "inProgress");
-  const waitingStep = steps.find((step) => step.status === "waiting");
-  const nextStep = steps.find((step) => step.status === "pending");
-  const labelStep = currentStep?.step ?? waitingStep?.step ?? nextStep?.step ?? progress.step;
-  const labelContext = currentStep
-    ? "Current task"
-    : waitingStep
-      ? "Waiting task"
-      : allDone
-        ? "Completed plan"
-        : "Next task";
-  const delegatesLabel = delegatedWorkLabel(delegatedWork);
-  const label = [
-    `Tasks: ${progress.completedSteps} of ${progress.totalSteps} complete. ${labelContext}: ${labelStep}.`,
+  readonly delegatesLabel: string | null;
+}): string {
+  const waitingStep = input.steps.find((step) => step.status === "waiting");
+  return [
+    `${input.expanded ? "Collapse tasks" : "Tasks"}: ${input.progress.completedSteps} of ${input.progress.totalSteps} complete. Current task: ${input.progress.step}.`,
     waitingStep ? `${waitingOwnerLabel(waitingStep.waitingOn)}.` : null,
-    delegatesLabel ? `${delegatesLabel}.` : null,
+    input.delegatesLabel ? `${input.delegatesLabel}.` : null,
   ]
     .filter((part): part is string => part !== null)
     .join(" ");
-  if (placement === "inline") {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-0.5" data-composer-tasks-badge="true">
-        <Button
-          size="micro"
-          variant="ghost-muted"
-          aria-expanded={expanded}
-          aria-label={label}
-          className="shrink-0 gap-1 px-1.5"
-          onClick={onToggle}
-          onPointerDown={(event) => event.preventDefault()}
-        >
-          <ListTodoIcon aria-hidden className="size-3 shrink-0" />
-          <span>Tasks</span>
-          <TaskProgressSegments fit className="w-10" steps={steps} />
-          <span
-            className={cn(
-              "font-medium tabular-nums",
-              allDone ? "text-success" : "text-muted-foreground",
-            )}
-          >
-            {progress.completedSteps}/{progress.totalSteps}
-          </span>
-          {delegatesLabel ? (
-            <span className="inline-flex items-center gap-1 text-foreground/70">
-              <UsersIcon aria-hidden className="size-3 shrink-0" />
-              <span>{delegatesLabel}</span>
-            </span>
-          ) : null}
-        </Button>
-        <Button
-          size="icon-micro"
-          variant="ghost-muted"
-          aria-label="Dismiss tasks for this turn"
-          className="shrink-0"
-          onClick={onDismiss}
-          onPointerDown={(event) => event.preventDefault()}
-        >
-          <XIcon aria-hidden className="size-2.5" />
-        </Button>
-      </span>
-    );
-  }
+}
 
+function TaskSummary({
+  expanded,
+  progress,
+  steps,
+  delegatesLabel,
+}: {
+  readonly expanded: boolean;
+  readonly progress: ComposerTasksProgress;
+  readonly steps: readonly ComposerTaskStep[];
+  readonly delegatesLabel: string | null;
+}) {
   return (
-    <div
-      className={cn(
-        "chat-composer-shoulder-tab chat-composer-tasks-tab absolute -top-7 left-5.5 z-0 flex h-8 items-center gap-1 rounded-t-xl border border-b-0 px-2 pb-1 text-xs leading-none text-muted-foreground",
-        hasTrailingShoulder ? "right-30" : "right-5.5",
-        allDone && "text-foreground",
-      )}
-      data-composer-tasks-badge="true"
-    >
-      <button
-        type="button"
-        aria-expanded={expanded}
-        aria-label={label}
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch text-muted-foreground hover:text-foreground"
-        onClick={onToggle}
-        onPointerDown={(event) => event.preventDefault()}
-      >
-        <ListTodoIcon aria-hidden className="size-3.5 shrink-0" />
-        <span className="shrink-0">Tasks</span>
+    <>
+      <ComposerBanner.Icon>
+        <ListTodoIcon />
+      </ComposerBanner.Icon>
+      <ComposerBanner.Content>
+        <span className="shrink-0 text-muted-foreground">Tasks</span>
         <span
           className="min-w-0 flex-1 truncate text-left font-medium text-foreground/80"
           data-composer-task-current="true"
         >
           {progress.step}
         </span>
-        <span
-          className={cn(
-            "shrink-0 font-medium tabular-nums",
-            allDone ? "text-success" : "text-muted-foreground",
-          )}
+      </ComposerBanner.Content>
+      <ComposerBanner.Actions>
+        <ComposerBanner.Count
+          className={progress.completedSteps >= progress.totalSteps ? "text-success" : undefined}
+          data-composer-task-progress="true"
         >
           {progress.completedSteps}/{progress.totalSteps}
-        </span>
+        </ComposerBanner.Count>
         {delegatesLabel ? (
-          <span className="inline-flex shrink-0 items-center gap-1 text-foreground/70">
+          <span
+            className="hidden shrink-0 items-center gap-1 text-foreground/70 sm:inline-flex"
+            data-composer-task-delegates="true"
+          >
             <UsersIcon aria-hidden className="size-3 shrink-0" />
             <span>{delegatesLabel}</span>
           </span>
         ) : null}
-        <TaskProgressSegments fit className="w-20" steps={steps} />
-      </button>
-      <Button
-        size="icon-micro"
-        variant="ghost-muted"
-        aria-label="Dismiss tasks for this turn"
-        className="shrink-0"
-        onClick={onDismiss}
-        onPointerDown={(event) => event.preventDefault()}
-      >
-        <XIcon aria-hidden className="size-3" />
-      </Button>
+        {/* The expanded list already shows every step; the bar would repeat it. */}
+        {expanded ? null : (
+          <TaskProgressSegments fit className="hidden w-20 sm:flex" steps={steps} />
+        )}
+        <ComposerBanner.ToggleIcon expanded={expanded} />
+      </ComposerBanner.Actions>
+    </>
+  );
+}
+
+export const ComposerTasksBadge = memo(function ComposerTasksBadge({
+  expanded,
+  onToggle,
+  onDismiss,
+  placement = "tab",
+  progress,
+  steps,
+  delegatedWork,
+}: {
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
+  readonly onDismiss?: (() => void) | undefined;
+  readonly placement?: "inline" | "tab";
+  readonly progress: ComposerTasksProgress;
+  readonly steps: readonly ComposerTaskStep[];
+  readonly delegatedWork?: ComposerDelegatedWorkSummary | null;
+}) {
+  if (progress.totalSteps <= 0) return null;
+
+  const delegatesLabel = delegatedWorkLabel(delegatedWork);
+  const row = (
+    <ComposerBanner.Row
+      render={<button type="button" />}
+      aria-expanded={expanded}
+      aria-label={tasksAriaLabel({ expanded, progress, steps, delegatesLabel })}
+      className={onDismiss ? "pe-7" : undefined}
+      data-composer-tasks-badge="true"
+      onClick={onToggle}
+      onPointerDown={(event) => event.preventDefault()}
+    >
+      <TaskSummary
+        expanded={expanded}
+        progress={progress}
+        steps={steps}
+        delegatesLabel={delegatesLabel}
+      />
+    </ComposerBanner.Row>
+  );
+  // The row is itself the disclosure button, so dismiss cannot nest inside it.
+  const dismiss = onDismiss ? (
+    <ComposerBanner.Dismiss
+      aria-label="Dismiss tasks for this turn"
+      className="absolute end-1 top-1/2 -translate-y-1/2"
+      onClick={onDismiss}
+      onPointerDown={(event) => event.preventDefault()}
+    />
+  ) : null;
+
+  if (placement === "inline") {
+    return dismiss ? (
+      <div className="relative">
+        {row}
+        {dismiss}
+      </div>
+    ) : (
+      row
+    );
+  }
+  return (
+    <ComposerBanner.Root className={dismiss ? "relative" : undefined} data-composer-shoulder-tab>
+      {row}
+      {dismiss}
+    </ComposerBanner.Root>
+  );
+});
+
+export const ComposerTasksContent = memo(function ComposerTasksContent({
+  expanded,
+  onToggle,
+  onDismiss,
+  progress,
+  steps,
+  delegatedWork,
+}: {
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
+  readonly onDismiss?: (() => void) | undefined;
+  readonly progress: ComposerTasksProgress;
+  readonly steps: readonly ComposerTaskStep[];
+  readonly delegatedWork?: ComposerDelegatedWorkSummary | null;
+}) {
+  return (
+    <div
+      data-chat-composer-collapsed-controls="true"
+      data-chat-composer-tasks-drawer={expanded ? "true" : undefined}
+    >
+      <ComposerTasksBadge
+        expanded={expanded}
+        onToggle={onToggle}
+        {...(onDismiss ? { onDismiss } : {})}
+        placement="inline"
+        progress={progress}
+        steps={steps}
+        {...(delegatedWork === undefined ? {} : { delegatedWork })}
+      />
+      {expanded ? (
+        <ComposerBanner.Scroll data-composer-tasks-scroll="true">
+          <ComposerBanner.Children
+            render={<ul />}
+            aria-label={`Task list. ${progress.completedSteps} of ${progress.totalSteps} complete.`}
+            data-composer-tasks-list="true"
+          >
+            {keyedTaskProgressSteps(steps).map(({ key, step }) => (
+              <ComposerBanner.Row key={key} render={<li />}>
+                <ComposerBanner.Icon>
+                  <TaskStatusIndicator
+                    aria-hidden
+                    status={step.status}
+                    waitingOn={step.status === "waiting" ? step.waitingOn : undefined}
+                  />
+                </ComposerBanner.Icon>
+                <ComposerBanner.Content
+                  className={cn(
+                    step.status === "completed"
+                      ? "text-muted-foreground/55"
+                      : step.status === "inProgress"
+                        ? "text-foreground/90"
+                        : step.status === "waiting"
+                          ? "text-foreground/80"
+                          : "text-muted-foreground/70",
+                  )}
+                >
+                  {step.step}
+                </ComposerBanner.Content>
+                <ComposerBanner.Actions>
+                  <span
+                    className="w-10 text-right text-[10px] text-muted-foreground/45 tabular-nums"
+                    data-composer-task-duration="true"
+                  >
+                    {step.status === "waiting"
+                      ? waitingOwnerLabel(step.waitingOn)
+                      : step.durationMs !== undefined
+                        ? formatDuration(step.durationMs)
+                        : step.status === "inProgress"
+                          ? "now"
+                          : null}
+                  </span>
+                  <span className="sr-only">{TASK_PROGRESS_STATUS_LABEL[step.status]}: </span>
+                </ComposerBanner.Actions>
+              </ComposerBanner.Row>
+            ))}
+          </ComposerBanner.Children>
+        </ComposerBanner.Scroll>
+      ) : null}
     </div>
   );
 });
 
 export const ComposerTasksDrawer = memo(function ComposerTasksDrawer({
-  delegatedWork,
-  onDismiss,
   onCollapse,
-  progress,
-  steps,
-}: {
-  readonly delegatedWork?: ComposerDelegatedWorkSummary | null;
-  readonly onDismiss: () => void;
+  ...props
+}: Omit<ComponentProps<typeof ComposerTasksContent>, "expanded" | "onToggle"> & {
   readonly onCollapse: () => void;
-  readonly progress: ComposerTasksProgress;
-  readonly steps: readonly ComposerTaskStep[];
 }) {
-  const delegatesLabel = delegatedWorkLabel(delegatedWork);
   return (
-    <div
-      className="chat-composer-top-drawer"
-      data-chat-composer-collapsed-controls="true"
-      data-chat-composer-tasks-drawer="true"
-    >
-      <div className="flex items-center gap-1 px-3 py-1.5 sm:px-4">
-        <button
-          type="button"
-          aria-expanded="true"
-          aria-label={`Collapse tasks. ${progress.completedSteps} of ${progress.totalSteps} complete.`}
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch text-left text-xs text-muted-foreground hover:text-foreground"
-          onClick={onCollapse}
-          onPointerDown={(event) => event.preventDefault()}
-        >
-          <ListTodoIcon aria-hidden className="size-3.5 shrink-0" />
-          <span className="font-medium text-foreground">Tasks</span>
-          <span className="tabular-nums">
-            {progress.completedSteps}/{progress.totalSteps}
-          </span>
-          {delegatesLabel ? (
-            <span className="inline-flex items-center gap-1 text-foreground/70">
-              <UsersIcon aria-hidden className="size-3 shrink-0" />
-              <span>{delegatesLabel}</span>
-            </span>
-          ) : null}
-          <ChevronDownIcon aria-hidden className="ml-auto size-3.5 shrink-0" />
-        </button>
-        <Button
-          size="icon-micro"
-          variant="ghost-muted"
-          aria-label="Dismiss tasks for this turn"
-          className="shrink-0"
-          onClick={onDismiss}
-          onPointerDown={(event) => event.preventDefault()}
-        >
-          <XIcon aria-hidden className="size-3" />
-        </Button>
-      </div>
-      <div
-        aria-label={`Task list. ${progress.completedSteps} of ${progress.totalSteps} complete.`}
-        className="max-h-[min(24rem,40dvh)] space-y-px overflow-y-auto overscroll-contain px-3 pb-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70 sm:px-4"
-        data-composer-tasks-list="true"
-        role="list"
-        tabIndex={0}
-      >
-        {keyedTaskProgressSteps(steps).map(({ key, step }) => (
-          <div key={key} className="flex items-start gap-2 text-xs leading-5" role="listitem">
-            <span className="flex h-5 shrink-0 items-center">
-              <TaskStatusIndicator
-                aria-hidden
-                status={step.status}
-                waitingOn={step.status === "waiting" ? step.waitingOn : undefined}
-              />
-            </span>
-            <span className="sr-only">{TASK_PROGRESS_STATUS_LABEL[step.status]}: </span>
-            <span
-              className={cn(
-                "min-w-0 flex-1",
-                step.status === "completed"
-                  ? "text-muted-foreground/55"
-                  : step.status === "inProgress"
-                    ? "text-foreground/90"
-                    : step.status === "waiting" && step.waitingOn === "user"
-                      ? "text-warning"
-                      : "text-muted-foreground/70",
-              )}
-            >
-              {step.step}
-            </span>
-            <span
-              className={cn(
-                "ml-auto shrink-0 text-right text-[10px] tabular-nums",
-                step.status === "waiting" && step.waitingOn === "user"
-                  ? "text-warning"
-                  : "text-muted-foreground/45",
-              )}
-              data-composer-task-duration="true"
-            >
-              {step.status === "waiting"
-                ? waitingOwnerLabel(step.waitingOn)
-                : step.durationMs !== undefined
-                  ? formatDuration(step.durationMs)
-                  : step.status === "inProgress"
-                    ? "now"
-                    : null}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
+    <ComposerBanner.Attachment>
+      <ComposerBanner.Root>
+        <ComposerTasksContent {...props} expanded onToggle={onCollapse} />
+      </ComposerBanner.Root>
+    </ComposerBanner.Attachment>
   );
 });
