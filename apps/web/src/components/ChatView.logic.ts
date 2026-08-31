@@ -14,6 +14,11 @@ import {
 } from "@t3tools/contracts";
 import { isPrimeAgentDefaultModelUnavailable } from "@t3tools/shared/model";
 import {
+  appendCodexArtifactTemplateUsePrompt,
+  codexArtifactTemplateUsePrompt,
+  type CodexArtifactTemplate,
+} from "@t3tools/client-runtime/codex-artifact-templates";
+import {
   type ChatMessage,
   isImageAttachment,
   type SessionPhase,
@@ -40,6 +45,14 @@ export const ENVIRONMENT_RECONNECT_WARNING_GRACE_MS = 2_000;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
 
+export function codexArtifactTemplatePromptToAppend(
+  currentDraft: string,
+  template: CodexArtifactTemplate,
+): string | null {
+  return appendCodexArtifactTemplateUsePrompt(currentDraft, template) === currentDraft
+    ? null
+    : codexArtifactTemplateUsePrompt(template);
+}
 export function shoulderTabReserve(overlay: HTMLElement): number {
   if (overlay.querySelector(".chat-composer-tasks-tab")) return 0;
   const tab = overlay.querySelector<HTMLElement>(".chat-composer-shoulder-tab");

@@ -38,6 +38,7 @@ import {
 import { deriveReportedTurnCosts } from "@t3tools/client-runtime/state/turn-costs";
 import { canAskSessionSideQuestion } from "@t3tools/client-runtime/state/session-side-question";
 import { wasBootstrapThreadDeleted } from "@t3tools/client-runtime/errors";
+import { type CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import {
   changeRequestAutoSettles,
   effectiveSettled,
@@ -415,6 +416,7 @@ import {
   revokeUserMessagePreviewUrls,
   shouldWriteThreadErrorToCurrentServerThread,
   startNewThreadForProject,
+  codexArtifactTemplatePromptToAppend,
   waitForStartedServerThread,
 } from "./ChatView.logic";
 import type { ThreadSyncPhase } from "../threadSync";
@@ -3377,6 +3379,25 @@ function ChatViewContent(props: ChatViewProps) {
       focusComposer();
     });
   }, [focusComposer]);
+  const useArtifactTemplate = useCallback(
+    (template: CodexArtifactTemplate) => {
+      const composer = composerRef.current;
+      if (!composer) return;
+
+      const currentDraft = composer.getSendContext().prompt;
+      const prompt = codexArtifactTemplatePromptToAppend(currentDraft, template);
+      if (prompt !== null && !composer.insertTextAtEnd(prompt, { ensureLeadingBoundary: true })) {
+        toastManager.add({
+          type: "error",
+          title: "Unable to add to chat",
+          description: "The composer is busy; try again once it is ready.",
+        });
+        return;
+      }
+      scheduleComposerFocus();
+    },
+    [composerRef, scheduleComposerFocus],
+  );
   const addTerminalContextToDraft = useCallback(
     (selection: TerminalContextSelection) => {
       composerRef.current?.addTerminalContext(selection);
@@ -8311,6 +8332,7 @@ function ChatViewContent(props: ChatViewProps) {
                 supportsConversationRollback={supportsServerProviderConversationRollback(
                   activeProviderStatus,
                 )}
+                onUseArtifactTemplate={useArtifactTemplate}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
                 onFileOpen={openFileAttachment}
