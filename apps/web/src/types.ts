@@ -69,15 +69,29 @@ const VIDEO_MIME_TYPE_BY_EXTENSION: Readonly<Record<string, string>> = {
   webm: "video/webm",
 };
 
+const PLAYABLE_VIDEO_MIME_TYPES: ReadonlySet<string> = new Set(
+  Object.values(VIDEO_MIME_TYPE_BY_EXTENSION),
+);
+
+/**
+ * The container this attachment should be presented as, or null when it is not
+ * a video Pylon offers to play.
+ *
+ * The extension decides first. Trusting a bare `video/*` prefix misreads files
+ * the host maps to a transport stream — a TypeScript `.ts` source is reported as
+ * `video/mp2t` — which would turn source files into blank play tiles.
+ */
 export function videoMimeType(
   attachment: Pick<ChatFileAttachment, "name" | "mimeType">,
 ): string | null {
-  const mimeType = attachment.mimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-  if (mimeType.startsWith("video/")) return mimeType;
   const dotIndex = attachment.name.lastIndexOf(".");
-  return dotIndex < 0
-    ? null
-    : (VIDEO_MIME_TYPE_BY_EXTENSION[attachment.name.slice(dotIndex + 1).toLowerCase()] ?? null);
+  const byExtension =
+    dotIndex < 0
+      ? null
+      : (VIDEO_MIME_TYPE_BY_EXTENSION[attachment.name.slice(dotIndex + 1).toLowerCase()] ?? null);
+  if (byExtension !== null) return byExtension;
+  const mimeType = attachment.mimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  return PLAYABLE_VIDEO_MIME_TYPES.has(mimeType) ? mimeType : null;
 }
 
 export function isVideoAttachment(attachment: ChatFileAttachment): boolean {

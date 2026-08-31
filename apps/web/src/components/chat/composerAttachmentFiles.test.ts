@@ -322,3 +322,24 @@ describe("composer attachment files", () => {
     ).toBe(true);
   });
 });
+
+describe("videoMimeType", () => {
+  it("resolves known video containers by extension", () => {
+    expect(videoMimeType({ name: "clip.mkv", mimeType: "" })).toBe("video/x-matroska");
+    expect(videoMimeType({ name: "clip.MP4", mimeType: "application/octet-stream" })).toBe(
+      "video/mp4",
+    );
+  });
+
+  it("does not treat a TypeScript source as a video", () => {
+    // Hosts map `.ts` to the MPEG transport stream type, so a bare `video/*`
+    // check would render source files as blank play tiles.
+    expect(videoMimeType({ name: "session-logic.ts", mimeType: "video/mp2t" })).toBeNull();
+    expect(videoMimeType({ name: "clip.ts", mimeType: "video/mp2t" })).toBeNull();
+  });
+
+  it("accepts a playable container when the name carries no extension", () => {
+    expect(videoMimeType({ name: "recording", mimeType: "video/webm" })).toBe("video/webm");
+    expect(videoMimeType({ name: "recording", mimeType: "video/mp2t" })).toBeNull();
+  });
+});

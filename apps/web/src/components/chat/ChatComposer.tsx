@@ -3722,8 +3722,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           error = fileAttachmentTooLargeMessage(file.name, fileStagingLimit);
           continue;
         }
+        // Re-wrapping copies the whole blob, so only do it when the resolved
+        // type is a real correction. A browser that reported no type at all
+        // gains nothing from being stamped octet-stream: `mimeType` below
+        // already carries the resolved value.
         const attachmentFile =
-          file.type === fileMimeType
+          file.type === fileMimeType || fileMimeType === "application/octet-stream"
             ? file
             : new File([file], file.name, { type: fileMimeType, lastModified: file.lastModified });
         acceptedFiles.push({
@@ -4602,7 +4606,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                               {isOpening ? (
                                 <span className="relative z-10 text-[10px]">Loading…</span>
                               ) : (
-                                <PlayIcon className="relative z-10 size-4 fill-current drop-shadow-md" />
+                                <>
+                                  <PlayIcon className="relative z-10 size-4 fill-current drop-shadow-md" />
+                                  {/* Two videos are otherwise indistinguishable
+                                      black tiles when no thumbnail decodes. */}
+                                  <span className="pointer-events-none relative z-10 w-full truncate text-center text-[9px] leading-tight drop-shadow-md">
+                                    {file.name}
+                                  </span>
+                                </>
                               )}
                             </button>
                             {upload?.status === "uploading" && (
