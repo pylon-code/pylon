@@ -27,7 +27,10 @@ describe("usage pricing", () => {
       expect(lookupRate(table, "deepinfra/anthropic/claude-fable-5")?.cacheReadCostPerToken).toBe(
         1e-5,
       );
-      expect(lookupRate(table, "other/claude-fable-5")).toBeNull();
+      // An unknown provider prefix prices as the model it names. Transcripts
+      // record gateway-proxied ids LiteLLM has no key for, and the canonical
+      // rate is a far better answer for those than reporting $0 spent.
+      expect(lookupRate(table, "other/claude-fable-5")?.cacheReadCostPerToken).toBe(1e-6);
     }
   });
 
@@ -42,14 +45,28 @@ describe("usage pricing", () => {
     );
   });
 
-  it("leaves an ambiguous bare name unpriced", () => {
+  it("resolves a disagreeing bare name to the shallowest publisher", () => {
     const table = parseRateTable({
       "provider-a/example-model": rate(1),
       "provider-b/example-model": rate(3),
+      "reseller/provider-a/example-model": rate(9),
     });
 
     expect(lookupRate(table, "provider-a/example-model")?.inputCostPerToken).toBe(1);
     expect(lookupRate(table, "provider-b/example-model")?.inputCostPerToken).toBe(3);
-    expect(lookupRate(table, "example-model")).toBeNull();
+    // Requiring unanimity here would leave the bare name unpriced, which is what
+    // stripped every Grok model of pricing: LiteLLM publishes them only under
+    // disagreeing xai/, azure_ai/ and replicate/ keys.
+    expect(lookupRate(table, "example-model")?.inputCostPerToken).toBe(1);
+  });
+
+  it("prefers a canonical entry over any qualified one", () => {
+    const table = parseRateTable({
+      "example-model": rate(2, 2e-7),
+      "reseller/example-model": rate(2),
+    });
+
+    expect(lookupRate(table, "example-model")?.cacheReadCostPerToken).toBe(2e-7);
+    expect(lookupRate(table, "reseller/example-model")?.cacheReadCostPerToken).toBe(2);
   });
 });
