@@ -563,7 +563,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain('data-anchor-index="0"');
-    expect(markup).toContain('data-anchor-offset="16"');
+    expect(markup).toContain('data-anchor-offset="24"');
     expect(markup).toContain('data-anchor-on-ready="true"');
     expect(markup).not.toContain("data-anchor-max-size=");
     expect(markup).toContain('data-content-inset-end="144"');
@@ -1522,9 +1522,11 @@ describe("MessagesTimeline", () => {
     expect(workingIndex).toBeGreaterThan(userIndex);
     expect(assistantIndex).toBeGreaterThan(workingIndex);
     expect(markup).toContain('class="border-b border-border/60 pb-2 pt-1"');
-    // #8734 lays the row out with flex so a long plan step truncates.
+    // #8734 lays the row out with flex so a long plan step truncates; #8922
+    // pins it to h-6 so swapping between "Working for" and the worktree-setup
+    // label cannot change the row's height.
     expect(markup).toContain(
-      'class="flex min-w-0 items-baseline px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
+      'class="flex h-6 min-w-0 items-baseline px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
     );
     expect(markup).not.toContain('class="pt-0.5 pb-5 pl-1.5"');
     expect(markup).not.toContain('data-slot="dot-matrix"');

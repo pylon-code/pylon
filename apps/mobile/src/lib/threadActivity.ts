@@ -18,6 +18,7 @@ import {
 } from "@t3tools/client-runtime/state/turn-costs";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import {
+  isWorktreeSetupActivity,
   normalizeCompactToolLabel,
   omitSupersededLifecycleMarkers,
   summarizeToolGroup,
@@ -350,6 +351,7 @@ function deriveWorkLogEntries(
   const ordered = Arr.sort(activities, activityOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
+    if (activity.tone !== "error" && isWorktreeSetupActivity(activity.kind)) continue;
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     // Terminal bypassed updates pass: Codex children's only terminal signal.
