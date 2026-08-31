@@ -1996,6 +1996,119 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("leaves the policy unmodified when the repository offers no examples", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* runGit(repoDir, ["init", "--initial-branch=main"]);
+      yield* runGit(repoDir, ["config", "user.email", "test@example.com"]);
+      yield* runGit(repoDir, ["config", "user.name", "Test User"]);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\n");
+      yield* runGit(repoDir, ["add", "README.md"]);
+      let generatedPolicy: TextGeneration.CommitMessageGenerationInput["policy"] = undefined;
+
+      const { manager } = yield* makeManager({
+        serverSettings: {
+          textGenerationModelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-sonnet-4-6",
+          },
+          sourceControlWritingStyle: { mode: "repo_conventions" as const },
+        },
+        textGeneration: {
+          generateCommitMessage: (input) => {
+            generatedPolicy = input.policy;
+            return Effect.succeed({ subject: "Create initial commit", body: "" });
+          },
+        },
+      });
+      yield* runStackedAction(manager, { cwd: repoDir, action: "commit" });
+
+      expect(generatedPolicy).toEqual({
+        kind: "repo_conventions",
+        commitInstructions:
+          "Follow the repository's established commit message style when examples are available.",
+        changeRequestInstructions:
+          "Follow the repository's established change request title and body style when examples are available.",
+        inferRepositoryConventions: true,
+      });
+    }),
+  );
+
+  it.effect("truncates oversized instructions instead of dropping them", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* runGit(repoDir, ["init", "--initial-branch=main"]);
+      yield* runGit(repoDir, ["config", "user.email", "test@example.com"]);
+      yield* runGit(repoDir, ["config", "user.name", "Test User"]);
+      // This repository's own AGENTS.md is past 20 KB, which is what made the
+      // original drop-on-oversize guard a silent no-op.
+      const oversized = `Use lowercase source control text.\n${"x".repeat(30_000)}`;
+      NodeFS.writeFileSync(NodePath.join(repoDir, "AGENTS.md"), oversized);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\n");
+      yield* runGit(repoDir, ["add", "README.md"]);
+      let generatedPolicy: TextGeneration.CommitMessageGenerationInput["policy"] = undefined;
+
+      const { manager } = yield* makeManager({
+        serverSettings: {
+          textGenerationModelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-sonnet-4-6",
+          },
+          sourceControlWritingStyle: { mode: "repo_conventions" as const },
+        },
+        textGeneration: {
+          generateCommitMessage: (input) => {
+            generatedPolicy = input.policy;
+            return Effect.succeed({ subject: "Create initial commit", body: "" });
+          },
+        },
+      });
+      yield* runStackedAction(manager, { cwd: repoDir, action: "commit" });
+
+      expect(generatedPolicy?.commitInstructions).toContain("Use lowercase source control text.");
+      expect(generatedPolicy?.commitInstructions).toContain("[Truncated]");
+    }),
+  );
+
+  it.effect("skips a CLAUDE.md that only imports another file", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* runGit(repoDir, ["init", "--initial-branch=main"]);
+      yield* runGit(repoDir, ["config", "user.email", "test@example.com"]);
+      yield* runGit(repoDir, ["config", "user.name", "Test User"]);
+      NodeFS.writeFileSync(
+        NodePath.join(repoDir, "AGENTS.md"),
+        "Use lowercase source control text.",
+      );
+      // Exactly this repository's CLAUDE.md.
+      NodeFS.writeFileSync(NodePath.join(repoDir, "CLAUDE.md"), "@AGENTS.md\n");
+      NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\n");
+      yield* runGit(repoDir, ["add", "README.md"]);
+      let generatedPolicy: TextGeneration.CommitMessageGenerationInput["policy"] = undefined;
+
+      const { manager } = yield* makeManager({
+        serverSettings: {
+          textGenerationModelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-sonnet-4-6",
+          },
+          sourceControlWritingStyle: { mode: "repo_conventions" as const },
+        },
+        textGeneration: {
+          generateCommitMessage: (input) => {
+            generatedPolicy = input.policy;
+            return Effect.succeed({ subject: "Create initial commit", body: "" });
+          },
+        },
+      });
+      yield* runStackedAction(manager, { cwd: repoDir, action: "commit" });
+
+      expect(generatedPolicy?.commitInstructions).toContain("Local AGENTS.md:");
+      expect(generatedPolicy?.commitInstructions).not.toContain("Local CLAUDE.md:");
+      expect(generatedPolicy?.commitInstructions).not.toContain("@AGENTS.md");
+    }),
+  );
+
   it.effect("uses custom commit message when provided", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");

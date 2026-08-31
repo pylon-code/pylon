@@ -619,10 +619,19 @@ export const make = Effect.gen(function* () {
         return "";
       }
       const info = yield* fileSystem.stat(instructionPath);
-      if (info.type !== "File" || info.size > FileSystem.Size(20_000)) {
+      if (
+        info.type !== "File" ||
+        info.size > FileSystem.Size(MAX_REPOSITORY_INSTRUCTIONS_READ_BYTES)
+      ) {
         return "";
       }
-      return (yield* fileSystem.readFileString(instructionPath)).trim();
+      const contents = (yield* fileSystem.readFileString(instructionPath)).trim();
+      // Conventions live near the top of these files, so keep the head. Dropping
+      // the file outright would silently disable the feature for any repository
+      // whose instructions grew past the budget — including this one.
+      return contents.length > MAX_REPOSITORY_INSTRUCTIONS_CHARS
+        ? `${contents.slice(0, MAX_REPOSITORY_INSTRUCTIONS_CHARS)}\n[Truncated]`
+        : contents;
     }).pipe(Effect.orElseSucceed(() => ""));
 
   const readRecentCommitSubjects = (cwd: string) =>
@@ -641,6 +650,28 @@ export const make = Effect.gen(function* () {
         ),
         Effect.orElseSucceed(() => []),
       );
+
+  /**
+   * Instruction files are read whole up to this size and then head-truncated, so a
+   * repository whose AGENTS.md grows does not silently lose the feature.
+   */
+  const MAX_REPOSITORY_INSTRUCTIONS_READ_BYTES = 128_000;
+  const MAX_REPOSITORY_INSTRUCTIONS_CHARS = 8_000;
+
+  /**
+   * `CLAUDE.md` commonly consists only of `@path` imports — this repository's is
+   * exactly `@AGENTS.md`. Sending the directive verbatim tells the model nothing,
+   * and resolving it would duplicate a file already included, so a CLAUDE.md that
+   * carries no prose of its own is skipped.
+   */
+  function repositoryInstructionsProse(contents: string): string {
+    const prose = contents
+      .split("\n")
+      .filter((line) => !/^\s*@\S+\s*$/.test(line))
+      .join("\n")
+      .trim();
+    return prose;
+  }
 
   const resolveStylePolicy = (cwd: string, settings: SourceControlTextGenerationSettings) =>
     Effect.gen(function* () {
@@ -667,7 +698,7 @@ export const make = Effect.gen(function* () {
                 provider.driver === "claudeAgent",
             );
           const claudeInstructions = isClaudeWriter
-            ? yield* readRepositoryInstructions(cwd, "CLAUDE.md")
+            ? repositoryInstructionsProse(yield* readRepositoryInstructions(cwd, "CLAUDE.md"))
             : "";
           const examples = [
             ...(subjects.length > 0
