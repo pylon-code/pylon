@@ -304,7 +304,7 @@ describe("readEnvironmentFromWindowsShell", () => {
 });
 
 describe("mergePathValues", () => {
-  it("dedupes case-insensitively on Windows while preserving preferred order", () => {
+  it("sanitizes and dedupes Windows entries while preserving preferred order", () => {
     expect(
       mergePathValues(
         'C:\\Users\\testuser\\AppData\\Roaming\\npm;"C:\\Program Files\\nodejs"',
@@ -312,7 +312,27 @@ describe("mergePathValues", () => {
         "win32",
       ),
     ).toBe(
-      'C:\\Users\\testuser\\AppData\\Roaming\\npm;"C:\\Program Files\\nodejs";C:\\Windows\\System32',
+      "C:\\Users\\testuser\\AppData\\Roaming\\npm;C:\\Program Files\\nodejs;C:\\Windows\\System32",
+    );
+  });
+
+  it("removes stray quotes from Windows entries", () => {
+    expect(
+      mergePathValues(
+        'C:\\Windows\\System32;C:\\cloudflared.exe;C:";C:\\Program Files\\nodejs',
+        undefined,
+        "win32",
+      ),
+      // The bare drive letter left behind is drive-relative: keeping it would add
+      // the child process's own directory to the executable search.
+    ).toBe("C:\\Windows\\System32;C:\\cloudflared.exe;C:\\Program Files\\nodejs");
+  });
+
+  it("keeps a quoted Windows entry that contains the delimiter", () => {
+    // The entry stays quoted on the way out, or consumers would split it back
+    // into "C:\\my" and a relative "dir".
+    expect(mergePathValues('C:\\bin;"C:\\my;dir";C:\\other', undefined, "win32")).toBe(
+      'C:\\bin;"C:\\my;dir";C:\\other',
     );
   });
 

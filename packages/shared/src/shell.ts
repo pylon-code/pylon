@@ -414,6 +414,58 @@ function normalizePathEntryForComparison(entry: string, platform: NodeJS.Platfor
   return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
+function sanitizePathEntry(entry: string, platform: NodeJS.Platform): string {
+  return platform === "win32" ? entry.replaceAll('"', "") : entry;
+}
+
+/**
+ * Splits a PATH value, honouring Windows quoting. A quoted entry may itself
+ * contain the delimiter — `C:\\bin;"C:\\my;dir"` is two directories, not three —
+ * so splitting on the raw delimiter first would tear it in half and leave a
+ * relative `dir` entry resolved against the child process's cwd.
+ */
+function splitPathValue(value: string, delimiter: string, platform: NodeJS.Platform): string[] {
+  if (platform !== "win32") return value.split(delimiter);
+  // Unbalanced quotes are stray characters, not quoting: honouring them would
+  // swallow every later entry into one. Fall back to a plain split there.
+  if ((value.match(/"/g)?.length ?? 0) % 2 !== 0) return value.split(delimiter);
+  const entries: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (const char of value) {
+    if (char === '"') {
+      quoted = !quoted;
+      current += char;
+      continue;
+    }
+    if (char === delimiter && !quoted) {
+      entries.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  entries.push(current);
+  return entries;
+}
+
+/**
+ * Re-quotes an entry containing the delimiter. Stripping its quotes and joining
+ * would hand consumers a value they split back into the wrong directories.
+ */
+function quotePathEntryIfNeeded(
+  entry: string,
+  delimiter: string,
+  platform: NodeJS.Platform,
+): string {
+  return platform === "win32" && entry.includes(delimiter) ? `"${entry}"` : entry;
+}
+
+/** A bare drive letter is drive-relative, so it would add the child's cwd to the search. */
+function isUsablePathEntry(entry: string, platform: NodeJS.Platform): boolean {
+  return platform !== "win32" || !/^[A-Za-z]:$/.test(entry);
+}
+
 export function mergePathValues(
   preferredPath: string | undefined,
   inheritedPath: string | undefined,
@@ -426,19 +478,21 @@ export function mergePathValues(
   for (const rawValue of [preferredPath, inheritedPath]) {
     if (!rawValue) continue;
 
-    for (const entry of rawValue.split(delimiter)) {
-      const trimmed = entry.trim();
-      if (trimmed.length === 0) continue;
+    for (const entry of splitPathValue(rawValue, delimiter, platform)) {
+      const sanitized = sanitizePathEntry(entry.trim(), platform);
+      if (sanitized.length === 0 || !isUsablePathEntry(sanitized, platform)) continue;
 
-      const normalized = normalizePathEntryForComparison(trimmed, platform);
+      const normalized = normalizePathEntryForComparison(sanitized, platform);
       if (normalized.length === 0 || seen.has(normalized)) continue;
 
       seen.add(normalized);
-      merged.push(trimmed);
+      merged.push(sanitized);
     }
   }
 
-  return merged.length > 0 ? merged.join(delimiter) : undefined;
+  return merged.length > 0
+    ? merged.map((entry) => quotePathEntryIfNeeded(entry, delimiter, platform)).join(delimiter)
+    : undefined;
 }
 
 function readEnvPath(env: NodeJS.ProcessEnv): string | undefined {

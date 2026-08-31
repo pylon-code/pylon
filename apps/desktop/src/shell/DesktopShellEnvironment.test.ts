@@ -334,7 +334,7 @@ describe("DesktopShellEnvironment", () => {
                 FNM_DIR: "C:\\Users\\testuser\\AppData\\Roaming\\fnm",
                 FNM_MULTISHELL_PATH: "C:\\Users\\testuser\\AppData\\Local\\fnm_multishells\\123",
               })
-            : envOutput({ PATH: "C:\\Custom\\Bin;C:\\Windows\\System32" });
+            : envOutput({ PATH: 'C:\\Custom\\Bin;C:";C:\\Windows\\System32' });
         },
       });
 
