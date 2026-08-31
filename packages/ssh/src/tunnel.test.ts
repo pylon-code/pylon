@@ -15,6 +15,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { SshPasswordPrompt } from "./auth.ts";
 import {
   buildRemoteLaunchScript,
+  buildRemoteLogTailScript,
   buildRemotePairingScript,
   buildRemoteStopScript,
   buildRemoteT3RunnerScript,
@@ -234,6 +235,36 @@ describe("ssh tunnel scripts", () => {
       buildRemoteLaunchScript().indexOf('DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port'),
       buildRemoteLaunchScript().indexOf('elif [ -n "$REMOTE_PID" ]'),
     );
+  });
+
+  // `~/.t3` is T3 Code's runtime home, and its database carries upstream's
+  // migration numbering. A remote server pointed at it would adopt another
+  // product's install, so no generated script may name it at all.
+  it("keeps every generated remote script under the Pylon runtime home", () => {
+    const target = {
+      alias: "devbox",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+
+    const launch = buildRemoteLaunchScript();
+    assert.include(launch, 'STATE_DIR="$HOME/.pylon-code/ssh-launch/$STATE_KEY"');
+    assert.include(launch, 'DEFAULT_SERVER_HOME="$HOME/.pylon-code"');
+    assert.include(buildRemotePairingScript(target), '"$HOME/.pylon-code/ssh-launch/');
+    assert.include(buildRemotePairingScript(target), 'DEFAULT_SERVER_HOME="$HOME/.pylon-code"');
+    assert.include(buildRemoteStopScript(target), '"$HOME/.pylon-code/ssh-launch/');
+    assert.include(buildRemoteLogTailScript(target), '"$HOME/.pylon-code/ssh-launch/');
+
+    for (const script of [
+      launch,
+      buildRemotePairingScript(target),
+      buildRemoteStopScript(target),
+      buildRemoteLogTailScript(target),
+      buildRemoteT3RunnerScript(),
+    ]) {
+      assert.notInclude(script, "/.t3/");
+    }
   });
 
   it.effect("accepts launch JSON after remote shell startup noise", () => {
