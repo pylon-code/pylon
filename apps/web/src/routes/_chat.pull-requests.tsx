@@ -1921,9 +1921,11 @@ function PullRequestsColumn({
         ref={scrollRef}
         className="topbar-scroll-fade scrollbar-gutter-both min-h-0 flex-1 overflow-y-auto"
       >
-        {/* The top padding is the shared fade band's height, the same pairing the
-            settings page makes: at rest the controls sit fully below the mask, and only
-            content actually passing under the chrome fades. */}
+        {/* WorkspacePageContainer's pt-6 must stay at least as tall as
+            --workspace-titlebar-scroll-fade-height, so at rest the controls sit
+            fully below the mask and only content passing under the chrome fades.
+            The two live apart now, so raising the fade means raising that padding
+            here and on the settings page. */}
         <WorkspacePageContainer className="gap-4">
           <div className="flex flex-col gap-3">
             <div ref={inFlowSearchRef} className="flex items-center gap-2">
