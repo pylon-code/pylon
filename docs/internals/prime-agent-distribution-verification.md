@@ -34,10 +34,16 @@ SLSA bindings:
 - one stable-manifest subject for stable promotion.
 
 The fetch and trusted-root functions are injected. Production keeps Sigstore TUF cache data below the
-Pylon runtime state directory rather than writing to an unrelated user cache. Focused tests use
-deterministic manifests and a cryptographic-verifier seam, then exercise certificate and SLSA binding separately. Bridge CI can
-supply the first immutable artifact set through the fail-closed real-fixture gate. The gate has no
-skip or metadata-only success mode.
+Pylon runtime state directory rather than writing to an unrelated user cache. Verified channel,
+publication, attestation, and installer-bundle results use one process-wide repository/channel TTL
+and single flight shared by provider status and host maintenance. Short failure and rate-limit TTLs
+bound retry traffic; explicit maintenance refreshes still reuse a just-fresh status result. One
+multi-subject preview attestation is fetched and verified once for its exact subject set rather than
+once per subject. Candidate and request counts remain bounded.
+
+Focused tests use deterministic manifests and a cryptographic-verifier seam, then exercise certificate
+and SLSA binding separately. Bridge CI can supply the first immutable artifact set through the
+fail-closed real-fixture gate. The gate has no skip or metadata-only success mode.
 
 ## Private managed state
 

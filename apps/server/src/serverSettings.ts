@@ -183,6 +183,11 @@ export interface PrimeAgentBinaryBinding {
   readonly generation: string;
 }
 
+export interface PrimeAgentBinaryBindingEntry {
+  readonly instanceId: string;
+  readonly binding: PrimeAgentBinaryBinding;
+}
+
 function primeAgentBinaryBinding(
   settings: ServerSettings,
   instanceId: string,
@@ -207,6 +212,22 @@ function primeAgentBinaryBinding(
     binaryPath: legacy.binaryPath,
     generation: hashPrimeAgentBinding(legacy),
   };
+}
+
+function primeAgentBinaryBindings(
+  settings: ServerSettings,
+): ReadonlyArray<PrimeAgentBinaryBindingEntry> {
+  const entries: PrimeAgentBinaryBindingEntry[] = [];
+  for (const [instanceId, instance] of Object.entries(settings.providerInstances)) {
+    if (instance.driver !== "primeAgent") continue;
+    const binding = primeAgentBinaryBinding(settings, instanceId);
+    if (binding) entries.push({ instanceId, binding });
+  }
+  if (!("primeAgent" in settings.providerInstances)) {
+    const binding = primeAgentBinaryBinding(settings, "primeAgent");
+    if (binding) entries.push({ instanceId: "primeAgent", binding });
+  }
+  return entries.toSorted((left, right) => left.instanceId.localeCompare(right.instanceId));
 }
 
 function patchPrimeAgentBinaryPath(
@@ -254,6 +275,12 @@ export class ServerSettingsService extends Context.Service<
     readonly readPrimeAgentBinaryBinding?: (
       instanceId: string,
     ) => Effect.Effect<PrimeAgentBinaryBinding | undefined, ServerSettingsError>;
+
+    /** Read every authoritative Prime binding from one settings snapshot. */
+    readonly listPrimeAgentBinaryBindings?: Effect.Effect<
+      ReadonlyArray<PrimeAgentBinaryBindingEntry>,
+      ServerSettingsError
+    >;
 
     /** Atomically compare-and-set only this Prime instance's binary path. */
     readonly compareAndSetPrimeAgentBinaryPath?: (input: {
@@ -861,6 +888,7 @@ const make = Effect.gen(function* () {
       getSettingsFromCache.pipe(
         Effect.map((settings) => primeAgentBinaryBinding(settings, instanceId)),
       ),
+    listPrimeAgentBinaryBindings: getSettingsFromCache.pipe(Effect.map(primeAgentBinaryBindings)),
     compareAndSetPrimeAgentBinaryPath: (input) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {

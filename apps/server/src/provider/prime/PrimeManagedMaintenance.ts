@@ -71,6 +71,7 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
   if (platform !== "win32") {
     if (
       !settings.readPrimeAgentBinaryBinding ||
+      !settings.listPrimeAgentBinaryBindings ||
       !settings.compareAndSetPrimeAgentBinaryPath ||
       !providerService.reserveProviderMaintenance ||
       !providerService.releaseProviderMaintenance
@@ -103,6 +104,7 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
   }
 
   const readPrimeAgentBinaryBinding = settings.readPrimeAgentBinaryBinding!;
+  const listPrimeAgentBinaryBindings = settings.listPrimeAgentBinaryBindings!;
   const compareAndSetPrimeAgentBinaryPath = settings.compareAndSetPrimeAgentBinaryPath!;
   const reserveProviderMaintenance = providerService.reserveProviderMaintenance!;
   const releaseProviderMaintenance = providerService.releaseProviderMaintenance!;
@@ -123,6 +125,17 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
         );
         if (!binding) throw new Error("The target is not a configured Prime Agent instance.");
         return binding;
+      },
+      listBindings: () => runPromise(listPrimeAgentBinaryBindings.pipe(Effect.orDie)),
+      listOwnedRuntimeBuildReferences: async () => {
+        const providers = await runPromise(providerRegistry.getProviders);
+        return providers.flatMap((provider) =>
+          provider.driver === "primeAgent" &&
+          provider.distribution?.classification === "pylon-managed" &&
+          provider.distribution.buildId !== null
+            ? [{ instanceId: provider.instanceId, buildId: provider.distribution.buildId }]
+            : [],
+        );
       },
       reserveQuiescentBinding: async (instanceId, expected) => {
         const current = await runPromise(

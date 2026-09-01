@@ -355,6 +355,10 @@ async function makeHarness(
   let binding: PrimeManagedBinding = { binaryPath: stock, generation: "binding-0" };
   let busy = input.busy ?? false;
   let generation = 0;
+  let ownedRuntimeBuildReferences: ReadonlyArray<{
+    readonly instanceId: string;
+    readonly buildId: string;
+  }> = [];
   let crashAfterCommitOnce = input.crashAfterCommitOnce ?? false;
   const reservations = new Set<string>();
   const dependencies: PrimeManagedToolStoreDependencies = {
@@ -363,6 +367,8 @@ async function makeHarness(
       return currentBundle;
     },
     readBinding: async () => binding,
+    listBindings: async () => [{ instanceId: "primeAgent", binding }],
+    listOwnedRuntimeBuildReferences: async () => ownedRuntimeBuildReferences,
     reserveQuiescentBinding: async (_instanceId, expected) => {
       if (
         expected.generation !== binding.generation ||
@@ -435,6 +441,15 @@ async function makeHarness(
     setExternalBinding(binaryPath: string) {
       generation += 1;
       binding = { binaryPath, generation: `binding-${generation}` };
+    },
+    bumpBindingGeneration() {
+      generation += 1;
+      binding = { ...binding, generation: `binding-${generation}` };
+    },
+    setOwnedRuntimeBuildReferences(
+      references: ReadonlyArray<{ readonly instanceId: string; readonly buildId: string }>,
+    ) {
+      ownedRuntimeBuildReferences = references;
     },
   };
 }
@@ -611,6 +626,132 @@ describe("Pylon-managed Prime tool store", () => {
     expect(await NodeFSP.readFile(harness.stock)).toEqual(stockBefore);
   });
 
+  it("preserves a managed selection across an unrelated display/home generation edit, then restores stock and cleans up", async () => {
+    const harness = await makeHarness();
+    const stockBefore = await NodeFSP.readFile(harness.stock);
+    const installed = await harness.store.command({
+      commandId: "install-before-unrelated-settings-edit",
+      instanceId: "primeAgent",
+      action: "install",
+    });
+    expect(installed.status).toBe("succeeded");
+    harness.bumpBindingGeneration();
+
+    const useStock = await harness.store.command({
+      commandId: "stock-after-unrelated-settings-edit",
+      instanceId: "primeAgent",
+      action: "use-stock",
+    });
+    expect(useStock.status).toBe("succeeded");
+    expect(harness.binding.binaryPath).toBe(harness.stock);
+
+    const cleanup = await harness.store.command({
+      commandId: "cleanup-after-unrelated-settings-edit",
+      instanceId: "primeAgent",
+      action: "cleanup",
+    });
+    expect(cleanup.status).toBe("succeeded");
+    expect((await harness.store.status("primeAgent")).availableBuilds).toEqual([]);
+    expect(await NodeFSP.readFile(harness.stock)).toEqual(stockBefore);
+  });
+
+  it("takes the provider maintenance fence and refuses cleanup while a runtime is active", async () => {
+    const harness = await makeHarness();
+    await harness.store.command({
+      commandId: "install-before-active-cleanup",
+      instanceId: "primeAgent",
+      action: "install",
+    });
+    await harness.store.command({
+      commandId: "stock-before-active-cleanup",
+      instanceId: "primeAgent",
+      action: "use-stock",
+    });
+    harness.setBusy(true);
+    const cleanup = await harness.store.command({
+      commandId: "cleanup-while-runtime-active",
+      instanceId: "primeAgent",
+      action: "cleanup",
+    });
+    expect(cleanup).toMatchObject({
+      status: "failed",
+      message: expect.stringMatching(/blocked.*active provider session/u),
+    });
+    expect((await harness.store.status("primeAgent")).availableBuilds).toHaveLength(1);
+  });
+
+  it("keeps unselected bytes referenced by a loaded owned runtime context until it unloads", async () => {
+    const harness = await makeHarness();
+    const installed = await harness.store.command({
+      commandId: "install-before-owned-context",
+      instanceId: "primeAgent",
+      action: "install",
+    });
+    await harness.store.command({
+      commandId: "stock-before-owned-context",
+      instanceId: "primeAgent",
+      action: "use-stock",
+    });
+    harness.setOwnedRuntimeBuildReferences([
+      { instanceId: "primeAgent", buildId: installed.buildId! },
+    ]);
+    await harness.store.command({
+      commandId: "cleanup-with-owned-context",
+      instanceId: "primeAgent",
+      action: "cleanup",
+    });
+    expect((await harness.store.status("primeAgent")).availableBuilds).toHaveLength(1);
+
+    harness.setOwnedRuntimeBuildReferences([]);
+    await harness.store.command({
+      commandId: "cleanup-after-owned-context",
+      instanceId: "primeAgent",
+      action: "cleanup",
+    });
+    expect((await harness.store.status("primeAgent")).availableBuilds).toEqual([]);
+  });
+
+  it("never deletes a build selected by an authoritative binding even when stored selection mode is corrupt", async () => {
+    const harness = await makeHarness();
+    const installed = await harness.store.command({
+      commandId: "install-before-corrupt-mode",
+      instanceId: "primeAgent",
+      action: "install",
+    });
+    const statePath = NodePath.join(
+      harness.stateDir,
+      ...PRIME_MANAGED_TOOL_DIRECTORY.split("/"),
+      "managed-tool-state-v1.json",
+    );
+    const state = JSON.parse(await NodeFSP.readFile(statePath, "utf8")) as {
+      selections: Record<string, Record<string, unknown>>;
+    };
+    state.selections.primeAgent = {
+      ...state.selections.primeAgent,
+      mode: "stock",
+      selectedBuildId: null,
+      channel: null,
+    };
+    await NodeFSP.writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+
+    const cleanup = await harness.store.command({
+      commandId: "cleanup-with-corrupt-mode",
+      instanceId: "primeAgent",
+      action: "cleanup",
+    });
+    expect(cleanup.status).toBe("succeeded");
+    expect((await harness.store.status("primeAgent")).availableBuilds).toEqual([
+      expect.objectContaining({ buildId: installed.buildId }),
+    ]);
+    const useStock = await harness.store.command({
+      commandId: "false-stock-with-corrupt-mode",
+      instanceId: "primeAgent",
+      action: "use-stock",
+    });
+    expect(useStock).toMatchObject({ status: "failed" });
+    expect(harness.binding.binaryPath).toContain(installed.buildId!);
+  });
+
   it("treats an external provider-path edit as the new configured stock binding", async () => {
     const harness = await makeHarness();
     const installed = await harness.store.command({
@@ -620,6 +761,7 @@ describe("Pylon-managed Prime tool store", () => {
     });
     const custom = NodePath.join(harness.stateDir, "custom-prime-agent");
     await NodeFSP.writeFile(custom, "custom-stock-bytes\n", { mode: 0o755 });
+    const customBefore = await NodeFSP.readFile(custom);
     harness.setExternalBinding(custom);
 
     await expect(
@@ -645,6 +787,12 @@ describe("Pylon-managed Prime tool store", () => {
       action: "use-stock",
     });
     expect(harness.binding.binaryPath).toBe(custom);
+    await harness.store.command({
+      commandId: "cleanup-after-external-stock",
+      instanceId: "primeAgent",
+      action: "cleanup",
+    });
+    expect(await NodeFSP.readFile(custom)).toEqual(customBefore);
   });
 
   it("schedules an exact binding while busy and commits after the instance drains", async () => {
@@ -716,6 +864,8 @@ describe("Pylon-managed Prime tool store", () => {
           throw new Error("not used");
         },
         readBinding: async () => binding,
+        listBindings: async () => [{ instanceId: "primeAgent", binding }],
+        listOwnedRuntimeBuildReferences: async () => [],
         reserveQuiescentBinding: async () => ({ status: "busy", reasons: [] }),
         commitBinding: async () => binding,
         releaseReservation: async () => {},
@@ -965,6 +1115,14 @@ describe("Pylon-managed Prime tool store", () => {
             readBinding: async () => {
               io += 1;
               return { binaryPath: "prime-agent", generation: "0" };
+            },
+            listBindings: async () => {
+              io += 1;
+              return [];
+            },
+            listOwnedRuntimeBuildReferences: async () => {
+              io += 1;
+              return [];
             },
             reserveQuiescentBinding: async () => {
               io += 1;

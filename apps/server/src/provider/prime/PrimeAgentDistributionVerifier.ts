@@ -1,5 +1,6 @@
 // @effect-diagnostics globalFetch:off
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics globalDate:off
 import { bundleFromJSON, assertBundleLatest, isBundleWithDsseEnvelope } from "@sigstore/bundle";
 import { X509Certificate } from "@sigstore/core";
 import { getTrustedRoot } from "@sigstore/tuf";
@@ -39,6 +40,12 @@ const MAX_RELEASE_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_ROOT_ARTIFACT_BYTES = 256 * 1024 * 1024;
 const MAX_FEED_CANDIDATES = 12;
 const FETCH_TIMEOUT_MS = 12_000;
+const DISTRIBUTION_CACHE_TTL_MS = 15 * 60_000;
+const DISTRIBUTION_BUNDLE_CACHE_TTL_MS = 30_000;
+const DISTRIBUTION_FAILURE_TTL_MS = 15_000;
+const DISTRIBUTION_RATE_LIMIT_TTL_MS = 60_000;
+const DISTRIBUTION_MAX_RATE_LIMIT_TTL_MS = 5 * 60_000;
+const DISTRIBUTION_REFRESH_REUSE_MS = 30_000;
 
 const SHA256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
 const SHA512 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{128}$/));
@@ -769,24 +776,38 @@ async function verifyExpectedSubjectBundles(
   bundlesByDigest: PrimePublicationFixture["attestationBundlesBySubjectSha256"],
   dependencies: PrimePublicationVerificationDependencies,
 ): Promise<void> {
+  // One GitHub attestation can (and Pylon publications do) bind the whole subject set. Query and
+  // verify that multi-subject provenance once instead of spending one REST request and one
+  // cryptographic verification per subject.
+  const candidates: unknown[] = [];
+  const seenObjects = new Set<unknown>();
   for (const subject of expected.subjects) {
-    const bundles = bundlesByDigest.get(subject.sha256);
-    if (!bundles || bundles.length < 1 || bundles.length > 20) {
-      throw new Error(`No bounded Sigstore bundle set exists for ${subject.name}.`);
-    }
-    let verified = false;
-    for (const bundle of bundles) {
-      try {
-        await dependencies.verifyBundle(bundle, expected);
-        verified = true;
-      } catch {
-        // Public repositories can accumulate unrelated attestations. Only one exact, fully verified
-        // Pylon signer/source/subject binding is required for this digest.
+    for (const bundle of bundlesByDigest.get(subject.sha256) ?? []) {
+      if (seenObjects.has(bundle)) continue;
+      seenObjects.add(bundle);
+      candidates.push(bundle);
+      if (candidates.length > 20) {
+        throw new Error("Pylon publication has an unbounded Sigstore bundle set.");
       }
     }
-    if (!verified)
-      throw new Error(`No valid Pylon Sigstore attestation exists for ${subject.name}.`);
   }
+  if (candidates.length === 0) {
+    throw new Error(
+      `No bounded Sigstore bundle set exists for ${expected.subjects[0]?.name ?? "publication"}.`,
+    );
+  }
+  for (const bundle of candidates) {
+    try {
+      await dependencies.verifyBundle(bundle, expected);
+      return;
+    } catch {
+      // Public repositories can accumulate unrelated attestations. Only one exact, fully verified
+      // Pylon signer/source/complete-subject binding is required.
+    }
+  }
+  throw new Error(
+    `No valid Pylon Sigstore attestation exists for ${expected.subjects[0]?.name ?? "publication"}.`,
+  );
 }
 
 export async function verifyPrimePublicationFixture(
@@ -1443,10 +1464,49 @@ export async function inspectPrimeAgentDistribution(
   });
 }
 
+export interface PrimeDistributionCacheOptions {
+  /** Separate fixture/test caches without weakening the process-wide production repository cache. */
+  readonly key: string;
+  readonly now?: () => number;
+  readonly successTtlMs?: number;
+  readonly bundleTtlMs?: number;
+  readonly failureTtlMs?: number;
+  readonly rateLimitTtlMs?: number;
+  readonly refreshReuseMs?: number;
+}
+
 export interface PrimeDistributionNetworkDependencies {
   readonly fetchJson: (url: string, maxBytes: number) => Promise<unknown>;
   readonly fetchBytes: (url: string, maxBytes: number) => Promise<Buffer>;
   readonly getTrustedRoot: () => Promise<TrustedRoot>;
+  /** Production loaders share this cache identity across driver and maintenance instances. */
+  readonly cache?: PrimeDistributionCacheOptions;
+  /** Test seams. Production always performs the server-owned verification functions above. */
+  readonly verifyBundle?: PrimePublicationVerificationDependencies["verifyBundle"];
+  readonly verifySourcePolicy?: PrimePublicationVerificationDependencies["verifySourcePolicy"];
+}
+
+class PrimeDistributionHttpError extends Error {
+  readonly status: number;
+  readonly retryAfterMs: number | undefined;
+
+  constructor(status: number, retryAfterMs: number | undefined) {
+    super(`Pylon distribution fetch failed with HTTP ${status}.`);
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+function retryAfterMilliseconds(response: Response): number | undefined {
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+    const instant = Date.parse(retryAfter);
+    if (Number.isFinite(instant)) return Math.max(0, instant - Date.now());
+  }
+  const reset = Number(response.headers.get("x-ratelimit-reset"));
+  return Number.isFinite(reset) ? Math.max(0, reset * 1_000 - Date.now()) : undefined;
 }
 
 async function boundedFetch(url: string, maxBytes: number, accept: string): Promise<Buffer> {
@@ -1471,7 +1531,7 @@ async function boundedFetch(url: string, maxBytes: number, accept: string): Prom
     throw new Error("Pylon distribution fetch followed an untrusted redirect.");
   }
   if (!response.ok || !response.body) {
-    throw new Error(`Pylon distribution fetch failed with HTTP ${response.status}.`);
+    throw new PrimeDistributionHttpError(response.status, retryAfterMilliseconds(response));
   }
   const length = Number(response.headers.get("content-length"));
   if (Number.isFinite(length) && length > maxBytes) {
@@ -1494,9 +1554,13 @@ async function boundedFetch(url: string, maxBytes: number, accept: string): Prom
 }
 
 export function makePrimeDistributionNetworkDependencies(
-  options: { readonly tufCachePath?: string } = {},
+  options: {
+    readonly tufCachePath?: string;
+    readonly cache?: Omit<PrimeDistributionCacheOptions, "key">;
+  } = {},
 ): PrimeDistributionNetworkDependencies {
   return {
+    cache: { key: PRIME_DISTRIBUTION_REPOSITORY, ...options.cache },
     fetchJson: async (url, maxBytes) => {
       const bytes = await boundedFetch(url, maxBytes, "application/vnd.github+json");
       return JSON.parse(bytes.toString("utf8")) as unknown;
@@ -1595,21 +1659,22 @@ async function loadPublicationFixtureForRelease(
         MAX_ROOT_ARTIFACT_BYTES,
       )
     : undefined;
-  const subjectDigests = new Set([
+  const previewSubjectDigests = [
     ...parsedRelease.assets.map((asset) => asset.sha256),
     sha256(releaseManifestBytes),
     sha256(previewManifestBytes),
-    ...(stableManifestBytes ? [sha256(stableManifestBytes)] : []),
-  ]);
-  const attestationBundlesBySubjectSha256 = new Map<string, ReadonlyArray<unknown>>();
-  await Promise.all(
-    [...subjectDigests].map(async (digest) => {
-      attestationBundlesBySubjectSha256.set(
-        digest,
-        await fetchAttestationBundles(digest, dependencies),
-      );
-    }),
+  ];
+  const previewBundles = await fetchAttestationBundles(sha256(previewManifestBytes), dependencies);
+  const attestationBundlesBySubjectSha256 = new Map<string, ReadonlyArray<unknown>>(
+    previewSubjectDigests.map((digest) => [digest, previewBundles]),
   );
+  if (stableManifestBytes) {
+    const stableDigest = sha256(stableManifestBytes);
+    attestationBundlesBySubjectSha256.set(
+      stableDigest,
+      await fetchAttestationBundles(stableDigest, dependencies),
+    );
+  }
   return {
     channel,
     releaseManifestBytes,
@@ -1649,50 +1714,220 @@ async function verifyRemoteSourcePolicy(
   }
 }
 
-export function makeLatestPrimePublicationLoader(
-  dependencies: PrimeDistributionNetworkDependencies = makePrimeDistributionNetworkDependencies(),
-): PrimeDistributionInspectionDependencies["loadLatestVerifiedPublication"] {
-  return async (channel) => {
-    const raw = await dependencies.fetchJson(
-      `https://api.github.com/repos/${PRIME_DISTRIBUTION_REPOSITORY}/releases?per_page=100`,
-      MAX_RELEASE_RESPONSE_BYTES,
-    );
-    const releases = decodeGitHubReleases(raw)
-      .filter(
-        (release) =>
-          !release.draft &&
-          release.immutable &&
-          (channel === "preview"
-            ? /^pylon-build-g[0-9a-f]{12}-r[1-9][0-9]*$/u.test(release.tag_name)
-            : /^pylon-stable-[0-9]{6}-g[0-9a-f]{12}-r[1-9][0-9]*$/u.test(release.tag_name)),
-      )
-      .slice(0, MAX_FEED_CANDIDATES);
-    if (releases.length === 0) throw new Error(`No immutable ${channel} publication exists.`);
-    const trustedRoot = await dependencies.getTrustedRoot();
-    const verified: VerifiedPrimePublication[] = [];
-    for (const release of releases) {
-      try {
-        const fixture = await loadPublicationFixtureForRelease(channel, release, dependencies);
-        verified.push(
-          await verifyPrimePublicationFixture(fixture, {
-            verifyBundle: async (bundle, expected) =>
-              verifyPrimeSigstoreBundle(bundle, trustedRoot, expected),
-            verifySourcePolicy: (expected) => verifyRemoteSourcePolicy(expected, dependencies),
-          }),
-        );
-      } catch {
-        // One malformed, draft-like, or unrelated release must not hide a later exact candidate.
-      }
-    }
-    const latest = verified.toSorted((left, right) => right.sequence - left.sequence)[0];
-    if (!latest) throw new Error(`No exact signed ${channel} publication verified.`);
-    return latest;
-  };
-}
-
 export interface VerifiedPrimePublicationBundle {
   readonly publication: VerifiedPrimePublication;
   readonly rootArtifactBytes: Buffer;
+}
+
+export interface PrimeDistributionLoadOptions {
+  /** Revalidate an old success, but reuse a just-fresh success and every live failure backoff. */
+  readonly refresh?: boolean;
+}
+
+type CachedPrimeDistributionResult<T> =
+  | {
+      readonly status: "success";
+      readonly value: T;
+      readonly storedAt: number;
+      readonly expiresAt: number;
+    }
+  | {
+      readonly status: "failure";
+      readonly error: unknown;
+      readonly storedAt: number;
+      readonly expiresAt: number;
+    };
+
+interface PrimeDistributionChannelCache {
+  publication?: CachedPrimeDistributionResult<VerifiedPrimePublication>;
+  publicationFlight?: Promise<VerifiedPrimePublication>;
+  bundle?: CachedPrimeDistributionResult<VerifiedPrimePublicationBundle>;
+  bundleFlight?: Promise<VerifiedPrimePublicationBundle>;
+}
+
+const primeDistributionChannelCaches = new Map<string, PrimeDistributionChannelCache>();
+
+function distributionCacheKey(
+  dependencies: PrimeDistributionNetworkDependencies,
+  channel: ServerProviderDistributionChannel,
+): string | undefined {
+  return dependencies.cache ? `${dependencies.cache.key}:${channel}` : undefined;
+}
+
+function cacheNow(dependencies: PrimeDistributionNetworkDependencies): number {
+  return dependencies.cache?.now?.() ?? Date.now();
+}
+
+function isRateLimitFailure(cause: unknown): boolean {
+  return (
+    (cause instanceof PrimeDistributionHttpError &&
+      (cause.status === 403 || cause.status === 429)) ||
+    (cause instanceof Error && /HTTP (?:403|429)\b/u.test(cause.message))
+  );
+}
+
+function failureCacheTtl(
+  cause: unknown,
+  dependencies: PrimeDistributionNetworkDependencies,
+): number {
+  const configured = dependencies.cache;
+  if (!isRateLimitFailure(cause)) {
+    return Math.max(1, configured?.failureTtlMs ?? DISTRIBUTION_FAILURE_TTL_MS);
+  }
+  const requested = cause instanceof PrimeDistributionHttpError ? cause.retryAfterMs : undefined;
+  return Math.min(
+    DISTRIBUTION_MAX_RATE_LIMIT_TTL_MS,
+    Math.max(configured?.rateLimitTtlMs ?? DISTRIBUTION_RATE_LIMIT_TTL_MS, requested ?? 0),
+  );
+}
+
+function reusableCachedResult<T>(
+  result: CachedPrimeDistributionResult<T> | undefined,
+  dependencies: PrimeDistributionNetworkDependencies,
+  options: PrimeDistributionLoadOptions,
+): CachedPrimeDistributionResult<T> | undefined {
+  if (!result) return undefined;
+  const now = cacheNow(dependencies);
+  if (now >= result.expiresAt) return undefined;
+  if (result.status === "failure") return result;
+  const refreshReuseMs = dependencies.cache?.refreshReuseMs ?? DISTRIBUTION_REFRESH_REUSE_MS;
+  return options.refresh && now - result.storedAt >= refreshReuseMs ? undefined : result;
+}
+
+function cachedValue<T>(result: CachedPrimeDistributionResult<T>): T {
+  if (result.status === "failure") throw result.error;
+  return result.value;
+}
+
+/** Test/operations seam. Normal refreshes rely on TTL and never need explicit invalidation. */
+export function invalidatePrimeDistributionCache(
+  input: {
+    readonly channel?: ServerProviderDistributionChannel;
+    readonly key?: string;
+  } = {},
+): void {
+  for (const key of primeDistributionChannelCaches.keys()) {
+    const separator = key.lastIndexOf(":");
+    const cacheKey = key.slice(0, separator);
+    const channel = key.slice(separator + 1);
+    if (
+      (input.key === undefined || input.key === cacheKey) &&
+      (input.channel === undefined || input.channel === channel)
+    ) {
+      primeDistributionChannelCaches.delete(key);
+    }
+  }
+}
+
+async function loadLatestPrimePublicationUncached(
+  channel: ServerProviderDistributionChannel,
+  dependencies: PrimeDistributionNetworkDependencies,
+): Promise<VerifiedPrimePublication> {
+  const raw = await dependencies.fetchJson(
+    `https://api.github.com/repos/${PRIME_DISTRIBUTION_REPOSITORY}/releases?per_page=100`,
+    MAX_RELEASE_RESPONSE_BYTES,
+  );
+  const releases = decodeGitHubReleases(raw)
+    .filter(
+      (release) =>
+        !release.draft &&
+        release.immutable &&
+        (channel === "preview"
+          ? /^pylon-build-g[0-9a-f]{12}-r[1-9][0-9]*$/u.test(release.tag_name)
+          : /^pylon-stable-[0-9]{6}-g[0-9a-f]{12}-r[1-9][0-9]*$/u.test(release.tag_name)),
+    )
+    .slice(0, MAX_FEED_CANDIDATES);
+  if (releases.length === 0) throw new Error(`No immutable ${channel} publication exists.`);
+  const trustedRoot = await dependencies.getTrustedRoot();
+  const verified: VerifiedPrimePublication[] = [];
+  const sourcePolicies = new Map<string, Promise<void>>();
+  const verifySourcePolicyOnce = (expected: PrimeSourcePolicyExpectation) => {
+    const key = `${expected.commit}:${expected.tree}:${expected.workflow}:${expected.publicationPolicyRevision}`;
+    const current = sourcePolicies.get(key);
+    if (current) return current;
+    const started = dependencies.verifySourcePolicy
+      ? dependencies.verifySourcePolicy(expected)
+      : verifyRemoteSourcePolicy(expected, dependencies);
+    sourcePolicies.set(key, started);
+    return started;
+  };
+  for (const release of releases) {
+    try {
+      const fixture = await loadPublicationFixtureForRelease(channel, release, dependencies);
+      verified.push(
+        await verifyPrimePublicationFixture(fixture, {
+          verifyBundle:
+            dependencies.verifyBundle ??
+            (async (bundle, expected) => verifyPrimeSigstoreBundle(bundle, trustedRoot, expected)),
+          verifySourcePolicy: verifySourcePolicyOnce,
+        }),
+      );
+    } catch (cause) {
+      if (isRateLimitFailure(cause)) throw cause;
+      // One malformed, draft-like, or unrelated release must not hide a later exact candidate.
+    }
+  }
+  const latest = verified.toSorted((left, right) => right.sequence - left.sequence)[0];
+  if (!latest) throw new Error(`No exact signed ${channel} publication verified.`);
+  return latest;
+}
+
+async function loadCachedPrimePublication(
+  channel: ServerProviderDistributionChannel,
+  dependencies: PrimeDistributionNetworkDependencies,
+  options: PrimeDistributionLoadOptions,
+): Promise<VerifiedPrimePublication> {
+  const key = distributionCacheKey(dependencies, channel);
+  if (!key) return await loadLatestPrimePublicationUncached(channel, dependencies);
+  const cache = primeDistributionChannelCaches.get(key) ?? {};
+  primeDistributionChannelCaches.set(key, cache);
+  const cached = reusableCachedResult(cache.publication, dependencies, options);
+  if (cached) return cachedValue(cached);
+  if (cache.publicationFlight) return await cache.publicationFlight;
+  const startedAt = cacheNow(dependencies);
+  const flight = loadLatestPrimePublicationUncached(channel, dependencies)
+    .then((value) => {
+      const current = primeDistributionChannelCaches.get(key);
+      if (current !== cache) return value;
+      const previousBuildId =
+        current.publication?.status === "success" ? current.publication.value.buildId : undefined;
+      current.publication = {
+        status: "success",
+        value,
+        storedAt: startedAt,
+        expiresAt: startedAt + (dependencies.cache?.successTtlMs ?? DISTRIBUTION_CACHE_TTL_MS),
+      };
+      if (previousBuildId !== undefined && previousBuildId !== value.buildId) delete current.bundle;
+      primeDistributionChannelCaches.set(key, current);
+      return value;
+    })
+    .catch((error: unknown) => {
+      const current = primeDistributionChannelCaches.get(key);
+      if (current !== cache) throw error;
+      current.publication = {
+        status: "failure",
+        error,
+        storedAt: startedAt,
+        expiresAt: startedAt + failureCacheTtl(error, dependencies),
+      };
+      primeDistributionChannelCaches.set(key, current);
+      throw error;
+    })
+    .finally(() => {
+      const current = primeDistributionChannelCaches.get(key);
+      if (current?.publicationFlight === flight) delete current.publicationFlight;
+    });
+  cache.publicationFlight = flight;
+  return await flight;
+}
+
+export function makeLatestPrimePublicationLoader(
+  dependencies: PrimeDistributionNetworkDependencies = makePrimeDistributionNetworkDependencies(),
+): (
+  channel: ServerProviderDistributionChannel,
+  options?: PrimeDistributionLoadOptions,
+) => Promise<VerifiedPrimePublication> {
+  return (channel, options = {}) => loadCachedPrimePublication(channel, dependencies, options);
 }
 
 /**
@@ -1702,51 +1937,65 @@ export interface VerifiedPrimePublicationBundle {
  */
 export function makeLatestPrimePublicationBundleLoader(
   dependencies: PrimeDistributionNetworkDependencies = makePrimeDistributionNetworkDependencies(),
-): (channel: ServerProviderDistributionChannel) => Promise<VerifiedPrimePublicationBundle> {
-  return async (channel) => {
-    const raw = await dependencies.fetchJson(
-      `https://api.github.com/repos/${PRIME_DISTRIBUTION_REPOSITORY}/releases?per_page=100`,
-      MAX_RELEASE_RESPONSE_BYTES,
-    );
-    const releases = decodeGitHubReleases(raw)
-      .filter(
-        (release) =>
-          !release.draft &&
-          release.immutable &&
-          (channel === "preview"
-            ? /^pylon-build-g[0-9a-f]{12}-r[1-9][0-9]*$/u.test(release.tag_name)
-            : /^pylon-stable-[0-9]{6}-g[0-9a-f]{12}-r[1-9][0-9]*$/u.test(release.tag_name)),
-      )
-      .slice(0, MAX_FEED_CANDIDATES);
-    if (releases.length === 0) throw new Error(`No immutable ${channel} publication exists.`);
-    const trustedRoot = await dependencies.getTrustedRoot();
-    const verified: VerifiedPrimePublication[] = [];
-    for (const release of releases) {
-      try {
-        // Authenticate manifests and every attested artifact digest first. Untrusted root bytes are
-        // not downloaded until the latest exact signed publication has been selected.
-        const fixture = await loadPublicationFixtureForRelease(channel, release, dependencies);
-        verified.push(
-          await verifyPrimePublicationFixture(fixture, {
-            verifyBundle: async (bundle, expected) =>
-              verifyPrimeSigstoreBundle(bundle, trustedRoot, expected),
-            verifySourcePolicy: (expected) => verifyRemoteSourcePolicy(expected, dependencies),
-          }),
-        );
-      } catch {
-        // One malformed or unrelated release must not hide a later exact candidate.
+): (
+  channel: ServerProviderDistributionChannel,
+  options?: PrimeDistributionLoadOptions,
+) => Promise<VerifiedPrimePublicationBundle> {
+  return async (channel, options = {}) => {
+    const publication = await loadCachedPrimePublication(channel, dependencies, options);
+    const key = distributionCacheKey(dependencies, channel);
+    const loadBundle = async () => {
+      const rootArtifactBytes = await dependencies.fetchBytes(
+        `${PRIME_DISTRIBUTION_REPOSITORY_URL}/releases/download/${publication.buildId}/${publication.rootAsset}`,
+        MAX_ROOT_ARTIFACT_BYTES,
+      );
+      if (sha256(rootArtifactBytes) !== publication.rootSha256) {
+        throw new Error("Prime root artifact does not match its exact signed digest.");
       }
+      return { publication, rootArtifactBytes };
+    };
+    if (!key) return await loadBundle();
+    const cache = primeDistributionChannelCaches.get(key) ?? {};
+    primeDistributionChannelCaches.set(key, cache);
+    const cached = reusableCachedResult(cache.bundle, dependencies, options);
+    if (cached?.status === "success" && cached.value.publication.buildId === publication.buildId) {
+      return cached.value;
     }
-    const publication = verified.toSorted((left, right) => right.sequence - left.sequence)[0];
-    if (!publication) throw new Error(`No exact signed ${channel} publication verified.`);
-    const rootArtifactBytes = await dependencies.fetchBytes(
-      `${PRIME_DISTRIBUTION_REPOSITORY_URL}/releases/download/${publication.buildId}/${publication.rootAsset}`,
-      MAX_ROOT_ARTIFACT_BYTES,
-    );
-    if (sha256(rootArtifactBytes) !== publication.rootSha256) {
-      throw new Error("Prime root artifact does not match its exact signed digest.");
-    }
-    return { publication, rootArtifactBytes };
+    if (cached?.status === "failure") throw cached.error;
+    if (cache.bundleFlight) return await cache.bundleFlight;
+    const startedAt = cacheNow(dependencies);
+    const flight = loadBundle()
+      .then((value) => {
+        const current = primeDistributionChannelCaches.get(key);
+        if (current !== cache) return value;
+        current.bundle = {
+          status: "success",
+          value,
+          storedAt: startedAt,
+          expiresAt:
+            startedAt + (dependencies.cache?.bundleTtlMs ?? DISTRIBUTION_BUNDLE_CACHE_TTL_MS),
+        };
+        primeDistributionChannelCaches.set(key, current);
+        return value;
+      })
+      .catch((error: unknown) => {
+        const current = primeDistributionChannelCaches.get(key);
+        if (current !== cache) throw error;
+        current.bundle = {
+          status: "failure",
+          error,
+          storedAt: startedAt,
+          expiresAt: startedAt + failureCacheTtl(error, dependencies),
+        };
+        primeDistributionChannelCaches.set(key, current);
+        throw error;
+      })
+      .finally(() => {
+        const current = primeDistributionChannelCaches.get(key);
+        if (current?.bundleFlight === flight) delete current.bundleFlight;
+      });
+    cache.bundleFlight = flight;
+    return await flight;
   };
 }
 

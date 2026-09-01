@@ -50,6 +50,16 @@ export interface PrimeManagedBinding {
   readonly generation: string;
 }
 
+export interface PrimeManagedBindingEntry {
+  readonly instanceId: string;
+  readonly binding: PrimeManagedBinding;
+}
+
+export interface PrimeManagedRuntimeBuildReference {
+  readonly instanceId: string;
+  readonly buildId: string;
+}
+
 export interface PrimeManagedReservation {
   readonly token: string;
 }
@@ -66,8 +76,15 @@ export interface PrimeManagedPublicationBundle {
 export interface PrimeManagedToolStoreDependencies {
   readonly loadLatestVerifiedPublication: (
     channel: ServerProviderDistributionChannel,
+    options?: { readonly refresh?: boolean },
   ) => Promise<PrimeManagedPublicationBundle>;
   readonly readBinding: (instanceId: string) => Promise<PrimeManagedBinding>;
+  /** Every authoritative configured Prime binding, including disabled and legacy instances. */
+  readonly listBindings: () => Promise<ReadonlyArray<PrimeManagedBindingEntry>>;
+  /** Build ids held by loaded provider adapters/SDK/daemon ownership contexts. */
+  readonly listOwnedRuntimeBuildReferences: () => Promise<
+    ReadonlyArray<PrimeManagedRuntimeBuildReference>
+  >;
   /**
    * The reservation must atomically fence new admissions/session starts for the instance, then
    * prove that it has no active or pending admission, turn, session, owned process, or SDK context.
@@ -951,7 +968,9 @@ export class PrimeAgentManagedToolStore {
           channel,
           message: `Downloading the exact signed ${channel} Prime publication.`,
         });
-        const bundle = await this.#dependencies.loadLatestVerifiedPublication(channel);
+        const bundle = await this.#dependencies.loadLatestVerifiedPublication(channel, {
+          refresh: true,
+        });
         receipt = await this.#updateOperation(await this.#readState(), receipt, {
           status: "verifying",
           channel,
@@ -987,12 +1006,22 @@ export class PrimeAgentManagedToolStore {
       } else {
         const selection = state.selections[input.instanceId];
         if (!selection || selection.mode === "stock") {
+          if (await this.#managedBuildIdForBinaryPath(expected.binaryPath)) {
+            throw new Error(
+              "Prime still selects a receipt-owned managed launcher, but its original stock binding is unavailable. Refusing to report a stock switch.",
+            );
+          }
           return await this.#finishOperation(state, receipt, {
             status: "succeeded",
             message: "Prime already uses its stock or configured binary.",
           });
         }
         targetBinaryPath = selection.stockBinaryPath;
+        if (await this.#managedBuildIdForBinaryPath(targetBinaryPath)) {
+          throw new Error(
+            "The recorded original Prime binding points into the managed tool store; refusing a false stock switch.",
+          );
+        }
       }
       return await this.#trySelection({
         state: await this.#readState(),
@@ -1093,6 +1122,15 @@ export class PrimeAgentManagedToolStore {
         binaryPath: input.targetBinaryPath,
         reservation: reservation.reservation,
       });
+      if (committed.binaryPath !== input.targetBinaryPath) {
+        throw new Error("Prime settings CAS did not select the exact requested binary binding.");
+      }
+      if (
+        input.buildId === null &&
+        (await this.#managedBuildIdForBinaryPath(committed.binaryPath))
+      ) {
+        throw new Error("Prime still selects managed bytes; the stock switch did not complete.");
+      }
       const next = await this.#commitSelectionState(await this.#readState(), intent, committed);
       return await this.#finishOperation(next, receipt, {
         status: "succeeded",
@@ -1118,6 +1156,23 @@ export class PrimeAgentManagedToolStore {
         selected.binding.binaryPath === current.binaryPath)
     ) {
       return state;
+    }
+    if (
+      selected.mode === "managed" &&
+      selected.selectedBuildId !== null &&
+      current.binaryPath === selected.binding.binaryPath &&
+      (await this.#managedBuildIdForBinaryPath(current.binaryPath)) === selected.selectedBuildId
+    ) {
+      const next: StoredState = {
+        ...state,
+        revision: state.revision + 1,
+        selections: {
+          ...state.selections,
+          [instanceId]: { ...selected, binding: current },
+        },
+      };
+      await this.#writeState(next);
+      return next;
     }
     const next: StoredState = {
       ...state,
@@ -1492,34 +1547,113 @@ export class PrimeAgentManagedToolStore {
     return next;
   }
 
+  async #managedBuildIdForBinaryPath(
+    binaryPath: string,
+    builds?: ReadonlyArray<PrimeManagedInstalledBuild>,
+  ): Promise<string | undefined> {
+    const available = builds ?? (await this.#listVerifiedBuilds());
+    const absolute = NodePath.resolve(binaryPath);
+    let canonical: string | undefined;
+    try {
+      canonical = await NodeFSP.realpath(absolute);
+    } catch {
+      // A missing external path is not cleanup authority. Exact managed launcher strings still are.
+    }
+    for (const build of available) {
+      if (absolute === NodePath.resolve(build.binaryPath)) return build.buildId;
+      if (canonical && canonical === (await NodeFSP.realpath(build.binaryPath)))
+        return build.buildId;
+    }
+    return undefined;
+  }
+
   async #cleanup(state: StoredState): Promise<ReadonlyArray<string>> {
-    const referenced = new Set<string>();
-    for (const selection of Object.values(state.selections)) {
-      if (selection.mode === "managed" && selection.selectedBuildId)
-        referenced.add(selection.selectedBuildId);
+    const bindings = await this.#dependencies.listBindings();
+    const duplicateInstance = bindings.find(
+      (entry, index) =>
+        bindings.findIndex((candidate) => candidate.instanceId === entry.instanceId) !== index,
+    );
+    if (duplicateInstance) {
+      throw new Error(`Prime cleanup received duplicate binding ${duplicateInstance.instanceId}.`);
     }
-    for (const scheduled of Object.values(state.scheduled)) {
-      if (scheduled.buildId) referenced.add(scheduled.buildId);
-    }
-    const removed: string[] = [];
-    const entries = await NodeFSP.readdir(this.#root, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!BUILD_ID.test(entry.name) || referenced.has(entry.name)) continue;
-      const path = NodePath.join(this.#root, entry.name);
-      const info = await NodeFSP.lstat(path);
-      if (!info.isDirectory() || info.isSymbolicLink() || (await NodeFSP.realpath(path)) !== path) {
-        continue;
+    const reservations: PrimeManagedReservation[] = [];
+    try {
+      for (const entry of bindings) {
+        const reserved = await this.#dependencies.reserveQuiescentBinding(
+          entry.instanceId,
+          entry.binding,
+        );
+        if (reserved.status === "busy") {
+          throw new Error(
+            `Prime cleanup is blocked by ${entry.instanceId}: ${reserved.reasons.join("; ")}`,
+          );
+        }
+        reservations.push(reserved.reservation);
       }
-      try {
-        await this.#readVerifiedBuild(entry.name);
-      } catch {
-        continue;
+
+      const fencedBindings = await this.#dependencies.listBindings();
+      const expected = bindings
+        .map(
+          (entry) =>
+            [entry.instanceId, entry.binding.binaryPath, entry.binding.generation] as const,
+        )
+        .toSorted(([left], [right]) => left.localeCompare(right));
+      const observed = fencedBindings
+        .map(
+          (entry) =>
+            [entry.instanceId, entry.binding.binaryPath, entry.binding.generation] as const,
+        )
+        .toSorted(([left], [right]) => left.localeCompare(right));
+      if (JSON.stringify(expected) !== JSON.stringify(observed)) {
+        throw new Error("Prime settings bindings changed while cleanup acquired its fences.");
       }
-      await NodeFSP.rm(path, { recursive: true, force: false });
-      removed.push(entry.name);
+
+      const builds = await this.#listVerifiedBuilds();
+      const referenced = new Set<string>();
+      for (const selection of Object.values(state.selections)) {
+        if (selection.selectedBuildId) referenced.add(selection.selectedBuildId);
+      }
+      for (const scheduled of Object.values(state.scheduled)) {
+        if (scheduled.buildId) referenced.add(scheduled.buildId);
+      }
+      for (const entry of fencedBindings) {
+        const buildId = await this.#managedBuildIdForBinaryPath(entry.binding.binaryPath, builds);
+        if (buildId) referenced.add(buildId);
+      }
+      const reservedInstances = new Set(fencedBindings.map((entry) => entry.instanceId));
+      for (const runtime of await this.#dependencies.listOwnedRuntimeBuildReferences()) {
+        if (!reservedInstances.has(runtime.instanceId)) {
+          throw new Error(
+            `Prime cleanup is blocked by an owned runtime context for unconfigured instance ${runtime.instanceId}.`,
+          );
+        }
+        if (BUILD_ID.test(runtime.buildId)) referenced.add(runtime.buildId);
+      }
+
+      const removed: string[] = [];
+      for (const build of builds) {
+        if (referenced.has(build.buildId)) continue;
+        const path = NodePath.join(this.#root, build.buildId);
+        const info = await NodeFSP.lstat(path);
+        if (
+          !info.isDirectory() ||
+          info.isSymbolicLink() ||
+          (await NodeFSP.realpath(path)) !== path
+        ) {
+          continue;
+        }
+        // Re-verify immediately before deletion. Only exact receipt-owned bytes are cleanup targets.
+        await this.#readVerifiedBuild(build.buildId);
+        await NodeFSP.rm(path, { recursive: true, force: false });
+        removed.push(build.buildId);
+      }
+      if (removed.length) await syncDirectory(this.#root);
+      return removed.toSorted();
+    } finally {
+      for (const reservation of reservations.toReversed()) {
+        await this.#dependencies.releaseReservation(reservation);
+      }
     }
-    if (removed.length) await syncDirectory(this.#root);
-    return removed.toSorted();
   }
 
   async #recoverTemporaryEntries(): Promise<void> {

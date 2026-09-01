@@ -52,9 +52,12 @@ Selection changes only the target Prime provider instance's complete settings bi
 
 The intent closes the crash window around settings CAS. Recovery reads the observed binding. If it is
 the exact target, recovery records the completed selection. If it is still the complete expected
-binding, recovery records an interrupted pre-switch failure. A different binding is treated as a
-superseding user/settings change. A later explicit command supersedes an older scheduled command and
-marks its receipt terminal rather than leaving two apparent pending switches.
+binding, recovery records an interrupted pre-switch failure. A different binary path is treated as a
+superseding user/settings change. A generation-only change caused by another field preserves the
+managed mode, build id, channel, and original stock path when the binary still names the exact
+receipt-owned launcher. `Use stock` then compare-and-sets that original path and never reports success
+while a managed launcher remains selected. A later explicit command supersedes an older scheduled
+command and marks its receipt terminal rather than leaving two apparent pending switches.
 
 Distinct package roots and quiescent switching prevent a daemon from one build from sharing an
 imported SDK module cache from another. Runtime capability still comes only from frozen SDK metadata
@@ -80,6 +83,10 @@ and a different build at the same sequence fail. Rollback is allowed only as an 
 an already installed receipt-owned build; it does not lower the channel high-water. An offline feed
 cannot change the selected build and is reported as a failure.
 
-Cleanup computes references from managed selections and scheduled switches. It ignores unrecognized,
-linked, incomplete, or invalid-receipt directories and removes only an unreferenced build that passes
-full offline marker and receipt validation.
+Cleanup fences every authoritative configured Prime binding with the same maintenance reservation
+used for switching and refuses the operation while a configured instance is active. Under those
+fences it derives references from every settings binding, managed selection, scheduled switch, and
+loaded or owned runtime build context. Binding paths protect exact or canonical managed launchers even
+when stored selection mode is corrupt. Cleanup ignores unrecognized, linked, incomplete, or
+invalid-receipt directories and removes only an unreferenced build that passes full offline marker and
+receipt validation. External Prime installations are never cleanup targets.

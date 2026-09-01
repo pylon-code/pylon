@@ -1081,9 +1081,14 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           },
         });
         const readBinding = serverSettings.readPrimeAgentBinaryBinding!;
+        const listBindings = serverSettings.listPrimeAgentBinaryBindings!;
         const compareAndSet = serverSettings.compareAndSetPrimeAgentBinaryPath!;
         const expected = yield* readBinding(instanceId);
         assert.isDefined(expected);
+        assert.deepEqual(
+          (yield* listBindings).find((entry) => entry.instanceId === instanceId),
+          { instanceId, binding: expected },
+        );
         const committed = yield* compareAndSet({
           instanceId,
           expected,
