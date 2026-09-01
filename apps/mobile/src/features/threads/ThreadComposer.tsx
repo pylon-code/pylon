@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
 import {
@@ -82,6 +83,10 @@ import {
   type ViewStyle,
 } from "react-native";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
+import {
+  composerAttachmentUploadBlockReason,
+  composerAttachmentUploadsAtom,
+} from "../../state/composer-attachment-uploads";
 import Animated, {
   FadeIn,
   FadeInDown,
@@ -591,10 +596,19 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     blockingAdmissionReason === null
       ? null
       : { headline: "Unavailable" as const, detail: blockingAdmissionReason };
+  const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
+  const attachmentBlockReason = composerAttachmentUploadBlockReason({
+    environmentId: props.environmentId,
+    attachments: props.draftAttachments,
+    connected: props.connectionState === "connected",
+    serverConfig: props.serverConfig,
+    states: uploadStates,
+  });
   const canSend =
     hasContent &&
     composerAuthority.providerAdmissionAvailable &&
     props.projectCwd !== null &&
+    attachmentBlockReason === null &&
     props.sessionCompactionPendingAction !== "compact" &&
     !isSessionCompactionInProgress(props.sessionCompaction);
   const activeSessionProviderStatus = useMemo(() => {
@@ -1683,6 +1697,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 layout={COMPOSER_LAYOUT_TRANSITION}
               >
                 <ComposerAttachmentStrip
+                  environmentId={props.environmentId}
                   attachments={props.draftAttachments}
                   onRemove={voiceInput.isBusy ? () => undefined : props.onRemoveDraftImage}
                   onPressPreview={voiceInput.isBusy ? undefined : onPressPreview}
@@ -1734,6 +1749,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               <View className="flex-row gap-1 pl-1">
                 {props.draftAttachments.slice(0, 3).map((attachment) => (
                   <ComposerAttachmentThumbnail
+                    environmentId={props.environmentId}
                     key={attachment.id}
                     attachment={attachment}
                     size={30}
@@ -1791,10 +1807,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   </View>
                 ) : (
                   <ControlPill
-                    accessibilityLabel={sendLabel}
+                    accessibilityLabel={attachmentBlockReason ?? sendLabel}
                     icon="arrow.up"
                     variant="primary"
-                    disabled={!hasContent}
+                    disabled={!canSend}
                     onPress={handleSend}
                   />
                 )}
@@ -2017,7 +2033,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       the user with no way to send until they dismiss the error. */}
                   {voicePresentation.showsSend ? (
                     <ComposerToolbarButton
-                      accessibilityLabel={sendLabel}
+                      accessibilityLabel={attachmentBlockReason ?? sendLabel}
                       icon="arrow.up"
                       variant="primary"
                       disabled={!canSend || (canQueueFollowUp && isMutatingSessionInputQueue)}

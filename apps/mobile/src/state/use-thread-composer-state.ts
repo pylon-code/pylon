@@ -104,6 +104,10 @@ import { removeThreadOutboxMessageIfCurrent } from "./thread-outbox-removal";
 import { recoverPendingSendToComposer } from "./thread-outbox-recovery";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
 import { useAtomCommand } from "./use-atom-command";
+import {
+  composerAttachmentUploadBlockReason,
+  composerAttachmentUploadsAtom,
+} from "./composer-attachment-uploads";
 import { threadEnvironment } from "./threads";
 import { resolveExistingThreadComposerSettings } from "./use-thread-composer-state.logic";
 
@@ -147,7 +151,7 @@ export function useThreadDraftForThread(input: {
 
 export function useThreadComposerState() {
   const navigation = useNavigation();
-  const { selectedThread: selectedThreadShell } = useThreadSelection();
+  const { selectedThread: selectedThreadShell, selectedEnvironmentRuntime } = useThreadSelection();
   const selectedThreadDetail = useSelectedThreadDetail();
   const selectedThreadContextWindow = useMemo(
     () => deriveLatestContextWindowSnapshot(selectedThreadDetail?.activities ?? []),
@@ -565,6 +569,16 @@ export function useThreadComposerState() {
     const thread = selectedThreadDetail ?? selectedThreadShell;
     const text = draft.text.trim();
     const attachments = draft.attachments;
+    if (
+      composerAttachmentUploadBlockReason({
+        environmentId: selectedThreadShell.environmentId,
+        attachments,
+        connected: selectedEnvironmentRuntime?.connectionState === "connected",
+        serverConfig: selectedEnvironmentRuntime?.serverConfig ?? null,
+        states: appAtomRegistry.get(composerAttachmentUploadsAtom),
+      }) !== null
+    )
+      return null;
     if (text.length === 0 && attachments.length === 0) {
       return null;
     }
@@ -723,6 +737,8 @@ export function useThreadComposerState() {
     );
     return messageId;
   }, [
+    selectedEnvironmentRuntime?.connectionState,
+    selectedEnvironmentRuntime?.serverConfig,
     selectedSessionProviderInstanceId,
     selectedThreadDetail,
     sessionCompactionBlocksSubmission,
