@@ -1,4 +1,9 @@
-import { PrimeAgentSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import {
+  PrimeAgentSettings,
+  ProviderDriverKind,
+  type ServerProvider,
+  type ServerProviderDistribution,
+} from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Crypto from "effect/Crypto";
@@ -32,6 +37,12 @@ import { readPrimeAgentBackends, readPrimeAgentCapacity } from "../primeAgentBac
 const PRIME_AGENT_TURN_END_CAPACITY_FRESH_MS = 60_000;
 import { makePrimeAgentDaemonAdapter } from "../prime/PrimeAgentDaemonAdapter.ts";
 import { negotiatePrimeAgentBackend } from "../prime/PrimeAgentBackendSelection.ts";
+import { locatePrimeAgentPublicPackage } from "../prime/PrimeAgentDaemonBridge.ts";
+import {
+  inspectPrimeAgentDistribution,
+  makeLatestPrimePublicationLoader,
+  makePrimeDistributionNetworkDependencies,
+} from "../prime/PrimeAgentDistributionVerifier.ts";
 import { makePrimeAgentDaemonManager } from "../prime/PrimeAgentDaemonManager.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -137,6 +148,67 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies PrimeAgentSettings;
+      const loadLatestVerifiedPublication = makeLatestPrimePublicationLoader(
+        makePrimeDistributionNetworkDependencies({
+          tufCachePath: path.join(serverConfig.stateDir, "sigstore-tuf"),
+        }),
+      );
+      const inspectDistribution = (
+        snapshot: ServerProvider,
+        enableUpdateChecks: boolean | undefined,
+      ): Effect.Effect<ServerProviderDistribution> => {
+        if (!snapshot.enabled || !snapshot.installed) {
+          return Effect.succeed({
+            classification: "stock-or-custom" as const,
+            channel: null,
+            buildId: null,
+            sequence: null,
+            latestBuildId: null,
+            latestSequence: null,
+            updateAvailable: false,
+            checkedAt: snapshot.checkedAt,
+            message: "This Prime installation is maintained manually.",
+          });
+        }
+        return Effect.gen(function* () {
+          const executablePath = path.resolve(
+            yield* resolveCommandPath(effectiveConfig.binaryPath || "prime-agent", {
+              env: processEnv,
+            }),
+          );
+          const publicPackage = yield* locatePrimeAgentPublicPackage(executablePath);
+          return yield* Effect.promise(() =>
+            inspectPrimeAgentDistribution(
+              {
+                stateDir: serverConfig.stateDir,
+                instanceId,
+                packageRoot: publicPackage.packageRoot,
+                platform: hostPlatform,
+                checkedAt: snapshot.checkedAt,
+                ...(enableUpdateChecks === undefined ? {} : { enableUpdateChecks }),
+              },
+              { loadLatestVerifiedPublication },
+            ),
+          );
+        }).pipe(
+          Effect.catchCause(() =>
+            Effect.succeed({
+              classification: "stock-or-custom" as const,
+              channel: null,
+              buildId: null,
+              sequence: null,
+              latestBuildId: null,
+              latestSequence: null,
+              updateAvailable: false,
+              checkedAt: snapshot.checkedAt,
+              message:
+                "Pylon could not inspect the selected Prime distribution; Prime remains ready and manually maintained.",
+            }),
+          ),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
+      };
       const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
         binaryPath: effectiveConfig.binaryPath,
         env: processEnv,
@@ -286,6 +358,7 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
             snapshot: currentSnapshot,
             maintenanceCapabilities,
             enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+            distribution: inspectDistribution(currentSnapshot, settings.enableProviderUpdateChecks),
             publishSnapshot,
             httpClient,
           }),

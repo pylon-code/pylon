@@ -309,6 +309,34 @@ sessions receive Pylon's thread-scoped preview tools. This works in daemon-backe
 compatibility mode. The scoped connection is removed when the provider session stops. Turning browser
 access off withholds both the tools and their instructions; it does not affect browser tabs you control.
 
+## Distribution Verification
+
+Pylon treats Prime runtime support and Prime distribution proof as separate checks. The exact
+configured `prime-agent` binary still negotiates its installed public SDK after Pylon attaches. A
+missing or invalid distribution receipt does not disable the provider and does not bypass ACP
+compatibility fallback.
+
+In **Settings → Providers → Prime Agent**, a Pylon publication can show one of these labels:
+
+- **Pylon managed** means a private Pylon receipt matches the exact package root and the build was
+  admitted from signed Pylon preview or stable publication evidence.
+- **Pylon build · manual** means the package claims Pylon build metadata but has no matching managed
+  receipt. Update it using the same manual method that installed it.
+- **Managed receipt invalid** means the private receipt, package-root binding, or local channel
+  high-water is invalid. Prime remains usable, but managed update advice is disabled.
+- Stock Prime Agent and other custom installations stay manually maintained and show no fork update
+  warning.
+
+Managed update advice compares the signed channel sequence and immutable build ID. It never orders
+builds by the package version. Pylon verifies the GitHub/Sigstore issuer, transparency evidence,
+repository, signer workflow and ref, source commit and tree, recipe, manifests, and artifact digest
+before advancing its private channel high-water. An offline or rate-limited feed keeps the installed
+build ready and retains the last authenticated advice.
+
+This feature only verifies and reports. It does not download, install, switch, remove, or clean up a
+Prime package. Native Windows receipts are not supported. Run Prime Agent in WSL2 to use the Linux
+receipt path.
+
 ## Current Limitations
 
 - Prime Agent 0.8.1 has no daemon-native or operating-system sandbox policy. Supervised mode gates

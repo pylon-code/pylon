@@ -198,6 +198,37 @@ export const ServerProviderVersionAdvisory = Schema.Struct({
 });
 export type ServerProviderVersionAdvisory = typeof ServerProviderVersionAdvisory.Type;
 
+export const ServerProviderDistributionClassification = Schema.Literals([
+  "stock-or-custom",
+  "pylon-unmanaged",
+  "pylon-managed",
+  "invalid-receipt",
+]);
+export type ServerProviderDistributionClassification =
+  typeof ServerProviderDistributionClassification.Type;
+
+export const ServerProviderDistributionChannel = Schema.Literals(["preview", "stable"]);
+export type ServerProviderDistributionChannel = typeof ServerProviderDistributionChannel.Type;
+
+/**
+ * Signed build identity for provider distributions that publish one.
+ *
+ * This stays separate from runtime capabilities and package versions. A provider can remain ready
+ * while distribution proof or its advisory feed is unavailable.
+ */
+export const ServerProviderDistribution = Schema.Struct({
+  classification: ServerProviderDistributionClassification,
+  channel: Schema.NullOr(ServerProviderDistributionChannel),
+  buildId: Schema.NullOr(TrimmedNonEmptyString),
+  sequence: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+  latestBuildId: Schema.NullOr(TrimmedNonEmptyString),
+  latestSequence: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+  updateAvailable: Schema.Boolean,
+  checkedAt: Schema.NullOr(IsoDateTime),
+  message: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type ServerProviderDistribution = typeof ServerProviderDistribution.Type;
+
 export const ServerProviderUpdateStatus = Schema.Literals([
   "idle",
   "queued",
@@ -291,6 +322,7 @@ export const ServerProvider = Schema.Struct({
   backends: Schema.optional(Schema.Array(ServerProviderBackend)),
   rateLimit: Schema.optional(ServerProviderRateLimit),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
+  distribution: Schema.optionalKey(ServerProviderDistribution),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
 });
 export type ServerProvider = typeof ServerProvider.Type;

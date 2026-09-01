@@ -2,6 +2,7 @@ import {
   type ModelCapabilities,
   type PrimeAgentSettings,
   type ServerProvider,
+  type ServerProviderDistribution,
   type ServerProviderModel,
   type ServerProviderBackend,
 } from "@t3tools/contracts";
@@ -534,20 +535,48 @@ ${versionOutput.stderr}`);
   });
 });
 
+export function applyPrimeAgentDistribution(
+  snapshot: ServerProvider,
+  distribution: ServerProviderDistribution,
+): ServerProvider {
+  const versionAdvisory =
+    distribution.classification === "pylon-managed"
+      ? {
+          status: distribution.updateAvailable ? ("behind_latest" as const) : ("current" as const),
+          currentVersion: distribution.buildId,
+          latestVersion: distribution.latestBuildId,
+          updateCommand: null,
+          canUpdate: false,
+          checkedAt: distribution.checkedAt,
+          message: distribution.updateAvailable ? distribution.message : null,
+        }
+      : snapshot.versionAdvisory;
+  return {
+    ...snapshot,
+    distribution,
+    ...(versionAdvisory ? { versionAdvisory } : {}),
+  };
+}
+
 export const enrichPrimeAgentSnapshot = (input: {
   readonly snapshot: ServerProvider;
   readonly maintenanceCapabilities: ProviderMaintenanceCapabilities;
   readonly enableProviderUpdateChecks?: boolean;
+  readonly distribution: Effect.Effect<ServerProviderDistribution>;
   readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
   readonly httpClient: HttpClient.HttpClient;
 }): Effect.Effect<void> =>
-  enrichProviderSnapshotWithVersionAdvisory(input.snapshot, input.maintenanceCapabilities, {
-    enableProviderUpdateChecks: input.enableProviderUpdateChecks,
+  Effect.gen(function* () {
+    const snapshot = yield* enrichProviderSnapshotWithVersionAdvisory(
+      input.snapshot,
+      input.maintenanceCapabilities,
+      { enableProviderUpdateChecks: input.enableProviderUpdateChecks },
+    ).pipe(Effect.provideService(HttpClient.HttpClient, input.httpClient));
+    const distribution = yield* input.distribution;
+    yield* input.publishSnapshot(applyPrimeAgentDistribution(snapshot, distribution));
   }).pipe(
-    Effect.provideService(HttpClient.HttpClient, input.httpClient),
-    Effect.flatMap(input.publishSnapshot),
     Effect.catchCause((cause) =>
-      Effect.logWarning("Prime Agent version advisory enrichment failed", { cause }),
+      Effect.logWarning("Prime Agent distribution advisory enrichment failed", { cause }),
     ),
     Effect.asVoid,
   );

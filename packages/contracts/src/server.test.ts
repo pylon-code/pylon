@@ -49,6 +49,7 @@ describe("ServerProvider", () => {
     expect(parsed.slashCommands).toEqual([]);
     expect(parsed.skills).toEqual([]);
     expect(parsed.versionAdvisory).toBeUndefined();
+    expect(parsed.distribution).toBeUndefined();
     expect(parsed.updateState).toBeUndefined();
     expect(getServerProviderSupportedRuntimeModes(parsed)).toEqual(
       DEFAULT_SERVER_PROVIDER_RUNTIME_MODES,
@@ -95,6 +96,37 @@ describe("ServerProvider", () => {
     });
 
     expect(parsed.versionAdvisory?.canUpdate).toBe(false);
+  });
+
+  it("decodes optional signed distribution identity independently from runtime status", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      driver: "primeAgent",
+      distribution: {
+        classification: "pylon-managed",
+        channel: "preview",
+        buildId: "pylon-build-g0123456789ab-r1",
+        sequence: 9,
+        latestBuildId: "pylon-build-gabcdef012345-r1",
+        latestSequence: 10,
+        updateAvailable: true,
+        checkedAt: "2026-04-10T00:00:00.000Z",
+        message: "A signed build is available.",
+      },
+    });
+
+    expect(parsed.status).toBe("ready");
+    expect(parsed.distribution).toEqual({
+      classification: "pylon-managed",
+      channel: "preview",
+      buildId: "pylon-build-g0123456789ab-r1",
+      sequence: 9,
+      latestBuildId: "pylon-build-gabcdef012345-r1",
+      latestSequence: 10,
+      updateAvailable: true,
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      message: "A signed build is available.",
+    });
   });
 
   it("decodes continuation group metadata", () => {
