@@ -168,7 +168,7 @@ The durable fence for one canonical Git workspace while a rollback saga is activ
 
 #### Manual recovery
 
-A durable rollback state used when Pylon cannot prove that both the workspace and provider conversation are at either the target or compensated source. The public projection exposes only `manual-recovery`; exact anchors, receipts, paths, and workspace pre-images remain private. The workspace lease stays active until a later recovery path can prove a safe result.
+A durable rollback state used when Pylon cannot prove that both the workspace and provider conversation are at either the target or compensated source. The public projection exposes `manual-recovery`, a redacted reason, and only the recovery actions permitted by the saga phase; exact anchors, receipts, paths, and workspace pre-images remain private. The workspace lease stays active until a later recovery path proves a safe result. See [Exact conversation rollback](./rollback-recovery.md).
 
 #### Checkpoint diff
 

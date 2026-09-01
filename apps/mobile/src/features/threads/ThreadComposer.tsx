@@ -606,6 +606,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   });
   const canSend =
     hasContent &&
+    !props.sessionInputBlocked &&
     composerAuthority.providerAdmissionAvailable &&
     props.projectCwd !== null &&
     attachmentBlockReason === null &&
@@ -624,6 +625,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       activeSessionProviderStatus?.requiresNewThreadForModelChange === true);
   const getModelChangeDisabledReason = useCallback(
     (option: ModelOption) => {
+      if (props.sessionInputBlocked) {
+        return "Provider changes are blocked while this thread has a pending safety operation";
+      }
       const boundInstanceId = props.selectedThread.session?.providerInstanceId;
       if (boundInstanceId) {
         const transition = resolveProviderContinuationTransition({
@@ -651,13 +655,21 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         ? "Start a new thread to use this model"
         : undefined;
     },
-    [currentModelSelection, modelChangesLocked, props.selectedThread.session, props.serverConfig],
+    [
+      currentModelSelection,
+      modelChangesLocked,
+      props.selectedThread.session,
+      props.serverConfig,
+      props.sessionInputBlocked,
+    ],
   );
-  const quickQuestionAvailable = canOpenQuickQuestion({
-    connectionState: props.connectionState,
-    session: props.selectedThread.session,
-    provider: activeSessionProviderStatus,
-  });
+  const quickQuestionAvailable =
+    !props.sessionInputBlocked &&
+    canOpenQuickQuestion({
+      connectionState: props.connectionState,
+      session: props.selectedThread.session,
+      provider: activeSessionProviderStatus,
+    });
   const quickQuestionScopeKey = quickQuestionSessionScopeKey({
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
@@ -824,12 +836,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.localOutboxCount === 0 &&
     supportsSessionInputQueueFollowUp(activeSessionProviderStatus);
   const canClearSessionInputQueue =
+    !props.sessionInputBlocked &&
     props.connectionState === "connected" &&
     props.selectedThread.session?.status === "running" &&
     props.selectedThread.session.activeTurnId != null &&
     sessionQueueCount > 0 &&
     supportsSessionInputQueueClear(activeSessionProviderStatus);
   const canRemoveOnlySessionInputQueueItem =
+    !props.sessionInputBlocked &&
     props.connectionState === "connected" &&
     props.selectedThread.session?.status === "running" &&
     props.selectedThread.session.activeTurnId != null &&
@@ -845,6 +859,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     sessionInputQueueMutation?.scopeKey === sessionInputQueueScopeKey;
   const canSetSessionInputQueueModes =
     showSessionInputQueueModes &&
+    !props.sessionInputBlocked &&
     props.connectionState === "connected" &&
     composerAuthority.providerAdmissionAvailable &&
     (props.selectedThread.session?.status === "ready" ||
@@ -1316,6 +1331,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     sessionResources: props.sessionResources,
     showInteractionModeToggle,
     hasThread: true,
+    enabled: !props.sessionInputBlocked,
     onChangeDraftMessage: props.onChangeDraftMessage,
     onUpdateInteractionMode: props.onUpdateInteractionMode,
   });
@@ -1543,12 +1559,19 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       environmentId: props.environmentId,
       providerGroups: threadProviderGroups,
       selectedModel: currentModelSelection,
-      onSelectModel: (option) => props.onUpdateModelSelection(option.selection),
+      onSelectModel: (option) => {
+        if (!props.sessionInputBlocked) props.onUpdateModelSelection(option.selection);
+      },
       optionDescriptors: providerOptionDescriptors,
-      onUpdateOptionSelections: (options) =>
-        props.onUpdateModelSelection({ ...currentModelSelection, options }),
+      onUpdateOptionSelections: (options) => {
+        if (!props.sessionInputBlocked) {
+          props.onUpdateModelSelection({ ...currentModelSelection, options });
+        }
+      },
       runtimeMode: currentRuntimeMode,
-      onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+      onUpdateRuntimeMode: (mode) => {
+        if (!props.sessionInputBlocked) props.onUpdateRuntimeMode(mode);
+      },
       getModelDisabledReason: getModelChangeDisabledReason,
     }),
     [
@@ -1558,6 +1581,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       getModelChangeDisabledReason,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
+      props.sessionInputBlocked,
       providerOptionDescriptors,
       settingsOwnerId,
       threadProviderGroups,
@@ -1866,6 +1890,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       }
                       label={currentModelOption?.label ?? currentModelSelection.model}
                       maxWidth={152}
+                      disabled={props.sessionInputBlocked}
+                      accessibilityHint={
+                        props.sessionInputBlocked
+                          ? "Provider changes are blocked while this thread has a pending safety operation"
+                          : undefined
+                      }
                       onPress={openSettings}
                     />
                     {sessionHarnessRefinementActions.length > 0 ? (

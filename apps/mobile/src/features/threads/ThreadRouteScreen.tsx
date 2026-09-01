@@ -14,7 +14,16 @@ import {
   type ProviderAskSessionSideQuestionResult,
   type ProviderSessionSideQuestionRequestId,
 } from "@t3tools/contracts";
-import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import {
+  buildRollbackConfirmation,
+  deriveRollbackTargets,
+  isRollbackActive,
+  type RollbackTarget,
+} from "@t3tools/client-runtime/rollback";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
@@ -221,6 +230,15 @@ function ThreadRouteContent(
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
+  const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
+    label: "thread rollback",
+    reportFailure: false,
+  });
+  const recoverThreadRollback = useAtomCommand(threadEnvironment.recoverRollback, {
+    label: "rollback recovery",
+    reportFailure: false,
+  });
+  const [rollbackCommandPending, setRollbackCommandPending] = useState(false);
   const reloadThreadSessionResources = useAtomCommand(
     threadEnvironment.reloadSessionResources,
     "session resource reload",
@@ -701,6 +719,82 @@ function ThreadRouteContent(
       terminalMenuSessions,
     ],
   );
+  const rollbackTargets = useMemo(
+    () =>
+      selectedThreadDetail === null
+        ? new Map<string, RollbackTarget>()
+        : deriveRollbackTargets(selectedThreadDetail),
+    [selectedThreadDetail],
+  );
+  const rollbackStatus = selectedThreadDetail?.rollbackStatus ?? selectedThread?.rollbackStatus;
+  const rollbackActive = isRollbackActive(rollbackStatus);
+  const rollbackTargetIdle =
+    selectedThreadDetail?.session !== null &&
+    selectedThreadDetail?.session !== undefined &&
+    (selectedThreadDetail.session.status === "idle" ||
+      selectedThreadDetail.session.status === "ready") &&
+    selectedThreadDetail.session.activeTurnId === null &&
+    selectedThreadDetail.session.pendingTurnRequestId === undefined &&
+    selectedThreadDetail.session.activeTurnRequestId === undefined &&
+    selectedThreadDetail.latestTurn?.state !== "running" &&
+    !rollbackActive &&
+    !composer.activeThreadBusy &&
+    !rollbackCommandPending;
+
+  const onRevertMessage = useCallback(
+    (target: RollbackTarget) => {
+      if (!selectedThread || !rollbackTargetIdle) return;
+      Alert.alert("Confirm exact rollback", buildRollbackConfirmation(target.label), [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Revert",
+          style: "destructive",
+          onPress: () => {
+            setRollbackCommandPending(true);
+            void revertThreadCheckpoint({
+              environmentId: selectedThread.environmentId,
+              input: {
+                threadId: selectedThread.id,
+                turnCount: target.targetTurnCount,
+                expectedSourceRevision: target.expectedSourceRevision,
+              },
+            }).then((result) => {
+              setRollbackCommandPending(false);
+              if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+                const failure = squashAtomCommandFailure(result);
+                Alert.alert(
+                  "Rollback unavailable",
+                  failure instanceof Error ? failure.message : "Pylon rejected this rollback.",
+                );
+              }
+            });
+          },
+        },
+      ]);
+    },
+    [revertThreadCheckpoint, rollbackTargetIdle, selectedThread],
+  );
+
+  const onRecoverRollback = useCallback(
+    async (action: "retry-verification" | "resume-compensation") => {
+      if (!selectedThread || rollbackCommandPending) return;
+      setRollbackCommandPending(true);
+      const result = await recoverThreadRollback({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id, action },
+      });
+      setRollbackCommandPending(false);
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const failure = squashAtomCommandFailure(result);
+        Alert.alert(
+          "Recovery could not resume",
+          failure instanceof Error ? failure.message : "Pylon rejected this recovery action.",
+        );
+      }
+    },
+    [recoverThreadRollback, rollbackCommandPending, selectedThread],
+  );
+
   const threadGitControlProps = {
     environmentId: environmentIdRaw ?? "",
     threadId: threadId ?? "",
@@ -716,7 +810,10 @@ function ThreadRouteContent(
     onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
     currentBranch: selectedThread?.branch ?? null,
     gitStatus: gitStatus.data,
-    gitOperationLabel: gitState.gitOperationLabel,
+    gitOperationLabel: rollbackActive
+      ? "Rollback verification in progress"
+      : gitState.gitOperationLabel,
+    mutationBlocked: rollbackActive,
     canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
     canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
     projectScripts: selectedThreadProject?.scripts ?? [],
@@ -796,11 +893,13 @@ function ThreadRouteContent(
         onPress: () => handleOpenTerminal(null),
       });
     }
-    actions.push({
-      accessibilityLabel: "Open git controls",
-      icon: "point.topleft.down.curvedto.point.bottomright.up",
-      onPress: handleOpenGitInspector,
-    });
+    if (!rollbackActive) {
+      actions.push({
+        accessibilityLabel: "Open git controls",
+        icon: "point.topleft.down.curvedto.point.bottomright.up",
+        onPress: handleOpenGitInspector,
+      });
+    }
     if (fileInspector.supported && selectedThreadCwd !== null) {
       actions.push({
         accessibilityLabel: "Toggle inspector",
@@ -816,6 +915,7 @@ function ThreadRouteContent(
     handleOpenGitInspector,
     handleToggleInspector,
     props.onReturnToThread,
+    rollbackActive,
     selectedThreadCwd,
     selectedThreadProject?.workspaceRoot,
   ]);
@@ -892,6 +992,12 @@ function ThreadRouteContent(
           connectionStateLabel={routeConnectionState}
           threadSyncStatus={selectedThreadDetailState.status}
           loadEarlier={loadEarlierTurns}
+          rollbackStatus={rollbackStatus}
+          rollbackTargets={rollbackTargets}
+          rollbackTargetIdle={rollbackTargetIdle}
+          rollbackCommandPending={rollbackCommandPending}
+          onRevertMessage={onRevertMessage}
+          onRecoverRollback={onRecoverRollback}
           activeThreadBusy={composer.activeThreadBusy}
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}

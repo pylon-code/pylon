@@ -485,6 +485,9 @@ export function applyThreadDetailEvent(
         files: event.payload.files,
         assistantMessageId: event.payload.assistantMessageId,
         completedAt: event.payload.completedAt,
+        ...(event.payload.rollbackAvailability === undefined
+          ? {}
+          : { rollbackAvailability: event.payload.rollbackAvailability }),
       };
 
       const existing = thread.checkpoints.find((entry) => entry.turnId === checkpoint.turnId);
@@ -533,7 +536,20 @@ export function applyThreadDetailEvent(
           rollbackStatus:
             event.payload.status === null
               ? null
-              : { state: event.payload.status, updatedAt: event.payload.updatedAt },
+              : {
+                  state: event.payload.status,
+                  updatedAt: event.payload.updatedAt,
+                  ...(event.payload.targetTurnCount === undefined
+                    ? {}
+                    : { targetTurnCount: event.payload.targetTurnCount }),
+                  ...(event.payload.sourceRevision === undefined
+                    ? {}
+                    : { sourceRevision: event.payload.sourceRevision }),
+                  ...(event.payload.detail === undefined ? {} : { detail: event.payload.detail }),
+                  ...(event.payload.allowedActions === undefined
+                    ? {}
+                    : { allowedActions: event.payload.allowedActions }),
+                },
           updatedAt: event.payload.updatedAt,
         },
       };
@@ -569,7 +585,16 @@ export function applyThreadDetailEvent(
           messages,
           proposedPlans,
           activities,
-          rollbackStatus: null,
+          rollbackStatus:
+            thread.rollbackStatus === null || thread.rollbackStatus === undefined
+              ? null
+              : {
+                  ...thread.rollbackStatus,
+                  state: "recovering",
+                  detail:
+                    "Rollback committed. Pylon is verifying cleanup before the thread is released.",
+                  updatedAt: event.occurredAt,
+                },
           latestTurn:
             latestCheckpoint === null
               ? null

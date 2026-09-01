@@ -13,6 +13,7 @@
 - [Remote access](./user/remote-access.md)
 - [Keeping app and server in sync](./user/updating.md)
 - [Source control integrations](./user/source-control.md)
+- [Revert a conversation](./user/conversation-rollback.md)
 - [Background service (Linux)](./user/background-service.md)
 - Providers: [Codex](./user/providers-codex.md) · [Claude](./user/providers-claude.md) · [OpenCode](./user/providers-opencode.md) · [Prime Agent](./user/providers-prime-agent.md)
 
@@ -32,6 +33,7 @@ policy in [CONTRIBUTING.md](../CONTRIBUTING.md); agent rules in [AGENTS.md](../A
 - [Connection runtime](./internals/connection-runtime.md)
 - [Voice input](./internals/voice-input.md)
 - [Providers](./internals/providers.md)
+- [Exact conversation rollback](./internals/rollback-recovery.md)
 - [Remote environments](./internals/remote.md)
 - [Server updates](./internals/server-updates.md)
 - [Resource telemetry](./internals/resource-telemetry.md)
@@ -51,4 +53,5 @@ policy in [CONTRIBUTING.md](../CONTRIBUTING.md); agent rules in [AGENTS.md](../A
 - [Observability](./operations/observability.md)
 - [Relay observability](./operations/relay-observability.md)
 - [Prime Agent managed rollback](./operations/prime-agent-managed-rollback.md)
+- [Rollback manual recovery](./operations/rollback-manual-recovery.md)
 - [Mobile app store screenshots](./operations/mobile-app-store-screenshots.md)

@@ -349,6 +349,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               planId: "plan-1",
             },
           },
+          rollbackStatus: null,
           createdAt: "2026-02-24T00:00:02.000Z",
           updatedAt: "2026-02-24T00:00:03.000Z",
           archivedAt: null,
@@ -403,6 +404,11 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               status: "ready",
               files: [{ path: "README.md", kind: "modified", additions: 2, deletions: 1 }],
               assistantMessageId: asMessageId("message-1"),
+              rollbackAvailability: {
+                state: "unavailable",
+                reason:
+                  "Exact rollback requires an idle Pylon-managed native Prime session with a matching immutable checkpoint anchor.",
+              },
               completedAt: "2026-02-24T00:00:08.000Z",
             },
           ],
@@ -480,6 +486,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               planId: "plan-1",
             },
           },
+          rollbackStatus: null,
           createdAt: "2026-02-24T00:00:02.000Z",
           updatedAt: "2026-02-24T00:00:03.000Z",
           archivedAt: null,
@@ -955,7 +962,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       }),
   );
 
-  it.effect("reads single-thread checkpoint context without hydrating unrelated threads", () =>
+  it.effect("reads exact checkpoint availability and durable recovery state", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
@@ -963,6 +970,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`DELETE FROM projection_projects`;
       yield* sql`DELETE FROM projection_threads`;
       yield* sql`DELETE FROM projection_turns`;
+      yield* sql`DELETE FROM projection_thread_sessions WHERE thread_id = 'thread-context'`;
+      yield* sql`DELETE FROM rollback_checkpoint_anchors WHERE thread_id = 'thread-context'`;
+      yield* sql`DELETE FROM rollback_sagas WHERE thread_id = 'thread-context'`;
 
       yield* sql`
         INSERT INTO projection_projects (
@@ -1021,6 +1031,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       `;
 
       yield* sql`
+        UPDATE projection_threads
+        SET rollback_status = 'manual-recovery',
+            rollback_updated_at = '2026-03-02T00:00:06.000Z'
+        WHERE thread_id = 'thread-context'
+      `;
+
+      yield* sql`
         INSERT INTO projection_turns (
           thread_id,
           turn_id,
@@ -1072,6 +1089,82 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           )
       `;
 
+      yield* sql`
+        INSERT INTO projection_thread_sessions (
+          thread_id,
+          status,
+          provider_name,
+          provider_instance_id,
+          session_incarnation_id,
+          runtime_mode,
+          restored,
+          harness_refinement_status,
+          updated_at
+        ) VALUES (
+          'thread-context',
+          'idle',
+          'prime',
+          'prime',
+          'incarnation-current',
+          'full-access',
+          0,
+          'available',
+          '2026-03-02T00:00:06.000Z'
+        )
+      `;
+      yield* sql`
+        INSERT INTO rollback_checkpoint_anchors (
+          thread_id,
+          checkpoint_turn_count,
+          turn_id,
+          source_revision,
+          provider_instance_id,
+          session_incarnation_id,
+          checkpoint_ref,
+          checkpoint_oid,
+          anchor_json,
+          anchor_digest,
+          captured_at
+        ) VALUES (
+          'thread-context',
+          1,
+          'turn-1',
+          1,
+          'prime',
+          'incarnation-current',
+          'checkpoint-a',
+          'checkpoint-oid-a',
+          '{"kind":"prime-native-leaf","leafId":"PRIVATE_LEAF_CANARY"}',
+          'private-anchor-digest',
+          '2026-03-02T00:00:04.000Z'
+        )
+      `;
+      yield* sql`
+        INSERT INTO rollback_sagas (
+          operation_id,
+          request_event_id,
+          thread_id,
+          project_id,
+          workspace_key,
+          phase,
+          terminal,
+          private_state_json,
+          created_at,
+          updated_at
+        ) VALUES (
+          'operation-context',
+          'request-context',
+          'thread-context',
+          'project-context',
+          'PRIVATE_WORKSPACE_CANARY',
+          'manual-recovery',
+          0,
+          '{"targetRevision":1,"sourceRevision":2,"lastErrorCode":"workspace-compensation-unproved","compensation":"manual","projectionCommitSequence":null,"privateLeaf":"PRIVATE_SAGA_CANARY"}',
+          '2026-03-02T00:00:05.000Z',
+          '2026-03-02T00:00:06.000Z'
+        )
+      `;
+
       const context = yield* snapshotQuery.getThreadCheckpointContext(
         ThreadId.make("thread-context"),
       );
@@ -1090,6 +1183,11 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               status: "ready",
               files: [],
               assistantMessageId: null,
+              rollbackAvailability: {
+                state: "available",
+                reason:
+                  "Pylon verified an exact native provider anchor for this immutable checkpoint.",
+              },
               completedAt: "2026-03-02T00:00:04.000Z",
             },
             {
@@ -1099,11 +1197,91 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               status: "ready",
               files: [],
               assistantMessageId: null,
+              rollbackAvailability: {
+                state: "unavailable",
+                reason:
+                  "Exact rollback requires an idle Pylon-managed native Prime session with a matching immutable checkpoint anchor.",
+              },
               completedAt: "2026-03-02T00:00:05.000Z",
             },
           ],
         });
       }
+
+      const detail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-context"));
+      assert.equal(detail._tag, "Some");
+      if (detail._tag === "Some") {
+        assert.deepEqual(detail.value.rollbackStatus, {
+          state: "manual-recovery",
+          targetTurnCount: 1,
+          sourceRevision: 2,
+          detail:
+            "The thread remains fenced because automatic rollback recovery could not be proved (workspace-compensation-unproved).",
+          allowedActions: ["resume-compensation"],
+          updatedAt: "2026-03-02T00:00:06.000Z",
+        });
+        const publicStrings: string[] = [];
+        const collectPublicStrings = (value: unknown): void => {
+          if (typeof value === "string") {
+            publicStrings.push(value);
+          } else if (Array.isArray(value)) {
+            value.forEach(collectPublicStrings);
+          } else if (value !== null && typeof value === "object") {
+            Object.values(value).forEach(collectPublicStrings);
+          }
+        };
+        collectPublicStrings(detail.value);
+        assert.notInclude(publicStrings, "PRIVATE_LEAF_CANARY");
+        assert.notInclude(publicStrings, "PRIVATE_SAGA_CANARY");
+        assert.notInclude(publicStrings, "private-anchor-digest");
+        assert.notInclude(publicStrings, "PRIVATE_WORKSPACE_CANARY");
+      }
+
+      yield* sql`
+        UPDATE projection_threads
+        SET rollback_status = 'completed',
+            rollback_updated_at = '2026-03-02T00:00:06.000Z'
+        WHERE thread_id = 'thread-context'
+      `;
+      yield* sql`
+        UPDATE rollback_sagas
+        SET phase = 'complete',
+            terminal = 0,
+            updated_at = '2026-03-02T00:00:06.000Z'
+        WHERE operation_id = 'operation-context'
+      `;
+      const stillFencedDetail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-context"),
+      );
+      assert.equal(stillFencedDetail._tag, "Some");
+      if (stillFencedDetail._tag === "Some") {
+        assert.equal(stillFencedDetail.value.rollbackStatus?.state, "recovering");
+      }
+
+      yield* sql`
+        UPDATE rollback_sagas
+        SET terminal = 1,
+            updated_at = '2026-03-02T00:00:07.000Z'
+        WHERE operation_id = 'operation-context'
+      `;
+      const terminalDetail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-context"),
+      );
+      assert.equal(terminalDetail._tag, "Some");
+      if (terminalDetail._tag === "Some") {
+        assert.deepEqual(terminalDetail.value.rollbackStatus, {
+          state: "completed",
+          targetTurnCount: 1,
+          sourceRevision: 2,
+          detail: "Rollback completed and all rewritten state was verified.",
+          allowedActions: [],
+          updatedAt: "2026-03-02T00:00:07.000Z",
+        });
+      }
+
+      yield* sql`DELETE FROM projection_thread_sessions WHERE thread_id = 'thread-context'`;
+      yield* sql`DELETE FROM rollback_checkpoint_anchors WHERE thread_id = 'thread-context'`;
+      yield* sql`DELETE FROM rollback_sagas WHERE thread_id = 'thread-context'`;
     }),
   );
 

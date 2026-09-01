@@ -152,6 +152,16 @@ layer("durable rollback admission", (it) => {
           createdAt: now,
         });
 
+        const joined = yield* orchestration.dispatch({
+          type: "thread.checkpoint.revert",
+          commandId: CommandId.make("command-atomic-revert-same-target"),
+          threadId,
+          turnCount: 1,
+          expectedSourceRevision: 2,
+          createdAt: now,
+        });
+        assert.equal(joined.sequence, 5);
+
         const fencedCommands = [
           orchestration.dispatch({
             type: "thread.turn.start",

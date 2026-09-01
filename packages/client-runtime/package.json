@@ -234,6 +234,10 @@
     "./work-log/command-label": {
       "types": "./src/work-log/commandLabel.ts",
       "default": "./src/work-log/commandLabel.ts"
+    },
+    "./rollback": {
+      "types": "./src/rollback.ts",
+      "default": "./src/rollback.ts"
     }
   },
   "scripts": {

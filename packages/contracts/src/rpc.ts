@@ -73,6 +73,8 @@ import {
   OrchestrationGetTurnDiffInput,
   OrchestrationRpcSchemas,
   OrchestrationGetWorkflowScriptError,
+  OrchestrationRollbackRecoveryError,
+  OrchestrationRollbackRecoveryInput,
 } from "./orchestration.ts";
 import {
   ProviderAskSessionSideQuestionError,
@@ -348,6 +350,9 @@ export const WS_METHODS = {
   providerSetSessionAutoCompaction: "provider.setSessionAutoCompaction",
   providerRefineSessionHarness: "provider.refineSessionHarness",
 
+  // Durable rollback recovery
+  rollbackRecover: "rollback.recover",
+
   // Server meta
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
@@ -589,6 +594,11 @@ export const WsProviderRefineSessionHarnessRpc = Rpc.make(WS_METHODS.providerRef
   payload: ProviderRefineSessionHarnessInput,
   success: ProviderRefineSessionHarnessResult,
   error: Schema.Union([ProviderRefineSessionHarnessError, EnvironmentAuthorizationError]),
+});
+
+export const WsRollbackRecoverRpc = Rpc.make(WS_METHODS.rollbackRecover, {
+  payload: OrchestrationRollbackRecoveryInput,
+  error: Schema.Union([OrchestrationRollbackRecoveryError, EnvironmentAuthorizationError]),
 });
 
 export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
@@ -1332,6 +1342,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderAbortSessionCompactionRpc,
   WsProviderSetSessionAutoCompactionRpc,
   WsProviderRefineSessionHarnessRpc,
+  WsRollbackRecoverRpc,
   WsServerUpdateProviderRpc,
   WsServerGetPrimeManagedMaintenanceRpc,
   WsServerRunPrimeManagedMaintenanceRpc,

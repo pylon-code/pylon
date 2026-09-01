@@ -1879,6 +1879,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           files: command.files,
           assistantMessageId: command.assistantMessageId ?? null,
           completedAt: command.completedAt,
+          ...(command.rollbackAvailability === undefined
+            ? {}
+            : { rollbackAvailability: command.rollbackAvailability }),
         },
       };
     }
@@ -1934,6 +1937,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           status: command.status,
+          ...(command.targetTurnCount === undefined
+            ? {}
+            : { targetTurnCount: command.targetTurnCount }),
+          ...(command.sourceRevision === undefined
+            ? {}
+            : { sourceRevision: command.sourceRevision }),
+          ...(command.detail === undefined ? {} : { detail: command.detail }),
+          ...(command.allowedActions === undefined
+            ? {}
+            : { allowedActions: command.allowedActions }),
           updatedAt: command.createdAt,
         },
       };

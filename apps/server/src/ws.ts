@@ -128,6 +128,7 @@ import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import { RollbackSagaRunner } from "./rollback/RollbackSagaRunner.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
@@ -453,6 +454,7 @@ const makeWsRpcLayer = (
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerService = yield* ProviderService.ProviderService;
+      const rollbackSagaRunner = yield* RollbackSagaRunner;
       const sideQuestionOwnership = makeSessionSideQuestionOwnership();
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const primeManagedMaintenance = yield* PrimeManagedMaintenance.PrimeManagedMaintenance;
@@ -1569,6 +1571,10 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "orchestration" },
           ),
+        [WS_METHODS.rollbackRecover]: (input) =>
+          observeRpcEffect(WS_METHODS.rollbackRecover, rollbackSagaRunner.recover(input), {
+            "rpc.aggregate": "rollback",
+          }),
         [WS_METHODS.serverProbe]: (_input) =>
           observeRpcEffect(WS_METHODS.serverProbe, Effect.succeed({}), {
             "rpc.aggregate": "server",

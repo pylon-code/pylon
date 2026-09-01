@@ -404,6 +404,13 @@ export type OrchestrationCheckpointFile = typeof OrchestrationCheckpointFile.Typ
 export const OrchestrationCheckpointStatus = Schema.Literals(["ready", "missing", "error"]);
 export type OrchestrationCheckpointStatus = typeof OrchestrationCheckpointStatus.Type;
 
+export const OrchestrationRollbackTargetAvailability = Schema.Struct({
+  state: Schema.Literals(["available", "unavailable"]),
+  reason: TrimmedNonEmptyString,
+});
+export type OrchestrationRollbackTargetAvailability =
+  typeof OrchestrationRollbackTargetAvailability.Type;
+
 export const OrchestrationCheckpointSummary = Schema.Struct({
   turnId: TurnId,
   checkpointTurnCount: NonNegativeInt,
@@ -412,6 +419,8 @@ export const OrchestrationCheckpointSummary = Schema.Struct({
   files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
+  /** Server-owned, target-specific proof. It never contains a provider-native anchor. */
+  rollbackAvailability: Schema.optional(OrchestrationRollbackTargetAvailability),
 });
 export type OrchestrationCheckpointSummary = typeof OrchestrationCheckpointSummary.Type;
 
@@ -589,13 +598,38 @@ export const OrchestrationRollbackPublicState = Schema.Literals([
   "pending",
   "recovering",
   "manual-recovery",
+  "completed",
+  "failed",
 ]);
 export type OrchestrationRollbackPublicState = typeof OrchestrationRollbackPublicState.Type;
+export const OrchestrationRollbackRecoveryAction = Schema.Literals([
+  "retry-verification",
+  "resume-compensation",
+]);
+export type OrchestrationRollbackRecoveryAction = typeof OrchestrationRollbackRecoveryAction.Type;
 export const OrchestrationRollbackStatus = Schema.Struct({
   state: OrchestrationRollbackPublicState,
   updatedAt: IsoDateTime,
+  targetTurnCount: Schema.optional(NonNegativeInt),
+  sourceRevision: Schema.optional(NonNegativeInt),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  allowedActions: Schema.optional(Schema.Array(OrchestrationRollbackRecoveryAction)),
 });
 export type OrchestrationRollbackStatus = typeof OrchestrationRollbackStatus.Type;
+
+export const OrchestrationRollbackRecoveryInput = Schema.Struct({
+  threadId: ThreadId,
+  action: OrchestrationRollbackRecoveryAction,
+});
+export type OrchestrationRollbackRecoveryInput = typeof OrchestrationRollbackRecoveryInput.Type;
+
+export class OrchestrationRollbackRecoveryError extends Schema.TaggedErrorClass<OrchestrationRollbackRecoveryError>()(
+  "OrchestrationRollbackRecoveryError",
+  {
+    reason: Schema.Literals(["not-found", "action-not-allowed", "operation-busy"]),
+    message: TrimmedNonEmptyString,
+  },
+) {}
 
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
@@ -1344,6 +1378,7 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.optional(MessageId),
   checkpointTurnCount: NonNegativeInt,
+  rollbackAvailability: Schema.optional(OrchestrationRollbackTargetAvailability),
   createdAt: IsoDateTime,
 });
 
@@ -1371,6 +1406,10 @@ const ThreadRollbackStatusSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   status: Schema.NullOr(OrchestrationRollbackPublicState),
+  targetTurnCount: Schema.optional(NonNegativeInt),
+  sourceRevision: Schema.optional(NonNegativeInt),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  allowedActions: Schema.optional(Schema.Array(OrchestrationRollbackRecoveryAction)),
   createdAt: IsoDateTime,
 });
 
@@ -1692,6 +1731,10 @@ export const ThreadCheckpointRevertRequestedPayload = Schema.Struct({
 export const ThreadRollbackStatusUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   status: Schema.NullOr(OrchestrationRollbackPublicState),
+  targetTurnCount: Schema.optional(NonNegativeInt),
+  sourceRevision: Schema.optional(NonNegativeInt),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  allowedActions: Schema.optional(Schema.Array(OrchestrationRollbackRecoveryAction)),
   updatedAt: IsoDateTime,
 });
 
@@ -1737,6 +1780,7 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
+  rollbackAvailability: Schema.optional(OrchestrationRollbackTargetAvailability),
 });
 
 export const ThreadActivityAppendedPayload = Schema.Struct({

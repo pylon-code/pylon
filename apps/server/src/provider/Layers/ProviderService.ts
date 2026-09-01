@@ -1153,6 +1153,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         schema: ProviderSessionStartInput,
         payload: rawInput,
       });
+      yield* assertNotRollbackFenced(threadId, "ProviderService.startSession");
 
       const resolvedInstanceId = yield* requireBindingInstanceId(
         "ProviderService.startSession",
@@ -1899,6 +1900,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderReloadSessionResourcesInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.reloadSessionResources");
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.reloadSessionResources",
@@ -1931,6 +1933,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderAskSessionSideQuestionInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.askSessionSideQuestion");
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.askSessionSideQuestion",
@@ -1963,6 +1966,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderCancelSessionSideQuestionInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.cancelSessionSideQuestion");
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.cancelSessionSideQuestion",
@@ -1995,6 +1999,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderCancelSessionAgentInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.cancelSessionAgent");
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.cancelSessionAgent",
@@ -2042,6 +2047,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderMessageSessionAgentInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.messageSessionAgent");
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.messageSessionAgent",
@@ -2146,6 +2152,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         issue: `Agent depth must be an integer from 0 to ${PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE}.`,
       });
     }
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.setSessionAgentDepth");
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.setSessionAgentDepth",
@@ -2392,6 +2399,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         schema: ProviderCompactSessionInput,
         payload: rawInput,
       });
+      yield* assertNotRollbackFenced(input.threadId, "ProviderService.compactSession");
       const routed = yield* resolveRoutableSession({
         threadId: input.threadId,
         operation: "ProviderService.compactSession",
@@ -2425,6 +2433,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderAbortSessionCompactionInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.abortSessionCompaction");
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.abortSessionCompaction",
@@ -2457,6 +2466,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderSetSessionAutoCompactionInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.setSessionAutoCompaction");
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.setSessionAutoCompaction",
@@ -2490,6 +2500,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderRefineSessionHarnessInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.refineSessionHarness");
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.refineSessionHarness",

@@ -23,6 +23,7 @@ import {
   classifyMarkdownImageSource,
   markdownImageSourceFragment,
 } from "@t3tools/client-runtime/markdown-images";
+import type { RollbackTarget } from "@t3tools/client-runtime/rollback";
 import { resolveViewedImageAsset } from "@t3tools/client-runtime/work-log/presentation";
 import {
   renderCodexFileCitationsAsMarkdown,
@@ -230,6 +231,10 @@ export interface ThreadFeedProps {
   readonly onEndFollowEnabledChange?: (enabled: boolean) => void;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
   readonly onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
+  readonly rollbackTargets: ReadonlyMap<string, RollbackTarget>;
+  readonly rollbackTargetIdle: boolean;
+  readonly rollbackCommandPending: boolean;
+  readonly onRevertMessage: (target: RollbackTarget) => void;
   /** Non-null when older turns exist beyond the loaded window. */
   readonly loadEarlier?: {
     readonly loading: boolean;
@@ -1449,7 +1454,16 @@ function useMarkdownStyles(
 
 function renderFeedEntry(
   info: { item: ThreadFeedEntry; index: number },
-  props: Pick<ThreadFeedProps, "environmentId" | "onUseArtifactTemplate" | "skills"> & {
+  props: Pick<
+    ThreadFeedProps,
+    | "environmentId"
+    | "onUseArtifactTemplate"
+    | "skills"
+    | "rollbackTargets"
+    | "rollbackTargetIdle"
+    | "rollbackCommandPending"
+    | "onRevertMessage"
+  > & {
     readonly copiedRowId: string | null;
     readonly expandedWorkRows: Record<string, boolean>;
     readonly terminalAssistantMessageIds: ReadonlySet<string>;
@@ -1591,6 +1605,26 @@ function renderFeedEntry(
             <Text className="font-t3-medium text-xs tabular-nums text-adaptive-neutral-600-400">
               {timestampLabel}
             </Text>
+            {props.rollbackTargetIdle && props.rollbackTargets.has(message.id) ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Revert to this message"
+                disabled={props.rollbackCommandPending}
+                hitSlop={6}
+                onPress={() => {
+                  const target = props.rollbackTargets.get(message.id);
+                  if (target) props.onRevertMessage(target);
+                }}
+                className="size-11 items-center justify-center rounded-full disabled:opacity-50"
+              >
+                <SymbolView
+                  name="arrow.uturn.backward"
+                  size={14}
+                  tintColor={iconSubtleColor}
+                  type="monochrome"
+                />
+              </Pressable>
+            ) : null}
             {message.text.trim().length > 0 ? (
               <CopyTextButton
                 accessibilityLabel="Copy message"
@@ -2639,6 +2673,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             userBubbleMaxWidth,
             skills: props.skills,
             onUseArtifactTemplate: props.onUseArtifactTemplate,
+            rollbackTargets: props.rollbackTargets,
+            rollbackTargetIdle: props.rollbackTargetIdle,
+            rollbackCommandPending: props.rollbackCommandPending,
+            onRevertMessage: props.onRevertMessage,
           })}
         </ThreadMediaVisibility>
       </Animated.View>
@@ -2665,6 +2703,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       props.environmentId,
       props.onUseArtifactTemplate,
       props.skills,
+      props.rollbackTargets,
+      props.rollbackTargetIdle,
+      props.rollbackCommandPending,
+      props.onRevertMessage,
       renderMarkdownImage,
     ],
   );

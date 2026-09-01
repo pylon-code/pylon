@@ -213,6 +213,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    recoverRollback: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:recover-rollback",
+      tag: WS_METHODS.rollbackRecover,
+      scheduler,
+      concurrency,
+    }),
     askSessionSideQuestion: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:commands:thread:ask-session-side-question",
       tag: WS_METHODS.providerAskSessionSideQuestion,
