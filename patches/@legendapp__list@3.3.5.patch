@@ -329,7 +329,7 @@ index b3c5a306b293f797a8b338adfca3060c0f6db22b..eb51ff0c375d7e5bd3473fca83995c7c
    const isWithinMaintainScrollAtEndThreshold = peek$(ctx, "isWithinMaintainScrollAtEndThreshold");
    const shouldMaintainScrollAtEnd = !!(isWithinMaintainScrollAtEndThreshold && maintainScrollAtEnd && didContainersLayout);
 +  if (state.contentSizeAnimationActiveEpoch !== void 0) {
-+    state.pendingMaintainScrollAtEnd = false;
++    state.pendingMaintainScrollAtEnd = shouldMaintainScrollAtEnd;
 +    return false;
 +  }
    if (pendingNativeMVCPAdjust) {
@@ -842,7 +842,7 @@ index 40e87cda8c9bc79a889e5542f29af429a24b24d4..700515b52c27a4ccd5343176121e7318
    const isWithinMaintainScrollAtEndThreshold = peek$(ctx, "isWithinMaintainScrollAtEndThreshold");
    const shouldMaintainScrollAtEnd = !!(isWithinMaintainScrollAtEndThreshold && maintainScrollAtEnd && didContainersLayout);
 +  if (state.contentSizeAnimationActiveEpoch !== void 0) {
-+    state.pendingMaintainScrollAtEnd = false;
++    state.pendingMaintainScrollAtEnd = shouldMaintainScrollAtEnd;
 +    return false;
 +  }
    if (pendingNativeMVCPAdjust) {
