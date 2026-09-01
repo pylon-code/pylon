@@ -155,7 +155,7 @@ export interface ThreadDetailScreenProps {
   readonly onHeaderMaterialVisibilityChange?: (visible: boolean) => void;
   readonly onOpenConnectionEditor: () => void;
   readonly onChangeDraftMessage: (value: string) => void;
-  readonly onPickDraftImages: () => Promise<void>;
+  readonly onPickDraftMedia: () => Promise<void>;
   readonly onPickDraftFiles: () => Promise<void>;
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
@@ -950,7 +950,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   projectCwd={props.projectWorkspaceRoot}
                   bottomInset={hasBelowEditorWidgets ? 0 : composerBottomInset}
                   onChangeDraftMessage={props.onChangeDraftMessage}
-                  onPickDraftImages={props.onPickDraftImages}
+                  onPickDraftMedia={props.onPickDraftMedia}
                   onPickDraftFiles={props.onPickDraftFiles}
                   onNativePasteImages={props.onNativePasteImages}
                   onRemoveDraftImage={props.onRemoveDraftImage}
