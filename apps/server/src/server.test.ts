@@ -122,6 +122,7 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import {
   OrchestrationCommandInvariantError,
   OrchestrationListenerCallbackError,
+  OrchestrationThreadSettleBlockedError,
 } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
@@ -8330,7 +8331,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("stops the provider session after settle without closing terminals", () =>
+  it.effect("leaves settle cleanup to the event reactor", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread-settle");
       const effects: string[] = [];
@@ -8388,64 +8389,40 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assert.equal(dispatchResult.sequence, 1);
-      assert.deepEqual(effects, ["dispatch:thread.settle", "dispatch:thread.session.stop"]);
-      const sessionStopCommand = dispatchedCommands[1];
-      assert.equal(sessionStopCommand?.type, "thread.session.stop");
-      if (sessionStopCommand?.type === "thread.session.stop") {
-        assert.equal(sessionStopCommand.threadId, threadId);
-        assert.equal(sessionStopCommand.commandId, "session-stop-for-settle:cmd-thread-settle");
-        assert.equal(sessionStopCommand.onlyIfSettled, true);
-      }
+      assert.deepEqual(effects, ["dispatch:thread.settle"]);
+      assert.deepEqual(
+        dispatchedCommands.map((command) => command.type),
+        ["thread.settle"],
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("settles without dispatching session stop when the thread has no session", () =>
+  it.effect("forwards the friendly blocked-settlement message over websocket rpc", () =>
     Effect.gen(function* () {
-      const threadId = ThreadId.make("thread-settle-no-session");
-      const effects: string[] = [];
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-
+      const threadId = ThreadId.make("thread-settle-blocked");
       yield* buildAppUnderTest({
         layers: {
-          terminalManager: {
-            close: (input) =>
-              Effect.sync(() => {
-                effects.push(`terminal.close:${input.threadId}`);
-              }),
-          },
           orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                dispatchedCommands.push(command);
-                effects.push(`dispatch:${command.type}`);
-                return { sequence: dispatchedCommands.length };
-              }),
-          },
-          projectionSnapshotQuery: {
-            getThreadShellById: () =>
-              Effect.succeed(
-                Option.some(makeDefaultOrchestrationThreadShell({ id: threadId, session: null })),
-              ),
+            dispatch: () => Effect.fail(new OrchestrationThreadSettleBlockedError({ threadId })),
           },
         },
       });
 
       const wsUrl = yield* getWsServerUrl("/ws");
-      const dispatchResult = yield* Effect.scoped(
+      const error = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
             type: "thread.settle",
-            commandId: CommandId.make("cmd-thread-settle-no-session"),
+            commandId: CommandId.make("cmd-thread-settle-blocked"),
             threadId,
           }),
-        ),
+        ).pipe(Effect.flip),
       );
 
-      assert.equal(dispatchResult.sequence, 1);
-      assert.deepEqual(effects, ["dispatch:thread.settle"]);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        ["thread.settle"],
+      assert.equal(error._tag, "OrchestrationDispatchCommandError");
+      assert.equal(
+        error.message,
+        "This thread still needs attention. Resolve or interrupt it first, then try again.",
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
