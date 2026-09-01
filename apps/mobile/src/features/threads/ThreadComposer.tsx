@@ -59,7 +59,16 @@ import type {
 } from "@t3tools/contracts";
 import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { ReactNode } from "react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -80,6 +89,9 @@ import Animated, {
   FadeOutDown,
   LinearTransition,
   ReduceMotion,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
 } from "react-native-reanimated";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { presentMobileContextWindow } from "../../lib/contextWindow";
@@ -276,8 +288,28 @@ export function ComposerSurface(props: {
   // style and `shadowOpacity: 1` would fall back to RN's default opaque black.
   const shadowColor = useUniwindTheme()["--color-primary-shadow"];
   const isDarkMode = useColorScheme() === "dark";
+  // #8793's shape morph, adopted without its toolbar restructure. Animating the
+  // radius on a shared value keeps the pill/card corners interpolating with the
+  // layout instead of snapping on the first frame. Every native frame carries
+  // the same transition: animating only the outer clip leaves the glass and the
+  // content at their final height immediately.
+  const targetBorderRadius =
+    typeof props.style.borderRadius === "number" ? props.style.borderRadius : 0;
+  const animatedBorderRadius = useSharedValue(targetBorderRadius);
+  const shouldAnimate = props.animateLayout !== false && Platform.OS !== "android";
+  useLayoutEffect(() => {
+    animatedBorderRadius.value = shouldAnimate
+      ? withTiming(targetBorderRadius, {
+          duration: COMPOSER_TRANSITION_DURATION_MS,
+          reduceMotion: ReduceMotion.System,
+        })
+      : targetBorderRadius;
+  }, [animatedBorderRadius, shouldAnimate, targetBorderRadius]);
+  const animatedShapeStyle = useAnimatedStyle(() => ({
+    borderRadius: animatedBorderRadius.value,
+  }));
+  const layoutTransition = shouldAnimate ? COMPOSER_LAYOUT_TRANSITION : undefined;
   const shadowStyle: ViewStyle = {
-    borderRadius: props.style.borderRadius,
     shadowColor,
     shadowOpacity: isDarkMode ? 0.35 : 0.12,
     shadowRadius: 14,
@@ -286,21 +318,26 @@ export function ComposerSurface(props: {
   };
 
   return (
-    <Animated.View
-      layout={props.animateLayout === false ? undefined : COMPOSER_LAYOUT_TRANSITION}
-      style={shadowStyle}
-    >
-      <GlassSurface
+    <Animated.View layout={layoutTransition} style={[shadowStyle, animatedShapeStyle]}>
+      <AnimatedGlassSurface
         chrome="none"
         fallbackClassName="border border-border bg-card-translucent"
         glassEffectStyle="regular"
         // The composer is a passive material containing interactive controls.
         // Expo GlassView defaults to non-interactive and both layouts share it.
         tintColor="transparent"
-        style={props.style}
+        layout={layoutTransition}
+        style={[{ position: "absolute", inset: 0 }, animatedShapeStyle]}
+      >
+        {null}
+      </AnimatedGlassSurface>
+      <Animated.View
+        collapsable={false}
+        layout={layoutTransition}
+        style={[props.style, animatedShapeStyle]}
       >
         {props.children}
-      </GlassSurface>
+      </Animated.View>
     </Animated.View>
   );
 }
@@ -1539,7 +1576,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   paddingTop: 14,
                 }
               : {
-                  borderRadius: 999,
+                  // Bounded so the radius morph interpolates instead of
+                  // travelling from 999; still renders as a capsule at this
+                  // pill height.
+                  borderRadius: 27,
                   overflow: "hidden" as const,
                   flexDirection: "row" as const,
                   alignItems: "center" as const,
