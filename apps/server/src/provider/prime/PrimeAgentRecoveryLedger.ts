@@ -14,6 +14,22 @@ const RecoveryCursor = Schema.Struct({
   sequence: NonNegativeInt,
 });
 
+export const PrimeAgentRecoveryAdoptionProof = Schema.Struct({
+  feature: Schema.Literal("recoverable_owned_session_adoption_v1"),
+  status: Schema.Literal("adopted"),
+  supervisorGeneration: Schema.String,
+  ownershipGeneration: NonNegativeInt,
+  activeSessionId: Schema.String,
+  sessionId: Schema.String,
+  correlationId: Schema.String,
+  lifecycle: Schema.Unknown,
+  cursor: RecoveryCursor,
+  mcpOwnerId: Schema.String,
+});
+export type PrimeAgentRecoveryAdoptionProof = typeof PrimeAgentRecoveryAdoptionProof.Type;
+
+export const PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS = 8;
+
 export const PrimeAgentRecoveryAuthority = Schema.Struct({
   threadId: Schema.String,
   providerInstanceId: Schema.String,
@@ -41,7 +57,17 @@ export const PrimeAgentRecoveryAuthority = Schema.Struct({
   transcriptMessageCount: NonNegativeInt,
   transcriptFingerprints: Schema.Array(Schema.String),
   ownerToken: Schema.String,
-  state: Schema.Literals(["prepared", "active", "adopting", "terminal"]),
+  state: Schema.Literals(["prepared", "active", "adopting", "quarantined", "terminal"]),
+  adoptionPreviousOwnerToken: Schema.NullOr(Schema.String),
+  adoptionOwnerToken: Schema.NullOr(Schema.String),
+  adoptionRequestId: Schema.NullOr(Schema.String),
+  adoptionMcpOwnerId: Schema.NullOr(Schema.String),
+  adoptionPhase: Schema.NullOr(
+    Schema.Literals(["claimed", "requested", "committed", "confirming", "quarantined"]),
+  ),
+  adoptionAttempt: NonNegativeInt,
+  adoptionRecoveryHandle: Schema.NullOr(Schema.String),
+  adoptionProof: Schema.NullOr(PrimeAgentRecoveryAdoptionProof),
   nativeCleanupProven: Schema.Boolean,
   terminalProjected: Schema.Boolean,
   checkpointQuiesced: Schema.Boolean,
@@ -60,6 +86,8 @@ export class PrimeAgentRecoveryLedgerError extends Schema.TaggedErrorClass<Prime
     return `Prime Agent recovery ledger failed during ${this.operation}.`;
   }
 }
+
+const isPrimeAgentRecoveryLedgerError = Schema.is(PrimeAgentRecoveryLedgerError);
 
 export interface PrimeAgentRecoveryLedgerShape {
   readonly putPrepared: (
@@ -90,27 +118,62 @@ export interface PrimeAgentRecoveryLedgerShape {
     readonly fingerprints: ReadonlyArray<string>;
     readonly updatedAt: string;
   }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
-  /** Compare-and-swap the last durable owner. Exactly one restarted Pylon process can win. */
+  /**
+   * Compare-and-swap one stable adoption route without replacing the current native authority.
+   * The old owner and bearer handle remain current until native confirmation succeeds.
+   */
   readonly claim: (input: {
     readonly threadId: string;
     readonly expectedOwnerToken: string;
     readonly nextOwnerToken: string;
+    readonly requestId: string;
+    readonly mcpOwnerId: string;
     readonly updatedAt: string;
   }) => Effect.Effect<Option.Option<PrimeAgentRecoveryAuthority>, PrimeAgentRecoveryLedgerError>;
+  /** Records an attempt before the native prepare request can begin. */
+  readonly beginAdoptionAttempt: (input: {
+    readonly threadId: string;
+    readonly ownerToken: string;
+    readonly requestId: string;
+    readonly updatedAt: string;
+  }) => Effect.Effect<Option.Option<PrimeAgentRecoveryAuthority>, PrimeAgentRecoveryLedgerError>;
+  /** Releases only a never-started claim. Any native ambiguity keeps the durable route. */
   readonly releaseClaim: (input: {
     readonly threadId: string;
     readonly ownerToken: string;
     readonly previousOwnerToken: string;
+    readonly requestId: string;
     readonly updatedAt: string;
   }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
-  /** Persist the rotated bearer authority before the SDK confirmation step. */
+  /** Persist the complete rotated receipt separately before the SDK confirmation step. */
   readonly commitAdoption: (input: {
     readonly threadId: string;
     readonly ownerToken: string;
+    readonly requestId: string;
     readonly recoveryHandle: string;
-    readonly ownershipGeneration: number;
-    readonly cursor: typeof RecoveryCursor.Type;
-    readonly mcpOwnerId: string;
+    readonly proof: PrimeAgentRecoveryAdoptionProof;
+    readonly updatedAt: string;
+  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  /** Records the confirmation attempt before it can close the old-handle retry window. */
+  readonly beginAdoptionConfirmation: (input: {
+    readonly threadId: string;
+    readonly ownerToken: string;
+    readonly requestId: string;
+    readonly updatedAt: string;
+  }) => Effect.Effect<Option.Option<PrimeAgentRecoveryAuthority>, PrimeAgentRecoveryLedgerError>;
+  /** Promotes the staged receipt only after exact native confirmation. */
+  readonly finalizeAdoption: (input: {
+    readonly threadId: string;
+    readonly ownerToken: string;
+    readonly requestId: string;
+    readonly recoveryHandle: string;
+    readonly proof: PrimeAgentRecoveryAdoptionProof;
+    readonly updatedAt: string;
+  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly quarantineAdoption: (input: {
+    readonly threadId: string;
+    readonly ownerToken: string;
+    readonly requestId: string;
     readonly updatedAt: string;
   }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
   readonly markNativeCleanup: (input: {
@@ -166,6 +229,14 @@ const RawRow = Schema.Struct({
   transcriptFingerprintsJson: Schema.String,
   ownerToken: Schema.String,
   state: Schema.String,
+  adoptionPreviousOwnerToken: Schema.NullOr(Schema.String),
+  adoptionOwnerToken: Schema.NullOr(Schema.String),
+  adoptionRequestId: Schema.NullOr(Schema.String),
+  adoptionMcpOwnerId: Schema.NullOr(Schema.String),
+  adoptionPhase: Schema.NullOr(Schema.String),
+  adoptionAttempt: Schema.Int,
+  adoptionRecoveryHandle: Schema.NullOr(Schema.String),
+  adoptionProofJson: Schema.NullOr(Schema.String),
   nativeCleanupProven: Schema.Int,
   terminalProjected: Schema.Int,
   checkpointQuiesced: Schema.Int,
@@ -203,11 +274,34 @@ const selectColumns = `
   transcript_fingerprints_json AS transcriptFingerprintsJson,
   owner_token AS ownerToken,
   state,
+  adoption_previous_owner_token AS adoptionPreviousOwnerToken,
+  adoption_owner_token AS adoptionOwnerToken,
+  adoption_request_id AS adoptionRequestId,
+  adoption_mcp_owner_id AS adoptionMcpOwnerId,
+  adoption_phase AS adoptionPhase,
+  adoption_attempt AS adoptionAttempt,
+  adoption_recovery_handle AS adoptionRecoveryHandle,
+  adoption_proof_json AS adoptionProofJson,
   native_cleanup_proven AS nativeCleanupProven,
   terminal_projected AS terminalProjected,
   checkpoint_quiesced AS checkpointQuiesced,
   updated_at AS updatedAt
 `;
+
+function encodeAdoptionProof(proof: PrimeAgentRecoveryAdoptionProof): string {
+  return JSON.stringify({
+    feature: proof.feature,
+    status: proof.status,
+    supervisorGeneration: proof.supervisorGeneration,
+    ownershipGeneration: proof.ownershipGeneration,
+    activeSessionId: proof.activeSessionId,
+    sessionId: proof.sessionId,
+    correlationId: proof.correlationId,
+    lifecycle: proof.lifecycle,
+    cursor: proof.cursor,
+    mcpOwnerId: proof.mcpOwnerId,
+  });
+}
 
 function ledgerError(operation: string, cause?: unknown): PrimeAgentRecoveryLedgerError {
   return new PrimeAgentRecoveryLedgerError({
@@ -247,6 +341,14 @@ function decodeRows(rows: unknown, operation: string): ReadonlyArray<PrimeAgentR
         transcriptFingerprints: JSON.parse(row.transcriptFingerprintsJson),
         ownerToken: row.ownerToken,
         state: row.state,
+        adoptionPreviousOwnerToken: row.adoptionPreviousOwnerToken,
+        adoptionOwnerToken: row.adoptionOwnerToken,
+        adoptionRequestId: row.adoptionRequestId,
+        adoptionMcpOwnerId: row.adoptionMcpOwnerId,
+        adoptionPhase: row.adoptionPhase,
+        adoptionAttempt: row.adoptionAttempt,
+        adoptionRecoveryHandle: row.adoptionRecoveryHandle,
+        adoptionProof: row.adoptionProofJson === null ? null : JSON.parse(row.adoptionProofJson),
         nativeCleanupProven: row.nativeCleanupProven === 1,
         terminalProjected: row.terminalProjected === 1,
         checkpointQuiesced: row.checkpointQuiesced === 1,
@@ -265,7 +367,7 @@ export const make = Effect.gen(function* () {
     Effect.try({
       try: () => decodeRows(rows, operation),
       catch: (cause) =>
-        Schema.is(PrimeAgentRecoveryLedgerError)(cause) ? cause : ledgerError(operation, cause),
+        isPrimeAgentRecoveryLedgerError(cause) ? cause : ledgerError(operation, cause),
     });
 
   const queryByThread = (threadId: string) =>
@@ -291,8 +393,11 @@ export const make = Effect.gen(function* () {
           recovery_handle, supervisor_generation, ownership_generation, cursor_generation, cursor_sequence,
           correlation_id, mcp_owner_id, recovery_config_json, launch_environment_json,
           transcript_message_count, transcript_fingerprints_json, owner_token, state,
-          native_cleanup_proven, terminal_projected, checkpoint_quiesced, updated_at
-        ) VALUES (${Array.from({ length: 32 }, () => "?").join(",")})
+          adoption_previous_owner_token, adoption_owner_token, adoption_request_id,
+          adoption_mcp_owner_id, adoption_phase, adoption_attempt, adoption_recovery_handle,
+          adoption_proof_json, native_cleanup_proven, terminal_projected, checkpoint_quiesced,
+          updated_at
+        ) VALUES (${Array.from({ length: 40 }, () => "?").join(",")})
 `,
         [
           authority.threadId,
@@ -323,6 +428,14 @@ export const make = Effect.gen(function* () {
           JSON.stringify(authority.transcriptFingerprints),
           authority.ownerToken,
           authority.state,
+          authority.adoptionPreviousOwnerToken,
+          authority.adoptionOwnerToken,
+          authority.adoptionRequestId,
+          authority.adoptionMcpOwnerId,
+          authority.adoptionPhase,
+          authority.adoptionAttempt,
+          authority.adoptionRecoveryHandle,
+          authority.adoptionProof === null ? null : JSON.stringify(authority.adoptionProof),
           authority.nativeCleanupProven ? 1 : 0,
           authority.terminalProjected ? 1 : 0,
           authority.checkpointQuiesced ? 1 : 0,
@@ -390,37 +503,161 @@ export const make = Effect.gen(function* () {
   const claim: PrimeAgentRecoveryLedgerShape["claim"] = (input) =>
     conditionalUpdate(
       "claim",
-      `UPDATE prime_agent_recovery_ledger SET owner_token=?, state='adopting', updated_at=?
-       WHERE thread_id=? AND owner_token=? AND state='active' RETURNING thread_id`,
-      [input.nextOwnerToken, input.updatedAt, input.threadId, input.expectedOwnerToken],
+      `UPDATE prime_agent_recovery_ledger
+       SET state='adopting', adoption_previous_owner_token=owner_token,
+           adoption_owner_token=?, adoption_request_id=?, adoption_mcp_owner_id=?,
+           adoption_phase='claimed', adoption_attempt=0, adoption_recovery_handle=NULL,
+           adoption_proof_json=NULL, updated_at=?
+       WHERE thread_id=? AND owner_token=? AND state='active'
+       RETURNING thread_id`,
+      [
+        input.nextOwnerToken,
+        input.requestId,
+        input.mcpOwnerId,
+        input.updatedAt,
+        input.threadId,
+        input.expectedOwnerToken,
+      ],
     ).pipe(
       Effect.flatMap((claimed) => (claimed ? get(input.threadId) : Effect.succeed(Option.none()))),
+    );
+
+  const beginAdoptionAttempt: PrimeAgentRecoveryLedgerShape["beginAdoptionAttempt"] = (input) =>
+    conditionalUpdate(
+      "beginAdoptionAttempt",
+      `UPDATE prime_agent_recovery_ledger
+       SET adoption_phase=CASE WHEN adoption_phase='claimed' THEN 'requested' ELSE adoption_phase END,
+           adoption_attempt=adoption_attempt+1, updated_at=?
+       WHERE thread_id=? AND state='adopting' AND adoption_owner_token=?
+         AND adoption_request_id=? AND adoption_phase IN ('claimed','requested','committed')
+         AND adoption_attempt < ?
+       RETURNING thread_id`,
+      [
+        input.updatedAt,
+        input.threadId,
+        input.ownerToken,
+        input.requestId,
+        PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS,
+      ],
+    ).pipe(
+      Effect.flatMap((started) => (started ? get(input.threadId) : Effect.succeed(Option.none()))),
     );
 
   const releaseClaim: PrimeAgentRecoveryLedgerShape["releaseClaim"] = (input) =>
     conditionalUpdate(
       "releaseClaim",
-      `UPDATE prime_agent_recovery_ledger SET owner_token=?, state='active', updated_at=?
-       WHERE thread_id=? AND owner_token=? AND state='adopting' RETURNING thread_id`,
-      [input.previousOwnerToken, input.updatedAt, input.threadId, input.ownerToken],
+      `UPDATE prime_agent_recovery_ledger
+       SET state='active', adoption_previous_owner_token=NULL, adoption_owner_token=NULL,
+           adoption_request_id=NULL, adoption_mcp_owner_id=NULL, adoption_phase=NULL,
+           adoption_attempt=0, adoption_recovery_handle=NULL, adoption_proof_json=NULL,
+           updated_at=?
+       WHERE thread_id=? AND owner_token=? AND state='adopting'
+         AND adoption_previous_owner_token=? AND adoption_owner_token=?
+         AND adoption_request_id=? AND adoption_phase='claimed' AND adoption_attempt=0
+       RETURNING thread_id`,
+      [
+        input.updatedAt,
+        input.threadId,
+        input.previousOwnerToken,
+        input.previousOwnerToken,
+        input.ownerToken,
+        input.requestId,
+      ],
     );
 
-  const commitAdoption: PrimeAgentRecoveryLedgerShape["commitAdoption"] = (input) =>
-    conditionalUpdate(
+  const commitAdoption: PrimeAgentRecoveryLedgerShape["commitAdoption"] = (input) => {
+    const proofJson = encodeAdoptionProof(input.proof);
+    return conditionalUpdate(
       "commitAdoption",
       `UPDATE prime_agent_recovery_ledger
-       SET recovery_handle=?, ownership_generation=?, cursor_generation=?, cursor_sequence=?,
-           mcp_owner_id=?, state='active', updated_at=?
-       WHERE thread_id=? AND owner_token=? AND state='adopting' RETURNING thread_id`,
+       SET adoption_recovery_handle=?, adoption_proof_json=?, adoption_phase='committed',
+           updated_at=?
+       WHERE thread_id=? AND state='adopting' AND adoption_owner_token=?
+         AND adoption_request_id=?
+         AND (adoption_phase='requested' OR
+           (adoption_phase='committed' AND adoption_recovery_handle=? AND adoption_proof_json=?))
+       RETURNING thread_id`,
       [
         input.recoveryHandle,
-        input.ownershipGeneration,
-        input.cursor.generation,
-        input.cursor.sequence,
-        input.mcpOwnerId,
+        proofJson,
         input.updatedAt,
         input.threadId,
         input.ownerToken,
+        input.requestId,
+        input.recoveryHandle,
+        proofJson,
+      ],
+    );
+  };
+
+  const beginAdoptionConfirmation: PrimeAgentRecoveryLedgerShape["beginAdoptionConfirmation"] = (
+    input,
+  ) =>
+    conditionalUpdate(
+      "beginAdoptionConfirmation",
+      `UPDATE prime_agent_recovery_ledger
+       SET adoption_phase='confirming', adoption_attempt=adoption_attempt+1, updated_at=?
+       WHERE thread_id=? AND state='adopting' AND adoption_owner_token=?
+         AND adoption_request_id=? AND adoption_phase IN ('committed','confirming')
+         AND adoption_recovery_handle IS NOT NULL AND adoption_proof_json IS NOT NULL
+         AND adoption_attempt < ?
+       RETURNING thread_id`,
+      [
+        input.updatedAt,
+        input.threadId,
+        input.ownerToken,
+        input.requestId,
+        PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS,
+      ],
+    ).pipe(
+      Effect.flatMap((started) => (started ? get(input.threadId) : Effect.succeed(Option.none()))),
+    );
+
+  const finalizeAdoption: PrimeAgentRecoveryLedgerShape["finalizeAdoption"] = (input) => {
+    const proofJson = encodeAdoptionProof(input.proof);
+    return conditionalUpdate(
+      "finalizeAdoption",
+      `UPDATE prime_agent_recovery_ledger
+       SET recovery_handle=?, ownership_generation=?, cursor_generation=?, cursor_sequence=?,
+           mcp_owner_id=?, owner_token=?, state='active', adoption_previous_owner_token=NULL,
+           adoption_owner_token=NULL, adoption_request_id=NULL, adoption_mcp_owner_id=NULL,
+           adoption_phase=NULL, adoption_attempt=0, adoption_recovery_handle=NULL,
+           adoption_proof_json=NULL, updated_at=?
+       WHERE thread_id=? AND state='adopting' AND adoption_owner_token=?
+         AND adoption_request_id=? AND adoption_phase='confirming'
+         AND adoption_recovery_handle=? AND adoption_proof_json=?
+       RETURNING thread_id`,
+      [
+        input.recoveryHandle,
+        input.proof.ownershipGeneration,
+        input.proof.cursor.generation,
+        input.proof.cursor.sequence,
+        input.proof.mcpOwnerId,
+        input.ownerToken,
+        input.updatedAt,
+        input.threadId,
+        input.ownerToken,
+        input.requestId,
+        input.recoveryHandle,
+        proofJson,
+      ],
+    );
+  };
+
+  const quarantineAdoption: PrimeAgentRecoveryLedgerShape["quarantineAdoption"] = (input) =>
+    conditionalUpdate(
+      "quarantineAdoption",
+      `UPDATE prime_agent_recovery_ledger
+       SET state='quarantined', adoption_phase='quarantined', updated_at=?
+       WHERE thread_id=? AND state='adopting' AND adoption_owner_token=?
+         AND adoption_request_id=? AND adoption_attempt >= ?
+       RETURNING thread_id`,
+      [
+        input.updatedAt,
+        input.threadId,
+        input.ownerToken,
+        input.requestId,
+        PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS,
       ],
     );
 
@@ -466,8 +703,12 @@ export const make = Effect.gen(function* () {
     discardPrepared,
     updateTranscriptProgress,
     claim,
+    beginAdoptionAttempt,
     releaseClaim,
     commitAdoption,
+    beginAdoptionConfirmation,
+    finalizeAdoption,
+    quarantineAdoption,
     markNativeCleanup,
     markTerminalProjected,
     markCheckpointQuiesced,

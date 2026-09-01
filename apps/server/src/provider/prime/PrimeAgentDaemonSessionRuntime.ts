@@ -919,7 +919,16 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
         readonly mcpOwnerId: string;
         readonly recoveryConfig: Readonly<Record<string, unknown>>;
         readonly launchEnvironment: Readonly<Record<string, string>>;
+        readonly onAdoptionAttemptStarted: () => Promise<void>;
         readonly onAdoptionCommitted: (authority: {
+          readonly recoveryHandle: string;
+          readonly proof: PrimeAgentRecoverableOwnedSessionAdoptionProof;
+        }) => Promise<void>;
+        readonly onAdoptionConfirming: (authority: {
+          readonly recoveryHandle: string;
+          readonly proof: PrimeAgentRecoverableOwnedSessionAdoptionProof;
+        }) => Promise<void>;
+        readonly onAdoptionConfirmed: (authority: {
           readonly recoveryHandle: string;
           readonly proof: PrimeAgentRecoverableOwnedSessionAdoptionProof;
         }) => Promise<void>;
@@ -1922,6 +1931,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "Recoverable Prime Agent execution is unavailable.",
         );
       }
+      yield* Effect.tryPromise({
+        try: recovery.onAdoptionAttemptStarted,
+        catch: () =>
+          runtimeError(
+            "attach-session",
+            "request-failed",
+            "Recoverable Prime Agent adoption attempt could not be durably recorded.",
+          ),
+      }).pipe(Effect.onError(() => closeClient));
       const adopted = yield* Effect.tryPromise({
         try: () =>
           adoptRecoverableOwnedSession(client, {
@@ -7747,7 +7765,28 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       );
     }
 
-    if (confirmAdoption !== undefined) {
+    if (confirmAdoption !== undefined && adoptedRecovery !== undefined) {
+      const adoptionRecovery = input.recovery;
+      if (adoptionRecovery?.kind !== "adopt") {
+        return yield* runtimeError(
+          "attach-session",
+          "invalid-response",
+          "Recoverable Prime Agent adoption state was lost before confirmation.",
+        );
+      }
+      const adoptionAuthority = {
+        recoveryHandle: adoptedRecovery.recoveryHandle,
+        proof: adoptedRecovery.proof,
+      };
+      yield* Effect.tryPromise({
+        try: () => adoptionRecovery.onAdoptionConfirming(adoptionAuthority),
+        catch: () =>
+          runtimeError(
+            "attach-session",
+            "request-failed",
+            "Recoverable Prime Agent confirmation attempt could not be durably recorded.",
+          ),
+      });
       yield* Effect.tryPromise({
         try: confirmAdoption,
         catch: () =>
@@ -7764,6 +7803,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           }),
         ),
       );
+      yield* Effect.tryPromise({
+        try: () => adoptionRecovery.onAdoptionConfirmed(adoptionAuthority),
+        catch: () =>
+          runtimeError(
+            "attach-session",
+            "request-failed",
+            "Confirmed Prime Agent ownership could not be durably finalized.",
+          ),
+      });
     }
 
     // The initial proof cannot survive any overlapping attachment generation, even

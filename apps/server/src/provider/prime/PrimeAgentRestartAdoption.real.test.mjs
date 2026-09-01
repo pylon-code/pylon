@@ -29,7 +29,7 @@ const skipReason =
     ? "native Windows is unsupported; run the POSIX proof in WSL2 with a Linux PRIME_AGENT_REAL_PACKAGE_ROOT"
     : "set PRIME_AGENT_REAL_PACKAGE_ROOT to the built exact Prime checkout at 507a52239d3ace7bb2b2965ade7779988fdb6344";
 const enabled = NodeProcess.platform !== "win32" && Boolean(packageRoot);
-const outerSafetyMs = 120_000;
+const outerSafetyMs = 180_000;
 const maximumOutputBytes = 2 * 1024 * 1024;
 const providerInstanceId = "primeAgent";
 const modelSelection = {
@@ -469,7 +469,16 @@ const preparePylonState = async (
   return stateDir;
 };
 
-const spawnPylonServer = async ({ repoRoot, baseDir, projectDir, home, port, label }) => {
+const spawnPylonServer = async ({
+  repoRoot,
+  baseDir,
+  projectDir,
+  home,
+  port,
+  label,
+  environment = {},
+  waitForPairing = true,
+}) => {
   const output = [];
   let outputBytes = 0;
   let pairingBuffer = "";
@@ -489,7 +498,7 @@ const spawnPylonServer = async ({ repoRoot, baseDir, projectDir, home, port, lab
     ],
     {
       cwd: repoRoot,
-      env: sanitizeServerEnvironment(home),
+      env: { ...sanitizeServerEnvironment(home), ...environment },
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
@@ -522,7 +531,10 @@ const spawnPylonServer = async ({ repoRoot, baseDir, projectDir, home, port, lab
       );
     }
   });
-  const access = await withSafetyCeiling(pairing.promise, 30_000, `${label} pairing readiness`);
+  const access = waitForPairing
+    ? await withSafetyCeiling(pairing.promise, 30_000, `${label} pairing readiness`)
+    : undefined;
+  if (!waitForPairing) void pairing.promise.catch(() => undefined);
   return {
     child,
     access,
@@ -630,7 +642,10 @@ const readLedger = (databasePath, threadId) => {
         `SELECT thread_id, provider_instance_id, session_incarnation_id, admission_request_id,
                 turn_id, package_root, active_session_id, native_session_id, recovery_handle,
                 supervisor_generation, ownership_generation, cursor_generation, cursor_sequence,
-                correlation_id, mcp_owner_id, owner_token, state
+                correlation_id, mcp_owner_id, owner_token, state,
+                adoption_previous_owner_token, adoption_owner_token, adoption_request_id,
+                adoption_mcp_owner_id, adoption_phase, adoption_attempt,
+                adoption_recovery_handle, adoption_proof_json
            FROM prime_agent_recovery_ledger WHERE thread_id = ?`,
       )
       .get(threadId);
@@ -658,6 +673,17 @@ const readProviderSessionRuntime = (databasePath, threadId) => {
   } finally {
     database.close();
   }
+};
+
+const waitForLedger = async (databasePath, threadId, predicate, timeoutMs) => {
+  const deadline = Date.now() + timeoutMs;
+  let observed;
+  while (Date.now() < deadline) {
+    observed = readLedger(databasePath, threadId);
+    if (observed !== undefined && predicate(observed)) return observed;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return observed;
 };
 
 const waitForDurableActiveRuntime = async (databasePath, threadId, expected, timeoutMs) => {
@@ -732,6 +758,17 @@ const stopCaptured = async (server, signal = "SIGTERM") => {
     await waitForExit(child, 5_000, "captured Pylon forced exit").catch(() => undefined);
     throw error;
   }
+};
+
+const spawnRecoveryCrashServer = async (input, stage) => {
+  const server = await spawnPylonServer({
+    ...input,
+    waitForPairing: false,
+    environment: { PRIME_AGENT_INTERNAL_PYLON_RECOVERY_CRASH_STAGE: stage },
+  });
+  const exited = await waitForExit(server.child, 30_000, `${input.label} deterministic crash`);
+  expect(exited).toMatchObject({ code: null, signal: "SIGKILL" });
+  return server;
 };
 
 const processExists = (pid) => {
@@ -890,6 +927,8 @@ describe.skipIf(!enabled)(
         let fixture;
         let serverA;
         let serverB;
+        const crashedServers = [];
+        const crashLedgers = [];
         let bearerToken;
         let daemonSocket;
         let primeSdkEntry;
@@ -1085,6 +1124,81 @@ describe.skipIf(!enabled)(
             busyClientOwnedSessionCount: 1,
           });
 
+          const crashCases = [
+            {
+              label: "server B after durable claim",
+              stage: "after-claim-persisted",
+              phase: "claimed",
+              attempt: 0,
+            },
+            {
+              label: "server C after native response",
+              stage: "after-native-response-before-commit",
+              phase: "requested",
+              attempt: 1,
+            },
+            {
+              label: "server D after durable rotated receipt",
+              stage: "after-commit-before-confirm",
+              phase: "committed",
+              attempt: 2,
+            },
+          ];
+          let adoptionRequestId;
+          let adoptionOwnerToken;
+          for (const crashCase of crashCases) {
+            const crashed = await spawnRecoveryCrashServer(
+              {
+                repoRoot,
+                baseDir,
+                projectDir,
+                home,
+                port: await reserveEphemeralPort(),
+                label: crashCase.label,
+              },
+              crashCase.stage,
+            );
+            crashedServers.push(crashed);
+            const crashLedger = readLedger(databasePath, threadId);
+            crashLedgers.push(crashLedger);
+            expect(crashLedger).toMatchObject({
+              thread_id: ledgerA.thread_id,
+              session_incarnation_id: ledgerA.session_incarnation_id,
+              admission_request_id: ledgerA.admission_request_id,
+              turn_id: ledgerA.turn_id,
+              recovery_handle: ledgerA.recovery_handle,
+              owner_token: ledgerA.owner_token,
+              state: "adopting",
+              adoption_previous_owner_token: ledgerA.owner_token,
+              adoption_phase: crashCase.phase,
+              adoption_attempt: crashCase.attempt,
+            });
+            expect(crashLedger.adoption_request_id).toMatch(/^[0-9a-f]{48}$/u);
+            if (adoptionRequestId === undefined) {
+              adoptionRequestId = crashLedger.adoption_request_id;
+              adoptionOwnerToken = crashLedger.adoption_owner_token;
+            } else {
+              expect(crashLedger.adoption_request_id).toBe(adoptionRequestId);
+              expect(crashLedger.adoption_owner_token).toBe(adoptionOwnerToken);
+            }
+            if (crashCase.phase === "committed") {
+              expect(crashLedger.adoption_recovery_handle).toEqual(expect.any(String));
+              expect(crashLedger.adoption_recovery_handle).not.toBe(ledgerA.recovery_handle);
+              expect(JSON.parse(crashLedger.adoption_proof_json)).toMatchObject({
+                feature: "recoverable_owned_session_adoption_v1",
+                status: "adopted",
+                activeSessionId: ledgerA.active_session_id,
+                sessionId: ledgerA.native_session_id,
+                correlationId: ledgerA.correlation_id,
+              });
+            } else {
+              expect(crashLedger.adoption_recovery_handle).toBeNull();
+              expect(crashLedger.adoption_proof_json).toBeNull();
+            }
+            expect(fixture.records).toHaveLength(1);
+            expect(processExists(workerPid)).toBe(true);
+          }
+
           const portB = await reserveEphemeralPort();
           serverB = await spawnPylonServer({
             repoRoot,
@@ -1092,15 +1206,39 @@ describe.skipIf(!enabled)(
             projectDir,
             home,
             port: portB,
-            label: "server B",
+            label: "server E",
           });
           const wsB = await issueWebSocketUrl(serverB.baseUrl, bearerToken);
           await runRpc(
             wsB,
             (client) => client[WS_METHODS.serverProbe]({}),
-            "server B command readiness after adoption",
+            "server E command readiness after repeated adoption recovery",
           );
           expect(fixture.records).toHaveLength(1);
+          const ledgerAfterRepeatedCrash = await waitForLedger(
+            databasePath,
+            threadId,
+            (ledger) => ledger.state === "active",
+            10_000,
+          );
+          if (ledgerAfterRepeatedCrash?.state !== "active") {
+            throw new Error(
+              `recovery did not finalize (phase=${String(ledgerAfterRepeatedCrash?.adoption_phase)}, attempt=${String(ledgerAfterRepeatedCrash?.adoption_attempt)})`,
+            );
+          }
+          expect({
+            state: ledgerAfterRepeatedCrash?.state,
+            adoptionPhase: ledgerAfterRepeatedCrash?.adoption_phase,
+            adoptionAttempt: ledgerAfterRepeatedCrash?.adoption_attempt,
+            ownerRotated: ledgerAfterRepeatedCrash?.owner_token !== ledgerA.owner_token,
+            handleRotated: ledgerAfterRepeatedCrash?.recovery_handle !== ledgerA.recovery_handle,
+          }).toEqual({
+            state: "active",
+            adoptionPhase: null,
+            adoptionAttempt: 0,
+            ownerRotated: true,
+            handleRotated: true,
+          });
           if (!processExists(workerPid)) {
             throw new Error(
               `captured Prime worker ${workerPid} exited before recovered activity\n${serverB.output()}`,
@@ -1125,6 +1263,11 @@ describe.skipIf(!enabled)(
                   supervisor_generation: ledgerA.supervisor_generation,
                   correlation_id: ledgerA.correlation_id,
                   state: "active",
+                  adoption_request_id: null,
+                  adoption_phase: null,
+                  adoption_attempt: 0,
+                  adoption_recovery_handle: null,
+                  adoption_proof_json: null,
                 });
                 expect(ledgerB.recovery_handle).not.toBe(ledgerA.recovery_handle);
                 expect(ledgerB.owner_token).not.toBe(ledgerA.owner_token);
@@ -1216,6 +1359,13 @@ describe.skipIf(!enabled)(
             ledgerA.correlation_id,
             ledgerA.mcp_owner_id,
             ledgerB.mcp_owner_id,
+            adoptionRequestId,
+            adoptionOwnerToken,
+            ...crashLedgers.flatMap((ledger) =>
+              [ledger.adoption_recovery_handle, ledger.adoption_mcp_owner_id].filter(
+                (value) => typeof value === "string",
+              ),
+            ),
             primeFacade.facadeRoot,
             sourceRoot,
             home,
@@ -1230,7 +1380,11 @@ describe.skipIf(!enabled)(
           for (const privateValue of privateValues) {
             expect(publicSurface).not.toContain(privateValue);
           }
-          const logSafeResult = [serverA.output(), serverB.output()]
+          const logSafeResult = [
+            serverA.output(),
+            ...crashedServers.map((server) => server.output()),
+            serverB.output(),
+          ]
             .join("\n")
             .replace(/^.*(?:Pairing URL|Connection string):.*$/gmu, "[startup access redacted]");
           for (const privateValue of [
@@ -1244,6 +1398,13 @@ describe.skipIf(!enabled)(
             ledgerA.correlation_id,
             ledgerA.mcp_owner_id,
             ledgerB.mcp_owner_id,
+            adoptionRequestId,
+            adoptionOwnerToken,
+            ...crashLedgers.flatMap((ledger) =>
+              [ledger.adoption_recovery_handle, ledger.adoption_mcp_owner_id].filter(
+                (value) => typeof value === "string",
+              ),
+            ),
             daemonSocket,
           ]) {
             expect(logSafeResult).not.toContain(privateValue);

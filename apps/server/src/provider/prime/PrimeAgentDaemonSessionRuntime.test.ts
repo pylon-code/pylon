@@ -13073,8 +13073,17 @@ describe("Prime Agent live activity privacy boundary", () => {
             mcpOwnerId: "pylon:mcp-2",
             recoveryConfig: { cwd: "/work/project" },
             launchEnvironment: { HOME: "/private/home" },
+            onAdoptionAttemptStarted: async () => {
+              side.captures.order.push("adoption-attempt-durable");
+            },
             onAdoptionCommitted: async () => {
               side.captures.order.push("ledger-committed");
+            },
+            onAdoptionConfirming: async () => {
+              side.captures.order.push("confirmation-attempt-durable");
+            },
+            onAdoptionConfirmed: async () => {
+              side.captures.order.push("ledger-finalized");
             },
           },
         );
@@ -13083,15 +13092,27 @@ describe("Prime Agent live activity privacy boundary", () => {
         expect(initial._tag).toBe("Some");
         expect(side.captures.order).toEqual(
           expect.arrayContaining([
+            "adoption-attempt-durable",
             "adopt-recoverable",
             "retain-daemon",
             "ledger-committed",
+            "confirmation-attempt-durable",
             "confirm-adoption",
+            "ledger-finalized",
           ]),
         );
         expect(side.captures.order).not.toContain("replace-mcp");
+        expect(side.captures.order.indexOf("adoption-attempt-durable")).toBeLessThan(
+          side.captures.order.indexOf("adopt-recoverable"),
+        );
         expect(side.captures.order.indexOf("ledger-committed")).toBeLessThan(
+          side.captures.order.indexOf("confirmation-attempt-durable"),
+        );
+        expect(side.captures.order.indexOf("confirmation-attempt-durable")).toBeLessThan(
           side.captures.order.indexOf("confirm-adoption"),
+        );
+        expect(side.captures.order.indexOf("confirm-adoption")).toBeLessThan(
+          side.captures.order.indexOf("ledger-finalized"),
         );
 
         yield* runtime.prompt({ text: "next prompt after adoption" });
