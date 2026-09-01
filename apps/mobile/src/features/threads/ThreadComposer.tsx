@@ -59,7 +59,16 @@ import type {
 } from "@t3tools/contracts";
 import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { ReactNode } from "react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -79,6 +88,10 @@ import Animated, {
   FadeOut,
   FadeOutDown,
   LinearTransition,
+  ReduceMotion,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
 } from "react-native-reanimated";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { presentMobileContextWindow } from "../../lib/contextWindow";
@@ -111,6 +124,15 @@ import type { RemoteClientConnectionState } from "../../lib/connection";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
+import {
+  ComposerDictationCancelAction,
+  ComposerDictationDraftContent,
+  ComposerDictationPrimaryAction,
+  ComposerDictationStatus,
+  ComposerDictationToolbar,
+} from "../voice-input/ComposerDictationControl";
+import { useVoiceInputController } from "../voice-input/useVoiceInputController";
+import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
 import {
   type ExistingThreadSettingsRouteSession,
   useExistingThreadSettingsRoutePresentation,
@@ -246,12 +268,14 @@ export const COMPOSER_TRANSITION_DURATION_MS = 220;
 export const COMPOSER_LAYOUT_TRANSITION =
   Platform.OS === "android"
     ? undefined
-    : LinearTransition.duration(COMPOSER_TRANSITION_DURATION_MS);
+    : LinearTransition.duration(COMPOSER_TRANSITION_DURATION_MS).reduceMotion(ReduceMotion.System);
+
+const AnimatedGlassSurface = Animated.createAnimatedComponent(GlassSurface);
 
 export function ComposerSurface(props: {
   readonly children: ReactNode;
   readonly style: ViewStyle;
-  /** Existing thread composers morph between pill and card layouts. */
+  /** Morphs between the compact and expanded composer layouts. */
   readonly animateLayout?: boolean;
 }) {
   // Drop shadow lives on a wrapper: `overflow: "hidden"` on the surface itself
@@ -264,8 +288,28 @@ export function ComposerSurface(props: {
   // style and `shadowOpacity: 1` would fall back to RN's default opaque black.
   const shadowColor = useUniwindTheme()["--color-primary-shadow"];
   const isDarkMode = useColorScheme() === "dark";
+  // #8793's shape morph, adopted without its toolbar restructure. Animating the
+  // radius on a shared value keeps the pill/card corners interpolating with the
+  // layout instead of snapping on the first frame. Every native frame carries
+  // the same transition: animating only the outer clip leaves the glass and the
+  // content at their final height immediately.
+  const targetBorderRadius =
+    typeof props.style.borderRadius === "number" ? props.style.borderRadius : 0;
+  const animatedBorderRadius = useSharedValue(targetBorderRadius);
+  const shouldAnimate = props.animateLayout !== false && Platform.OS !== "android";
+  useLayoutEffect(() => {
+    animatedBorderRadius.value = shouldAnimate
+      ? withTiming(targetBorderRadius, {
+          duration: COMPOSER_TRANSITION_DURATION_MS,
+          reduceMotion: ReduceMotion.System,
+        })
+      : targetBorderRadius;
+  }, [animatedBorderRadius, shouldAnimate, targetBorderRadius]);
+  const animatedShapeStyle = useAnimatedStyle(() => ({
+    borderRadius: animatedBorderRadius.value,
+  }));
+  const layoutTransition = shouldAnimate ? COMPOSER_LAYOUT_TRANSITION : undefined;
   const shadowStyle: ViewStyle = {
-    borderRadius: props.style.borderRadius,
     shadowColor,
     shadowOpacity: isDarkMode ? 0.35 : 0.12,
     shadowRadius: 14,
@@ -274,21 +318,27 @@ export function ComposerSurface(props: {
   };
 
   return (
-    <Animated.View
-      layout={props.animateLayout === false ? undefined : COMPOSER_LAYOUT_TRANSITION}
-      style={shadowStyle}
-    >
-      <GlassSurface
+    <Animated.View layout={layoutTransition} style={[shadowStyle, animatedShapeStyle]}>
+      <AnimatedGlassSurface
         chrome="none"
         fallbackClassName="border border-border bg-card-translucent"
         glassEffectStyle="regular"
-        // The composer is a passive material containing interactive controls.
-        // Expo GlassView defaults to non-interactive and both layouts share it.
+        // Keep native glass out of the interactive content's layout path: the
+        // content is now a sibling of this layer, not a child of it.
+        pointerEvents="none"
         tintColor="transparent"
-        style={props.style}
+        layout={layoutTransition}
+        style={[{ position: "absolute", inset: 0 }, animatedShapeStyle]}
+      >
+        {null}
+      </AnimatedGlassSurface>
+      <Animated.View
+        collapsable={false}
+        layout={layoutTransition}
+        style={[props.style, animatedShapeStyle]}
       >
         {props.children}
-      </GlassSurface>
+      </Animated.View>
     </Animated.View>
   );
 }
@@ -1179,8 +1229,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   );
 
   // ── Composer command menu ────────────────────────────────
+  const composerOwnerKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+
   const composerMenu = useComposerCommandMenu({
     draftMessage: props.draftMessage,
+    ownerKey: composerOwnerKey,
     environmentId: props.environmentId,
     projectCwd: props.projectCwd,
     selectedProviderStatus,
@@ -1190,10 +1243,28 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     onChangeDraftMessage: props.onChangeDraftMessage,
     onUpdateInteractionMode: props.onUpdateInteractionMode,
   });
+  const voiceInput = useVoiceInputController({
+    ownerKey: composerOwnerKey,
+    draftMessage: props.draftMessage,
+    selection: composerMenu.selection,
+    onChangeDraftMessage: props.onChangeDraftMessage,
+    onChangeSelection: composerMenu.onSelectionChange,
+  });
+  const voicePresentation = resolveVoiceComposerPresentation(
+    voiceInput.state,
+    voiceInput.elapsedSeconds,
+  );
+  const isVoiceInputPresented = voicePresentation.statusLabel !== null;
+  // An open draft stays visible; only a collapsed composer becomes a voice strip.
+  const showsCompactDictation = isVoiceInputPresented && !isExpanded;
+  const isToolbarVisible = isExpanded || isVoiceInputPresented;
 
   const { onSendMessage } = props;
 
   const handleSend = useCallback(async () => {
+    // canSend is derived above voiceInput, so the block lives here.
+    // Reachable via a hardware-keyboard Return while recording.
+    if (voiceInput.blocksSubmission) return;
     if (!canSend) return;
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
@@ -1222,8 +1293,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.environmentLabel,
     props.selectedThread.id,
     props.selectedThread.title,
+    voiceInput.blocksSubmission,
   ]);
   const handleQueueFollowUp = useCallback(async () => {
+    // canSend is derived above voiceInput, so the block lives here.
+    // Reachable via a hardware-keyboard Return while recording.
+    if (voiceInput.blocksSubmission) return;
     if (!canSend) return;
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey) || isMutatingSessionInputQueue) return;
@@ -1387,7 +1462,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       }),
     [currentModelOption?.capabilities, currentModelSelection.options],
   );
-  const settingsOwnerId = scopedThreadKey(props.environmentId, props.selectedThread.id);
+  const settingsOwnerId = composerOwnerKey;
   const settingsRouteSession = useMemo<ExistingThreadSettingsRouteSession>(
     () => ({
       ownerId: settingsOwnerId,
@@ -1478,7 +1553,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         layout={COMPOSER_LAYOUT_TRANSITION}
         style={{ maxWidth: props.contentMaxWidth }}
       >
-        {composerMenu.trigger && composerMenu.items.length > 0 ? (
+        {!voiceInput.isBusy && composerMenu.trigger && composerMenu.items.length > 0 ? (
           <View className="absolute inset-x-0 bottom-full z-10 mb-2">
             <ComposerCommandPopover
               items={composerMenu.items}
@@ -1508,328 +1583,392 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   paddingTop: 14,
                 }
               : {
-                  borderRadius: 999,
+                  // Bounded so the radius morph interpolates instead of
+                  // travelling from 999; still renders as a capsule at this
+                  // pill height.
+                  borderRadius: 27,
                   overflow: "hidden" as const,
                   flexDirection: "row" as const,
                   alignItems: "center" as const,
                   paddingLeft: 18,
                   paddingRight: 5,
-                  paddingVertical: 5,
+                  paddingVertical: showsCompactDictation ? 2 : 5,
                 }
           }
         >
-          {/* Attachment strip — inside the card, above the text input */}
-          {isExpanded ? (
-            <Animated.View
-              className={props.draftAttachments.length > 0 ? "pb-2.5" : undefined}
-              entering={FadeIn.duration(160)}
-              exiting={FadeOut.duration(120)}
-            >
-              <ComposerAttachmentStrip
-                attachments={props.draftAttachments}
-                onRemove={props.onRemoveDraftImage}
-                onPressImage={onPressImage}
+          <ComposerDictationDraftContent
+            className={isExpanded ? undefined : "flex-row items-center"}
+            collapsed={showsCompactDictation}
+          >
+            {isExpanded ? (
+              <Animated.View
+                className={props.draftAttachments.length > 0 ? "pb-2.5" : undefined}
+                entering={FadeIn.duration(160)}
+                exiting={FadeOut.duration(120)}
+                layout={COMPOSER_LAYOUT_TRANSITION}
+              >
+                <ComposerAttachmentStrip
+                  attachments={props.draftAttachments}
+                  onRemove={voiceInput.isBusy ? () => undefined : props.onRemoveDraftImage}
+                  onPressImage={voiceInput.isBusy ? undefined : onPressImage}
+                />
+              </Animated.View>
+            ) : null}
+            <View className={isExpanded ? undefined : "min-w-0 flex-1"}>
+              <ComposerEditor
+                ref={inputRef}
+                multiline
+                value={props.draftMessage}
+                // Without this the keyboard stays live during dictation, and any
+                // keystroke makes resolveTranscriptCommit see a changed draft and
+                // discard the whole transcript as stale.
+                readOnly={voiceInput.freezesEditor}
+                skills={selectedProviderStatus?.skills ?? []}
+                selection={composerMenu.selection}
+                onChangeText={props.onChangeDraftMessage}
+                onSelectionChange={composerMenu.onSelectionChange}
+                onPasteImages={(uris) => void props.onNativePasteImages(uris)}
+                placeholder={props.placeholder}
+                onFocus={handleFocus}
+                onBlur={handleBlur}
+                onSubmit={handleSend}
+                scrollEnabled={isExpanded}
+                // Android: collapsed single line centers natively (gravity) in
+                // a pill-height box matching the send button; iOS keeps insets.
+                singleLineCentered={!isExpanded}
+                contentInsetVertical={isExpanded || Platform.OS === "android" ? 0 : 6}
+                style={
+                  isExpanded
+                    ? {
+                        minHeight: 72,
+                        maxHeight: 160,
+                        paddingHorizontal: 4,
+                        paddingVertical: 4,
+                      }
+                    : {
+                        height: 36,
+                      }
+                }
+                textStyle={{
+                  ...bodyText,
+                  color: foregroundColor,
+                }}
               />
-            </Animated.View>
-          ) : null}
-
-          <View className={isExpanded ? undefined : "min-w-0 flex-1"}>
-            <ComposerEditor
-              ref={inputRef}
-              multiline
-              value={props.draftMessage}
-              skills={selectedProviderStatus?.skills ?? []}
-              selection={composerMenu.selection}
-              onChangeText={props.onChangeDraftMessage}
-              onSelectionChange={composerMenu.onSelectionChange}
-              onPasteImages={(uris) => void props.onNativePasteImages(uris)}
-              placeholder={props.placeholder}
-              onFocus={handleFocus}
-              onBlur={handleBlur}
-              onSubmit={handleSend}
-              scrollEnabled={isExpanded}
-              // Android: collapsed single line centers natively (gravity) in
-              // a pill-height box matching the send button; iOS keeps insets.
-              singleLineCentered={!isExpanded}
-              contentInsetVertical={isExpanded || Platform.OS === "android" ? 0 : 6}
-              style={
-                isExpanded
-                  ? {
-                      minHeight: 72,
-                      maxHeight: 160,
-                      paddingHorizontal: 4,
-                      paddingVertical: 4,
-                    }
-                  : {
-                      height: 36,
-                    }
-              }
-              textStyle={{
-                ...bodyText,
-                color: foregroundColor,
-              }}
-            />
-          </View>
-          {!isExpanded && props.draftAttachments.length > 0 ? (
-            <View className="flex-row gap-1 pl-1">
-              {props.draftAttachments.slice(0, 3).map((attachment) =>
-                attachment.type === "image" ? (
-                  <Pressable
-                    key={attachment.id}
-                    onPress={() => onPressImage(attachment.previewUri)}
-                  >
-                    <Image
-                      source={{ uri: attachment.previewUri }}
-                      className="size-[30px] rounded-lg bg-subtle"
-                      resizeMode="cover"
-                    />
-                  </Pressable>
-                ) : (
-                  <View
-                    key={attachment.id}
-                    className="size-[30px] items-center justify-center rounded-lg bg-subtle"
-                  >
-                    <SymbolView
-                      name="doc.text"
-                      size={15}
-                      tintColorClassName="accent-icon-subtle"
-                      type="monochrome"
-                    />
-                  </View>
-                ),
-              )}
-              {props.draftAttachments.length > 3 ? (
-                <View className="size-[30px] items-center justify-center rounded-lg bg-subtle-strong">
-                  <Text className="text-foreground-muted text-2xs font-t3-bold">
-                    +{props.draftAttachments.length - 3}
-                  </Text>
-                </View>
-              ) : null}
             </View>
-          ) : null}
-          {!isExpanded && props.contextWindow ? (
-            <ContextWindowIndicator snapshot={props.contextWindow} expanded={false} />
-          ) : null}
-          {!isExpanded ? (
-            <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
-              {showStopAction ? (
-                <View className="flex-row items-center gap-2">
-                  <ControlPill
-                    accessibilityLabel="Stop"
-                    icon="stop.fill"
-                    variant="danger"
-                    onPress={props.onStopThread}
-                  />
-                  {canQueueFollowUp ? (
-                    <ControlPill
-                      accessibilityLabel="Queue follow-up"
-                      icon="arrow.up"
-                      variant="primary"
-                      disabled={!canSend || isMutatingSessionInputQueue}
-                      onPress={handleQueueFollowUp}
-                    />
-                  ) : null}
-                </View>
-              ) : (
-                <ControlPill
-                  accessibilityLabel={sendLabel}
-                  icon="arrow.up"
-                  variant="primary"
-                  disabled={!canSend}
-                  onPress={handleSend}
-                />
-              )}
-            </Animated.View>
-          ) : null}
-          {isExpanded ? (
-            <ComposerToolbarRow paddingBottom={0} paddingHorizontal={0} paddingTop={4}>
-              <ComposerToolbarScroller contentPaddingRight={8}>
-                <ComposerToolbarButton
-                  accessibilityLabel="Add attachment"
-                  icon="plus"
-                  onPress={() => {
-                    if (props.serverConfig?.environment.capabilities.fileAttachments) {
-                      Alert.alert("Add attachment", undefined, [
-                        { text: "Photos", onPress: () => void props.onPickDraftImages() },
-                        { text: "Files", onPress: () => void props.onPickDraftFiles() },
-                        { text: "Cancel", style: "cancel" },
-                      ]);
-                      return;
-                    }
-                    void props.onPickDraftImages();
-                  }}
-                  showChevron={false}
-                />
-                {quickQuestionAvailable ? (
-                  <QuickQuestionTrigger
-                    onPress={() => setQuickQuestionOpenScopeKey(quickQuestionScopeKey)}
-                  />
-                ) : null}
-                <ComposerInlineControl
-                  accessibilityLabel="Model and reasoning settings"
-                  emphasized
-                  iconNode={
-                    <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
-                  }
-                  label={currentModelOption?.label ?? currentModelSelection.model}
-                  maxWidth={152}
-                  onPress={openSettings}
-                />
-                {sessionHarnessRefinementActions.length > 0 ? (
-                  <ControlPillMenu
-                    title="Local harness"
-                    actions={sessionHarnessRefinementActions}
-                    onPressAction={({ nativeEvent }) => {
-                      if (
-                        parseSessionHarnessRefinementAction(
-                          nativeEvent.event,
-                          sessionHarnessRefinementScopeKey,
-                        ) === "refine"
-                      ) {
-                        confirmSessionHarnessRefinement(sessionHarnessRefinementScopeKey);
-                      }
-                    }}
-                  >
-                    <ComposerToolbarButton
-                      accessibilityLabel="Local harness refinement"
-                      icon="wand.and.stars"
-                      label="Refine"
-                    />
-                  </ControlPillMenu>
-                ) : null}
-                {props.sessionGoal ? (
-                  <ControlPillMenu
-                    title="Session goal · Managed in chat"
-                    actions={sessionGoalActions}
-                  >
-                    <ComposerToolbarButton
-                      accessibilityLabel={`Session goal ${formatSessionGoalStatus(props.sessionGoal.status).toLowerCase()}. Managed in chat.`}
-                      icon="target"
-                      label={
-                        props.sessionGoal.status === "idle"
-                          ? "No goal"
-                          : `Goal ${formatSessionGoalStatus(props.sessionGoal.status)}`
-                      }
-                    />
-                  </ControlPillMenu>
-                ) : null}
-                {props.contextWindow ||
-                (props.sessionCompaction?.available && sessionCompactionScopeKey) ? (
-                  props.sessionCompaction?.available && sessionCompactionScopeKey ? (
-                    <ControlPillMenu
-                      title="Context window"
-                      actions={sessionCompactionActions}
-                      onPressAction={({ nativeEvent }) =>
-                        handleSessionCompactionAction(nativeEvent.event)
-                      }
+            {!isExpanded && props.draftAttachments.length > 0 ? (
+              <View className="flex-row gap-1 pl-1">
+                {props.draftAttachments.slice(0, 3).map((attachment) =>
+                  attachment.type === "image" ? (
+                    <Pressable
+                      key={attachment.id}
+                      onPress={() => onPressImage(attachment.previewUri)}
                     >
-                      <ComposerToolbarButton
-                        accessibilityLabel={`${
-                          contextWindowPresentation?.accessibilityText ??
-                          "Context usage unavailable."
-                        } ${
-                          isSessionCompactionInProgress(props.sessionCompaction)
-                            ? "Compaction in progress."
-                            : "Compaction controls."
-                        }`}
-                        icon="gauge.with.dots.needle.50percent"
-                        label={contextWindowPresentation?.compactLabel ?? "Context"}
+                      <Image
+                        source={{ uri: attachment.previewUri }}
+                        className="size-[30px] rounded-lg bg-subtle"
+                        resizeMode="cover"
                       />
-                    </ControlPillMenu>
-                  ) : props.contextWindow ? (
-                    <ContextWindowIndicator snapshot={props.contextWindow} expanded />
-                  ) : null
+                    </Pressable>
+                  ) : (
+                    <View
+                      key={attachment.id}
+                      className="size-[30px] items-center justify-center rounded-lg bg-subtle"
+                    >
+                      <SymbolView
+                        name="doc.text"
+                        size={15}
+                        tintColorClassName="accent-icon-subtle"
+                        type="monochrome"
+                      />
+                    </View>
+                  ),
+                )}
+                {props.draftAttachments.length > 3 ? (
+                  <View className="size-[30px] items-center justify-center rounded-lg bg-subtle-strong">
+                    <Text className="text-foreground-muted text-2xs font-t3-bold">
+                      +{props.draftAttachments.length - 3}
+                    </Text>
+                  </View>
                 ) : null}
-                {sessionAgentActions.length > 0 ? (
-                  <ControlPillMenu
-                    title="Active agents"
-                    actions={[...sessionAgentActions]}
-                    onPressAction={({ nativeEvent }) => handleSessionAgentAction(nativeEvent.event)}
-                  >
-                    <ComposerToolbarButton
-                      accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. View live activity, message, or stop an agent.`}
-                      icon="person.2"
-                      label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
-                    />
-                  </ControlPillMenu>
-                ) : null}
-                {showSessionInputQueueModes && props.sessionInputQueue ? (
-                  <ControlPillMenu
-                    title="Session input delivery"
-                    actions={sessionInputQueueActions}
-                    onPressAction={({ nativeEvent }) =>
-                      handleSessionInputQueueAction(nativeEvent.event)
-                    }
-                  >
-                    <ComposerToolbarButton
-                      accessibilityLabel={`Session input delivery. ${sessionQueueCount} pending. Steering ${props.sessionInputQueue.steeringMode === "all-at-once" ? "all at once" : "one at a time"}. Follow-ups ${props.sessionInputQueue.followUpMode === "all-at-once" ? "all at once" : "one at a time"}.`}
-                      icon="text.badge.plus"
-                      label={sessionQueueCount > 0 ? `Inputs ${sessionQueueCount}` : "Inputs"}
-                    />
-                  </ControlPillMenu>
-                ) : null}
-                {showSessionAgentDepth && props.sessionAgentDepth !== null ? (
-                  <ControlPillMenu
-                    title="Agent spawn depth"
-                    actions={sessionAgentDepthActions}
-                    onPressAction={({ nativeEvent }) =>
-                      void setSessionAgentDepth(nativeEvent.event)
-                    }
-                  >
-                    <ComposerToolbarButton
-                      accessibilityLabel={
-                        !props.sessionAgentDepth.writable
-                          ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, fixed by session policy`
-                          : props.sessionAgentDepth.settable
-                            ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}`
-                            : `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, unavailable until the session is idle`
-                      }
-                      icon="person.crop.circle"
-                      label={`Depth ${props.sessionAgentDepth.maxDepth}`}
-                      disabled={sessionAgentDepthDisabled}
-                    />
-                  </ControlPillMenu>
-                ) : null}
-                {sessionResourceInventory !== null ? (
-                  <ComposerToolbarButton
-                    accessibilityLabel={`Session resources. ${sessionResourceInventory.skills.length} skills, ${sessionResourceInventory.prompts.length} prompts.`}
-                    label={`Resources ${sessionResourceInventory.skills.length + sessionResourceInventory.prompts.length}`}
-                    onPress={() => setIsSessionResourcesOpen(true)}
-                    showChevron={false}
-                  />
-                ) : showSessionResourceReload ? (
-                  <ComposerToolbarButton
-                    accessibilityLabel={
-                      isReloadingSessionResources
-                        ? "Reloading session commands and resources"
-                        : "Reload session commands and resources after changing commands, skills, or prompts"
-                    }
-                    icon="arrow.clockwise"
-                    label={isReloadingSessionResources ? "Reloading…" : "Reload resources"}
-                    disabled={sessionResourceReloadDisabled || isReloadingSessionResources}
-                    onPress={() => void reloadSessionResources()}
-                    showChevron={false}
+              </View>
+            ) : null}
+            {!isExpanded && props.contextWindow ? (
+              <ContextWindowIndicator snapshot={props.contextWindow} expanded={false} />
+            ) : null}
+            {!isExpanded && !voiceInput.isBusy ? (
+              <Animated.View
+                className="flex-row items-center gap-1.5"
+                entering={FadeIn.duration(180)}
+                exiting={FadeOut.duration(100)}
+              >
+                {voiceInput.isAvailable ? (
+                  <ComposerDictationPrimaryAction
+                    state={voiceInput.state}
+                    presentation={voicePresentation}
+                    isAvailable={voiceInput.isAvailable}
+                    onStart={voiceInput.start}
+                    onConfirm={voiceInput.stop}
+                    onCancel={voiceInput.cancel}
                   />
                 ) : null}
                 {showStopAction ? (
-                  <ComposerToolbarButton
-                    accessibilityLabel="Stop"
-                    icon="stop.fill"
-                    variant="danger"
-                    onPress={props.onStopThread}
-                    showChevron={false}
+                  <View className="flex-row items-center gap-2">
+                    <ControlPill
+                      accessibilityLabel="Stop"
+                      icon="stop.fill"
+                      variant="danger"
+                      onPress={props.onStopThread}
+                    />
+                    {canQueueFollowUp ? (
+                      <ControlPill
+                        accessibilityLabel="Queue follow-up"
+                        icon="arrow.up"
+                        variant="primary"
+                        disabled={!canSend || isMutatingSessionInputQueue}
+                        onPress={handleQueueFollowUp}
+                      />
+                    ) : null}
+                  </View>
+                ) : (
+                  <ControlPill
+                    accessibilityLabel={sendLabel}
+                    icon="arrow.up"
+                    variant="primary"
+                    disabled={!canSend}
+                    onPress={handleSend}
                   />
-                ) : null}
-              </ComposerToolbarScroller>
-              <ComposerToolbarButton
-                accessibilityLabel={sendLabel}
-                icon="arrow.up"
-                variant="primary"
-                disabled={!canSend || (canQueueFollowUp && isMutatingSessionInputQueue)}
-                onPress={canQueueFollowUp ? handleQueueFollowUp : handleSend}
-                showChevron={false}
-              />
-            </ComposerToolbarRow>
+                )}
+              </Animated.View>
+            ) : null}
+            {isExpanded ? <View className="h-1" /> : null}
+          </ComposerDictationDraftContent>
+          {isToolbarVisible ? (
+            <ComposerDictationToolbar
+              showsDictation={isVoiceInputPresented}
+              visible={isToolbarVisible}
+            >
+              <ComposerToolbarRow paddingBottom={0} paddingHorizontal={0} paddingTop={0}>
+                <ComposerDictationCancelAction
+                  presentation={voicePresentation}
+                  onCancel={voiceInput.cancel}
+                />
+                {isVoiceInputPresented ? (
+                  <ComposerDictationStatus
+                    audioLevels={voiceInput.audioLevels}
+                    elapsedSeconds={voiceInput.elapsedSeconds}
+                    phase={voiceInput.state.phase}
+                    presentation={voicePresentation}
+                    onDismissError={voiceInput.cancel}
+                  />
+                ) : (
+                  <ComposerToolbarScroller contentPaddingRight={8}>
+                    <ComposerToolbarButton
+                      accessibilityLabel="Add attachment"
+                      icon="plus"
+                      onPress={() => {
+                        if (props.serverConfig?.environment.capabilities.fileAttachments) {
+                          Alert.alert("Add attachment", undefined, [
+                            { text: "Photos", onPress: () => void props.onPickDraftImages() },
+                            { text: "Files", onPress: () => void props.onPickDraftFiles() },
+                            { text: "Cancel", style: "cancel" },
+                          ]);
+                          return;
+                        }
+                        void props.onPickDraftImages();
+                      }}
+                      showChevron={false}
+                    />
+                    {quickQuestionAvailable ? (
+                      <QuickQuestionTrigger
+                        onPress={() => setQuickQuestionOpenScopeKey(quickQuestionScopeKey)}
+                      />
+                    ) : null}
+                    <ComposerInlineControl
+                      accessibilityLabel="Model and reasoning settings"
+                      emphasized
+                      iconNode={
+                        <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
+                      }
+                      label={currentModelOption?.label ?? currentModelSelection.model}
+                      maxWidth={152}
+                      onPress={openSettings}
+                    />
+                    {sessionHarnessRefinementActions.length > 0 ? (
+                      <ControlPillMenu
+                        title="Local harness"
+                        actions={sessionHarnessRefinementActions}
+                        onPressAction={({ nativeEvent }) => {
+                          if (
+                            parseSessionHarnessRefinementAction(
+                              nativeEvent.event,
+                              sessionHarnessRefinementScopeKey,
+                            ) === "refine"
+                          ) {
+                            confirmSessionHarnessRefinement(sessionHarnessRefinementScopeKey);
+                          }
+                        }}
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel="Local harness refinement"
+                          icon="wand.and.stars"
+                          label="Refine"
+                        />
+                      </ControlPillMenu>
+                    ) : null}
+                    {props.sessionGoal ? (
+                      <ControlPillMenu
+                        title="Session goal · Managed in chat"
+                        actions={sessionGoalActions}
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel={`Session goal ${formatSessionGoalStatus(props.sessionGoal.status).toLowerCase()}. Managed in chat.`}
+                          icon="target"
+                          label={
+                            props.sessionGoal.status === "idle"
+                              ? "No goal"
+                              : `Goal ${formatSessionGoalStatus(props.sessionGoal.status)}`
+                          }
+                        />
+                      </ControlPillMenu>
+                    ) : null}
+                    {props.contextWindow ||
+                    (props.sessionCompaction?.available && sessionCompactionScopeKey) ? (
+                      props.sessionCompaction?.available && sessionCompactionScopeKey ? (
+                        <ControlPillMenu
+                          title="Context window"
+                          actions={sessionCompactionActions}
+                          onPressAction={({ nativeEvent }) =>
+                            handleSessionCompactionAction(nativeEvent.event)
+                          }
+                        >
+                          <ComposerToolbarButton
+                            accessibilityLabel={`${
+                              contextWindowPresentation?.accessibilityText ??
+                              "Context usage unavailable."
+                            } ${
+                              isSessionCompactionInProgress(props.sessionCompaction)
+                                ? "Compaction in progress."
+                                : "Compaction controls."
+                            }`}
+                            icon="gauge.with.dots.needle.50percent"
+                            label={contextWindowPresentation?.compactLabel ?? "Context"}
+                          />
+                        </ControlPillMenu>
+                      ) : props.contextWindow ? (
+                        <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                      ) : null
+                    ) : null}
+                    {sessionAgentActions.length > 0 ? (
+                      <ControlPillMenu
+                        title="Active agents"
+                        actions={[...sessionAgentActions]}
+                        onPressAction={({ nativeEvent }) =>
+                          handleSessionAgentAction(nativeEvent.event)
+                        }
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. View live activity, message, or stop an agent.`}
+                          icon="person.2"
+                          label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
+                        />
+                      </ControlPillMenu>
+                    ) : null}
+                    {showSessionInputQueueModes && props.sessionInputQueue ? (
+                      <ControlPillMenu
+                        title="Session input delivery"
+                        actions={sessionInputQueueActions}
+                        onPressAction={({ nativeEvent }) =>
+                          handleSessionInputQueueAction(nativeEvent.event)
+                        }
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel={`Session input delivery. ${sessionQueueCount} pending. Steering ${props.sessionInputQueue.steeringMode === "all-at-once" ? "all at once" : "one at a time"}. Follow-ups ${props.sessionInputQueue.followUpMode === "all-at-once" ? "all at once" : "one at a time"}.`}
+                          icon="text.badge.plus"
+                          label={sessionQueueCount > 0 ? `Inputs ${sessionQueueCount}` : "Inputs"}
+                        />
+                      </ControlPillMenu>
+                    ) : null}
+                    {showSessionAgentDepth && props.sessionAgentDepth !== null ? (
+                      <ControlPillMenu
+                        title="Agent spawn depth"
+                        actions={sessionAgentDepthActions}
+                        onPressAction={({ nativeEvent }) =>
+                          void setSessionAgentDepth(nativeEvent.event)
+                        }
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel={
+                            !props.sessionAgentDepth.writable
+                              ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, fixed by session policy`
+                              : props.sessionAgentDepth.settable
+                                ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}`
+                                : `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, unavailable until the session is idle`
+                          }
+                          icon="person.crop.circle"
+                          label={`Depth ${props.sessionAgentDepth.maxDepth}`}
+                          disabled={sessionAgentDepthDisabled}
+                        />
+                      </ControlPillMenu>
+                    ) : null}
+                    {sessionResourceInventory !== null ? (
+                      <ComposerToolbarButton
+                        accessibilityLabel={`Session resources. ${sessionResourceInventory.skills.length} skills, ${sessionResourceInventory.prompts.length} prompts.`}
+                        label={`Resources ${sessionResourceInventory.skills.length + sessionResourceInventory.prompts.length}`}
+                        onPress={() => setIsSessionResourcesOpen(true)}
+                        showChevron={false}
+                      />
+                    ) : showSessionResourceReload ? (
+                      <ComposerToolbarButton
+                        accessibilityLabel={
+                          isReloadingSessionResources
+                            ? "Reloading session commands and resources"
+                            : "Reload session commands and resources after changing commands, skills, or prompts"
+                        }
+                        icon="arrow.clockwise"
+                        label={isReloadingSessionResources ? "Reloading…" : "Reload resources"}
+                        disabled={sessionResourceReloadDisabled || isReloadingSessionResources}
+                        onPress={() => void reloadSessionResources()}
+                        showChevron={false}
+                      />
+                    ) : null}
+                  </ComposerToolbarScroller>
+                )}
+                <View className="shrink-0 flex-row items-center gap-2">
+                  {/* Stop lives outside the dictation ternary: an agent must stay
+                      stoppable for the whole recording and transcription window. */}
+                  {showStopAction ? (
+                    <ComposerToolbarButton
+                      accessibilityLabel="Stop"
+                      icon="stop.fill"
+                      variant="danger"
+                      onPress={props.onStopThread}
+                      showChevron={false}
+                    />
+                  ) : null}
+                  <ComposerDictationPrimaryAction
+                    state={voiceInput.state}
+                    presentation={voicePresentation}
+                    isAvailable={voiceInput.isAvailable}
+                    onStart={voiceInput.start}
+                    onConfirm={voiceInput.stop}
+                    onCancel={voiceInput.cancel}
+                  />
+                  {/* showsSend, not isVoiceInputPresented: the error phase shows a
+                      status label AND keeps send, so gating on the label strands
+                      the user with no way to send until they dismiss the error. */}
+                  {voicePresentation.showsSend ? (
+                    <ComposerToolbarButton
+                      accessibilityLabel={sendLabel}
+                      icon="arrow.up"
+                      variant="primary"
+                      disabled={!canSend || (canQueueFollowUp && isMutatingSessionInputQueue)}
+                      onPress={canQueueFollowUp ? handleQueueFollowUp : handleSend}
+                      showChevron={false}
+                    />
+                  ) : null}
+                </View>
+              </ComposerToolbarRow>
+            </ComposerDictationToolbar>
           ) : null}
         </ComposerSurface>
 
