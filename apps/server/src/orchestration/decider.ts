@@ -7,6 +7,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import type * as PlatformError from "effect/PlatformError";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
@@ -825,6 +826,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const boundInstanceId = thread.session?.providerInstanceId;
+      const providerSelectionIsBoundNoop =
+        command.modelSelection !== undefined &&
+        boundInstanceId !== undefined &&
+        Equal.equals(command.modelSelection, thread.modelSelection);
+      if (
+        command.modelSelection !== undefined &&
+        boundInstanceId !== undefined &&
+        !providerSelectionIsBoundNoop
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' is bound to provider instance '${boundInstanceId}'. Provider model and options may change only through a validated turn transition.`,
+        });
+      }
+      const hasNonProviderMetaUpdate =
+        command.title !== undefined ||
+        command.regenerateTitle === true ||
+        command.branch !== undefined ||
+        command.worktreePath !== undefined ||
+        command.linkedPullRequest !== undefined;
+      if (providerSelectionIsBoundNoop && !hasNonProviderMetaUpdate) {
+        return [];
+      }
       const branch =
         command.branch !== undefined &&
         command.expectedBranch !== undefined &&
@@ -856,7 +881,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.title !== undefined && thread.titleRegeneration != null
             ? { titleRegeneration: null }
             : {}),
-          ...(command.modelSelection !== undefined
+          ...(command.modelSelection !== undefined && !providerSelectionIsBoundNoop
             ? { modelSelection: command.modelSelection }
             : {}),
           ...(branch !== undefined ? { branch } : {}),
@@ -895,11 +920,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.runtime-mode.set": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (thread.session?.providerInstanceId !== undefined) {
+        if (thread.runtimeMode === command.runtimeMode) return [];
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' is bound to provider instance '${thread.session.providerInstanceId}'. Runtime mode may change only through a validated turn transition.`,
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -918,11 +950,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.interaction-mode.set": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (thread.session?.providerInstanceId !== undefined) {
+        if (thread.interactionMode === command.interactionMode) return [];
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' is bound to provider instance '${thread.session.providerInstanceId}'. Interaction mode may change only through a validated turn transition.`,
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -946,6 +985,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const effectiveModelSelection = command.modelSelection ?? targetThread.modelSelection;
+      const providerSettingsChanged =
+        !Equal.equals(effectiveModelSelection, targetThread.modelSelection) ||
+        command.runtimeMode !== targetThread.runtimeMode ||
+        command.interactionMode !== targetThread.interactionMode;
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({
@@ -1005,6 +1049,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      const admissionIntent = {
+        kind:
+          targetThread.session?.providerInstanceId !== undefined &&
+          targetThread.session.providerInstanceId !== effectiveModelSelection.instanceId
+            ? ("compatible-transition" as const)
+            : targetThread.session?.status === "running" && !providerSettingsChanged
+              ? ("steer" as const)
+              : ("start" as const),
+        expectedProviderInstanceId: targetThread.session?.providerInstanceId ?? null,
+        expectedSessionIncarnationId: targetThread.session?.sessionIncarnationId ?? null,
+        expectedActiveTurnRequestId: targetThread.session?.activeTurnRequestId ?? null,
+        targetModelSelection: effectiveModelSelection,
+      };
       const turnStartRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -1017,12 +1074,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           messageId: command.message.messageId,
-          ...(command.modelSelection !== undefined
-            ? { modelSelection: command.modelSelection }
-            : {}),
+          modelSelection: effectiveModelSelection,
+          admissionIntent,
           ...(command.titleSeed !== undefined ? { titleSeed: command.titleSeed } : {}),
-          runtimeMode: targetThread.runtimeMode,
-          interactionMode: targetThread.interactionMode,
+          runtimeMode: command.runtimeMode,
+          interactionMode: command.interactionMode,
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
           admissionRequestedAt,
           admissionDeadlineAt,
@@ -1030,9 +1086,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
       const admissionPendingEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
-      if (targetThread.session?.status !== "running") {
-        const desiredInstanceId =
-          command.modelSelection?.instanceId ?? targetThread.modelSelection.instanceId;
+      if (targetThread.session?.status !== "running" || providerSettingsChanged) {
         admissionPendingEvents.push({
           ...(yield* withEventBase({
             aggregateKind: "thread",
@@ -1049,8 +1103,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 providerName: null,
               }),
               status: "starting",
-              providerInstanceId: targetThread.session?.providerInstanceId ?? desiredInstanceId,
-              runtimeMode: command.runtimeMode,
+              ...(targetThread.session?.providerInstanceId !== undefined
+                ? { providerInstanceId: targetThread.session.providerInstanceId }
+                : {}),
+              runtimeMode: targetThread.session?.runtimeMode ?? targetThread.runtimeMode,
               pendingTurnRequestId: command.commandId,
               pendingTurnMessageId: command.message.messageId,
               pendingTurnRequestedAt: admissionRequestedAt,
@@ -1443,7 +1499,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           );
         }
       }
-      return {
+      const targetSession = thread.session;
+      const stopRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1453,9 +1510,56 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.session-stop-requested",
         payload: {
           threadId: command.threadId,
+          targetProviderInstanceId: targetSession?.providerInstanceId ?? null,
+          targetSessionIncarnationId: targetSession?.sessionIncarnationId ?? null,
+          targetPendingTurnSessionId: targetSession?.pendingTurnSessionId ?? null,
+          targetTurnRequestId:
+            targetSession?.pendingTurnRequestId ??
+            targetSession?.activeTurnRequestId ??
+            targetSession?.failedTurnRequestId ??
+            null,
+          targetTurnId: targetSession?.activeTurnId ?? null,
           createdAt: command.createdAt,
         },
       };
+      // Persist the reverse transition and exact cleanup target in the same
+      // transaction as the stop intent. `stopped` is understood by frozen
+      // clients; the additive pending-stop fields are owned by the server and
+      // survive a restart until exact provider cleanup finishes.
+      const stoppedEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        causationEventId: stopRequestedEvent.eventId,
+        type: "thread.session-set",
+        payload: {
+          threadId: command.threadId,
+          session: {
+            ...(targetSession ?? {
+              threadId: command.threadId,
+              providerName: null,
+              runtimeMode: thread.runtimeMode,
+              lastError: null,
+            }),
+            status: "stopped",
+            pendingStopRequestId: command.commandId,
+            pendingStopProviderInstanceId: targetSession?.providerInstanceId ?? null,
+            pendingStopSessionIncarnationId: targetSession?.sessionIncarnationId ?? null,
+            pendingStopTurnRequestId:
+              targetSession?.pendingTurnRequestId ??
+              targetSession?.activeTurnRequestId ??
+              targetSession?.failedTurnRequestId ??
+              null,
+            pendingStopTurnId: targetSession?.activeTurnId ?? null,
+            activeTurnId: null,
+            updatedAt: command.createdAt,
+          },
+        },
+      };
+      return [stopRequestedEvent, stoppedEvent];
     }
 
     case "thread.session.apply-lifecycle": {
@@ -1473,7 +1577,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         (current?.pendingTurnSessionId ?? null) === command.expectedPendingTurnSessionId &&
         (current?.activeTurnRequestId ?? null) === command.expectedActiveTurnRequestId &&
         (current?.activeTurnId ?? null) === command.expectedActiveTurnId &&
-        (current?.failedTurnRequestId ?? null) === command.expectedFailedTurnRequestId;
+        (current?.failedTurnRequestId ?? null) === command.expectedFailedTurnRequestId &&
+        (command.expectedPendingStopRequestId === undefined ||
+          (current?.pendingStopRequestId ?? null) === command.expectedPendingStopRequestId) &&
+        (command.expectedPendingStopSessionIncarnationId === undefined ||
+          (current?.pendingStopSessionIncarnationId ?? null) ===
+            command.expectedPendingStopSessionIncarnationId);
       if (!lineageIsCurrent) return [];
       if (
         current?.failedTurnRequestId !== undefined &&
@@ -1527,16 +1636,69 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         thread.session?.status !== "starting" ||
         thread.session.pendingTurnRequestId !== command.requestId ||
         thread.session.pendingTurnMessageId !== command.messageId ||
+        (thread.session.providerInstanceId ?? null) !== command.expectedProviderInstanceId ||
         thread.session.failedTurnRequestId !== undefined ||
         thread.session.activeTurnId !== null ||
         command.session.pendingTurnRequestId !== command.requestId ||
         command.session.pendingTurnMessageId !== command.messageId ||
+        command.session.providerInstanceId !== command.modelSelection.instanceId ||
+        command.session.runtimeMode !== command.runtimeMode ||
         command.session.sessionIncarnationId === undefined ||
         command.session.pendingTurnSessionId !== command.session.sessionIncarnationId
       ) {
         return [];
       }
-      return {
+
+      const acceptedEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      if (!Equal.equals(thread.modelSelection, command.modelSelection)) {
+        acceptedEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.meta-updated",
+          payload: {
+            threadId: command.threadId,
+            modelSelection: command.modelSelection,
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      if (thread.runtimeMode !== command.runtimeMode) {
+        acceptedEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.runtime-mode-set",
+          payload: {
+            threadId: command.threadId,
+            runtimeMode: command.runtimeMode,
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      if (thread.interactionMode !== command.interactionMode) {
+        acceptedEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.interaction-mode-set",
+          payload: {
+            threadId: command.threadId,
+            interactionMode: command.interactionMode,
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      acceptedEvents.push({
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1548,7 +1710,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           session: command.session,
         },
-      };
+      });
+      return acceptedEvents;
     }
 
     case "thread.session.set": {

@@ -53,6 +53,19 @@ import {
 
 const decodePrimeAgentSettings = Schema.decodeSync(PrimeAgentSettings);
 const DRIVER_KIND = ProviderDriverKind.make("primeAgent");
+export const PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE =
+  "Prime Agent is unavailable because this Pylon server is running on native Windows. Run the Pylon server and Prime Agent in WSL2, or connect this client to a Pylon server running in WSL2 or another remote environment.";
+
+export function isPrimeAgentProviderPlatformSupported(platform: NodeJS.Platform): boolean {
+  return platform === "darwin" || platform === "linux";
+}
+
+function unsupportedPlatformMessage(platform: NodeJS.Platform): string {
+  return platform === "win32"
+    ? PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE
+    : `Prime Agent is unavailable on '${platform}'. Run the Pylon server and Prime Agent on macOS, Linux, or WSL2.`;
+}
+
 const UPDATE = makeStaticProviderMaintenanceResolver(
   makeManualOnlyProviderMaintenanceCapabilities({
     provider: DRIVER_KIND,
@@ -97,8 +110,15 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
   defaultConfig: (): PrimeAgentSettings => decodePrimeAgentSettings({}),
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const hostPlatform = yield* HostProcessPlatform;
+      if (!isPrimeAgentProviderPlatformSupported(hostPlatform)) {
+        return yield* new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId,
+          detail: unsupportedPlatformMessage(hostPlatform),
+        });
+      }
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const httpClient = yield* HttpClient.HttpClient;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -221,7 +241,7 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
       const readBackends = provideBackendServices(
-        readPrimeAgentBackends(effectiveConfig, { processEnv, platform: hostPlatform }),
+        readPrimeAgentBackends(effectiveConfig, { processEnv }),
       );
       // After a turn the credential Prime just used is fresh and the number
       // just changed: read again unless a reading under a minute old exists.
@@ -229,7 +249,6 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         refresh: provideBackendServices(
           readPrimeAgentCapacity(effectiveConfig, {
             processEnv,
-            platform: hostPlatform,
             freshForMs: PRIME_AGENT_TURN_END_CAPACITY_FRESH_MS,
           }),
         ),

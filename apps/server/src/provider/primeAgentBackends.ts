@@ -1,4 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off - capacity home resolution must model Windows paths while tests run on other hosts.
 /**
  * What Prime Agent is signed in to, per backend.
  *
@@ -27,7 +26,6 @@
  */
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
 
 import type {
   PrimeAgentSettings,
@@ -164,39 +162,6 @@ export function primeAgentSignInsFromAuthFile(
 
 export interface PrimeAgentHomeResolutionOptions {
   readonly processEnv?: NodeJS.ProcessEnv | undefined;
-  /** Test seam for Windows path semantics on non-Windows hosts. */
-  readonly platform?: NodeJS.Platform | undefined;
-}
-
-function environmentValue(
-  environment: NodeJS.ProcessEnv,
-  name: string,
-  platform: NodeJS.Platform,
-): string | undefined {
-  if (platform !== "win32") return environment[name];
-  const entries = Object.entries(environment);
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const [candidate, value] = entries[index]!;
-    if (candidate.toUpperCase() === name.toUpperCase()) return value;
-  }
-  return undefined;
-}
-
-function environmentHome(
-  environment: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform,
-): string | undefined {
-  const pathApi = platform === "win32" ? NodePath.win32 : NodePath.posix;
-  const candidates =
-    platform === "win32"
-      ? [
-          environmentValue(environment, "USERPROFILE", platform)?.trim(),
-          `${environmentValue(environment, "HOMEDRIVE", platform)?.trim() ?? ""}${environmentValue(environment, "HOMEPATH", platform)?.trim() ?? ""}`,
-        ]
-      : [environment.HOME?.trim()];
-  return candidates.find((candidate): candidate is string =>
-    Boolean(candidate && pathApi.isAbsolute(candidate)),
-  );
 }
 
 /** Prime's effective agent home for the selected instance environment. */
@@ -209,23 +174,17 @@ export function resolvePrimeAgentHomePath(
   if (configured) return resolveProviderHomePath(configured);
   if (!options.processEnv) return path.join(NodeOS.homedir(), ".prime", "agent");
 
-  const platform = options.platform;
-  if (!platform) return undefined;
-  const pathApi = platform === "win32" ? NodePath.win32 : NodePath.posix;
-  const home = environmentHome(options.processEnv, platform);
-  const environmentAgentDir = environmentValue(
-    options.processEnv,
-    PRIME_AGENT_HOME_ENV,
-    platform,
-  )?.trim();
-  if (!environmentAgentDir) return home ? pathApi.join(home, ".prime", "agent") : undefined;
-  if (environmentAgentDir === "~") return home;
-  if (environmentAgentDir.startsWith("~/") || environmentAgentDir.startsWith("~\\")) {
-    return home ? pathApi.join(home, environmentAgentDir.slice(2)) : undefined;
+  const home = options.processEnv.HOME?.trim();
+  const absoluteHome = home && path.isAbsolute(home) ? path.normalize(home) : undefined;
+  const environmentAgentDir = options.processEnv[PRIME_AGENT_HOME_ENV]?.trim();
+  if (!environmentAgentDir) {
+    return absoluteHome ? path.join(absoluteHome, ".prime", "agent") : undefined;
   }
-  return pathApi.isAbsolute(environmentAgentDir)
-    ? pathApi.normalize(environmentAgentDir)
-    : undefined;
+  if (environmentAgentDir === "~") return absoluteHome;
+  if (environmentAgentDir.startsWith("~/")) {
+    return absoluteHome ? path.join(absoluteHome, environmentAgentDir.slice(2)) : undefined;
+  }
+  return path.isAbsolute(environmentAgentDir) ? path.normalize(environmentAgentDir) : undefined;
 }
 
 /**

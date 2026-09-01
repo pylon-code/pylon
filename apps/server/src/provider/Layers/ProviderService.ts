@@ -109,6 +109,8 @@ export interface ProviderServiceLiveOptions {
   readonly issueMcpCredential?: typeof McpSessionRegistry.issueActiveMcpCredential;
   /** Same seam as `issueMcpCredential`, for observing session credential revocation. */
   readonly revokeMcpCredential?: typeof McpSessionRegistry.revokeActiveMcpThread;
+  /** Test-only observation seam for proving idle reservation lanes are reclaimed. */
+  readonly onStartReservationCountChange?: (count: number) => void;
 }
 
 type ProviderServiceMethod<Name extends keyof ProviderService.ProviderService["Service"]> =
@@ -330,31 +332,78 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       readonly turnId: ProviderRuntimeEvent["turnId"];
     }
   >();
-  const startReservations = yield* SynchronizedRef.make(
-    new Map<ThreadId, { readonly generation: number; readonly semaphore: Semaphore.Semaphore }>(),
-  );
+  type StartReservationToken = string;
+  type StartReservationEntry = {
+    readonly currentToken: StartReservationToken;
+    readonly activeTokens: ReadonlySet<StartReservationToken>;
+    readonly semaphore: Semaphore.Semaphore;
+  };
+  const startReservations = yield* SynchronizedRef.make(new Map<ThreadId, StartReservationEntry>());
+  const makeStartReservationToken = (): StartReservationToken => NodeCrypto.randomUUID();
+  const reportStartReservationCount = options?.onStartReservationCountChange
+    ? SynchronizedRef.get(startReservations).pipe(
+        Effect.tap((current) =>
+          Effect.sync(() => options.onStartReservationCountChange?.(current.size)),
+        ),
+        Effect.asVoid,
+      )
+    : Effect.void;
   const reserveStartSession = (threadId: ThreadId) =>
     SynchronizedRef.modify(startReservations, (current) => {
       const previous = current.get(threadId);
+      const token = makeStartReservationToken();
+      const activeTokens = new Set(previous?.activeTokens ?? []);
+      activeTokens.add(token);
       const reservation = {
-        generation: (previous?.generation ?? 0) + 1,
+        token,
         semaphore: previous?.semaphore ?? Semaphore.makeUnsafe(1),
       };
       const next = new Map(current);
-      next.set(threadId, reservation);
+      next.set(threadId, {
+        currentToken: token,
+        activeTokens,
+        semaphore: reservation.semaphore,
+      });
       return [reservation, next] as const;
-    });
-  const isStartReservationCurrent = (threadId: ThreadId, generation: number) =>
+    }).pipe(Effect.tap(() => reportStartReservationCount));
+  const isStartReservationCurrent = (threadId: ThreadId, token: StartReservationToken) =>
     SynchronizedRef.get(startReservations).pipe(
-      Effect.map((reservations) => reservations.get(threadId)?.generation === generation),
+      Effect.map((reservations) => reservations.get(threadId)?.currentToken === token),
     );
-  const releaseStartReservation = (threadId: ThreadId, generation: number) =>
+  const releaseStartReservation = (threadId: ThreadId, token: StartReservationToken) =>
     SynchronizedRef.update(startReservations, (current) => {
-      if (current.get(threadId)?.generation !== generation) return current;
+      const previous = current.get(threadId);
+      if (previous === undefined || !previous.activeTokens.has(token)) return current;
+      const activeTokens = new Set(previous.activeTokens);
+      activeTokens.delete(token);
       const next = new Map(current);
-      next.delete(threadId);
+      if (activeTokens.size === 0) {
+        // Tokens are process-globally unique, so deleting an idle tombstone
+        // cannot make any older reservation current again through an ABA reset.
+        next.delete(threadId);
+      } else {
+        next.set(threadId, { ...previous, activeTokens });
+      }
       return next;
-    });
+    }).pipe(Effect.tap(() => reportStartReservationCount));
+  // Stop is a cancellation boundary, not another participant in the start
+  // semaphore. Replace the current token before any directory read so a first
+  // start with no persisted binding still quarantines itself when it returns.
+  const invalidateStartSession = (threadId: ThreadId) =>
+    SynchronizedRef.update(startReservations, (current) => {
+      const previous = current.get(threadId);
+      if (previous === undefined || previous.activeTokens.size === 0) {
+        // There is no work that can observe this token. Do not retain a
+        // historical-thread tombstone indefinitely.
+        return current;
+      }
+      const next = new Map(current);
+      next.set(threadId, {
+        ...previous,
+        currentToken: makeStartReservationToken(),
+      });
+      return next;
+    }).pipe(Effect.tap(() => reportStartReservationCount));
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   /**
    * Attach the `t3-code` MCP server to the session that is about to start.
@@ -907,7 +956,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       return yield* reservation.semaphore
         .withPermit(
           Effect.gen(function* () {
-            if (!(yield* isStartReservationCurrent(threadId, reservation.generation))) {
+            if (!(yield* isStartReservationCurrent(threadId, reservation.token))) {
               return yield* toValidationError(
                 "ProviderService.startSession",
                 `Provider session start for thread '${threadId}' was superseded by a newer request.`,
@@ -1007,7 +1056,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               sessionIncarnationId,
             };
             const requireCurrentStartReservation = Effect.fnUntraced(function* () {
-              if (yield* isStartReservationCurrent(threadId, reservation.generation)) return;
+              if (yield* isStartReservationCurrent(threadId, reservation.token)) return;
               yield* adapter.stopSession(threadId).pipe(
                 Effect.catchCause((cause) =>
                   Effect.logWarning("provider.session.stop-superseded-start-failed", {
@@ -1022,6 +1071,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                 currentSessionIncarnations.delete(threadId);
               }
               activeTurnAdmissions.delete(threadId);
+              // The invalidation can land between the pre-upsert check and the
+              // directory write. Remove only the exact late incarnation; a
+              // newer start may already own the thread and must remain intact.
+              yield* directory.removeExact({
+                threadId,
+                providerInstanceId: resolvedInstanceId,
+                sessionIncarnationId,
+              });
               return yield* toValidationError(
                 "ProviderService.startSession",
                 `Provider session start for thread '${threadId}' was superseded by a newer request.`,
@@ -1073,7 +1130,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             }),
           ),
         )
-        .pipe(Effect.ensuring(releaseStartReservation(threadId, reservation.generation)));
+        .pipe(Effect.ensuring(releaseStartReservation(threadId, reservation.token)));
     },
   );
 
@@ -1113,6 +1170,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     let metricProvider = "unknown";
     let metricModel = input.modelSelection?.model;
     return yield* Effect.gen(function* () {
+      if (input.modelSelection !== undefined) {
+        const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+        if (persistedBinding !== undefined) {
+          const boundInstanceId = yield* requireBindingInstanceId(
+            "ProviderService.sendTurn",
+            persistedBinding,
+          );
+          if (input.modelSelection.instanceId !== boundInstanceId) {
+            return yield* toValidationError(
+              "ProviderService.sendTurn",
+              `Provider session for thread '${input.threadId}' is bound to instance '${boundInstanceId}', but the model selection belongs to '${input.modelSelection.instanceId}'.`,
+            );
+          }
+        }
+      }
       const routed = yield* resolveRoutableSession({
         threadId: input.threadId,
         operation: "ProviderService.sendTurn",
@@ -1120,6 +1192,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
       metricProvider = routed.adapter.provider;
       metricModel = input.modelSelection?.model;
+      if (
+        input.modelSelection !== undefined &&
+        input.modelSelection.instanceId !== routed.instanceId
+      ) {
+        return yield* toValidationError(
+          "ProviderService.sendTurn",
+          `Provider session for thread '${input.threadId}' is bound to instance '${routed.instanceId}', but the model selection belongs to '${input.modelSelection.instanceId}'.`,
+        );
+      }
       yield* Effect.annotateCurrentSpan({
         "provider.kind": routed.adapter.provider,
         ...(input.modelSelection?.model ? { "provider.model": input.modelSelection.model } : {}),
@@ -1985,6 +2066,77 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         payload: rawInput,
       });
       let metricProvider = "unknown";
+      // Invalidate before the first directory read. A first-turn start can be
+      // inside adapter creation without having a persisted binding yet; stop
+      // must still win that race and let the late start quarantine itself.
+      if (input.invalidateStartReservation !== false) {
+        yield* invalidateStartSession(input.threadId);
+      }
+      const activeAdmission = activeTurnAdmissions.get(input.threadId);
+      if (
+        input.expectedAdmissionRequestId === undefined ||
+        (input.expectedAdmissionRequestId !== null &&
+          activeAdmission?.requestId === input.expectedAdmissionRequestId)
+      ) {
+        activeTurnAdmissions.delete(input.threadId);
+      }
+
+      const targetIsExact =
+        input.expectedProviderInstanceId !== undefined ||
+        input.expectedSessionIncarnationId !== undefined;
+      const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+      const currentIncarnation = currentSessionIncarnations.get(input.threadId);
+      const persistedIncarnationId =
+        binding === undefined
+          ? undefined
+          : readRuntimePayloadString(binding.runtimePayload, "sessionIncarnationId");
+      const instanceMatches =
+        input.expectedProviderInstanceId === undefined ||
+        (input.expectedProviderInstanceId === null
+          ? binding === undefined && currentIncarnation === undefined
+          : (binding?.providerInstanceId ?? currentIncarnation?.instanceId) ===
+            input.expectedProviderInstanceId);
+      const incarnationMatches =
+        input.expectedSessionIncarnationId === undefined ||
+        (input.expectedSessionIncarnationId === null
+          ? persistedIncarnationId === undefined && currentIncarnation === undefined
+          : (persistedIncarnationId ?? currentIncarnation?.id) ===
+            input.expectedSessionIncarnationId);
+      if (!instanceMatches || !incarnationMatches) {
+        return;
+      }
+
+      if (binding === undefined) {
+        // A target with no directory row can only be an in-flight start. Its
+        // reservation was invalidated above; if the exact adapter incarnation
+        // is already known, stop it now as well.
+        if (
+          targetIsExact &&
+          input.expectedProviderInstanceId != null &&
+          input.expectedSessionIncarnationId != null &&
+          currentIncarnation !== undefined
+        ) {
+          metricProvider = currentIncarnation.adapter.provider;
+          yield* currentIncarnation.adapter.stopSession(input.threadId).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider.session.stop-exact-unbound-failed", {
+                threadId: input.threadId,
+                provider: currentIncarnation.adapter.provider,
+                cause,
+              }),
+            ),
+          );
+        }
+        if (
+          !targetIsExact ||
+          currentSessionIncarnations.get(input.threadId) === currentIncarnation
+        ) {
+          yield* clearMcpSession(input.threadId);
+          currentSessionIncarnations.delete(input.threadId);
+        }
+        return;
+      }
+
       return yield* Effect.gen(function* () {
         const routed = yield* resolveRoutableSession({
           threadId: input.threadId,
@@ -1996,6 +2148,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.operation": "stop-session",
           "provider.kind": routed.adapter.provider,
           "provider.thread_id": input.threadId,
+          ...(input.expectedSessionIncarnationId
+            ? { "provider.session_incarnation_id": input.expectedSessionIncarnationId }
+            : {}),
         });
         if (routed.isActive) {
           yield* routed.adapter
@@ -2005,20 +2160,49 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           // an asynchronous relay after stopSession returns. Keep this exact
           // incarnation routable until processRuntimeEvent ingests that exit. A
           // later start safely replaces the map entry before its adapter starts.
-        } else {
-          yield* clearMcpSession(input.threadId);
+        } else if (
+          !targetIsExact ||
+          (currentIncarnation !== undefined &&
+            currentSessionIncarnations.get(input.threadId) === currentIncarnation)
+        ) {
           currentSessionIncarnations.delete(input.threadId);
         }
-        activeTurnAdmissions.delete(input.threadId);
-        yield* directory.upsert({
-          threadId: input.threadId,
-          provider: routed.adapter.provider,
-          providerInstanceId: routed.instanceId,
-          status: "stopped",
-          runtimePayload: {
-            activeTurnId: null,
-          },
-        });
+        yield* clearMcpSession(input.threadId);
+
+        const latestBinding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+        const latestIncarnationId =
+          latestBinding === undefined
+            ? undefined
+            : readRuntimePayloadString(latestBinding.runtimePayload, "sessionIncarnationId");
+        const latestIsTarget =
+          latestBinding !== undefined &&
+          (input.expectedProviderInstanceId === undefined ||
+            latestBinding.providerInstanceId === input.expectedProviderInstanceId) &&
+          (input.expectedSessionIncarnationId === undefined ||
+            latestIncarnationId === input.expectedSessionIncarnationId);
+        if (input.removeBinding === true) {
+          if (
+            latestIsTarget &&
+            input.expectedProviderInstanceId != null &&
+            input.expectedSessionIncarnationId != null
+          ) {
+            yield* directory.removeExact({
+              threadId: input.threadId,
+              providerInstanceId: input.expectedProviderInstanceId,
+              sessionIncarnationId: input.expectedSessionIncarnationId,
+            });
+          }
+        } else if (!targetIsExact || latestIsTarget) {
+          yield* directory.upsert({
+            threadId: input.threadId,
+            provider: routed.adapter.provider,
+            providerInstanceId: routed.instanceId,
+            status: "stopped",
+            runtimePayload: {
+              activeTurnId: null,
+            },
+          });
+        }
         yield* analytics.record("provider.session.stopped", {
           provider: routed.adapter.provider,
         });
@@ -2078,6 +2262,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }),
       { concurrency: "unbounded" },
     );
+  });
+
+  const getSessionContinuation: NonNullable<
+    ProviderService.ProviderServiceShape["getSessionContinuation"]
+  > = Effect.fn("getSessionContinuation")(function* (threadId) {
+    const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+    if (binding?.resumeCursor === undefined || binding.resumeCursor === null) return null;
+    return {
+      providerInstanceId: yield* requireBindingInstanceId(
+        "ProviderService.getSessionContinuation",
+        binding,
+      ),
+      resumeCursor: binding.resumeCursor,
+    };
   });
 
   const listSessions: ProviderServiceMethod<"listSessions"> = Effect.fn("listSessions")(
@@ -2360,6 +2558,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     refineSessionHarness,
     stopSession,
     listSessions,
+    getSessionContinuation,
     listSessionsForInstance,
     getCapabilities,
     getInstanceInfo,

@@ -13,6 +13,7 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { isPrimeAgentDefaultModelUnavailable } from "@t3tools/shared/model";
+import { getProviderAdmissionAvailability } from "@t3tools/client-runtime/providerAvailability";
 import {
   appendCodexArtifactTemplateUsePrompt,
   codexArtifactTemplateUsePrompt,
@@ -397,6 +398,29 @@ export function cloneComposerImageForRetry(
   }
 }
 
+export function mergeFailedComposerSend<T extends { readonly id: string }>(input: {
+  readonly failedText: string;
+  readonly currentText: string;
+  readonly failedAttachments: ReadonlyArray<T>;
+  readonly currentAttachments: ReadonlyArray<T>;
+}): { readonly text: string; readonly attachments: T[] } {
+  const currentIds = new Set(input.currentAttachments.map((attachment) => attachment.id));
+  return {
+    text:
+      input.failedText.length === 0
+        ? input.currentText
+        : input.currentText.length === 0
+          ? input.failedText
+          : `${input.failedText}
+
+${input.currentText}`,
+    attachments: [
+      ...input.failedAttachments.filter((attachment) => !currentIds.has(attachment.id)),
+      ...input.currentAttachments,
+    ],
+  };
+}
+
 export function deriveComposerSendState(options: {
   prompt: string;
   imageCount: number;
@@ -547,7 +571,13 @@ export function deriveLockedProvider(input: {
 
 export function getStartedThreadModelChangeBlockReason(input: {
   providers: ReadonlyArray<
-    Pick<ServerProvider, "instanceId" | "driver" | "requiresNewThreadForModelChange">
+    Pick<ServerProvider, "instanceId" | "driver" | "requiresNewThreadForModelChange"> &
+      Partial<
+        Pick<
+          ServerProvider,
+          "continuation" | "enabled" | "installed" | "auth" | "availability" | "status"
+        >
+      >
   >;
   hasStartedSession: boolean;
   currentModelSelection: ModelSelection;
@@ -557,18 +587,51 @@ export function getStartedThreadModelChangeBlockReason(input: {
   if (!input.hasStartedSession) {
     return null;
   }
-  const currentModelSelection = {
-    ...input.currentModelSelection,
-    instanceId: input.currentProviderInstanceId ?? input.currentModelSelection.instanceId,
-  };
-  if (
-    currentModelSelection.instanceId === input.nextModelSelection.instanceId &&
-    currentModelSelection.model === input.nextModelSelection.model
-  ) {
+  const currentInstanceId =
+    input.currentProviderInstanceId ?? input.currentModelSelection.instanceId;
+  if (input.nextModelSelection.instanceId !== currentInstanceId) {
+    const currentProvider = input.providers.find(
+      (provider) => provider.instanceId === currentInstanceId,
+    );
+    const targetProvider = input.providers.find(
+      (provider) => provider.instanceId === input.nextModelSelection.instanceId,
+    );
+    const currentContinuationKey = currentProvider?.continuation?.groupKey?.trim() ?? "";
+    const targetContinuationKey = targetProvider?.continuation?.groupKey?.trim() ?? "";
+    const targetAvailable =
+      targetProvider !== undefined &&
+      getProviderAdmissionAvailability({
+        provider: targetProvider,
+        instanceId: String(input.nextModelSelection.instanceId),
+        providerSnapshotKnown: true,
+      }).status === "available";
+    if (
+      currentProvider?.driver === targetProvider?.driver &&
+      currentContinuationKey.length > 0 &&
+      currentContinuationKey === targetContinuationKey &&
+      targetAvailable
+    ) {
+      return null;
+    }
+    return {
+      title: "Start a new chat to change providers",
+      description: targetAvailable
+        ? "A started thread stays bound to the exact provider account that created its session."
+        : "The selected compatible provider account is unavailable on this environment.",
+    };
+  }
+  // A stale device can observe the session binding before the exact persisted
+  // model arrives. Selecting an explicit model for that binding is remediation;
+  // never synthesize it by copying the old provider's model or options.
+  if (input.currentModelSelection.instanceId !== currentInstanceId) {
+    return null;
+  }
+  const currentModelSelection = input.currentModelSelection;
+  if (currentModelSelection.model === input.nextModelSelection.model) {
     return null;
   }
   const currentProvider = input.providers.find(
-    (snapshot) => snapshot.instanceId === currentModelSelection.instanceId,
+    (snapshot) => snapshot.instanceId === currentInstanceId,
   );
   const nextProvider = input.providers.find(
     (snapshot) => snapshot.instanceId === input.nextModelSelection.instanceId,

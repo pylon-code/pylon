@@ -11,7 +11,6 @@ import {
   type OrchestrationSession,
   ThreadId,
   type ProviderSession,
-  type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
@@ -31,6 +30,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
@@ -41,6 +41,10 @@ import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import {
+  findUnavailableProviderInstance,
+  providerUnavailableDetail,
+} from "../../provider/providerUnavailable.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -57,6 +61,10 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
+
+type TurnAdmissionIntent = NonNullable<
+  Extract<OrchestrationEvent, { type: "thread.turn-start-requested" }>["payload"]["admissionIntent"]
+>;
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -117,7 +125,6 @@ export const PROVIDER_TURN_INVENTORY_ATTEMPT_TIMEOUT_MS = 2_000;
 export const PROVIDER_TURN_INVENTORY_RETRY_TIMEOUT_MS = 6_500;
 const PROVIDER_TURN_ADMISSION_TIMEOUT_DETAIL =
   "Provider did not start the requested turn within 60 seconds.";
-const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const MAX_REGENERATION_ATTACHMENTS = 4;
 const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
 const MAX_FIRST_USER_TITLE_CONTEXT_CHARS = 2_000;
@@ -356,6 +363,32 @@ const make = Effect.gen(function* () {
 
   const threadModelSelections = new Map<string, ModelSelection>();
   const admissionFibers = new Map<CommandId, Fiber.Fiber<unknown, unknown>>();
+  const admissionFiberThreads = new Map<CommandId, ThreadId>();
+  type AdmissionStopToken = object;
+  const admissionStopTokens = new Map<CommandId, AdmissionStopToken>();
+  const admissionPermits = new Map<ThreadId, Semaphore.Semaphore>();
+  const makeAdmissionStopToken = (): AdmissionStopToken => Object.freeze({});
+  const admissionStopTokenForRequest = (requestId: CommandId) => {
+    const current = admissionStopTokens.get(requestId);
+    if (current !== undefined) return current;
+    const created = makeAdmissionStopToken();
+    admissionStopTokens.set(requestId, created);
+    return created;
+  };
+  const admissionPermitForThread = (threadId: ThreadId) => {
+    const current = admissionPermits.get(threadId);
+    if (current !== undefined) return current;
+    const created = Semaphore.makeUnsafe(1);
+    admissionPermits.set(threadId, created);
+    return created;
+  };
+  const releaseAdmissionLaneIfIdle = (threadId: ThreadId) => {
+    for (const fiberThreadId of admissionFiberThreads.values()) {
+      if (fiberThreadId === threadId) return;
+    }
+    admissionPermits.delete(threadId);
+  };
+
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       const fibers = Array.from(admissionFibers.entries());
@@ -372,7 +405,11 @@ const make = Effect.gen(function* () {
       if (Option.isSome(joined)) {
         for (const [requestId, fiber] of fibers) {
           if (admissionFibers.get(requestId) === fiber && fiber.pollUnsafe() !== undefined) {
+            const threadId = admissionFiberThreads.get(requestId);
             admissionFibers.delete(requestId);
+            admissionFiberThreads.delete(requestId);
+            admissionStopTokens.delete(requestId);
+            if (threadId !== undefined) releaseAdmissionLaneIfIdle(threadId);
           }
         }
       } else if (fibers.length > 0) {
@@ -461,6 +498,9 @@ const make = Effect.gen(function* () {
           expectedActiveTurnRequestId: expected?.activeTurnRequestId ?? null,
           expectedActiveTurnId: expected?.activeTurnId ?? null,
           expectedFailedTurnRequestId: expected?.failedTurnRequestId ?? null,
+          expectedPendingStopRequestId: expected?.pendingStopRequestId ?? null,
+          expectedPendingStopSessionIncarnationId:
+            expected?.pendingStopSessionIncarnationId ?? null,
           ...(input.allowFailedTurnRequestClear === true
             ? { allowFailedTurnRequestClear: true as const }
             : {}),
@@ -609,11 +649,15 @@ const make = Effect.gen(function* () {
     createdAt: string,
     options?: {
       readonly modelSelection?: ModelSelection;
+      readonly runtimeMode?: OrchestrationSession["runtimeMode"];
+      readonly interactionMode?: "default" | "plan";
       readonly pendingTurnStart?: boolean;
       readonly pendingTurnRequestId?: CommandId;
       readonly pendingTurnMessageId?: MessageId;
       readonly pendingTurnRequestedAt?: string;
       readonly pendingTurnDeadlineAt?: string;
+      readonly expectedProviderInstanceId?: ProviderInstanceId | null;
+      readonly expectedSessionIncarnationId?: TurnAdmissionIntent["expectedSessionIncarnationId"];
     },
   ) {
     const thread = yield* resolveThread(threadId);
@@ -621,7 +665,8 @@ const make = Effect.gen(function* () {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
     }
 
-    const desiredRuntimeMode = thread.runtimeMode;
+    const desiredRuntimeMode = options?.runtimeMode ?? thread.runtimeMode;
+    const desiredInteractionMode = options?.interactionMode ?? thread.interactionMode;
     const requestedModelSelection = options?.modelSelection;
     const resolveActiveSession = (threadId: ThreadId) =>
       providerService
@@ -629,9 +674,31 @@ const make = Effect.gen(function* () {
         .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === threadId)));
 
     const activeSession = yield* resolveActiveSession(threadId);
-    const desiredModelSelection = requestedModelSelection ?? thread.modelSelection;
-    const desiredInstanceId = desiredModelSelection.instanceId;
-
+    const observedInstanceId = thread.session?.providerInstanceId;
+    const persistedInstanceId =
+      options?.expectedProviderInstanceId === undefined
+        ? observedInstanceId
+        : (options.expectedProviderInstanceId ?? undefined);
+    if (
+      options?.expectedProviderInstanceId !== undefined &&
+      (observedInstanceId ?? null) !== options.expectedProviderInstanceId
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(String(options.expectedProviderInstanceId ?? "unknown")),
+        method: "thread.turn.start",
+        detail: `Turn admission observed a different provider binding for thread '${threadId}'.`,
+      });
+    }
+    if (
+      options?.expectedSessionIncarnationId !== undefined &&
+      (thread.session?.sessionIncarnationId ?? null) !== options.expectedSessionIncarnationId
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(String(persistedInstanceId ?? "unknown")),
+        method: "thread.turn.start",
+        detail: `Turn admission observed a different provider session incarnation for thread '${threadId}'.`,
+      });
+    }
     const activeThreadSession =
       thread.session !== null && thread.session.status !== "stopped" && activeSession
         ? thread.session
@@ -648,38 +715,112 @@ const make = Effect.gen(function* () {
         detail: `Thread '${threadId}' has an active provider session without a provider instance id.`,
       });
     }
-    const currentInstanceId =
-      activeThreadSession !== null &&
+    if (
+      persistedInstanceId !== undefined &&
+      activeSession?.providerInstanceId !== undefined &&
+      activeSession.providerInstanceId !== persistedInstanceId
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(String(persistedInstanceId)),
+        method: "thread.turn.start",
+        detail: `Thread '${threadId}' is bound to provider instance '${persistedInstanceId}', but the active runtime belongs to '${activeSession.providerInstanceId}'.`,
+      });
+    }
+
+    if (
+      options?.expectedSessionIncarnationId !== undefined &&
       activeSession !== undefined &&
-      activeSession.providerInstanceId !== undefined
-        ? activeSession.providerInstanceId
-        : thread.modelSelection.instanceId;
-    const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId).pipe(
-      Effect.mapError(
-        () =>
-          new ProviderAdapterRequestError({
-            provider: providerErrorLabelFromInstanceHint({
-              instanceId: String(currentInstanceId),
-              modelSelectionInstanceId: String(thread.modelSelection.instanceId),
-              sessionProvider: thread.session?.providerName ?? undefined,
+      activeSession.sessionIncarnationId !== options.expectedSessionIncarnationId
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(String(persistedInstanceId ?? "unknown")),
+        method: "thread.turn.start",
+        detail: `The provider runtime for thread '${threadId}' no longer matches the accepted session incarnation.`,
+      });
+    }
+
+    // The projected session binding survives provider-runtime restarts. Keep
+    // resolving that exact instance when the in-memory session is gone. A model
+    // selection from another instance is not repairable by replacing only its
+    // routing key: its model and options belong to the other provider.
+    const currentInstanceId =
+      persistedInstanceId ?? activeSession?.providerInstanceId ?? thread.modelSelection.instanceId;
+    const cachedModelSelection = threadModelSelections.get(threadId);
+    const persistedModelSelection =
+      cachedModelSelection?.instanceId === currentInstanceId
+        ? cachedModelSelection
+        : activeSession?.providerInstanceId === currentInstanceId && activeSession.model
+          ? { instanceId: currentInstanceId, model: activeSession.model }
+          : thread.modelSelection.instanceId === currentInstanceId
+            ? thread.modelSelection
+            : undefined;
+    const hasStartedSession =
+      activeSession !== undefined ||
+      thread.latestTurn !== null ||
+      thread.session?.startedAt !== undefined ||
+      thread.session?.providerInstanceId !== undefined;
+    const desiredModelSelection = requestedModelSelection ?? persistedModelSelection;
+    if (desiredModelSelection === undefined) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(String(currentInstanceId)),
+        method: "thread.turn.start",
+        detail: `Thread '${threadId}' is bound to provider instance '${currentInstanceId}', but no model selection persisted for that exact instance. Start a new thread or explicitly select a model for the bound provider.`,
+      });
+    }
+    const desiredInstanceId = desiredModelSelection.instanceId;
+    const resolveInstanceInfo = Effect.fnUntraced(function* (
+      instanceId: ProviderInstanceId,
+      role: "current" | "requested",
+    ) {
+      return yield* providerService.getInstanceInfo(instanceId).pipe(
+        Effect.catch(() =>
+          providerRegistry.getProviders.pipe(
+            Effect.flatMap((providers) => {
+              const unavailable = findUnavailableProviderInstance(providers, instanceId);
+              return Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: providerErrorLabelFromInstanceHint({
+                    instanceId: String(instanceId),
+                    modelSelectionInstanceId: String(thread.modelSelection.instanceId),
+                    sessionProvider: thread.session?.providerName ?? undefined,
+                  }),
+                  method: "thread.turn.start",
+                  detail: unavailable
+                    ? providerUnavailableDetail(unavailable)
+                    : role === "current"
+                      ? `Thread '${threadId}' references unknown provider instance '${instanceId}'. The instance is not configured in this build.`
+                      : `Requested provider instance '${instanceId}' is not configured in this build.`,
+                }),
+              );
             }),
-            method: "thread.turn.start",
-            detail: `Thread '${threadId}' references unknown provider instance '${currentInstanceId}'. The instance is not configured in this build.`,
-          }),
-      ),
-    );
-    const desiredInfo = yield* providerService.getInstanceInfo(desiredInstanceId).pipe(
-      Effect.mapError(
-        () =>
-          new ProviderAdapterRequestError({
-            provider: providerErrorLabelFromInstanceHint({
-              instanceId: String(desiredModelSelection.instanceId),
-            }),
-            method: "thread.turn.start",
-            detail: `Requested provider instance '${desiredInstanceId}' is not configured in this build.`,
-          }),
-      ),
-    );
+          ),
+        ),
+      );
+    });
+    const desiredInfo = yield* resolveInstanceInfo(desiredInstanceId, "requested");
+    if (hasStartedSession && desiredInstanceId !== currentInstanceId) {
+      const currentInfo = yield* resolveInstanceInfo(currentInstanceId, "current");
+      const currentContinuationKey = currentInfo.continuationIdentity.continuationKey.trim();
+      const desiredContinuationKey = desiredInfo.continuationIdentity.continuationKey.trim();
+      if (currentInfo.driverKind !== desiredInfo.driverKind) {
+        return yield* new ProviderAdapterRequestError({
+          provider: providerErrorLabel(String(desiredInfo.driverKind)),
+          method: "thread.turn.start",
+          detail: `Thread '${threadId}' is bound to driver '${currentInfo.driverKind}' and cannot switch to '${desiredInfo.driverKind}'. Start a new thread to change providers.`,
+        });
+      }
+      if (
+        currentContinuationKey.length === 0 ||
+        desiredContinuationKey.length === 0 ||
+        currentContinuationKey !== desiredContinuationKey
+      ) {
+        return yield* new ProviderAdapterRequestError({
+          provider: providerErrorLabel(String(desiredInfo.driverKind)),
+          method: "thread.turn.start",
+          detail: `Thread '${threadId}' cannot switch from instance '${currentInstanceId}' to '${desiredInstanceId}' because they do not share the same non-empty provider continuation identity. Start a new thread to use that account.`,
+        });
+      }
+    }
     const desiredDriverKind = desiredInfo.driverKind;
     if (!isProviderDriverKind(desiredDriverKind)) {
       return yield* new ProviderAdapterRequestError({
@@ -689,49 +830,12 @@ const make = Effect.gen(function* () {
       });
     }
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
-    const hasStartedSession =
-      activeSession !== undefined ||
-      thread.latestTurn !== null ||
-      thread.session?.startedAt !== undefined ||
-      (thread.session?.providerInstanceId !== undefined &&
-        thread.session.providerInstanceId !== desiredInstanceId);
-    if (thread.session !== null && hasStartedSession) {
+    if (thread.session !== null && hasStartedSession && desiredInstanceId === currentInstanceId) {
       yield* rejectStartedThreadModelChangeIfRequired({
         threadId,
-        currentModelSelection:
-          activeSession?.model !== undefined
-            ? {
-                ...thread.modelSelection,
-                instanceId: currentInstanceId,
-                model: activeSession.model,
-              }
-            : thread.modelSelection,
+        currentModelSelection: persistedModelSelection ?? desiredModelSelection,
         requestedModelSelection,
       });
-    }
-    if (
-      thread.session !== null &&
-      hasStartedSession &&
-      requestedModelSelection !== undefined &&
-      requestedModelSelection.instanceId !== currentInstanceId
-    ) {
-      if (currentInfo.driverKind !== desiredInfo.driverKind) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' is bound to driver '${currentInfo.driverKind}' and cannot switch to '${desiredInfo.driverKind}'.`,
-        });
-      }
-      if (
-        currentInfo.continuationIdentity.continuationKey !==
-        desiredInfo.continuationIdentity.continuationKey
-      ) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' cannot switch from instance '${currentInstanceId}' to '${desiredInstanceId}' because their provider resume state is incompatible.`,
-        });
-      }
     }
     const project = yield* resolveProject(thread.projectId);
     const effectiveCwd = resolveThreadWorkspaceCwd({
@@ -792,6 +896,16 @@ const make = Effect.gen(function* () {
           ...(options?.pendingTurnRequestId === undefined
             ? {}
             : { pendingTurnSessionId: session.sessionIncarnationId }),
+          ...(thread.session?.pendingStopRequestId === undefined
+            ? {}
+            : {
+                pendingStopRequestId: thread.session.pendingStopRequestId,
+                pendingStopProviderInstanceId: thread.session.pendingStopProviderInstanceId ?? null,
+                pendingStopSessionIncarnationId:
+                  thread.session.pendingStopSessionIncarnationId ?? null,
+                pendingStopTurnRequestId: thread.session.pendingStopTurnRequestId ?? null,
+                pendingStopTurnId: thread.session.pendingStopTurnId ?? null,
+              }),
           activeTurnRequestId: undefined,
           startedAt: session.createdAt,
           // Provider turn ids are not orchestration turn ids.
@@ -815,6 +929,13 @@ const make = Effect.gen(function* () {
                 threadId,
                 requestId: options.pendingTurnRequestId,
                 messageId: options.pendingTurnMessageId!,
+                expectedProviderInstanceId:
+                  options?.expectedProviderInstanceId === undefined
+                    ? (persistedInstanceId ?? null)
+                    : options.expectedProviderInstanceId,
+                modelSelection: desiredModelSelection,
+                runtimeMode: desiredRuntimeMode,
+                interactionMode: desiredInteractionMode,
                 session: sessionBinding,
                 createdAt,
               },
@@ -822,10 +943,54 @@ const make = Effect.gen(function* () {
         return (dispatched.eventCount ?? 1) > 0;
       });
 
+    const quarantineStartedSession = (session: ProviderSession) => {
+      if (session.providerInstanceId === undefined || session.sessionIncarnationId === undefined) {
+        return Effect.void;
+      }
+      return providerService
+        .stopSession({
+          threadId,
+          expectedProviderInstanceId: session.providerInstanceId,
+          expectedSessionIncarnationId: session.sessionIncarnationId,
+          expectedAdmissionRequestId: options?.pendingTurnRequestId ?? null,
+          removeBinding: true,
+          invalidateStartReservation: false,
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider command reactor failed to quarantine superseded session", {
+              threadId,
+              providerInstanceId: session.providerInstanceId,
+              sessionIncarnationId: session.sessionIncarnationId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+    };
+    const bindStartedSession = (session: ProviderSession) =>
+      bindSessionToThread(session).pipe(
+        Effect.tap((bound) => (bound ? Effect.void : quarantineStartedSession(session))),
+        Effect.onError(() => quarantineStartedSession(session)),
+        // Once an adapter returned a concrete runtime, either its exact CAS
+        // binds or that exact runtime is quarantined before interruption lands.
+        Effect.uninterruptible,
+      );
+    const startAndBindSession = (input?: {
+      readonly resumeCursor?: unknown;
+      readonly provider?: ProviderDriverKind;
+    }) =>
+      Effect.uninterruptibleMask((restore) =>
+        restore(startProviderSession(input)).pipe(
+          Effect.flatMap((session) =>
+            bindStartedSession(session).pipe(Effect.map((bound) => ({ session, bound }))),
+          ),
+        ),
+      );
+
     const existingSessionThreadId =
       thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
     if (existingSessionThreadId) {
-      const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
+      const runtimeModeChanged = desiredRuntimeMode !== thread.session?.runtimeMode;
       const cwdChanged = effectiveCwd !== activeSession?.cwd;
       const sessionModelSwitch = (yield* providerService.getCapabilities(desiredInstanceId))
         .sessionModelSwitch;
@@ -875,9 +1040,10 @@ const make = Effect.gen(function* () {
         shouldRestartForModelSelectionChange,
         hasResumeCursor: resumeCursor !== undefined,
       });
-      const restartedSession = yield* startProviderSession(
+      const restarted = yield* startAndBindSession(
         resumeCursor !== undefined ? { resumeCursor } : undefined,
       );
+      const restartedSession = restarted.session;
       yield* Effect.logInfo("provider command reactor restarted provider session", {
         threadId,
         previousSessionId: existingSessionThreadId,
@@ -886,11 +1052,31 @@ const make = Effect.gen(function* () {
         runtimeMode: restartedSession.runtimeMode,
         cwd: restartedSession.cwd,
       });
-      return (yield* bindSessionToThread(restartedSession)) ? restartedSession : undefined;
+      return restarted.bound ? restartedSession : undefined;
     }
 
-    const startedSession = yield* startProviderSession(undefined);
-    return (yield* bindSessionToThread(startedSession)) ? startedSession : undefined;
+    const compatibleColdTransition =
+      hasStartedSession && desiredInstanceId !== currentInstanceId
+        ? yield* providerService.getSessionContinuation?.(threadId) ?? Effect.succeed(null)
+        : null;
+    if (hasStartedSession && desiredInstanceId !== currentInstanceId) {
+      if (
+        compatibleColdTransition === null ||
+        compatibleColdTransition.providerInstanceId !== currentInstanceId
+      ) {
+        return yield* new ProviderAdapterRequestError({
+          provider: providerErrorLabel(String(desiredInstanceId)),
+          method: "thread.turn.start",
+          detail: `Thread '${threadId}' cannot continue on '${desiredInstanceId}' because its exact persisted provider continuation is unavailable.`,
+        });
+      }
+    }
+    const started = yield* startAndBindSession(
+      compatibleColdTransition === null
+        ? undefined
+        : { resumeCursor: compatibleColdTransition.resumeCursor },
+    );
+    return started.bound ? started.session : undefined;
   });
 
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
@@ -898,9 +1084,11 @@ const make = Effect.gen(function* () {
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
-    readonly interactionMode?: "default" | "plan";
+    readonly runtimeMode: OrchestrationSession["runtimeMode"];
+    readonly interactionMode: "default" | "plan";
     readonly requestId: CommandId;
     readonly messageId: MessageId;
+    readonly admissionIntent?: TurnAdmissionIntent;
     readonly admissionRequestedAt: string;
     readonly admissionDeadlineAt: string;
     readonly createdAt: string;
@@ -911,10 +1099,22 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
-    const requiresExactAdmission = thread.session?.status !== "running";
+    const admissionIntent = input.admissionIntent;
+    const requiresExactAdmission =
+      admissionIntent === undefined
+        ? thread.session?.status !== "running"
+        : admissionIntent.kind !== "steer";
     const admittedSession = yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+      runtimeMode: input.runtimeMode,
+      interactionMode: input.interactionMode,
       pendingTurnStart: requiresExactAdmission,
+      ...(admissionIntent === undefined
+        ? {}
+        : {
+            expectedProviderInstanceId: admissionIntent.expectedProviderInstanceId,
+            expectedSessionIncarnationId: admissionIntent.expectedSessionIncarnationId,
+          }),
       ...(requiresExactAdmission
         ? {
             pendingTurnRequestId: input.requestId,
@@ -931,9 +1131,6 @@ const make = Effect.gen(function* () {
         detail: `Turn admission '${input.requestId}' was superseded before provider binding completed.`,
       });
     }
-    if (input.modelSelection !== undefined) {
-      threadModelSelections.set(input.threadId, input.modelSelection);
-    }
     const normalizedInput = toNonEmptyProviderInput(input.messageText);
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
@@ -941,27 +1138,38 @@ const make = Effect.gen(function* () {
       .pipe(
         Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
       );
-    const sessionModelSwitch =
-      activeSession === undefined
-        ? "in-session"
-        : activeSession.providerInstanceId === undefined
-          ? yield* new ProviderAdapterRequestError({
-              provider: providerErrorLabel(activeSession.provider),
-              method: "thread.turn.start",
-              detail: `Active provider session '${activeSession.threadId}' is missing a provider instance id.`,
-            })
-          : (yield* providerService.getCapabilities(activeSession.providerInstanceId))
-              .sessionModelSwitch;
+    const admittedInstanceId = admittedSession.providerInstanceId;
+    if (admittedInstanceId === undefined) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(admittedSession.provider),
+        method: "thread.turn.start",
+        detail: `Admitted provider session '${admittedSession.threadId}' is missing a provider instance id.`,
+      });
+    }
     const requestedModelSelection =
-      input.modelSelection ?? threadModelSelections.get(input.threadId) ?? thread.modelSelection;
+      input.admissionIntent?.targetModelSelection ??
+      input.modelSelection ??
+      threadModelSelections.get(input.threadId) ??
+      thread.modelSelection;
+    if (requestedModelSelection.instanceId !== admittedInstanceId) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(String(admittedInstanceId)),
+        method: "thread.turn.start",
+        detail: `Thread '${input.threadId}' is bound to provider instance '${admittedInstanceId}', but its requested model selection belongs to '${requestedModelSelection.instanceId}'. Start a new thread or explicitly select a model for the bound provider.`,
+      });
+    }
+    threadModelSelections.set(input.threadId, requestedModelSelection);
+    const sessionModelSwitch = (yield* providerService.getCapabilities(admittedInstanceId))
+      .sessionModelSwitch;
     const modelForTurn =
-      sessionModelSwitch === "unsupported" && input.modelSelection === undefined
-        ? activeSession?.model !== undefined
-          ? {
-              ...requestedModelSelection,
-              model: activeSession.model,
-            }
-          : requestedModelSelection
+      sessionModelSwitch === "unsupported" &&
+      input.modelSelection === undefined &&
+      activeSession?.providerInstanceId === admittedInstanceId &&
+      activeSession.model !== undefined
+        ? {
+            ...requestedModelSelection,
+            model: activeSession.model,
+          }
         : input.modelSelection;
 
     return {
@@ -971,9 +1179,11 @@ const make = Effect.gen(function* () {
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       admissionRequestId:
-        requiresExactAdmission || thread.session?.activeTurnRequestId === undefined
-          ? input.requestId
-          : thread.session.activeTurnRequestId,
+        input.admissionIntent?.kind === "steer"
+          ? (input.admissionIntent.expectedActiveTurnRequestId ?? input.requestId)
+          : requiresExactAdmission || thread.session?.activeTurnRequestId === undefined
+            ? input.requestId
+            : thread.session.activeTurnRequestId,
       sessionIncarnationId: admittedSession.sessionIncarnationId!,
     };
   });
@@ -1365,6 +1575,7 @@ const make = Effect.gen(function* () {
       Effect.forkScoped,
     );
 
+    const admissionStopToken = admissionStopTokenForRequest(requestId);
     const admissionEffect = Effect.gen(function* () {
       yield* ensureThreadWorktree(thread);
       const isFirstUserMessageTurn =
@@ -1402,22 +1613,40 @@ const make = Effect.gen(function* () {
         ...(event.payload.modelSelection !== undefined
           ? { modelSelection: event.payload.modelSelection }
           : {}),
+        runtimeMode: event.payload.runtimeMode,
         interactionMode: event.payload.interactionMode,
         requestId,
         messageId: event.payload.messageId,
+        ...(event.payload.admissionIntent === undefined
+          ? {}
+          : { admissionIntent: event.payload.admissionIntent }),
         admissionRequestedAt,
         admissionDeadlineAt,
         createdAt: event.payload.createdAt,
       });
+      if (admissionStopTokens.get(requestId) !== admissionStopToken) {
+        return yield* Effect.interrupt;
+      }
       return yield* providerService.sendTurn(sendTurnRequest);
     });
-    const admissionFiber = yield* admissionEffect.pipe(Effect.forkDetach);
+    // Event handlers detach provider work so Stop can invalidate a slow start
+    // immediately. The keyed permit still preserves accepted event order for
+    // the same thread: an earlier steer reaches the provider before a later
+    // settings transition starts.
+    const orderedAdmissionEffect = admissionPermitForThread(event.payload.threadId).withPermit(
+      admissionEffect,
+    );
+    const admissionFiber = yield* orderedAdmissionEffect.pipe(Effect.forkDetach);
     admissionFibers.set(requestId, admissionFiber);
+    admissionFiberThreads.set(requestId, event.payload.threadId);
     yield* Fiber.await(admissionFiber).pipe(
       Effect.ensuring(
         Effect.sync(() => {
           if (admissionFibers.get(requestId) === admissionFiber) {
             admissionFibers.delete(requestId);
+            admissionFiberThreads.delete(requestId);
+            admissionStopTokens.delete(requestId);
+            releaseAdmissionLaneIfIdle(event.payload.threadId);
           }
         }),
       ),
@@ -1428,7 +1657,10 @@ const make = Effect.gen(function* () {
     );
 
     const superviseAdmission = Effect.gen(function* () {
-      if (thread.session?.status === "running") {
+      if (
+        event.payload.admissionIntent?.kind === "steer" ||
+        (event.payload.admissionIntent === undefined && thread.session?.status === "running")
+      ) {
         const steeringExit = yield* Fiber.await(admissionFiber);
         yield* Fiber.interrupt(watchdog);
         if (Exit.isFailure(steeringExit) && !Cause.hasInterruptsOnly(steeringExit.cause)) {
@@ -1437,7 +1669,7 @@ const make = Effect.gen(function* () {
             kind: "provider.turn.start.failed",
             summary: "Provider turn start failed",
             detail: formatFailureDetail(steeringExit.cause),
-            turnId: thread.session.activeTurnId,
+            turnId: thread.session?.activeTurnId ?? null,
             createdAt: yield* nowIso,
             requestId,
           });
@@ -1715,43 +1947,146 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const processSessionStopRequested = Effect.fn("processSessionStopRequested")(function* (
-    event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
+  type PendingSessionStopTarget = {
+    readonly threadId: ThreadId;
+    readonly stopRequestId: CommandId;
+    readonly providerInstanceId: ProviderInstanceId | null;
+    readonly sessionIncarnationId: NonNullable<OrchestrationSession["sessionIncarnationId"]> | null;
+    readonly turnRequestId: CommandId | null;
+    readonly turnId: TurnId | null;
+    readonly createdAt: string;
+  };
+
+  const sessionRequestId = (session: OrchestrationSession | null | undefined) =>
+    session?.pendingTurnRequestId ??
+    session?.activeTurnRequestId ??
+    session?.failedTurnRequestId ??
+    null;
+
+  const pendingStopTargetIsCurrent = (
+    session: OrchestrationSession | null | undefined,
+    target: PendingSessionStopTarget,
+  ) =>
+    session?.pendingStopRequestId === target.stopRequestId &&
+    (session.pendingStopProviderInstanceId ?? null) === target.providerInstanceId &&
+    (session.pendingStopSessionIncarnationId ?? null) === target.sessionIncarnationId &&
+    (session.pendingStopTurnRequestId ?? null) === target.turnRequestId &&
+    (session.pendingStopTurnId ?? null) === target.turnId;
+
+  const clearPendingSessionStop = Effect.fn("clearPendingSessionStop")(function* (
+    target: PendingSessionStopTarget,
   ) {
-    const thread = yield* resolveThread(event.payload.threadId);
-    if (!thread) {
+    const latestThread = yield* resolveThread(target.threadId);
+    const latestSession = latestThread?.session;
+    if (!latestThread || !latestSession || !pendingStopTargetIsCurrent(latestSession, target)) {
       return;
     }
-
-    const now = event.payload.createdAt;
-    if (thread.session && thread.session.status !== "stopped") {
-      yield* providerService.stopSession({ threadId: thread.id });
-    }
-
+    const targetStillOwnsProjectedSession =
+      latestSession.status === "stopped" &&
+      (latestSession.providerInstanceId ?? null) === target.providerInstanceId &&
+      (latestSession.sessionIncarnationId ?? null) === target.sessionIncarnationId &&
+      sessionRequestId(latestSession) === target.turnRequestId;
+    const clearedAt =
+      latestSession.updatedAt > target.createdAt ? latestSession.updatedAt : target.createdAt;
     yield* applyThreadSessionLifecycle({
-      threadId: thread.id,
-      expectedSession: thread.session,
+      threadId: target.threadId,
+      expectedSession: latestSession,
       allowFailedTurnRequestClear: true,
       session: {
-        threadId: thread.id,
-        status: "stopped",
-        providerName: thread.session?.providerName ?? null,
-        ...(thread.session?.providerInstanceId !== undefined
-          ? { providerInstanceId: thread.session.providerInstanceId }
+        ...latestSession,
+        ...(targetStillOwnsProjectedSession
+          ? {
+              pendingTurnRequestId: undefined,
+              pendingTurnMessageId: undefined,
+              pendingTurnRequestedAt: undefined,
+              pendingTurnDeadlineAt: undefined,
+              pendingTurnSessionId: undefined,
+              activeTurnRequestId: undefined,
+              failedTurnRequestId: undefined,
+              activeTurnId: null,
+            }
           : {}),
-        runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
-        ...(thread.session?.restored === true ? { restored: true } : {}),
-        ...(thread.session?.startedAt !== undefined ? { startedAt: thread.session.startedAt } : {}),
-        ...(thread.session?.harnessRefinementStatus !== undefined
-          ? { harnessRefinementStatus: thread.session.harnessRefinementStatus }
-          : {}),
-        activeTurnId: null,
-        lastError: thread.session?.lastError ?? null,
-        updatedAt: now,
+        pendingStopRequestId: undefined,
+        pendingStopProviderInstanceId: undefined,
+        pendingStopSessionIncarnationId: undefined,
+        pendingStopTurnRequestId: undefined,
+        pendingStopTurnId: undefined,
+        updatedAt: clearedAt,
       },
-      createdAt: now,
+      createdAt: clearedAt,
     });
   });
+
+  const stopPendingSessionTarget = Effect.fn("stopPendingSessionTarget")(function* (
+    target: PendingSessionStopTarget,
+  ) {
+    const currentThread = yield* resolveThread(target.threadId);
+    const currentSession = currentThread?.session;
+    // A later Start can coexist with the old target. Never invalidate that new
+    // reservation; the exact provider identity below still cleans only the old
+    // runtime. A still-projected stopped target owns the original reservation.
+    const invalidateStartReservation =
+      currentSession?.status === "stopped" && pendingStopTargetIsCurrent(currentSession, target);
+    yield* providerService.stopSession({
+      threadId: target.threadId,
+      expectedProviderInstanceId: target.providerInstanceId,
+      expectedSessionIncarnationId: target.sessionIncarnationId,
+      expectedAdmissionRequestId: target.turnRequestId,
+      invalidateStartReservation,
+    });
+    yield* clearPendingSessionStop(target);
+    releaseAdmissionLaneIfIdle(target.threadId);
+  });
+
+  const processSessionStopRequested = Effect.fn("processSessionStopRequested")(
+    function* (event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>) {
+      const targetRequestId = event.payload.targetTurnRequestId ?? null;
+      // Invalidate only the admission captured by the persisted stop intent.
+      // A later Start has a different globally unique request id and token.
+      if (targetRequestId !== null && admissionStopTokens.has(targetRequestId)) {
+        admissionStopTokens.set(targetRequestId, makeAdmissionStopToken());
+      }
+      if (targetRequestId !== null) {
+        const targetFiber = admissionFibers.get(targetRequestId);
+        if (
+          targetFiber !== undefined &&
+          admissionFiberThreads.get(targetRequestId) === event.payload.threadId
+        ) {
+          targetFiber.interruptUnsafe();
+        }
+      }
+      if (event.commandId === null) {
+        // Legacy stop events have no durable pending-stop marker. Keep their
+        // prior exact-stop behavior, but never manufacture a cleanup target.
+        yield* providerService.stopSession({
+          threadId: event.payload.threadId,
+          ...(event.payload.targetProviderInstanceId !== undefined ||
+          event.payload.targetSessionIncarnationId !== undefined ||
+          event.payload.targetTurnRequestId !== undefined
+            ? {
+                expectedProviderInstanceId: event.payload.targetProviderInstanceId ?? null,
+                expectedSessionIncarnationId: event.payload.targetSessionIncarnationId ?? null,
+                expectedAdmissionRequestId: targetRequestId,
+              }
+            : {}),
+        });
+        return;
+      }
+      yield* stopPendingSessionTarget({
+        threadId: event.payload.threadId,
+        stopRequestId: event.commandId,
+        providerInstanceId: event.payload.targetProviderInstanceId ?? null,
+        sessionIncarnationId: event.payload.targetSessionIncarnationId ?? null,
+        turnRequestId: targetRequestId,
+        turnId: event.payload.targetTurnId ?? null,
+        createdAt: event.payload.createdAt,
+      });
+    },
+    (effect, event) =>
+      effect.pipe(
+        Effect.ensuring(Effect.sync(() => releaseAdmissionLaneIfIdle(event.payload.threadId))),
+      ),
+  );
 
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (
     event: ProviderIntentEvent,
@@ -1805,6 +2140,29 @@ const make = Effect.gen(function* () {
         yield* processSessionStopRequested(event);
         return;
     }
+  });
+
+  const reconcilePendingSessionStops = Effect.fn("reconcilePendingSessionStops")(function* () {
+    const readModel = yield* projectionSnapshotQuery.getCommandReadModel();
+    const pendingTargets = readModel.threads.flatMap((thread) => {
+      const session = thread.session;
+      if (session?.pendingStopRequestId === undefined) return [];
+      return [
+        {
+          threadId: thread.id,
+          stopRequestId: session.pendingStopRequestId,
+          providerInstanceId: session.pendingStopProviderInstanceId ?? null,
+          sessionIncarnationId: session.pendingStopSessionIncarnationId ?? null,
+          turnRequestId: session.pendingStopTurnRequestId ?? null,
+          turnId: session.pendingStopTurnId ?? null,
+          createdAt: session.updatedAt,
+        } satisfies PendingSessionStopTarget,
+      ];
+    });
+    yield* Effect.forEach(pendingTargets, stopPendingSessionTarget, {
+      concurrency: PROVIDER_TURN_RECONCILIATION_CONCURRENCY,
+      discard: true,
+    });
   });
 
   const reconcileOverdueTurnAdmissions = Effect.fn("reconcileOverdueTurnAdmissions")(function* () {
@@ -1998,22 +2356,33 @@ const make = Effect.gen(function* () {
         );
       }),
     );
-    const reconcileAdmissions = reconcileOverdueTurnAdmissions().pipe(
+    const reconcileStopsThenAdmissions = reconcilePendingSessionStops().pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
         return Effect.logWarning(
-          "provider command reactor failed to reconcile overdue turn admissions",
+          "provider command reactor failed to reconcile pending session stops",
           { cause: Cause.pretty(cause) },
         );
       }),
+      Effect.andThen(
+        reconcileOverdueTurnAdmissions().pipe(
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+            return Effect.logWarning(
+              "provider command reactor failed to reconcile overdue turn admissions",
+              { cause: Cause.pretty(cause) },
+            );
+          }),
+        ),
+      ),
     );
     const activation = yield* ServerActivation;
     if (activation === undefined) {
       yield* clearInterrupted;
-      yield* reconcileAdmissions;
+      yield* reconcileStopsThenAdmissions;
     } else {
       yield* forkParked(clearInterrupted);
-      yield* forkParked(reconcileAdmissions);
+      yield* forkParked(reconcileStopsThenAdmissions);
     }
   });
 
@@ -2022,6 +2391,12 @@ const make = Effect.gen(function* () {
     drain: Effect.gen(function* () {
       yield* worker.drain;
       yield* threadTitleRegenerationWorker.drain;
+    }),
+    getAdmissionTrackingCounts: () => ({
+      fibers: admissionFibers.size,
+      fiberThreads: admissionFiberThreads.size,
+      stopTokens: admissionStopTokens.size,
+      permits: admissionPermits.size,
     }),
   } satisfies ProviderCommandReactorShape;
 });

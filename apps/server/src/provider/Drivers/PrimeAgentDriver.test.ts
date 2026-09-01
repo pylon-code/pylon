@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { BUILT_IN_DRIVERS } from "../builtInDrivers.ts";
-import { PrimeAgentDriver } from "./PrimeAgentDriver.ts";
+import { isPrimeAgentProviderPlatformSupported, PrimeAgentDriver } from "./PrimeAgentDriver.ts";
 
 describe("PrimeAgentDriver", () => {
   it("registers one global Prime Agent driver with contract defaults", () => {
@@ -20,5 +20,12 @@ describe("PrimeAgentDriver", () => {
     expect(BUILT_IN_DRIVERS.filter((driver) => driver.driverKind === "primeAgent")).toEqual([
       PrimeAgentDriver,
     ]);
+  });
+
+  it("supports macOS, Linux, and WSL2's Linux runtime only", () => {
+    expect(isPrimeAgentProviderPlatformSupported("darwin")).toBe(true);
+    expect(isPrimeAgentProviderPlatformSupported("linux")).toBe(true);
+    expect(isPrimeAgentProviderPlatformSupported("win32")).toBe(false);
+    expect(isPrimeAgentProviderPlatformSupported("freebsd")).toBe(false);
   });
 });

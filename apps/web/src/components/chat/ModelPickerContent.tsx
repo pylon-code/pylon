@@ -1,3 +1,4 @@
+import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
 import {
   type ProviderInstanceId,
   type ProviderDriverKind,
@@ -91,6 +92,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
    */
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey?: string | null;
+  lockedInstanceId?: ProviderInstanceId | null;
   /**
    * All configured provider instances in display order. Used to render
    * the sidebar (one button per instance) and to resolve display names
@@ -210,14 +212,24 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     () => new Map(instanceEntries.map((entry) => [entry.instanceId, entry])),
     [instanceEntries],
   );
+  const continuationTransitionForInstance = useCallback(
+    (instanceId: ProviderInstanceId) => {
+      const currentInstanceId = props.lockedInstanceId ?? props.activeInstanceId;
+      return resolveProviderContinuationTransition({
+        providers: instanceEntries.map((candidate) => candidate.snapshot),
+        currentInstanceId,
+        targetInstanceId: instanceId,
+      });
+    },
+    [instanceEntries, props.activeInstanceId, props.lockedInstanceId],
+  );
   const matchesLockedProvider = useCallback(
-    (entry: Pick<ProviderInstanceEntry, "driverKind" | "continuationGroupKey">): boolean => {
+    (entry: Pick<ProviderInstanceEntry, "driverKind" | "instanceId">): boolean => {
       if (props.lockedProvider === null) return true;
       if (entry.driverKind !== props.lockedProvider) return false;
-      if (!props.lockedContinuationGroupKey) return true;
-      return entry.continuationGroupKey === props.lockedContinuationGroupKey;
+      return continuationTransitionForInstance(entry.instanceId).compatible;
     },
-    [props.lockedContinuationGroupKey, props.lockedProvider],
+    [continuationTransitionForInstance, props.lockedProvider],
   );
 
   const selectableUnavailableInstanceIds = useMemo(() => {
@@ -649,8 +661,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             {...(lockedDisabledInstanceIds
               ? {
                   disabledInstanceIds: lockedDisabledInstanceIds,
-                  getDisabledInstanceTooltip: (entry: ProviderInstanceEntry) =>
-                    `${entry.displayName} is unavailable in this thread. Start a new thread to switch providers.`,
+                  getDisabledInstanceTooltip: (entry: ProviderInstanceEntry) => {
+                    const transition = continuationTransitionForInstance(entry.instanceId);
+                    return transition.compatible
+                      ? entry.displayName
+                      : `${entry.displayName} — ${transition.reason}`;
+                  },
                 }
               : {})}
           />

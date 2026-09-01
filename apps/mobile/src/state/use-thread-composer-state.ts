@@ -14,6 +14,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
+import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
 import {
   codexFeedbackMessage,
   parseCodexFeedbackCommand,
@@ -64,6 +65,7 @@ import {
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import {
+  canSendToModelSelection,
   resolveModelSelectionRuntimeMode,
   showModelSelectionInteractionModeToggle,
 } from "../lib/modelOptions";
@@ -84,13 +86,19 @@ import {
   useComposerDraft,
 } from "./use-composer-drafts";
 import { setPendingConnectionError } from "../state/use-remote-environment-registry";
-import { useEnvironmentServerConfig } from "../state/entities";
+import { useEnvironmentServerConfig, useProjects } from "../state/entities";
 import { useSelectedThreadDetail } from "../state/use-thread-detail";
 import { useThreadSelection } from "../state/use-thread-selection";
-import { enqueueThreadOutboxMessage } from "./thread-outbox";
+import {
+  enqueueThreadOutboxMessage,
+  removeThreadOutboxMessage,
+  retryQueuedThreadMessage,
+  updateThreadOutboxMessage,
+} from "./thread-outbox";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
 import { useAtomCommand } from "./use-atom-command";
 import { threadEnvironment } from "./threads";
+import { resolveExistingThreadComposerSettings } from "./use-thread-composer-state.logic";
 
 export function appendReviewCommentToDraft(input: {
   readonly environmentId: EnvironmentId;
@@ -124,7 +132,7 @@ export function useThreadDraftForThread(input: {
 }
 
 export function useThreadComposerState() {
-  const { selectedThread: selectedThreadShell, selectedEnvironmentRuntime } = useThreadSelection();
+  const { selectedThread: selectedThreadShell } = useThreadSelection();
   const selectedThreadDetail = useSelectedThreadDetail();
   const selectedThreadContextWindow = useMemo(
     () => deriveLatestContextWindowSnapshot(selectedThreadDetail?.activities ?? []),
@@ -133,6 +141,15 @@ export function useThreadComposerState() {
   const selectedThreadServerConfig = useEnvironmentServerConfig(
     selectedThreadShell?.environmentId ?? null,
   );
+  const projects = useProjects();
+  const selectedThreadProject =
+    selectedThreadShell == null
+      ? null
+      : (projects.find(
+          (project) =>
+            project.environmentId === selectedThreadShell?.environmentId &&
+            project.id === selectedThreadShell.projectId,
+        ) ?? null);
   const composerDrafts = useAtomValue(composerDraftsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
   const [feedbackSubmissionsByThreadKey, setFeedbackSubmissionsByThreadKey] = useState<
@@ -222,7 +239,30 @@ export function useThreadComposerState() {
   const draftAttachments = selectedDraft?.attachments ?? [];
   const selectedThreadQueueCount = selectedThreadQueuedMessages.length;
   const selectedThread = selectedThreadDetail ?? selectedThreadShell;
-  const modelSelection = selectedDraft?.modelSelection ?? selectedThread?.modelSelection ?? null;
+  const selectedSessionProviderInstanceId =
+    selectedThreadDetail?.session?.providerInstanceId ??
+    selectedThreadShell?.session?.providerInstanceId;
+  const composerSettings = selectedThread
+    ? resolveExistingThreadComposerSettings({
+        thread: selectedThread,
+        sessionProviderInstanceId: selectedSessionProviderInstanceId,
+        providers: selectedThreadServerConfig?.providers ?? [],
+        draft: selectedDraft,
+      })
+    : null;
+  const modelSelection = composerSettings?.modelSelection ?? null;
+
+  useEffect(() => {
+    if (!selectedThreadKey || !composerSettings?.rejectedDraftProviderSelection) return;
+    // A draft can outlive another device binding the thread. Reject all of its
+    // provider-shaped settings together so a Codex mode cannot leak onto the
+    // now-authoritative Prime session; message text and attachments stay put.
+    updateComposerDraftSettings(selectedThreadKey, {
+      modelSelection: undefined,
+      runtimeMode: undefined,
+      interactionMode: undefined,
+    });
+  }, [composerSettings?.rejectedDraftProviderSelection, selectedThreadKey]);
   const selectedThreadResources = useMemo(() => {
     const session = selectedThreadDetail?.session;
     const instanceId = session?.providerInstanceId;
@@ -284,6 +324,9 @@ export function useThreadComposerState() {
       environmentId: selectedThreadShell.environmentId,
       threadId: selectedThreadShell.id,
       providerInstanceId: instanceId,
+      admissionAvailable:
+        selectedThreadDetail.modelSelection.instanceId === instanceId &&
+        canSendToModelSelection(selectedThreadServerConfig, selectedThreadDetail.modelSelection),
     } as const;
   }, [
     selectedThreadDetail?.session?.providerInstanceId,
@@ -399,7 +442,13 @@ export function useThreadComposerState() {
   const runSessionCompactionMutation = useCallback(
     async (action: "compact" | "abort" | "auto-enable" | "auto-disable"): Promise<boolean> => {
       const scope = sessionCompactionScopeRef.current;
-      if (!scope || sessionCompactionMutationRef.current?.scopeKey === scope.key) return false;
+      if (
+        !scope ||
+        sessionCompactionMutationRef.current?.scopeKey === scope.key ||
+        (action !== "abort" && !scope.admissionAvailable)
+      ) {
+        return false;
+      }
       const id = ++sessionCompactionRequestIdRef.current;
       const mutation = { scopeKey: scope.key, id, action } as const;
       sessionCompactionMutationRef.current = mutation;
@@ -459,21 +508,18 @@ export function useThreadComposerState() {
     },
     [abortSessionCompaction, compactSession, setSessionAutoCompaction],
   );
-  const selectedRuntimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
-  const runtimeMode = selectedRuntimeMode
+  const runtimeMode = composerSettings
     ? resolveModelSelectionRuntimeMode(
         selectedThreadServerConfig,
         modelSelection,
-        selectedRuntimeMode,
+        composerSettings.runtimeMode,
       )
     : null;
-  const selectedInteractionMode =
-    selectedDraft?.interactionMode ?? selectedThread?.interactionMode ?? null;
   const interactionMode = showModelSelectionInteractionModeToggle(
     selectedThreadServerConfig,
     modelSelection,
   )
-    ? selectedInteractionMode
+    ? (composerSettings?.interactionMode ?? null)
     : "default";
 
   const selectedThreadSessionActivity = useMemo(() => {
@@ -519,8 +565,28 @@ export function useThreadComposerState() {
       return null;
     }
 
-    const provider = selectedEnvironmentRuntime?.serverConfig?.providers.find(
-      (entry) => entry.instanceId === thread.modelSelection.instanceId,
+    const submissionSettings = resolveExistingThreadComposerSettings({
+      thread,
+      sessionProviderInstanceId: selectedSessionProviderInstanceId,
+      providers: selectedThreadServerConfig?.providers ?? [],
+      draft,
+    });
+    const modelSelection = submissionSettings.modelSelection;
+    if (
+      modelSelection === null ||
+      !canSendToModelSelection(selectedThreadServerConfig, modelSelection)
+    ) {
+      return null;
+    }
+    if (submissionSettings.rejectedDraftProviderSelection) {
+      updateComposerDraftSettings(threadKey, {
+        modelSelection: undefined,
+        runtimeMode: undefined,
+        interactionMode: undefined,
+      });
+    }
+    const provider = selectedThreadServerConfig?.providers.find(
+      (entry) => entry.instanceId === modelSelection.instanceId,
     );
     const feedbackCommand =
       attachments.length === 0 &&
@@ -585,17 +651,16 @@ export function useThreadComposerState() {
 
     const metadata = makeQueuedMessageMetadata();
     const messageId = MessageId.make(metadata.messageId);
-    const modelSelection = draft.modelSelection ?? thread.modelSelection;
     const runtimeMode = resolveModelSelectionRuntimeMode(
       selectedThreadServerConfig,
       modelSelection,
-      draft.runtimeMode ?? thread.runtimeMode,
+      submissionSettings.runtimeMode,
     );
     const interactionMode = showModelSelectionInteractionModeToggle(
       selectedThreadServerConfig,
       modelSelection,
     )
-      ? (draft.interactionMode ?? thread.interactionMode)
+      ? submissionSettings.interactionMode
       : "default";
     // Enqueue publishes the queued atom synchronously (the durable write
     // happens behind it), so clearing the draft here gives send feedback on
@@ -612,6 +677,19 @@ export function useThreadComposerState() {
       modelSelection,
       runtimeMode,
       interactionMode,
+      destination: {
+        projectId: selectedThreadShell.projectId,
+        ...(selectedThreadProject?.title === undefined
+          ? {}
+          : { projectTitle: selectedThreadProject.title }),
+        ...(selectedThreadProject?.workspaceRoot === undefined
+          ? {}
+          : { projectCwd: selectedThreadProject.workspaceRoot }),
+        workspaceMode: selectedThreadShell.worktreePath === null ? "local" : "worktree",
+        branch: selectedThreadShell.branch,
+        // A deleted worktree cannot be reused. Retargeting creates a fresh one.
+        worktreePath: null,
+      },
       createdAt: metadata.createdAt,
     });
     clearComposerDraftContent(threadKey);
@@ -628,9 +706,10 @@ export function useThreadComposerState() {
     });
     return messageId;
   }, [
-    selectedEnvironmentRuntime?.serverConfig?.providers,
+    selectedSessionProviderInstanceId,
     selectedThreadDetail,
     sessionCompactionBlocksSubmission,
+    selectedThreadProject,
     selectedThreadServerConfig,
     selectedThreadShell,
     uploadThreadFeedback,
@@ -647,6 +726,25 @@ export function useThreadComposerState() {
     }
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
     const draft = getComposerDraftSnapshot(threadKey);
+    const submissionSettings = resolveExistingThreadComposerSettings({
+      thread: selectedThreadDetail,
+      sessionProviderInstanceId: selectedSessionProviderInstanceId,
+      providers: selectedThreadServerConfig?.providers ?? [],
+      draft,
+    });
+    if (
+      submissionSettings.modelSelection === null ||
+      !canSendToModelSelection(selectedThreadServerConfig, submissionSettings.modelSelection)
+    ) {
+      return null;
+    }
+    if (submissionSettings.rejectedDraftProviderSelection) {
+      updateComposerDraftSettings(threadKey, {
+        modelSelection: undefined,
+        runtimeMode: undefined,
+        interactionMode: undefined,
+      });
+    }
     const text = draft.text.trim();
     const attachments = draft.attachments;
     if (text.length === 0 && attachments.length === 0) return null;
@@ -682,8 +780,9 @@ export function useThreadComposerState() {
     return messageId;
   }, [
     followUpInputQueue,
-    selectedThreadDetail?.session?.activeTurnId,
-    selectedThreadDetail?.session?.status,
+    selectedSessionProviderInstanceId,
+    selectedThreadDetail,
+    selectedThreadServerConfig,
     selectedThreadShell,
     sessionCompactionBlocksSubmission,
   ]);
@@ -869,7 +968,10 @@ export function useThreadComposerState() {
             ) ?? null);
       if (
         !selectedThreadShell ||
+        !selectedThreadDetail ||
         (session?.status !== "ready" && session?.status !== "running") ||
+        selectedThreadDetail.modelSelection.instanceId !== session.providerInstanceId ||
+        !canSendToModelSelection(selectedThreadServerConfig, selectedThreadDetail.modelSelection) ||
         !supportsSessionInputQueueSetModes(provider) ||
         !hasSessionInputQueueModes(selectedThreadInputQueue)
       ) {
@@ -995,8 +1097,18 @@ export function useThreadComposerState() {
         return;
       }
       const thread = selectedThreadDetail ?? selectedThreadShell;
-      const currentRuntimeMode = selectedDraft?.runtimeMode ?? thread?.runtimeMode;
-      const currentInteractionMode = selectedDraft?.interactionMode ?? thread?.interactionMode;
+      if (
+        selectedSessionProviderInstanceId !== undefined &&
+        !resolveProviderContinuationTransition({
+          providers: selectedThreadServerConfig?.providers ?? [],
+          currentInstanceId: selectedSessionProviderInstanceId,
+          targetInstanceId: value.instanceId,
+        }).compatible
+      ) {
+        return;
+      }
+      const currentRuntimeMode = composerSettings?.runtimeMode ?? thread?.runtimeMode;
+      const currentInteractionMode = composerSettings?.interactionMode ?? thread?.interactionMode;
       updateComposerDraftSettings(selectedThreadKey, {
         modelSelection: value,
         ...(currentRuntimeMode
@@ -1016,8 +1128,9 @@ export function useThreadComposerState() {
       });
     },
     [
-      selectedDraft?.interactionMode,
-      selectedDraft?.runtimeMode,
+      composerSettings?.interactionMode,
+      composerSettings?.runtimeMode,
+      selectedSessionProviderInstanceId,
       selectedThreadDetail,
       selectedThreadKey,
       selectedThreadServerConfig,
@@ -1045,6 +1158,75 @@ export function useThreadComposerState() {
     [selectedThreadKey],
   );
 
+  const onManagePendingSends = useCallback(() => {
+    const queuedMessage = selectedThreadQueuedMessages[0];
+    if (!queuedMessage) return;
+    const hold = queuedMessage.deliveryHold;
+    const boundInstanceId = selectedSessionProviderInstanceId;
+    const exactBoundSelection =
+      boundInstanceId !== undefined &&
+      composerSettings?.modelSelection?.instanceId === boundInstanceId
+        ? composerSettings.modelSelection
+        : null;
+    const freshRetry = (settings?: {
+      readonly modelSelection?: ModelSelection;
+      readonly runtimeMode?: RuntimeMode;
+      readonly interactionMode?: ProviderInteractionMode;
+    }) => {
+      const metadata = makeQueuedMessageMetadata();
+      return retryQueuedThreadMessage(queuedMessage, {
+        commandId: CommandId.make(metadata.commandId),
+        createdAt: metadata.createdAt,
+        ...settings,
+      });
+    };
+    const actions: Array<{
+      text: string;
+      style?: "default" | "cancel" | "destructive";
+      onPress?: () => void;
+    }> = [
+      {
+        text: "Retry",
+        onPress: () => {
+          void updateThreadOutboxMessage(freshRetry());
+        },
+      },
+    ];
+    if (
+      (hold?.kind === "provider-binding-mismatch" ||
+        hold?.kind === "provider-binding-unresolved") &&
+      exactBoundSelection !== null
+    ) {
+      actions.push({
+        text: "Use bound provider",
+        onPress: () => {
+          void updateThreadOutboxMessage(
+            freshRetry({
+              modelSelection: exactBoundSelection,
+              runtimeMode: composerSettings?.runtimeMode,
+              interactionMode: composerSettings?.interactionMode,
+            }),
+          );
+        },
+      });
+    }
+    actions.push(
+      {
+        text: "Delete pending send",
+        style: "destructive",
+        onPress: () => {
+          void removeThreadOutboxMessage(queuedMessage);
+        },
+      },
+      { text: "Cancel", style: "cancel" },
+    );
+    Alert.alert(
+      hold ? "Pending send held" : "Pending send",
+      hold?.reason ?? "This message is saved on this device and waiting to be sent.",
+      actions,
+    );
+  }, [composerSettings, selectedSessionProviderInstanceId, selectedThreadQueuedMessages]);
+
   return {
     selectedThreadFeed,
     selectedThreadAgents,
@@ -1060,6 +1242,7 @@ export function useThreadComposerState() {
         ? sessionCompactionPendingAction
         : null,
     selectedThreadQueueCount,
+    selectedThreadQueueHold: selectedThreadQueuedMessages[0]?.deliveryHold ?? null,
     activeWorkStartedAt,
     draftMessage,
     draftAttachments,
@@ -1074,6 +1257,7 @@ export function useThreadComposerState() {
     onRemoveDraftImage,
     onSendMessage,
     onQueueFollowUp,
+    onManagePendingSends,
     onClearSessionInputQueue,
     onRemoveOnlySessionInputQueueItem,
     onSetSessionInputQueueMode,

@@ -4,12 +4,20 @@ import { InfoIcon, XIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { formatProviderDriverKindLabel } from "../../providerModels";
+import { getProviderUnavailablePresentation } from "../../providerInstances";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export function getProviderStatusBannerKey(status: ServerProvider | null): string | null {
-  return !status || status.status === "ready" || status.status === "disabled"
-    ? null
-    : [status.instanceId, status.status, status.auth.status, status.message ?? ""].join("\u0000");
+  if (!status) return null;
+  const unavailable = getProviderUnavailablePresentation(status);
+  if (!unavailable && (status.status === "ready" || status.status === "disabled")) return null;
+  return [
+    status.instanceId,
+    status.availability ?? "available",
+    status.status,
+    status.auth.status,
+    unavailable?.detail ?? status.message ?? "",
+  ].join("\u0000");
 }
 
 export function shouldShowProviderStatusBanner(
@@ -27,48 +35,58 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
   onDismiss: () => void;
   status: ServerProvider | null;
 }) {
-  if (!status || status.status === "ready" || status.status === "disabled") {
-    return null;
-  }
+  if (!status) return null;
+  const unavailable = getProviderUnavailablePresentation(status);
+  if (!unavailable && (status.status === "ready" || status.status === "disabled")) return null;
 
   const providerName = status.displayName?.trim() || formatProviderDriverKindLabel(status.driver);
-  const isUnauthenticated = status.status === "error" && status.auth.status === "unauthenticated";
-  const title = isUnauthenticated
-    ? `${providerName} is unauthenticated`
-    : `${providerName} provider status`;
-  const message = isUnauthenticated
-    ? "Sign in via the CLI to authenticate again."
-    : (status.message ??
-      (status.status === "error"
-        ? `${providerName} provider is unavailable.`
-        : `${providerName} provider has limited availability.`));
+  const isUnauthenticated =
+    !unavailable && status.status === "error" && status.auth.status === "unauthenticated";
+  const title = unavailable
+    ? `${providerName} is unavailable`
+    : isUnauthenticated
+      ? `${providerName} is unauthenticated`
+      : `${providerName} provider status`;
+  const message = unavailable
+    ? unavailable.detail
+    : isUnauthenticated
+      ? "Sign in via the CLI to authenticate again."
+      : (status.message ??
+        (status.status === "error"
+          ? `${providerName} provider is unavailable.`
+          : `${providerName} provider has limited availability.`));
+  const severity = unavailable ? "unavailable" : status.status;
 
   return (
     <div className="pointer-events-auto mx-auto w-fit max-w-[calc(100%-2rem)] pt-3">
       <div
         className={cn(
           "alert-glass relative inline-flex items-center gap-3 rounded-xl border py-3 ps-3.5 pe-10 text-card-foreground text-sm",
-          status.status === "warning"
+          !unavailable && status.status === "warning"
             ? "border-warning/32 [&_svg]:text-warning"
             : "border-destructive/32 text-destructive-foreground [&_svg]:text-destructive",
         )}
-        data-variant={status.status === "warning" ? "warning" : "error"}
+        data-variant={!unavailable && status.status === "warning" ? "warning" : "error"}
         role="alert"
       >
         <InfoIcon className="size-4 shrink-0" aria-hidden />
         <div className="flex min-w-0 flex-col gap-1">
           <div className="font-medium">{title}</div>
-          <Tooltip>
-            <TooltipTrigger
-              render={<div className="line-clamp-3 text-muted-foreground">{message}</div>}
-            />
-            <TooltipPopup side="top" className="max-w-96 whitespace-pre-wrap">
-              {message}
-            </TooltipPopup>
-          </Tooltip>
+          {unavailable ? (
+            <div className="max-w-2xl whitespace-pre-wrap text-muted-foreground">{message}</div>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger
+                render={<div className="line-clamp-3 text-muted-foreground">{message}</div>}
+              />
+              <TooltipPopup side="top" className="max-w-96 whitespace-pre-wrap">
+                {message}
+              </TooltipPopup>
+            </Tooltip>
+          )}
         </div>
         <Button
-          aria-label={`Dismiss ${providerName} provider ${status.status}`}
+          aria-label={`Dismiss ${providerName} provider ${severity}`}
           className="absolute top-2 right-2 size-6 text-muted-foreground hover:text-foreground"
           onClick={onDismiss}
           size="icon-xs"

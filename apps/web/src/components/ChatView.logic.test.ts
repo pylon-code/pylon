@@ -24,6 +24,7 @@ import {
   ENVIRONMENT_RECONNECT_WARNING_GRACE_MS,
   getStartedThreadModelChangeBlockReason,
   loadVideoPreviewUrl,
+  mergeFailedComposerSend,
   isVideoPreviewRequestCurrent,
   hasEnvironmentReconnectWarningGraceElapsed,
   hasServerAcknowledgedLocalDispatch,
@@ -407,10 +408,10 @@ describe("buildThreadTurnInterruptInput", () => {
     ).toEqual({ threadId, turnId: activeTurnId });
   });
 
-  it("omits a turn id when the session is not running", () => {
-    expect(buildThreadTurnInterruptInput(makeThread({ session: readySession }))).toEqual({
-      threadId,
-    });
+  it.each(["ready", "starting"] as const)("omits a turn id when the session is %s", (status) => {
+    expect(
+      buildThreadTurnInterruptInput(makeThread({ session: { ...readySession, status } })),
+    ).toEqual({ threadId });
   });
 });
 
@@ -496,6 +497,22 @@ describe("buildExpiredTerminalContextToastCopy", () => {
     expect(buildExpiredTerminalContextToastCopy(2, "omitted")).toEqual({
       title: "Expired terminal contexts omitted from message",
       description: "Re-add it if you want that terminal output included.",
+    });
+  });
+});
+
+describe("mergeFailedComposerSend", () => {
+  it("puts a failed immediate send before a newer draft and deduplicates attachments", () => {
+    expect(
+      mergeFailedComposerSend({
+        failedText: "failed first",
+        currentText: "typed while sending",
+        failedAttachments: [{ id: "failed" }, { id: "shared", source: "failed" }],
+        currentAttachments: [{ id: "shared", source: "current" }, { id: "new" }],
+      }),
+    ).toEqual({
+      text: "failed first\n\ntyped while sending",
+      attachments: [{ id: "failed" }, { id: "shared", source: "current" }, { id: "new" }],
     });
   });
 });
@@ -589,7 +606,7 @@ describe("getStartedThreadModelChangeBlockReason", () => {
     ).toBeNull();
   });
 
-  it("blocks started-session model changes when either provider requires a new thread", () => {
+  it("blocks every cross-instance change after a session starts", () => {
     expect(
       getStartedThreadModelChangeBlockReason({
         providers,
@@ -604,10 +621,90 @@ describe("getStartedThreadModelChangeBlockReason", () => {
         },
       }),
     ).toEqual({
-      title: "Start a new chat to change models",
+      title: "Start a new chat to change providers",
       description:
-        "This provider does not allow switching models after a conversation has started.",
+        "A started thread stays bound to the exact provider account that created its session.",
     });
+  });
+
+  it("allows only available peers with the same exact continuation identity", () => {
+    const compatibleProviders = [
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        driver: ProviderDriverKind.make("codex"),
+        continuation: { groupKey: "codex:home:shared" },
+        enabled: true,
+        installed: true,
+        status: "ready" as const,
+        auth: { status: "authenticated" as const },
+      },
+      {
+        instanceId: ProviderInstanceId.make("codex_personal"),
+        driver: ProviderDriverKind.make("codex"),
+        continuation: { groupKey: "codex:home:shared" },
+        enabled: true,
+        installed: true,
+        status: "ready" as const,
+        auth: { status: "authenticated" as const },
+      },
+    ];
+    const input = {
+      providers: compatibleProviders,
+      hasStartedSession: true,
+      currentProviderInstanceId: ProviderInstanceId.make("codex"),
+      currentModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.3-codex",
+      },
+      nextModelSelection: {
+        instanceId: ProviderInstanceId.make("codex_personal"),
+        model: "gpt-5.4",
+        options: [{ id: "reasoningEffort", value: "xhigh" }],
+      },
+    } as const;
+
+    expect(getStartedThreadModelChangeBlockReason(input)).toBeNull();
+    expect(
+      getStartedThreadModelChangeBlockReason({
+        ...input,
+        providers: compatibleProviders.map((provider) =>
+          provider.instanceId === ProviderInstanceId.make("codex_personal")
+            ? { ...provider, availability: "unavailable" as const }
+            : provider,
+        ),
+      }),
+    ).toMatchObject({
+      description: expect.stringContaining("unavailable"),
+    });
+  });
+
+  it("lets a warning bound provider reconcile a stale picker selection", () => {
+    const providersWithWarningBinding = providers.map((provider) =>
+      provider.instanceId === ProviderInstanceId.make("prime")
+        ? {
+            ...provider,
+            enabled: true,
+            installed: true,
+            status: "warning" as const,
+            auth: { status: "authenticated" as const },
+          }
+        : provider,
+    );
+    expect(
+      getStartedThreadModelChangeBlockReason({
+        providers: providersWithWarningBinding,
+        hasStartedSession: true,
+        currentProviderInstanceId: ProviderInstanceId.make("prime"),
+        currentModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        },
+        nextModelSelection: {
+          instanceId: ProviderInstanceId.make("prime"),
+          model: "anthropic/claude-sonnet-4.5",
+        },
+      }),
+    ).toBeNull();
   });
 });
 

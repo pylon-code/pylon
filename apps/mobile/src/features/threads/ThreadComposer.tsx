@@ -1,4 +1,5 @@
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
+import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
 import {
   formatSessionGoalStatus,
   type SessionGoalSnapshot,
@@ -109,6 +110,12 @@ import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
+import { ProviderUnavailableNotice } from "./ProviderUnavailableNotice";
+import {
+  resolveThreadComposerAdmissionReason,
+  resolveThreadComposerAuthority,
+  threadComposerShowsStopAction,
+} from "./ThreadComposer.logic";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
 import {
   type ExistingThreadSettingsRouteSession,
@@ -177,6 +184,7 @@ export interface ThreadComposerProps {
   readonly selectedThread: OrchestrationThreadShell;
   readonly serverConfig: T3ServerConfig | null;
   readonly localOutboxCount: number;
+  readonly onManagePendingSends: () => void;
   readonly contextWindow: ContextWindowSnapshot | null;
   readonly sessionResources: SessionResourcesSnapshot | null;
   readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
@@ -435,10 +443,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   // Opening and presentation count as active so the composer stays expanded
   // while focus moves between its native editor and the settings picker.
   const isExpanded = isFocused || settingsSheetPresentation.isActive;
-  const canSend =
-    hasContent &&
-    props.sessionCompactionPendingAction !== "compact" &&
-    !isSessionCompactionInProgress(props.sessionCompaction);
 
   // Notify the parent from the derived value, not focus events: the parent
   // sizes the feed inset from this, and blur-during-sheet would otherwise
@@ -472,11 +476,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     setIsFocused(false);
     onEditorFocusChange?.(false);
   }, [onEditorFocusChange]);
-  const showStopAction =
-    props.selectedThread.session?.status === "running" ||
-    props.selectedThread.session?.status === "starting";
-
-  const currentModelSelection = props.selectedThread.modelSelection;
+  const showStopAction = threadComposerShowsStopAction(props.selectedThread.session?.status);
+  const composerAuthority = resolveThreadComposerAuthority({
+    serverConfig: props.serverConfig,
+    modelSelection: props.selectedThread.modelSelection,
+    sessionProviderInstanceId: props.selectedThread.session?.providerInstanceId,
+  });
+  // A mismatched persisted selection is presentation-only. Admission remains
+  // blocked until the user selects an exact model for the bound instance.
+  const currentModelSelection =
+    composerAuthority.modelSelection ?? props.selectedThread.modelSelection;
   const currentRuntimeMode = resolveModelSelectionRuntimeMode(
     props.serverConfig,
     currentModelSelection,
@@ -492,14 +501,26 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     environmentLabel: props.environmentLabel,
     threadSyncPhase: props.threadSyncPhase,
   });
-  const selectedProviderStatus = useMemo(() => {
-    if (!props.serverConfig) return null;
-    return (
-      props.serverConfig.providers.find(
-        (p) => p.instanceId === props.selectedThread.modelSelection.instanceId,
-      ) ?? null
-    );
-  }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  const selectedProviderStatus = composerAuthority.provider;
+  const providerAdmissionReason = composerAuthority.providerAdmissionReason;
+  const projectAdmissionReason =
+    props.projectCwd === null ? "This thread's project workspace is unavailable." : null;
+  const blockingAdmissionReason = providerAdmissionReason ?? projectAdmissionReason;
+  const composerAdmissionReason = resolveThreadComposerAdmissionReason({
+    providerReason: providerAdmissionReason,
+    projectCwd: props.projectCwd,
+    connectionState: props.connectionState,
+  });
+  const selectedProviderUnavailable =
+    blockingAdmissionReason === null
+      ? null
+      : { headline: "Unavailable" as const, detail: blockingAdmissionReason };
+  const canSend =
+    hasContent &&
+    composerAuthority.providerAdmissionAvailable &&
+    props.projectCwd !== null &&
+    props.sessionCompactionPendingAction !== "compact" &&
+    !isSessionCompactionInProgress(props.sessionCompaction);
   const activeSessionProviderStatus = useMemo(() => {
     const instanceId = props.selectedThread.session?.providerInstanceId;
     if (!props.serverConfig || instanceId === undefined) return null;
@@ -513,6 +534,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       activeSessionProviderStatus?.requiresNewThreadForModelChange === true);
   const getModelChangeDisabledReason = useCallback(
     (option: ModelOption) => {
+      const boundInstanceId = props.selectedThread.session?.providerInstanceId;
+      if (boundInstanceId) {
+        const transition = resolveProviderContinuationTransition({
+          providers: props.serverConfig?.providers ?? [],
+          currentInstanceId: boundInstanceId,
+          targetInstanceId: option.selection.instanceId,
+        });
+        if (!transition.compatible) return transition.reason;
+      }
       const isCurrent =
         option.selection.instanceId === currentModelSelection.instanceId &&
         option.selection.model === currentModelSelection.model;
@@ -531,7 +561,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         ? "Start a new thread to use this model"
         : undefined;
     },
-    [currentModelSelection, modelChangesLocked, props.selectedThread.session],
+    [currentModelSelection, modelChangesLocked, props.selectedThread.session, props.serverConfig],
   );
   const quickQuestionAvailable = canOpenQuickQuestion({
     connectionState: props.connectionState,
@@ -698,6 +728,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     supportsSessionInputQueue(activeSessionProviderStatus);
   const canQueueFollowUp =
     props.connectionState === "connected" &&
+    composerAuthority.providerAdmissionAvailable &&
     props.selectedThread.session?.status === "running" &&
     !props.sessionInputBlocked &&
     props.localOutboxCount === 0 &&
@@ -725,17 +756,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const canSetSessionInputQueueModes =
     showSessionInputQueueModes &&
     props.connectionState === "connected" &&
+    composerAuthority.providerAdmissionAvailable &&
     (props.selectedThread.session?.status === "ready" ||
       props.selectedThread.session?.status === "running") &&
     !isMutatingSessionInputQueue;
   // A busy thread is no longer a reason to hold a message back: the outbox now
   // delivers while a turn runs so the message steers it. Only a lost connection
   // or an already-queued message still means "saved rather than sent".
-  const sendLabel = canQueueFollowUp
-    ? "Queue follow-up"
-    : props.connectionState !== "connected" || props.localOutboxCount > 0
-      ? "Save pending send"
-      : "Send";
+  const sendLabel = selectedProviderUnavailable
+    ? `Send unavailable. ${selectedProviderUnavailable.detail}`
+    : canQueueFollowUp
+      ? "Queue follow-up"
+      : props.connectionState !== "connected"
+        ? `Save pending send. ${composerAdmissionReason ?? "The environment is disconnected."}`
+        : props.localOutboxCount > 0
+          ? "Save pending send"
+          : "Send";
 
   const showSessionResourceReload =
     props.selectedThread.session?.runtimeMode === "full-access" &&
@@ -1082,6 +1118,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       props.selectedThread.session?.status === "running");
   const canCompactSessionContext =
     sessionCompactionConnected &&
+    composerAuthority.providerAdmissionAvailable &&
     props.sessionCompactionPendingAction === null &&
     canStartSessionCompaction(activeSessionProviderStatus, props.sessionCompaction);
   const canAbortSessionContext =
@@ -1090,6 +1127,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     canAbortSessionCompaction(activeSessionProviderStatus, props.sessionCompaction);
   const canSetSessionAutoCompaction =
     sessionCompactionConnected &&
+    composerAuthority.providerAdmissionAvailable &&
     props.sessionCompactionPendingAction === null &&
     canConfigureSessionAutoCompaction(activeSessionProviderStatus, props.sessionCompaction);
   const sessionCompactionControlRef = useRef({
@@ -1365,12 +1403,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     [props.serverConfig, currentModelSelection],
   );
   const providerGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);
-  // An existing thread is bound to its harness: sessions can't move between
-  // provider instances, so the picker only offers the thread's own group.
-  const threadProviderGroups = useMemo(
-    () => providerGroups.filter((group) => group.providerKey === currentModelSelection.instanceId),
-    [providerGroups, currentModelSelection.instanceId],
-  );
+  // Keep every configured group visible. `getModelChangeDisabledReason`
+  // enables exact continuation peers and explains why every other account
+  // needs a new thread.
+  const threadProviderGroups = providerGroups;
   const currentModelOption =
     modelOptions.find(
       (option) =>
@@ -1493,6 +1529,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             onPress={props.onReconnectEnvironment}
           />
         ) : null}
+
+        <ProviderUnavailableNotice
+          provider={selectedProviderStatus}
+          reason={blockingAdmissionReason}
+          title={projectAdmissionReason === null ? undefined : "Project unavailable"}
+        />
 
         <ComposerSurface
           style={
@@ -1822,10 +1864,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         {/* Queue count */}
         {props.localOutboxCount > 0 ? (
           <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>
-            <Text className="pt-2 text-xs text-foreground-muted">
-              {props.localOutboxCount} pending send{props.localOutboxCount === 1 ? "" : "s"} on this
-              device.
-            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Manage ${props.localOutboxCount} pending send${props.localOutboxCount === 1 ? "" : "s"}`}
+              onPress={props.onManagePendingSends}
+            >
+              <Text className="pt-2 text-xs text-foreground-muted">
+                {props.localOutboxCount} pending send{props.localOutboxCount === 1 ? "" : "s"} on
+                this device · Manage
+              </Text>
+            </Pressable>
           </Animated.View>
         ) : null}
       </Animated.View>

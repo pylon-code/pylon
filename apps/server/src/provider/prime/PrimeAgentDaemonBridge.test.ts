@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it } from "@effect/vitest";
 import {
   isPathInside,
   loadPrimeAgentDaemonBridge,
-  locatePrimeAgentPublicPackage,
   PRIME_AGENT_DAEMON_PROTOCOL_NAME,
   PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION,
   PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE,
@@ -153,41 +152,6 @@ describe("PrimeAgentDaemonBridge", () => {
 
       expect(error.reason).toBe("wrong-package");
       expect(error.message).toContain("not-prime-agent");
-    }),
-  );
-
-  it.effect("locates a Windows npm wrapper through its sibling package bin", () =>
-    Effect.gen(function* () {
-      const npmRoot = makeTemporaryDirectory();
-      const packageRoot = NodePath.join(npmRoot, "node_modules", "prime-agent");
-      const dist = NodePath.join(packageRoot, "dist");
-      NodeFS.mkdirSync(dist, { recursive: true });
-      const cliPath = NodePath.join(dist, "cli.js");
-      const entryPath = NodePath.join(dist, "index.js");
-      const wrapperPath = NodePath.join(npmRoot, "prime-agent.cmd");
-      NodeFS.writeFileSync(cliPath, "#!/usr/bin/env node\n");
-      NodeFS.writeFileSync(entryPath, "export const VERSION = '0.8.1';\n");
-      NodeFS.writeFileSync(
-        NodePath.join(packageRoot, "package.json"),
-        // @effect-diagnostics-next-line preferSchemaOverJson:off
-        JSON.stringify({
-          name: "prime-agent",
-          version: "0.8.1",
-          type: "module",
-          bin: { "prime-agent": "dist/cli.js" },
-          exports: { ".": { import: "./dist/index.js" } },
-        }),
-      );
-      NodeFS.writeFileSync(
-        wrapperPath,
-        '@ECHO off\r\n"%~dp0\\node.exe" "%~dp0\\node_modules\\prime-agent\\dist\\cli.js" %*\r\n',
-      );
-
-      const located = yield* locatePrimeAgentPublicPackage(wrapperPath);
-
-      expect(located.packageRoot).toBe(NodeFS.realpathSync(packageRoot));
-      expect(located.moduleEntryPath).toBe(NodeFS.realpathSync(entryPath));
-      expect(located.version).toBe("0.8.1");
     }),
   );
 

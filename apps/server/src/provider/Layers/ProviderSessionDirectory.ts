@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
 import { ProviderSessionDirectoryPersistenceError, ProviderValidationError } from "../Errors.ts";
@@ -100,52 +101,97 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       ),
     );
 
+  const mutationPermit = Semaphore.makeUnsafe(1);
   const upsert: ProviderSessionDirectoryShape["upsert"] = Effect.fn(function* (binding) {
-    const existing = yield* repository
-      .getByThreadId({ threadId: binding.threadId })
-      .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:getByThreadId")));
+    return yield* mutationPermit.withPermit(
+      Effect.gen(function* () {
+        const existing = yield* repository
+          .getByThreadId({ threadId: binding.threadId })
+          .pipe(
+            Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:getByThreadId")),
+          );
 
-    const existingRuntime = Option.getOrUndefined(existing);
-    const resolvedThreadId = binding.threadId ?? existingRuntime?.threadId;
-    if (!resolvedThreadId) {
-      return yield* new ProviderValidationError({
-        operation: "ProviderSessionDirectory.upsert",
-        issue: "threadId must be a non-empty string.",
-      });
-    }
+        const existingRuntime = Option.getOrUndefined(existing);
+        const resolvedThreadId = binding.threadId ?? existingRuntime?.threadId;
+        if (!resolvedThreadId) {
+          return yield* new ProviderValidationError({
+            operation: "ProviderSessionDirectory.upsert",
+            issue: "threadId must be a non-empty string.",
+          });
+        }
 
-    const now = DateTime.formatIso(yield* DateTime.now);
-    const providerChanged =
-      existingRuntime !== undefined && existingRuntime.providerName !== binding.provider;
-    const providerInstanceId =
-      binding.providerInstanceId ?? (!providerChanged ? existingRuntime?.providerInstanceId : null);
-    if (providerInstanceId === null || providerInstanceId === undefined) {
-      return yield* new ProviderValidationError({
-        operation: "ProviderSessionDirectory.upsert",
-        issue: "providerInstanceId is required for provider session runtime bindings.",
-      });
-    }
-    yield* repository
-      .upsert({
-        threadId: resolvedThreadId,
-        providerName: binding.provider,
-        providerInstanceId,
-        adapterKey:
-          binding.adapterKey ??
-          (providerChanged ? binding.provider : (existingRuntime?.adapterKey ?? binding.provider)),
-        runtimeMode: binding.runtimeMode ?? existingRuntime?.runtimeMode ?? "full-access",
-        status: binding.status ?? existingRuntime?.status ?? "running",
-        lastSeenAt: now,
-        resumeCursor:
-          binding.resumeCursor !== undefined
-            ? binding.resumeCursor
-            : (existingRuntime?.resumeCursor ?? null),
-        runtimePayload: mergeRuntimePayload(
-          existingRuntime?.runtimePayload ?? null,
-          binding.runtimePayload,
-        ),
-      })
-      .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:upsert")));
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const providerChanged =
+          existingRuntime !== undefined && existingRuntime.providerName !== binding.provider;
+        const providerInstanceId =
+          binding.providerInstanceId ??
+          (!providerChanged ? existingRuntime?.providerInstanceId : null);
+        if (providerInstanceId === null || providerInstanceId === undefined) {
+          return yield* new ProviderValidationError({
+            operation: "ProviderSessionDirectory.upsert",
+            issue: "providerInstanceId is required for provider session runtime bindings.",
+          });
+        }
+        yield* repository
+          .upsert({
+            threadId: resolvedThreadId,
+            providerName: binding.provider,
+            providerInstanceId,
+            adapterKey:
+              binding.adapterKey ??
+              (providerChanged
+                ? binding.provider
+                : (existingRuntime?.adapterKey ?? binding.provider)),
+            runtimeMode: binding.runtimeMode ?? existingRuntime?.runtimeMode ?? "full-access",
+            status: binding.status ?? existingRuntime?.status ?? "running",
+            lastSeenAt: now,
+            resumeCursor:
+              binding.resumeCursor !== undefined
+                ? binding.resumeCursor
+                : (existingRuntime?.resumeCursor ?? null),
+            runtimePayload: mergeRuntimePayload(
+              existingRuntime?.runtimePayload ?? null,
+              binding.runtimePayload,
+            ),
+          })
+          .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:upsert")));
+      }),
+    );
+  });
+
+  const removeExact: ProviderSessionDirectoryShape["removeExact"] = Effect.fn(function* (input) {
+    return yield* mutationPermit.withPermit(
+      Effect.gen(function* () {
+        const existing = Option.getOrUndefined(
+          yield* repository
+            .getByThreadId({ threadId: input.threadId })
+            .pipe(
+              Effect.mapError(
+                toPersistenceError("ProviderSessionDirectory.removeExact:getByThreadId"),
+              ),
+            ),
+        );
+        const payload = existing?.runtimePayload;
+        const persistedIncarnationId =
+          isRecord(payload) && typeof payload.sessionIncarnationId === "string"
+            ? payload.sessionIncarnationId
+            : undefined;
+        if (
+          existing?.providerInstanceId !== input.providerInstanceId ||
+          persistedIncarnationId !== input.sessionIncarnationId
+        ) {
+          return false;
+        }
+        yield* repository
+          .deleteByThreadId({ threadId: input.threadId })
+          .pipe(
+            Effect.mapError(
+              toPersistenceError("ProviderSessionDirectory.removeExact:deleteByThreadId"),
+            ),
+          );
+        return true;
+      }),
+    );
   });
 
   const getProvider: ProviderSessionDirectoryShape["getProvider"] = (threadId) =>
@@ -186,6 +232,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
     upsert,
     getProvider,
     getBinding,
+    removeExact,
     listThreadIds,
     listBindings,
   } satisfies ProviderSessionDirectoryShape;

@@ -1737,6 +1737,23 @@ describe("composerDraftStore modelSelection", () => {
     resetComposerDraftStore();
   });
 
+  it("clears only provider-shaped draft state when a live session binds elsewhere", () => {
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadRef, "keep this prompt");
+    store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "gpt-5.4"));
+    store.setRuntimeMode(threadRef, "approval-required");
+    store.setInteractionMode(threadRef, "plan");
+
+    store.reconcileProviderBinding(threadRef, CLAUDE_AGENT_INSTANCE);
+
+    const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft?.prompt).toBe("keep this prompt");
+    expect(draft?.activeProvider).toBe(CLAUDE_AGENT_INSTANCE);
+    expect(draft?.modelSelectionByProvider[CODEX_INSTANCE]).toBeUndefined();
+    expect(draft?.runtimeMode).toBeNull();
+    expect(draft?.interactionMode).toBeNull();
+  });
+
   it("stores a model selection in the draft", () => {
     const store = useComposerDraftStore.getState();
     store.setModelSelection(

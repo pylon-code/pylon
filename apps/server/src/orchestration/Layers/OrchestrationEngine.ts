@@ -209,6 +209,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
               const lastSavedEvent = committedEvents.at(-1) ?? null;
               const acceptsStaleNoEvent =
+                envelope.command.type === "thread.meta.update" ||
+                envelope.command.type === "thread.runtime-mode.set" ||
+                envelope.command.type === "thread.interaction-mode.set" ||
                 envelope.command.type === "thread.turn.admission.accept" ||
                 envelope.command.type === "thread.turn.admission.fail" ||
                 envelope.command.type === "thread.session.bind-pending" ||

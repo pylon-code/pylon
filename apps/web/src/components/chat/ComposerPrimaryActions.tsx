@@ -19,6 +19,7 @@ interface ComposerPrimaryActionsProps {
   compact: boolean;
   pendingAction: PendingActionState | null;
   isRunning: boolean;
+  isStopCapable?: boolean;
   canQueueFollowUp: boolean;
   onQueueFollowUp: () => void;
   showPlanFollowUpPrompt: boolean;
@@ -64,6 +65,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
   pendingAction,
   isRunning,
+  isStopCapable = isRunning,
   canQueueFollowUp,
   onQueueFollowUp,
   showPlanFollowUpPrompt,
@@ -113,7 +115,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   if (pendingAction) {
     return (
       <div className={cn("flex items-center justify-end", compact ? "gap-1.5" : "gap-2")}>
-        {isRunning ? renderStopGenerationButton(true) : null}
+        {isStopCapable ? renderStopGenerationButton(true) : null}
         {pendingAction.questionIndex > 0 ? (
           compact ? (
             <Button
@@ -240,10 +242,10 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         !hasSendableContent
       }
       aria-label={
-        isEnvironmentUnavailable
-          ? "Environment disconnected"
-          : sendDisabledReason
-            ? sendDisabledReason
+        sendDisabledReason
+          ? sendDisabledReason
+          : isEnvironmentUnavailable
+            ? "Environment disconnected"
             : isConnecting
               ? "Connecting"
               : isPreparingWorktree
@@ -274,8 +276,13 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     </button>
   );
 
-  if (!isRunning) {
+  if (!isStopCapable) {
     return sendButton;
+  }
+  if (!isRunning) {
+    // A pending admission has no turn id yet. Stop remains the exact reverse
+    // action, while starting a second send stays unavailable.
+    return <div className="flex items-center justify-end">{renderStopGenerationButton(false)}</div>;
   }
 
   // While a turn runs, steering it stays reachable. Providers with a session
@@ -300,7 +307,14 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             !hasSendableContent
           }
           onClick={onQueueFollowUp}
-          aria-label={isSendBusy ? "Queueing follow-up" : "Queue follow-up"}
+          aria-label={
+            sendDisabledReason ??
+            (isEnvironmentUnavailable
+              ? "Environment disconnected"
+              : isSendBusy
+                ? "Queueing follow-up"
+                : "Queue follow-up")
+          }
         >
           {isSendBusy ? (
             <Spinner className="size-3.5" aria-hidden="true" />

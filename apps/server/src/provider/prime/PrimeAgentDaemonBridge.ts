@@ -249,7 +249,6 @@ const packageIdentitySchema = Schema.Struct({
 const primeAgentPackageSchema = Schema.Struct({
   name: Schema.Literal("prime-agent"),
   version: Schema.String,
-  bin: Schema.optional(Schema.Union([Schema.String, Schema.Record(Schema.String, Schema.String)])),
   exports: Schema.Union([
     Schema.String,
     Schema.Struct({ ".": Schema.String }),
@@ -292,93 +291,6 @@ async function readJson(filePath: string): Promise<unknown> {
   return JSON.parse(source) as unknown;
 }
 
-function packageBinEntry(
-  manifest: LocatedPackage["manifest"],
-  commandName: string,
-): string | undefined {
-  if (Predicate.isString(manifest.bin)) {
-    return commandName === "prime-agent" ? manifest.bin : undefined;
-  }
-  return manifest.bin?.[commandName];
-}
-
-async function locatePrimeAgentWrapperPackage(
-  binaryPath: string,
-  canonicalWrapperPath: string,
-): Promise<LocatedPackage | undefined> {
-  const wrapperName = NodePath.basename(binaryPath).replace(/\.(?:cmd|ps1)$/iu, "");
-  if (wrapperName.toLowerCase() !== "prime-agent") return undefined;
-
-  const siblingRoot = NodePath.join(
-    NodePath.dirname(NodePath.resolve(binaryPath)),
-    "node_modules",
-    "prime-agent",
-  );
-  let rawManifest: unknown;
-  try {
-    rawManifest = await readJson(NodePath.join(siblingRoot, "package.json"));
-  } catch (cause) {
-    if (
-      Predicate.isObject(cause) &&
-      "code" in cause &&
-      (cause.code === "ENOENT" || cause.code === "ENOTDIR")
-    ) {
-      return undefined;
-    }
-    throw bridgeError(
-      binaryPath,
-      "invalid-package-manifest",
-      `Could not read the wrapper-owned prime-agent package at '${siblingRoot}'.`,
-      cause,
-    );
-  }
-
-  const manifest = decodePrimeAgentPackage(rawManifest);
-  if (Option.isNone(manifest)) {
-    throw bridgeError(
-      binaryPath,
-      "invalid-package-manifest",
-      `The wrapper-owned package at '${siblingRoot}' is not a valid prime-agent public package.`,
-    );
-  }
-  const binEntry = packageBinEntry(manifest.value, wrapperName.toLowerCase());
-  if (!binEntry) {
-    throw bridgeError(
-      binaryPath,
-      "wrong-package",
-      "The Prime Agent wrapper is not bound to the package's prime-agent bin entry.",
-    );
-  }
-
-  try {
-    const [canonicalRoot, canonicalBin, wrapperSource] = await Promise.all([
-      NodeFSP.realpath(siblingRoot),
-      NodeFSP.realpath(NodePath.resolve(siblingRoot, binEntry)),
-      NodeFSP.readFile(canonicalWrapperPath, "utf8"),
-    ]);
-    const binStat = await NodeFSP.stat(canonicalBin);
-    const expectedReference = `node_modules/prime-agent/${binEntry.replace(/^\.\//u, "")}`
-      .replaceAll("\\", "/")
-      .toLowerCase();
-    const normalizedWrapperSource = wrapperSource.replaceAll("\\", "/").toLowerCase();
-    if (
-      !binStat.isFile() ||
-      !isPathInside(canonicalRoot, canonicalBin) ||
-      !normalizedWrapperSource.includes(expectedReference)
-    ) {
-      throw new Error("wrapper does not reference its package-owned bin file");
-    }
-    return { root: canonicalRoot, manifest: manifest.value };
-  } catch (cause) {
-    throw bridgeError(
-      binaryPath,
-      "wrong-package",
-      "The Prime Agent wrapper is not safely bound to its sibling package.",
-      cause,
-    );
-  }
-}
-
 async function locatePrimeAgentPackage(binaryPath: string): Promise<LocatedPackage> {
   let canonicalPath: string;
   try {
@@ -393,10 +305,6 @@ async function locatePrimeAgentPackage(binaryPath: string): Promise<LocatedPacka
   }
 
   const canonicalStat = await NodeFSP.stat(canonicalPath);
-  if (canonicalStat.isFile()) {
-    const wrapperPackage = await locatePrimeAgentWrapperPackage(binaryPath, canonicalPath);
-    if (wrapperPackage) return wrapperPackage;
-  }
   let directory = canonicalStat.isDirectory() ? canonicalPath : NodePath.dirname(canonicalPath);
   let nearestWrongPackage: { readonly root: string; readonly name: string } | undefined;
   let nearestInvalidManifest: { readonly root: string; readonly cause: unknown } | undefined;
