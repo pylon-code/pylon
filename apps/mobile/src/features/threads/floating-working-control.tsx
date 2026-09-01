@@ -28,8 +28,11 @@ const CONTROL_TIMING = {
 } as const;
 const CONTROL_SEPARATION = (16 + CONTROL_HEIGHT) / 2;
 
-// Expo reapplies glass after native layout and window reattachment, when UIKit
-// can otherwise leave the label visible but lose the material behind it.
+// Explicit mappings keep the native glassEffectStyle enum out of style-array
+// conversion: uniwind treats any prop ending in "Style" as a style prop, so
+// auto mode would pass glassEffectStyle={[undefined, "regular"]} and lose the
+// effect. The old `effect` prop did not end in "Style", which is why auto mode
+// was safe before the rename.
 const UniwindGlassView = withUniwind(GlassView, {
   style: { fromClassName: "className" },
 });
