@@ -28,7 +28,10 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 
 import { cn } from "../../lib/utils";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { normalizeProviderAccentColor } from "../../providerInstances";
+import {
+  getProviderUnavailablePresentation,
+  normalizeProviderAccentColor,
+} from "../../providerInstances";
 import { ProviderSignInDialog } from "./ProviderSignInDialog";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Badge } from "../ui/badge";
@@ -474,19 +477,22 @@ export function ProviderInstanceCard({
 }: ProviderInstanceCardProps) {
   const [activeTab, setActiveTab] = useState<"configuration" | "models">("configuration");
   const enabled = resolveProviderInstanceEnabled(instance);
-  // A locally disabled provider stays neutral even if its last server status
-  // is stale. Enabled providers use the server status when one is available.
-  const statusKey: ProviderStatusKey = enabled
-    ? ((liveProvider?.status as ProviderStatusKey | undefined) ?? "warning")
-    : "disabled";
+  const unavailable = getProviderUnavailablePresentation(liveProvider);
+  // An unavailable shadow is fail-closed as disabled, but its platform or
+  // missing-driver reason is the actionable state. Otherwise local settings
+  // still outrank a streamed probe that has not caught up yet.
+  const statusKey: ProviderStatusKey = unavailable
+    ? "error"
+    : enabled
+      ? ((liveProvider?.status as ProviderStatusKey | undefined) ?? "warning")
+      : "disabled";
   const statusStyle = PROVIDER_STATUS_STYLES[statusKey];
   const rawSummary = getProviderSummary(liveProvider);
-  // Locally disabled wins over a server status that has not caught up yet, but
-  // the server's reason for the provider still belongs in the detail slot —
-  // `getProviderSummary` keys off `provider.enabled`, which lags the switch.
-  const summary = enabled
-    ? rawSummary
-    : { headline: "Disabled", detail: liveProvider?.message ?? null };
+  const summary = unavailable
+    ? unavailable
+    : enabled
+      ? rawSummary
+      : { headline: "Disabled", detail: liveProvider?.message ?? null };
   const authEmail = liveProvider?.auth.email;
   const hasAuthenticatedEmail =
     liveProvider?.auth.status === "authenticated" && Boolean(authEmail?.trim());
@@ -830,7 +836,7 @@ export function ProviderInstanceCard({
         <span className="flex h-5 shrink-0 items-center">
           <Switch
             checked={enabled}
-            disabled={readOnly}
+            disabled={readOnly || unavailable !== null}
             onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
             aria-label={`Enable ${displayName}`}
           />

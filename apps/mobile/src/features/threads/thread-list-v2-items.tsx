@@ -189,6 +189,7 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
 });
 
 const PENDING_TASK_MENU_ACTIONS: MenuAction[] = [
+  { id: "retarget", title: "Retarget", image: "arrow.triangle.2.circlepath" },
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
@@ -222,9 +223,10 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
 
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
+      if (nativeEvent.event === "retarget") onSelectPendingTask(pendingTask);
       if (nativeEvent.event === "delete") onDeletePendingTask(pendingTask);
     },
-    [onDeletePendingTask, pendingTask],
+    [onDeletePendingTask, onSelectPendingTask, pendingTask],
   );
 
   const rowContent = (
@@ -242,7 +244,9 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
         <Text className="flex-1 text-sm font-t3-medium text-foreground-muted" numberOfLines={1}>
           {projectTitle}
         </Text>
-        <Text className="text-xs text-foreground-tertiary">Queued</Text>
+        <Text className="text-xs text-foreground-tertiary">
+          {pendingTask.message.deliveryHold ? "Held" : "Queued"}
+        </Text>
       </View>
       {/* One line, unlike the two an active row allows: a queued title is
           derived from the whole prompt rather than written as a title, so the

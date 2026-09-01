@@ -2159,6 +2159,75 @@ const make = Effect.gen(function* () {
       let thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
 
+      const pendingStopSession = thread.session;
+      const eventMatchesPendingStop =
+        pendingStopSession?.pendingStopRequestId !== undefined &&
+        (pendingStopSession.pendingStopProviderInstanceId ?? null) ===
+          (event.providerInstanceId ?? null) &&
+        (pendingStopSession.pendingStopSessionIncarnationId ?? null) ===
+          (event.sessionIncarnationId ?? null);
+      if (eventMatchesPendingStop) {
+        // A Stop receipt is a durable lifecycle barrier. The exact old runtime
+        // may still flush events while its adapter shuts down, but only its
+        // terminal exit may finish cleanup. A later incarnation can coexist
+        // with this target and must remain otherwise untouched.
+        if (event.type !== "session.exited") return;
+        const stoppedLineageStillProjected =
+          pendingStopSession.status === "stopped" &&
+          (pendingStopSession.providerInstanceId ?? null) ===
+            (pendingStopSession.pendingStopProviderInstanceId ?? null) &&
+          (pendingStopSession.sessionIncarnationId ?? null) ===
+            (pendingStopSession.pendingStopSessionIncarnationId ?? null);
+        const cleared = yield* orchestrationEngine.dispatch({
+          type: "thread.session.apply-lifecycle",
+          commandId: yield* providerCommandId(event, "pending-stop-exit-cleanup"),
+          threadId: thread.id,
+          expectedStatus: pendingStopSession.status,
+          expectedProviderInstanceId: pendingStopSession.providerInstanceId ?? null,
+          expectedSessionIncarnationId: pendingStopSession.sessionIncarnationId ?? null,
+          expectedPendingTurnRequestId: pendingStopSession.pendingTurnRequestId ?? null,
+          expectedPendingTurnSessionId: pendingStopSession.pendingTurnSessionId ?? null,
+          expectedActiveTurnRequestId: pendingStopSession.activeTurnRequestId ?? null,
+          expectedActiveTurnId: pendingStopSession.activeTurnId ?? null,
+          expectedFailedTurnRequestId: pendingStopSession.failedTurnRequestId ?? null,
+          expectedPendingStopRequestId: pendingStopSession.pendingStopRequestId,
+          expectedPendingStopSessionIncarnationId:
+            pendingStopSession.pendingStopSessionIncarnationId ?? null,
+          allowFailedTurnRequestClear: true,
+          session: {
+            ...pendingStopSession,
+            ...(stoppedLineageStillProjected
+              ? {
+                  pendingTurnRequestId: undefined,
+                  pendingTurnMessageId: undefined,
+                  pendingTurnRequestedAt: undefined,
+                  pendingTurnDeadlineAt: undefined,
+                  pendingTurnSessionId: undefined,
+                  activeTurnRequestId: undefined,
+                  failedTurnRequestId: undefined,
+                  activeTurnId: null,
+                }
+              : {}),
+            pendingStopRequestId: undefined,
+            pendingStopProviderInstanceId: undefined,
+            pendingStopSessionIncarnationId: undefined,
+            pendingStopTurnRequestId: undefined,
+            pendingStopTurnId: undefined,
+            updatedAt: event.createdAt,
+          },
+          createdAt: event.createdAt,
+        });
+        if ((cleared.eventCount ?? 0) > 0 && stoppedLineageStillProjected) {
+          yield* clearTurnStateForSession(thread.id);
+        }
+        return;
+      }
+      const eventMatchesStoppedSession =
+        pendingStopSession?.status === "stopped" &&
+        (pendingStopSession.providerInstanceId ?? null) === (event.providerInstanceId ?? null) &&
+        (pendingStopSession.sessionIncarnationId ?? null) === (event.sessionIncarnationId ?? null);
+      if (eventMatchesStoppedSession && event.type !== "session.exited") return;
+
       if (thread.session?.failedTurnRequestId !== undefined) {
         // A failed admission quarantines the lineage even for legacy sessions
         // that do not have an incarnation id. Runtime start/state/output/item/
@@ -2282,6 +2351,9 @@ const make = Effect.gen(function* () {
           expectedActiveTurnRequestId: observed?.activeTurnRequestId ?? null,
           expectedActiveTurnId: observed?.activeTurnId ?? null,
           expectedFailedTurnRequestId: observed?.failedTurnRequestId ?? null,
+          expectedPendingStopRequestId: observed?.pendingStopRequestId ?? null,
+          expectedPendingStopSessionIncarnationId:
+            observed?.pendingStopSessionIncarnationId ?? null,
           session,
           createdAt: now,
         });

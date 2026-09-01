@@ -7,23 +7,29 @@
  * showing one account while the composer sends to another.
  *
  * Priority:
- *   1. The composer draft's `activeProvider` — the user's unsaved pick from
- *      the model picker (must win, otherwise the UI appears to ignore picker
- *      selections).
- *   2. The thread's live session binding (server-side saved selection).
+ *   1. The thread's live session binding. Once present it is the only routing
+ *      target for this thread.
+ *   2. The composer draft's `activeProvider` while the thread is unbound.
  *   3. The thread's persisted model selection.
  *   4. The project default's instance id.
  *   5. First enabled entry matching the current driver kind.
  *   6. First enabled entry overall / default instance for the kind.
  *
- * Candidates 1 and 2 are pinned: an explicit picker choice and a thread's
- * live session binding are honored even when that account is spent, so an
- * existing thread never migrates off the account it started on. Everything
- * below them has not bound to a session yet and is free to route around a
- * drained account, in configured priority order.
+ * A draft from another device can outlive the session transition. It is
+ * reported as conflicting and ignored; callers clear only that provider-shaped
+ * draft state while keeping prompt text and attachments.
+ *
+ * Any preferred entry that is explicitly unavailable is held as a blocked
+ * selection regardless of priority. Availability means the configured driver
+ * cannot materialize on this server, so silently routing the turn to another
+ * provider or account would violate the stored choice. Ordinary disabled,
+ * missing, stale, and temporarily unhealthy preferences keep their existing
+ * fallback behavior.
  *
  * @module composerInstanceSelection
  */
+import { getProviderAdmissionAvailability } from "@t3tools/client-runtime/providerAvailability";
+import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
 import { ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
 
 import {
@@ -67,6 +73,14 @@ export interface ComposerInstanceSelection {
    */
   readonly requestedDriverKind: ProviderDriverKind;
   /**
+   * The preferred entry exists but cannot materialize on this server. The
+   * composer must keep showing this entry and reject turns until a user picks
+   * another provider or the entry becomes available.
+   */
+  readonly blockedByUnavailablePreference: boolean;
+  /** A device-local draft points at another instance than the live session. */
+  readonly draftConflictsWithSessionBinding: boolean;
+  /**
    * Continuation group a locked thread must stay inside, or null while the
    * thread is unlocked or its instance has no group.
    */
@@ -77,9 +91,25 @@ export function resolveComposerInstanceSelection(
   input: ComposerInstanceSelectionInput,
 ): ComposerInstanceSelection {
   const { entries, lockedProvider, nowMs } = input;
+  const sessionInstanceId = input.sessionInstanceId ?? null;
+  const providers = entries.map((entry) => entry.snapshot);
+  const draftTransition =
+    sessionInstanceId !== null &&
+    input.draftActiveProvider != null &&
+    input.draftActiveProvider !== sessionInstanceId
+      ? resolveProviderContinuationTransition({
+          providers,
+          currentInstanceId: sessionInstanceId,
+          targetInstanceId: input.draftActiveProvider,
+        })
+      : null;
+  const draftConflictsWithSessionBinding = draftTransition?.compatible === false;
+  const compatibleDraftInstanceId =
+    draftTransition?.compatible === true ? (input.draftActiveProvider ?? null) : null;
   const threadProvider =
-    input.sessionInstanceId ?? input.threadInstanceId ?? input.projectInstanceId ?? null;
-  const explicitSelectedInstanceId = input.draftActiveProvider ?? threadProvider;
+    sessionInstanceId ?? input.threadInstanceId ?? input.projectInstanceId ?? null;
+  const explicitSelectedInstanceId =
+    compatibleDraftInstanceId ?? sessionInstanceId ?? input.draftActiveProvider ?? threadProvider;
 
   const unlockedSelectedProvider =
     resolveProviderDriverKindForInstanceSelection(entries, [], explicitSelectedInstanceId) ??
@@ -97,36 +127,63 @@ export function resolveComposerInstanceSelection(
   const candidates: ReadonlyArray<{
     readonly instanceId: ProviderInstanceId | null | undefined;
     readonly pinned: boolean;
-  }> = [
-    { instanceId: input.draftActiveProvider, pinned: true },
-    { instanceId: input.sessionInstanceId, pinned: true },
-    { instanceId: input.threadInstanceId, pinned: false },
-    { instanceId: input.projectInstanceId, pinned: false },
-  ];
+  }> = sessionInstanceId
+    ? [
+        ...(compatibleDraftInstanceId === null
+          ? []
+          : [{ instanceId: compatibleDraftInstanceId, pinned: true }]),
+        { instanceId: sessionInstanceId, pinned: true },
+      ]
+    : [
+        { instanceId: input.draftActiveProvider, pinned: true },
+        { instanceId: input.threadInstanceId, pinned: false },
+        { instanceId: input.projectInstanceId, pinned: false },
+      ];
 
   const finish = (
     instanceId: ProviderInstanceId,
     entry: ProviderInstanceEntry | undefined,
+    blockedByUnavailablePreference = false,
   ): ComposerInstanceSelection => ({
     instanceId,
     driverKind: entry?.driverKind ?? requestedDriverKind,
     entry,
     requestedDriverKind,
+    blockedByUnavailablePreference,
+    draftConflictsWithSessionBinding,
     lockedContinuationGroupKey,
   });
 
   for (const candidate of candidates) {
     if (!candidate.instanceId) continue;
-    const match = entries.find(
-      (entry) => entry.instanceId === candidate.instanceId && entry.enabled && entry.isAvailable,
-    );
-    if (!match) continue;
-    // When locked to a specific driver kind, ignore persisted instance ids
-    // from a different kind or continuation group.
-    if (lockedProvider && match.driverKind !== lockedProvider) continue;
-    if (lockedContinuationGroupKey && match.continuationGroupKey !== lockedContinuationGroupKey) {
+    const match = entries.find((entry) => entry.instanceId === candidate.instanceId);
+    if (!match) {
+      if (sessionInstanceId && candidate.instanceId === sessionInstanceId) {
+        return finish(sessionInstanceId, undefined);
+      }
       continue;
     }
+    if (sessionInstanceId && candidate.instanceId === sessionInstanceId) {
+      return finish(match.instanceId, match, !match.isAvailable);
+    }
+    // A started thread can select another instance only when both snapshots
+    // prove the exact same non-empty continuation identity.
+    if (lockedProvider && match.driverKind !== lockedProvider) continue;
+    if (
+      lockedInstanceId !== null &&
+      !resolveProviderContinuationTransition({
+        providers,
+        currentInstanceId: lockedInstanceId,
+        targetInstanceId: match.instanceId,
+      }).compatible
+    ) {
+      continue;
+    }
+    // Explicit unavailability is a durable materialization barrier, not a
+    // transient readiness signal. Preserve the exact requested routing key so
+    // the UI can show the server's remediation and require a deliberate pick.
+    if (!match.isAvailable) return finish(match.instanceId, match, true);
+    if (!match.enabled) continue;
     // Drained and unpinned: defer to the ordered fallback below, which
     // prefers a healthy instance and lands back here only when every instance
     // is drained.
@@ -137,7 +194,12 @@ export function resolveComposerInstanceSelection(
   const compatibleEntries = entries.filter(
     (entry) =>
       (!lockedProvider || entry.driverKind === lockedProvider) &&
-      (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey),
+      (lockedInstanceId === null ||
+        resolveProviderContinuationTransition({
+          providers,
+          currentInstanceId: lockedInstanceId,
+          targetInstanceId: entry.instanceId,
+        }).compatible),
   );
   const requestedDriverEntries = compatibleEntries.filter(
     (entry) => entry.driverKind === requestedDriverKind,
@@ -146,4 +208,19 @@ export function resolveComposerInstanceSelection(
     resolveSelectableProviderInstanceEntry(requestedDriverEntries, undefined, nowMs) ??
     resolveSelectableProviderInstanceEntry(compatibleEntries, undefined, nowMs);
   return finish(fallback?.instanceId ?? NO_PROVIDER_MODEL_SELECTION.instanceId, fallback);
+}
+
+/** Whether the resolved routing target may be admitted as a provider turn. */
+export function canStartComposerTurn(selection: ComposerInstanceSelection): boolean {
+  return (
+    selection.entry !== undefined &&
+    selection.entry.enabled &&
+    selection.entry.isAvailable &&
+    getProviderAdmissionAvailability({
+      provider: selection.entry.snapshot,
+      instanceId: String(selection.entry.instanceId),
+      providerSnapshotKnown: true,
+    }).status === "available" &&
+    !selection.blockedByUnavailablePreference
+  );
 }

@@ -258,6 +258,7 @@ export const ThreadListShowMoreRow = memo(function ThreadListShowMoreRow(props: 
 /* ─── Pending task row ───────────────────────────────────────────────── */
 
 const PENDING_TASK_MENU_ACTIONS: MenuAction[] = [
+  { id: "retarget", title: "Retarget", image: "arrow.triangle.2.circlepath" },
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
@@ -288,14 +289,17 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
 
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
+      if (nativeEvent.event === "retarget") onSelectPendingTask(pendingTask);
       if (nativeEvent.event === "delete") onDeletePendingTask(pendingTask);
     },
-    [onDeletePendingTask, pendingTask],
+    [onDeletePendingTask, onSelectPendingTask, pendingTask],
   );
 
   const statusPill = (
     <View className="rounded-full bg-adaptive-zinc-500-a12-a16 px-1.5 py-0.5">
-      <Text className="text-3xs font-t3-bold text-adaptive-zinc-600-300">Pending</Text>
+      <Text className="text-3xs font-t3-bold text-adaptive-zinc-600-300">
+        {pendingTask.message.deliveryHold ? "Held" : "Pending"}
+      </Text>
     </View>
   );
 

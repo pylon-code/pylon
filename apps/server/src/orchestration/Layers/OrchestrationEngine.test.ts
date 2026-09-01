@@ -244,7 +244,7 @@ describe("OrchestrationEngine", () => {
     await runtime.dispose();
   });
 
-  it("accepts a stale session lifecycle CAS without producing an event", async () => {
+  it("accepts exact zero-event updates and stale lifecycle CAS without poisoning retries", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;
     const createdAt = now();
@@ -306,6 +306,43 @@ describe("OrchestrationEngine", () => {
       }),
     );
     const sequenceBeforeStaleLifecycle = await system.run(engine.latestSequence);
+    const zeroEventCommands = [
+      {
+        type: "thread.meta.update" as const,
+        commandId: CommandId.make("cmd-session-stale-meta"),
+        threadId,
+        modelSelection: {
+          instanceId: providerInstanceId,
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      },
+      {
+        type: "thread.runtime-mode.set" as const,
+        commandId: CommandId.make("cmd-session-stale-runtime"),
+        threadId,
+        runtimeMode: "full-access" as const,
+        createdAt,
+      },
+      {
+        type: "thread.interaction-mode.set" as const,
+        commandId: CommandId.make("cmd-session-stale-interaction"),
+        threadId,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt,
+      },
+    ];
+    for (const command of zeroEventCommands) {
+      expect(await system.run(engine.dispatch(command))).toEqual({
+        sequence: sequenceBeforeStaleLifecycle,
+        eventCount: 0,
+      });
+      // The accepted zero-event receipt makes exact delivery retries succeed;
+      // it must never be rewritten as a poisoned rejection.
+      expect(await system.run(engine.dispatch(command))).toEqual({
+        sequence: sequenceBeforeStaleLifecycle,
+      });
+    }
 
     const result = await system.run(
       engine.dispatch({

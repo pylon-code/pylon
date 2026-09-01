@@ -504,6 +504,7 @@ const hasMetricSnapshot = (
   );
 
 function makeProviderServiceLayer() {
+  const startReservationCounts: number[] = [];
   const codex = makeFakeCodexAdapter();
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER, { supportsSideQuestions: false });
@@ -524,7 +525,9 @@ function makeProviderServiceLayer() {
 
   const layer = it.layer(
     Layer.mergeAll(
-      makeProviderServiceLive().pipe(
+      makeProviderServiceLive({
+        onStartReservationCountChange: (count) => startReservationCounts.push(count),
+      }).pipe(
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -549,6 +552,7 @@ function makeProviderServiceLayer() {
     claude,
     cursor,
     layer,
+    startReservationCounts,
   };
 }
 
@@ -1157,6 +1161,27 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("reclaims start reservations after long historical-thread churn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      routing.startReservationCounts.length = 0;
+
+      for (let index = 0; index < 200; index += 1) {
+        const threadId = asThreadId(`thread-reservation-churn-${index}`);
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+        yield* provider.stopSession({ threadId });
+      }
+
+      assert.equal(Math.max(...routing.startReservationCounts), 1);
+      assert.equal(routing.startReservationCounts.at(-1), 0);
+    }),
+  );
+
   it.effect("routes side questions once without recovering inactive sessions", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
@@ -1281,6 +1306,41 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.equal(inventoried?.sessionIncarnationId, session.sessionIncarnationId);
       yield* provider.stopSession({ threadId });
       routing.codex.sendTurn.mockClear();
+    }),
+  );
+
+  it.effect("rejects a model selection from another instance before adapter dispatch", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-model-instance-mismatch");
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      routing.codex.sendTurn.mockClear();
+      routing.codex.startSession.mockClear();
+      routing.codex.removeSession(threadId);
+
+      const error = yield* provider
+        .sendTurn({
+          threadId,
+          input: "must not dispatch",
+          attachments: [],
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-opus-4-6",
+          },
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, ProviderValidationError);
+      assert.match(error.issue, /model selection belongs to 'claudeAgent'/);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      yield* provider.stopSession({ threadId });
     }),
   );
 
@@ -2371,6 +2431,113 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
           .filter((session) => session.threadId === threadId)
           .map((session) => session.provider),
         [CLAUDE_AGENT_DRIVER],
+      );
+    }),
+  );
+
+  it.effect("cancels a first slow start before it can persist or send", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-stop-slow-first-start");
+      const stopCallsBefore = fanout.codex.stopSession.mock.calls.length;
+      const startEntered = yield* Deferred.make<ProviderSessionStartInput>();
+      const releaseStart = yield* Deferred.make<ProviderSession>();
+      fanout.codex.startSession.mockImplementationOnce((input) =>
+        Deferred.succeed(startEntered, input).pipe(Effect.andThen(Deferred.await(releaseStart))),
+      );
+
+      const startFiber = yield* provider
+        .startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      const startInput = yield* Deferred.await(startEntered);
+
+      // No binding exists yet. Stop must still invalidate this exact start and
+      // return without waiting for adapter creation to finish.
+      yield* provider.stopSession({ threadId });
+      const now = "2026-01-01T00:00:00.000Z";
+      yield* Deferred.succeed(releaseStart, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        sessionIncarnationId: startInput.sessionIncarnationId,
+        status: "ready",
+        runtimeMode: "full-access",
+        threadId,
+        cwd: process.cwd(),
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const startExit = yield* Fiber.await(startFiber);
+      assert.equal(Exit.isFailure(startExit), true);
+      assert.equal(fanout.codex.stopSession.mock.calls.length, stopCallsBefore + 1);
+      assert.equal(Option.isNone(yield* directory.getBinding(threadId)), true);
+      assert.deepEqual(
+        (yield* provider.listSessions()).filter((session) => session.threadId === threadId),
+        [],
+      );
+    }),
+  );
+
+  it.effect("keeps Stop authoritative while an account transition is starting", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-stop-slow-transition");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const codexStopCallsBefore = fanout.codex.stopSession.mock.calls.length;
+      const claudeStopCallsBefore = fanout.claude.stopSession.mock.calls.length;
+
+      const transitionEntered = yield* Deferred.make<ProviderSessionStartInput>();
+      const releaseTransition = yield* Deferred.make<ProviderSession>();
+      fanout.claude.startSession.mockImplementationOnce((input) =>
+        Deferred.succeed(transitionEntered, input).pipe(
+          Effect.andThen(Deferred.await(releaseTransition)),
+        ),
+      );
+      const transitionFiber = yield* provider
+        .startSession(threadId, {
+          provider: CLAUDE_AGENT_DRIVER,
+          providerInstanceId: claudeAgentInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      const transitionInput = yield* Deferred.await(transitionEntered);
+
+      yield* provider.stopSession({ threadId });
+      const now = "2026-01-01T00:00:00.000Z";
+      yield* Deferred.succeed(releaseTransition, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        sessionIncarnationId: transitionInput.sessionIncarnationId,
+        status: "ready",
+        runtimeMode: "full-access",
+        threadId,
+        cwd: process.cwd(),
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      assert.equal(Exit.isFailure(yield* Fiber.await(transitionFiber)), true);
+      assert.equal(fanout.codex.stopSession.mock.calls.length, codexStopCallsBefore + 1);
+      assert.equal(fanout.claude.stopSession.mock.calls.length, claudeStopCallsBefore + 1);
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.equal(binding?.providerInstanceId, codexInstanceId);
+      assert.equal(binding?.status, "stopped");
+      assert.deepEqual(
+        (yield* provider.listSessions()).filter((session) => session.threadId === threadId),
+        [],
       );
     }),
   );

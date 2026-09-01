@@ -5,6 +5,7 @@ import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import {
+  getProviderUnavailablePresentation,
   isProviderInstancePickerReady,
   shouldShowInstanceBadge,
   type ProviderInstanceEntry,
@@ -17,6 +18,10 @@ import {
  */
 function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
   const label = entry.displayName;
+  const unavailable = getProviderUnavailablePresentation(entry.snapshot);
+  if (unavailable) {
+    return `${label} — ${unavailable.headline}. ${unavailable.detail}`;
+  }
   if (!entry.enabled || entry.status === "disabled") {
     return `${label} — Disabled in settings.`;
   }
@@ -145,6 +150,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
             const isHovered = hoveredInstanceId === entry.instanceId;
             const showNewBadge = props.newBadgeInstanceIds?.has(entry.instanceId) ?? false;
             const showInstanceBadge = shouldShowInstanceBadge(entry, props.instanceEntries);
+            const disabledDescriptionId = `model-picker-provider-${entry.instanceId}-disabled-reason`;
 
             const tooltip = isUnavailable
               ? describeUnavailableInstance(entry)
@@ -171,6 +177,8 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                   setHoveredInstanceId((current) => (current === entry.instanceId ? null : current))
                 }
                 disabled={isDisabled}
+                aria-hidden={isDisabled || undefined}
+                tabIndex={isDisabled ? -1 : undefined}
                 type="button"
                 aria-label={
                   isUnavailable || isContextDisabled
@@ -207,7 +215,19 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
             );
 
             const trigger = isDisabled ? (
-              <span className="relative block w-full">{button}</span>
+              <span
+                aria-describedby={disabledDescriptionId}
+                aria-disabled="true"
+                aria-label={entry.displayName}
+                className="relative block w-full rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                role="button"
+                tabIndex={0}
+              >
+                {button}
+                <span className="sr-only" id={disabledDescriptionId}>
+                  {tooltip}
+                </span>
+              </span>
             ) : (
               button
             );

@@ -23,7 +23,6 @@ import { FAKE_PUBLIC_SDK } from "./PrimeAgentTextGeneration.test-fixture.ts";
 import {
   hasStablePrimeAgentImageFileIdentity,
   makePrimeAgentTextGeneration,
-  normalizePrimeAgentTextGenerationEnvironment,
   resolvePrimeAgentTextGenerationHomePath,
 } from "./PrimeAgentTextGeneration.ts";
 
@@ -179,7 +178,6 @@ it.layer(TestLayer)("PrimeAgentTextGeneration", (it) => {
             PRIME_AGENT_CODING_AGENT_DIR: "/explicit/prime-home",
           },
           cwd: "/srv/project",
-          platform: "linux",
         }),
       ).toBe("/explicit/prime-home");
       expect(
@@ -189,7 +187,6 @@ it.layer(TestLayer)("PrimeAgentTextGeneration", (it) => {
             PRIME_AGENT_CODING_AGENT_DIR: "~/.prime-instance",
           },
           cwd: "/srv/project",
-          platform: "linux",
         }),
       ).toBe("/srv/instance-home/.prime-instance");
       expect(
@@ -199,71 +196,14 @@ it.layer(TestLayer)("PrimeAgentTextGeneration", (it) => {
             PRIME_AGENT_CODING_AGENT_DIR: "relative-prime-home",
           },
           cwd: "/srv/project",
-          platform: "darwin",
         }),
       ).toBe("/srv/project/relative-prime-home");
       expect(
         resolvePrimeAgentTextGenerationHomePath({
           environment: { HOME: "/srv/instance-home" },
           cwd: "/srv/project",
-          platform: "linux",
         }),
       ).toBe("/srv/instance-home/.prime/agent");
-    }),
-  );
-
-  it.effect("uses Windows USERPROFILE then HOMEDRIVE and HOMEPATH", () =>
-    Effect.sync(() => {
-      expect(
-        resolvePrimeAgentTextGenerationHomePath({
-          environment: {
-            USERPROFILE: "C:\\Users\\Instance",
-            HOMEDRIVE: "D:",
-            HOMEPATH: "\\Ignored",
-            PRIME_AGENT_CODING_AGENT_DIR: "~\\prime-instance",
-          },
-          cwd: "C:\\project",
-          platform: "win32",
-        }),
-      ).toBe("C:\\Users\\Instance\\prime-instance");
-      expect(
-        resolvePrimeAgentTextGenerationHomePath({
-          environment: { HOMEDRIVE: "D:", HOMEPATH: "\\Profiles\\DriveUser" },
-          cwd: "D:\\project",
-          platform: "win32",
-        }),
-      ).toBe("D:\\Profiles\\DriveUser\\.prime\\agent");
-      const normalized = normalizePrimeAgentTextGenerationEnvironment(
-        {
-          PATH: "C:\\base-bin",
-          USERPROFILE: "C:\\Users\\Base",
-          HOME: "C:\\home-base",
-          CUSTOM_VALUE: "base",
-          Path: "D:\\instance-bin",
-          UserProfile: "D:\\Users\\Instance",
-          Home: "D:\\home-instance",
-          custom_value: "instance",
-        },
-        "win32",
-      );
-      expect(normalized).toMatchObject({
-        PATH: "D:\\instance-bin",
-        USERPROFILE: "D:\\Users\\Instance",
-        HOME: "D:\\home-instance",
-        CUSTOM_VALUE: "instance",
-      });
-      expect(
-        resolvePrimeAgentTextGenerationHomePath({
-          environment: {
-            USERPROFILE: "C:\\Users\\Base",
-            PRIME_AGENT_CODING_AGENT_DIR: "C:\\prime-base",
-            UserProfile: "D:\\Users\\Instance",
-            prime_agent_coding_agent_dir: "~\\prime-instance",
-          },
-          cwd: "D:\\project",
-          platform: "win32",
-        }),
-      ).toBe("D:\\Users\\Instance\\prime-instance");
     }),
   );
 

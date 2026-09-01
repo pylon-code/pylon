@@ -1246,6 +1246,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           pendingTurnSessionId: null,
           activeTurnRequestId: null,
           failedTurnRequestId: null,
+          pendingStopRequestId: null,
+          pendingStopProviderInstanceId: null,
+          pendingStopSessionIncarnationId: null,
+          pendingStopTurnRequestId: null,
+          pendingStopTurnId: null,
           activeTurnId: null,
           lastError: null,
           updatedAt: event.occurredAt,
@@ -1313,6 +1318,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           : (incoming.pendingTurnSessionId ?? null),
         activeTurnRequestId: incoming.activeTurnRequestId ?? null,
         failedTurnRequestId: incoming.failedTurnRequestId ?? null,
+        pendingStopRequestId: incoming.pendingStopRequestId ?? null,
+        pendingStopProviderInstanceId:
+          incoming.pendingStopRequestId === undefined
+            ? null
+            : (incoming.pendingStopProviderInstanceId ?? null),
+        pendingStopSessionIncarnationId:
+          incoming.pendingStopRequestId === undefined
+            ? null
+            : (incoming.pendingStopSessionIncarnationId ?? null),
+        pendingStopTurnRequestId:
+          incoming.pendingStopRequestId === undefined
+            ? null
+            : (incoming.pendingStopTurnRequestId ?? null),
+        pendingStopTurnId:
+          incoming.pendingStopRequestId === undefined ? null : (incoming.pendingStopTurnId ?? null),
         activeTurnId: incoming.activeTurnId,
         lastError: incoming.lastError,
         updatedAt: incoming.updatedAt,

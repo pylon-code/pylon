@@ -30,6 +30,14 @@ export interface ProviderCommandReactorShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void>;
+
+  /** Internal counts used by deterministic lifecycle tests. */
+  readonly getAdmissionTrackingCounts?: () => {
+    readonly fibers: number;
+    readonly fiberThreads: number;
+    readonly stopTokens: number;
+    readonly permits: number;
+  };
 }
 
 /**

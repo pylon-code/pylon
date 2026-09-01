@@ -278,4 +278,92 @@ describe("deriveProviderModelsForDisplay", () => {
     expect(readOnly).toContain('aria-label="Toggle account email visibility"');
     expect(fences.some((region) => region.includes("Toggle account email visibility"))).toBe(false);
   });
+
+  it("shows an unavailable WSL2 reason ahead of disabled state in the list and detail", () => {
+    const instanceId = ProviderInstanceId.make("primeAgent");
+    const driver = ProviderDriverKind.make("primeAgent");
+    const reason =
+      "Prime Agent is unavailable because this Pylon server is running on native Windows. Run the Pylon server and Prime Agent in WSL2, or connect this client to a Pylon server running in WSL2 or another remote environment.";
+    const liveProvider: ServerProvider = {
+      instanceId,
+      driver,
+      displayName: "Prime Agent",
+      enabled: false,
+      installed: false,
+      version: null,
+      status: "disabled",
+      availability: "unavailable",
+      unavailableReason: reason,
+      auth: { status: "unknown" },
+      checkedAt: "2026-08-28T12:00:00.000Z",
+      message: reason,
+      models: [],
+      slashCommands: [],
+      skills: [],
+    };
+    const props = {
+      instanceId,
+      instance: { driver, displayName: "Prime Agent", enabled: true },
+      driverOption: undefined,
+      liveProvider,
+      timestampFormat: DEFAULT_TIMESTAMP_FORMAT,
+      onUpdate: () => undefined,
+      hiddenModels: [],
+      favoriteModels: [],
+      modelOrder: [],
+      onHiddenModelsChange: () => undefined,
+      onFavoriteModelsChange: () => undefined,
+      onModelOrderChange: () => undefined,
+    } as const;
+
+    for (const mode of ["list", "editor"] as const) {
+      const markup = renderToStaticMarkup(createElement(ProviderInstanceCard, { ...props, mode }));
+      expect(markup).toContain("Unavailable");
+      expect(markup).toContain(reason);
+      expect(markup).not.toContain(">Disabled<");
+      if (mode === "list") {
+        expect(buttonTag(markup, "Enable Prime Agent")).toContain('disabled=""');
+      }
+    }
+  });
+
+  it("keeps an ordinary disabled provider re-enableable", () => {
+    const instanceId = ProviderInstanceId.make("codex");
+    const driver = ProviderDriverKind.make("codex");
+    const liveProvider: ServerProvider = {
+      instanceId,
+      driver,
+      displayName: "Codex",
+      enabled: false,
+      installed: true,
+      version: null,
+      status: "disabled",
+      auth: { status: "unknown" },
+      checkedAt: "2026-08-28T12:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    };
+    const markup = renderToStaticMarkup(
+      createElement(ProviderInstanceCard, {
+        instanceId,
+        instance: { driver, displayName: "Codex", enabled: false },
+        driverOption: undefined,
+        liveProvider,
+        mode: "list",
+        timestampFormat: DEFAULT_TIMESTAMP_FORMAT,
+        onUpdate: () => undefined,
+        hiddenModels: [],
+        favoriteModels: [],
+        modelOrder: [],
+        onHiddenModelsChange: () => undefined,
+        onFavoriteModelsChange: () => undefined,
+        onModelOrderChange: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain("Disabled");
+    expect(markup).not.toContain("Unavailable");
+    expect(buttonTag(markup, "Enable Codex")).not.toContain('disabled=""');
+  });
 });

@@ -7,6 +7,10 @@ import { TextGenerationError } from "@t3tools/contracts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
+import {
+  findUnavailableProviderInstance,
+  providerUnavailableDetail,
+} from "../provider/providerUnavailable.ts";
 import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
 
 export type TextGenerationProvider =
@@ -138,16 +142,22 @@ const resolveInstance = (
   instanceId: ProviderInstanceId,
 ): Effect.Effect<ProviderInstance, TextGenerationError> =>
   registry.getInstance(instanceId).pipe(
-    Effect.flatMap((instance) =>
-      instance
-        ? Effect.succeed(instance)
-        : Effect.fail(
+    Effect.flatMap((instance) => {
+      if (instance) return Effect.succeed(instance);
+      return registry.listUnavailable.pipe(
+        Effect.flatMap((unavailable) => {
+          const shadow = findUnavailableProviderInstance(unavailable, instanceId);
+          return Effect.fail(
             new TextGenerationError({
               operation,
-              detail: `No provider instance registered for id '${instanceId}'.`,
+              detail: shadow
+                ? providerUnavailableDetail(shadow)
+                : `No provider instance registered for id '${instanceId}'.`,
             }),
-          ),
-    ),
+          );
+        }),
+      );
+    }),
   );
 
 export const makeTextGenerationFromRegistry = (

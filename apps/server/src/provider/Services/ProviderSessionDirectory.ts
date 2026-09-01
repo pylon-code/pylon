@@ -2,6 +2,7 @@ import type {
   ProviderInstanceId,
   ProviderDriverKind,
   ProviderSessionRuntimeStatus,
+  RuntimeSessionId,
   RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
@@ -52,6 +53,13 @@ export interface ProviderSessionDirectoryShape {
   readonly getBinding: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<ProviderRuntimeBinding>, ProviderSessionDirectoryReadError>;
+
+  /** Atomically removes only the exact runtime incarnation supplied by its owner. */
+  readonly removeExact: (input: {
+    readonly threadId: ThreadId;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly sessionIncarnationId: RuntimeSessionId;
+  }) => Effect.Effect<boolean, ProviderSessionDirectoryWriteError>;
 
   readonly listThreadIds: () => Effect.Effect<
     ReadonlyArray<ThreadId>,

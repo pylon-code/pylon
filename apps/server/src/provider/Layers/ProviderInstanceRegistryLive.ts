@@ -198,7 +198,7 @@ const buildEntry = <R>(input: {
           instanceId,
           displayName: entry.displayName,
           accentColor: entry.accentColor,
-          reason: `Driver '${entry.driver}' failed to create instance: ${createResult.failure.detail}`,
+          reason: createResult.failure.detail,
         }),
       };
     }

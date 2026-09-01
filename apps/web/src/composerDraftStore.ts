@@ -519,6 +519,11 @@ interface ComposerDraftStoreState {
   setStickyModelSelection: (modelSelection: ModelSelection | null | undefined) => void;
   setPrompt: (threadRef: ComposerThreadTarget, prompt: string) => void;
   setTerminalContexts: (threadRef: ComposerThreadTarget, contexts: TerminalContextDraft[]) => void;
+  /** Reconcile a stale cross-instance draft after a live session binds. */
+  reconcileProviderBinding: (
+    threadRef: ComposerThreadTarget,
+    providerInstanceId: ProviderInstanceId,
+  ) => void;
   setModelSelection: (
     threadRef: ComposerThreadTarget,
     modelSelection: ModelSelection | null | undefined,
@@ -2906,6 +2911,37 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftsByThreadKey[threadKey] = nextDraft;
             }
             return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
+        reconcileProviderBinding: (threadRef, providerInstanceId) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) return;
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey];
+            const conflictingInstanceId = existing?.activeProvider;
+            if (
+              !existing ||
+              conflictingInstanceId == null ||
+              conflictingInstanceId === providerInstanceId
+            ) {
+              return state;
+            }
+            const modelSelectionByProvider = { ...existing.modelSelectionByProvider };
+            delete modelSelectionByProvider[conflictingInstanceId];
+            const { modelSelectionExplicit: _explicit, ...rest } = existing;
+            const nextDraft: ComposerThreadDraftState = {
+              ...rest,
+              modelSelectionByProvider,
+              activeProvider: providerInstanceId,
+              runtimeMode: null,
+              interactionMode: null,
+            };
+            return {
+              draftsByThreadKey: {
+                ...state.draftsByThreadKey,
+                [threadKey]: nextDraft,
+              },
+            };
           });
         },
         setModelSelection: (threadRef, modelSelection, opts) => {

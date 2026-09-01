@@ -24,10 +24,15 @@ adapter in a child scope. Adapter implementations live beside them in
 [`ProviderAdapter.ts`][adapter]. Read the driver plus its adapter to see how a specific agent's
 transport, config, and event shapes are mapped.
 
-Prime Agent uses its public detached-daemon APIs as the primary runtime on POSIX hosts. Windows fails
-closed to ACP compatibility mode because Prime Agent 0.8.1 does not expose a verifiable named-pipe
-ACL or authenticated peer handshake; a stable pipe name alone is not a trust boundary. One scoped daemon belongs
-to a provider instance, while each Pylon thread owns an isolated, deterministic native session
+Prime Agent uses its public detached-daemon APIs as the primary runtime on macOS, Linux, and WSL2
+(which reports itself as Linux). `PrimeAgentDriver.create` rejects a native `win32` server before
+maintenance resolution, backend negotiation, status or catalog probes, capacity reads, adapter
+construction, or background-writing construction. The instance becomes the existing typed unavailable
+shadow with WSL2 guidance; it does not fall back to ACP. Web, desktop, and mobile clients remain supported
+when they connect to a WSL2 or remote environment, and Windows desktop packaging is independent of
+provider-runtime support. Revisit native execution only after upstream Prime Agent supports Windows;
+that review must then validate its public process, transport, SDK, and ACP contracts before removing the
+gate. One scoped daemon belongs to a provider instance, while each Pylon thread owns an isolated, deterministic native session
 directory. The client-visible continuation cursor stays an opaque marker; a server-private sidecar
 binds it to the exact stable Prime transcript identity and verifies the saved file before cold
 resume. On POSIX filesystems the thread session directory is owner-only, and its identity,

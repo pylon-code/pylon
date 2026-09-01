@@ -149,6 +149,7 @@ export interface ThreadDetailScreenProps {
   readonly projectWorkspaceRoot: string | null;
   readonly threadCwd: string | null;
   readonly localOutboxCount: number;
+  readonly onManagePendingSends: () => void;
   readonly serverConfig: T3ServerConfig | null;
   readonly layoutVariant?: LayoutVariant;
   readonly usesAutomaticContentInsets?: boolean;
@@ -931,6 +932,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   selectedThread={props.selectedThread}
                   serverConfig={props.serverConfig}
                   localOutboxCount={props.localOutboxCount}
+                  onManagePendingSends={props.onManagePendingSends}
                   contextWindow={props.contextWindow}
                   sessionResources={props.sessionResources}
                   sessionAgentDepth={props.sessionAgentDepth}

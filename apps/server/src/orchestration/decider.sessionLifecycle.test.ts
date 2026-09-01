@@ -5,6 +5,7 @@ import {
   ProviderInstanceId,
   RuntimeSessionId,
   ThreadId,
+  TurnId,
   type OrchestrationReadModel,
   type OrchestrationSession,
 } from "@t3tools/contracts";
@@ -149,6 +150,56 @@ it.layer(NodeServices.layer)("session lifecycle CAS decider", (it) => {
     }),
   );
 
+  it.effect(
+    "binds accepted provider settings and the compatible target session in one decision",
+    () =>
+      Effect.gen(function* () {
+        const current = makeSession();
+        const targetInstanceId = ProviderInstanceId.make("codex_personal");
+        const acceptedSession = makeSession({
+          providerInstanceId: targetInstanceId,
+          runtimeMode: "approval-required",
+          sessionIncarnationId: RuntimeSessionId.make("session-target"),
+          pendingTurnSessionId: RuntimeSessionId.make("session-target"),
+        });
+        const command = {
+          type: "thread.session.bind-pending" as const,
+          commandId: CommandId.make("cmd-bind-compatible-target"),
+          threadId: THREAD_ID,
+          requestId: REQUEST_ID,
+          messageId: MESSAGE_ID,
+          expectedProviderInstanceId: INSTANCE_ID,
+          modelSelection: {
+            instanceId: targetInstanceId,
+            model: "gpt-5.4",
+            options: [{ id: "reasoningEffort", value: "xhigh" }],
+          },
+          runtimeMode: "approval-required" as const,
+          interactionMode: "plan" as const,
+          session: acceptedSession,
+          createdAt: NOW,
+        };
+
+        const accepted = yield* decideOrchestrationCommand({
+          command,
+          readModel: makeReadModel(current),
+        });
+        const events = Array.isArray(accepted) ? accepted : [accepted];
+        expect(events.map((event) => event.type)).toEqual([
+          "thread.meta-updated",
+          "thread.runtime-mode-set",
+          "thread.interaction-mode-set",
+          "thread.session-set",
+        ]);
+
+        const stale = yield* decideOrchestrationCommand({
+          command: { ...command, expectedProviderInstanceId: targetInstanceId },
+          readModel: makeReadModel(current),
+        });
+        expect(stale).toEqual([]);
+      }),
+  );
+
   it.effect("rejects a pending bind after that admission was quarantined", () =>
     Effect.gen(function* () {
       const quarantined = makeSession({
@@ -162,12 +213,264 @@ it.layer(NodeServices.layer)("session lifecycle CAS decider", (it) => {
           threadId: THREAD_ID,
           requestId: REQUEST_ID,
           messageId: MESSAGE_ID,
+          expectedProviderInstanceId: INSTANCE_ID,
+          modelSelection: { instanceId: INSTANCE_ID, model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
           session: quarantined,
           createdAt: NOW,
         },
         readModel: makeReadModel(quarantined),
       });
       expect(result).toEqual([]);
+    }),
+  );
+
+  it.effect("keeps branch metadata while rejecting stale provider-shaped metadata", () =>
+    Effect.gen(function* () {
+      const session = makeSession({ status: "ready" });
+      const readModel = makeReadModel(session);
+      const branchUpdate = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.meta.update",
+          commandId: CommandId.make("cmd-bound-branch-update"),
+          threadId: THREAD_ID,
+          modelSelection: { instanceId: INSTANCE_ID, model: "gpt-5.4" },
+          branch: "fix/accepted-branch",
+        },
+        readModel,
+      });
+      const events = Array.isArray(branchUpdate) ? branchUpdate : [branchUpdate];
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: "thread.meta-updated",
+        payload: { branch: "fix/accepted-branch" },
+      });
+      if (events[0]?.type === "thread.meta-updated") {
+        expect(events[0].payload.modelSelection).toBeUndefined();
+      }
+
+      const staleModelFailure = yield* Effect.flip(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.meta.update",
+            commandId: CommandId.make("cmd-stale-model-update"),
+            threadId: THREAD_ID,
+            modelSelection: {
+              instanceId: INSTANCE_ID,
+              model: "gpt-5.4",
+              options: [{ id: "reasoningEffort", value: "xhigh" }],
+            },
+          },
+          readModel,
+        }),
+      );
+      expect(staleModelFailure.message).toContain("validated turn transition");
+
+      const staleRuntimeFailure = yield* Effect.flip(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.runtime-mode.set",
+            commandId: CommandId.make("cmd-stale-runtime-update"),
+            threadId: THREAD_ID,
+            runtimeMode: "approval-required",
+            createdAt: NOW,
+          },
+          readModel,
+        }),
+      );
+      expect(staleRuntimeFailure.message).toContain("validated turn transition");
+
+      const staleInteractionFailure = yield* Effect.flip(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.interaction-mode.set",
+            commandId: CommandId.make("cmd-stale-interaction-update"),
+            threadId: THREAD_ID,
+            interactionMode: "plan",
+            createdAt: NOW,
+          },
+          readModel,
+        }),
+      );
+      expect(staleInteractionFailure.message).toContain("validated turn transition");
+    }),
+  );
+
+  it.effect("accepts exact older provider-setting writes as no-event successes", () =>
+    Effect.gen(function* () {
+      const readModel = makeReadModel(makeSession({ status: "ready" }));
+      expect(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.meta.update",
+            commandId: CommandId.make("cmd-bound-model-idempotent"),
+            threadId: THREAD_ID,
+            modelSelection: { instanceId: INSTANCE_ID, model: "gpt-5.4" },
+          },
+          readModel,
+        }),
+      ).toEqual([]);
+      expect(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.runtime-mode.set",
+            commandId: CommandId.make("cmd-bound-runtime-idempotent"),
+            threadId: THREAD_ID,
+            runtimeMode: "full-access",
+            createdAt: NOW,
+          },
+          readModel,
+        }),
+      ).toEqual([]);
+      expect(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.interaction-mode.set",
+            commandId: CommandId.make("cmd-bound-interaction-idempotent"),
+            threadId: THREAD_ID,
+            interactionMode: "default",
+            createdAt: NOW,
+          },
+          readModel,
+        }),
+      ).toEqual([]);
+    }),
+  );
+
+  it.effect("requires exact admission for running settings changes but keeps plain steering", () =>
+    Effect.gen(function* () {
+      const running = makeSession({
+        status: "running",
+        pendingTurnRequestId: undefined,
+        pendingTurnMessageId: undefined,
+        pendingTurnRequestedAt: undefined,
+        pendingTurnDeadlineAt: undefined,
+        pendingTurnSessionId: undefined,
+        activeTurnRequestId: CommandId.make("request-active"),
+        activeTurnId: TurnId.make("turn-active"),
+      });
+      const readModel = makeReadModel(running);
+      const settingsChange = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-running-settings-change"),
+          threadId: THREAD_ID,
+          message: {
+            messageId: MessageId.make("message-running-settings-change"),
+            role: "user",
+            text: "restart through exact admission",
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: INSTANCE_ID,
+            model: "gpt-5.4",
+            options: [{ id: "reasoningEffort", value: "xhigh" }],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: NOW,
+        },
+        readModel,
+      });
+      const settingsEvents = Array.isArray(settingsChange) ? settingsChange : [settingsChange];
+      expect(settingsEvents.map((event) => event.type)).toEqual([
+        "thread.message-sent",
+        "thread.session-set",
+        "thread.turn-start-requested",
+      ]);
+      expect(settingsEvents[1]).toMatchObject({
+        type: "thread.session-set",
+        payload: {
+          session: {
+            status: "starting",
+            providerInstanceId: INSTANCE_ID,
+            pendingTurnRequestId: CommandId.make("cmd-running-settings-change"),
+          },
+        },
+      });
+
+      const accepted = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-running-steer"),
+          threadId: THREAD_ID,
+          message: {
+            messageId: MessageId.make("message-running-steer"),
+            role: "user",
+            text: "steer with accepted settings",
+            attachments: [],
+          },
+          modelSelection: { instanceId: INSTANCE_ID, model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: NOW,
+        },
+        readModel,
+      });
+      const events = Array.isArray(accepted) ? accepted : [accepted];
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.message-sent",
+        "thread.turn-start-requested",
+      ]);
+    }),
+  );
+
+  it.effect("captures the exact stop target and projects stopped atomically", () =>
+    Effect.gen(function* () {
+      const turnId = TurnId.make("turn-stop-target");
+      const current = makeSession({
+        status: "running",
+        pendingTurnRequestId: undefined,
+        pendingTurnMessageId: undefined,
+        pendingTurnRequestedAt: undefined,
+        pendingTurnDeadlineAt: undefined,
+        pendingTurnSessionId: undefined,
+        activeTurnRequestId: REQUEST_ID,
+        activeTurnId: turnId,
+      });
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.session.stop",
+          commandId: CommandId.make("cmd-exact-session-stop"),
+          threadId: THREAD_ID,
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(current),
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.session-stop-requested",
+        "thread.session-set",
+      ]);
+      expect(events[0]).toMatchObject({
+        type: "thread.session-stop-requested",
+        payload: {
+          targetProviderInstanceId: INSTANCE_ID,
+          targetSessionIncarnationId: INCARNATION_ID,
+          targetPendingTurnSessionId: null,
+          targetTurnRequestId: REQUEST_ID,
+          targetTurnId: turnId,
+        },
+      });
+      expect(events[1]).toMatchObject({
+        type: "thread.session-set",
+        payload: {
+          session: {
+            status: "stopped",
+            providerInstanceId: INSTANCE_ID,
+            sessionIncarnationId: INCARNATION_ID,
+            activeTurnRequestId: REQUEST_ID,
+            pendingStopRequestId: CommandId.make("cmd-exact-session-stop"),
+            pendingStopProviderInstanceId: INSTANCE_ID,
+            pendingStopSessionIncarnationId: INCARNATION_ID,
+            pendingStopTurnRequestId: REQUEST_ID,
+            pendingStopTurnId: turnId,
+            activeTurnId: null,
+          },
+        },
+      });
     }),
   );
 });
