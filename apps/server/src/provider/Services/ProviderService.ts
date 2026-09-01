@@ -58,9 +58,13 @@ import type {
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
+import type { Json } from "effect/Schema";
 
 import type { ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
+import type {
+  ProviderAdapterCapabilities,
+  ProviderConversationAnchorReceipt,
+} from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -249,6 +253,21 @@ export interface ProviderServiceShape {
   readonly rollbackConversation: (input: {
     readonly threadId: ThreadId;
     readonly numTurns: number;
+  }) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Private exact-anchor operations used only by the durable rollback saga. */
+  readonly hasAbsoluteConversationRollback?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<boolean, ProviderServiceError>;
+  readonly captureConversationAnchor?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderConversationAnchorReceipt, ProviderServiceError>;
+  readonly inspectConversationAnchor?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderConversationAnchorReceipt, ProviderServiceError>;
+  readonly applyConversationAnchor?: (input: {
+    readonly threadId: ThreadId;
+    readonly anchor: Json;
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**

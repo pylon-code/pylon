@@ -2,6 +2,7 @@ import * as Layer from "effect/Layer";
 
 import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
+import { RollbackSagaRepositoryLive } from "../persistence/Layers/RollbackSagas.ts";
 import { OrchestrationEngineLive } from "./Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./Layers/ProjectionSnapshotQuery.ts";
@@ -11,6 +12,7 @@ import * as ThreadPlanProgress from "./ThreadPlanProgress.ts";
 export const OrchestrationEventInfrastructureLayerLive = Layer.mergeAll(
   OrchestrationEventStoreLive,
   OrchestrationCommandReceiptRepositoryLive,
+  RollbackSagaRepositoryLive,
 );
 
 export const OrchestrationProjectionPipelineLayerLive = OrchestrationProjectionPipelineLive.pipe(

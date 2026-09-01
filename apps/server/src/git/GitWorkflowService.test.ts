@@ -2,12 +2,16 @@ import { assert, describe, expect, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { VcsRepositoryDetectionError } from "@t3tools/contracts";
+import { ProjectId, ThreadId, VcsRepositoryDetectionError } from "@t3tools/contracts";
 
 import * as GitManager from "./GitManager.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import {
+  RollbackSagaRepository,
+  type RollbackSagaRecord,
+} from "../persistence/Services/RollbackSagas.ts";
 
 function makeLayer(input: {
   readonly detect: VcsDriverRegistry.VcsDriverRegistry["Service"]["detect"];
@@ -189,4 +193,77 @@ describe("GitWorkflowService", () => {
       ),
     );
   });
+
+  it.effect(
+    "fails closed before a Git mutation when the workspace rollback lease is active",
+    () => {
+      const threadId = ThreadId.make("thread-git-fence");
+      const projectId = ProjectId.make("project-git-fence");
+      const record = {
+        operationId: "operation-git-fence",
+        requestEventId: "event-git-fence",
+        threadId,
+        projectId,
+        workspaceKey: "workspace-git-fence",
+        phase: "workspace-apply-started",
+        terminal: false,
+        ownerId: null,
+        version: 1,
+        state: {
+          operationId: "operation-git-fence",
+          requestEventId: "event-git-fence",
+          threadId,
+          projectId,
+          workspaceKey: "workspace-git-fence",
+          workspaceCwd: "/repo",
+          sourceRevision: 2,
+          targetRevision: 1,
+          sourceCheckpointRef: "refs/source" as never,
+          sourceCheckpointOid: "a".repeat(40),
+          targetCheckpointRef: "refs/target" as never,
+          targetCheckpointOid: "b".repeat(40),
+          targetCheckpointDigest: "target-tree",
+          providerInstanceId: "fake" as never,
+          sessionIncarnationId: "session" as never,
+          phase: "workspace-apply-started" as const,
+          attempt: 0,
+          lastErrorCode: null,
+          compensation: "none" as const,
+          cleanup: "pending" as const,
+          sourceAnchor: null,
+          sourceAnchorDigest: null,
+          desiredAnchor: { leaf: "private" },
+          desiredAnchorDigest: "target",
+          preimage: { path: "private" },
+          workspaceReceiptDigest: null,
+          providerReceiptDigest: null,
+          projectionCommitSequence: null,
+          createdAt: "2026-08-31T00:00:00.000Z",
+          updatedAt: "2026-08-31T00:00:00.000Z",
+        },
+        createdAt: "2026-08-31T00:00:00.000Z",
+        updatedAt: "2026-08-31T00:00:00.000Z",
+      } satisfies RollbackSagaRecord;
+      const repository = Layer.succeed(RollbackSagaRepository, {
+        listNonterminal: () => Effect.succeed([record]),
+        listNonterminalForFence: () => Effect.succeed([record]),
+      } as never);
+      const testLayer = makeLayer({
+        detect: () => Effect.die("VCS detection must not run through a rollback fence"),
+      }).pipe(Layer.provideMerge(repository));
+
+      return Effect.gen(function* () {
+        const workflow = yield* GitWorkflowService.GitWorkflowService;
+        const result = yield* workflow.pullCurrentBranch("/repo").pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") {
+          expect(result.failure).toMatchObject({
+            _tag: "GitCommandError",
+            command: "rollback-fence",
+            cwd: "/repo",
+          });
+        }
+      }).pipe(Effect.provide(testLayer));
+    },
+  );
 });

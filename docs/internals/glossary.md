@@ -158,6 +158,18 @@ The durable identifier for a filesystem checkpoint, stored as a Git ref. It is t
 
 The starting checkpoint for diffing a thread timeline. This flow is surfaced through [RuntimeReceiptBus.ts][13], coordinated in [CheckpointReactor.ts][6], and supported by [Utils.ts][22].
 
+#### Rollback saga
+
+A durable, provider-neutral operation that moves a checkpoint-managed workspace and an exact provider conversation anchor to the same older turn. Admission stores the operation and workspace lease before acknowledgement. The reconciler persists each phase, commits `thread.reverted` last, and either compensates to the source state or keeps the lease in manual recovery. Private state lives in [RollbackSagas.ts][29]; execution lives in [RollbackSagaRunner.ts][30].
+
+#### Workspace rollback lease
+
+The durable fence for one canonical Git workspace while a rollback saga is active. It blocks new turns, provider input and queue mutations, checkpoint mutations, session stops, and Git mutations from every thread that shares the workspace. The lease is removed only after verified cleanup or proved compensation.
+
+#### Manual recovery
+
+A durable rollback state used when Pylon cannot prove that both the workspace and provider conversation are at either the target or compensated source. The public projection exposes only `manual-recovery`; exact anchors, receipts, paths, and workspace pre-images remain private. The workspace lease stays active until a later recovery path can prove a safe result.
+
 #### Checkpoint diff
 
 The patch difference between two checkpoints. Query logic lives in [CheckpointDiffQuery.ts][20], diff parsing lives in [Diffs.ts][23], and finalization is coordinated by [CheckpointReactor.ts][6].
@@ -224,3 +236,5 @@ ships Pylon already matching it.
 [26]: ../../apps/server/src/orchestration/threadDetailCursor.ts
 [27]: ../../apps/server/src/environmentTheme.ts
 [28]: ../user/environment-theme.md
+[29]: ../../apps/server/src/persistence/Services/RollbackSagas.ts
+[30]: ../../apps/server/src/rollback/RollbackSagaRunner.ts

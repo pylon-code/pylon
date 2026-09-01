@@ -42,6 +42,7 @@ import type {
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
+import type { Json } from "effect/Schema";
 import type { ProviderRuntimeFence } from "../ProviderDriver.ts";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
@@ -56,6 +57,23 @@ export const BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES = {
   prime: "unsupported",
   primeDaemon: "unsupported",
 } as const satisfies Record<string, ProviderConversationRollbackMode>;
+
+export interface ProviderConversationAnchorReceipt {
+  /** Provider-private absolute identity. It must never enter public events or logs. */
+  readonly anchor: Json;
+  /** Provider-private stable digest used only for equality checks inside the saga. */
+  readonly digest: string;
+}
+
+export interface ProviderAbsoluteConversationRollback<TError> {
+  readonly captureAnchor: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderConversationAnchorReceipt, TError>;
+  readonly inspectAnchor: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderConversationAnchorReceipt, TError>;
+  readonly applyAnchor: (threadId: ThreadId, anchor: Json) => Effect.Effect<void, TError>;
+}
 
 export interface ProviderAdapterCapabilities {
   /**
@@ -87,6 +105,12 @@ export interface ProviderAdapterShape<TError> {
   readonly capabilities: ProviderAdapterCapabilities;
   /** Server-private materialization fence. It never crosses provider contracts. */
   readonly runtimeFence?: ProviderRuntimeFence | undefined;
+
+  /**
+   * Exact provider conversation control. Production adapters intentionally omit
+   * this until they can apply and inspect an immutable absolute anchor.
+   */
+  readonly absoluteConversationRollback?: ProviderAbsoluteConversationRollback<TError>;
 
   /**
    * Start a provider-backed session.

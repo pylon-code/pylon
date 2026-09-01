@@ -585,6 +585,18 @@ export const ThreadLinkedPullRequest = Schema.Struct({
 });
 export type ThreadLinkedPullRequest = typeof ThreadLinkedPullRequest.Type;
 
+export const OrchestrationRollbackPublicState = Schema.Literals([
+  "pending",
+  "recovering",
+  "manual-recovery",
+]);
+export type OrchestrationRollbackPublicState = typeof OrchestrationRollbackPublicState.Type;
+export const OrchestrationRollbackStatus = Schema.Struct({
+  state: OrchestrationRollbackPublicState,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationRollbackStatus = typeof OrchestrationRollbackStatus.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -598,6 +610,7 @@ export const OrchestrationThread = Schema.Struct({
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
+  rollbackStatus: Schema.optional(Schema.NullOr(OrchestrationRollbackStatus)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -685,6 +698,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
+  rollbackStatus: Schema.optional(Schema.NullOr(OrchestrationRollbackStatus)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1171,6 +1185,8 @@ const ThreadCheckpointRevertCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   turnCount: NonNegativeInt,
+  /** Exact current checkpoint revision. Required when an absolute adapter is admitted. */
+  expectedSourceRevision: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
 });
 
@@ -1343,7 +1359,18 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.revert.complete"),
   commandId: CommandId,
   threadId: ThreadId,
+  operationId: Schema.String,
+  sourceRevision: NonNegativeInt,
+  targetRevision: NonNegativeInt,
   turnCount: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+
+const ThreadRollbackStatusSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.rollback.status.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  status: Schema.NullOr(OrchestrationRollbackPublicState),
   createdAt: IsoDateTime,
 });
 
@@ -1387,6 +1414,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
+  ThreadRollbackStatusSetCommand,
   ThreadTurnAdmissionAcceptCommand,
   ThreadTurnAdmissionFailCommand,
   ThreadTitleRegenerationCompleteCommand,
@@ -1425,6 +1453,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.user-input-response-requested",
   "thread.interaction-response-requested",
   "thread.checkpoint-revert-requested",
+  "thread.rollback-status-updated",
   "thread.reverted",
   "thread.session-stop-requested",
   "thread.session-set",
@@ -1660,9 +1689,18 @@ export const ThreadCheckpointRevertRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadRollbackStatusUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  status: Schema.NullOr(OrchestrationRollbackPublicState),
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadRevertedPayload = Schema.Struct({
   threadId: ThreadId,
   turnCount: NonNegativeInt,
+  operationId: Schema.optional(Schema.String),
+  sourceRevision: Schema.optional(NonNegativeInt),
+  targetRevision: Schema.optional(NonNegativeInt),
 });
 
 export const ThreadSessionStopRequestedPayload = Schema.Struct({
@@ -1865,6 +1903,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.checkpoint-revert-requested"),
     payload: ThreadCheckpointRevertRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.rollback-status-updated"),
+    payload: ThreadRollbackStatusUpdatedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

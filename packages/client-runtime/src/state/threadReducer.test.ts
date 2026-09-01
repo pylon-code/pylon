@@ -888,10 +888,39 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread.rollback-status-updated", () => {
+    it("keeps pending and manual recovery durable in the shared client state", () => {
+      const pending = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 13,
+        occurredAt: "2026-04-01T03:30:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.rollback-status-updated",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          status: "manual-recovery",
+          updatedAt: "2026-04-01T03:30:00.000Z",
+        },
+      });
+      expect(pending.kind).toBe("updated");
+      if (pending.kind === "updated") {
+        expect(pending.thread.rollbackStatus).toEqual({
+          state: "manual-recovery",
+          updatedAt: "2026-04-01T03:30:00.000Z",
+        });
+      }
+    });
+  });
+
   describe("thread.reverted", () => {
     it("filters entities to retained turns", () => {
       const threadWithData: OrchestrationThread = {
         ...baseThread,
+        rollbackStatus: {
+          state: "pending",
+          updatedAt: "2026-04-01T03:30:00.000Z",
+        },
         messages: [
           {
             id: MessageId.make("msg-1"),
@@ -964,6 +993,7 @@ describe("applyThreadDetailEvent", () => {
         // msg-3 (turn-2) is filtered, msg-1 (no turn) and msg-2 (turn-1) remain
         expect(result.thread.messages).toHaveLength(2);
         expect(result.thread.latestTurn?.turnId).toBe("turn-1");
+        expect(result.thread.rollbackStatus).toBeNull();
       }
     });
   });

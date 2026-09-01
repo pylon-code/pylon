@@ -30,6 +30,7 @@ import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
+import { RollbackSagaRepositoryLive } from "./persistence/Layers/RollbackSagas.ts";
 import * as ProviderSessionRuntime from "./persistence/ProviderSessionRuntime.ts";
 import * as PrimeAgentRecoveryLedger from "./provider/prime/PrimeAgentRecoveryLedger.ts";
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
@@ -63,6 +64,7 @@ import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRun
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
+import * as RollbackSagaRunner from "./rollback/RollbackSagaRunner.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -113,6 +115,8 @@ import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinar
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import * as RollbackAdmission from "./rollback/RollbackAdmission.ts";
+import * as RollbackWorkspace from "./rollback/RollbackWorkspace.ts";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -252,11 +256,17 @@ const PlatformServicesLive = Layer.unwrap(
   }),
 );
 
+const RollbackSagaRuntimeLayerLive = RollbackSagaRunner.layer.pipe(
+  Layer.provideMerge(RollbackWorkspace.layer),
+  Layer.provideMerge(RollbackSagaRepositoryLive),
+);
+
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
+  Layer.provideMerge(RollbackSagaRuntimeLayerLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
   Layer.provideMerge(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
   Layer.provideMerge(RuntimeReceiptBusLive),
@@ -275,6 +285,7 @@ const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
 const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provide(ProviderAdapterRegistryLive),
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
+  Layer.provideMerge(RollbackSagaRepositoryLive),
 );
 
 const PersistenceLayerLive = PrimeAgentRecoveryLedger.layer.pipe(
@@ -308,6 +319,7 @@ const GitLayerLive = Layer.empty.pipe(
 const GitWorkflowLayerLive = GitWorkflowService.layer.pipe(
   Layer.provideMerge(VcsDriverRegistryLayerLive),
   Layer.provideMerge(GitLayerLive),
+  Layer.provideMerge(RollbackSagaRepositoryLive),
 );
 
 const SourceControlRepositoryServiceLayerLive = SourceControlRepositoryService.layer.pipe(
@@ -378,9 +390,15 @@ const CloudManagedEndpointRuntimeLive = Layer.mergeAll(
   ),
 );
 
+const RollbackAdmissionLayerLive = RollbackAdmission.layer.pipe(
+  Layer.provide(ProviderLayerLive),
+  Layer.provide(RollbackWorkspace.layer),
+  Layer.provide(RollbackSagaRepositoryLive),
+);
+
 const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(ProviderLayerLive),
-  Layer.provideMerge(OrchestrationLayerLive),
+  Layer.provideMerge(OrchestrationLayerLive.pipe(Layer.provideMerge(RollbackAdmissionLayerLive))),
 );
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
