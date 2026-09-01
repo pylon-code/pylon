@@ -1,6 +1,7 @@
 import {
   PrimeAgentSettings,
   ProviderDriverKind,
+  type ProviderInstanceId,
   type ServerProvider,
   type ServerProviderDistribution,
 } from "@t3tools/contracts";
@@ -10,6 +11,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
@@ -47,6 +49,13 @@ import {
 import { makePrimeAgentDaemonManager } from "../prime/PrimeAgentDaemonManager.ts";
 import { fencePrimeAgentAdapter } from "../prime/PrimeAgentGenerationFence.ts";
 import {
+  PrimeAgentOwnershipReceiptStore,
+  primeAgentOwnershipHomesOverlap,
+  primeAgentOwnershipReceiptIsSafeLive,
+  type PrimeAgentAcquiredOwnershipReceipt,
+} from "../prime/PrimeAgentOwnershipReceipt.ts";
+import { PrimeAgentRecoveryLedger } from "../prime/PrimeAgentRecoveryLedger.ts";
+import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
   type ProviderDriverPreflightResult,
@@ -73,6 +82,55 @@ import {
 
 const decodePrimeAgentSettings = Schema.decodeSync(PrimeAgentSettings);
 const DRIVER_KIND = ProviderDriverKind.make("primeAgent");
+const PRIME_AGENT_NATIVE_QUARANTINE_MESSAGE =
+  "Prime Agent native execution is quarantined until server-owned cleanup proves the prior owned session settled.";
+
+const sameStringRecord = (
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean => {
+  const leftEntries = Object.entries(left);
+  const rightEntries = Object.entries(right);
+  return (
+    leftEntries.length === rightEntries.length &&
+    leftEntries.every(([name, value]) => right[name] === value)
+  );
+};
+
+const receiptMatchesRecoveryAuthority = (
+  receipt: PrimeAgentAcquiredOwnershipReceipt,
+  identity: PrimeAgentMaterializedIdentity,
+  authority: import("../prime/PrimeAgentRecoveryLedger.ts").PrimeAgentRecoveryAuthority,
+): boolean =>
+  receipt.instanceId === identity.instanceId &&
+  receipt.effectiveHome === identity.effectiveHome &&
+  receipt.activeSessionId === authority.activeSessionId &&
+  receipt.nativeSessionId === authority.nativeSessionId &&
+  receipt.attachProof.daemon.protocolName === authority.protocolName &&
+  receipt.attachProof.daemon.protocolVersion === authority.protocolVersion &&
+  receipt.attachProof.daemon.schemaRevision === authority.schemaRevision &&
+  receipt.attachProof.daemon.supervisorGeneration === authority.supervisorGeneration &&
+  receipt.recovery?.threadId === authority.threadId &&
+  receipt.recovery.sessionIncarnationId === authority.sessionIncarnationId &&
+  receipt.recovery.admissionRequestId === authority.admissionRequestId &&
+  receipt.recovery.recoveryHandle === authority.recoveryHandle &&
+  receipt.recovery.ownershipGeneration === authority.ownershipGeneration &&
+  authority.providerInstanceId === identity.instanceId &&
+  authority.state === "active" &&
+  sameStringRecord(authority.launchEnvironment, identity.launchEnv);
+
+const sameOwnershipReceipt = (
+  left: PrimeAgentAcquiredOwnershipReceipt,
+  right: PrimeAgentAcquiredOwnershipReceipt,
+): boolean =>
+  left.attemptId === right.attemptId &&
+  left.instanceId === right.instanceId &&
+  left.creationConfigRevision === right.creationConfigRevision &&
+  left.currentConfigRevision === right.currentConfigRevision &&
+  left.effectiveHome === right.effectiveHome &&
+  left.activeSessionId === right.activeSessionId &&
+  left.nativeSessionId === right.nativeSessionId;
+
 export const PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE =
   "Prime Agent is unavailable because this Pylon server is running on native Windows. Run the Pylon server and Prime Agent in WSL2, or connect this client to a Pylon server running in WSL2 or another remote environment.";
 
@@ -133,27 +191,80 @@ export const PrimeAgentDriver: ProviderDriver<
   configSchema: PrimeAgentSettings,
   defaultConfig: (): PrimeAgentSettings => decodePrimeAgentSettings({}),
   preflight: (inputs) =>
-    materializePrimeAgentIdentities(inputs).pipe(
-      Effect.map(
-        (materialized) =>
-          new Map(
-            Array.from(materialized, ([instanceId, result]) => [
-              instanceId,
-              result.kind === "ready"
-                ? ({
-                    kind: "ready",
-                    preparation: result.identity,
-                    generation: result.identity.generation,
-                    configRevision: result.identity.configRevision,
-                  } satisfies ProviderDriverPreflightResult<PrimeAgentMaterializedIdentity>)
-                : ({
-                    kind: "unavailable",
-                    error: result.error,
-                  } satisfies ProviderDriverPreflightResult<PrimeAgentMaterializedIdentity>),
-            ]),
+    Effect.gen(function* () {
+      // Native quarantine is resolved before provider identities are materialized.
+      // A dirty receipt must prevent all provider/session construction for its home.
+      const serverConfig = yield* ServerConfig;
+      const platform = yield* HostProcessPlatform;
+      const store = new PrimeAgentOwnershipReceiptStore(serverConfig.stateDir);
+      const scan = yield* Effect.tryPromise(() => store.scan()).pipe(
+        Effect.orElseSucceed(() => ({ receipts: [], corrupt: true }) as const),
+      );
+      const ledger = Option.getOrUndefined(yield* Effect.serviceOption(PrimeAgentRecoveryLedger));
+      const authorities =
+        ledger === undefined ? [] : yield* ledger.listActive().pipe(Effect.orElseSucceed(() => []));
+      const materialized = yield* materializePrimeAgentIdentities(inputs);
+      const results = new Map<
+        ProviderInstanceId,
+        ProviderDriverPreflightResult<PrimeAgentMaterializedIdentity>
+      >();
+
+      for (const [instanceId, result] of materialized) {
+        if (result.kind === "unavailable") {
+          results.set(instanceId, { kind: "unavailable", error: result.error });
+          continue;
+        }
+        const input = inputs.find((candidate) => candidate.instanceId === instanceId);
+        const overlapping = scan.receipts.filter((receipt) =>
+          primeAgentOwnershipHomesOverlap(
+            receipt.effectiveHome,
+            result.identity.effectiveHome,
+            platform,
           ),
-      ),
-    ),
+        );
+        const adoptableReceipts = overlapping.filter(
+          (receipt): receipt is PrimeAgentAcquiredOwnershipReceipt =>
+            receipt.state === "acquired" &&
+            authorities.some((authority) =>
+              receiptMatchesRecoveryAuthority(receipt, result.identity, authority),
+            ),
+        );
+        const dirtyBlockingReceipt = overlapping.some(
+          (receipt) =>
+            !primeAgentOwnershipReceiptIsSafeLive(receipt) &&
+            !(
+              receipt.state === "acquired" &&
+              adoptableReceipts.some((adoptable) => sameOwnershipReceipt(receipt, adoptable))
+            ),
+        );
+        const quarantined = input?.enabled === true && (scan.corrupt || dirtyBlockingReceipt);
+        if (quarantined) {
+          results.set(instanceId, {
+            kind: "unavailable",
+            error: new ProviderDriverError({
+              driver: DRIVER_KIND,
+              instanceId,
+              detail: PRIME_AGENT_NATIVE_QUARANTINE_MESSAGE,
+            }),
+          });
+          continue;
+        }
+        const identity: PrimeAgentMaterializedIdentity = Object.freeze({
+          ...result.identity,
+          nativeOwnership: Object.freeze({
+            store,
+            adoptableReceipts: Object.freeze([...adoptableReceipts]),
+          }),
+        });
+        results.set(instanceId, {
+          kind: "ready",
+          preparation: identity,
+          generation: identity.generation,
+          configRevision: identity.configRevision,
+        });
+      }
+      return results;
+    }),
   create: ({ instanceId, displayName, accentColor, enabled, runtimeFence }, identity) =>
     Effect.gen(function* () {
       const hostPlatform = yield* HostProcessPlatform;
@@ -167,6 +278,7 @@ export const PrimeAgentDriver: ProviderDriver<
       if (
         identity === undefined ||
         identity.instanceId !== instanceId ||
+        identity.nativeOwnership === undefined ||
         runtimeFence === undefined ||
         runtimeFence.generation !== identity.generation ||
         runtimeFence.configRevision !== identity.configRevision
@@ -184,6 +296,43 @@ export const PrimeAgentDriver: ProviderDriver<
       const path = yield* Path.Path;
       const serverSettings = yield* ServerSettingsService;
       const serverConfig = yield* ServerConfig;
+      if (identity.nativeOwnership.store.stateDir !== serverConfig.stateDir) {
+        return yield* new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId,
+          detail: "Prime Agent native ownership preflight was not preserved.",
+        });
+      }
+      const ownershipScan = yield* Effect.tryPromise(() =>
+        identity.nativeOwnership!.store.scan(),
+      ).pipe(Effect.orElseSucceed(() => ({ receipts: [], corrupt: true }) as const));
+      const blockingOwnershipReceipt = ownershipScan.receipts.some((receipt) => {
+        if (
+          !primeAgentOwnershipHomesOverlap(
+            receipt.effectiveHome,
+            identity.effectiveHome,
+            hostPlatform,
+          )
+        ) {
+          return false;
+        }
+        if (
+          receipt.state === "acquired" &&
+          identity.nativeOwnership!.adoptableReceipts.some((adoptable) =>
+            sameOwnershipReceipt(receipt, adoptable),
+          )
+        ) {
+          return false;
+        }
+        return true;
+      });
+      if (enabled && (ownershipScan.corrupt || blockingOwnershipReceipt)) {
+        return yield* new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId,
+          detail: PRIME_AGENT_NATIVE_QUARANTINE_MESSAGE,
+        });
+      }
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = identity.launchEnv;
       const continuationIdentity = defaultProviderContinuationIdentity({

@@ -69,6 +69,35 @@ export interface PrimeAgentOwnedSessionContractProof {
   readonly daemon: PrimeAgentOwnedSessionDaemonIdentity;
 }
 
+interface PrimeAgentOwnedSessionDisposeBase {
+  readonly feature: typeof PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE;
+  readonly started?: PrimeAgentOwnedSessionContractProof;
+  readonly observed?: PrimeAgentOwnedSessionDaemonIdentity;
+}
+
+/** Frozen observable cleanup outcomes from Prime Agent #37. */
+export type PrimeAgentOwnedSessionDisposeResult =
+  | (PrimeAgentOwnedSessionDisposeBase & {
+      readonly status: "completed" | "already_completed";
+      readonly started: PrimeAgentOwnedSessionContractProof;
+      readonly observed: PrimeAgentOwnedSessionDaemonIdentity;
+      readonly daemonReplaced: boolean;
+    })
+  | (PrimeAgentOwnedSessionDisposeBase & {
+      readonly status: "replacement_settled";
+      readonly started: PrimeAgentOwnedSessionContractProof;
+      readonly observed: PrimeAgentOwnedSessionDaemonIdentity;
+      readonly daemonReplaced: true;
+    })
+  | (PrimeAgentOwnedSessionDisposeBase & { readonly status: "owner_mismatch" })
+  | (PrimeAgentOwnedSessionDisposeBase & {
+      readonly status: "uncertain";
+      readonly reason: "active" | "stopping";
+    })
+  | (PrimeAgentOwnedSessionDisposeBase & {
+      readonly status: "transport_failure" | "unsupported";
+    });
+
 export interface PrimeAgentDaemonEventCursor {
   readonly generation: string;
   readonly sequence: number;
@@ -246,6 +275,8 @@ export type PrimeAgentDaemonAgentConnectionOptions = Readonly<Record<string, unk
   readonly recoverDaemon?: () => Promise<void>;
   /** Fresh owner-held configuration used only if a client-owned worker must be relaunched. */
   readonly ownedSessionRecoveryConfig?: Readonly<Record<string, unknown>>;
+  /** Exact immutable caller environment used for create, attach fallback, and recovery. */
+  readonly ownedSessionLaunchEnv?: Readonly<Record<string, string>>;
 };
 
 export interface PrimeAgentDaemonAgentConnectionConstructor {

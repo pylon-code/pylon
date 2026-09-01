@@ -18,6 +18,7 @@ import {
   type PrimeAgentIdentityInput,
   type PrimeAgentIdentityPreparation,
 } from "./PrimeAgentRuntimeContext.ts";
+import { PrimeAgentOwnershipReceiptStore } from "./PrimeAgentOwnershipReceipt.ts";
 
 const decodeSettings = Schema.decodeSync(PrimeAgentSettings);
 
@@ -107,6 +108,25 @@ it.layer(NodeServices.layer)("PrimeAgentRuntimeContext", (it) => {
         });
         expect(Object.isFrozen(runtimeContext)).toBe(true);
         expect(Object.isFrozen(runtimeContext.backendIdentity)).toBe(true);
+
+        const ownership = {
+          store: new PrimeAgentOwnershipReceiptStore(root),
+          adoptableReceipts: [],
+        };
+        const identityWithOwnership = { ...identity, nativeOwnership: ownership };
+        const acpContext = bindPrimeAgentRuntimeContext(identityWithOwnership, { kind: "acp" });
+        expect(acpContext.nativeOwnership).toBeUndefined();
+        const daemonContext = bindPrimeAgentRuntimeContext(identityWithOwnership, {
+          kind: "daemon",
+          proof: {
+            sdkFeatures: [],
+            requiredServerCapabilities: [
+              "caller_owned_session_environment_cleanup_v1",
+              "authoritative_owned_session_cleanup_v1",
+            ],
+          },
+        });
+        expect(daemonContext.nativeOwnership).toBe(ownership);
       }),
     ),
   );

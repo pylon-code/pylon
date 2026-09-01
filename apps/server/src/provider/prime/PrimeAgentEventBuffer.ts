@@ -16,14 +16,17 @@ export function shutdownPrimeAgentEventPubSub<A, E>(input: {
   readonly component: "acp" | "daemon";
   readonly pubSub: PubSub.PubSub<A>;
   readonly drain: Effect.Effect<void, E>;
+  readonly timeoutMs?: number;
 }): Effect.Effect<void> {
+  const timeoutMs = input.timeoutMs ?? PRIME_AGENT_EVENT_TEARDOWN_TIMEOUT_MS;
   return Effect.raceFirst(
-    input.drain,
-    Effect.sleep(PRIME_AGENT_EVENT_TEARDOWN_TIMEOUT_MS).pipe(
+    Effect.interruptible(input.drain),
+    Effect.sleep(timeoutMs).pipe(
+      Effect.interruptible,
       Effect.tap(() =>
         Effect.logError("Prime Agent event drain timed out during adapter teardown.", {
           component: input.component,
-          timeoutMs: PRIME_AGENT_EVENT_TEARDOWN_TIMEOUT_MS,
+          timeoutMs,
           outcome: "forced-pubsub-shutdown",
         }),
       ),

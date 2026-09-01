@@ -13,6 +13,10 @@ import * as Schema from "effect/Schema";
 
 import { ProviderDriverError } from "../Errors.ts";
 import type { ProviderRuntimeFence } from "../ProviderDriver.ts";
+import type {
+  PrimeAgentAcquiredOwnershipReceipt,
+  PrimeAgentOwnershipReceiptStore,
+} from "./PrimeAgentOwnershipReceipt.ts";
 
 export const PRIME_AGENT_HOME_ENV = "PRIME_AGENT_CODING_AGENT_DIR" as const;
 export const PRIME_AGENT_COMPAT_HOME_ENV = "PRIME_AGENT_HOME" as const;
@@ -61,6 +65,11 @@ export interface PrimeAgentMaterializedIdentity {
   readonly effectiveHome: string;
   readonly launchEnv: Readonly<Record<string, string>>;
   readonly settings: Readonly<PrimeAgentSettings>;
+  /** Server-private durable native ownership admission. Never serialize this field. */
+  readonly nativeOwnership?: {
+    readonly store: PrimeAgentOwnershipReceiptStore;
+    readonly adoptableReceipts: ReadonlyArray<PrimeAgentAcquiredOwnershipReceipt>;
+  };
 }
 
 export interface PrimeAgentNativeProofIdentity {
@@ -326,8 +335,19 @@ export function bindPrimeAgentRuntimeContext(
             ? {}
             : { fallbackCategory: backendIdentity.fallbackCategory }),
         });
+  const runtimeIdentity =
+    immutableBackendIdentity.kind === "daemon" || identity.nativeOwnership === undefined
+      ? identity
+      : {
+          instanceId: identity.instanceId,
+          generation: identity.generation,
+          configRevision: identity.configRevision,
+          effectiveHome: identity.effectiveHome,
+          launchEnv: identity.launchEnv,
+          settings: identity.settings,
+        };
   return Object.freeze({
-    ...identity,
+    ...runtimeIdentity,
     ...(runtimeFence === undefined ? {} : { runtimeFence }),
     backendKind: immutableBackendIdentity.kind,
     backendIdentity: immutableBackendIdentity,

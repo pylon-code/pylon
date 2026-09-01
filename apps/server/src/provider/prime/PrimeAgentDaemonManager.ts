@@ -1,14 +1,17 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import type { PrimeAgentSettings, ProviderInstanceId } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -114,11 +117,17 @@ export interface PrimeAgentDaemonManagerInput {
   readonly architecture?: string;
   /** Tests may supply the already validated public bridge without importing a real installation. */
   readonly bridge?: PrimeAgentDaemonBridge;
+  /** Test seam for exact PID/start identity validation before a force signal. */
+  readonly inspectProcessIdentity?: (pid: number) => Promise<string | undefined>;
+  /** Test seam for a private socket cleanup barrier. */
+  readonly removePrivateSocket?: (socket: string) => Promise<void>;
 }
 
 interface RunningDaemon {
   readonly handle: ChildProcessSpawner.ChildProcessHandle;
   readonly scope: Scope.Scope;
+  /** Captured at spawn and freshly re-read before every signal. */
+  readonly startIdentity: string | undefined;
 }
 
 const daemonHelloSchema = Schema.Struct({
@@ -247,6 +256,15 @@ function connectClient(input: {
           cause,
         ),
     }).pipe(
+      Effect.timeoutOrElse({
+        duration: input.timeoutMs,
+        orElse: () =>
+          managerError(
+            input.socket,
+            "readiness-failed",
+            "Timed out while opening the Pylon-owned daemon control connection.",
+          ),
+      }),
       Effect.onError(() =>
         Effect.sync(() => {
           client.close();
@@ -261,6 +279,40 @@ function connectClient(input: {
       ),
     );
     return client;
+  });
+}
+
+async function inspectNativeProcessIdentity(
+  pid: number,
+  platform: NodeJS.Platform,
+): Promise<string | undefined> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  if (platform === "linux") {
+    try {
+      const stat = await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd < 0) return undefined;
+      const fields = stat
+        .slice(commandEnd + 2)
+        .trim()
+        .split(/\s+/u);
+      const startTicks = fields[19];
+      return startTicks === undefined ? undefined : `${pid}:${startTicks}`;
+    } catch {
+      return undefined;
+    }
+  }
+  if (platform !== "darwin") return undefined;
+  return await new Promise<string | undefined>((resolve) => {
+    NodeChildProcess.execFile(
+      "/bin/ps",
+      ["-o", "lstart=", "-p", String(pid)],
+      { timeout: 1_000, maxBuffer: 1_024, encoding: "utf8" },
+      (error, stdout) => {
+        const started = stdout.trim();
+        resolve(error === null && started.length > 0 ? `${pid}:${started}` : undefined);
+      },
+    );
   });
 }
 
@@ -341,28 +393,59 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     Schedule.recurs(input.readinessRetries ?? 20),
   ]);
   const shutdownTimeout = input.shutdownTimeout ?? Duration.seconds(5);
+  const shutdownTimeoutMs = Math.max(
+    1,
+    Duration.toMillis(Duration.fromInputUnsafe(shutdownTimeout)),
+  );
+  const inspectProcessIdentity =
+    input.inspectProcessIdentity ?? ((pid: number) => inspectNativeProcessIdentity(pid, platform));
   const semaphore = yield* Semaphore.make(1);
   let running: RunningDaemon | undefined;
+  let starting: RunningDaemon | undefined;
   let retainedExistingDaemon = false;
   let closing = false;
 
   const isCurrentGeneration = input.runtimeFence?.isCurrent ?? Effect.succeed(true);
+  const isStartAllowed = Effect.map(isCurrentGeneration, (current) => current && !closing);
   const removeSocket = () =>
     Effect.gen(function* () {
       // Recheck at unlink, not when cleanup was scheduled: a replacement may now own this path.
       if (!(yield* isCurrentGeneration)) return;
-      yield* fileSystem
-        .remove(socket, { force: true })
-        .pipe(
-          Effect.mapError((cause) =>
+      const cleanup =
+        input.removePrivateSocket === undefined
+          ? fileSystem
+              .remove(socket, { force: true })
+              .pipe(
+                Effect.mapError((cause) =>
+                  managerError(
+                    socket,
+                    "state-directory-failed",
+                    "Could not clean the daemon socket.",
+                    cause,
+                  ),
+                ),
+              )
+          : Effect.tryPromise({
+              try: () => input.removePrivateSocket!(socket),
+              catch: (cause) =>
+                managerError(
+                  socket,
+                  "state-directory-failed",
+                  "Could not clean the private daemon socket.",
+                  cause,
+                ),
+            });
+      yield* cleanup.pipe(
+        Effect.timeoutOrElse({
+          duration: shutdownTimeout,
+          orElse: () =>
             managerError(
               socket,
               "state-directory-failed",
-              "Could not clean the daemon socket.",
-              cause,
+              "Timed out while cleaning the private daemon socket.",
             ),
-          ),
-        );
+        }),
+      );
     });
 
   const ensurePrivateSocketDirectory = Effect.fn(
@@ -507,98 +590,204 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
   });
 
   const closeProcessScope = (state: RunningDaemon) =>
-    Scope.close(state.scope, Exit.void).pipe(Effect.ignore);
+    Effect.gen(function* () {
+      // Scope finalizers are uninterruptible. Await them through a detached fiber so a
+      // wedged subprocess/stream finalizer cannot defeat the explicit shutdown bound.
+      const closer = yield* Effect.forkDetach(Scope.close(state.scope, Exit.void));
+      const result = yield* Fiber.await(closer).pipe(Effect.timeoutOption(shutdownTimeout));
+      if (Option.isNone(result)) {
+        yield* Effect.logWarning("Prime Agent daemon process scope close timed out.", {
+          provider: "primeAgent",
+        });
+        return false;
+      }
+      if (Exit.isFailure(result.value)) {
+        yield* Effect.logWarning("Prime Agent daemon process scope close failed.", {
+          provider: "primeAgent",
+        });
+        return false;
+      }
+      return true;
+    });
 
-  const stopCapturedDaemon = Effect.fn("PrimeAgentDaemonManager.stopCapturedDaemon")(function* (
-    state: RunningDaemon,
-    controlPlaneReady = true,
-  ) {
-    let controlClient: PrimeAgentDaemonClient | undefined;
-    const isRunning = yield* state.handle.isRunning.pipe(
-      Effect.catch((cause) => {
-        return Effect.logWarning("Could not inspect Prime Agent daemon during shutdown.").pipe(
-          Effect.annotateLogs({ provider: "primeAgent", cause }),
-          Effect.as(true),
-        );
-      }),
+  const awaitCapturedExit = (state: RunningDaemon, phase: "graceful" | "post-kill") =>
+    state.handle.exitCode.pipe(
+      Effect.timeoutOption(shutdownTimeout),
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not await Prime Agent daemon exit.").pipe(
+          Effect.annotateLogs({ provider: "primeAgent", phase, cause }),
+          Effect.as(Option.none()),
+        ),
+      ),
     );
 
-    if (isRunning && !(yield* isCurrentGeneration)) {
-      yield* state.handle.kill().pipe(Effect.ignore);
-      yield* state.handle.exitCode.pipe(Effect.ignore);
-      yield* closeProcessScope(state);
-      return;
-    }
-
-    if (isRunning) {
-      if (controlPlaneReady) {
-        controlClient = yield* connectClient({ bridge, socket, timeoutMs }).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning(error.message).pipe(
-              Effect.annotateLogs({ provider: "primeAgent" }),
-              Effect.as(undefined),
-            ),
+  const capturedProcessIdentityIsCurrent = (state: RunningDaemon) =>
+    state.startIdentity === undefined
+      ? Effect.succeed(false)
+      : Effect.tryPromise(() => inspectProcessIdentity(state.handle.pid)).pipe(
+          Effect.timeoutOption(shutdownTimeout),
+          Effect.orElseSucceed(() => Option.none()),
+          Effect.map(
+            (freshIdentity) =>
+              Option.isSome(freshIdentity) && freshIdentity.value === state.startIdentity,
           ),
         );
-        if (controlClient && (yield* isCurrentGeneration)) {
-          yield* Effect.tryPromise({
-            try: async () => {
-              const response = await controlClient!.request({ type: "shutdown" }, timeoutMs);
-              if (!isDaemonSuccessResponse(response)) {
-                throw new Error("shutdown response was not a successful public daemon response");
-              }
-            },
-            catch: (cause) =>
-              managerError(
-                socket,
-                "shutdown-failed",
-                "The daemon rejected or did not answer its public shutdown command.",
-                cause,
-              ),
+
+  const closeProcessScopeSafely = Effect.fn("PrimeAgentDaemonManager.closeProcessScopeSafely")(
+    function* (state: RunningDaemon, processExited: boolean) {
+      if (!processExited && !(yield* capturedProcessIdentityIsCurrent(state))) {
+        yield* Effect.logWarning(
+          "Refusing to close a process scope that could signal an unproved Prime Agent daemon identity.",
+          { provider: "primeAgent" },
+        );
+        return false;
+      }
+      return yield* closeProcessScope(state);
+    },
+  );
+
+  const forceKillCaptured = Effect.fn("PrimeAgentDaemonManager.forceKillCaptured")(function* (
+    state: RunningDaemon,
+  ) {
+    if (!(yield* capturedProcessIdentityIsCurrent(state))) {
+      yield* Effect.logWarning(
+        state.startIdentity === undefined
+          ? "Refusing to signal a Prime Agent daemon without its captured process start identity."
+          : "Refusing to signal a Prime Agent daemon whose process identity is no longer current.",
+        { provider: "primeAgent" },
+      );
+      return false;
+    }
+    const requested = yield* state.handle.kill({ killSignal: "SIGKILL" }).pipe(
+      Effect.timeoutOption(shutdownTimeout),
+      Effect.flatMap(
+        Option.match({
+          onNone: () =>
+            Effect.logWarning("Prime Agent daemon force-kill request timed out.", {
+              provider: "primeAgent",
+            }).pipe(Effect.as(false)),
+          onSome: () => Effect.succeed(true),
+        }),
+      ),
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not interrupt captured Prime Agent daemon process.").pipe(
+          Effect.annotateLogs({ provider: "primeAgent", cause }),
+          Effect.as(false),
+        ),
+      ),
+    );
+    return requested;
+  });
+
+  const stopCapturedDaemonBody = Effect.fn("PrimeAgentDaemonManager.stopCapturedDaemonBody")(
+    function* (state: RunningDaemon, controlPlaneReady = true) {
+      let controlClient: PrimeAgentDaemonClient | undefined;
+      const runningReceipt = yield* state.handle.isRunning.pipe(
+        Effect.timeoutOption(shutdownTimeout),
+        Effect.catch((cause) => {
+          return Effect.logWarning("Could not inspect Prime Agent daemon during shutdown.").pipe(
+            Effect.annotateLogs({ provider: "primeAgent", cause }),
+            Effect.as(Option.none()),
+          );
+        }),
+      );
+      let exited = Option.isSome(runningReceipt) && runningReceipt.value === false;
+      const isRunning = !exited;
+
+      if (isRunning && !(yield* isCurrentGeneration)) {
+        const killed = yield* forceKillCaptured(state);
+        if (killed) exited = Option.isSome(yield* awaitCapturedExit(state, "post-kill"));
+        yield* closeProcessScopeSafely(state, exited);
+        return;
+      }
+
+      if (isRunning) {
+        if (controlPlaneReady) {
+          controlClient = yield* connectClient({
+            bridge,
+            socket,
+            timeoutMs: shutdownTimeoutMs,
           }).pipe(
             Effect.catch((error) =>
               Effect.logWarning(error.message).pipe(
                 Effect.annotateLogs({ provider: "primeAgent" }),
+                Effect.as(undefined),
               ),
             ),
-            Effect.ensuring(
-              Effect.sync(() => {
-                controlClient?.close();
-              }),
-            ),
           );
-        } else {
-          yield* Effect.sync(() => controlClient?.close());
+          if (controlClient && (yield* isCurrentGeneration)) {
+            yield* Effect.tryPromise({
+              try: async () => {
+                const response = await controlClient!.request(
+                  { type: "shutdown" },
+                  shutdownTimeoutMs,
+                );
+                if (!isDaemonSuccessResponse(response)) {
+                  throw new Error("shutdown response was not a successful public daemon response");
+                }
+              },
+              catch: (cause) =>
+                managerError(
+                  socket,
+                  "shutdown-failed",
+                  "The daemon rejected or did not answer its public shutdown command.",
+                  cause,
+                ),
+            }).pipe(
+              Effect.timeoutOption(shutdownTimeout),
+              Effect.catch((error) =>
+                Effect.logWarning(error.message).pipe(
+                  Effect.annotateLogs({ provider: "primeAgent" }),
+                  Effect.as(Option.none()),
+                ),
+              ),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  controlClient?.close();
+                }),
+              ),
+            );
+          } else {
+            yield* Effect.sync(() => controlClient?.close());
+          }
+        }
+
+        const gracefulExit = controlPlaneReady
+          ? yield* awaitCapturedExit(state, "graceful")
+          : Option.none();
+        exited = Option.isSome(gracefulExit);
+        if (!exited) {
+          const killed = yield* forceKillCaptured(state);
+          if (killed) exited = Option.isSome(yield* awaitCapturedExit(state, "post-kill"));
         }
       }
 
-      const gracefulExit = controlPlaneReady
-        ? yield* state.handle.exitCode.pipe(
-            Effect.timeoutOption(shutdownTimeout),
-            Effect.catch((cause) =>
-              Effect.logWarning("Could not await Prime Agent daemon exit.").pipe(
-                Effect.annotateLogs({ provider: "primeAgent", cause }),
-                Effect.as(Option.none()),
-              ),
-            ),
-          )
-        : Option.none();
-      if (Option.isNone(gracefulExit)) {
-        yield* state.handle
-          .kill()
-          .pipe(
-            Effect.catch((cause) =>
-              Effect.logWarning("Could not interrupt captured Prime Agent daemon process.").pipe(
-                Effect.annotateLogs({ provider: "primeAgent", pid: state.handle.pid, cause }),
-              ),
-            ),
-          );
-        yield* state.handle.exitCode.pipe(Effect.ignore);
-      }
-    }
+      if (exited) yield* removeSocket().pipe(Effect.ignore);
+      yield* closeProcessScopeSafely(state, exited);
+    },
+  );
 
-    yield* removeSocket().pipe(Effect.ignore);
-    yield* closeProcessScope(state);
+  const daemonStopFlights = new WeakMap<RunningDaemon, Deferred.Deferred<void>>();
+  const stopCapturedDaemon = Effect.fn("PrimeAgentDaemonManager.stopCapturedDaemon")(function* (
+    state: RunningDaemon,
+    controlPlaneReady = true,
+  ) {
+    const existing = daemonStopFlights.get(state);
+    if (existing !== undefined) return yield* Deferred.await(existing);
+    const completion = yield* Deferred.make<void>();
+    daemonStopFlights.set(state, completion);
+    return yield* stopCapturedDaemonBody(state, controlPlaneReady).pipe(
+      Effect.onExit((exit) =>
+        Deferred.done(completion, exit).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (Exit.isFailure(exit)) daemonStopFlights.delete(state);
+            }),
+          ),
+          Effect.ignore,
+        ),
+      ),
+    );
   });
 
   const probeExistingDaemon = Effect.fn("PrimeAgentDaemonManager.probeExistingDaemon")(
@@ -607,11 +796,21 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       PrimeAgentDaemonManagerError
     > {
       const client = new bridge.DaemonClient(socket);
-      const connected = yield* Effect.tryPromise({
-        try: () => client.connect(timeoutMs),
-        catch: () => undefined,
-      }).pipe(Effect.option);
+      const connected = yield* Effect.promise(() =>
+        client.connect(timeoutMs).then(
+          () => true,
+          () => false,
+        ),
+      ).pipe(Effect.timeoutOption(timeoutMs));
       if (Option.isNone(connected)) {
+        client.close();
+        return yield* managerError(
+          socket,
+          "readiness-failed",
+          "Timed out while probing the private daemon socket.",
+        );
+      }
+      if (!connected.value) {
         client.close();
         return Option.none();
       }
@@ -624,7 +823,18 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
             "A process accepted the private daemon socket but did not send daemon_hello; refusing to unlink its live socket.",
             cause,
           ),
-      }).pipe(Effect.onError(() => Effect.sync(() => client.close())));
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: timeoutMs,
+          orElse: () =>
+            managerError(
+              socket,
+              "readiness-failed",
+              "Timed out while validating the private daemon socket listener.",
+            ),
+        }),
+        Effect.onError(() => Effect.sync(() => client.close())),
+      );
       yield* validatedHello(socket, hello).pipe(
         Effect.onError(() => Effect.sync(() => client.close())),
       );
@@ -635,12 +845,21 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
   const waitForSocketClosure = Effect.fn("PrimeAgentDaemonManager.waitForSocketClosure")(
     function* () {
       const client = new bridge.DaemonClient(socket);
-      const connected = yield* Effect.tryPromise({
-        try: () => client.connect(timeoutMs),
-        catch: () => undefined,
-      }).pipe(Effect.option);
+      const connected = yield* Effect.promise(() =>
+        client.connect(timeoutMs).then(
+          () => true,
+          () => false,
+        ),
+      ).pipe(Effect.timeoutOption(timeoutMs));
       client.close();
-      if (Option.isSome(connected)) {
+      if (Option.isNone(connected)) {
+        return yield* managerError(
+          socket,
+          "shutdown-failed",
+          "Timed out while confirming private daemon socket closure.",
+        );
+      }
+      if (connected.value) {
         return yield* managerError(
           socket,
           "shutdown-failed",
@@ -653,7 +872,7 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
   const retireExistingDaemon = Effect.fn("PrimeAgentDaemonManager.retireExistingDaemon")(function* (
     client: PrimeAgentDaemonClient,
   ) {
-    if (!(yield* isCurrentGeneration)) {
+    if (!(yield* isStartAllowed)) {
       client.close();
       return yield* managerError(
         socket,
@@ -670,7 +889,18 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
           "Could not stop the prior Pylon-owned daemon on the stable private socket.",
           cause,
         ),
-    }).pipe(Effect.ensuring(Effect.sync(() => client.close())));
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: shutdownTimeout,
+        orElse: () =>
+          managerError(
+            socket,
+            "shutdown-failed",
+            "Timed out while requesting private daemon shutdown.",
+          ),
+      }),
+      Effect.ensuring(Effect.sync(() => client.close())),
+    );
     if (!isDaemonSuccessResponse(response)) {
       return yield* managerError(
         socket,
@@ -678,11 +908,11 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
         "The prior daemon did not acknowledge its public shutdown command.",
       );
     }
-    yield* waitForSocketClosure().pipe(Effect.retry(readinessSchedule));
+    yield* waitForSocketClosure();
   });
 
   const startLocked = Effect.fn("PrimeAgentDaemonManager.startLocked")(function* () {
-    if (!(yield* isCurrentGeneration)) {
+    if (!(yield* isStartAllowed)) {
       return yield* managerError(
         socket,
         "readiness-failed",
@@ -699,6 +929,15 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     if (running) {
       const current = running;
       const isRunning = yield* current.handle.isRunning.pipe(
+        Effect.timeoutOrElse({
+          duration: shutdownTimeout,
+          orElse: () =>
+            managerError(
+              socket,
+              "process-status-failed",
+              "Timed out while inspecting the daemon process.",
+            ),
+        }),
         Effect.mapError((cause) =>
           managerError(
             socket,
@@ -718,7 +957,7 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
           ),
         );
         if (Option.isSome(healthClient)) {
-          if (yield* isCurrentGeneration) return healthClient.value;
+          if (yield* isStartAllowed) return healthClient.value;
           healthClient.value.close();
           return yield* managerError(
             socket,
@@ -731,12 +970,12 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       } else {
         running = undefined;
         yield* removeSocket();
-        yield* closeProcessScope(current);
+        yield* closeProcessScopeSafely(current, true);
       }
     }
 
     yield* ensurePrivateSocketDirectory();
-    if (!(yield* isCurrentGeneration)) {
+    if (!(yield* isStartAllowed)) {
       return yield* managerError(
         socket,
         "readiness-failed",
@@ -769,7 +1008,7 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
           "authoritative_owned_session_cleanup_v1",
         ].every((capability) => hello.value.serverCapabilities.includes(capability));
       if (recoverable) {
-        if (!(yield* isCurrentGeneration)) {
+        if (!(yield* isStartAllowed)) {
           existing.value.close();
           return yield* managerError(
             socket,
@@ -791,8 +1030,9 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       ["--mode", "daemon", "--daemon-socket", socket, "--offline", "--session-dir", sessionDir],
       { env: launchEnvironment, extendEnv: false },
     );
-    if (!(yield* isCurrentGeneration)) {
-      yield* Scope.close(processScope, Exit.void).pipe(Effect.ignore);
+    if (!(yield* isStartAllowed)) {
+      const closer = yield* Effect.forkDetach(Scope.close(processScope, Exit.void));
+      yield* Fiber.await(closer).pipe(Effect.timeoutOption(shutdownTimeout), Effect.ignore);
       return yield* managerError(
         socket,
         "readiness-failed",
@@ -804,9 +1044,38 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       Effect.mapError((cause) =>
         managerError(socket, "spawn-failed", "Could not spawn the Prime Agent daemon.", cause),
       ),
-      Effect.onError(() => Scope.close(processScope, Exit.void).pipe(Effect.ignore)),
+      Effect.onError(() =>
+        Effect.logWarning(
+          "Prime Agent daemon spawn failed before a process identity could be captured; refusing unproved scope signaling.",
+          { provider: "primeAgent" },
+        ),
+      ),
     );
-    const state = { handle, scope: processScope } satisfies RunningDaemon;
+    const capturedStartIdentity = yield* Effect.tryPromise(() =>
+      inspectProcessIdentity(handle.pid),
+    ).pipe(
+      Effect.timeoutOption(timeoutMs),
+      Effect.orElseSucceed(() => Option.none()),
+    );
+    const state = {
+      handle,
+      scope: processScope,
+      startIdentity: Option.getOrUndefined(capturedStartIdentity),
+    } satisfies RunningDaemon;
+    starting = state;
+    if (state.startIdentity === undefined) {
+      starting = undefined;
+      yield* handle.unref.pipe(Effect.timeoutOption(shutdownTimeout), Effect.ignore);
+      yield* Effect.logError(
+        "Prime Agent daemon start identity was unavailable; refusing any unproved process signal.",
+        { provider: "primeAgent", pid: handle.pid },
+      );
+      return yield* managerError(
+        socket,
+        "process-status-failed",
+        "Could not capture the Prime Agent daemon process start identity.",
+      );
+    }
     yield* Effect.forkIn(drainProcessOutput(handle.stdout, "stdout"), processScope);
     yield* Effect.forkIn(drainProcessOutput(handle.stderr, "stderr"), processScope);
 
@@ -815,9 +1084,17 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
         while: (error) => error.reason === "readiness-failed",
         schedule: readinessSchedule,
       }),
-      Effect.onError(() => stopCapturedDaemon(state, false)),
+      Effect.onError(() =>
+        stopCapturedDaemon(state, false).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (starting === state) starting = undefined;
+            }),
+          ),
+        ),
+      ),
     );
-    if (!(yield* isCurrentGeneration)) {
+    if (!(yield* isStartAllowed)) {
       readinessClient.close();
       yield* stopCapturedDaemon(state, false);
       return yield* managerError(
@@ -826,6 +1103,7 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
         "This Prime Agent runtime generation was replaced.",
       );
     }
+    starting = undefined;
     running = state;
     retainedExistingDaemon = false;
     return readinessClient;
@@ -843,14 +1121,14 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
 
   const openClient = () => semaphore.withPermit(startLocked());
 
-  const shutdown = semaphore.withPermit(
+  const shutdownLocked = semaphore.withPermit(
     Effect.gen(function* () {
-      closing = true;
-      const captured = running;
+      const captured = running ?? starting;
       running = undefined;
+      starting = undefined;
       if (recoveryRetainers > 0 && (yield* isCurrentGeneration)) {
-        // A server shutdown keeps recoverable work alive. A material replacement does not:
-        // its retired generation must release the stable socket before the successor uses it.
+        // Server shutdown retains exact #84 recovery authority. A material replacement
+        // has already retired this generation and must contain only its private daemon.
         return;
       }
       if (captured) {
@@ -858,13 +1136,33 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
         return;
       }
       if (retainedExistingDaemon) {
-        // This process did not spawn the compatible supervisor. A competing replacement
-        // may already own it, so shutdown must never revoke that process's authority.
+        // This process did not spawn the compatible supervisor. A competing exact
+        // adopter may already own it, so a generic socket is never cleanup authority.
         return;
       }
     }),
   );
-  yield* Effect.addFinalizer(() => shutdown.pipe(Effect.ignore));
+  const shutdown = Effect.gen(function* () {
+    closing = true;
+    const overallTimeoutMs = shutdownTimeoutMs * 8;
+    const settled = yield* shutdownLocked.pipe(Effect.timeoutOption(overallTimeoutMs));
+    if (Option.isSome(settled)) return;
+    yield* Effect.logWarning("Prime Agent daemon shutdown reached its total bound.", {
+      provider: "primeAgent",
+      timeoutMs: overallTimeoutMs,
+    });
+    if (recoveryRetainers > 0 && (yield* isCurrentGeneration)) return;
+    const captured = running ?? starting;
+    running = undefined;
+    starting = undefined;
+    if (captured !== undefined) yield* stopCapturedDaemon(captured).pipe(Effect.ignore);
+  });
+
+  yield* Effect.addFinalizer(() =>
+    // Scope finalizers are uninterruptible. A fresh runtime fiber preserves the
+    // interruptibility required by each teardown phase timeout.
+    Effect.promise(() => runPromise(shutdown).catch(() => undefined)),
+  );
 
   return {
     bridge,

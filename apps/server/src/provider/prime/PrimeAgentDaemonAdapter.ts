@@ -133,6 +133,7 @@ import {
   type PrimeAgentDaemonSessionRuntimeError,
   type PrimeAgentDaemonSessionRuntimeInput,
 } from "./PrimeAgentDaemonSessionRuntime.ts";
+import type { PrimeAgentOwnershipAdoptionClaim } from "./PrimeAgentOwnershipReceipt.ts";
 import {
   PRIME_AGENT_SESSION_IDENTITY_FILENAME,
   decodePrimeAgentSessionIdentity,
@@ -866,6 +867,8 @@ export function makePrimeAgentDaemonAdapter(
           readonly requestId: string;
           readonly mcpOwnerId: string;
           readonly sessionFile: string;
+          readonly ownershipClaim: PrimeAgentOwnershipAdoptionClaim;
+          adoptionAttempted: boolean;
         };
     const pendingRecoveryStarts = new Map<ThreadId, PendingRecoveryStart>();
     const activeTeardowns = new Map<
@@ -1046,6 +1049,37 @@ export function makePrimeAgentDaemonAdapter(
           Effect.asVoid,
         );
       });
+    const runBoundedTeardownBarrier = Effect.fn(
+      "PrimeAgentDaemonAdapter.runBoundedTeardownBarrier",
+    )(function* <E, R>(input: {
+      readonly threadId: ThreadId;
+      readonly phase: string;
+      readonly effect: Effect.Effect<void, E, R>;
+    }) {
+      const barrierFiber = yield* input.effect.pipe(Effect.interruptible, Effect.forkDetach);
+      const settled = yield* Fiber.await(barrierFiber).pipe(
+        Effect.timeoutOption(Duration.millis(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS)),
+      );
+      if (Option.isNone(settled)) {
+        yield* Effect.logWarning("Prime Agent daemon teardown barrier timed out.", {
+          threadId: input.threadId,
+          phase: input.phase,
+          timeoutMs: PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS,
+        });
+        yield* Fiber.interrupt(barrierFiber).pipe(Effect.forkDetach);
+        return false;
+      }
+      if (Exit.isFailure(settled.value)) {
+        yield* Effect.logError("Prime Agent daemon teardown barrier failed.", {
+          threadId: input.threadId,
+          phase: input.phase,
+          cause: Cause.pretty(settled.value.cause),
+        });
+        return false;
+      }
+      return true;
+    });
+
     const withThreadLock = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(getThreadSemaphore(threadId), (semaphore) =>
         semaphore.withPermit(effect).pipe(Effect.ensuring(drainActiveTeardown(threadId))),
@@ -3588,16 +3622,11 @@ export function makePrimeAgentDaemonAdapter(
       });
 
       return Effect.gen(function* () {
-        yield* Scope.close(context.scope, Exit.void).pipe(
-          Effect.timeoutOption(Duration.millis(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS)),
-          Effect.catchCause((cause) =>
-            Effect.logError("Prime Agent daemon session scope cleanup failed.", {
-              threadId: context.threadId,
-              cause: Cause.pretty(cause),
-            }).pipe(Effect.as(Option.none())),
-          ),
-          Effect.forkDetach,
-        );
+        yield* runBoundedTeardownBarrier({
+          threadId: context.threadId,
+          phase: "session-scope-close",
+          effect: Scope.close(context.scope, Exit.void),
+        });
         const workFiber = yield* teardownWork.pipe(Effect.forkDetach);
         const workResult = yield* Fiber.join(workFiber).pipe(
           Effect.exit,
@@ -3615,7 +3644,10 @@ export function makePrimeAgentDaemonAdapter(
             cause: Cause.pretty(workResult.value.cause),
           });
         }
-        yield* publishTerminalOnce;
+        yield* publishTerminalOnce.pipe(
+          Effect.timeoutOption(Duration.millis(PRIME_AGENT_TERMINAL_EVENT_TIMEOUT_MS)),
+          Effect.asVoid,
+        );
       }).pipe(
         Effect.ensuring(
           Deferred.succeed(context.teardownCompletion, undefined).pipe(
@@ -3946,6 +3978,9 @@ export function makePrimeAgentDaemonAdapter(
           const runtime = yield* runtimeFactory({
             manager,
             ...(primeRuntimeContext === undefined ? {} : { runtimeContext: primeRuntimeContext }),
+            ...(recoveryStart?.kind === "adopt"
+              ? { ownershipReceipt: recoveryStart.ownershipClaim.handle }
+              : {}),
             cwd,
             sessionDir,
             ...(mcpSession === undefined
@@ -3992,6 +4027,9 @@ export function makePrimeAgentDaemonAdapter(
                     recovery: {
                       kind: "create" as const,
                       requestId: yield* randomUUIDv4,
+                      threadId: input.threadId,
+                      sessionIncarnationId: input.sessionIncarnationId!,
+                      admissionRequestId: recoveryStart.admissionRequestId,
                       correlationId: recoveryStart.correlationId,
                       mcpOwnerId: recoveryStart.mcpOwnerId,
                       onAuthorityReady: (authority) =>
@@ -4060,6 +4098,9 @@ export function makePrimeAgentDaemonAdapter(
                       recoveryConfig: recoveryStart.authority.recoveryConfig,
                       launchEnvironment:
                         primeRuntimeContext?.launchEnv ?? recoveryStart.authority.launchEnvironment,
+                      onAdoptionStarted: () => {
+                        recoveryStart.adoptionAttempted = true;
+                      },
                       onAdoptionCommitted: ({ recoveryHandle, proof }) =>
                         runPromise(
                           Effect.gen(function* () {
@@ -4677,6 +4718,20 @@ export function makePrimeAgentDaemonAdapter(
       ) {
         return null;
       }
+      const nativeOwnership = primeRuntimeContext?.nativeOwnership;
+      const adoptionReceipt = nativeOwnership?.adoptableReceipts.find(
+        (receipt) =>
+          receipt.instanceId === authority.providerInstanceId &&
+          receipt.effectiveHome === primeRuntimeContext?.effectiveHome &&
+          receipt.activeSessionId === authority.activeSessionId &&
+          receipt.nativeSessionId === authority.nativeSessionId &&
+          receipt.recovery?.threadId === authority.threadId &&
+          receipt.recovery.sessionIncarnationId === authority.sessionIncarnationId &&
+          receipt.recovery.admissionRequestId === authority.admissionRequestId &&
+          receipt.recovery.recoveryHandle === authority.recoveryHandle &&
+          receipt.recovery.ownershipGeneration === authority.ownershipGeneration,
+      );
+      if (nativeOwnership === undefined || adoptionReceipt === undefined) return null;
       const ownerToken = yield* randomUUIDv4;
       const claimedAt = yield* nowIso;
       const claimed = yield* recoveryLedger!.claim({
@@ -4686,13 +4741,38 @@ export function makePrimeAgentDaemonAdapter(
         updatedAt: claimedAt,
       });
       if (Option.isNone(claimed)) return null;
+      const ownershipClaimResult = yield* Effect.tryPromise(() =>
+        nativeOwnership.store.claimForAdoption({
+          receipt: adoptionReceipt,
+          nextConfigRevision: primeRuntimeContext!.configRevision,
+          recovery: {
+            threadId: authority.threadId,
+            sessionIncarnationId: authority.sessionIncarnationId,
+            admissionRequestId: authority.admissionRequestId,
+            recoveryHandle: authority.recoveryHandle,
+            ownershipGeneration: authority.ownershipGeneration,
+          },
+        }),
+      ).pipe(Effect.result);
+      const ownershipClaim = Result.isSuccess(ownershipClaimResult)
+        ? ownershipClaimResult.success
+        : undefined;
+      if (ownershipClaim === undefined) {
+        yield* recoveryLedger!.releaseClaim({
+          threadId: input.threadId,
+          ownerToken,
+          previousOwnerToken: authority.ownerToken,
+          updatedAt: yield* nowIso,
+        });
+        return null;
+      }
       const requestId = yield* randomUUIDv4;
       const mcpSession = candidateMcpSession;
       const mcpOwnerId =
         mcpSession === undefined
           ? `pylon:none:${yield* randomUUIDv4}`
           : `pylon:${mcpSession.providerSessionId}`;
-      pendingRecoveryStarts.set(input.threadId, {
+      const recoveryStart = {
         kind: "adopt",
         authority,
         previousOwnerToken: authority.ownerToken,
@@ -4700,7 +4780,10 @@ export function makePrimeAgentDaemonAdapter(
         requestId,
         mcpOwnerId,
         sessionFile: `${authority.nativeSessionId}.jsonl`,
-      });
+        ownershipClaim,
+        adoptionAttempted: false,
+      } satisfies PendingRecoveryStart;
+      pendingRecoveryStarts.set(input.threadId, recoveryStart);
       const started = yield* Effect.result(
         startSession({
           threadId: input.threadId,
@@ -4715,6 +4798,11 @@ export function makePrimeAgentDaemonAdapter(
       );
       if (Result.isFailure(started)) {
         pendingRecoveryStarts.delete(input.threadId);
+        if (!recoveryStart.adoptionAttempted) {
+          yield* Effect.tryPromise(() =>
+            nativeOwnership.store.releaseAdoptionClaim(ownershipClaim, adoptionReceipt),
+          ).pipe(Effect.ignore);
+        }
         yield* recoveryLedger!.releaseClaim({
           threadId: input.threadId,
           ownerToken,
@@ -7082,15 +7170,29 @@ export function makePrimeAgentDaemonAdapter(
                 if (context.recoveryOwnerToken !== undefined) {
                   context.stopped = true;
                   sessions.delete(context.threadId);
-                  if (context.eventFiber !== undefined) yield* Fiber.interrupt(context.eventFiber);
+                  if (context.eventFiber !== undefined) {
+                    yield* runBoundedTeardownBarrier({
+                      threadId: context.threadId,
+                      phase: "recovery-event-fiber-interrupt",
+                      effect: Fiber.interrupt(context.eventFiber).pipe(Effect.asVoid),
+                    });
+                  }
                   context.backgroundQuiescenceController?.abort();
                   context.backgroundQuiescenceController = undefined;
-                  yield* (context.runtime.detach ?? context.runtime.dispose).pipe(
-                    Effect.mapError((error) =>
-                      runtimeOperationError(context.threadId, "shutdown", error),
+                  yield* runBoundedTeardownBarrier({
+                    threadId: context.threadId,
+                    phase: "recovery-runtime-detach",
+                    effect: (context.runtime.detach ?? context.runtime.dispose).pipe(
+                      Effect.mapError((error) =>
+                        runtimeOperationError(context.threadId, "shutdown", error),
+                      ),
                     ),
-                  );
-                  yield* Scope.close(context.scope, Exit.void).pipe(Effect.ignore);
+                  });
+                  yield* runBoundedTeardownBarrier({
+                    threadId: context.threadId,
+                    phase: "recovery-session-scope-close",
+                    effect: Scope.close(context.scope, Exit.void),
+                  });
                   return undefined;
                 }
                 return yield* stopSessionInternal(context);
@@ -7098,17 +7200,27 @@ export function makePrimeAgentDaemonAdapter(
             ),
           { concurrency: "unbounded" },
         );
-        yield* Effect.forEach(
-          ordinaryCompletions.filter((completion) => completion !== undefined),
-          Deferred.await,
-          { concurrency: "unbounded", discard: true },
-        );
+        const ordinary = ordinaryCompletions.filter((completion) => completion !== undefined);
+        const drained = yield* Effect.forEach(ordinary, Deferred.await, {
+          concurrency: "unbounded",
+          discard: true,
+        }).pipe(Effect.timeoutOption(Duration.millis(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS)));
+        if (Option.isNone(drained) && ordinary.length > 0) {
+          yield* Effect.logWarning("Prime Agent shutdown reached its session teardown bound.", {
+            sessionCount: ordinary.length,
+            timeoutMs: PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS,
+          });
+        }
       });
 
     yield* Effect.addFinalizer(() =>
       shutdownPrimeAgentEventPubSub({
         component: "daemon",
         pubSub: runtimeEventPubSub,
+        // Recovery shutdown has three ordered bounded phases: event-fiber stop,
+        // owner detach, then scope close. Keep the outer event drain long enough
+        // for all phases while retaining one fixed total bound.
+        timeoutMs: PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS * 4,
         drain: shutdown().pipe(
           Effect.andThen(
             Effect.suspend(() =>
@@ -7121,7 +7233,13 @@ export function makePrimeAgentDaemonAdapter(
         ),
       }).pipe(
         Effect.ensuring(Queue.shutdown(orderedRuntimeEventQueue)),
-        Effect.ensuring(managedNativeEventLogger?.close() ?? Effect.void),
+        Effect.ensuring(
+          (managedNativeEventLogger?.close() ?? Effect.void).pipe(
+            Effect.interruptible,
+            Effect.timeoutOption(Duration.millis(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS)),
+            Effect.asVoid,
+          ),
+        ),
       ),
     );
 
