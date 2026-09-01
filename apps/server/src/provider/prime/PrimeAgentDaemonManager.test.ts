@@ -103,6 +103,7 @@ function fakeBridge(input: {
 
   class FakeClient implements PrimeAgentDaemonClient {
     isConnected = false;
+    hello = hello as NonNullable<PrimeAgentDaemonClient["hello"]>;
     readonly socketPath: string;
 
     constructor(socketPath: string) {
@@ -188,6 +189,8 @@ function fakeBridge(input: {
     protocolName: "prime-agent.daemon",
     protocolVersion: 7,
     negotiatedDaemonSessionCapabilitiesAvailable: false,
+    sdkFeatures: [],
+    recoverableOwnedSessionAdoptionAvailable: false,
     DaemonClient: FakeClient,
     DaemonAgentConnection: FakeAgentConnection,
     defaultDaemonSocketPath: () => "/tmp/user-prime-agent.sock",
@@ -203,6 +206,7 @@ function managerFixture(options?: {
   readonly tempDir?: string;
   readonly platform?: NodeJS.Platform;
   readonly injectBridge?: boolean;
+  readonly recoverable?: boolean;
 }) {
   const commands: CapturedCommand[] = [];
   const processes: FakeProcess[] = [];
@@ -218,6 +222,21 @@ function managerFixture(options?: {
     platform: options?.platform ?? "linux",
     tempDir: options?.tempDir ?? "/tmp",
   });
+  const recoveryHello = options?.recoverable
+    ? {
+        type: "daemon_hello",
+        socketPath: paths.socket,
+        protocol: { name: "prime-agent.daemon", version: 7 },
+        schemaRevision: 30,
+        supervisorGeneration: "supervisor-1",
+        serverCapabilities: [
+          ...PRIME_AGENT_REQUIRED_DAEMON_CAPABILITIES,
+          "daemon_recoverable_owned_session_adoption_v1",
+          "caller_owned_session_environment_cleanup_v1",
+          "authoritative_owned_session_cleanup_v1",
+        ],
+      }
+    : undefined;
   const bridge = fakeBridge({
     socket: paths.socket,
     processes,
@@ -227,9 +246,27 @@ function managerFixture(options?: {
     readinessFailures,
     connectionAvailable,
     calls,
-    ...(options?.hello === undefined ? {} : { hello: options.hello }),
+    ...(options?.hello === undefined && recoveryHello === undefined
+      ? {}
+      : { hello: options?.hello ?? recoveryHello }),
     ...(options?.failConnect === undefined ? {} : { failConnect: options.failConnect }),
   });
+  if (options?.recoverable) {
+    Object.assign(bridge, {
+      sdkFeatures: [
+        "recoverable_owned_session_adoption_v1",
+        "caller_owned_session_environment_cleanup_v1",
+      ],
+      recoverableOwnedSessionAdoptionAvailable: true,
+      createRecoverableOwnedSession: async () => {
+        throw new Error("not used by manager test");
+      },
+      adoptRecoverableOwnedSession: async () => {
+        throw new Error("not used by manager test");
+      },
+      confirmRecoverableOwnedSessionAdoption: async () => undefined,
+    });
+  }
   const spawner = Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) =>
@@ -261,6 +298,8 @@ function managerFixture(options?: {
     readinessRetryDelay: Duration.zero,
     readinessRetries: 4,
     shutdownTimeout: Duration.zero,
+    recoveryEnabled: options?.recoverable === true,
+    architecture: "arm64",
     ...(options?.injectBridge === false ? {} : { bridge }),
   }).pipe(Effect.provide(Layer.merge(NodeServices.layer, spawner)));
   return {
@@ -586,4 +625,24 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
       );
     },
   );
+
+  it.effect("never shuts down a compatible recovery supervisor retained by another process", () => {
+    const fixture = managerFixture({ existingLive: true, recoverable: true });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const manager = yield* fixture.make;
+        const client = yield* manager.openClient();
+        client.close();
+        expect(fixture.shutdownRequests).toEqual([]);
+        expect(fixture.commands).toHaveLength(0);
+      }),
+    ).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(fixture.shutdownRequests).toEqual([]);
+          expect(fixture.commands).toHaveLength(0);
+        }),
+      ),
+    );
+  });
 });

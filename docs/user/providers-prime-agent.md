@@ -128,8 +128,16 @@ negotiated, recovery is stricter: Pylon never copies missing prompt output from 
 provide complete event continuity, and the completed-message transcript must exactly match messages
 Pylon already received through attributed live events. Any extra snapshot message closes the uncertain
 session rather than guessing whether it was your answer or unrelated background output.
-Restarting the Pylon server is a separate boundary and does not yet adopt Prime work that is still running
-in another process.
+An active Full access turn can also survive a Pylon server restart when the exact Prime installation is
+Pylon managed and the replacement server can prove the same retained native execution and complete
+event history. Pylon restores the turn's scoped browser/MCP access before showing recovered activity and
+never sends your prompt again. The recovery identity and handle remain private to the server and are not
+sent to clients or written to public thread history.
+
+Supervised or other approval-required sessions do not use restart adoption. Neither do ACP sessions,
+stock or manually installed Prime distributions, native Windows, a replaced Prime supervisor, or any turn
+whose identity or complete event continuity cannot be proven. Those cases keep the existing orphaned
+session result rather than guessing, replaying the prompt, or exposing partial native work.
 
 Native Windows is not a Prime Agent provider runtime. Pylon does not fall back to ACP there. Use
 WSL2, where the server runs as Linux, or connect this client to another supported environment.

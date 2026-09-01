@@ -61,6 +61,7 @@ import Migration0046 from "./Migrations/046_ProjectionThreadLinkedPullRequest.ts
 import Migration0047 from "./Migrations/047_ProjectionThreadsUnsettledAt.ts";
 import Migration0048 from "./Migrations/048_ProjectionThreadSessionPendingTurnRequest.ts";
 import Migration0049 from "./Migrations/049_ProjectionThreadSessionPendingStop.ts";
+import Migration0050 from "./Migrations/050_PrimeAgentRecoveryLedger.ts";
 /**
  * Migration loader with all migrations defined inline.
  *
@@ -144,6 +145,7 @@ export const migrationEntries = [
   [47, "ProjectionThreadsUnsettledAt", Migration0047],
   [48, "ProjectionThreadSessionPendingTurnRequest", Migration0048],
   [49, "ProjectionThreadSessionPendingStop", Migration0049],
+  [50, "PrimeAgentRecoveryLedger", Migration0050],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

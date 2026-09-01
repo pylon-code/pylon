@@ -33,6 +33,8 @@ export interface PrimeAgentBackendNegotiationInput {
   readonly environment: NodeJS.ProcessEnv;
   readonly stateDir: string;
   readonly providerInstanceId: ProviderInstanceId;
+  readonly recoveryEnabled?: boolean;
+  readonly architecture?: string;
 }
 
 export interface PrimeAgentBackendNegotiationDependencies<
@@ -105,6 +107,8 @@ export function negotiatePrimeAgentBackend<
         environment: input.environment,
         stateDir: input.stateDir,
         providerInstanceId: input.providerInstanceId,
+        ...(input.recoveryEnabled === undefined ? {} : { recoveryEnabled: input.recoveryEnabled }),
+        ...(input.architecture === undefined ? {} : { architecture: input.architecture }),
       }),
     );
     if (Result.isFailure(manager)) {

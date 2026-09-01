@@ -43,10 +43,14 @@ const makeThread = (
   },
 });
 
-const makeProviderService = (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
+const makeProviderService = (
+  liveThreadIds: ReadonlyArray<ThreadId> = [],
+  recoverRestartSessions: () => Effect.Effect<void> = () => Effect.void,
+) =>
   ({
     startSession: () => Effect.die("unused"),
     sendTurn: () => Effect.die("unused"),
+    recoverRestartSessions,
     interruptTurn: () => Effect.die("unused"),
     respondToRequest: () => Effect.die("unused"),
     respondToUserInput: () => Effect.die("unused"),
@@ -283,6 +287,48 @@ it.effect("retries failed projections and continues after a persistent failure",
         ]),
       ),
     ),
+  );
+});
+
+it.effect("runs restart adoption before taking the orphan inventory", () => {
+  const recovered = makeThread("thread-recovered", "running", TurnId.make("turn-recovered"));
+  const liveThreadIds: ThreadId[] = [];
+  const order: string[] = [];
+  const provider = {
+    ...makeProviderService(liveThreadIds, () =>
+      Effect.sync(() => {
+        order.push("recover");
+        liveThreadIds.push(recovered.id);
+      }),
+    ),
+    listSessions: () =>
+      Effect.sync(() => {
+        order.push("inventory");
+        return liveThreadIds.map((threadId) => ({ threadId }) as never);
+      }),
+  };
+  return ServerRuntimeStartup.reconcileProviderSessions.pipe(
+    Effect.provideService(
+      ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+      queryWithThreads([recovered]),
+    ),
+    Effect.provideService(ProviderService.ProviderService, provider),
+    Effect.provideService(ProviderSessionDirectory.ProviderSessionDirectory, {
+      getBinding: () => Effect.die("recovered thread must not be orphaned"),
+      upsert: () => Effect.die("recovered thread must not be orphaned"),
+      removeExact: () => Effect.die("unused"),
+      getProvider: () => Effect.die("unused"),
+      listThreadIds: () => Effect.die("unused"),
+      listBindings: () => Effect.die("unused"),
+    }),
+    Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
+      readEvents: () => Stream.empty,
+      dispatch: () => Effect.die("recovered thread must not be orphaned"),
+      streamDomainEvents: Stream.empty,
+      latestSequence: Effect.succeed(0),
+    }),
+    Effect.provide(NodeServices.layer),
+    Effect.tap(() => Effect.sync(() => assert.deepStrictEqual(order, ["recover", "inventory"]))),
   );
 });
 

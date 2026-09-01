@@ -90,6 +90,9 @@ export interface ProviderServiceShape {
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
 
+  /** Adopt eligible surviving Prime executions before startup orphan reconciliation. */
+  readonly recoverRestartSessions?: () => Effect.Effect<void, ProviderServiceError>;
+
   /**
    * Interrupt a running provider turn.
    */

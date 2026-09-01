@@ -37,6 +37,8 @@ import * as Stream from "effect/Stream";
 import {
   type PrimeAgentDaemonAcpMcpServer,
   type PrimeAgentDaemonAgentConnection,
+  type PrimeAgentDaemonEventCursor,
+  type PrimeAgentRecoverableOwnedSessionAdoptionProof,
   type PrimeAgentDaemonExtensionUiResponse,
   type PrimeAgentDaemonImage,
   type PrimeAgentDaemonQueueMode,
@@ -883,6 +885,45 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
   readonly resumeCursor?: unknown;
   /** Private stable native id selected from the server-owned identity sidecar. */
   readonly resumeSessionId?: string;
+  readonly recovery?:
+    | {
+        readonly kind: "create";
+        readonly requestId: string;
+        readonly correlationId: string;
+        readonly mcpOwnerId: string;
+        readonly onAuthorityReady: (authority: {
+          readonly recoveryHandle: string;
+          readonly supervisorGeneration: string;
+          readonly ownershipGeneration: number;
+          readonly activeSessionId: string;
+          readonly sessionId: string;
+          readonly sessionFile: string;
+          readonly cursor: PrimeAgentDaemonEventCursor;
+          readonly recoveryConfig: Readonly<Record<string, unknown>>;
+          readonly launchEnvironment: Readonly<Record<string, string>>;
+          readonly daemonCapabilities: ReadonlyArray<string>;
+          readonly schemaRevision: number;
+        }) => Promise<void>;
+      }
+    | {
+        readonly kind: "adopt";
+        readonly requestId: string;
+        readonly recoveryHandle: string;
+        readonly expectedSupervisorGeneration: string;
+        readonly activeSessionId: string;
+        readonly sessionId: string;
+        readonly sessionFile: string;
+        readonly correlationId: string;
+        readonly cursor: PrimeAgentDaemonEventCursor;
+        readonly previousMcpOwnerId: string;
+        readonly mcpOwnerId: string;
+        readonly recoveryConfig: Readonly<Record<string, unknown>>;
+        readonly launchEnvironment: Readonly<Record<string, string>>;
+        readonly onAdoptionCommitted: (authority: {
+          readonly recoveryHandle: string;
+          readonly proof: PrimeAgentRecoverableOwnedSessionAdoptionProof;
+        }) => Promise<void>;
+      };
 }
 
 export interface PrimeAgentDaemonPromptInput {
@@ -1139,6 +1180,14 @@ export interface PrimeAgentDaemonSessionRuntime {
     PrimeAgentDaemonSessionStats,
     PrimeAgentDaemonSessionRuntimeError
   >;
+  readonly recoveryCorrelationId?: string;
+  readonly recoveryCursor?: PrimeAgentDaemonEventCursor;
+  readonly recoveryCursorForEvent?: (
+    event: PrimeDaemonEvent,
+  ) => PrimeAgentDaemonEventCursor | undefined;
+  /** Close only this Pylon owner. The recoverable worker and MCP authority stay with the daemon. */
+  readonly detach?: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  /** Explicit cleanup requires Prime's authoritative owned-session result. */
   readonly dispose: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
 }
 
@@ -1298,6 +1347,19 @@ function safeCatalogModels(
   return Option.some(safeModels);
 }
 
+function recoveryCursorFromSnapshot(value: unknown): PrimeAgentDaemonEventCursor | undefined {
+  if (!Predicate.isObject(value) || !Predicate.isObject(value.lastEventCursor)) return undefined;
+  const generation = value.lastEventCursor.generation;
+  const sequence = value.lastEventCursor.sequence;
+  return typeof generation === "string" &&
+    generation.length > 0 &&
+    Number.isSafeInteger(sequence) &&
+    typeof sequence === "number" &&
+    sequence >= 0
+    ? { generation, sequence }
+    : undefined;
+}
+
 export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemonSessionRuntime")(
   function* (
     input: PrimeAgentDaemonSessionRuntimeInput,
@@ -1351,6 +1413,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let connection: PrimeAgentDaemonAgentConnection | undefined;
     let unsubscribe: (() => void) | undefined;
     let disposed = false;
+    let detached = false;
     let disposeStarted = false;
     const disposeCompletion = yield* Deferred.make<void, PrimeAgentDaemonSessionRuntimeError>();
     let needsResumeAfterAbort = false;
@@ -1770,99 +1833,261 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       ...(configuredModel && configuredModel !== "default" ? { model: configuredModel } : {}),
       ...(input.thinkingLevel === undefined ? {} : { thinking: input.thinkingLevel }),
     };
-    const createCommand = {
-      type: "create",
-      lifecycle: "client_owned",
-      ...(resumeSessionId === undefined
-        ? { continueRecent: shouldContinue }
-        : { sessionPath: resumeSessionId, continueRecent: false }),
-      config: sessionRuntimeConfig,
-    } as const;
-    const requestCreate = Effect.tryPromise({
-      try: () => client.request(createCommand, COMMAND_TIMEOUT_MS),
-      catch: () =>
-        runtimeError(
-          "create-session",
-          "request-failed",
-          "The daemon did not complete the create command.",
-        ),
-    }).pipe(Effect.onError(() => closeClient));
-    const createResponse = yield* Effect.gen(function* () {
-      let response = yield* requestCreate;
-      for (const delay of OWNED_SESSION_RELEASE_RETRY_DELAYS_MS) {
-        if (!shouldContinue || Option.isNone(decodeCreateSessionAlreadyActiveFailure(response)))
-          break;
-        yield* Effect.sleep(delay);
-        response = yield* requestCreate;
-      }
-      return response;
-    }).pipe(Effect.onInterrupt(() => closeClient));
-    const created = decodeCreateSuccess(createResponse);
-    if (Option.isNone(created)) {
-      yield* closeClient;
-      const alreadyActive = decodeCreateSessionAlreadyActiveFailure(createResponse);
-      if (Option.isSome(alreadyActive)) {
+    let activeSessionId: string;
+    let sessionId: string;
+    let sessionFile: string;
+    let createdRecovery:
+      | {
+          readonly recoveryHandle: string;
+          readonly supervisorGeneration: string;
+          readonly ownershipGeneration: number;
+        }
+      | undefined;
+    let adoptedRecovery:
+      | {
+          readonly recoveryHandle: string;
+          readonly proof: PrimeAgentRecoverableOwnedSessionAdoptionProof;
+        }
+      | undefined;
+    let releaseManagerRecoveryRetention: (() => void) | undefined;
+    let confirmAdoption: (() => Promise<void>) | undefined;
+    const recoveryConnectionOptions = {
+      closeClientOnDispose: false,
+      supportsExtensionUi: true,
+      ...(input.disableAutoReconnect === true ? {} : { recoverDaemon: input.manager.recover }),
+    };
+
+    if (input.recovery?.kind === "create") {
+      const recovery = input.recovery;
+      const createRecoverableOwnedSession = input.manager.bridge.createRecoverableOwnedSession;
+      if (
+        !input.manager.recoveryEnabled ||
+        !input.manager.bridge.recoverableOwnedSessionAdoptionAvailable ||
+        !Predicate.isFunction(createRecoverableOwnedSession)
+      ) {
+        yield* closeClient;
         return yield* runtimeError(
           "create-session",
-          "session-already-active",
-          "SessionAlreadyActiveError: Prime Agent session is already active in another client.",
+          "incompatible-api",
+          "Recoverable Prime Agent execution is unavailable.",
         );
       }
-      const failed = decodeCreateFailure(createResponse);
-      return yield* runtimeError(
-        "create-session",
-        Option.isSome(failed) ? "request-failed" : "invalid-response",
-        Option.isSome(failed)
-          ? "The daemon rejected the create command."
-          : "The daemon returned an invalid create response.",
+      const created = yield* Effect.tryPromise({
+        try: () =>
+          createRecoverableOwnedSession(client, {
+            requestId: recovery.requestId,
+            correlationId: recovery.correlationId,
+            mcpOwnerId: recovery.mcpOwnerId,
+            config: sessionRuntimeConfig,
+            ...(resumeSessionId === undefined
+              ? { continueRecent: shouldContinue }
+              : { sessionPath: resumeSessionId, continueRecent: false }),
+            launchEnv: input.manager.launchEnvironment ?? {},
+            connectionOptions: recoveryConnectionOptions,
+          }),
+        catch: () =>
+          runtimeError(
+            "create-session",
+            "request-failed",
+            "Recoverable Prime Agent execution could not be created.",
+          ),
+      }).pipe(Effect.onError(() => closeClient));
+      connection = created.connection;
+      const state = created.state;
+      activeSessionId =
+        typeof state.activeSessionId === "string" ? state.activeSessionId.trim() : "";
+      sessionId = typeof state.sessionId === "string" ? state.sessionId.trim() : "";
+      sessionFile = typeof state.sessionFile === "string" ? state.sessionFile.trim() : "";
+      createdRecovery = {
+        recoveryHandle: created.recoveryHandle,
+        supervisorGeneration: created.supervisorGeneration,
+        ownershipGeneration: created.ownershipGeneration,
+      };
+      releaseManagerRecoveryRetention = input.manager.retainForRecovery?.();
+    } else if (input.recovery?.kind === "adopt") {
+      const recovery = input.recovery;
+      const adoptRecoverableOwnedSession = input.manager.bridge.adoptRecoverableOwnedSession;
+      const confirmRecoverableOwnedSessionAdoption =
+        input.manager.bridge.confirmRecoverableOwnedSessionAdoption;
+      if (
+        !input.manager.recoveryEnabled ||
+        !input.manager.bridge.recoverableOwnedSessionAdoptionAvailable ||
+        !Predicate.isFunction(adoptRecoverableOwnedSession) ||
+        !Predicate.isFunction(confirmRecoverableOwnedSessionAdoption)
+      ) {
+        yield* closeClient;
+        return yield* runtimeError(
+          "attach-session",
+          "incompatible-api",
+          "Recoverable Prime Agent execution is unavailable.",
+        );
+      }
+      const adopted = yield* Effect.tryPromise({
+        try: () =>
+          adoptRecoverableOwnedSession(client, {
+            requestId: recovery.requestId,
+            recoveryHandle: recovery.recoveryHandle,
+            expectedSupervisorGeneration: recovery.expectedSupervisorGeneration,
+            activeSessionId: recovery.activeSessionId,
+            sessionId: recovery.sessionId,
+            correlationId: recovery.correlationId,
+            cursor: recovery.cursor,
+            previousMcpOwnerId: recovery.previousMcpOwnerId,
+            mcpOwnerId: recovery.mcpOwnerId,
+            config: recovery.recoveryConfig,
+            launchEnv: recovery.launchEnvironment,
+            connectionOptions: recoveryConnectionOptions,
+          }),
+        catch: () =>
+          runtimeError(
+            "attach-session",
+            "request-failed",
+            "Recoverable Prime Agent execution could not be adopted.",
+          ),
+      }).pipe(Effect.onError(() => closeClient));
+      releaseManagerRecoveryRetention = input.manager.retainForRecovery?.();
+      yield* Effect.tryPromise({
+        try: () =>
+          recovery.onAdoptionCommitted({
+            recoveryHandle: adopted.recoveryHandle,
+            proof: adopted.proof,
+          }),
+        catch: () =>
+          runtimeError(
+            "attach-session",
+            "request-failed",
+            "Recoverable Prime Agent ownership could not be durably recorded.",
+          ),
+      }).pipe(
+        Effect.onError(() =>
+          Effect.promise(async () => {
+            await adopted.connection.dispose().catch(() => undefined);
+            client.close();
+          }),
+        ),
       );
+      confirmAdoption = () =>
+        confirmRecoverableOwnedSessionAdoption(client, {
+          requestId: recovery.requestId,
+          recoveryHandle: adopted.recoveryHandle,
+          proof: adopted.proof,
+        });
+      connection = adopted.connection;
+      activeSessionId = recovery.activeSessionId;
+      sessionId = recovery.sessionId;
+      sessionFile = recovery.sessionFile;
+      adoptedRecovery = { recoveryHandle: adopted.recoveryHandle, proof: adopted.proof };
+    } else {
+      const createCommand = {
+        type: "create",
+        lifecycle: "client_owned",
+        ...(resumeSessionId === undefined
+          ? { continueRecent: shouldContinue }
+          : { sessionPath: resumeSessionId, continueRecent: false }),
+        config: sessionRuntimeConfig,
+      } as const;
+      const requestCreate = Effect.tryPromise({
+        try: () => client.request(createCommand, COMMAND_TIMEOUT_MS),
+        catch: () =>
+          runtimeError(
+            "create-session",
+            "request-failed",
+            "The daemon did not complete the create command.",
+          ),
+      }).pipe(Effect.onError(() => closeClient));
+      const createResponse = yield* Effect.gen(function* () {
+        let response = yield* requestCreate;
+        for (const delay of OWNED_SESSION_RELEASE_RETRY_DELAYS_MS) {
+          if (!shouldContinue || Option.isNone(decodeCreateSessionAlreadyActiveFailure(response)))
+            break;
+          yield* Effect.sleep(delay);
+          response = yield* requestCreate;
+        }
+        return response;
+      }).pipe(Effect.onInterrupt(() => closeClient));
+      const created = decodeCreateSuccess(createResponse);
+      if (Option.isNone(created)) {
+        yield* closeClient;
+        const alreadyActive = decodeCreateSessionAlreadyActiveFailure(createResponse);
+        if (Option.isSome(alreadyActive)) {
+          return yield* runtimeError(
+            "create-session",
+            "session-already-active",
+            "SessionAlreadyActiveError: Prime Agent session is already active in another client.",
+          );
+        }
+        const failed = decodeCreateFailure(createResponse);
+        return yield* runtimeError(
+          "create-session",
+          Option.isSome(failed) ? "request-failed" : "invalid-response",
+          Option.isSome(failed)
+            ? "The daemon rejected the create command."
+            : "The daemon returned an invalid create response.",
+        );
+      }
+      activeSessionId = created.value.data.activeSessionId.trim();
+      sessionId = created.value.data.sessionId.trim();
+      sessionFile = created.value.data.sessionFile.trim();
+      const completeUnattachedOwnedSession = Effect.tryPromise({
+        try: () =>
+          client.request({ type: "complete_owned_session", activeSessionId }, COMMAND_TIMEOUT_MS),
+        catch: () => undefined,
+      }).pipe(Effect.ignore, Effect.ensuring(closeClient));
+      if (activeSessionId.length === 0) {
+        yield* completeUnattachedOwnedSession;
+        return yield* runtimeError(
+          "create-session",
+          "invalid-response",
+          "The daemon create response omitted its active session identifier.",
+        );
+      }
+      if (
+        !/^[A-Za-z0-9_-]{1,256}$/.test(sessionId) ||
+        primeAgentSessionFileName(sessionDir, sessionFile) === undefined ||
+        (resumeSessionId !== undefined && sessionId !== resumeSessionId)
+      ) {
+        yield* completeUnattachedOwnedSession;
+        return yield* runtimeError(
+          "create-session",
+          "invalid-response",
+          "The daemon create response did not match the isolated durable session identity.",
+        );
+      }
+      connection = yield* Effect.tryPromise({
+        try: () =>
+          input.manager.bridge.DaemonAgentConnection.attach(client, activeSessionId, {
+            closeClientOnDispose: false,
+            supportsExtensionUi: true,
+            ownedSession: true,
+            ownedSessionRecoveryConfig: sessionRuntimeConfig,
+            ...(input.disableAutoReconnect === true
+              ? {}
+              : { recoverDaemon: input.manager.recover }),
+          }),
+        catch: () =>
+          runtimeError(
+            "attach-session",
+            "request-failed",
+            "Could not attach to the created daemon session.",
+          ),
+      }).pipe(Effect.onError(() => completeUnattachedOwnedSession));
     }
-    const activeSessionId = created.value.data.activeSessionId.trim();
-    if (activeSessionId.length === 0) {
-      client.close();
-      return yield* runtimeError(
-        "create-session",
-        "invalid-response",
-        "The daemon create response omitted its active session identifier.",
-      );
-    }
-    const completeUnattachedOwnedSession = Effect.tryPromise({
-      try: () =>
-        client.request({ type: "complete_owned_session", activeSessionId }, COMMAND_TIMEOUT_MS),
-      catch: () => undefined,
-    }).pipe(Effect.ignore, Effect.ensuring(closeClient));
 
-    const sessionId = created.value.data.sessionId.trim();
-    const sessionFile = created.value.data.sessionFile.trim();
     if (
+      activeSessionId.length === 0 ||
       !/^[A-Za-z0-9_-]{1,256}$/.test(sessionId) ||
       primeAgentSessionFileName(sessionDir, sessionFile) === undefined ||
       (resumeSessionId !== undefined && sessionId !== resumeSessionId)
     ) {
-      yield* completeUnattachedOwnedSession;
+      yield* Effect.promise(() => connection?.dispose().catch(() => undefined));
+      yield* closeClient;
+      releaseManagerRecoveryRetention?.();
       return yield* runtimeError(
         "create-session",
         "invalid-response",
-        "The daemon create response did not match the isolated durable session identity.",
+        "The daemon session authority did not match the isolated durable session identity.",
       );
     }
-
-    connection = yield* Effect.tryPromise({
-      try: () =>
-        input.manager.bridge.DaemonAgentConnection.attach(client, activeSessionId, {
-          closeClientOnDispose: false,
-          supportsExtensionUi: true,
-          ownedSession: true,
-          ownedSessionRecoveryConfig: sessionRuntimeConfig,
-          ...(input.disableAutoReconnect === true ? {} : { recoverDaemon: input.manager.recover }),
-        }),
-      catch: () =>
-        runtimeError(
-          "attach-session",
-          "request-failed",
-          "Could not attach to the created daemon session.",
-        ),
-    }).pipe(Effect.onError(() => completeUnattachedOwnedSession));
 
     const closeUnusableAttachedConnection = Effect.promise(async () => {
       await connection?.dispose().catch(() => undefined);
@@ -1957,7 +2182,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     interface QueuedRuntimeEvent {
       readonly event: PrimeDaemonEvent;
       readonly weight: number;
+      readonly recoveryCursor?: PrimeAgentDaemonEventCursor;
     }
+    const consumedRecoveryCursors = new WeakMap<object, PrimeAgentDaemonEventCursor>();
     let queuedRuntimeEventWeight = 0;
     let runtimeEventIngressFailed = false;
     let runtimeEventCapacityFailed = false;
@@ -2097,6 +2324,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       onCommit: () => void = () => undefined,
       ordinaryIngressFence?: OrdinaryIngressFence,
       providerRouteRetirement?: ProviderRouteRetirement,
+      recoveryCursor?: PrimeAgentDaemonEventCursor,
     ) => {
       const routeIsCurrent = () =>
         ordinaryIngressFenceIsCurrent(ordinaryIngressFence) &&
@@ -2107,7 +2335,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         return proofEpoch === undefined ? Effect.void : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
       }
       const weight = boundedCorrelatedProofRouteWeight(event);
-      const queued = { event, weight } satisfies QueuedRuntimeEvent;
+      const queued = {
+        event,
+        weight,
+        ...(recoveryCursor === undefined ? {} : { recoveryCursor }),
+      } satisfies QueuedRuntimeEvent;
       if (event._tag === "SessionClosed") {
         runtimeEventIngressFailed = true;
         settleReconnectResolution(connectionGeneration, false);
@@ -2781,6 +3013,19 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       ) {
         return Effect.void;
       }
+      const rawRecoveryCursor =
+        Predicate.isObject(raw) &&
+        Predicate.isObject(raw.meta) &&
+        Predicate.isObject(raw.meta.cursor) &&
+        typeof raw.meta.cursor.generation === "string" &&
+        typeof raw.meta.cursor.sequence === "number" &&
+        Number.isSafeInteger(raw.meta.cursor.sequence) &&
+        raw.meta.cursor.sequence >= 0
+          ? {
+              generation: raw.meta.cursor.generation,
+              sequence: raw.meta.cursor.sequence,
+            }
+          : undefined;
       let decoded = safeEvent(
         decodePrimeAgentDaemonEvent(raw, {
           correlatedPromptLifecycle: correlatedPromptLifecycleAvailable,
@@ -3069,6 +3314,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         },
         ordinaryIngressFence,
         providerRouteRetirement,
+        rawRecoveryCursor,
       );
     };
     const routeRawEvent = (
@@ -7437,6 +7683,71 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       } satisfies PrimeAgentDaemonSessionStats;
     });
 
+    const recoveryCursor = adoptedRecovery?.proof.cursor ?? recoveryCursorFromSnapshot(rawSnapshot);
+    if (createdRecovery !== undefined) {
+      const creationRecovery = input.recovery;
+      if (recoveryCursor === undefined || creationRecovery?.kind !== "create") {
+        unsubscribe();
+        yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
+        client.close();
+        releaseManagerRecoveryRetention?.();
+        return yield* runtimeError(
+          "initial-snapshot",
+          "invalid-response",
+          "Recoverable Prime Agent execution omitted its authoritative event cursor.",
+        );
+      }
+      yield* Effect.tryPromise({
+        try: () =>
+          creationRecovery.onAuthorityReady({
+            ...createdRecovery,
+            activeSessionId,
+            sessionId,
+            sessionFile,
+            cursor: recoveryCursor,
+            recoveryConfig: sessionRuntimeConfig,
+            launchEnvironment: input.manager.launchEnvironment ?? {},
+            daemonCapabilities: [...(client.hello?.serverCapabilities ?? [])],
+            schemaRevision: client.hello?.schemaRevision ?? 0,
+          }),
+        catch: () =>
+          runtimeError(
+            "create-session",
+            "request-failed",
+            "Recoverable Prime Agent authority could not be durably recorded.",
+          ),
+      }).pipe(
+        Effect.onError(() =>
+          Effect.promise(async () => {
+            await connection
+              ?.disposeOwnedSession?.({ timeoutMs: COMMAND_TIMEOUT_MS })
+              .catch(() => undefined);
+            client.close();
+            releaseManagerRecoveryRetention?.();
+          }),
+        ),
+      );
+    }
+
+    if (confirmAdoption !== undefined) {
+      yield* Effect.tryPromise({
+        try: confirmAdoption,
+        catch: () =>
+          runtimeError(
+            "attach-session",
+            "request-failed",
+            "Recoverable Prime Agent ownership could not be durably confirmed.",
+          ),
+      }).pipe(
+        Effect.onError(() =>
+          Effect.promise(async () => {
+            await connection?.dispose().catch(() => undefined);
+            client.close();
+          }),
+        ),
+      );
+    }
+
     // The initial proof cannot survive any overlapping attachment generation, even
     // if a newer proof has already appeared by the end of these asynchronous reads.
     if (
@@ -7461,6 +7772,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     yield* offerBackpressuredRuntimeEvent({
       event: initialRuntimeEvent,
       weight: boundedCorrelatedProofRouteWeight(initialRuntimeEvent),
+      ...(recoveryCursor === undefined ? {} : { recoveryCursor }),
     }).pipe(
       Effect.asVoid,
       Effect.catch(() =>
@@ -7498,28 +7810,91 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     // synchronous assignment. Later events enter the normal bounded queue path.
     initializing = false;
 
+    const retireLocalOwner = Effect.sync(() => {
+      retireOrdinaryIngressFence();
+      retireCurrentOrdinaryWorkerCloseRoute();
+      retireProviderRoute(correlatedProviderRouteRetirement);
+      settleReconnectResolution(connectionGeneration, false);
+      settleManagedRecovery(managedRecoveryResolution, false);
+      mcpRecoveryPending = false;
+      mcpRecoveryFailed = true;
+      settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
+      const workerRecovery = activeWorkerRecovery;
+      if (workerRecovery !== undefined) {
+        workerRecovery.provisionalSnapshot = undefined;
+        settleReconnectResolution(workerRecovery.resolution.generation, false);
+        if (activeWorkerRecovery === workerRecovery) activeWorkerRecovery = undefined;
+      }
+      unsubscribe?.();
+    });
+
+    const detach = Effect.uninterruptible(
+      Effect.gen(function* () {
+        if (detached || disposed) return;
+        detached = true;
+        disposeStarted = true;
+        yield* retireLocalOwner;
+        yield* closeClient;
+        yield* Queue.shutdown(eventQueue);
+        yield* Queue.shutdown(runtimeEventWeightCapacityAvailable);
+        yield* Deferred.succeed(disposeCompletion, undefined).pipe(Effect.ignore);
+      }),
+    );
+
     const dispose = Effect.uninterruptibleMask((restore) => {
       // Scope cleanup and explicit teardown can race. Every caller joins the
       // first bounded native disposal instead of treating "started" as done.
       if (disposeStarted) return restore(Deferred.await(disposeCompletion));
       disposeStarted = true;
 
-      const nativeDispose = Effect.tryPromise({
-        try: () => connection!.dispose(),
-        catch: () =>
-          runtimeError("dispose", "request-failed", "Could not dispose the daemon session."),
-      }).pipe(
-        Effect.flatMap((output) =>
-          output === undefined
-            ? Effect.void
-            : Effect.fail(
-                runtimeError(
-                  "dispose",
-                  "invalid-response",
-                  "The daemon dispose operation returned an invalid response.",
-                ),
+      const recoveryOwned = input.recovery !== undefined;
+      const nativeDispose = recoveryOwned
+        ? Effect.tryPromise({
+            try: async () => {
+              const cleanup = connection?.disposeOwnedSession;
+              if (!Predicate.isFunction(cleanup)) {
+                throw new Error("authoritative cleanup is unavailable");
+              }
+              const result = await cleanup.call(connection, { timeoutMs: COMMAND_TIMEOUT_MS });
+              if (
+                !Predicate.isObject(result) ||
+                (result.status !== "completed" && result.status !== "already_completed")
+              ) {
+                throw new Error("authoritative cleanup was not proven");
+              }
+            },
+            catch: () =>
+              runtimeError(
+                "dispose",
+                "request-failed",
+                "Prime Agent could not prove authoritative native cleanup.",
               ),
-        ),
+          }).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                releaseManagerRecoveryRetention?.();
+                releaseManagerRecoveryRetention = undefined;
+              }),
+            ),
+          )
+        : Effect.tryPromise({
+            try: () => connection!.dispose(),
+            catch: () =>
+              runtimeError("dispose", "request-failed", "Could not dispose the daemon session."),
+          }).pipe(
+            Effect.flatMap((output) =>
+              output === undefined
+                ? Effect.void
+                : Effect.fail(
+                    runtimeError(
+                      "dispose",
+                      "invalid-response",
+                      "The daemon dispose operation returned an invalid response.",
+                    ),
+                  ),
+            ),
+          );
+      const boundedNativeDispose = nativeDispose.pipe(
         Effect.timeoutOrElse({
           duration: COMMAND_TIMEOUT_MS,
           orElse: () =>
@@ -7530,37 +7905,21 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             ),
         }),
       );
-      const beginDisposeOwner = Effect.sync(() => {
-        retireOrdinaryIngressFence();
-        retireCurrentOrdinaryWorkerCloseRoute();
-        retireProviderRoute(correlatedProviderRouteRetirement);
-        settleReconnectResolution(connectionGeneration, false);
-        settleManagedRecovery(managedRecoveryResolution, false);
-        mcpRecoveryPending = false;
-        mcpRecoveryFailed = true;
-        settleQuiescenceMcpRecovery(quiescenceMcpRecovery, false);
-        const workerRecovery = activeWorkerRecovery;
-        if (workerRecovery !== undefined) {
-          workerRecovery.provisionalSnapshot = undefined;
-          settleReconnectResolution(workerRecovery.resolution.generation, false);
-          if (activeWorkerRecovery === workerRecovery) activeWorkerRecovery = undefined;
-        }
-        unsubscribe?.();
-        return [...activePrivateSideQuestions.entries()];
-      });
+      const beginDisposeOwner = retireLocalOwner.pipe(
+        Effect.map(() => [...activePrivateSideQuestions.entries()] as const),
+      );
       const disposeOwnerBody = (
         nativeSideQuestions: ReadonlyArray<readonly [string, ActivePrivateSideQuestion]>,
       ) =>
         Effect.forEach(nativeSideQuestions, ([nativeId, active]) =>
           bestEffortAbortSideQuestion(nativeId, active),
-        ).pipe(Effect.andThen(failActivePrivateSideQuestions()), Effect.andThen(releaseMcpServer));
+        ).pipe(
+          Effect.andThen(failActivePrivateSideQuestions()),
+          Effect.andThen(recoveryOwned ? Effect.void : releaseMcpServer),
+        );
       return beginDisposeOwner.pipe(
-        // Election stays masked through synchronous route retirement and unsubscribe.
-        // Only the remaining owner body observes an interrupt pending since election.
         Effect.flatMap((nativeSideQuestions) => restore(disposeOwnerBody(nativeSideQuestions))),
-        // These finalizers must be installed outside restore: a pending interrupt may
-        // prevent the restored body from starting, but it cannot skip native teardown.
-        Effect.onExit(() => nativeDispose),
+        Effect.onExit(() => boundedNativeDispose),
         Effect.ensuring(
           Effect.gen(function* () {
             disposed = true;
@@ -7572,12 +7931,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             yield* Queue.shutdown(runtimeEventWeightCapacityAvailable);
           }),
         ),
-        // Publish only the final Exit after every cleanup and combined cleanup defect.
         Effect.onExit((exit) => Deferred.done(disposeCompletion, exit).pipe(Effect.ignore)),
       );
     });
 
-    yield* Effect.addFinalizer(() => dispose.pipe(Effect.ignore));
+    yield* Effect.addFinalizer(() => (detached ? Effect.void : dispose.pipe(Effect.ignore)));
 
     return {
       resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
@@ -7615,6 +7973,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       events: Stream.fromQueue(eventQueue).pipe(
         Stream.map((queued) => {
           releaseQueuedRuntimeEventWeight(queued.weight);
+          if (queued.recoveryCursor !== undefined) {
+            consumedRecoveryCursors.set(queued.event, queued.recoveryCursor);
+          }
           return queued.event;
         }),
       ),
@@ -7680,6 +8041,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       setServiceTier,
       respondToExtensionUiRequest,
       getSessionStats,
+      ...(input.recovery === undefined
+        ? {}
+        : {
+            recoveryCorrelationId: input.recovery.correlationId,
+            ...(recoveryCursor === undefined ? {} : { recoveryCursor }),
+          }),
+      recoveryCursorForEvent: (event) => consumedRecoveryCursors.get(event),
+      detach,
       dispose,
     } satisfies PrimeAgentDaemonSessionRuntime;
   },
