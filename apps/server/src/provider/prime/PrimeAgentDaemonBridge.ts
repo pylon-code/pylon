@@ -14,6 +14,8 @@ export const PRIME_AGENT_DAEMON_PROTOCOL_NAME = "prime-agent.daemon" as const;
 export const PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION = 7 as const;
 export const PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE =
   "negotiated_daemon_session_capabilities_v1" as const;
+export const PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE =
+  "caller_owned_session_environment_cleanup_v1" as const;
 
 const bridgeErrorReason = Schema.Literals([
   "path-not-found",
@@ -49,6 +51,22 @@ export interface PrimeAgentDaemonHello {
   readonly buildId?: string;
   readonly supervisorGeneration?: string;
   readonly serverCapabilities: ReadonlyArray<string>;
+}
+
+export interface PrimeAgentOwnedSessionDaemonIdentity {
+  readonly protocolName: string;
+  readonly protocolVersion: number;
+  readonly schemaRevision: number;
+  readonly appVersion?: string;
+  readonly buildId?: string;
+  readonly supervisorGeneration: string;
+  readonly transportGeneration: number;
+}
+
+export interface PrimeAgentOwnedSessionContractProof {
+  readonly feature: typeof PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE;
+  readonly status: "attached";
+  readonly daemon: PrimeAgentOwnedSessionDaemonIdentity;
 }
 
 export interface PrimeAgentDaemonEventCursor {
@@ -155,7 +173,7 @@ export interface PrimeAgentDaemonAgentConnection {
   ) => Promise<unknown>;
   readonly cancelPromptLifecycle?: (correlationId: string) => Promise<unknown>;
   readonly getPromptLifecycles?: () => Promise<unknown>;
-  readonly supportsNegotiatedCapability?: (capability: "correlated_prompt_lifecycle_v1") => boolean;
+  readonly supportsNegotiatedCapability?: (capability: string) => boolean;
   readonly waitForHeadlessCompletion?: (options?: {
     readonly waitForRlmQuiescence?: boolean;
   }) => Promise<unknown>;
@@ -216,7 +234,7 @@ export interface PrimeAgentDaemonAgentConnection {
   readonly getSessionStats: () => Promise<unknown>;
   readonly getRlmMaxDepthStatus?: () => Promise<unknown>;
   readonly setRlmMaxDepth?: (maxDepth: number) => Promise<unknown>;
-  readonly getOwnedSessionContractProof?: () => unknown;
+  readonly getOwnedSessionContractProof?: () => PrimeAgentOwnedSessionContractProof | undefined;
   readonly disposeOwnedSession?: (options?: { readonly timeoutMs?: number }) => Promise<unknown>;
   readonly dispose: () => Promise<unknown>;
 }
@@ -643,6 +661,9 @@ function requireDaemonExports(input: {
     !Predicate.isFunction(daemonAgentConnection.prototype.dispose) ||
     (negotiatedDaemonSessionCapabilitiesAvailable &&
       !Predicate.isFunction(daemonAgentConnection.prototype.supportsNegotiatedCapability)) ||
+    (sdkFeatures.includes(PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE) &&
+      (!Predicate.isFunction(daemonAgentConnection.prototype.getOwnedSessionContractProof) ||
+        !Predicate.isFunction(daemonAgentConnection.prototype.disposeOwnedSession))) ||
     !Predicate.isFunction(defaultDaemonSocketPath)
   ) {
     throw bridgeError(

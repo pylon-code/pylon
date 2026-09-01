@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 
 import * as Cause from "effect/Cause";
@@ -28,6 +29,7 @@ import {
   type PrimeAgentDaemonExtensionUiResponse,
   type PrimeAgentDaemonImage,
   type PrimeAgentDaemonPromptOptions,
+  type PrimeAgentOwnedSessionContractProof,
   type PrimeAgentDaemonQueuedMessageMutation,
   type PrimeAgentDaemonSessionWatcher,
   type PrimeAgentDaemonServiceTier,
@@ -279,6 +281,7 @@ function fixture(options?: {
   readonly correlatedPromptLifecycleProof?: boolean;
   readonly omitNegotiatedCapabilityAccessor?: boolean;
   readonly negotiatedCapabilityProofImpl?: () => boolean;
+  readonly ownedSessionContractProofImpl?: () => PrimeAgentOwnedSessionContractProof | undefined;
   readonly submitCorrelatedPromptImpl?: (
     message: string,
     options: {
@@ -576,11 +579,28 @@ function fixture(options?: {
       captures.connectionCalls.push({ method: "getPromptLifecycles", args: [] });
       return options?.getPromptLifecyclesImpl?.() ?? Promise.resolve({ records: [], expired: [] });
     }
-    supportsNegotiatedCapability(capability: "correlated_prompt_lifecycle_v1"): boolean {
-      return (
-        capability === "correlated_prompt_lifecycle_v1" &&
-        (options?.negotiatedCapabilityProofImpl?.() ?? correlatedPromptLifecycleProof)
-      );
+    supportsNegotiatedCapability(capability: string): boolean {
+      return capability === "caller_owned_session_environment_cleanup_v1"
+        ? true
+        : capability === "correlated_prompt_lifecycle_v1" &&
+            (options?.negotiatedCapabilityProofImpl?.() ?? correlatedPromptLifecycleProof);
+    }
+    getOwnedSessionContractProof(): PrimeAgentOwnedSessionContractProof | undefined {
+      if (options?.ownedSessionContractProofImpl !== undefined) {
+        return options.ownedSessionContractProofImpl();
+      }
+      return {
+        feature: "caller_owned_session_environment_cleanup_v1" as const,
+        status: "attached" as const,
+        daemon: {
+          protocolName: "prime-agent.daemon",
+          protocolVersion: 7,
+          schemaRevision: 30,
+          appVersion: "0.7.1",
+          supervisorGeneration: "supervisor-1",
+          transportGeneration: 0,
+        },
+      };
     }
     waitForHeadlessCompletion(
       waitOptions: { readonly waitForRlmQuiescence?: boolean } = {},
@@ -932,8 +952,23 @@ function fixture(options?: {
     DaemonAgentConnection: FakeConnection,
     defaultDaemonSocketPath: () => "/tmp/prime-agent.sock",
   };
+  const identity = {
+    instanceId: ProviderInstanceId.make("primeAgent"),
+    generation: { _tag: "PrimeAgentRuntimeGeneration" as const },
+    configRevision: "runtime-test-revision",
+    effectiveHome: "/state/prime-agent-home",
+    launchEnv: { HOME: "/private/home" },
+    settings: {
+      enabled: true,
+      binaryPath: "prime-agent",
+      agentHomePath: "/state/prime-agent-home",
+      launchArgs: "",
+      customModels: [],
+    },
+  };
   const manager: PrimeAgentDaemonManager = {
     bridge,
+    identity,
     socket: "/tmp/pylon-prime.sock",
     sessionDir: "/state/shared-daemon-sessions",
     launchEnvironment: { HOME: "/private/home" },
@@ -965,6 +1000,23 @@ function fixture(options?: {
   ) =>
     makePrimeAgentDaemonSessionRuntime({
       manager,
+      runtimeContext: {
+        ...identity,
+        backendKind: "daemon",
+        backendIdentity: {
+          kind: "daemon",
+          proof: {
+            sdkFeatures: [
+              "negotiated_daemon_session_capabilities_v1",
+              "caller_owned_session_environment_cleanup_v1",
+            ],
+            requiredServerCapabilities: [
+              "caller_owned_session_environment_cleanup_v1",
+              "authoritative_owned_session_cleanup_v1",
+            ],
+          },
+        },
+      },
       cwd: "/work/project",
       sessionDir: "/state/provider-sessions/thread-safe",
       agentDir: "/state/prime-agent-home",
@@ -1042,6 +1094,51 @@ function captureNextSetConstruction<A>(run: () => A): readonly [A, Set<unknown>]
 }
 
 describe("PrimeAgentDaemonSessionRuntime", () => {
+  it.effect("rejects a missing current owned-attachment proof before prompt admission", () =>
+    Effect.gen(function* () {
+      const test = fixture({ ownedSessionContractProofImpl: () => undefined });
+
+      const error = yield* Effect.flip(Effect.scoped(test.make()));
+
+      expect(error).toMatchObject({
+        operation: "attach-session",
+        reason: "invalid-response",
+      });
+      expect(error.detail).not.toContain("active-secret-1");
+      expect(test.captures.connectionCalls.some((call) => call.method === "prompt")).toBe(false);
+      expect(test.captures.disposeCount).toBe(1);
+      expect(test.captures.closeCount).toBe(1);
+    }),
+  );
+
+  it.effect("rejects a current proof that contradicts the successful daemon hello", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        ownedSessionContractProofImpl: () => ({
+          feature: "caller_owned_session_environment_cleanup_v1",
+          status: "attached",
+          daemon: {
+            protocolName: "prime-agent.daemon",
+            protocolVersion: 7,
+            schemaRevision: 30,
+            appVersion: "0.7.1",
+            supervisorGeneration: "stale-supervisor",
+            transportGeneration: 0,
+          },
+        }),
+      });
+
+      const error = yield* Effect.flip(Effect.scoped(test.make()));
+
+      expect(error).toMatchObject({
+        operation: "attach-session",
+        reason: "invalid-response",
+      });
+      expect(error.detail).not.toContain("stale-supervisor");
+      expect(test.captures.disposeCount).toBe(1);
+    }),
+  );
+
   it.effect("keeps a server offer on the ordinary prompt path without the frozen SDK feature", () =>
     Effect.scoped(
       Effect.gen(function* () {

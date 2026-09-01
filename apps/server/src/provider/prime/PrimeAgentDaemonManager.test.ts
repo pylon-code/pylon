@@ -155,6 +155,25 @@ function fakeBridge(input: {
     subscribe(): () => void {
       return () => undefined;
     }
+    supportsNegotiatedCapability(): boolean {
+      return true;
+    }
+    getOwnedSessionContractProof() {
+      return {
+        feature: "caller_owned_session_environment_cleanup_v1" as const,
+        status: "attached" as const,
+        daemon: {
+          protocolName: "prime-agent.daemon",
+          protocolVersion: 7,
+          schemaRevision: 30,
+          supervisorGeneration: "supervisor-1",
+          transportGeneration: 0,
+        },
+      };
+    }
+    disposeOwnedSession(): Promise<void> {
+      return Promise.resolve();
+    }
     getCommands(): Promise<unknown> {
       return Promise.resolve([]);
     }
@@ -188,8 +207,11 @@ function fakeBridge(input: {
     version: "0.7.1",
     protocolName: "prime-agent.daemon",
     protocolVersion: 7,
-    negotiatedDaemonSessionCapabilitiesAvailable: false,
-    sdkFeatures: [],
+    negotiatedDaemonSessionCapabilitiesAvailable: true,
+    sdkFeatures: [
+      "negotiated_daemon_session_capabilities_v1",
+      "caller_owned_session_environment_cleanup_v1",
+    ],
     recoverableOwnedSessionAdoptionAvailable: false,
     DaemonClient: FakeClient,
     DaemonAgentConnection: FakeAgentConnection,
@@ -207,6 +229,7 @@ function managerFixture(options?: {
   readonly platform?: NodeJS.Platform;
   readonly injectBridge?: boolean;
   readonly recoverable?: boolean;
+  readonly sdkFeatures?: ReadonlyArray<string>;
 }) {
   const commands: CapturedCommand[] = [];
   const processes: FakeProcess[] = [];
@@ -251,9 +274,18 @@ function managerFixture(options?: {
       : { hello: options?.hello ?? recoveryHello }),
     ...(options?.failConnect === undefined ? {} : { failConnect: options.failConnect }),
   });
+  if (options?.sdkFeatures !== undefined) {
+    Object.assign(bridge, {
+      sdkFeatures: [...options.sdkFeatures],
+      negotiatedDaemonSessionCapabilitiesAvailable: options.sdkFeatures.includes(
+        "negotiated_daemon_session_capabilities_v1",
+      ),
+    });
+  }
   if (options?.recoverable) {
     Object.assign(bridge, {
       sdkFeatures: [
+        "negotiated_daemon_session_capabilities_v1",
         "recoverable_owned_session_adoption_v1",
         "caller_owned_session_environment_cleanup_v1",
       ],
@@ -284,15 +316,26 @@ function managerFixture(options?: {
   );
   const make = makePrimeAgentDaemonManager({
     executablePath: "/resolved/bin/prime-agent",
-    settings: { agentHomePath: "~/.prime/pylon" },
-    environment: {
-      PATH: "/usr/bin",
-      PRIME_AGENT_INTERNAL_ROLE: "worker",
-      PRIME_AGENT_INTERNAL_TOKEN: "secret",
-      KEEP_ME: "yes",
+    identity: {
+      instanceId: ProviderInstanceId.make("prime-work"),
+      generation: { _tag: "PrimeAgentRuntimeGeneration" },
+      configRevision: "test-revision",
+      effectiveHome: NodePath.resolve(process.env.HOME!, ".prime/pylon"),
+      launchEnv: {
+        PATH: "/usr/bin",
+        KEEP_ME: "yes",
+        PRIME_AGENT_HOME: NodePath.resolve(process.env.HOME!, ".prime/pylon"),
+        PRIME_AGENT_CODING_AGENT_DIR: NodePath.resolve(process.env.HOME!, ".prime/pylon"),
+      },
+      settings: {
+        enabled: true,
+        binaryPath: "prime-agent",
+        agentHomePath: NodePath.resolve(process.env.HOME!, ".prime/pylon"),
+        launchArgs: "",
+        customModels: [],
+      },
     },
     stateDir: "/tmp/pylon-state",
-    providerInstanceId: ProviderInstanceId.make("prime-work"),
     platform: options?.platform ?? "linux",
     tempDir: options?.tempDir ?? "/tmp",
     readinessRetryDelay: Duration.zero,
@@ -360,6 +403,22 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
         detail: expect.stringContaining("verified per-user ACL or authenticated handshake"),
       });
       expect(fixture.commands).toHaveLength(0);
+    });
+  });
+
+  it.effect("rejects missing frozen SDK proof before spawning or opening a daemon", () => {
+    const fixture = managerFixture({
+      sdkFeatures: ["negotiated_daemon_session_capabilities_v1"],
+    });
+    return Effect.gen(function* () {
+      const result = yield* fixture.make.pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.reason).toBe("incompatible-hello");
+        expect(result.failure.detail).not.toContain("/resolved/bin/prime-agent");
+      }
+      expect(fixture.commands).toEqual([]);
+      expect(fixture.calls.connect).toBe(0);
     });
   });
 

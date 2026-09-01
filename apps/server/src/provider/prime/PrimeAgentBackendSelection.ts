@@ -1,4 +1,4 @@
-import type { PrimeAgentSettings, ProviderInstanceId } from "@t3tools/contracts";
+import type { PrimeAgentMaterializedIdentity } from "./PrimeAgentRuntimeContext.ts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
@@ -26,13 +26,9 @@ export type PrimeAgentBackendSelection<Manager> =
     };
 
 export interface PrimeAgentBackendNegotiationInput {
-  readonly enabled: boolean;
-  readonly binaryPath: string;
-  readonly launchArgs: string;
-  readonly settings: Pick<PrimeAgentSettings, "agentHomePath">;
-  readonly environment: NodeJS.ProcessEnv;
+  readonly identity: PrimeAgentMaterializedIdentity;
   readonly stateDir: string;
-  readonly providerInstanceId: ProviderInstanceId;
+  readonly platform: NodeJS.Platform;
   readonly recoveryEnabled?: boolean;
   readonly architecture?: string;
 }
@@ -78,9 +74,17 @@ export function negotiatePrimeAgentBackend<
   Path.Path | ResolveServices | ManagerServices
 > {
   return Effect.gen(function* () {
-    if (!input.enabled) return { runtime: "acp" } as const;
+    const settings = input.identity.settings;
+    if (!settings.enabled) return { runtime: "acp" } as const;
+    if (input.platform === "win32") {
+      return {
+        runtime: "acp",
+        fallbackCategory: "daemon-setup",
+        fallbackMessage: FALLBACK_MESSAGES.manager,
+      } as const;
+    }
 
-    if (input.launchArgs.trim().length > 0) {
+    if (settings.launchArgs.trim().length > 0) {
       return {
         runtime: "acp",
         fallbackCategory: "launch-args",
@@ -90,7 +94,10 @@ export function negotiatePrimeAgentBackend<
 
     const path = yield* Path.Path;
     const resolution = yield* Effect.result(
-      dependencies.resolveExecutable(input.binaryPath || "prime-agent", input.environment),
+      dependencies.resolveExecutable(
+        settings.binaryPath || "prime-agent",
+        input.identity.launchEnv,
+      ),
     );
     if (Result.isFailure(resolution)) {
       return {
@@ -103,10 +110,9 @@ export function negotiatePrimeAgentBackend<
     const manager = yield* Effect.result(
       dependencies.makeManager({
         executablePath: path.resolve(resolution.success),
-        settings: input.settings,
-        environment: input.environment,
+        identity: input.identity,
         stateDir: input.stateDir,
-        providerInstanceId: input.providerInstanceId,
+        platform: input.platform,
         ...(input.recoveryEnabled === undefined ? {} : { recoveryEnabled: input.recoveryEnabled }),
         ...(input.architecture === undefined ? {} : { architecture: input.architecture }),
       }),

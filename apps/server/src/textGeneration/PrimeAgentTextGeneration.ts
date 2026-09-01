@@ -28,6 +28,7 @@ import {
   PRIME_AGENT_HOME_ENV,
 } from "../provider/acp/PrimeAgentAcpSupport.ts";
 import { locatePrimeAgentPublicPackage } from "../provider/prime/PrimeAgentDaemonBridge.ts";
+import type { PrimeAgentRuntimeContext } from "../provider/prime/PrimeAgentRuntimeContext.ts";
 import {
   PRIME_AGENT_INHERIT_MODEL_OPTION,
   resolvePrimeAgentTurnControls,
@@ -75,6 +76,7 @@ export interface PrimeAgentTextGenerationOptions {
   readonly timeoutMs?: number | undefined;
   /** Test-only hook used to prove a validated image identity cannot be swapped before open. */
   readonly beforeImageOpen?: ((filePath: string) => Effect.Effect<void, never>) | undefined;
+  readonly runtimeContext?: PrimeAgentRuntimeContext;
 }
 
 function effectiveEnvironmentHome(environment: NodeJS.ProcessEnv): string {
@@ -190,10 +192,11 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverConfig = yield* ServerConfig.ServerConfig;
-  const resolvedEnvironment = makePrimeAgentEnvironment(
-    primeAgentSettings,
-    environment ?? process.env,
-  );
+  const boundRuntimeContext = options.runtimeContext;
+  const effectiveSettings = boundRuntimeContext?.settings ?? primeAgentSettings;
+  const resolvedEnvironment =
+    boundRuntimeContext?.launchEnv ??
+    makePrimeAgentEnvironment(effectiveSettings, environment ?? process.env);
   const helperEnvironment = Object.fromEntries(
     Object.entries(resolvedEnvironment).filter(([name]) => {
       const normalizedName = name.toUpperCase();
@@ -326,17 +329,19 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
     const serviceTier =
       controls.serviceTier === PRIME_AGENT_INHERIT_MODEL_OPTION ? undefined : controls.serviceTier;
 
-    const agentDir = resolvePrimeAgentTextGenerationHomePath({
-      environment: resolvedEnvironment,
-      cwd: input.cwd,
-    });
+    const agentDir =
+      boundRuntimeContext?.effectiveHome ??
+      resolvePrimeAgentTextGenerationHomePath({
+        environment: resolvedEnvironment,
+        cwd: input.cwd,
+      });
     const requestEnvironment = {
       ...helperEnvironment,
       NO_COLOR: "1",
       [PRIME_AGENT_HOME_ENV]: agentDir,
     };
     const executablePath = yield* resolveCommandPath(
-      primeAgentSettings.binaryPath.trim() || "prime-agent",
+      effectiveSettings.binaryPath.trim() || "prime-agent",
       { env: requestEnvironment },
     ).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),

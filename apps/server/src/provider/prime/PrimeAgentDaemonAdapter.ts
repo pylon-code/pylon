@@ -92,6 +92,7 @@ import {
   type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import type { PrimeAgentRuntimeContext } from "./PrimeAgentRuntimeContext.ts";
 import {
   PrimeAgentRecoveryLedger,
   type PrimeAgentRecoveryAuthority,
@@ -166,6 +167,7 @@ export interface PrimeAgentDaemonAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: ProviderInstanceId;
+  readonly runtimeContext?: PrimeAgentRuntimeContext;
   /** Present only after the exact selected package passed Pylon managed-distribution proof. */
   readonly recoveryManagedBuildId?: string;
   readonly recoveryLedger?: PrimeAgentRecoveryLedgerShape;
@@ -725,6 +727,20 @@ export function makePrimeAgentDaemonAdapter(
 ) {
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("primeAgent");
+    const primeRuntimeContext = options?.runtimeContext;
+    if (
+      primeRuntimeContext !== undefined &&
+      (primeRuntimeContext.backendKind !== "daemon" ||
+        primeRuntimeContext.instanceId !== boundInstanceId ||
+        primeRuntimeContext.instanceId !== manager.identity.instanceId ||
+        primeRuntimeContext.configRevision !== manager.identity.configRevision ||
+        primeRuntimeContext.effectiveHome !== manager.identity.effectiveHome ||
+        primeRuntimeContext.launchEnv !== manager.identity.launchEnv)
+    ) {
+      return yield* Effect.die(
+        new Error("The Prime Agent runtime context does not own this daemon adapter."),
+      );
+    }
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
@@ -3824,10 +3840,19 @@ export function makePrimeAgentDaemonAdapter(
           yield* Effect.addFinalizer(() =>
             scopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
           );
-          const agentDir = primeAgentSettings.agentHomePath.trim();
+          const agentDir =
+            primeRuntimeContext?.effectiveHome ?? primeAgentSettings.agentHomePath.trim();
           const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          if (mcpSession !== undefined && mcpSession.providerInstanceId !== boundInstanceId) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: "The MCP route does not belong to this provider instance.",
+            });
+          }
           const runtime = yield* runtimeFactory({
             manager,
+            ...(primeRuntimeContext === undefined ? {} : { runtimeContext: primeRuntimeContext }),
             cwd,
             sessionDir,
             ...(mcpSession === undefined
@@ -3911,7 +3936,8 @@ export function makePrimeAgentDaemonAdapter(
                               correlationId: recoveryStart.correlationId,
                               mcpOwnerId: recoveryStart.mcpOwnerId,
                               recoveryConfig: authority.recoveryConfig,
-                              launchEnvironment: authority.launchEnvironment,
+                              launchEnvironment:
+                                primeRuntimeContext?.launchEnv ?? authority.launchEnvironment,
                               transcriptMessageCount: recoveryStart.transcriptMessageCount,
                               transcriptFingerprints: [...recoveryStart.transcriptFingerprints],
                               ownerToken: recoveryStart.ownerToken,
@@ -3939,7 +3965,8 @@ export function makePrimeAgentDaemonAdapter(
                       previousMcpOwnerId: recoveryStart.authority.mcpOwnerId,
                       mcpOwnerId: recoveryStart.mcpOwnerId,
                       recoveryConfig: recoveryStart.authority.recoveryConfig,
-                      launchEnvironment: recoveryStart.authority.launchEnvironment,
+                      launchEnvironment:
+                        primeRuntimeContext?.launchEnv ?? recoveryStart.authority.launchEnvironment,
                       onAdoptionCommitted: ({ recoveryHandle, proof }) =>
                         runPromise(
                           Effect.gen(function* () {
@@ -4430,8 +4457,15 @@ export function makePrimeAgentDaemonAdapter(
           if (admissionRequestId === undefined || admissionRequestId.length === 0) {
             return undefined;
           }
+          const candidateMcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          if (
+            candidateMcpSession !== undefined &&
+            candidateMcpSession.providerInstanceId !== boundInstanceId
+          ) {
+            return undefined;
+          }
           const ownerToken = yield* randomUUIDv4;
-          const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          const mcpSession = candidateMcpSession;
           const recoveryStart: PendingRecoveryStart = {
             kind: "create",
             admissionRequestId,
@@ -4538,6 +4572,13 @@ export function makePrimeAgentDaemonAdapter(
       ) {
         return null;
       }
+      const candidateMcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+      if (
+        candidateMcpSession !== undefined &&
+        candidateMcpSession.providerInstanceId !== boundInstanceId
+      ) {
+        return null;
+      }
       const ownerToken = yield* randomUUIDv4;
       const claimedAt = yield* nowIso;
       const claimed = yield* recoveryLedger!.claim({
@@ -4548,7 +4589,7 @@ export function makePrimeAgentDaemonAdapter(
       });
       if (Option.isNone(claimed)) return null;
       const requestId = yield* randomUUIDv4;
-      const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+      const mcpSession = candidateMcpSession;
       const mcpOwnerId =
         mcpSession === undefined
           ? `pylon:none:${yield* randomUUIDv4}`

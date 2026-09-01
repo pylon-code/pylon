@@ -52,6 +52,7 @@ import {
 import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
 import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
 import { canonicalPrimeToolItemId } from "../prime/PrimeAgentDaemonRuntimeEvents.ts";
+import type { PrimeAgentRuntimeContext } from "../prime/PrimeAgentRuntimeContext.ts";
 import {
   makePrimeAgentEventPubSub,
   shutdownPrimeAgentEventPubSub,
@@ -75,6 +76,7 @@ export interface PrimeAgentAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: ProviderInstanceId;
+  readonly runtimeContext?: PrimeAgentRuntimeContext;
   /** Generic, user-visible explanation when this adapter is an explicit compatibility fallback. */
   readonly startupWarning?: string;
 }
@@ -197,6 +199,17 @@ export function makePrimeAgentAdapter(
 ) {
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("primeAgent");
+    const primeRuntimeContext = options?.runtimeContext;
+    if (
+      primeRuntimeContext !== undefined &&
+      (primeRuntimeContext.backendKind !== "acp" ||
+        primeRuntimeContext.instanceId !== boundInstanceId)
+    ) {
+      return yield* Effect.die(
+        new Error("The Prime Agent runtime context does not own this ACP adapter."),
+      );
+    }
+    const effectiveSettings = primeRuntimeContext?.settings ?? primeAgentSettings;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -533,9 +546,20 @@ export function makePrimeAgentAdapter(
             threadId: input.threadId,
           });
           const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          if (mcpSession !== undefined && mcpSession.providerInstanceId !== boundInstanceId) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: "The MCP route does not belong to this provider instance.",
+            });
+          }
           const acp = yield* makePrimeAgentAcpRuntime({
-            primeAgentSettings,
-            ...(options?.environment ? { environment: options.environment } : {}),
+            primeAgentSettings: effectiveSettings,
+            ...(primeRuntimeContext !== undefined
+              ? { environment: primeRuntimeContext.launchEnv }
+              : options?.environment
+                ? { environment: options.environment }
+                : {}),
             childProcessSpawner,
             cwd,
             sessionDir,

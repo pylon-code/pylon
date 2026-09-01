@@ -174,7 +174,11 @@ export interface ProviderDriverCreateInput<Config> {
  * scope closes. Two calls to `create` with different `instanceId` /
  * `config` MUST yield instances with no shared mutable state.
  */
-export interface ProviderDriver<Config, R = never> {
+export type ProviderDriverPreflightResult<Preparation> =
+  | { readonly kind: "ready"; readonly preparation: Preparation }
+  | { readonly kind: "unavailable"; readonly error: ProviderDriverError };
+
+export interface ProviderDriver<Config, R = never, Preparation = unknown> {
   readonly driverKind: ProviderDriverKind;
   readonly metadata: ProviderDriverMetadata;
   /**
@@ -204,14 +208,30 @@ export interface ProviderDriver<Config, R = never> {
    */
   readonly defaultConfig: () => Config;
   /**
+   * Optional driver-wide identity preflight. The registry runs this for the
+   * complete driver set before it closes or creates any affected instance.
+   * The registry must apply unavailable set-wide results to already-live
+   * participants before it starts replacements or additions.
+   */
+  readonly preflight?: (
+    inputs: ReadonlyArray<ProviderDriverCreateInput<Config>>,
+  ) => Effect.Effect<
+    ReadonlyMap<ProviderInstanceId, ProviderDriverPreflightResult<Preparation>>,
+    never,
+    R
+  >;
+  /**
    * Materialize one instance. The returned effect runs in a scope owned
    * by the registry; closing that scope releases every resource the
    * driver opened. Failures become unavailable shadow snapshots — the
    * driver MUST NOT throw defects.
    */
-  readonly create: (
-    input: ProviderDriverCreateInput<Config>,
-  ) => Effect.Effect<ProviderInstance, ProviderDriverError, R | Scope.Scope>;
+  readonly create: {
+    bivarianceHack(
+      input: ProviderDriverCreateInput<Config>,
+      preparation?: Preparation,
+    ): Effect.Effect<ProviderInstance, ProviderDriverError, R | Scope.Scope>;
+  }["bivarianceHack"];
 }
 
 /**
@@ -224,4 +244,4 @@ export interface ProviderDriver<Config, R = never> {
 // needs the original `Config` type. Using `unknown` instead would force
 // `create` callers into casts since `unknown` is not assignable to a
 // concrete `Config` from inside the driver body.
-export type AnyProviderDriver<R = never> = ProviderDriver<any, R>;
+export type AnyProviderDriver<R = never> = ProviderDriver<any, R, unknown>;

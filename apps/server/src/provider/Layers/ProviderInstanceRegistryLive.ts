@@ -61,7 +61,12 @@ import {
   ProviderInstanceRegistryMutator,
   type ProviderInstanceRegistryMutatorShape,
 } from "../Services/ProviderInstanceRegistryMutator.ts";
-import type { AnyProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
+import type {
+  AnyProviderDriver,
+  ProviderDriverCreateInput,
+  ProviderDriverPreflightResult,
+  ProviderInstance,
+} from "../ProviderDriver.ts";
 
 /**
  * Live registry entry: the materialized `ProviderInstance` + the fresh
@@ -82,6 +87,7 @@ interface RegistryState {
   readonly entries: Ref.Ref<ReadonlyMap<ProviderInstanceId, LiveEntry>>;
   readonly unavailable: Ref.Ref<ReadonlyMap<ProviderInstanceId, ServerProvider>>;
   readonly changes: PubSub.PubSub<void>;
+  readonly configured: Ref.Ref<ProviderInstanceConfigMap>;
 }
 
 /**
@@ -121,6 +127,7 @@ const buildEntry = <R>(input: {
   readonly instanceId: ProviderInstanceId;
   readonly rawInstanceId: string;
   readonly entry: ProviderInstanceConfig;
+  readonly preflight?: ReadonlyMap<ProviderInstanceId, ProviderDriverPreflightResult<unknown>>;
 }): Effect.Effect<
   | { readonly kind: "live"; readonly live: LiveEntry }
   | { readonly kind: "unavailable"; readonly snapshot: ServerProvider },
@@ -128,7 +135,7 @@ const buildEntry = <R>(input: {
   R
 > =>
   Effect.gen(function* () {
-    const { driversById, parentScope, instanceId, rawInstanceId, entry } = input;
+    const { driversById, parentScope, instanceId, rawInstanceId, entry, preflight } = input;
     const driver = driversById.get(entry.driver);
     if (!driver) {
       return {
@@ -166,6 +173,32 @@ const buildEntry = <R>(input: {
     }
 
     const typedConfig = decodeResult.success;
+    const createInput = {
+      instanceId,
+      displayName: entry.displayName,
+      accentColor: entry.accentColor,
+      environment: entry.environment ?? [],
+      enabled: resolveEntryEnabled(entry, typedConfig),
+      config: typedConfig,
+    } satisfies ProviderDriverCreateInput<unknown>;
+    const preparation = preflight?.get(instanceId);
+    if (preflight !== undefined && preparation?.kind !== "ready") {
+      const detail =
+        preparation?.kind === "unavailable"
+          ? preparation.error.detail
+          : "Provider instance identity preflight did not return a result.";
+      return {
+        kind: "unavailable" as const,
+        snapshot: yield* buildUnavailableProviderSnapshot({
+          driverKind: entry.driver,
+          instanceId,
+          displayName: entry.displayName,
+          accentColor: entry.accentColor,
+          reason: detail,
+        }),
+      };
+    }
+
     const childScope = yield* Scope.make();
     // Attach the child scope to the registry's parent scope: if the
     // registry scope closes, each surviving instance's child scope is
@@ -175,14 +208,7 @@ const buildEntry = <R>(input: {
     yield* Scope.addFinalizer(parentScope, Scope.close(childScope, Exit.void).pipe(Effect.ignore));
 
     const createResult = yield* driver
-      .create({
-        instanceId,
-        displayName: entry.displayName,
-        accentColor: entry.accentColor,
-        environment: entry.environment ?? [],
-        enabled: resolveEntryEnabled(entry, typedConfig),
-        config: typedConfig,
-      })
+      .create(createInput, preparation?.kind === "ready" ? preparation.preparation : undefined)
       .pipe(Effect.provideService(Scope.Scope, childScope), Effect.result);
     if (createResult._tag === "Failure") {
       yield* Effect.logError("Failed to create provider instance", {
@@ -217,6 +243,12 @@ const buildEntry = <R>(input: {
  * Reconcile-only implementation of the mutator. Exposed to the hydration
  * layer; never called directly by the rest of the server.
  */
+const driverConfigEntries = (
+  configMap: ProviderInstanceConfigMap,
+  driverKind: ProviderDriverKind,
+): ReadonlyArray<readonly [string, ProviderInstanceConfig]> =>
+  Object.entries(configMap).filter(([, entry]) => entry.driver === driverKind);
+
 const makeReconcile = <R>(input: {
   readonly state: RegistryState;
   readonly driversById: ReadonlyMap<ProviderDriverKind, AnyProviderDriver<R>>;
@@ -227,10 +259,45 @@ const makeReconcile = <R>(input: {
     Effect.gen(function* () {
       const previousEntries = yield* Ref.get(state.entries);
       const previousUnavailable = yield* Ref.get(state.unavailable);
+      const previousConfigMap = yield* Ref.get(state.configured);
       const nextRaw = Object.entries(configMap);
       const nextKeys = new Set<ProviderInstanceId>(
         nextRaw.map(([raw]) => ProviderInstanceId.make(raw)),
       );
+      const changedPreflightDrivers = new Set<ProviderDriverKind>();
+      const preflightByDriver = new Map<
+        ProviderDriverKind,
+        ReadonlyMap<ProviderInstanceId, ProviderDriverPreflightResult<unknown>>
+      >();
+
+      // Preflight the complete desired set before closing an old instance or
+      // starting a new one. An unchanged live instance is retained unless the
+      // set-wide result makes that instance unavailable.
+      for (const [driverKind, driver] of driversById) {
+        if (driver.preflight === undefined) continue;
+        const previousDriverEntries = driverConfigEntries(previousConfigMap, driverKind);
+        const nextDriverEntries = driverConfigEntries(configMap, driverKind);
+        if (Equal.equals(previousDriverEntries, nextDriverEntries)) continue;
+        changedPreflightDrivers.add(driverKind);
+
+        const decoder = Schema.decodeUnknownEffect(driver.configSchema);
+        const decodedInputs: Array<ProviderDriverCreateInput<unknown>> = [];
+        for (const [rawInstanceId, entry] of nextDriverEntries) {
+          const decoded = yield* decoder(entry.config ?? driver.defaultConfig()).pipe(
+            Effect.result,
+          );
+          if (decoded._tag === "Failure") continue;
+          decodedInputs.push({
+            instanceId: ProviderInstanceId.make(rawInstanceId),
+            displayName: entry.displayName,
+            accentColor: entry.accentColor,
+            environment: entry.environment ?? [],
+            enabled: resolveEntryEnabled(entry, decoded.success),
+            config: decoded.success,
+          });
+        }
+        preflightByDriver.set(driverKind, yield* driver.preflight(decodedInputs));
+      }
 
       // 1. Close scopes for instances that disappeared or whose config
       //    changed. Do this BEFORE creating replacements so ids map 1-to-1
@@ -243,7 +310,11 @@ const makeReconcile = <R>(input: {
           continue;
         }
         const nextEntry = configMap[instanceId];
-        if (nextEntry !== undefined && !entryEqual(live.entry, nextEntry)) {
+        const preflightResult = preflightByDriver.get(live.instance.driverKind)?.get(instanceId);
+        if (
+          (nextEntry !== undefined && !entryEqual(live.entry, nextEntry)) ||
+          preflightResult?.kind === "unavailable"
+        ) {
           replacedIds.add(instanceId);
         }
       }
@@ -272,6 +343,16 @@ const makeReconcile = <R>(input: {
           builtEntries.set(instanceId, existing);
           continue;
         }
+        const driver = driversById.get(entry.driver);
+        const previousShadow = previousUnavailable.get(instanceId);
+        if (
+          previousShadow !== undefined &&
+          driver?.preflight !== undefined &&
+          !changedPreflightDrivers.has(entry.driver)
+        ) {
+          builtUnavailable.set(instanceId, previousShadow);
+          continue;
+        }
 
         const result = yield* buildEntry({
           driversById,
@@ -279,6 +360,9 @@ const makeReconcile = <R>(input: {
           instanceId,
           rawInstanceId,
           entry,
+          ...(preflightByDriver.has(entry.driver)
+            ? { preflight: preflightByDriver.get(entry.driver)! }
+            : {}),
         });
         if (result.kind === "live") {
           builtEntries.set(instanceId, result.live);
@@ -313,6 +397,7 @@ const makeReconcile = <R>(input: {
 
       yield* Ref.set(state.entries, builtEntries);
       yield* Ref.set(state.unavailable, builtUnavailable);
+      yield* Ref.set(state.configured, configMap);
 
       if (entriesChanged || unavailableChanged) {
         yield* PubSub.publish(state.changes, undefined);
@@ -366,10 +451,11 @@ export const makeProviderInstanceRegistry = <R>(input: {
 
     const entries = yield* Ref.make<ReadonlyMap<ProviderInstanceId, LiveEntry>>(new Map());
     const unavailable = yield* Ref.make<ReadonlyMap<ProviderInstanceId, ServerProvider>>(new Map());
+    const configured = yield* Ref.make<ProviderInstanceConfigMap>({});
     const changes = yield* PubSub.unbounded<void>();
     yield* Effect.addFinalizer(() => PubSub.shutdown(changes));
 
-    const state: RegistryState = { entries, unavailable, changes };
+    const state: RegistryState = { entries, unavailable, changes, configured };
     const reconcileWithR = makeReconcile({ state, driversById, parentScope });
     const reconcile: ProviderInstanceRegistryMutatorShape["reconcile"] = (configMap) =>
       reconcileWithR(configMap).pipe(Effect.provideContext(driverContext));

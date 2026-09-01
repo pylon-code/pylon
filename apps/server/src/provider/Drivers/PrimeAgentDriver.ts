@@ -48,10 +48,17 @@ import { makePrimeAgentDaemonManager } from "../prime/PrimeAgentDaemonManager.ts
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
+  type ProviderDriverPreflightResult,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import {
+  bindPrimeAgentRuntimeContext,
+  materializePrimeAgentIdentities,
+  PRIME_AGENT_AUTHORITATIVE_CLEANUP_CAPABILITY,
+  PRIME_AGENT_CALLER_OWNED_SESSION_FEATURE,
+  type PrimeAgentMaterializedIdentity,
+} from "../prime/PrimeAgentRuntimeContext.ts";
 import {
   makeManualOnlyProviderMaintenanceCapabilities,
   makeStaticProviderMaintenanceResolver,
@@ -112,7 +119,11 @@ const withInstanceIdentity =
     continuation: { groupKey: input.continuationGroupKey },
   });
 
-export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriverEnv> = {
+export const PrimeAgentDriver: ProviderDriver<
+  PrimeAgentSettings,
+  PrimeAgentDriverEnv,
+  PrimeAgentMaterializedIdentity
+> = {
   driverKind: DRIVER_KIND,
   metadata: {
     displayName: "Prime Agent",
@@ -120,10 +131,29 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
   },
   configSchema: PrimeAgentSettings,
   defaultConfig: (): PrimeAgentSettings => decodePrimeAgentSettings({}),
-  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
+  preflight: (inputs) =>
+    materializePrimeAgentIdentities(inputs).pipe(
+      Effect.map(
+        (materialized) =>
+          new Map(
+            Array.from(materialized, ([instanceId, result]) => [
+              instanceId,
+              result.kind === "ready"
+                ? ({
+                    kind: "ready",
+                    preparation: result.identity,
+                  } satisfies ProviderDriverPreflightResult<PrimeAgentMaterializedIdentity>)
+                : ({
+                    kind: "unavailable",
+                    error: result.error,
+                  } satisfies ProviderDriverPreflightResult<PrimeAgentMaterializedIdentity>),
+            ]),
+          ),
+      ),
+    ),
+  create: ({ instanceId, displayName, accentColor, enabled }, identity) =>
     Effect.gen(function* () {
       const hostPlatform = yield* HostProcessPlatform;
-      const hostArchitecture = yield* HostProcessArchitecture;
       if (!isPrimeAgentProviderPlatformSupported(hostPlatform)) {
         return yield* new ProviderDriverError({
           driver: DRIVER_KIND,
@@ -131,6 +161,14 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
           detail: unsupportedPlatformMessage(hostPlatform),
         });
       }
+      if (identity === undefined || identity.instanceId !== instanceId) {
+        return yield* new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId,
+          detail: "Prime Agent runtime identity preflight was not preserved.",
+        });
+      }
+      const hostArchitecture = yield* HostProcessArchitecture;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const httpClient = yield* HttpClient.HttpClient;
       const fileSystem = yield* FileSystem.FileSystem;
@@ -138,7 +176,7 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
       const serverSettings = yield* ServerSettingsService;
       const serverConfig = yield* ServerConfig;
       const eventLoggers = yield* ProviderEventLoggers;
-      const processEnv = mergeProviderInstanceEnvironment(environment);
+      const processEnv = identity.launchEnv;
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,
@@ -149,7 +187,7 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
       });
-      const effectiveConfig = { ...config, enabled } satisfies PrimeAgentSettings;
+      const effectiveConfig = identity.settings;
       const loadLatestVerifiedPublication = makeLatestPrimePublicationLoader(
         makePrimeDistributionNetworkDependencies({
           tufCachePath: path.join(serverConfig.stateDir, "sigstore-tuf"),
@@ -249,13 +287,9 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
 
       const backend = yield* negotiatePrimeAgentBackend(
         {
-          enabled: effectiveConfig.enabled,
-          binaryPath: effectiveConfig.binaryPath,
-          launchArgs: effectiveConfig.launchArgs,
-          settings: effectiveConfig,
-          environment: processEnv,
+          identity,
           stateDir: serverConfig.stateDir,
-          providerInstanceId: instanceId,
+          platform: hostPlatform,
           recoveryEnabled: recoveryManagedBuildId !== undefined,
           architecture: hostArchitecture,
         },
@@ -264,6 +298,26 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
             resolveCommandPath(command, { env: resolvedEnvironment }),
           makeManager: makePrimeAgentDaemonManager,
         },
+      );
+      const runtimeContext = bindPrimeAgentRuntimeContext(
+        identity,
+        backend.runtime === "daemon"
+          ? {
+              kind: "daemon",
+              proof: {
+                sdkFeatures: Object.freeze([...(backend.manager.bridge.sdkFeatures ?? [])]),
+                requiredServerCapabilities: [
+                  PRIME_AGENT_CALLER_OWNED_SESSION_FEATURE,
+                  PRIME_AGENT_AUTHORITATIVE_CLEANUP_CAPABILITY,
+                ],
+              },
+            }
+          : {
+              kind: "acp",
+              ...(backend.fallbackCategory === undefined
+                ? {}
+                : { fallbackCategory: backend.fallbackCategory }),
+            },
       );
       const stampBackendSnapshot = (snapshot: ServerProviderDraft) =>
         stampPrimeAgentBackendSnapshot(
@@ -360,7 +414,11 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
           }),
         ),
       };
-      const textGeneration = yield* makePrimeAgentTextGeneration(effectiveConfig, processEnv);
+      const textGeneration = yield* makePrimeAgentTextGeneration(
+        effectiveConfig,
+        runtimeContext.launchEnv,
+        { runtimeContext },
+      );
       const checkProvider = checkPrimeAgentProviderStatus(effectiveConfig, processEnv, {
         readBackends,
       }).pipe(
@@ -410,7 +468,8 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
       );
 
       const adapterOptions = {
-        environment: processEnv,
+        environment: runtimeContext.launchEnv,
+        runtimeContext,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,
         ...(recoveryManagedBuildId === undefined ? {} : { recoveryManagedBuildId }),

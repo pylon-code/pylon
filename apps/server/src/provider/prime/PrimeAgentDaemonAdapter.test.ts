@@ -2232,6 +2232,49 @@ describe("PrimeAgentDaemonAdapter", () => {
       }),
     ).pipe(Effect.provide(testLayer)),
   );
+  it.effect("rejects a thread MCP route owned by another provider instance", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const mismatchedThread = ThreadId.make("prime-daemon-mcp-mismatch");
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            McpProviderSession.setMcpProviderSession({
+              providerSessionId: "provider-session-mismatch",
+              threadId: mismatchedThread,
+              environmentId: EnvironmentId.make("environment-mismatch"),
+              providerInstanceId: ProviderInstanceId.make("prime-daemon-other"),
+              endpoint: "http://127.0.0.1:4321/mcp/mismatch",
+              authorizationHeader: "Bearer must-not-route",
+            }),
+          ),
+          () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(mismatchedThread)),
+        );
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+
+        const result = yield* adapter
+          .startSession({
+            threadId: mismatchedThread,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          })
+          .pipe(Effect.result);
+
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "ProviderAdapterValidationError",
+            issue: "The MCP route does not belong to this provider instance.",
+          },
+        });
+        expect(captures.runtimeInputs).toEqual([]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("passes the thread-scoped Pylon MCP server into the daemon runtime", () =>
     Effect.scoped(
       Effect.gen(function* () {

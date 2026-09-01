@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 /**
  * Multi-instance validation slices for `ProviderInstanceRegistryLive`.
  *
@@ -22,6 +23,10 @@
  * binaries. That keeps the assertions focused on registry routing
  * behaviour rather than the runtime details of each provider.
  */
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -314,6 +319,68 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         expect(ghost.unavailableReason).toMatch(/ghostDriver/);
       }).pipe(Effect.provide(testLayer)),
   );
+
+  it.live("rejects every overlapping Prime instance before any Prime work", () => {
+    let processCalls = 0;
+    let networkCalls = 0;
+    const trackingSpawner = ChildProcessSpawner.make(() =>
+      Effect.sync(() => {
+        processCalls += 1;
+        throw new Error("overlap preflight must run before process work");
+      }),
+    );
+    const trackingHttpClient = HttpClient.make((request) =>
+      Effect.sync(() => {
+        networkCalls += 1;
+        return HttpClientResponse.fromWeb(request, Response.json({}));
+      }),
+    );
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const root = yield* Effect.acquireRelease(
+          Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "prime-registry-"))),
+          (directory) =>
+            Effect.promise(() => NodeFSP.rm(directory, { recursive: true, force: true })),
+        );
+        const shared = NodePath.join(root, "shared");
+        yield* Effect.promise(() => NodeFSP.mkdir(shared, { recursive: true }));
+        const parentId = ProviderInstanceId.make("prime-parent");
+        const childId = ProviderInstanceId.make("prime-child");
+        const { registry } = yield* makeProviderInstanceRegistry({
+          drivers: [PrimeAgentDriver],
+          configMap: {
+            [parentId]: {
+              driver: ProviderDriverKind.make("primeAgent"),
+              enabled: true,
+              config: makePrimeAgentConfig({ agentHomePath: shared }),
+            },
+            [childId]: {
+              driver: ProviderDriverKind.make("primeAgent"),
+              enabled: true,
+              config: makePrimeAgentConfig({ agentHomePath: NodePath.join(shared, "nested") }),
+            },
+          },
+        });
+
+        expect(yield* registry.listInstances).toEqual([]);
+        const unavailable = yield* registry.listUnavailable;
+        expect(unavailable.map((snapshot) => snapshot.instanceId).toSorted()).toEqual(
+          [parentId, childId].toSorted(),
+        );
+        expect(
+          unavailable.every((snapshot) => snapshot.unavailableReason?.includes("distinct homes")),
+        ).toBe(true);
+        expect(processCalls).toBe(0);
+        expect(networkCalls).toBe(0);
+      }),
+    ).pipe(
+      Effect.provideService(HostProcessPlatform, "linux"),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, trackingSpawner),
+      Effect.provideService(HttpClient.HttpClient, trackingHttpClient),
+      Effect.provide(testLayer),
+    );
+  });
 
   it.live("fails native Windows Prime closed across every routed entry point", () => {
     let processCalls = 0;

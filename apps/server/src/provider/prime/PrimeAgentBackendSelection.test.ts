@@ -21,15 +21,30 @@ const testManager = (id: string) => ({
   prepare: () => Effect.void,
 });
 
-const baseInput: PrimeAgentBackendNegotiationInput = {
-  enabled: true,
-  binaryPath: "prime-agent",
-  launchArgs: "",
-  settings: { agentHomePath: "" },
-  environment: { PATH: "/configured/bin" },
+const makeInput = (
+  settings: Partial<PrimeAgentBackendNegotiationInput["identity"]["settings"]> = {},
+  launchEnv: Readonly<Record<string, string>> = { PATH: "/configured/bin" },
+): PrimeAgentBackendNegotiationInput => ({
+  identity: {
+    instanceId: ProviderInstanceId.make("primeAgent"),
+    generation: { _tag: "PrimeAgentRuntimeGeneration" },
+    configRevision: "test-revision",
+    effectiveHome: "/prime/home",
+    launchEnv,
+    settings: {
+      enabled: true,
+      binaryPath: "prime-agent",
+      launchArgs: "",
+      agentHomePath: "/prime/home",
+      customModels: [],
+      ...settings,
+    },
+  },
   stateDir: "/pylon/state",
-  providerInstanceId: ProviderInstanceId.make("primeAgent"),
-};
+  platform: "linux",
+});
+
+const baseInput = makeInput();
 
 it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
   it.effect("selects daemon with a PATH-resolved Prime Agent executable", () =>
@@ -53,13 +68,13 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
         const managerCalls: PrimeAgentDaemonManagerInput[] = [];
         const manager = testManager("path-resolved");
         const selected = yield* negotiatePrimeAgentBackend(
-          {
-            ...baseInput,
-            environment: {
+          makeInput(
+            {},
+            {
               PATH: tempDir,
               ...(platform === "win32" ? { PATHEXT: ".CMD" } : {}),
             },
-          },
+          ),
           {
             resolveExecutable: (command, environment) =>
               resolveCommandPath(command, { env: environment }),
@@ -108,7 +123,7 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
         expect(selected).toEqual({ runtime: "daemon", manager });
         expect(prepareAttempts).toBe(1);
         expect(resolutionCalls).toEqual([
-          { command: "prime-agent", environment: baseInput.environment },
+          { command: "prime-agent", environment: baseInput.identity.launchEnv },
         ]);
         expect(managerCalls).toHaveLength(1);
         expect(NodePath.isAbsolute(managerCalls[0]?.executablePath ?? "")).toBe(true);
@@ -121,7 +136,7 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
       let resolutionAttempts = 0;
       let managerAttempts = 0;
       const selected = yield* negotiatePrimeAgentBackend(
-        { ...baseInput, launchArgs: "  --verbose  " },
+        makeInput({ launchArgs: "  --verbose  " }),
         {
           resolveExecutable: () =>
             Effect.sync(() => {
@@ -146,7 +161,7 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
   it.effect("turns resolution failures into bounded ACP reasons without raw details", () =>
     Effect.gen(function* () {
       const selected = yield* negotiatePrimeAgentBackend(
-        { ...baseInput, binaryPath: "/secret/configured/prime-agent" },
+        makeInput({ binaryPath: "/secret/configured/prime-agent" }),
         {
           resolveExecutable: () =>
             Effect.fail({
@@ -217,12 +232,12 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
     }),
   );
 
-  it.effect("quietly selects ACP when disabled and skips daemon setup", () =>
+  it.effect("selects ACP on native Windows without resolving, importing, or starting Prime", () =>
     Effect.gen(function* () {
       let resolutionAttempts = 0;
       let managerAttempts = 0;
       const selected = yield* negotiatePrimeAgentBackend(
-        { ...baseInput, enabled: false },
+        { ...baseInput, platform: "win32" },
         {
           resolveExecutable: () =>
             Effect.sync(() => {
@@ -236,6 +251,29 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
             }),
         },
       );
+
+      expect(selected).toMatchObject({ runtime: "acp", fallbackCategory: "daemon-setup" });
+      expect(resolutionAttempts).toBe(0);
+      expect(managerAttempts).toBe(0);
+    }),
+  );
+
+  it.effect("quietly selects ACP when disabled and skips daemon setup", () =>
+    Effect.gen(function* () {
+      let resolutionAttempts = 0;
+      let managerAttempts = 0;
+      const selected = yield* negotiatePrimeAgentBackend(makeInput({ enabled: false }), {
+        resolveExecutable: () =>
+          Effect.sync(() => {
+            resolutionAttempts += 1;
+            return "/unused/prime-agent";
+          }),
+        makeManager: () =>
+          Effect.sync(() => {
+            managerAttempts += 1;
+            return testManager("unused");
+          }),
+      });
 
       expect(selected).toEqual({ runtime: "acp" });
       expect(resolutionAttempts).toBe(0);

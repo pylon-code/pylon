@@ -4,7 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import type { PrimeAgentSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -20,10 +20,13 @@ import { ChildProcess } from "effect/unstable/process";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import { resolveProviderHomePath } from "../../pathExpansion.ts";
+import type { PrimeAgentMaterializedIdentity } from "./PrimeAgentRuntimeContext.ts";
 import {
   loadPrimeAgentDaemonBridge,
+  PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE,
   PRIME_AGENT_DAEMON_PROTOCOL_NAME,
   PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION,
+  PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE,
   type PrimeAgentDaemonBridge,
   type PrimeAgentDaemonBridgeError,
   type PrimeAgentDaemonClient,
@@ -40,6 +43,8 @@ export const PRIME_AGENT_REQUIRED_DAEMON_CAPABILITIES = [
   "extension_ui",
   "session_input_admission",
   "prompt_admission_cancellation",
+  "caller_owned_session_environment_cleanup_v1",
+  "authoritative_owned_session_cleanup_v1",
 ] as const;
 
 const managerErrorReason = Schema.Literals([
@@ -70,6 +75,7 @@ export type PrimeAgentDaemonManagerOpenError = PrimeAgentDaemonManagerError;
 
 export interface PrimeAgentDaemonManager {
   readonly bridge: PrimeAgentDaemonBridge;
+  readonly identity: PrimeAgentMaterializedIdentity;
   readonly socket: string;
   readonly sessionDir: string;
   /** Starts the daemon and validates its control-plane hello without opening an agent session. */
@@ -91,10 +97,8 @@ export interface PrimeAgentDaemonManager {
 
 export interface PrimeAgentDaemonManagerInput {
   readonly executablePath: string;
-  readonly settings: Pick<PrimeAgentSettings, "agentHomePath">;
-  readonly environment?: NodeJS.ProcessEnv;
+  readonly identity: PrimeAgentMaterializedIdentity;
   readonly stateDir: string;
-  readonly providerInstanceId: ProviderInstanceId | string;
   readonly connectTimeoutMs?: number;
   readonly readinessRetryDelay?: Duration.Input;
   readonly readinessRetries?: number;
@@ -285,9 +289,13 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
   const hostPlatform = yield* HostProcessPlatform;
-  const hostEnvironment = yield* HostProcessEnvironment;
   const platform = input.platform ?? hostPlatform;
-  const paths = derivePrimeAgentDaemonPaths({ ...input, platform });
+  const paths = derivePrimeAgentDaemonPaths({
+    stateDir: input.stateDir,
+    providerInstanceId: input.identity.instanceId,
+    platform,
+    ...(input.tempDir === undefined ? {} : { tempDir: input.tempDir }),
+  });
   if (platform === "win32") {
     return yield* managerError(
       paths.socket,
@@ -296,16 +304,19 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     );
   }
   const bridge = input.bridge ?? (yield* loadPrimeAgentDaemonBridge(input.executablePath));
+  if (
+    !bridge.sdkFeatures?.includes(PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE) ||
+    !bridge.sdkFeatures.includes(PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE)
+  ) {
+    return yield* managerError(
+      paths.socket,
+      "incompatible-hello",
+      "The installed Prime Agent SDK does not provide the required caller-owned session contract.",
+    );
+  }
   const recoveryEnabled =
     input.recoveryEnabled === true && bridge.recoverableOwnedSessionAdoptionAvailable === true;
-  const launchEnvironment = Object.fromEntries(
-    Object.entries(
-      makePrimeAgentDaemonEnvironment({
-        settings: input.settings,
-        environment: input.environment ?? hostEnvironment,
-      }),
-    ).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
-  );
+  const launchEnvironment = input.identity.launchEnv;
   let recoveryRetainers = 0;
   const retainForRecovery = () => {
     recoveryRetainers += 1;
@@ -788,6 +799,7 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
 
   return {
     bridge,
+    identity: input.identity,
     socket,
     sessionDir,
     prepare,

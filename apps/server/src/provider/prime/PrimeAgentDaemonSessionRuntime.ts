@@ -35,8 +35,11 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import {
+  PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE,
+  PRIME_AGENT_DAEMON_PROTOCOL_NAME,
   type PrimeAgentDaemonAcpMcpServer,
   type PrimeAgentDaemonAgentConnection,
+  type PrimeAgentDaemonClient,
   type PrimeAgentDaemonEventCursor,
   type PrimeAgentRecoverableOwnedSessionAdoptionProof,
   type PrimeAgentDaemonExtensionUiResponse,
@@ -66,6 +69,7 @@ import {
   type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import type { PrimeAgentRuntimeContext } from "./PrimeAgentRuntimeContext.ts";
 import {
   PRIME_AGENT_PLAN_TOOL_DEFINITION,
   PRIME_AGENT_PLAN_TOOL_NAME,
@@ -854,6 +858,7 @@ export class PrimeAgentDaemonSessionRuntimeError extends Schema.TaggedErrorClass
 
 export interface PrimeAgentDaemonSessionRuntimeInput {
   readonly manager: PrimeAgentDaemonManager;
+  readonly runtimeContext?: PrimeAgentRuntimeContext;
   readonly cwd: string;
   /** Isolated, deterministic, server-owned directory for this Pylon thread. */
   readonly sessionDir: string;
@@ -1360,6 +1365,48 @@ function recoveryCursorFromSnapshot(value: unknown): PrimeAgentDaemonEventCursor
     : undefined;
 }
 
+function hasCurrentOwnedSessionContractProof(
+  connection: PrimeAgentDaemonAgentConnection,
+  client: PrimeAgentDaemonClient,
+): boolean {
+  try {
+    if (
+      !Predicate.isFunction(connection.getOwnedSessionContractProof) ||
+      !Predicate.isFunction(connection.supportsNegotiatedCapability) ||
+      connection.supportsNegotiatedCapability(
+        PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE,
+      ) !== true
+    ) {
+      return false;
+    }
+    const proof = connection.getOwnedSessionContractProof();
+    const hello = client.hello;
+    if (proof === undefined || hello === undefined) return false;
+    return (
+      proof.feature === PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE &&
+      proof.status === "attached" &&
+      proof.daemon.protocolName === PRIME_AGENT_DAEMON_PROTOCOL_NAME &&
+      proof.daemon.protocolName === hello.protocol.name &&
+      proof.daemon.protocolVersion === hello.protocol.version &&
+      Number.isSafeInteger(proof.daemon.protocolVersion) &&
+      proof.daemon.schemaRevision === hello.schemaRevision &&
+      Number.isSafeInteger(proof.daemon.schemaRevision) &&
+      proof.daemon.supervisorGeneration.length > 0 &&
+      proof.daemon.supervisorGeneration === hello.supervisorGeneration &&
+      Number.isSafeInteger(proof.daemon.transportGeneration) &&
+      proof.daemon.transportGeneration >= 0 &&
+      hello.serverCapabilities.includes(
+        PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE,
+      ) &&
+      hello.serverCapabilities.includes("authoritative_owned_session_cleanup_v1") &&
+      (hello.appVersion === undefined || proof.daemon.appVersion === hello.appVersion) &&
+      (hello.buildId === undefined || proof.daemon.buildId === hello.buildId)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemonSessionRuntime")(
   function* (
     input: PrimeAgentDaemonSessionRuntimeInput,
@@ -1368,6 +1415,21 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     PrimeAgentDaemonSessionRuntimeError,
     Scope.Scope
   > {
+    const primeRuntimeContext = input.runtimeContext;
+    if (
+      primeRuntimeContext === undefined ||
+      primeRuntimeContext.backendKind !== "daemon" ||
+      primeRuntimeContext.instanceId !== input.manager.identity.instanceId ||
+      primeRuntimeContext.configRevision !== input.manager.identity.configRevision ||
+      primeRuntimeContext.effectiveHome !== input.manager.identity.effectiveHome ||
+      primeRuntimeContext.launchEnv !== input.manager.identity.launchEnv
+    ) {
+      return yield* runtimeError(
+        "create-session",
+        "invalid-input",
+        "The Prime Agent runtime context does not own this daemon manager.",
+      );
+    }
     const cwd = yield* validateNonEmpty("create-session", "cwd", input.cwd);
     const sessionDir = yield* validateNonEmpty("create-session", "sessionDir", input.sessionDir);
     const shouldContinue = input.resumeCursor !== undefined;
@@ -2093,6 +2155,29 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       await connection?.dispose().catch(() => undefined);
       client.close();
     });
+    if (!hasCurrentOwnedSessionContractProof(connection, client)) {
+      yield* closeUnusableAttachedConnection;
+      return yield* runtimeError(
+        "attach-session",
+        "invalid-response",
+        "Prime Agent did not prove the required caller-owned session contract for this attachment.",
+      );
+    }
+    let ownedSessionContractProofCurrent = true;
+    const requireCurrentOwnedSessionContract = (operation: "prompt" | "steer" | "follow-up") =>
+      Effect.suspend(() => {
+        ownedSessionContractProofCurrent =
+          ownedSessionContractProofCurrent &&
+          hasCurrentOwnedSessionContractProof(connection!, client);
+        return ownedSessionContractProofCurrent
+          ? Effect.void
+          : runtimeError(
+              operation,
+              "incompatible-api",
+              "Prime Agent no longer proves the caller-owned session contract for this attachment.",
+            );
+      });
+
     if (input.manager.bridge.negotiatedDaemonSessionCapabilitiesAvailable) {
       if (!Predicate.isFunction(connection.supportsNegotiatedCapability)) {
         yield* closeUnusableAttachedConnection;
@@ -4415,6 +4500,18 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         Predicate.isObject(raw) && "type" in raw && Predicate.isString(raw.type)
           ? raw.type
           : undefined;
+      const rawStatus =
+        rawType === "connection_status" &&
+        Predicate.isObject(raw) &&
+        "status" in raw &&
+        Predicate.isString(raw.status)
+          ? raw.status
+          : undefined;
+      if (rawStatus === "reconnecting") {
+        ownedSessionContractProofCurrent = false;
+      } else if (rawStatus === "connected" || rawType === "session_resynced") {
+        ownedSessionContractProofCurrent = hasCurrentOwnedSessionContractProof(connection!, client);
+      }
       if (correlatedPromptLifecycleAvailable) {
         if (rawType !== "closed") return routeWorkerAwareRawEvent(raw);
         if (correlatedWorkerCloseRoute !== undefined) return correlatedWorkerCloseRoute;
@@ -6878,6 +6975,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         yield* requireCorrelatedPromptLifecycleAdmission("prompt");
       }
       yield* awaitProviderRecovery;
+      yield* requireCurrentOwnedSessionContract("prompt");
       const resumedAfterAbort = yield* resumeAfterAbort();
       const images = yield* validateImages("prompt", promptInput.images);
       yield* validatePromptContent("prompt", promptInput.text, images);
@@ -6995,6 +7093,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* validatePromptContent("steer", promptInput.text, images);
       const recovery = yield* inputAdmissionAfterRecovery("steer");
       if (recovery === "recovering") return recovery;
+      yield* requireCurrentOwnedSessionContract("steer");
       const method = yield* requireMethod("steer", connection!.steer);
       yield* callVoid("steer", () => method.call(connection, promptInput.text, images));
       return "accepted" as const;
@@ -7008,6 +7107,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* validatePromptContent("follow-up", promptInput.text, images);
       const recovery = yield* inputAdmissionAfterRecovery("follow-up");
       if (recovery === "recovering") return recovery;
+      yield* requireCurrentOwnedSessionContract("follow-up");
       const method = yield* requireMethod("follow-up", connection!.followUp);
       yield* callVoid("follow-up", () => method.call(connection, promptInput.text, images));
       return "accepted" as const;
