@@ -1,4 +1,8 @@
-import type { ServerProvider, ServerProviderVersionAdvisory } from "@t3tools/contracts";
+import type {
+  ServerProvider,
+  ServerProviderDistribution,
+  ServerProviderVersionAdvisory,
+} from "@t3tools/contracts";
 
 import { getProviderUnavailablePresentation } from "../../providerInstances";
 
@@ -92,6 +96,17 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
 export function getProviderVersionLabel(version: string | null | undefined) {
   if (!version) return null;
   return version.startsWith("v") ? version : `v${version}`;
+}
+
+export function getProviderDistributionLabel(
+  distribution: ServerProviderDistribution | undefined,
+): string | null {
+  if (!distribution || distribution.classification === "stock-or-custom") return null;
+  if (distribution.classification === "invalid-receipt") return "Managed receipt invalid";
+  if (distribution.classification === "pylon-unmanaged") return "Pylon build · manual";
+  const channel = distribution.channel ?? "managed";
+  const sequence = distribution.sequence === null ? "" : ` #${distribution.sequence}`;
+  return `Pylon managed · ${channel}${sequence}`;
 }
 
 export function getProviderVersionAdvisoryPresentation(

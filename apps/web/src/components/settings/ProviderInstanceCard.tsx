@@ -53,6 +53,7 @@ import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { ProviderUsageRows, ProviderUsageSummary } from "../providerUsage/ProviderUsageRows";
 import {
+  getProviderDistributionLabel,
   getProviderVersionAdvisoryPresentation,
   PROVIDER_STATUS_STYLES,
   getProviderSummary,
@@ -512,6 +513,7 @@ export function ProviderInstanceCard({
   // headline shows, so a broken provider is actionable from the list.
   const needsAttention = statusKey === "warning" || statusKey === "error";
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
+  const distributionLabel = getProviderDistributionLabel(liveProvider?.distribution);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
   const FallbackIconComponent = driverOption?.icon;
@@ -852,6 +854,14 @@ export function ProviderInstanceCard({
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             {titleHeadNode}
             {versionCodeNode}
+            {distributionLabel ? (
+              <code
+                className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                aria-label={liveProvider?.distribution?.message ?? distributionLabel}
+              >
+                {distributionLabel}
+              </code>
+            ) : null}
             {/*
               Only the write actions go inert on read-only sessions — the
               update popover, the drain-order chevrons, and the delete button.
