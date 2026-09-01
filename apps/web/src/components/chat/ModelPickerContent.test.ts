@@ -23,45 +23,63 @@ function entry(status: ServerProvider["status"]) {
 }
 
 describe("shouldIncludeModelPickerOption", () => {
-  it.each(["error", "warning"] as const)(
-    "keeps only the active synthetic OpenCode row when the provider status is %s",
-    (status) => {
-      const providerEntry = entry(status);
-      const activeInstanceId = ProviderInstanceId.make("opencode_work");
-      const activeModel = "openrouter/kimi-k3";
+  it("keeps only the active synthetic OpenCode row when the provider status is error", () => {
+    const providerEntry = entry("error");
+    const activeInstanceId = ProviderInstanceId.make("opencode_work");
+    const activeModel = "openrouter/kimi-k3";
 
+    expect(
+      shouldIncludeModelPickerOption({
+        entry: providerEntry,
+        option: {
+          slug: activeModel,
+          name: activeModel,
+          isUnavailable: true,
+        },
+        activeInstanceId,
+        activeModel,
+      }),
+    ).toBe(true);
+    expect(
+      shouldIncludeModelPickerOption({
+        entry: providerEntry,
+        option: { slug: "stale/model", name: "Stale model" },
+        activeInstanceId,
+        activeModel,
+      }),
+    ).toBe(false);
+    expect(
+      shouldIncludeModelPickerOption({
+        entry: providerEntry,
+        option: {
+          slug: "other/missing",
+          name: "Other missing",
+          isUnavailable: true,
+        },
+        activeInstanceId,
+        activeModel,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps warning provider models selectable", () => {
+    const providerEntry = entry("warning");
+    const activeInstanceId = ProviderInstanceId.make("opencode_work");
+    const activeModel = "openrouter/kimi-k3";
+
+    for (const option of [
+      { slug: activeModel, name: activeModel, isUnavailable: true },
+      { slug: "stale/model", name: "Stale model" },
+      { slug: "other/missing", name: "Other missing", isUnavailable: true },
+    ]) {
       expect(
         shouldIncludeModelPickerOption({
           entry: providerEntry,
-          option: {
-            slug: activeModel,
-            name: activeModel,
-            isUnavailable: true,
-          },
+          option,
           activeInstanceId,
           activeModel,
         }),
       ).toBe(true);
-      expect(
-        shouldIncludeModelPickerOption({
-          entry: providerEntry,
-          option: { slug: "stale/model", name: "Stale model" },
-          activeInstanceId,
-          activeModel,
-        }),
-      ).toBe(false);
-      expect(
-        shouldIncludeModelPickerOption({
-          entry: providerEntry,
-          option: {
-            slug: "other/missing",
-            name: "Other missing",
-            isUnavailable: true,
-          },
-          activeInstanceId,
-          activeModel,
-        }),
-      ).toBe(false);
-    },
-  );
+    }
+  });
 });
