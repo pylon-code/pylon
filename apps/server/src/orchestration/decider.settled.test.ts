@@ -671,7 +671,10 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
         readModel: makeReadModel("settled", null, makeSession("ready")),
       });
       const stoppedEvents = Array.isArray(stopped) ? stopped : [stopped];
-      expect(stoppedEvents.map((event) => event.type)).toEqual(["thread.session-stop-requested"]);
+      expect(stoppedEvents.map((event) => event.type)).toEqual([
+        "thread.session-stop-requested",
+        "thread.session-set",
+      ]);
 
       // Re-engaged before the stop was decided (a turn start unsettles the
       // thread): the stale cleanup stop must not kill the new session.
@@ -701,6 +704,7 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
       const unconditionalEvents = Array.isArray(unconditional) ? unconditional : [unconditional];
       expect(unconditionalEvents.map((event) => event.type)).toEqual([
         "thread.session-stop-requested",
+        "thread.session-set",
       ]);
     }),
   );
