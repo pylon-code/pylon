@@ -100,6 +100,7 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
+import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
 import { GlassSurface } from "../../components/GlassSurface";
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
@@ -215,7 +216,7 @@ export interface ThreadComposerProps {
   readonly projectCwd: string | null;
   readonly editorRef?: RefObject<ComposerEditorHandle | null>;
   readonly onChangeDraftMessage: (value: string) => void;
-  readonly onPickDraftImages: () => Promise<void>;
+  readonly onPickDraftMedia: () => Promise<void>;
   readonly onPickDraftFiles: () => Promise<void>;
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
@@ -524,9 +525,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     setIsFocused(false);
     onEditorFocusChange?.(false);
   }, [onEditorFocusChange]);
+  // #8843: an empty composer shows the interrupt button while the agent works;
+  // adding text or an attachment swaps it for send.
   const showStopAction =
-    props.selectedThread.session?.status === "running" ||
-    props.selectedThread.session?.status === "starting";
+    !hasContent &&
+    (props.selectedThread.session?.status === "running" ||
+      props.selectedThread.session?.status === "starting");
 
   const currentModelSelection = props.selectedThread.modelSelection;
   const currentRuntimeMode = resolveModelSelectionRuntimeMode(
@@ -1579,7 +1583,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   minHeight: 140,
                   overflow: "hidden" as const,
                   paddingBottom: 6,
-                  paddingHorizontal: 14,
                   paddingTop: 14,
                 }
               : {
@@ -1598,11 +1601,21 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         >
           <ComposerDictationDraftContent
             className={isExpanded ? undefined : "flex-row items-center"}
-            collapsed={showsCompactDictation}
+            compact={!isExpanded}
+            hidden={showsCompactDictation}
           >
+            {!isExpanded ? (
+              <ComposerAttachmentButton
+                supportsFiles={Boolean(
+                  props.serverConfig?.environment.capabilities.fileAttachments,
+                )}
+                onPickMedia={props.onPickDraftMedia}
+                onPickFiles={props.onPickDraftFiles}
+              />
+            ) : null}
             {isExpanded ? (
               <Animated.View
-                className={props.draftAttachments.length > 0 ? "pb-2.5" : undefined}
+                className={props.draftAttachments.length > 0 ? "px-[14px] pb-2.5" : undefined}
                 entering={FadeIn.duration(160)}
                 exiting={FadeOut.duration(120)}
                 layout={COMPOSER_LAYOUT_TRANSITION}
@@ -1642,7 +1655,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     ? {
                         minHeight: 72,
                         maxHeight: 160,
-                        paddingHorizontal: 4,
                         paddingVertical: 4,
                       }
                     : {
@@ -1734,7 +1746,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     accessibilityLabel={sendLabel}
                     icon="arrow.up"
                     variant="primary"
-                    disabled={!canSend}
+                    disabled={!hasContent}
                     onPress={handleSend}
                   />
                 )}
@@ -1747,7 +1759,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               showsDictation={isVoiceInputPresented}
               visible={isToolbarVisible}
             >
-              <ComposerToolbarRow paddingBottom={0} paddingHorizontal={0} paddingTop={0}>
+              <ComposerToolbarRow
+                paddingBottom={0}
+                paddingHorizontal={0}
+                paddingTop={0}
+                style={{ gap: 0 }}
+              >
                 <ComposerDictationCancelAction
                   presentation={voicePresentation}
                   onCancel={voiceInput.cancel}
@@ -1762,21 +1779,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   />
                 ) : (
                   <ComposerToolbarScroller contentPaddingRight={8}>
-                    <ComposerToolbarButton
-                      accessibilityLabel="Add attachment"
-                      icon="plus"
-                      onPress={() => {
-                        if (props.serverConfig?.environment.capabilities.fileAttachments) {
-                          Alert.alert("Add attachment", undefined, [
-                            { text: "Photos", onPress: () => void props.onPickDraftImages() },
-                            { text: "Files", onPress: () => void props.onPickDraftFiles() },
-                            { text: "Cancel", style: "cancel" },
-                          ]);
-                          return;
-                        }
-                        void props.onPickDraftImages();
-                      }}
-                      showChevron={false}
+                    {/* #8843 replaces the Alert with a native menu anchored to
+                        the button. Kept inside Pylon's scroller rather than
+                        upstream's fixed left group. */}
+                    <ComposerAttachmentButton
+                      supportsFiles={Boolean(
+                        props.serverConfig?.environment.capabilities.fileAttachments,
+                      )}
+                      onPickMedia={props.onPickDraftMedia}
+                      onPickFiles={props.onPickDraftFiles}
                     />
                     {quickQuestionAvailable ? (
                       <QuickQuestionTrigger
