@@ -62,7 +62,7 @@ you send it.
 The first use can download Apple's speech model and needs a network connection. Later transcription
 works offline for that language. A recording can be up to five minutes long. Canceling voice input,
 leaving the screen, or an audio interruption discards the new recording and keeps the existing draft
-and attachments. T3 Code deletes the local audio file after transcription or cancellation. It sends
+and attachments. Pylon deletes the local audio file after transcription or cancellation. It sends
 only the normal message text when you submit the draft.
 
 ## Commands and skills

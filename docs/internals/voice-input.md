@@ -1,6 +1,6 @@
 # Voice input
 
-> For maintainers. Using T3 Code? See [voice input on iPhone](../user/composer.md#voice-input-on-iphone).
+> For maintainers. Using Pylon? See [voice input on iPhone](../user/composer.md#voice-input-on-iphone).
 
 Voice input produces editable composer text. The current implementation records on the client and
 transcribes locally with Apple's `SpeechAnalyzer` and `SpeechTranscriber` on supported iOS 26+

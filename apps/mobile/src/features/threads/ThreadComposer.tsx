@@ -323,8 +323,9 @@ export function ComposerSurface(props: {
         chrome="none"
         fallbackClassName="border border-border bg-card-translucent"
         glassEffectStyle="regular"
-        // The composer is a passive material containing interactive controls.
-        // Expo GlassView defaults to non-interactive and both layouts share it.
+        // Keep native glass out of the interactive content's layout path: the
+        // content is now a sibling of this layer, not a child of it.
+        pointerEvents="none"
         tintColor="transparent"
         layout={layoutTransition}
         style={[{ position: "absolute", inset: 0 }, animatedShapeStyle]}
@@ -1261,6 +1262,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const { onSendMessage } = props;
 
   const handleSend = useCallback(async () => {
+    // canSend is derived above voiceInput, so the block lives here.
+    // Reachable via a hardware-keyboard Return while recording.
+    if (voiceInput.blocksSubmission) return;
     if (!canSend) return;
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
@@ -1292,6 +1296,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     voiceInput.blocksSubmission,
   ]);
   const handleQueueFollowUp = useCallback(async () => {
+    // canSend is derived above voiceInput, so the block lives here.
+    // Reachable via a hardware-keyboard Return while recording.
+    if (voiceInput.blocksSubmission) return;
     if (!canSend) return;
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey) || isMutatingSessionInputQueue) return;
@@ -1612,6 +1619,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 ref={inputRef}
                 multiline
                 value={props.draftMessage}
+                // Without this the keyboard stays live during dictation, and any
+                // keystroke makes resolveTranscriptCommit see a changed draft and
+                // discard the whole transcript as stale.
+                readOnly={voiceInput.freezesEditor}
                 skills={selectedProviderStatus?.skills ?? []}
                 selection={composerMenu.selection}
                 onChangeText={props.onChangeDraftMessage}
@@ -1729,13 +1740,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 )}
               </Animated.View>
             ) : null}
+            {isExpanded ? <View className="h-1" /> : null}
           </ComposerDictationDraftContent>
           {isToolbarVisible ? (
             <ComposerDictationToolbar
               showsDictation={isVoiceInputPresented}
               visible={isToolbarVisible}
             >
-              <ComposerToolbarRow paddingBottom={0} paddingHorizontal={0} paddingTop={4}>
+              <ComposerToolbarRow paddingBottom={0} paddingHorizontal={0} paddingTop={0}>
                 <ComposerDictationCancelAction
                   presentation={voicePresentation}
                   onCancel={voiceInput.cancel}
@@ -1919,29 +1931,32 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                         showChevron={false}
                       />
                     ) : null}
-                    {showStopAction ? (
-                      <ComposerToolbarButton
-                        accessibilityLabel="Stop"
-                        icon="stop.fill"
-                        variant="danger"
-                        onPress={props.onStopThread}
-                        showChevron={false}
-                      />
-                    ) : null}
                   </ComposerToolbarScroller>
                 )}
                 <View className="shrink-0 flex-row items-center gap-2">
-                  {voiceInput.isAvailable ? (
-                    <ComposerDictationPrimaryAction
-                      state={voiceInput.state}
-                      presentation={voicePresentation}
-                      isAvailable={voiceInput.isAvailable}
-                      onStart={voiceInput.start}
-                      onConfirm={voiceInput.stop}
-                      onCancel={voiceInput.cancel}
+                  {/* Stop lives outside the dictation ternary: an agent must stay
+                      stoppable for the whole recording and transcription window. */}
+                  {showStopAction ? (
+                    <ComposerToolbarButton
+                      accessibilityLabel="Stop"
+                      icon="stop.fill"
+                      variant="danger"
+                      onPress={props.onStopThread}
+                      showChevron={false}
                     />
                   ) : null}
-                  {isVoiceInputPresented ? null : (
+                  <ComposerDictationPrimaryAction
+                    state={voiceInput.state}
+                    presentation={voicePresentation}
+                    isAvailable={voiceInput.isAvailable}
+                    onStart={voiceInput.start}
+                    onConfirm={voiceInput.stop}
+                    onCancel={voiceInput.cancel}
+                  />
+                  {/* showsSend, not isVoiceInputPresented: the error phase shows a
+                      status label AND keeps send, so gating on the label strands
+                      the user with no way to send until they dismiss the error. */}
+                  {voicePresentation.showsSend ? (
                     <ComposerToolbarButton
                       accessibilityLabel={sendLabel}
                       icon="arrow.up"
@@ -1950,7 +1965,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       onPress={canQueueFollowUp ? handleQueueFollowUp : handleSend}
                       showChevron={false}
                     />
-                  )}
+                  ) : null}
                 </View>
               </ComposerToolbarRow>
             </ComposerDictationToolbar>

@@ -67,3 +67,36 @@ describe("resolveVoiceComposerPresentation", () => {
     expect(voiceInputFreezesEditor({ phase: "idle", error: null, errorAction: null })).toBe(false);
   });
 });
+
+describe("showsSend is not the same predicate as having a status label", () => {
+  // The composer must gate its send control on showsSend. Gating on the
+  // presence of a status label instead looks equivalent — both are non-null
+  // through recording and transcribing — but diverges exactly in the error
+  // phase, which shows a label AND keeps send. Getting this wrong strands the
+  // user with no send control until they find the dismiss affordance.
+  it("keeps send available in the error phase, which also shows a status label", () => {
+    const presentation = resolveVoiceComposerPresentation(
+      { phase: "error", error: "No speech was detected.", errorAction: null },
+      0,
+    );
+    expect(presentation.showsSend).toBe(true);
+    expect(presentation.statusLabel).not.toBeNull();
+  });
+
+  it("hides send only while dictation actually owns the row", () => {
+    for (const phase of ["preparing", "recording", "transcribing"] as const) {
+      const presentation = resolveVoiceComposerPresentation(
+        { phase, error: null, errorAction: null },
+        0,
+      );
+      expect(presentation.showsSend).toBe(false);
+      expect(presentation.statusLabel).not.toBeNull();
+    }
+    const idle = resolveVoiceComposerPresentation(
+      { phase: "idle", error: null, errorAction: null },
+      0,
+    );
+    expect(idle.showsSend).toBe(true);
+    expect(idle.statusLabel).toBeNull();
+  });
+});
