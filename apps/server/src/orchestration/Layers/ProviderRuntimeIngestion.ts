@@ -2148,6 +2148,10 @@ const make = Effect.gen(function* () {
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
+      // Non-assistant deltas cannot change any projection this path derives.
+      if (event.type === "content.delta" && event.payload.streamKind !== "assistant_text") {
+        return;
+      }
       if (event.type === "account.rate-limits.updated") {
         return yield* applyProviderRateLimitEvent(event);
       }
@@ -2362,9 +2366,17 @@ const make = Effect.gen(function* () {
           createdAt: now,
         });
       });
-      const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
-        threadId: thread.id,
-      });
+      const pendingTurnStart =
+        event.type === "session.started" ||
+        event.type === "session.state.changed" ||
+        event.type === "session.exited" ||
+        event.type === "thread.started" ||
+        event.type === "turn.started" ||
+        event.type === "turn.completed"
+          ? yield* projectionTurnRepository.getPendingTurnStartByThreadId({
+              threadId: thread.id,
+            })
+          : Option.none();
       const hasPendingTurnStart =
         Option.isSome(pendingTurnStart) && thread.session?.status === "starting";
       const turnStartedMatchesPendingAdmission =
