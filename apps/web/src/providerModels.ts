@@ -8,7 +8,7 @@ import {
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
-import { createModelCapabilities, normalizeModelSlug } from "@t3tools/shared/model";
+import { createModelCapabilities, resolveSelectableModel } from "@t3tools/shared/model";
 
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -86,7 +86,7 @@ export function getProviderModelCapabilities(
   planModeEnabled = true,
   context: ProviderModelCapabilityContext = "interactive",
 ): ModelCapabilities {
-  const slug = normalizeModelSlug(model, provider);
+  const slug = resolveSelectableModel(provider, model, models);
   const selectedModel = models.find((candidate) => candidate.slug === slug);
   const caps =
     (context === "background-text-generation"
