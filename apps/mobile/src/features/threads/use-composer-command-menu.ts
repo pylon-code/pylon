@@ -1,4 +1,5 @@
 import {
+  dedupeProviderSkillsByName,
   getProviderSkillsForSlashMenu,
   getProviderSlashCommandsForSlashMenu,
 } from "@t3tools/client-runtime/providerSkills";
@@ -158,7 +159,9 @@ export function buildComposerCommandItems({
   }
 
   if (trigger.kind === "skill") {
-    const enabledSkills = (selectedProviderStatus?.skills ?? []).filter((s) => s.enabled);
+    const enabledSkills = dedupeProviderSkillsByName(
+      (selectedProviderStatus?.skills ?? []).filter((s) => s.enabled),
+    );
     const normalizedQuery = normalizeSearchQuery(trigger.query, {
       trimLeadingPattern: /^\$+/,
     });
