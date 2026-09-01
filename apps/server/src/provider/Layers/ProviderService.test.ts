@@ -450,11 +450,26 @@ function makeFakeCodexAdapter(
     sessions.set(threadId, update(existing));
   };
 
+  const setPrepareTurnRecovery = (
+    prepareTurnRecovery:
+      | NonNullable<ProviderAdapterShape<ProviderAdapterError>["prepareTurnRecovery"]>
+      | undefined,
+  ): void => {
+    const mutable = adapter as {
+      prepareTurnRecovery?: NonNullable<
+        ProviderAdapterShape<ProviderAdapterError>["prepareTurnRecovery"]
+      >;
+    };
+    if (prepareTurnRecovery === undefined) delete mutable.prepareTurnRecovery;
+    else mutable.prepareTurnRecovery = prepareTurnRecovery;
+  };
+
   return {
     adapter,
     emit,
     removeSession,
     updateSession,
+    setPrepareTurnRecovery,
     startSession,
     sendTurn,
     followUp,
@@ -2705,6 +2720,129 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         [],
       );
     }),
+  );
+
+  it.effect("retains a live same-incarnation replacement after an old session exit", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-live-same-incarnation-exit");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const received = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const consumer = yield* Stream.take(provider.streamEvents, 2).pipe(
+        Stream.runForEach((event) => Ref.update(received, (events) => [...events, event])),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      fanout.codex.emit({
+        type: "session.exited",
+        eventId: asEventId("evt-live-same-incarnation-old-exit"),
+        provider: CODEX_DRIVER,
+        threadId,
+        sessionIncarnationId: session.sessionIncarnationId,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: { exitKind: "graceful" },
+      });
+      fanout.codex.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-live-same-incarnation-current-output"),
+        provider: CODEX_DRIVER,
+        threadId,
+        sessionIncarnationId: session.sessionIncarnationId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        delta: "current",
+      });
+      yield* Fiber.join(consumer);
+
+      assert.deepEqual(
+        (yield* Ref.get(received)).map((event) => event.eventId),
+        [
+          asEventId("evt-live-same-incarnation-old-exit"),
+          asEventId("evt-live-same-incarnation-current-output"),
+        ],
+      );
+    }),
+  );
+
+  it.effect("keeps a logical incarnation current across a recovery attachment swap", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-recovery-attachment-swap");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const admissionRequestId = CommandId.make("cmd-recovery-attachment-swap");
+      fanout.codex.setPrepareTurnRecovery((input) =>
+        Effect.gen(function* () {
+          fanout.codex.removeSession(threadId);
+          fanout.codex.emit({
+            type: "session.exited",
+            eventId: asEventId("evt-recovery-attachment-old-exit"),
+            provider: CODEX_DRIVER,
+            threadId,
+            sessionIncarnationId: session.sessionIncarnationId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            payload: { exitKind: "graceful" },
+          });
+          yield* Effect.yieldNow;
+          yield* fanout.codex.startSession({
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            runtimeMode: session.runtimeMode,
+            ...(session.cwd === undefined ? {} : { cwd: session.cwd }),
+            sessionIncarnationId: session.sessionIncarnationId,
+          });
+          fanout.codex.emit({
+            type: "turn.started",
+            eventId: asEventId("evt-recovery-attachment-current-turn"),
+            provider: CODEX_DRIVER,
+            threadId,
+            turnId: asTurnId("turn-recovery-attachment-swap"),
+            admissionRequestId: input.admissionRequestId,
+            sessionIncarnationId: session.sessionIncarnationId,
+            createdAt: "2026-01-01T00:00:01.000Z",
+            payload: {},
+          });
+        }),
+      );
+      const received = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const consumer = yield* Stream.take(provider.streamEvents, 2).pipe(
+        Stream.runForEach((event) => Ref.update(received, (events) => [...events, event])),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      yield* provider.sendTurn({
+        threadId,
+        input: "continue after the exact attachment swap",
+        admissionRequestId,
+        sessionIncarnationId: session.sessionIncarnationId,
+      });
+      yield* Fiber.join(consumer);
+
+      assert.deepEqual(
+        (yield* Ref.get(received)).map((event) => event.eventId),
+        [
+          asEventId("evt-recovery-attachment-old-exit"),
+          asEventId("evt-recovery-attachment-current-turn"),
+        ],
+      );
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          fanout.codex.setPrepareTurnRecovery(undefined);
+        }),
+      ),
+    ),
   );
 
   it.effect("retains a stopping incarnation until its delayed exit is ingested", () =>

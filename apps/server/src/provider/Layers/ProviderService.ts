@@ -332,6 +332,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       readonly turnId: ProviderRuntimeEvent["turnId"];
     }
   >();
+  // Some adapters replace their native attachment inside prepareTurnRecovery while preserving
+  // the logical Pylon incarnation. Keep exit events from tearing down that incarnation mid-swap.
+  const turnRecoveryPreparations = new Set<ThreadId>();
   type StartReservationToken = string;
   type StartReservationEntry = {
     readonly currentToken: StartReservationToken;
@@ -704,13 +707,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
       }
       if (canonicalEvent.type === "session.exited") {
+        const stillActive =
+          turnRecoveryPreparations.has(canonicalEvent.threadId) ||
+          (yield* source.adapter.hasSession(canonicalEvent.threadId));
         const retained = currentSessionIncarnations.get(canonicalEvent.threadId);
-        if (retained?.id === currentIncarnation.id) {
+        if (!stillActive && retained?.id === currentIncarnation.id) {
           currentSessionIncarnations.delete(canonicalEvent.threadId);
         }
         const mcpSession = McpProviderSession.readMcpProviderSession(canonicalEvent.threadId);
         if (mcpSession?.providerInstanceId !== source.instanceId) return;
-        const stillActive = yield* source.adapter.hasSession(canonicalEvent.threadId);
         if (!stillActive) yield* clearMcpSession(canonicalEvent.threadId);
       }
     });
@@ -1295,7 +1300,53 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         });
       }
       if (routed.adapter.prepareTurnRecovery !== undefined) {
-        yield* routed.adapter.prepareTurnRecovery(input);
+        turnRecoveryPreparations.add(input.threadId);
+        yield* routed.adapter.prepareTurnRecovery(input).pipe(
+          Effect.onError(() =>
+            routed.adapter.hasSession(input.threadId).pipe(
+              Effect.flatMap((stillLive) => {
+                if (stillLive) return Effect.void;
+                const retained = currentSessionIncarnations.get(input.threadId);
+                if (
+                  retained?.instanceId === routed.instanceId &&
+                  retained.adapter === routed.adapter
+                ) {
+                  currentSessionIncarnations.delete(input.threadId);
+                }
+                return clearMcpSession(input.threadId);
+              }),
+              Effect.ignore,
+            ),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              turnRecoveryPreparations.delete(input.threadId);
+            }),
+          ),
+        );
+      }
+      if (
+        routed.adapter.prepareTurnRecovery !== undefined &&
+        input.sessionIncarnationId !== undefined
+      ) {
+        const preparedSessionIsLive = yield* routed.adapter
+          .listSessions()
+          .pipe(
+            Effect.map((sessions) =>
+              sessions.some(
+                (session) =>
+                  session.threadId === input.threadId &&
+                  session.sessionIncarnationId === input.sessionIncarnationId,
+              ),
+            ),
+          );
+        if (preparedSessionIsLive) {
+          currentSessionIncarnations.set(input.threadId, {
+            id: input.sessionIncarnationId,
+            instanceId: routed.instanceId,
+            adapter: routed.adapter,
+          });
+        }
       }
       const turn = yield* routed.adapter.sendTurn(input);
       yield* directory.upsert({

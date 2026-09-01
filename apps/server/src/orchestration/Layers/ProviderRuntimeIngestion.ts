@@ -2585,7 +2585,7 @@ const make = Effect.gen(function* () {
               "thread-session-set",
             );
             if ((applied.eventCount ?? 0) === 0) return;
-            if (event.type === "session.exited") {
+            if (event.type === "turn.completed" || event.type === "session.exited") {
               yield* settleRecoveryTerminalProjection(thread.id, event.createdAt);
             }
           }
