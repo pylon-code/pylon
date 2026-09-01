@@ -616,6 +616,22 @@ const refinementResultSchema = Schema.Struct({
   appliedEdits: Schema.Array(Schema.Struct({ applied: Schema.Boolean })),
   scope: Schema.optional(Schema.Literals(["local", "global"])),
 });
+const privateConversationLeafIdSchema = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(256),
+);
+const privateConversationLeafStateSchema = Schema.Struct({
+  activeSessionId: Schema.optional(Schema.String),
+  sessionId: Schema.String,
+  leafId: Schema.NullOr(privateConversationLeafIdSchema),
+});
+const privateConversationLeafSnapshotSchema = Schema.Struct({
+  state: privateConversationLeafStateSchema,
+});
+const privateConversationNavigationResultSchema = Schema.Struct({
+  cancelled: Schema.Boolean,
+  aborted: Schema.optional(Schema.Boolean),
+});
 
 const decodeThinkingLevel = Schema.decodeUnknownOption(thinkingLevelSchema);
 const decodeServiceTier = Schema.decodeUnknownOption(serviceTierSchema);
@@ -639,6 +655,15 @@ const decodeSessionStats = Schema.decodeUnknownOption(sessionStatsSchema);
 const decodeRlmMaxDepthStatus = Schema.decodeUnknownOption(rlmMaxDepthStatusSchema);
 const decodeAgentMessageReceipt = Schema.decodeUnknownOption(agentMessageReceiptSchema);
 const decodeRefinementResult = Schema.decodeUnknownOption(refinementResultSchema);
+const decodePrivateConversationLeafState = Schema.decodeUnknownOption(
+  privateConversationLeafStateSchema,
+);
+const decodePrivateConversationLeafSnapshot = Schema.decodeUnknownOption(
+  privateConversationLeafSnapshotSchema,
+);
+const decodePrivateConversationNavigationResult = Schema.decodeUnknownOption(
+  privateConversationNavigationResultSchema,
+);
 
 function managedPlanToolDefinitionMatches(value: unknown): boolean {
   const decoded = decodeManagedPlanToolDefinition(value);
@@ -820,6 +845,9 @@ const runtimeErrorOperation = Schema.Literals([
   "remove-only-input-queue-item",
   "set-input-queue-mode",
   "get-compaction-state",
+  "inspect-conversation-leaf",
+  "navigate-conversation-leaf",
+  "release-conversation-leaf",
   "compact",
   "refine-local-harness",
   "abort-compaction",
@@ -1044,7 +1072,24 @@ export interface PrimeAgentDaemonSessionRuntime {
   readonly sessionId: string;
   readonly sessionFile: string;
   readonly activeSessionId: string;
+  /** Stable only within one compatible daemon supervisor generation. */
+  readonly conversationRuntimeGeneration?: string;
   readonly initialSnapshot: PrimeAgentDaemonCanonicalSnapshot;
+  /** Private immutable root selected from the raw initial snapshot. */
+  readonly initialConversationLeafId?: string;
+  readonly conversationRollbackAvailable: boolean;
+  readonly inspectConversationLeaf: Effect.Effect<string, PrimeAgentDaemonSessionRuntimeError>;
+  readonly navigateConversationLeaf: (input: {
+    readonly desiredLeafId: string;
+    readonly allowedSourceLeafId: string;
+  }) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  readonly prepareConversationRollback: (input: {
+    readonly desiredLeafId: string;
+    readonly allowedSourceLeafId: string;
+  }) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  readonly releaseConversationRollback: (
+    expectedLeafId: string,
+  ) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly initialResources: PrimeAgentDaemonSessionResources;
   readonly initialAgentDepth: PrimeAgentDaemonAgentDepth;
   readonly initialInputQueue: PrimeAgentDaemonInputQueue;
@@ -1557,6 +1602,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     >();
     let needsResumeAfterAbort = false;
     let connectionGeneration = 0;
+    let conversationRollbackFence:
+      | {
+          readonly desiredLeafId: string;
+          readonly allowedSourceLeafId: string;
+          compromised: boolean;
+        }
+      | undefined;
     type RouteRetirementSignal = {
       readonly listeners: Set<() => void>;
       retired: boolean;
@@ -2579,6 +2631,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         weight,
         ...(recoveryCursor === undefined ? {} : { recoveryCursor }),
       } satisfies QueuedRuntimeEvent;
+      if (conversationRollbackFence !== undefined) {
+        onCommit();
+        return Effect.void;
+      }
       if (event._tag === "SessionClosed") {
         runtimeEventIngressFailed = true;
         settleReconnectResolution(connectionGeneration, false);
@@ -4825,6 +4881,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }),
       ),
     );
+    const privateInitialLeaf = decodePrivateConversationLeafSnapshot(rawSnapshot);
+    const initialConversationLeafId = Option.flatMap(privateInitialLeaf, (snapshot) =>
+      snapshot.state.sessionId === sessionId &&
+      (snapshot.state.activeSessionId === undefined ||
+        snapshot.state.activeSessionId === activeSessionId)
+        ? Option.fromNullishOr(snapshot.state.leafId)
+        : Option.none<string>(),
+    );
     const rawSnapshotWeight = boundedCorrelatedProofRouteWeight(rawSnapshot);
     if (rawSnapshotWeight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - initializationAcceptedEventWeight) {
       initializationOverflow = true;
@@ -5160,6 +5224,176 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               "The installed Prime Agent connection does not support this operation.",
             ),
           );
+
+    const conversationRuntimeGeneration = client.hello?.supervisorGeneration?.trim();
+    const conversationRollbackAvailable =
+      input.requiredExtension === undefined &&
+      conversationRuntimeGeneration !== undefined &&
+      conversationRuntimeGeneration.length > 0 &&
+      Predicate.isFunction(connection!.getState) &&
+      Predicate.isFunction(connection!.navigateTree);
+
+    const readConversationLeaf = Effect.fn(
+      "PrimeAgentDaemonSessionRuntime.inspectConversationLeaf",
+    )(function* () {
+      yield* ensureOpen("inspect-conversation-leaf");
+      if (!conversationRollbackAvailable) {
+        return yield* runtimeError(
+          "inspect-conversation-leaf",
+          "incompatible-api",
+          "The installed Prime Agent connection does not support exact conversation navigation.",
+        );
+      }
+      const getState = yield* requireMethod("inspect-conversation-leaf", connection!.getState);
+      const output = yield* Effect.tryPromise({
+        try: () => getState.call(connection),
+        catch: () =>
+          runtimeError(
+            "inspect-conversation-leaf",
+            "request-failed",
+            "Prime Agent conversation state could not be inspected.",
+          ),
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: COMMAND_TIMEOUT_MS,
+          orElse: () =>
+            runtimeError(
+              "inspect-conversation-leaf",
+              "request-timed-out",
+              "Prime Agent conversation inspection timed out.",
+            ),
+        }),
+      );
+      const decoded = decodePrivateConversationLeafState(output);
+      if (
+        Option.isNone(decoded) ||
+        decoded.value.sessionId !== sessionId ||
+        (decoded.value.activeSessionId !== undefined &&
+          decoded.value.activeSessionId !== activeSessionId) ||
+        decoded.value.leafId === null
+      ) {
+        return yield* runtimeError(
+          "inspect-conversation-leaf",
+          "invalid-response",
+          "Prime Agent returned an invalid or mismatched conversation state.",
+        );
+      }
+      return decoded.value.leafId;
+    });
+
+    const prepareConversationRollback: PrimeAgentDaemonSessionRuntime["prepareConversationRollback"] =
+      Effect.fn("PrimeAgentDaemonSessionRuntime.prepareConversationRollback")(function* (input) {
+        const desiredLeafId = yield* validateNonEmpty(
+          "navigate-conversation-leaf",
+          "desiredLeafId",
+          input.desiredLeafId,
+        );
+        const allowedSourceLeafId = yield* validateNonEmpty(
+          "navigate-conversation-leaf",
+          "allowedSourceLeafId",
+          input.allowedSourceLeafId,
+        );
+        conversationRollbackFence = {
+          desiredLeafId,
+          allowedSourceLeafId,
+          compromised: false,
+        };
+        const current = yield* readConversationLeaf();
+        if (current !== desiredLeafId && current !== allowedSourceLeafId) {
+          conversationRollbackFence.compromised = true;
+          return yield* runtimeError(
+            "navigate-conversation-leaf",
+            "invalid-response",
+            "Prime Agent conversation state is outside the exact rollback boundary.",
+          );
+        }
+      });
+
+    const navigateConversationLeaf: PrimeAgentDaemonSessionRuntime["navigateConversationLeaf"] =
+      Effect.fn("PrimeAgentDaemonSessionRuntime.navigateConversationLeaf")(function* (input) {
+        yield* prepareConversationRollback(input);
+        if (conversationRollbackFence?.compromised === true) {
+          return yield* runtimeError(
+            "navigate-conversation-leaf",
+            "invalid-response",
+            "Prime Agent conversation rollback authority is compromised.",
+          );
+        }
+        const current = yield* readConversationLeaf();
+        if (current === input.desiredLeafId) return;
+        if (current !== input.allowedSourceLeafId) {
+          conversationRollbackFence!.compromised = true;
+          return yield* runtimeError(
+            "navigate-conversation-leaf",
+            "invalid-response",
+            "Prime Agent conversation state is outside the exact rollback boundary.",
+          );
+        }
+        const navigate = yield* requireMethod(
+          "navigate-conversation-leaf",
+          connection!.navigateTree,
+        );
+        const output = yield* Effect.tryPromise({
+          try: () => navigate.call(connection, input.desiredLeafId, { summarize: false }),
+          catch: () =>
+            runtimeError(
+              "navigate-conversation-leaf",
+              "request-failed",
+              "Prime Agent conversation navigation outcome is unavailable.",
+            ),
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: COMMAND_TIMEOUT_MS,
+            orElse: () =>
+              runtimeError(
+                "navigate-conversation-leaf",
+                "request-timed-out",
+                "Prime Agent conversation navigation timed out.",
+              ),
+          }),
+        );
+        const result = decodePrivateConversationNavigationResult(output);
+        if (Option.isNone(result) || result.value.cancelled || result.value.aborted === true) {
+          return yield* runtimeError(
+            "navigate-conversation-leaf",
+            "invalid-response",
+            "Prime Agent did not confirm exact conversation navigation.",
+          );
+        }
+        const inspected = yield* readConversationLeaf();
+        if (inspected !== input.desiredLeafId) {
+          if (inspected !== input.allowedSourceLeafId)
+            conversationRollbackFence!.compromised = true;
+          return yield* runtimeError(
+            "navigate-conversation-leaf",
+            "invalid-response",
+            "Prime Agent did not reach the exact requested conversation state.",
+          );
+        }
+      });
+
+    const releaseConversationRollback: PrimeAgentDaemonSessionRuntime["releaseConversationRollback"] =
+      Effect.fn("PrimeAgentDaemonSessionRuntime.releaseConversationRollback")(
+        function* (expectedLeafId) {
+          yield* validateNonEmpty("release-conversation-leaf", "expectedLeafId", expectedLeafId);
+          if (conversationRollbackFence?.compromised === true) {
+            return yield* runtimeError(
+              "release-conversation-leaf",
+              "invalid-response",
+              "Prime Agent conversation rollback authority is compromised.",
+            );
+          }
+          const current = yield* readConversationLeaf();
+          if (current !== expectedLeafId) {
+            return yield* runtimeError(
+              "release-conversation-leaf",
+              "invalid-response",
+              "Prime Agent did not preserve the committed conversation state.",
+            );
+          }
+          conversationRollbackFence = undefined;
+        },
+      );
 
     const agentMessageAvailable =
       input.requiredExtension === undefined && Predicate.isFunction(connection!.sendAgentMessage);
@@ -8311,7 +8545,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       sessionId,
       sessionFile,
       activeSessionId,
+      ...(conversationRuntimeGeneration === undefined ? {} : { conversationRuntimeGeneration }),
       initialSnapshot: initialEvent,
+      ...(Option.isNone(initialConversationLeafId)
+        ? {}
+        : { initialConversationLeafId: initialConversationLeafId.value }),
+      conversationRollbackAvailable,
+      inspectConversationLeaf: readConversationLeaf(),
+      navigateConversationLeaf,
+      prepareConversationRollback,
+      releaseConversationRollback,
       initialResources,
       initialAgentDepth,
       initialInputQueue,

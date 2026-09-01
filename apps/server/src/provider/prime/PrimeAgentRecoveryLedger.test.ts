@@ -95,6 +95,26 @@ const admit = (ledger: PrimeAgentRecoveryLedgerShape) =>
   });
 
 layer("PrimeAgentRecoveryLedger", (it) => {
+  it.effect("retains settled exact rollback authority as idle and adoptable", () =>
+    Effect.gen(function* () {
+      yield* resetLedger;
+      const ledger = yield* make;
+      yield* ledger.putPrepared(authority);
+      assert.isTrue(yield* admit(ledger));
+      assert.isTrue(
+        yield* ledger.markIdle({
+          threadId: authority.threadId,
+          ownerToken: authority.ownerToken,
+          updatedAt: "2026-01-01T00:00:01.500Z",
+        }),
+      );
+      assert.isNull(Option.getOrThrow(yield* ledger.get(authority.threadId)).turnId);
+      const retained = yield* ledger.listActive();
+      assert.equal(retained.length, 1);
+      assert.isNull(retained[0]?.turnId);
+    }),
+  );
+
   it.effect(
     "keeps prior authority while one stable adoption route advances through every phase",
     () =>

@@ -247,6 +247,7 @@ export const make = Effect.gen(function* () {
       readonly threadId: ThreadId;
       readonly cwd: string;
       readonly checkpointTurnCount: number;
+      readonly turnId: TurnId | null;
       readonly checkpointRef: ReturnType<typeof checkpointRefForThreadTurn>;
       readonly capturedAt: string;
     }) {
@@ -273,10 +274,22 @@ export const make = Effect.gen(function* () {
         cwd: input.cwd,
         checkpointRef: input.checkpointRef,
       });
-      const anchor = yield* providerService.captureConversationAnchor(input.threadId);
+      const anchor = yield* providerService.captureConversationAnchor({
+        threadId: input.threadId,
+        binding: {
+          kind: "checkpoint",
+          checkpointTurnCount: input.checkpointTurnCount,
+          turnId: input.turnId,
+          checkpointRef: input.checkpointRef,
+          checkpointOid: checkpoint.oid,
+          sourceRevision: input.checkpointTurnCount,
+        },
+      });
       yield* rollbackRepository.value.putCheckpointAnchor({
         threadId: input.threadId,
         checkpointTurnCount: input.checkpointTurnCount,
+        turnId: input.turnId,
+        sourceRevision: input.checkpointTurnCount,
         providerInstanceId: session.value.providerInstanceId,
         sessionIncarnationId: session.value.sessionIncarnationId,
         checkpointRef: input.checkpointRef,
@@ -331,6 +344,7 @@ export const make = Effect.gen(function* () {
       threadId: input.threadId,
       cwd: input.cwd,
       checkpointTurnCount: input.turnCount,
+      turnId: input.turnId,
       checkpointRef: targetCheckpointRef,
       capturedAt: input.createdAt,
     });
@@ -590,14 +604,24 @@ export const make = Effect.gen(function* () {
         cwd: checkpointCwd,
         checkpointRef: baselineCheckpointRef,
       });
-      if (baselineExists) {
-        return;
+      if (!baselineExists) {
+        yield* checkpointStore.captureCheckpoint({
+          cwd: checkpointCwd,
+          checkpointRef: baselineCheckpointRef,
+        });
       }
-
-      yield* checkpointStore.captureCheckpoint({
+      yield* capturePrivateCheckpointAnchor({
+        threadId: thread.id,
         cwd: checkpointCwd,
+        checkpointTurnCount: currentTurnCount,
+        turnId:
+          thread.checkpoints.find(
+            (checkpoint) => checkpoint.checkpointTurnCount === currentTurnCount,
+          )?.turnId ?? null,
         checkpointRef: baselineCheckpointRef,
+        capturedAt: event.createdAt,
       });
+      if (baselineExists) return;
       yield* receiptBus.publish({
         type: "checkpoint.baseline.captured",
         threadId: thread.id,
@@ -749,14 +773,23 @@ export const make = Effect.gen(function* () {
       cwd: checkpointCwd,
       checkpointRef: baselineCheckpointRef,
     });
-    if (baselineExists) {
-      return;
+    if (!baselineExists) {
+      yield* checkpointStore.captureCheckpoint({
+        cwd: checkpointCwd,
+        checkpointRef: baselineCheckpointRef,
+      });
     }
-
-    yield* checkpointStore.captureCheckpoint({
+    yield* capturePrivateCheckpointAnchor({
+      threadId,
       cwd: checkpointCwd,
+      checkpointTurnCount: currentTurnCount,
+      turnId:
+        thread.checkpoints.find((checkpoint) => checkpoint.checkpointTurnCount === currentTurnCount)
+          ?.turnId ?? null,
       checkpointRef: baselineCheckpointRef,
+      capturedAt: event.occurredAt,
     });
+    if (baselineExists) return;
     yield* receiptBus.publish({
       type: "checkpoint.baseline.captured",
       threadId,

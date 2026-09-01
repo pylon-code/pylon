@@ -26,9 +26,11 @@ transport, config, and event shapes are mapped.
 
 ### Absolute conversation rollback
 
-The optional `absoluteConversationRollback` adapter boundary captures, inspects, and applies a private JSON anchor with a stable equality digest. The durable rollback saga accepts only adapters that declare `conversationRollback: "absolute"` and implement all three operations. Relative turn counts and uninspectable no-op paths always fail closed.
+The optional `absoluteConversationRollback` adapter boundary captures, inspects, applies, and releases a private JSON anchor with a stable equality digest. The durable saga accepts only an adapter that declares `conversationRollback: "absolute"`, implements every operation, and reports the exact thread available. Relative turn counts and uninspectable no-op paths fail closed.
 
-All built-in production adapters currently omit this boundary and remain `unsupported`. The foundation provides only the provider-neutral contract, private persistence, leases, compensation, and reconciliation. A later provider-specific phase must prove its immutable anchor semantics before changing that declaration. Anchors, native session identities, receipts, and recovery paths must not enter orchestration events, logs, shell projections, or client payloads.
+The managed Prime daemon adapter is the only built-in absolute implementation. It is enabled only when the pinned managed build exposes the public `getState()` and `navigateTree()` methods. A full-access session must be idle, quiescent, on the same provider instance, runtime generation, session incarnation, and native session. Prime `leafId`, native identities, and anchors stay in private rollback tables and adapter memory. They never enter orchestration events, receipts, logs, telemetry, shell projections, or client payloads.
+
+Each ready checkpoint anchor binds one exact leaf to its checkpoint ref, object id, turn id, and source revision. A conflicting recapture cannot overwrite it. Navigation calls `navigateTree(leafId, { summarize: false })`, then proves the result with `getState().leafId`. While a saga is nonterminal, the provider admission fence and Prime event quarantine block new input and public output. Source or target is safe to reconcile after response loss or compatible reconnect; any third leaf enters manual recovery. Cleanup releases quarantine only after the public projection commit and a final exact-target proof. A managed recoverable Prime owner becomes an idle retained authority after settlement, stays adoptable across server restart, and cannot rotate into the next turn until terminal projection and checkpoint-quiescence holds are durable. Prime ACP, approval-required sessions, unmanaged or incompatible builds, and every other built-in provider remain unsupported.
 
 Prime Agent uses its public detached-daemon APIs as the primary runtime on macOS, Linux, and WSL2
 (which reports itself as Linux). `PrimeAgentDriver.create` rejects a native `win32` server before
@@ -362,8 +364,8 @@ synchronization.
    commands.
 2. [`ProviderCommandReactor`][cmd] reacts to orchestration intent events and dispatches provider
    calls.
-3. [`CheckpointReactor`][checkpoint] captures workspace checkpoints on turn start and completion. It
-   rejects coordinated rollback requests while rollback is disabled.
+3. [`CheckpointReactor`][checkpoint] captures workspace checkpoints and private provider anchors on
+   turn start and completion. It dispatches coordinated rollback only after strict admission.
 
 ### Turn-start admission and reconciliation
 

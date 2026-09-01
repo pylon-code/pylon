@@ -79,6 +79,7 @@ export const make = Effect.gen(function* () {
         provider.captureConversationAnchor === undefined ||
         provider.inspectConversationAnchor === undefined ||
         provider.applyConversationAnchor === undefined ||
+        provider.releaseConversationAnchor === undefined ||
         !(yield* provider
           .hasAbsoluteConversationRollback(command.threadId)
           .pipe(
@@ -218,7 +219,14 @@ export const make = Effect.gen(function* () {
         .pipe(
           Effect.mapError(() => invariant("The private target provider anchor is unavailable.")),
         );
-      if (Option.isNone(desired) || desired.value.checkpointOid !== targetIdentity.oid) {
+      const targetTurnId = targetSummary?.turnId ?? null;
+      if (
+        Option.isNone(desired) ||
+        desired.value.sourceRevision !== command.turnCount ||
+        desired.value.turnId !== targetTurnId ||
+        desired.value.checkpointRef !== targetCheckpointRef ||
+        desired.value.checkpointOid !== targetIdentity.oid
+      ) {
         return yield* invariant(
           "The private target provider anchor does not match the immutable checkpoint.",
         );
@@ -256,6 +264,8 @@ export const make = Effect.gen(function* () {
         workspaceCwd: sessionIdentity.cwd,
         sourceRevision,
         targetRevision: command.turnCount,
+        sourceTurnId: sourceSummary.turnId,
+        targetTurnId,
         sourceCheckpointRef,
         sourceCheckpointOid: sourceIdentity.oid,
         targetCheckpointRef,

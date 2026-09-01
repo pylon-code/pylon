@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { SqlError } from "effect/unstable/sql/SqlError";
-import { NonNegativeInt, ProjectId, ThreadId } from "@t3tools/contracts";
+import { NonNegativeInt, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
 import {
   PersistenceDecodeError,
   toPersistenceDecodeError,
@@ -41,6 +41,8 @@ const LeaseDbRow = Schema.Struct({
 const AnchorDbRow = Schema.Struct({
   threadId: ThreadId,
   checkpointTurnCount: NonNegativeInt,
+  turnId: Schema.NullOr(TurnId),
+  sourceRevision: NonNegativeInt,
   providerInstanceId: Schema.String,
   sessionIncarnationId: Schema.String,
   checkpointRef: Schema.String,
@@ -299,16 +301,19 @@ const make = Effect.gen(function* () {
     });
     const rows = yield* sql<{ readonly anchorDigest: string }>`
       INSERT INTO rollback_checkpoint_anchors (
-        thread_id, checkpoint_turn_count, provider_instance_id, session_incarnation_id,
-        checkpoint_ref, checkpoint_oid, anchor_json, anchor_digest, captured_at
+        thread_id, checkpoint_turn_count, turn_id, source_revision, provider_instance_id,
+        session_incarnation_id, checkpoint_ref, checkpoint_oid, anchor_json, anchor_digest, captured_at
       ) VALUES (
-        ${anchor.threadId}, ${anchor.checkpointTurnCount}, ${anchor.providerInstanceId},
+        ${anchor.threadId}, ${anchor.checkpointTurnCount}, ${anchor.turnId}, ${anchor.sourceRevision},
+        ${anchor.providerInstanceId},
         ${anchor.sessionIncarnationId}, ${anchor.checkpointRef}, ${anchor.checkpointOid},
         ${anchorJson}, ${anchor.anchorDigest}, ${anchor.capturedAt}
       )
       ON CONFLICT (thread_id, checkpoint_turn_count, provider_instance_id, session_incarnation_id)
       DO UPDATE SET captured_at = rollback_checkpoint_anchors.captured_at
-      WHERE rollback_checkpoint_anchors.checkpoint_ref = excluded.checkpoint_ref
+      WHERE rollback_checkpoint_anchors.turn_id IS excluded.turn_id
+        AND rollback_checkpoint_anchors.source_revision = excluded.source_revision
+        AND rollback_checkpoint_anchors.checkpoint_ref = excluded.checkpoint_ref
         AND rollback_checkpoint_anchors.checkpoint_oid = excluded.checkpoint_oid
         AND rollback_checkpoint_anchors.anchor_digest = excluded.anchor_digest
       RETURNING anchor_digest AS "anchorDigest"
@@ -324,6 +329,7 @@ const make = Effect.gen(function* () {
   const getCheckpointAnchor: RollbackSagaRepositoryShape["getCheckpointAnchor"] = (input) =>
     sql`
       SELECT thread_id AS "threadId", checkpoint_turn_count AS "checkpointTurnCount",
+        turn_id AS "turnId", source_revision AS "sourceRevision",
         provider_instance_id AS "providerInstanceId", session_incarnation_id AS "sessionIncarnationId",
         checkpoint_ref AS "checkpointRef", checkpoint_oid AS "checkpointOid",
         anchor_json AS "anchorJson", anchor_digest AS "anchorDigest", captured_at AS "capturedAt"
@@ -353,6 +359,8 @@ const make = Effect.gen(function* () {
               decodeAnchor({
                 threadId: row.threadId,
                 checkpointTurnCount: row.checkpointTurnCount,
+                turnId: row.turnId,
+                sourceRevision: row.sourceRevision,
                 providerInstanceId: row.providerInstanceId,
                 sessionIncarnationId: row.sessionIncarnationId,
                 checkpointRef: row.checkpointRef,

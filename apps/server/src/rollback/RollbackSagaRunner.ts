@@ -47,6 +47,7 @@ export const make = Effect.gen(function* () {
   const captureConversationAnchor = provider.captureConversationAnchor;
   const inspectConversationAnchor = provider.inspectConversationAnchor;
   const applyConversationAnchor = provider.applyConversationAnchor;
+  const releaseConversationAnchor = provider.releaseConversationAnchor;
   const ownerId = yield* (yield* Crypto.Crypto).randomUUIDv4;
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -193,6 +194,18 @@ export const make = Effect.gen(function* () {
       );
       return;
     }
+    if (releaseConversationAnchor === undefined || record.state.sourceAnchor === null) {
+      yield* manual(record, "provider-quarantine-release-unavailable");
+      return;
+    }
+    const releasedProvider = yield* releaseConversationAnchor({
+      threadId: record.state.threadId,
+      anchor: record.state.sourceAnchor,
+    }).pipe(Effect.result);
+    if (releasedProvider._tag === "Failure") {
+      yield* manual(record, "provider-quarantine-release-unproved");
+      return;
+    }
     const preimageForCleanup = privatePreimage(record.state);
     if (preimageForCleanup !== null) {
       const cleaned = yield* workspace.cleanupPreimage(preimageForCleanup).pipe(Effect.result);
@@ -223,7 +236,16 @@ export const make = Effect.gen(function* () {
       const state = record.state;
       switch (state.phase) {
         case "source-anchor-capture-started": {
-          const source = yield* captureConversationAnchor!(state.threadId).pipe(Effect.result);
+          const source = yield* captureConversationAnchor!({
+            threadId: state.threadId,
+            binding: {
+              kind: "source",
+              sourceRevision: state.sourceRevision,
+              checkpointRef: state.sourceCheckpointRef,
+              checkpointOid: state.sourceCheckpointOid,
+              turnId: state.sourceTurnId,
+            },
+          }).pipe(Effect.result);
           yield* after("side-effect:source-anchor-captured", state.operationId);
           if (source._tag === "Failure")
             return yield* compensate(record, "source-anchor-capture-failed");
@@ -358,16 +380,48 @@ export const make = Effect.gen(function* () {
               checkpointOid: state.targetCheckpointOid,
             })
             .pipe(Effect.result);
-          const providerReceipt = yield* inspectConversationAnchor!(state.threadId).pipe(
+          let providerReceipt = yield* inspectConversationAnchor!(state.threadId).pipe(
             Effect.result,
           );
           if (
+            providerReceipt._tag === "Success" &&
+            providerReceipt.success.digest === state.sourceAnchorDigest &&
+            state.desiredAnchor !== null
+          ) {
+            yield* applyConversationAnchor!({
+              threadId: state.threadId,
+              anchor: state.desiredAnchor,
+            }).pipe(Effect.result);
+            yield* after("side-effect:provider-target-reapplied", state.operationId);
+            providerReceipt = yield* inspectConversationAnchor!(state.threadId).pipe(Effect.result);
+          }
+          if (
+            providerReceipt._tag === "Success" &&
+            providerReceipt.success.digest !== state.desiredAnchorDigest &&
+            providerReceipt.success.digest !== state.sourceAnchorDigest
+          ) {
+            return yield* manual(record, "provider-anchor-neither-source-nor-target");
+          }
+          if (
             workspaceReceipt._tag === "Failure" ||
             workspaceReceipt.success.digest !== state.workspaceReceiptDigest ||
-            providerReceipt._tag === "Failure" ||
-            providerReceipt.success.digest !== state.desiredAnchorDigest
-          )
+            providerReceipt._tag === "Failure"
+          ) {
             return yield* manual(record, "precommit-postcondition-lost");
+          }
+          if (providerReceipt.success.digest !== state.desiredAnchorDigest) {
+            if (state.attempt + 1 < MAX_PROVIDER_TARGET_ATTEMPTS) {
+              const next = yield* update(record, {
+                phase: "provider-applied",
+                attempt: state.attempt + 1,
+                lastErrorCode: "provider-target-stayed-source-after-reconnect",
+              });
+              if (Option.isNone(next)) return;
+              record = next.value;
+              continue;
+            }
+            return yield* compensate(record, "provider-target-retry-exhausted");
+          }
           const next = yield* update(record, { phase: "projection-commit-started" });
           if (Option.isNone(next)) return;
           record = next.value;
@@ -399,6 +453,44 @@ export const make = Effect.gen(function* () {
           continue;
         }
         case "projection-committed": {
+          let providerReceipt = yield* inspectConversationAnchor!(state.threadId).pipe(
+            Effect.result,
+          );
+          if (
+            providerReceipt._tag === "Success" &&
+            providerReceipt.success.digest === state.sourceAnchorDigest &&
+            state.desiredAnchor !== null
+          ) {
+            yield* applyConversationAnchor!({
+              threadId: state.threadId,
+              anchor: state.desiredAnchor,
+            }).pipe(Effect.result);
+            yield* after("side-effect:provider-target-reapplied", state.operationId);
+            providerReceipt = yield* inspectConversationAnchor!(state.threadId).pipe(Effect.result);
+          }
+          if (
+            providerReceipt._tag === "Success" &&
+            providerReceipt.success.digest !== state.desiredAnchorDigest &&
+            providerReceipt.success.digest !== state.sourceAnchorDigest
+          ) {
+            return yield* manual(record, "provider-anchor-neither-source-nor-target");
+          }
+          if (
+            providerReceipt._tag !== "Success" ||
+            providerReceipt.success.digest !== state.desiredAnchorDigest
+          ) {
+            if (state.attempt + 1 < MAX_PROVIDER_TARGET_ATTEMPTS) {
+              const retried = yield* update(record, {
+                phase: "projection-committed",
+                attempt: state.attempt + 1,
+                lastErrorCode: "provider-target-unproved-after-projection",
+              });
+              if (Option.isNone(retried)) return;
+              record = retried.value;
+              continue;
+            }
+            return yield* manual(record, "provider-target-unproved-after-projection");
+          }
           const next = yield* update(record, { phase: "cleanup-started", cleanup: "running" });
           if (Option.isNone(next)) return;
           record = next.value;
@@ -422,6 +514,11 @@ export const make = Effect.gen(function* () {
             yield* repository.deleteCheckpointAnchorsAfter({
               threadId: state.threadId,
               checkpointTurnCount: state.targetRevision,
+            });
+            if (state.desiredAnchor === null) return yield* Effect.die("provider anchor missing");
+            yield* releaseConversationAnchor!({
+              threadId: state.threadId,
+              anchor: state.desiredAnchor,
             });
             const preimage = privatePreimage(state);
             if (preimage !== null) yield* workspace.cleanupPreimage(preimage);

@@ -21,6 +21,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import type { Json } from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import * as ServerConfig from "./config.ts";
@@ -37,6 +38,7 @@ import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ProviderSessionReaper from "./provider/Services/ProviderSessionReaper.ts";
+import { RollbackSagaRepository } from "./persistence/Services/RollbackSagas.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import {
@@ -302,11 +304,43 @@ export const reconcileProviderSessions = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
   const providerService = yield* ProviderService.ProviderService;
   const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const rollbackRepository = yield* Effect.serviceOption(RollbackSagaRepository);
 
-  // Prime restart adoption must install exact incarnation fencing and release retained
-  // replay before generic orphan settlement can observe the thread as dead.
+  // Prime restart adoption installs rollback quarantine before exact-incarnation
+  // fencing releases any retained native frames.
   if (providerService.recoverRestartSessions !== undefined) {
-    yield* providerService.recoverRestartSessions();
+    const unrecoverableAbsoluteRollbacks = new Set<ThreadId>();
+    const pendingAbsoluteRollbacks = new Map<
+      ThreadId,
+      { readonly sourceAnchor: Json; readonly desiredAnchor: Json; readonly expectedAnchor: Json }
+    >();
+    const pendingRecords = Option.isSome(rollbackRepository)
+      ? yield* rollbackRepository.value.listNonterminal()
+      : [];
+    for (const record of pendingRecords) {
+      const { sourceAnchor, desiredAnchor } = record.state;
+      if (sourceAnchor === null || desiredAnchor === null) {
+        unrecoverableAbsoluteRollbacks.add(record.state.threadId);
+        continue;
+      }
+      const expectTarget = [
+        "workspace-applied",
+        "provider-apply-started",
+        "provider-applied",
+        "projection-commit-started",
+        "projection-committed",
+        "cleanup-started",
+      ].includes(record.state.phase);
+      pendingAbsoluteRollbacks.set(record.state.threadId, {
+        sourceAnchor,
+        desiredAnchor,
+        expectedAnchor: expectTarget ? desiredAnchor : sourceAnchor,
+      });
+    }
+    yield* providerService.recoverRestartSessions({
+      pendingAbsoluteRollbacks,
+      unrecoverableAbsoluteRollbacks,
+    });
   }
   const liveThreadIds = new Set(
     (yield* providerService.listSessions()).map((session) => session.threadId),

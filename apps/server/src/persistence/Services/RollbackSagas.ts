@@ -10,6 +10,7 @@ import {
   ProviderInstanceId,
   RuntimeSessionId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import type { PersistenceDecodeError, PersistenceSqlError } from "../Errors.ts";
 
@@ -43,6 +44,8 @@ export const RollbackSagaState = Schema.Struct({
   workspaceCwd: Schema.String,
   sourceRevision: NonNegativeInt,
   targetRevision: NonNegativeInt,
+  sourceTurnId: Schema.NullOr(TurnId),
+  targetTurnId: Schema.NullOr(TurnId),
   sourceCheckpointRef: CheckpointRef,
   sourceCheckpointOid: Schema.String,
   targetCheckpointRef: CheckpointRef,
@@ -87,6 +90,8 @@ export type RollbackSagaRecord = typeof RollbackSagaRecord.Type;
 export const RollbackCheckpointAnchor = Schema.Struct({
   threadId: ThreadId,
   checkpointTurnCount: NonNegativeInt,
+  turnId: Schema.NullOr(TurnId),
+  sourceRevision: NonNegativeInt,
   providerInstanceId: ProviderInstanceId,
   sessionIncarnationId: RuntimeSessionId,
   checkpointRef: CheckpointRef,

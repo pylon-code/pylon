@@ -41,6 +41,8 @@ const pending = {
     workspaceCwd: "/startup/workspace",
     sourceRevision: 2,
     targetRevision: 1,
+    sourceTurnId: null,
+    targetTurnId: null,
     sourceCheckpointRef: "refs/t3/checkpoints/source" as never,
     sourceCheckpointOid: "a".repeat(40),
     targetCheckpointRef: "refs/t3/checkpoints/target" as never,

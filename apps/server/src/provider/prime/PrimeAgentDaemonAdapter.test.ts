@@ -5,6 +5,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
   ApprovalRequestId,
+  CheckpointRef,
+  CommandId,
   defaultInstanceIdForDriver,
   EnvironmentId,
   PrimeAgentSettings,
@@ -18,6 +20,7 @@ import {
   RuntimeTaskId,
   SessionInteractionRequestId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -36,6 +39,7 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import type { PrimeAgentRecoveryLedgerShape } from "./PrimeAgentRecoveryLedger.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
@@ -538,11 +542,22 @@ function fakeRuntimeFactory(
       captures.queue = queue;
       captures.promptObserved = promptObserved;
       for (const event of captures.startupEvents) yield* Queue.offer(queue, event);
+      let conversationLeafId = "prime-root-leaf";
       const runtime: PrimeAgentDaemonSessionRuntime = {
         resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
         sessionId: "native-session-secret",
         sessionFile: `${input.sessionDir}/native-session-secret.jsonl`,
         activeSessionId: "native-active-secret",
+        conversationRuntimeGeneration: "native-runtime-generation-secret",
+        initialConversationLeafId: conversationLeafId,
+        conversationRollbackAvailable: true,
+        inspectConversationLeaf: Effect.sync(() => conversationLeafId),
+        navigateConversationLeaf: ({ desiredLeafId }) =>
+          Effect.sync(() => {
+            conversationLeafId = desiredLeafId;
+          }),
+        prepareConversationRollback: () => Effect.void,
+        releaseConversationRollback: () => Effect.void,
         initialSnapshot: { ...initialSnapshot(), children: captures.agentRoster },
         initialResources: { available: true, skills: [], prompts: [], commands: [] },
         sideQuestionsAvailable: captures.sideQuestionsAvailable,
@@ -9470,6 +9485,211 @@ describe("PrimeAgentDaemonAdapter", () => {
         for (const fiber of activeFibers) yield* Fiber.interrupt(fiber);
         yield* Effect.yieldNow;
         expect(captures.sideQuestionAbortCalls).toHaveLength(4);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("exposes exact private rollback only on the managed public Prime API path", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        class ExactDaemonConnection {
+          getState() {}
+          navigateTree() {}
+        }
+        const exactManager = {
+          bridge: { DaemonAgentConnection: ExactDaemonConnection },
+          recoveryEnabled: false,
+          platform: "darwin",
+          architecture: "arm64",
+        } as unknown as PrimeAgentDaemonManager;
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), exactManager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+          recoveryManagedBuildId: "managed-prime-test-build",
+        });
+        const subscription = yield* subscribe(adapter);
+        const sessionIncarnationId = RuntimeSessionId.make("private-rollback-incarnation");
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          sessionIncarnationId,
+        });
+        yield* awaitObservedType(subscription.observed, "thread.started");
+
+        expect(adapter.capabilities.conversationRollback).toBe("absolute");
+        const rollback = adapter.absoluteConversationRollback!;
+        expect(yield* rollback.isAvailable(threadId)).toBe(true);
+        const source = yield* rollback.captureAnchor({
+          threadId,
+          binding: {
+            kind: "source",
+            sourceRevision: 0,
+            checkpointRef: CheckpointRef.make("refs/t3/checkpoints/private/source"),
+            checkpointOid: "a".repeat(40),
+            turnId: TurnId.make("private-source-turn"),
+          },
+        });
+        const sourceAnchor = source.anchor as Readonly<Record<string, Schema.Json>>;
+        const desiredAnchor = {
+          ...sourceAnchor,
+          leafId: "prime-target-leaf-private",
+        } as Schema.Json;
+
+        yield* rollback.applyAnchor(threadId, desiredAnchor);
+        const quarantinedEventCount = subscription.events.length;
+        yield* offer(captures, {
+          _tag: "GoalUpdated",
+          goal: {
+            available: true,
+            active: false,
+            status: "complete",
+            objective: "must stay private while rollback is pending",
+            tokensUsed: 1,
+            timeUsedSeconds: 1,
+            continuationsUsed: 0,
+          },
+        });
+        yield* Effect.yieldNow;
+        yield* Effect.yieldNow;
+        expect(subscription.events).toHaveLength(quarantinedEventCount);
+        expect((yield* rollback.inspectAnchor(threadId)).digest).not.toBe(source.digest);
+
+        yield* rollback.releaseAnchor(threadId, desiredAnchor);
+        yield* offer(captures, {
+          _tag: "GoalUpdated",
+          goal: {
+            available: true,
+            active: false,
+            status: "complete",
+            objective: "public after exact release",
+            tokensUsed: 1,
+            timeUsedSeconds: 1,
+            continuationsUsed: 0,
+          },
+        });
+        yield* awaitObservedType(subscription.observed, "session.goal.updated");
+
+        const stale = {
+          ...sourceAnchor,
+          runtimeGeneration: "stale-private-generation",
+        } as Schema.Json;
+        const staleResult = yield* rollback.applyAnchor(threadId, stale).pipe(Effect.result);
+        expect(staleResult._tag).toBe("Failure");
+        const publicEncoding = encodeUnknownJson(subscription.events);
+        expect(publicEncoding).not.toContain("prime-target-leaf-private");
+        expect(publicEncoding).not.toContain("private-source-turn");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("retains a settled recoverable Prime session for exact rollback", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        class ExactDaemonConnection {
+          getState() {}
+          navigateTree() {}
+        }
+        const exactManager = {
+          bridge: { DaemonAgentConnection: ExactDaemonConnection },
+          recoveryEnabled: true,
+          platform: "darwin",
+          architecture: "arm64",
+        } as unknown as PrimeAgentDaemonManager;
+        const captures = makeCaptures();
+        const markAdmittedCalls: string[] = [];
+        const markIdleObserved = yield* Deferred.make<void>();
+        const markIdleCalls: Array<{ readonly threadId: string; readonly ownerToken: string }> = [];
+        const recoveryLedger = {
+          putPrepared: () => Effect.void,
+          get: () => Effect.succeed(Option.none()),
+          listActive: () => Effect.succeed([]),
+          markAdmitted: () =>
+            Effect.sync(() => {
+              markAdmittedCalls.push("admitted");
+              return true;
+            }),
+          markIdle: (input: { readonly threadId: string; readonly ownerToken: string }) =>
+            Effect.sync(() => {
+              markIdleCalls.push(input);
+              return true;
+            }).pipe(Effect.tap(() => Deferred.succeed(markIdleObserved, undefined))),
+          discardPrepared: () => Effect.succeed(true),
+          updateTranscriptProgress: () => Effect.succeed(true),
+          claim: () => Effect.succeed(Option.none()),
+          releaseClaim: () => Effect.succeed(true),
+          commitAdoption: () => Effect.succeed(true),
+          markNativeCleanup: () => Effect.succeed(true),
+          markTerminalProjected: () => Effect.void,
+          markCheckpointQuiesced: () => Effect.void,
+          deleteIfSettled: () => Effect.succeed(false),
+        } as unknown as PrimeAgentRecoveryLedgerShape;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), exactManager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+          recoveryManagedBuildId: "managed-prime-test-build",
+          recoveryLedger,
+        });
+        const subscription = yield* subscribe(adapter);
+        const sessionIncarnationId = RuntimeSessionId.make("retained-rollback-incarnation");
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          sessionIncarnationId,
+        });
+        const turnInput = {
+          threadId,
+          input: "retain exact rollback authority",
+          sessionIncarnationId,
+          admissionRequestId: CommandId.make("retained-admission"),
+        } as const;
+        yield* adapter.prepareTurnRecovery!(turnInput);
+        expect(adapter.capabilities.conversationRollback).toBe("absolute");
+        expect(captures.runtimeInputs).toHaveLength(2);
+        expect(captures.runtimeInputs.at(-1)?.recovery?.kind).toBe("create");
+        const turn = yield* adapter.sendTurn(turnInput).pipe(Effect.forkChild);
+        yield* Queue.take(captures.promptObserved!);
+        yield* offer(captures, { _tag: "RunCompleted", messages: [] });
+        yield* Fiber.join(turn);
+        yield* awaitObservedType(subscription.observed, "turn.completed");
+
+        expect(markAdmittedCalls).toHaveLength(1);
+        yield* Deferred.await(markIdleObserved);
+        const retainedSessions = yield* adapter.listSessions();
+        expect(retainedSessions).toHaveLength(1);
+        expect(retainedSessions[0]).toMatchObject({ status: "ready" });
+        expect(markIdleCalls).toHaveLength(1);
+        expect(markIdleCalls[0]?.threadId).toBe(threadId);
+        expect(
+          (yield* adapter.listSessions()).find((session) => session.threadId === threadId),
+        ).toMatchObject({
+          status: "ready",
+          sessionIncarnationId,
+        });
+        expect(yield* adapter.absoluteConversationRollback!.isAvailable(threadId)).toBe(true);
+        const held = yield* adapter.prepareTurnRecovery!({
+          ...turnInput,
+          admissionRequestId: CommandId.make("next-admission-before-checkpoint-hold"),
+        }).pipe(Effect.result);
+        expect(held._tag).toBe("Failure");
+        if (held._tag === "Failure") expect(held.failure).toMatchObject({ reason: "busy" });
+        expect(captures.runtimeInputs).toHaveLength(2);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps the absolute capability unsupported without the managed build proof", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        expect(adapter.capabilities.conversationRollback).toBe("unsupported");
+        expect(adapter.absoluteConversationRollback).toBeUndefined();
       }),
     ).pipe(Effect.provide(testLayer)),
   );

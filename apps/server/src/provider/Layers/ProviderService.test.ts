@@ -2720,6 +2720,79 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
     }),
   );
 
+  it.effect("rejects an exact anchor result after its provider generation retires", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-generation-replaced-absolute-anchor");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const originalCapabilities = fanout.codex.adapter.capabilities;
+      const originalAbsoluteRollback = fanout.codex.adapter.absoluteConversationRollback;
+      const originalRuntimeFence = fanout.codex.adapter.runtimeFence;
+      const current = yield* Ref.make(true);
+      const captureEntered = yield* Deferred.make<void>();
+      const releaseCapture = yield* Deferred.make<void>();
+      Object.assign(fanout.codex.adapter, {
+        capabilities: { ...originalCapabilities, conversationRollback: "absolute" },
+        absoluteConversationRollback: {
+          isAvailable: () => Effect.succeed(true),
+          captureAnchor: () =>
+            Deferred.succeed(captureEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseCapture)),
+              Effect.as({ anchor: { privateLeaf: "stale-private" }, digest: "stale-digest" }),
+            ),
+          inspectAnchor: () => Effect.succeed({ anchor: {}, digest: "unused" }),
+          applyAnchor: () => Effect.void,
+          releaseAnchor: () => Effect.void,
+        },
+        runtimeFence: {
+          generation: {},
+          configRevision: "private-anchor-test-revision",
+          isCurrent: Ref.get(current),
+        },
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          Object.assign(fanout.codex.adapter, { capabilities: originalCapabilities });
+          if (originalAbsoluteRollback === undefined) {
+            delete (fanout.codex.adapter as { absoluteConversationRollback?: unknown })
+              .absoluteConversationRollback;
+          } else {
+            Object.assign(fanout.codex.adapter, {
+              absoluteConversationRollback: originalAbsoluteRollback,
+            });
+          }
+          if (originalRuntimeFence === undefined) {
+            delete (fanout.codex.adapter as { runtimeFence?: unknown }).runtimeFence;
+          } else {
+            Object.assign(fanout.codex.adapter, { runtimeFence: originalRuntimeFence });
+          }
+        }),
+      );
+
+      const anchorFiber = yield* provider.captureConversationAnchor!({
+        threadId,
+        binding: {
+          kind: "source",
+          sourceRevision: 1,
+          checkpointRef: "refs/t3/checkpoints/private/source" as never,
+          checkpointOid: "a".repeat(40),
+          turnId: null,
+        },
+      }).pipe(Effect.forkChild);
+      yield* Deferred.await(captureEntered);
+      yield* Ref.set(current, false);
+      yield* Deferred.succeed(releaseCapture, undefined);
+
+      assert.isTrue(Exit.isFailure(yield* Fiber.await(anchorFiber)));
+    }),
+  );
+
   it.effect("keeps Stop authoritative while an account transition is starting", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
@@ -3883,6 +3956,23 @@ describe("agent browser access", () => {
       let recoveredSession: ProviderSession | undefined;
       const recoveryAdapter: ProviderAdapterShape<ProviderAdapterError> = {
         ...codex.adapter,
+        capabilities: {
+          ...codex.adapter.capabilities,
+          conversationRollback: "absolute",
+        },
+        absoluteConversationRollback: {
+          isAvailable: () => Effect.succeed(true),
+          captureAnchor: () => Effect.succeed({ anchor: {}, digest: "unused" }),
+          inspectAnchor: () => Effect.succeed({ anchor: {}, digest: "unused" }),
+          applyAnchor: () => Effect.void,
+          releaseAnchor: () => Effect.void,
+          prepareRecovery: (input) =>
+            Effect.sync(() => {
+              assert.deepEqual(input.sourceAnchor, { privateLeaf: "restart-source-private" });
+              assert.deepEqual(input.desiredAnchor, { privateLeaf: "restart-target-private" });
+              order.push("quarantine");
+            }),
+        },
         recoverSession: (input) =>
           Effect.gen(function* () {
             assert.isDefined(McpProviderSession.readMcpProviderSession(threadId));
@@ -3943,10 +4033,21 @@ describe("agent browser access", () => {
         );
         yield* Effect.yieldNow;
 
-        yield* provider.recoverRestartSessions!();
+        yield* provider.recoverRestartSessions!({
+          pendingAbsoluteRollbacks: new Map([
+            [
+              threadId,
+              {
+                sourceAnchor: { privateLeaf: "restart-source-private" },
+                desiredAnchor: { privateLeaf: "restart-target-private" },
+                expectedAnchor: { privateLeaf: "restart-source-private" },
+              },
+            ],
+          ]),
+        });
         yield* Fiber.join(consumer);
 
-        assert.deepEqual(order, ["mcp", "recover", "activate"]);
+        assert.deepEqual(order, ["mcp", "recover", "quarantine", "activate"]);
         const [recoveredEvent] = yield* Ref.get(recoveredEvents);
         assert.equal(recoveredEvent?.eventId, asEventId("evt-restart-adopted-output"));
         assert.equal(recoveredEvent?.turnId, recoveredTurnId);

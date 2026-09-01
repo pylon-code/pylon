@@ -189,6 +189,10 @@ export interface PrimeAgentDaemonAgentConnection {
   readonly getInitialSnapshot: () => Promise<unknown>;
   readonly getRlmChildSnapshots?: () => Promise<unknown>;
   readonly getState?: () => Promise<unknown>;
+  readonly navigateTree?: (
+    targetId: string,
+    options?: { readonly summarize?: boolean },
+  ) => Promise<unknown>;
   readonly promptAndWait: (
     message: string,
     options?: PrimeAgentDaemonPromptOptions,
