@@ -4,6 +4,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
+  ServerProviderInstancesMutationId,
   ServerSettings,
   ServerSettingsPatch,
 } from "@t3tools/contracts";
@@ -1060,6 +1061,31 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       assert.equal(
         roundTripped.providerInstances[instanceId]?.environment?.[0]?.value,
+        "sk-or-secret",
+      );
+
+      const expectedProviderInstances =
+        ServerSettingsModule.redactServerSettingsForClient(roundTripped).providerInstances;
+      const mutated = yield* serverSettings.mutateProviderInstances({
+        mutationId: ServerProviderInstancesMutationId.make("sensitive-provider-cas"),
+        expectedProviderInstances,
+        patch: {
+          providerInstances: {
+            ...expectedProviderInstances,
+            [instanceId]: {
+              ...expectedProviderInstances[instanceId]!,
+              displayName: "Codex Personal CAS",
+            },
+          },
+        },
+      });
+      assert.equal(mutated.disposition, "applied");
+      assert.equal(
+        mutated.settings.providerInstances[instanceId]?.displayName,
+        "Codex Personal CAS",
+      );
+      assert.equal(
+        mutated.settings.providerInstances[instanceId]?.environment?.[0]?.value,
         "sk-or-secret",
       );
     }).pipe(Effect.provide(makeServerSettingsLayer())),

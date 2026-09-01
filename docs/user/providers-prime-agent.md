@@ -66,6 +66,23 @@ ACP compatibility mode instead, because the daemon API cannot safely preserve ar
 arguments. Pylon shows that fallback in the provider status rather than silently discarding the
 arguments.
 
+## Multiple Prime Accounts
+
+One Pylon server currently supports one enabled Prime Agent instance. Settings disables adding a second
+Prime Agent instance and explains why. Prime Agent 0.8.1 has not passed Pylon's real multi-root
+isolation gate: ACP uses one OS-user daemon socket, and two private native daemon roots could not
+complete concurrent turns reliably.
+
+Use a separate Pylon server environment for each additional Prime account. Give each environment a
+separate Prime Agent home and sign in from that home. Do not reuse, nest, or symlink one Prime home
+inside another. On Windows, run each server environment inside WSL2 or on another macOS/Linux host;
+native Windows does not run Prime Agent.
+
+Pylon never runs OS-user-global Prime maintenance such as update, doctor, shutdown, or stop-all for a
+provider instance. Run global Prime maintenance outside Pylon only after considering every Prime
+session owned by that OS user. Web, desktop, and mobile receive the same host capability state. Mobile
+does not offer a disabled or unavailable Prime instance as a fallback model.
+
 ## Turn Completion
 
 A Prime turn can contain several assistant segments around tool work. Pylon keeps those segments in

@@ -13,6 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Stream from "effect/Stream";
 
 import type { PrimeDaemonEvent } from "./PrimeAgentDaemonEvents.ts";
+import { sanitizePrimeAgentDaemonEnvironment } from "./PrimeAgentDaemonBridge.ts";
 import { makePrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import {
   makePrimeAgentDaemonSessionRuntime,
@@ -28,7 +29,7 @@ const makeTestIdentity = (agentHomePath: string) => ({
   generation: { _tag: "PrimeAgentRuntimeGeneration" as const },
   configRevision: "real-integration-test",
   effectiveHome: agentHomePath,
-  launchEnv: {
+  launchEnv: sanitizePrimeAgentDaemonEnvironment({
     ...Object.fromEntries(
       Object.entries(process.env).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -36,7 +37,7 @@ const makeTestIdentity = (agentHomePath: string) => ({
     ),
     PRIME_AGENT_HOME: agentHomePath,
     PRIME_AGENT_CODING_AGENT_DIR: agentHomePath,
-  },
+  }),
   settings: {
     enabled: true,
     binaryPath: configuredExecutable ?? "prime-agent",

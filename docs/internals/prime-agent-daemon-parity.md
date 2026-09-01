@@ -21,6 +21,49 @@ continues to project the authoritative source and value rather than assuming eit
 completion and assistant-boundary changes are handled separately below; live catalog changes remain
 provider-discovered rather than pinned in Pylon.
 
+## Multiple-instance capability gate
+
+Pylon advertises `supportsMultipleInstances: false` for Prime Agent 0.8.1. This is a measured runtime
+decision, not a UI-only limitation. The host rejects a second enabled instance before persistence or
+process launch. Direct settings-file edits fail closed in the provider registry as well. Web, desktop,
+and mobile receive the same false capability and actionable reason.
+
+The real gate used the exact `@earendil-works/pi-coding-agent` 0.8.1 package from Prime Agent commit
+`507a52239`, built from `packages/coding-agent` and launched through its public
+`dist/cli.js` entry. The host was arm64 macOS (Darwin 25.6.0). The live single-instance Pylon bridge
+suite passed prompt, interruption, transport reconnect/resync, restart, and cleanup. A/B then used two
+canonical homes, copied auth fixtures, separate Pylon state roots, separate private daemon sockets, and
+overlapping turns. ACP was also probed with separate homes. No live home was opened read-write.
+
+| Enabled instances | Path                              | Result                                                                                                                           |                       Observed time | Post-idle processes / RSS             |
+| ----------------: | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------: | ------------------------------------- |
+|                 1 | Pylon public daemon bridge        | Passed full lifecycle suite                                                                                                      |                             12.55 s | Not recorded; lifecycle baseline only |
+|                 2 | Two private daemon roots          | Failed the A/B gate: one concurrent prompt was rejected with `Session worker is stopping`                                        | 5.0–7.7 s to failure across repeats | Invalid measurement after failed turn |
+|                 4 | Private daemon roots              | Not run after N=2 failed                                                                                                         |                                   — | Not claimed                           |
+|                 2 | ACP compatibility, separate homes | Failed before `initialize`: Prime reported its OS-user daemon socket was owned by a different running version with busy sessions |                              0.61 s | Invalid measurement before cold start |
+
+The N=4 resource campaign deliberately stops at the failed N=2 correctness gate. Publishing RSS or
+process counts for a configuration that cannot complete concurrent turns would imply support that does
+not exist. The opt-in proof remains in
+`PrimeAgentMultipleInstances.integration.test.ts`; it is gated by
+`PYLON_REAL_PRIME_AGENT_MULTI_PROOF=1` and must pass A/B before its N=1/2/4 resource rows can be used.
+A Linux CI fixture covers fail-closed capability and host settings validation without pretending that a
+Linux runner executed a real signed-in Prime account.
+
+A future enablement must pass all of these conditions with one exact supported Prime artifact:
+
+1. two distinct homes and sign-ins complete concurrent turns without sharing state;
+2. restart/reconnect/resync of A does not disturb B;
+3. removing A leaves B connected and able to complete another turn;
+4. N=1, N=2, and N=4 record cold start, one completed prompt per instance, then post-idle process count
+   and RSS on both macOS and Linux;
+5. per-instance cleanup never calls OS-user-global update, doctor, shutdown, or stop-all operations.
+
+The settings validator already enforces a future ceiling of four and rejects equal, nested, relative,
+or symlink-aliased homes. Those rules remain defense in depth, but they do not override the current
+false capability. Separate Pylon server environments are the supported isolation boundary for multiple
+Prime accounts today.
+
 ACP compatibility mode consumes Prime's correlated `ai.primeintellect.prime-agent`
 `session_info_update` envelopes. Prime Agent 0.8.1 does not resolve the standard ACP prompt until all
 causally admitted descendant and parent work settles; Pylon still validates the matching terminal event

@@ -321,7 +321,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       }).pipe(Effect.provide(testLayer)),
   );
 
-  it.live("rejects every overlapping Prime instance before any Prime work", () => {
+  it.live("rejects multiple Prime instances at the artifact gate before any Prime work", () => {
     let processCalls = 0;
     let networkCalls = 0;
     const trackingSpawner = ChildProcessSpawner.make(() =>
@@ -370,7 +370,9 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
           [parentId, childId].toSorted(),
         );
         expect(
-          unavailable.every((snapshot) => snapshot.unavailableReason?.includes("distinct homes")),
+          unavailable.every((snapshot) =>
+            snapshot.unavailableReason?.includes("did not pass A/B isolation"),
+          ),
         ).toBe(true);
         expect(processCalls).toBe(0);
         expect(networkCalls).toBe(0);
@@ -404,6 +406,10 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
           configMap: { [instanceId]: entry },
         });
         const first = yield* registry.getInstance(instanceId);
+        expect((yield* first!.snapshot.getSnapshot).supportsMultipleInstances).toBe(false);
+        expect((yield* first!.snapshot.getSnapshot).multipleInstancesUnavailableReason).toContain(
+          "did not pass A/B isolation",
+        );
         expect(first?.runtimeFence).toBeDefined();
         expect(yield* first!.runtimeFence!.isCurrent).toBe(true);
 
@@ -502,6 +508,8 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         installed: false,
         status: "disabled",
         models: [],
+        supportsMultipleInstances: false,
+        multipleInstancesUnavailableReason: PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE,
       });
       expect(unavailable[0]!.message).toContain(PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE);
       expect(unavailable[0]!.unavailableReason).toContain(

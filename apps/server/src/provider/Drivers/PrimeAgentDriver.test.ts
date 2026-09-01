@@ -9,6 +9,7 @@ describe("PrimeAgentDriver", () => {
     expect(PrimeAgentDriver.metadata).toEqual({
       displayName: "Prime Agent",
       supportsMultipleInstances: false,
+      multipleInstancesUnavailableReason: expect.stringContaining("did not pass A/B isolation"),
     });
     expect(PrimeAgentDriver.defaultConfig()).toEqual({
       enabled: true,

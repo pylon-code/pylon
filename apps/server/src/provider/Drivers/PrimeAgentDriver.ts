@@ -70,6 +70,10 @@ import {
   type PrimeAgentMaterializedIdentity,
 } from "../prime/PrimeAgentRuntimeContext.ts";
 import {
+  PRIME_AGENT_MULTIPLE_INSTANCES_UNAVAILABLE_REASON,
+  PRIME_AGENT_SUPPORTED_INSTANCE_LIMIT,
+} from "../providerInstanceSettingsValidation.ts";
+import {
   makeManualOnlyProviderMaintenanceCapabilities,
   makeStaticProviderMaintenanceResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
@@ -187,6 +191,7 @@ export const PrimeAgentDriver: ProviderDriver<
   metadata: {
     displayName: "Prime Agent",
     supportsMultipleInstances: false,
+    multipleInstancesUnavailableReason: PRIME_AGENT_MULTIPLE_INSTANCES_UNAVAILABLE_REASON,
   },
   configSchema: PrimeAgentSettings,
   defaultConfig: (): PrimeAgentSettings => decodePrimeAgentSettings({}),
@@ -194,8 +199,39 @@ export const PrimeAgentDriver: ProviderDriver<
     Effect.gen(function* () {
       // Native quarantine is resolved before provider identities are materialized.
       // A dirty receipt must prevent all provider/session construction for its home.
-      const serverConfig = yield* ServerConfig;
       const platform = yield* HostProcessPlatform;
+      if (!isPrimeAgentProviderPlatformSupported(platform)) {
+        return new Map(
+          inputs.map((input) => [
+            input.instanceId,
+            {
+              kind: "unavailable" as const,
+              error: new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId: input.instanceId,
+                detail: unsupportedPlatformMessage(platform),
+              }),
+            },
+          ]),
+        );
+      }
+      if (inputs.filter((input) => input.enabled).length > PRIME_AGENT_SUPPORTED_INSTANCE_LIMIT) {
+        const detail = `Prime Agent supports at most ${PRIME_AGENT_SUPPORTED_INSTANCE_LIMIT} enabled instances on one Pylon server.`;
+        return new Map(
+          inputs.map((input) => [
+            input.instanceId,
+            {
+              kind: "unavailable" as const,
+              error: new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId: input.instanceId,
+                detail,
+              }),
+            },
+          ]),
+        );
+      }
+      const serverConfig = yield* ServerConfig;
       const store = new PrimeAgentOwnershipReceiptStore(serverConfig.stateDir);
       const scan = yield* Effect.tryPromise(() => store.scan()).pipe(
         Effect.orElseSucceed(() => ({ receipts: [], corrupt: true }) as const),

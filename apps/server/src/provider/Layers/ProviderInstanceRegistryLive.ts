@@ -54,6 +54,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { buildUnavailableProviderSnapshot } from "../unavailableProviderSnapshot.ts";
+import { ProviderDriverError } from "../Errors.ts";
 import {
   ProviderInstanceRegistry,
   type ProviderInstanceRegistryShape,
@@ -65,6 +66,7 @@ import {
 import type {
   AnyProviderDriver,
   ProviderDriverCreateInput,
+  ProviderDriverMetadata,
   ProviderDriverPreflightResult,
   ProviderInstance,
   ProviderRuntimeFence,
@@ -129,6 +131,7 @@ const materialEntryEqual = (a: ProviderInstanceConfig, b: ProviderInstanceConfig
 const applyEntryPresentation = (
   provider: ServerProvider,
   entry: ProviderInstanceConfig,
+  metadata: ProviderDriverMetadata,
 ): ServerProvider => {
   const {
     displayName: _displayName,
@@ -139,12 +142,17 @@ const applyEntryPresentation = (
     ...providerWithoutPresentation,
     ...(entry.displayName ? { displayName: entry.displayName } : {}),
     ...(entry.accentColor ? { accentColor: entry.accentColor } : {}),
+    supportsMultipleInstances: metadata.supportsMultipleInstances === true,
+    ...(metadata.supportsMultipleInstances === true || !metadata.multipleInstancesUnavailableReason
+      ? {}
+      : { multipleInstancesUnavailableReason: metadata.multipleInstancesUnavailableReason }),
   };
 };
 
 const withEntryPresentation = (
   instance: ProviderInstance,
   entry: ProviderInstanceConfig,
+  metadata: ProviderDriverMetadata,
 ): ProviderInstance => ({
   ...instance,
   displayName: entry.displayName,
@@ -152,13 +160,13 @@ const withEntryPresentation = (
   snapshot: {
     maintenanceCapabilities: instance.snapshot.maintenanceCapabilities,
     getSnapshot: instance.snapshot.getSnapshot.pipe(
-      Effect.map((provider) => applyEntryPresentation(provider, entry)),
+      Effect.map((provider) => applyEntryPresentation(provider, entry, metadata)),
     ),
     refresh: instance.snapshot.refresh.pipe(
-      Effect.map((provider) => applyEntryPresentation(provider, entry)),
+      Effect.map((provider) => applyEntryPresentation(provider, entry, metadata)),
     ),
     streamChanges: instance.snapshot.streamChanges.pipe(
-      Stream.map((provider) => applyEntryPresentation(provider, entry)),
+      Stream.map((provider) => applyEntryPresentation(provider, entry, metadata)),
     ),
   },
 });
@@ -322,6 +330,7 @@ const buildEntry = <R>(input: {
             ? createResult.success
             : { ...createResult.success, runtimeFence },
           entry,
+          driver.metadata,
         ),
         scope: childScope,
         entry,
@@ -361,11 +370,47 @@ const makeReconcile = <R>(input: {
           ReadonlyMap<ProviderInstanceId, ProviderDriverPreflightResult<unknown>>
         >();
 
+        // A missing capability is fail-closed. Decode the driver's complete
+        // desired set before any process launch so a false/missing driver can
+        // never materialize a second enabled instance, including after a
+        // remote multi-client settings race or direct settings-file edit.
+        for (const [driverKind, driver] of driversById) {
+          if (driver.metadata.supportsMultipleInstances === true) continue;
+          const entries = driverConfigEntries(configMap, driverKind);
+          const decoder = Schema.decodeUnknownEffect(driver.configSchema);
+          const enabledIds: ProviderInstanceId[] = [];
+          for (const [rawInstanceId, entry] of entries) {
+            const decoded = yield* decoder(entry.config ?? driver.defaultConfig()).pipe(
+              Effect.result,
+            );
+            if (decoded._tag === "Success" && resolveEntryEnabled(entry, decoded.success)) {
+              enabledIds.push(ProviderInstanceId.make(rawInstanceId));
+            }
+          }
+          if (enabledIds.length < 2) continue;
+          changedPreflightDrivers.add(driverKind);
+          const detail =
+            driver.metadata.multipleInstancesUnavailableReason ??
+            `Driver '${driverKind}' supports only one enabled instance.`;
+          preflightByDriver.set(
+            driverKind,
+            new Map(
+              enabledIds.map((instanceId) => [
+                instanceId,
+                {
+                  kind: "unavailable" as const,
+                  error: new ProviderDriverError({ driver: driverKind, instanceId, detail }),
+                },
+              ]),
+            ),
+          );
+        }
+
         // Preflight the complete desired set before closing an old instance or
         // starting a new one. An unchanged live instance is retained unless the
         // set-wide result makes that instance unavailable.
         for (const [driverKind, driver] of driversById) {
-          if (driver.preflight === undefined) continue;
+          if (preflightByDriver.has(driverKind) || driver.preflight === undefined) continue;
           const previousDriverEntries = driverConfigEntries(previousConfigMap, driverKind);
           const nextDriverEntries = driverConfigEntries(configMap, driverKind);
           const materialEntries = (
@@ -467,7 +512,15 @@ const makeReconcile = <R>(input: {
             builtEntries.set(
               instanceId,
               presentationChangedIds.has(instanceId)
-                ? { ...existing, instance: withEntryPresentation(existing.instance, entry), entry }
+                ? {
+                    ...existing,
+                    instance: withEntryPresentation(
+                      existing.instance,
+                      entry,
+                      driversById.get(entry.driver)!.metadata,
+                    ),
+                    entry,
+                  }
                 : existing,
             );
             continue;

@@ -19,11 +19,15 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   ProviderDriverKind,
+  ServerProviderInstancesMutationConflictError,
+  type ServerProviderInstancesMutationInput,
+  type ServerProviderInstancesMutationReceipt,
   ProviderInstanceId,
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -44,6 +48,11 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { writeFileStringAtomically } from "./atomicWrite.ts";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import {
+  ProviderInstanceSettingsValidationError,
+  validateProviderInstanceSettings,
+} from "./provider/providerInstanceSettingsValidation.ts";
 import * as ServerConfig from "./config.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
@@ -58,6 +67,9 @@ export { resolveSourceControlWriterModelSelection } from "@t3tools/shared/server
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
 const encodeServerSettingsJson = Schema.encodeUnknownEffect(fromJsonStringPretty(ServerSettings));
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
+const isProviderInstanceSettingsValidationError = Schema.is(
+  ProviderInstanceSettingsValidationError,
+);
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -126,6 +138,36 @@ const normalizeServerSettings = (
     ),
   );
 
+const validateChangedProviderInstanceSettings = (
+  current: ServerSettings,
+  next: ServerSettings,
+  settingsPath: string,
+): Effect.Effect<void, ServerSettingsError, FileSystem.FileSystem | Path.Path> => {
+  if (
+    Equal.equals(current.providerInstances, next.providerInstances) &&
+    Equal.equals(current.providers, next.providers)
+  ) {
+    return Effect.void;
+  }
+  return Effect.gen(function* () {
+    const platform = yield* HostProcessPlatform;
+    const hostEnvironment = yield* HostProcessEnvironment;
+    yield* validateProviderInstanceSettings({ settings: next, platform, hostEnvironment });
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ServerSettingsError({
+          settingsPath,
+          operation: "normalize",
+          detail: isProviderInstanceSettingsValidationError(cause)
+            ? cause.message
+            : "Provider instance home validation failed.",
+          cause,
+        }),
+    ),
+  );
+};
+
 function providerEnvironmentSecretName(input: {
   readonly instanceId: string;
   readonly name: string;
@@ -179,6 +221,14 @@ export class ServerSettingsService extends Context.Service<
       patch: ServerSettingsPatch,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
+    /** CAS/idempotent provider-instance mutation on the host server. */
+    readonly mutateProviderInstances: (
+      input: ServerProviderInstancesMutationInput,
+    ) => Effect.Effect<
+      ServerProviderInstancesMutationReceipt,
+      ServerSettingsError | ServerProviderInstancesMutationConflictError
+    >;
+
     /** Stream of settings change events. */
     readonly streamChanges: Stream.Stream<ServerSettings>;
 
@@ -209,17 +259,87 @@ const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
         : {}),
     });
     const currentSettingsRef = yield* Ref.make<ServerSettings>(initialSettings);
+    const mutationReceipts = new Map<
+      string,
+      {
+        readonly input: ServerProviderInstancesMutationInput;
+        readonly receipt: ServerProviderInstancesMutationReceipt;
+      }
+    >();
+    const mutationSemaphore = yield* Semaphore.make(1);
 
     return {
       start: Effect.void,
       ready: Effect.void,
       getSettings: Ref.get(currentSettingsRef).pipe(Effect.map(resolveTextGenerationProvider)),
       updateSettings: (patch) =>
-        Ref.get(currentSettingsRef).pipe(
-          Effect.map((currentSettings) => applyServerSettingsPatch(currentSettings, patch)),
-          Effect.flatMap(normalizeServerSettings),
-          Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
-          Effect.map(resolveTextGenerationProvider),
+        Effect.gen(function* () {
+          const current = yield* Ref.get(currentSettingsRef);
+          const next = yield* normalizeServerSettings(applyServerSettingsPatch(current, patch));
+          yield* validateChangedProviderInstanceSettings(current, next, "<memory>").pipe(
+            Effect.provide(NodeServices.layer),
+          );
+          yield* Ref.set(currentSettingsRef, next);
+          return resolveTextGenerationProvider(next);
+        }),
+      mutateProviderInstances: (input) =>
+        mutationSemaphore.withPermits(1)(
+          Effect.gen(function* () {
+            const prior = mutationReceipts.get(input.mutationId);
+            if (prior !== undefined) {
+              if (!Equal.equals(prior.input, input)) {
+                return yield* new ServerProviderInstancesMutationConflictError({
+                  mutationId: input.mutationId,
+                  reason: "mutation-reused",
+                  detail: "This provider mutation id was already used for different input.",
+                });
+              }
+              return { ...prior.receipt, disposition: "already-applied" as const };
+            }
+            if (input.patch.providerInstances === undefined) {
+              return yield* new ServerProviderInstancesMutationConflictError({
+                mutationId: input.mutationId,
+                reason: "invalid",
+                detail: "A provider instance mutation must include the complete next instance map.",
+              });
+            }
+            const current = yield* Ref.get(currentSettingsRef);
+            if (!Equal.equals(current.providerInstances, input.expectedProviderInstances)) {
+              if (Equal.equals(current.providerInstances, input.patch.providerInstances)) {
+                const receipt = {
+                  mutationId: input.mutationId,
+                  disposition: "already-applied" as const,
+                  settings: resolveTextGenerationProvider(current),
+                } satisfies ServerProviderInstancesMutationReceipt;
+                mutationReceipts.set(input.mutationId, { input, receipt });
+                return receipt;
+              }
+              return yield* new ServerProviderInstancesMutationConflictError({
+                mutationId: input.mutationId,
+                reason: "stale",
+                detail:
+                  "Provider settings changed on the host. Reload the current instances and retry your edit.",
+              });
+            }
+            const next = yield* normalizeServerSettings(
+              applyServerSettingsPatch(current, input.patch),
+            );
+            yield* validateChangedProviderInstanceSettings(current, next, "<memory>").pipe(
+              Effect.provide(NodeServices.layer),
+            );
+            yield* Ref.set(currentSettingsRef, next);
+            const receipt = {
+              mutationId: input.mutationId,
+              disposition: "applied" as const,
+              settings: resolveTextGenerationProvider(next),
+            } satisfies ServerProviderInstancesMutationReceipt;
+            mutationReceipts.set(input.mutationId, { input, receipt });
+            if (mutationReceipts.size > 256) {
+              const oldest = mutationReceipts.keys().next().value;
+              if (oldest !== undefined) mutationReceipts.delete(oldest);
+            }
+            return receipt;
+          }),
         ),
       streamChanges: Stream.empty,
       subscribeChanges: Effect.succeed(Stream.empty),
@@ -378,6 +498,13 @@ const make = Effect.gen(function* () {
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const sql = yield* SqlClient.SqlClient;
   const writeSemaphore = yield* Semaphore.make(1);
+  const mutationReceipts = new Map<
+    string,
+    {
+      readonly input: ServerProviderInstancesMutationInput;
+      readonly receipt: ServerProviderInstancesMutationReceipt;
+    }
+  >();
   const cacheKey = "settings" as const;
   const changesPubSub = yield* PubSub.unbounded<ServerSettings>();
   const startedRef = yield* Ref.make(false);
@@ -739,16 +866,101 @@ const make = Effect.gen(function* () {
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
           const current = yield* getSettingsFromCache;
-          const nextPersisted = yield* persistProviderEnvironmentSecrets(
-            current,
-            applyServerSettingsPatch(current, patch),
+          const currentMaterialized = yield* materializeProviderEnvironmentSecrets(current);
+          const candidate = yield* normalizeServerSettings(
+            applyServerSettingsPatch(currentMaterialized, patch),
           );
+          yield* validateChangedProviderInstanceSettings(
+            currentMaterialized,
+            candidate,
+            settingsPath,
+          ).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, pathService),
+          );
+          const nextPersisted = yield* persistProviderEnvironmentSecrets(current, candidate);
           const next = yield* normalizeServerSettings(nextPersisted);
           yield* writeSettingsAtomically(next);
           yield* Cache.set(settingsCache, cacheKey, next);
           yield* emitChange(next);
           const materialized = yield* materializeProviderEnvironmentSecrets(next);
           return resolveTextGenerationProvider(materialized);
+        }),
+      ),
+    mutateProviderInstances: (input) =>
+      writeSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const prior = mutationReceipts.get(input.mutationId);
+          if (prior !== undefined) {
+            if (!Equal.equals(prior.input, input)) {
+              return yield* new ServerProviderInstancesMutationConflictError({
+                mutationId: input.mutationId,
+                reason: "mutation-reused",
+                detail: "This provider mutation id was already used for different input.",
+              });
+            }
+            return { ...prior.receipt, disposition: "already-applied" as const };
+          }
+          if (input.patch.providerInstances === undefined) {
+            return yield* new ServerProviderInstancesMutationConflictError({
+              mutationId: input.mutationId,
+              reason: "invalid",
+              detail: "A provider instance mutation must include the complete next instance map.",
+            });
+          }
+
+          const current = yield* getSettingsFromCache;
+          const currentMaterialized = yield* materializeProviderEnvironmentSecrets(current);
+          const currentClientProviderInstances =
+            redactServerSettingsForClient(currentMaterialized).providerInstances;
+          if (!Equal.equals(currentClientProviderInstances, input.expectedProviderInstances)) {
+            if (Equal.equals(currentClientProviderInstances, input.patch.providerInstances)) {
+              const receipt = {
+                mutationId: input.mutationId,
+                disposition: "already-applied" as const,
+                settings: resolveTextGenerationProvider(currentMaterialized),
+              } satisfies ServerProviderInstancesMutationReceipt;
+              mutationReceipts.set(input.mutationId, { input, receipt });
+              return receipt;
+            }
+            return yield* new ServerProviderInstancesMutationConflictError({
+              mutationId: input.mutationId,
+              reason: "stale",
+              detail:
+                "Provider settings changed on the host. Reload the current instances and retry your edit.",
+            });
+          }
+
+          const candidate = yield* normalizeServerSettings(
+            applyServerSettingsPatch(currentMaterialized, input.patch),
+          );
+          yield* validateChangedProviderInstanceSettings(
+            currentMaterialized,
+            candidate,
+            settingsPath,
+          ).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, pathService),
+          );
+          const nextPersisted = yield* persistProviderEnvironmentSecrets(current, candidate);
+          const next = yield* normalizeServerSettings(nextPersisted);
+          yield* writeSettingsAtomically(next);
+          yield* Cache.set(settingsCache, cacheKey, next);
+          yield* emitChange(next);
+          const materialized = resolveTextGenerationProvider(
+            yield* materializeProviderEnvironmentSecrets(next),
+          );
+          const receipt = {
+            mutationId: input.mutationId,
+            disposition: "applied" as const,
+            settings: materialized,
+          } satisfies ServerProviderInstancesMutationReceipt;
+          mutationReceipts.set(input.mutationId, { input, receipt });
+          if (mutationReceipts.size > 256) {
+            const oldest = mutationReceipts.keys().next().value;
+            if (oldest !== undefined) mutationReceipts.delete(oldest);
+          }
+          return receipt;
         }),
       ),
     get streamChanges() {

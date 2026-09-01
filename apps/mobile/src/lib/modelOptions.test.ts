@@ -432,4 +432,27 @@ describe("mobile model options", () => {
     expect(resolve(null, null, sticky)).toBe(sticky);
     expect(resolve(null, null, null)).toBe(providerDefault.selection);
   });
+
+  it("omits a disabled fallback selection from mobile options", () => {
+    const fallback = {
+      instanceId: ProviderInstanceId.make("primeAgent"),
+      model: "default",
+    };
+    const config = {
+      providers: [
+        {
+          instanceId: "primeAgent",
+          driver: "primeAgent",
+          displayName: "Prime Agent",
+          enabled: false,
+          installed: true,
+          status: "disabled",
+          auth: { status: "authenticated" },
+          models: [],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    expect(buildModelOptions(config, fallback)).toEqual([]);
+  });
 });

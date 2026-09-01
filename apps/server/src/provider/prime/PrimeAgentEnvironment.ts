@@ -3,6 +3,12 @@
  * Pylon itself was launched from an existing Prime Agent session.
  */
 export function sanitizePrimeAgentTopLevelEnvironment(
+  environment: Readonly<Record<string, string>>,
+): Record<string, string>;
+export function sanitizePrimeAgentTopLevelEnvironment(
+  environment: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv;
+export function sanitizePrimeAgentTopLevelEnvironment(
   environment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   return Object.fromEntries(

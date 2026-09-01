@@ -386,7 +386,7 @@ const packageIdentitySchema = Schema.Struct({
 });
 
 const primeAgentPackageSchema = Schema.Struct({
-  name: Schema.Literal("prime-agent"),
+  name: Schema.Literals(["prime-agent", "@earendil-works/pi-coding-agent"]),
   version: Schema.String,
   exports: Schema.Union([
     Schema.String,
@@ -458,7 +458,10 @@ async function locatePrimeAgentPackage(binaryPath: string): Promise<LocatedPacka
           root: directory,
           cause: new Error("package.json must contain string name and version fields"),
         };
-      } else if (identity.value.name === "prime-agent") {
+      } else if (
+        identity.value.name === "prime-agent" ||
+        identity.value.name === "@earendil-works/pi-coding-agent"
+      ) {
         const manifest = decodePrimeAgentPackage(rawManifest);
         if (Option.isNone(manifest)) {
           throw bridgeError(

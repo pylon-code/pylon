@@ -46,11 +46,12 @@ export interface ProviderDriverMetadata {
   readonly displayName: string;
   /**
    * Whether the driver may be instantiated more than once concurrently.
-   * Defaults to `true`. Set to `false` for drivers that wrap a global
-   * resource (e.g. a single desktop app socket) — the registry then
-   * rejects multi-instance configurations with a clear error.
+   * Missing is fail-closed. Drivers must publish `true` only after their
+   * per-instance process, credential, state, and cleanup boundaries are proved.
    */
   readonly supportsMultipleInstances?: boolean;
+  /** Actionable explanation when multiple enabled instances are unavailable. */
+  readonly multipleInstancesUnavailableReason?: string | undefined;
 }
 
 /**

@@ -56,6 +56,23 @@ describe("ServerProvider", () => {
     );
     expect(supportsServerProviderBackgroundTextGeneration(parsed)).toBe(true);
     expect(supportsServerProviderConversationRollback(parsed)).toBe(false);
+    expect(parsed.supportsMultipleInstances).toBeUndefined();
+  });
+
+  it("decodes truthful multiple-instance support and its actionable reason", () => {
+    const supported = decodeServerProvider({
+      ...baseProviderSnapshot,
+      supportsMultipleInstances: true,
+    });
+    const unsupported = decodeServerProvider({
+      ...baseProviderSnapshot,
+      supportsMultipleInstances: false,
+      multipleInstancesUnavailableReason: "Use WSL2 for multiple Prime Agent homes.",
+    });
+
+    expect(supported.supportsMultipleInstances).toBe(true);
+    expect(unsupported.supportsMultipleInstances).toBe(false);
+    expect(unsupported.multipleInstancesUnavailableReason).toContain("WSL2");
   });
 
   it("decodes provider presentation capability restrictions", () => {

@@ -1045,6 +1045,7 @@ export function EnvironmentProviderSettings({
           open
           environmentId={environmentId}
           environmentLabel={environmentLabel}
+          serverProviders={serverProviders}
           onOpenChange={setIsAddInstanceDialogOpen}
         />
       ) : null}

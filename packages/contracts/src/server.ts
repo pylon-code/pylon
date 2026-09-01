@@ -297,6 +297,14 @@ export const ServerProvider = Schema.Struct({
   supportedRuntimeModes: Schema.optional(Schema.Array(RuntimeMode)),
   supportsBackgroundTextGeneration: Schema.optional(Schema.Boolean),
   supportsConversationRollback: Schema.optional(Schema.Boolean),
+  /**
+   * Whether this exact driver/runtime may have more than one enabled instance.
+   * Missing is fail-closed: older or unknown drivers must not be duplicated until
+   * the host server publishes an explicit current capability.
+   */
+  supportsMultipleInstances: Schema.optional(Schema.Boolean),
+  /** Actionable host/driver reason when multiple enabled instances are unavailable. */
+  multipleInstancesUnavailableReason: Schema.optional(TrimmedNonEmptyString),
   enabled: Schema.Boolean,
   installed: Schema.Boolean,
   version: Schema.NullOr(TrimmedNonEmptyString),

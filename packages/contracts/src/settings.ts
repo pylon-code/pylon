@@ -860,10 +860,12 @@ export class ServerSettingsError extends Schema.TaggedErrorClass<ServerSettingsE
     operation: ServerSettingsOperation,
     providerInstanceId: Schema.optional(Schema.String),
     environmentVariable: Schema.optional(Schema.String),
+    detail: Schema.optional(TrimmedNonEmptyString),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
+    if (this.detail !== undefined) return this.detail;
     const provider =
       this.providerInstanceId === undefined ? "" : ` for provider ${this.providerInstanceId}`;
     const variable =
@@ -992,6 +994,41 @@ export const ServerSettingsPatch = Schema.Struct({
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
+
+export const ServerProviderInstancesMutationId = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(128),
+).pipe(Schema.brand("ServerProviderInstancesMutationId"));
+export type ServerProviderInstancesMutationId = typeof ServerProviderInstancesMutationId.Type;
+
+export const ServerProviderInstancesMutationInput = Schema.Struct({
+  mutationId: ServerProviderInstancesMutationId,
+  /** Exact explicit-map snapshot the client edited. */
+  expectedProviderInstances: Schema.Record(ProviderInstanceId, ProviderInstanceConfig),
+  /** Atomic settings patch; providerInstances is required at runtime. */
+  patch: ServerSettingsPatch,
+});
+export type ServerProviderInstancesMutationInput = typeof ServerProviderInstancesMutationInput.Type;
+
+export const ServerProviderInstancesMutationReceipt = Schema.Struct({
+  mutationId: ServerProviderInstancesMutationId,
+  disposition: Schema.Literals(["applied", "already-applied"]),
+  settings: ServerSettings,
+});
+export type ServerProviderInstancesMutationReceipt =
+  typeof ServerProviderInstancesMutationReceipt.Type;
+
+export class ServerProviderInstancesMutationConflictError extends Schema.TaggedErrorClass<ServerProviderInstancesMutationConflictError>()(
+  "ServerProviderInstancesMutationConflictError",
+  {
+    mutationId: ServerProviderInstancesMutationId,
+    reason: Schema.Literals(["stale", "invalid", "mutation-reused"]),
+    detail: TrimmedNonEmptyString,
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
 
 export const ClientSettingsPatch = Schema.Struct({
   appearanceContrast: Schema.optionalKey(AppearanceContrast),

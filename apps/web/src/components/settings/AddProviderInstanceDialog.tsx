@@ -8,6 +8,7 @@ import {
   ProviderDriverKind,
   type EnvironmentId,
   type ProviderInstanceConfig,
+  type ServerProvider,
 } from "@t3tools/contracts";
 
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
@@ -36,6 +37,16 @@ import {
   type WizardNavigation,
 } from "./AddProviderInstanceDialog.logic";
 import { AddProviderInstanceWizardSteps } from "./AddProviderInstanceWizardSteps";
+import {
+  countEnabledConfiguredInstances,
+  getDriverMultipleInstancePresentation,
+  PRIME_AGENT_ACP_GUIDANCE,
+  PRIME_AGENT_INSTANCE_GUIDANCE,
+  PRIME_AGENT_MAINTENANCE_GUIDANCE,
+  validatePrimeAgentAddHome,
+} from "./providerMultipleInstances";
+
+const EMPTY_SERVER_PROVIDERS: ReadonlyArray<ServerProvider> = [];
 
 const PROVIDER_ACCENT_SWATCHES = [
   "#2563eb",
@@ -119,6 +130,7 @@ interface AddProviderInstanceDialogProps {
   readonly open: boolean;
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
+  readonly serverProviders?: ReadonlyArray<ServerProvider> | undefined;
   readonly onOpenChange: (open: boolean) => void;
 }
 
@@ -126,6 +138,7 @@ export function AddProviderInstanceDialog({
   open,
   environmentId,
   environmentLabel,
+  serverProviders = EMPTY_SERVER_PROVIDERS,
   onOpenChange,
 }: AddProviderInstanceDialogProps) {
   const settings = useEnvironmentSettings(environmentId);
@@ -160,6 +173,21 @@ export function AddProviderInstanceDialog({
   const wizardStepSummaries = [driverOption.label, previewLabel, null] as const;
 
   const configDraft = configByDriver[driver] ?? EMPTY_CONFIG_DRAFT;
+  const multipleInstanceSupport = getDriverMultipleInstancePresentation({
+    driver,
+    providers: serverProviders,
+  });
+  const configuredEnabledCount = countEnabledConfiguredInstances(settings, driver);
+  const multipleInstancesBlocked = configuredEnabledCount > 0 && !multipleInstanceSupport.supported;
+  const primeHomeError =
+    driver === "primeAgent" && configuredEnabledCount > 0
+      ? validatePrimeAgentAddHome({ draftConfig: configDraft, settings })
+      : null;
+  const saveError =
+    instanceIdError ??
+    (multipleInstancesBlocked
+      ? (multipleInstanceSupport.reason ?? "This driver supports only one enabled instance.")
+      : primeHomeError);
   const setConfigDraft = (config: Record<string, unknown> | undefined) => {
     setConfigByDriver((existing) => {
       const next = { ...existing };
@@ -189,7 +217,7 @@ export function AddProviderInstanceDialog({
 
   const handleSave = () => {
     setHasAttemptedSubmit(true);
-    if (instanceIdError !== null) return;
+    if (saveError !== null) return;
 
     const config = configByDriver[driver] ?? {};
     const hasConfig = Object.keys(config).length > 0;
@@ -263,11 +291,25 @@ export function AddProviderInstanceDialog({
                 >
                   {DRIVER_OPTIONS.map((option) => {
                     const IconComponent = option.icon;
+                    const optionSupport = getDriverMultipleInstancePresentation({
+                      driver: option.value,
+                      providers: serverProviders,
+                    });
+                    const optionBlocked =
+                      countEnabledConfiguredInstances(settings, option.value) > 0 &&
+                      !optionSupport.supported;
                     return (
                       <RadioPrimitive.Root
                         key={option.value}
                         value={option.value}
-                        className="relative flex cursor-pointer items-center gap-3 rounded-lg bg-card px-3 py-3 text-left text-muted-foreground outline-none ring-1 ring-black/5 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-ring data-checked:bg-primary/8 data-checked:text-foreground data-checked:ring-2 data-checked:ring-primary data-checked:hover:bg-primary/8 dark:bg-white/3 dark:ring-white/5 dark:hover:bg-white/5 dark:data-checked:bg-primary/15 dark:data-checked:ring-primary dark:data-checked:hover:bg-primary/15"
+                        disabled={optionBlocked}
+                        aria-description={
+                          optionBlocked ? (optionSupport.reason ?? undefined) : undefined
+                        }
+                        className={cn(
+                          "relative flex cursor-pointer items-center gap-3 rounded-lg bg-card px-3 py-3 text-left text-muted-foreground outline-none ring-1 ring-black/5 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-ring data-checked:bg-primary/8 data-checked:text-foreground data-checked:ring-2 data-checked:ring-primary data-checked:hover:bg-primary/8 dark:bg-white/3 dark:ring-white/5 dark:hover:bg-white/5 dark:data-checked:bg-primary/15 dark:data-checked:ring-primary dark:data-checked:hover:bg-primary/15",
+                          optionBlocked && "cursor-not-allowed opacity-55",
+                        )}
                       >
                         <IconComponent className="size-4 shrink-0" aria-hidden />
                         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
@@ -312,6 +354,11 @@ export function AddProviderInstanceDialog({
                     );
                   })}
                 </RadioGroup>
+                {multipleInstancesBlocked ? (
+                  <p className="text-xs text-destructive" role="alert">
+                    {multipleInstanceSupport.reason}
+                  </p>
+                ) : null}
               </div>
 
               <label className={cn("grid gap-2", wizardStep !== 1 && "hidden")}>
@@ -403,6 +450,18 @@ export function AddProviderInstanceDialog({
                     variant="dialog"
                     onChange={setConfigDraft}
                   />
+                  {driver === "primeAgent" ? (
+                    <div className="grid gap-1 rounded-lg border border-border/70 bg-muted/30 p-3 text-xs text-muted-foreground">
+                      <p>{PRIME_AGENT_INSTANCE_GUIDANCE}</p>
+                      <p>{PRIME_AGENT_ACP_GUIDANCE}</p>
+                      <p>{PRIME_AGENT_MAINTENANCE_GUIDANCE}</p>
+                      {hasAttemptedSubmit && primeHomeError ? (
+                        <p className="text-destructive" role="alert">
+                          {primeHomeError}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               ) : wizardStep === 2 ? (
                 <div className="grid gap-2">
@@ -429,11 +488,15 @@ export function AddProviderInstanceDialog({
               {wizardStep === 0 ? "Cancel" : "Back"}
             </Button>
             {wizardStep < ADD_PROVIDER_WIZARD_STEPS.length - 1 ? (
-              <Button size="sm" onClick={() => navigateToStep(wizardStep + 1)}>
+              <Button
+                size="sm"
+                disabled={wizardStep === 0 && multipleInstancesBlocked}
+                onClick={() => navigateToStep(wizardStep + 1)}
+              >
                 Next
               </Button>
             ) : (
-              <Button size="sm" onClick={handleSave}>
+              <Button size="sm" disabled={saveError !== null} onClick={handleSave}>
                 Add instance
               </Button>
             )}

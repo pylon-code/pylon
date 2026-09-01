@@ -170,6 +170,17 @@ describe("PrimeAgentDaemonBridge", () => {
     }),
   );
 
+  it.effect("loads the exact scoped Prime coding-agent package used for integration proof", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({ name: "@earendil-works/pi-coding-agent" });
+
+      const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+
+      expect(bridge.packageRoot).toBe(NodeFS.realpathSync(pkg.root));
+      expect(bridge.version).toBe("0.7.1");
+    }),
+  );
+
   it.effect("loads the public API from a direct dist/cli.js executable", () =>
     Effect.gen(function* () {
       const pkg = makePackage();

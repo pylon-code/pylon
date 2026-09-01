@@ -297,7 +297,14 @@ export function buildModelOptions(
       const provider = config?.providers.find(
         (candidate) => candidate.instanceId === fallbackModelSelection.instanceId,
       );
-      if (getProviderUnavailablePresentation(provider) === null) {
+      if (
+        provider !== undefined &&
+        getProviderAdmissionAvailability({
+          provider,
+          instanceId: String(fallbackModelSelection.instanceId),
+          providerSnapshotKnown: true,
+        }).status === "available"
+      ) {
         const providerLabel = provider
           ? providerDisplayLabel(provider)
           : fallbackModelSelection.instanceId;

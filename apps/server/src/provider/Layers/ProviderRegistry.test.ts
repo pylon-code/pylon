@@ -330,6 +330,7 @@ function makeMutableServerSettingsService(
           yield* PubSub.publish(changes, next);
           return next;
         }),
+      mutateProviderInstances: () => Effect.die(new Error("unused in this test")),
       get streamChanges() {
         return Stream.fromPubSub(changes);
       },

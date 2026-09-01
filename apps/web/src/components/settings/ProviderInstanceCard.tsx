@@ -49,6 +49,11 @@ import { providerSettingsTabClassName } from "./providerSettingsTabs";
 import { ProviderSettingsForm } from "./ProviderSettingsForm";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon, providerInstanceInitials } from "../chat/ProviderInstanceIcon";
+import {
+  PRIME_AGENT_ACP_GUIDANCE,
+  PRIME_AGENT_INSTANCE_GUIDANCE,
+  PRIME_AGENT_MAINTENANCE_GUIDANCE,
+} from "./providerMultipleInstances";
 import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { ProviderUsageRows, ProviderUsageSummary } from "../providerUsage/ProviderUsageRows";
@@ -1054,6 +1059,21 @@ export function ProviderInstanceCard({
                 onChange={updateEnvironment}
               />
             </div>
+
+            {instance.driver === "primeAgent" ? (
+              <div className="grid max-w-lg gap-1.5 rounded-lg border border-border/70 bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
+                <p>{PRIME_AGENT_INSTANCE_GUIDANCE}</p>
+                <p>{PRIME_AGENT_ACP_GUIDANCE}</p>
+                <p>{PRIME_AGENT_MAINTENANCE_GUIDANCE}</p>
+              </div>
+            ) : null}
+
+            {liveProvider?.supportsMultipleInstances === false &&
+            liveProvider.multipleInstancesUnavailableReason ? (
+              <p className="max-w-lg text-xs text-muted-foreground" role="status">
+                {liveProvider.multipleInstancesUnavailableReason}
+              </p>
+            ) : null}
 
             {driverOption ? (
               <ProviderSettingsForm
