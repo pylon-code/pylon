@@ -1547,6 +1547,7 @@ async function loadPublicationFixtureForRelease(
   channel: ServerProviderDistributionChannel,
   release: GitHubRelease,
   dependencies: PrimeDistributionNetworkDependencies,
+  options: { readonly includeRootArtifact?: boolean } = {},
 ): Promise<PrimePublicationFixture> {
   let previewRelease = release;
   let stableManifestBytes: Buffer | undefined;
@@ -1586,6 +1587,14 @@ async function loadPublicationFixtureForRelease(
   ) {
     throw new Error("Stable release must contain only its signed singleton manifest.");
   }
+  const rootAsset = parsedRelease.assets.find((asset) => asset.package === "prime-agent");
+  if (!rootAsset) throw new Error("Release manifest has no Prime root artifact.");
+  const rootArtifactBytes = options.includeRootArtifact
+    ? await dependencies.fetchBytes(
+        releaseAsset(previewRelease, rootAsset.file).browser_download_url,
+        MAX_ROOT_ARTIFACT_BYTES,
+      )
+    : undefined;
   const subjectDigests = new Set([
     ...parsedRelease.assets.map((asset) => asset.sha256),
     sha256(releaseManifestBytes),
@@ -1606,6 +1615,7 @@ async function loadPublicationFixtureForRelease(
     releaseManifestBytes,
     previewManifestBytes,
     ...(stableManifestBytes ? { stableManifestBytes } : {}),
+    ...(rootArtifactBytes ? { rootArtifactBytes } : {}),
     attestationBundlesBySubjectSha256,
   };
 }
@@ -1677,6 +1687,66 @@ export function makeLatestPrimePublicationLoader(
     const latest = verified.toSorted((left, right) => right.sequence - left.sequence)[0];
     if (!latest) throw new Error(`No exact signed ${channel} publication verified.`);
     return latest;
+  };
+}
+
+export interface VerifiedPrimePublicationBundle {
+  readonly publication: VerifiedPrimePublication;
+  readonly rootArtifactBytes: Buffer;
+}
+
+/**
+ * Loads the exact signed channel/build manifests, attestations, and root artifact. Verification
+ * succeeds before the root bytes leave this boundary. Installers must still treat the archive as
+ * hostile input and validate it before extraction.
+ */
+export function makeLatestPrimePublicationBundleLoader(
+  dependencies: PrimeDistributionNetworkDependencies = makePrimeDistributionNetworkDependencies(),
+): (channel: ServerProviderDistributionChannel) => Promise<VerifiedPrimePublicationBundle> {
+  return async (channel) => {
+    const raw = await dependencies.fetchJson(
+      `https://api.github.com/repos/${PRIME_DISTRIBUTION_REPOSITORY}/releases?per_page=100`,
+      MAX_RELEASE_RESPONSE_BYTES,
+    );
+    const releases = decodeGitHubReleases(raw)
+      .filter(
+        (release) =>
+          !release.draft &&
+          release.immutable &&
+          (channel === "preview"
+            ? /^pylon-build-g[0-9a-f]{12}-r[1-9][0-9]*$/u.test(release.tag_name)
+            : /^pylon-stable-[0-9]{6}-g[0-9a-f]{12}-r[1-9][0-9]*$/u.test(release.tag_name)),
+      )
+      .slice(0, MAX_FEED_CANDIDATES);
+    if (releases.length === 0) throw new Error(`No immutable ${channel} publication exists.`);
+    const trustedRoot = await dependencies.getTrustedRoot();
+    const verified: VerifiedPrimePublication[] = [];
+    for (const release of releases) {
+      try {
+        // Authenticate manifests and every attested artifact digest first. Untrusted root bytes are
+        // not downloaded until the latest exact signed publication has been selected.
+        const fixture = await loadPublicationFixtureForRelease(channel, release, dependencies);
+        verified.push(
+          await verifyPrimePublicationFixture(fixture, {
+            verifyBundle: async (bundle, expected) =>
+              verifyPrimeSigstoreBundle(bundle, trustedRoot, expected),
+            verifySourcePolicy: (expected) => verifyRemoteSourcePolicy(expected, dependencies),
+          }),
+        );
+      } catch {
+        // One malformed or unrelated release must not hide a later exact candidate.
+      }
+    }
+    const publication = verified.toSorted((left, right) => right.sequence - left.sequence)[0];
+    if (!publication) throw new Error(`No exact signed ${channel} publication verified.`);
+    const rootArtifactBytes = await dependencies.fetchBytes(
+      `${PRIME_DISTRIBUTION_REPOSITORY_URL}/releases/download/${publication.buildId}/${publication.rootAsset}`,
+      MAX_ROOT_ARTIFACT_BYTES,
+    );
+    if (sha256(rootArtifactBytes) !== publication.rootSha256) {
+      throw new Error("Prime root artifact does not match its exact signed digest.");
+    }
+    return { publication, rootArtifactBytes };
   };
 }
 

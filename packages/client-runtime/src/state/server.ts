@@ -797,6 +797,17 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    primeManagedMaintenance: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:prime-managed-maintenance",
+      tag: WS_METHODS.serverGetPrimeManagedMaintenance,
+      staleTimeMs: 0,
+    }),
+    runPrimeManagedMaintenance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:run-prime-managed-maintenance",
+      tag: WS_METHODS.serverRunPrimeManagedMaintenance,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     startProviderLogin: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:start-provider-login",
       tag: WS_METHODS.serverStartProviderLogin,

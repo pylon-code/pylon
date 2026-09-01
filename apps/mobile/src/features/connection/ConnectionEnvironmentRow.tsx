@@ -1,7 +1,8 @@
 import { SymbolView } from "../../components/AppSymbol";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import type { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useState } from "react";
@@ -12,6 +13,8 @@ import { AppText as Text, AppTextInput as TextInput } from "../../components/App
 import { cn } from "../../lib/cn";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
+import { serverEnvironment } from "../../state/server";
+import { useEnvironmentQuery } from "../../state/query";
 import { ConnectionStatusDot } from "./ConnectionStatusDot";
 
 function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string | null {
@@ -20,6 +23,82 @@ function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string
     error: environment.connectionError,
     traceId: environment.connectionErrorTraceId,
   });
+}
+
+function PrimeHostMaintenanceInstanceStatus(props: {
+  readonly environmentId: EnvironmentId;
+  readonly instanceId: ProviderInstanceId;
+  readonly label: string;
+  readonly distributionMessage: string | null;
+}) {
+  const { data, error, isPending } = useEnvironmentQuery(
+    serverEnvironment.primeManagedMaintenance({
+      environmentId: props.environmentId,
+      input: { instanceId: props.instanceId },
+    }),
+  );
+  const operation = data?.scheduled ?? data?.operation ?? null;
+  return (
+    <View className="gap-1 rounded-[14px] border border-input-border bg-input px-3.5 py-3">
+      <Text className="text-xs font-t3-bold text-foreground">{props.label}</Text>
+      <Text className="text-xs leading-normal text-foreground-muted">
+        {data?.message ??
+          (isPending ? "Reading host maintenance status." : (error ?? "Status unavailable."))}
+      </Text>
+      {props.distributionMessage ? (
+        <Text className="text-xs leading-normal text-foreground-muted">
+          {props.distributionMessage}
+        </Text>
+      ) : null}
+      {operation ? (
+        <Text
+          className={cn(
+            "text-xs leading-normal",
+            operation.status === "failed" ? "text-adaptive-rose-500-400" : "text-foreground-muted",
+          )}
+        >
+          {operation.status.replaceAll("-", " ")} · {operation.message}
+        </Text>
+      ) : null}
+      {data?.guidance ? (
+        <Text className="text-xs leading-normal text-adaptive-amber-600-400">{data.guidance}</Text>
+      ) : null}
+    </View>
+  );
+}
+
+function PrimeHostMaintenanceStatus(props: { readonly environmentId: EnvironmentId }) {
+  const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
+  const primeProviders =
+    config?.providers.filter((provider) => provider.driver === "primeAgent") ?? [];
+  return (
+    <View className="gap-2 border-t border-border pt-3">
+      <Text className="text-2xs font-t3-bold tracking-[0.8px] uppercase text-foreground-muted">
+        Prime host maintenance
+      </Text>
+      {primeProviders.length > 0 ? (
+        primeProviders.map((provider) => (
+          <PrimeHostMaintenanceInstanceStatus
+            key={provider.instanceId}
+            environmentId={props.environmentId}
+            instanceId={provider.instanceId}
+            label={provider.displayName ?? "Prime Agent"}
+            distributionMessage={provider.distribution?.message ?? null}
+          />
+        ))
+      ) : (
+        <Text className="text-xs leading-normal text-foreground-muted">
+          {config === null
+            ? "Connect to read Prime maintenance status."
+            : "This environment reports no configured Prime Agent instance."}
+        </Text>
+      )}
+      <Text className="text-xs leading-normal text-foreground-muted">
+        Install, update, rollback, switch back, and cleanup are host operations. Open Provider
+        Settings in Pylon web or desktop for this environment. Active work is never interrupted.
+      </Text>
+    </View>
+  );
 }
 
 export function ConnectionEnvironmentRow(props: {
@@ -162,6 +241,8 @@ export function ConnectionEnvironmentRow(props: {
               </View>
             </>
           )}
+
+          <PrimeHostMaintenanceStatus environmentId={props.environment.environmentId} />
 
           <View className="flex-row justify-end gap-2">
             {props.environment.isRelayManaged ? null : (

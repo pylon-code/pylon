@@ -1160,6 +1160,94 @@ it.effect(
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect("ProviderServiceLive fences starts and inventories exact instance quiescence", () => {
+  const codex = makeFakeCodexAdapter();
+  const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
+  const registry = makeAdapterRegistryMock({
+    [CODEX_DRIVER]: codex.adapter,
+    [CURSOR_DRIVER]: cursor.adapter,
+  });
+  const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+    Layer.provide(SqlitePersistenceMemory),
+  );
+  const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+  const providerLayer = Layer.merge(
+    makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(serverConfigTestLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    ),
+    directoryLayer,
+  );
+
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService.ProviderService;
+    const activeThread = asThreadId("thread-maintenance-active");
+    yield* provider.startSession(activeThread, {
+      provider: CODEX_DRIVER,
+      providerInstanceId: codexInstanceId,
+      threadId: activeThread,
+      cwd: "/tmp/project-maintenance-active",
+      runtimeMode: "full-access",
+    });
+    assert.deepInclude(yield* provider.reserveProviderMaintenance!(codexInstanceId), {
+      status: "busy",
+    });
+
+    const quiescentInstanceId = ProviderInstanceId.make("cursor");
+    const reserved = yield* provider.reserveProviderMaintenance!(quiescentInstanceId);
+    assert.equal(reserved.status, "reserved");
+    if (reserved.status !== "reserved") return;
+    const fencedThread = asThreadId("thread-maintenance-fenced");
+    const fencedError = yield* provider
+      .startSession(fencedThread, {
+        provider: CURSOR_DRIVER,
+        providerInstanceId: quiescentInstanceId,
+        threadId: fencedThread,
+        cwd: "/tmp/project-maintenance-fenced",
+        runtimeMode: "full-access",
+      })
+      .pipe(Effect.flip);
+    assert.instanceOf(fencedError, ProviderValidationError);
+    assert.include(fencedError.message, "fenced for scheduled host maintenance");
+
+    const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+    const recoveryThread = asThreadId("thread-maintenance-recovery-fenced");
+    yield* directory.upsert({
+      threadId: recoveryThread,
+      provider: CURSOR_DRIVER,
+      providerInstanceId: quiescentInstanceId,
+      runtimeMode: "full-access",
+    });
+    cursor.startSession.mockClear();
+    const recoveryError = yield* provider
+      .sendTurn({ threadId: recoveryThread, input: "must not recover", attachments: [] })
+      .pipe(Effect.flip);
+    assert.instanceOf(recoveryError, ProviderValidationError);
+    assert.include(recoveryError.message, "fenced for scheduled host maintenance");
+    assert.equal(cursor.startSession.mock.calls.length, 0);
+
+    yield* provider.releaseProviderMaintenance!(reserved.reservation);
+    yield* provider.startSession(fencedThread, {
+      provider: CURSOR_DRIVER,
+      providerInstanceId: quiescentInstanceId,
+      threadId: fencedThread,
+      cwd: "/tmp/project-maintenance-fenced",
+      runtimeMode: "full-access",
+    });
+    yield* provider.stopSession({ threadId: fencedThread });
+    yield* provider.stopSession({ threadId: activeThread });
+  }).pipe(Effect.provide(Layer.merge(providerLayer, NodeServices.layer)));
+});
+
 routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("reclaims start reservations after long historical-thread churn", () =>
     Effect.gen(function* () {

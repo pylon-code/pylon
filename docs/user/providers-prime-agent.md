@@ -66,6 +66,37 @@ ACP compatibility mode instead, because the daemon API cannot safely preserve ar
 arguments. Pylon shows that fallback in the provider status rather than silently discarding the
 arguments.
 
+### Optional Pylon-managed installation
+
+Stock or configured Prime remains the default. To opt in, open **Settings → Providers → Prime Agent**
+and use **Install stable** under **Pylon-managed Prime**. Pylon downloads and verifies the exact signed
+publication on the selected environment host, installs it beside other builds, and changes only this
+Prime provider instance's binary path. It does not overwrite or remove a global npm, pnpm, yarn, bun,
+Homebrew, or standalone Prime installation.
+
+Stable is the default managed channel. Preview requires checking the preview warning before
+**Install/update preview** becomes available. Signed channel sequence and build identity determine
+updates; the package version does not. If the signed feed is offline or invalid, Pylon keeps the
+current verified build selected and shows the failure instead of guessing that an update is available.
+
+Updates stage a new build before switching. If this Prime instance has an active admission, turn,
+session, daemon, or loaded SDK runtime, Pylon schedules the switch until that exact instance drains.
+It never interrupts a turn for maintenance. The same controls work when Settings connects to the host
+locally, remotely, through a relay, or through a tunnel.
+
+Use the build list to roll back to an already verified build. **Use stock/configured Prime** restores
+the binary path that was configured before managed installation. **Prune unreferenced builds** removes
+only verified Pylon-owned builds that no provider selection or scheduled switch references. It never
+touches the stock installation.
+
+Pylon Mobile shows each connected environment's Prime host-maintenance status under **Settings →
+Environments**. Use web or desktop Provider Settings for install, update, rollback, switch-back, and
+cleanup controls.
+
+Native Windows does not perform a managed Prime download or install. Install and run Pylon and Prime
+Agent inside WSL2, connect to that Linux environment, and use its Linux path. macOS and Linux use their
+native managed build only after exact runtime negotiation succeeds.
+
 ## Turn Completion
 
 A Prime turn can contain several assistant segments around tool work. Pylon keeps those segments in

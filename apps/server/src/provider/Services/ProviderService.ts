@@ -66,6 +66,14 @@ import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 /**
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
+export interface ProviderMaintenanceReservation {
+  readonly token: string;
+}
+
+export type ProviderMaintenanceReservationResult =
+  | { readonly status: "reserved"; readonly reservation: ProviderMaintenanceReservation }
+  | { readonly status: "busy"; readonly reasons: ReadonlyArray<string> };
+
 export interface ProviderServiceShape {
   /**
    * Start a provider session.
@@ -211,6 +219,15 @@ export interface ProviderServiceShape {
   readonly listSessionsForInstance?: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ReadonlyArray<ProviderSession>, ProviderServiceError>;
+
+  /** Atomically fences new starts/admissions, then inventories exact instance quiescence. */
+  readonly reserveProviderMaintenance?: (
+    instanceId: ProviderInstanceId,
+  ) => Effect.Effect<ProviderMaintenanceReservationResult, ProviderServiceError>;
+
+  readonly releaseProviderMaintenance?: (
+    reservation: ProviderMaintenanceReservation,
+  ) => Effect.Effect<void>;
 
   /**
    * Read capabilities for the adapter bound to a configured provider instance.

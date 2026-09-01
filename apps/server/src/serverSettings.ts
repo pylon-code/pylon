@@ -24,6 +24,7 @@ import {
   ServerSettingsError,
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
+import * as NodeCrypto from "node:crypto";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -162,6 +163,76 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
   return { ...settings, providerInstances };
 }
 
+function hashPrimeAgentBinding(value: unknown): string {
+  const canonicalize = (input: unknown): unknown => {
+    if (Array.isArray(input)) return input.map(canonicalize);
+    if (typeof input !== "object" || input === null) return input;
+    return Object.fromEntries(
+      Object.entries(input as Readonly<Record<string, unknown>>)
+        .toSorted(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalize(entry)]),
+    );
+  };
+  return NodeCrypto.createHash("sha256")
+    .update(JSON.stringify(canonicalize(value)))
+    .digest("hex");
+}
+
+export interface PrimeAgentBinaryBinding {
+  readonly binaryPath: string;
+  readonly generation: string;
+}
+
+function primeAgentBinaryBinding(
+  settings: ServerSettings,
+  instanceId: string,
+): PrimeAgentBinaryBinding | undefined {
+  const explicit = settings.providerInstances[ProviderInstanceId.make(instanceId)];
+  if (explicit) {
+    if (explicit.driver !== "primeAgent") return undefined;
+    const config =
+      typeof explicit.config === "object" &&
+      explicit.config !== null &&
+      !Array.isArray(explicit.config)
+        ? (explicit.config as Readonly<Record<string, unknown>>)
+        : {};
+    return {
+      binaryPath: typeof config.binaryPath === "string" ? config.binaryPath : "",
+      generation: hashPrimeAgentBinding(explicit),
+    };
+  }
+  if (instanceId !== "primeAgent") return undefined;
+  const legacy = settings.providers.primeAgent;
+  return {
+    binaryPath: legacy.binaryPath,
+    generation: hashPrimeAgentBinding(legacy),
+  };
+}
+
+function patchPrimeAgentBinaryPath(
+  settings: ServerSettings,
+  instanceId: string,
+  binaryPath: string,
+): ServerSettingsPatch | undefined {
+  const explicit = settings.providerInstances[ProviderInstanceId.make(instanceId)];
+  if (explicit) {
+    if (explicit.driver !== "primeAgent") return undefined;
+    const config =
+      typeof explicit.config === "object" &&
+      explicit.config !== null &&
+      !Array.isArray(explicit.config)
+        ? explicit.config
+        : {};
+    return {
+      providerInstances: {
+        ...settings.providerInstances,
+        [instanceId]: { ...explicit, config: { ...config, binaryPath } },
+      },
+    };
+  }
+  return instanceId === "primeAgent" ? { providers: { primeAgent: { binaryPath } } } : undefined;
+}
+
 export class ServerSettingsService extends Context.Service<
   ServerSettingsService,
   {
@@ -178,6 +249,18 @@ export class ServerSettingsService extends Context.Service<
     readonly updateSettings: (
       patch: ServerSettingsPatch,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
+
+    /** Read the persisted complete Prime instance binding generation. */
+    readonly readPrimeAgentBinaryBinding?: (
+      instanceId: string,
+    ) => Effect.Effect<PrimeAgentBinaryBinding | undefined, ServerSettingsError>;
+
+    /** Atomically compare-and-set only this Prime instance's binary path. */
+    readonly compareAndSetPrimeAgentBinaryPath?: (input: {
+      readonly instanceId: string;
+      readonly expected: PrimeAgentBinaryBinding;
+      readonly binaryPath: string;
+    }) => Effect.Effect<PrimeAgentBinaryBinding | undefined, ServerSettingsError>;
 
     /** Stream of settings change events. */
     readonly streamChanges: Stream.Stream<ServerSettings>;
@@ -220,6 +303,29 @@ const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
           Effect.flatMap(normalizeServerSettings),
           Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
           Effect.map(resolveTextGenerationProvider),
+        ),
+      readPrimeAgentBinaryBinding: (instanceId) =>
+        Ref.get(currentSettingsRef).pipe(
+          Effect.map((settings) => primeAgentBinaryBinding(settings, instanceId)),
+        ),
+      compareAndSetPrimeAgentBinaryPath: (input) =>
+        Ref.get(currentSettingsRef).pipe(
+          Effect.flatMap((current) => {
+            const binding = primeAgentBinaryBinding(current, input.instanceId);
+            if (
+              binding?.generation !== input.expected.generation ||
+              binding.binaryPath !== input.expected.binaryPath
+            ) {
+              return Effect.void.pipe(Effect.as(undefined as PrimeAgentBinaryBinding | undefined));
+            }
+            const patch = patchPrimeAgentBinaryPath(current, input.instanceId, input.binaryPath);
+            if (!patch)
+              return Effect.void.pipe(Effect.as(undefined as PrimeAgentBinaryBinding | undefined));
+            return normalizeServerSettings(applyServerSettingsPatch(current, patch)).pipe(
+              Effect.tap((next) => Ref.set(currentSettingsRef, next)),
+              Effect.map((next) => primeAgentBinaryBinding(next, input.instanceId)),
+            );
+          }),
         ),
       streamChanges: Stream.empty,
       subscribeChanges: Effect.succeed(Stream.empty),
@@ -749,6 +855,34 @@ const make = Effect.gen(function* () {
           yield* emitChange(next);
           const materialized = yield* materializeProviderEnvironmentSecrets(next);
           return resolveTextGenerationProvider(materialized);
+        }),
+      ),
+    readPrimeAgentBinaryBinding: (instanceId) =>
+      getSettingsFromCache.pipe(
+        Effect.map((settings) => primeAgentBinaryBinding(settings, instanceId)),
+      ),
+    compareAndSetPrimeAgentBinaryPath: (input) =>
+      writeSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const current = yield* getSettingsFromCache;
+          const binding = primeAgentBinaryBinding(current, input.instanceId);
+          if (
+            binding?.generation !== input.expected.generation ||
+            binding.binaryPath !== input.expected.binaryPath
+          ) {
+            return undefined;
+          }
+          const patch = patchPrimeAgentBinaryPath(current, input.instanceId, input.binaryPath);
+          if (!patch) return undefined;
+          const nextPersisted = yield* persistProviderEnvironmentSecrets(
+            current,
+            applyServerSettingsPatch(current, patch),
+          );
+          const next = yield* normalizeServerSettings(nextPersisted);
+          yield* writeSettingsAtomically(next);
+          yield* Cache.set(settingsCache, cacheKey, next);
+          yield* emitChange(next);
+          return primeAgentBinaryBinding(next, input.instanceId);
         }),
       ),
     get streamChanges() {
