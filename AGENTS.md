@@ -210,7 +210,8 @@ Full glossary with file links: `docs/internals/glossary.md`
 - Complexity belongs at the adapter boundary. Orchestration stays pure, UI stays dumb.
 - Inferred types over annotations. `any` is the enemy.
 - Comments describe how a thing is used, and move when the code moves. To be used mostly to describe functions, not to annotate every line of behavior.
-- Our users drive agents all day and notice a dropped frame, a lying spinner, and a stale label. No continuously repainting animations; they peg the GPU on high-refresh displays.
+- Our users drive agents all day and notice a dropped frame, a lying spinner, and a stale label.
+- Continuous animation must be scoped to a transient state and gated. Nothing may repaint at rest: an animation runs only while the state it reports is live, and stops for reduce-motion, backgrounding, and unfocused screens. `thread-work-log.tsx`'s shimmer is the reference. An unbounded animation that survives all three gates pegs the GPU on high-refresh displays.
 - If a rule here fights the task in front of you, say so loudly and get a human sign-off before breaking it.
 
 ## Additional tips
