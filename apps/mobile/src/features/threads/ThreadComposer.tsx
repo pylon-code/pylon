@@ -1684,8 +1684,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             {!isExpanded && props.contextWindow ? (
               <ContextWindowIndicator snapshot={props.contextWindow} expanded={false} />
             ) : null}
-            {!isExpanded ? (
-              <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
+            {!isExpanded && !voiceInput.isBusy ? (
+              <Animated.View
+                className="flex-row items-center gap-1.5"
+                entering={FadeIn.duration(180)}
+                exiting={FadeOut.duration(100)}
+              >
+                {voiceInput.isAvailable ? (
+                  <ComposerDictationPrimaryAction
+                    state={voiceInput.state}
+                    presentation={voicePresentation}
+                    isAvailable={voiceInput.isAvailable}
+                    onStart={voiceInput.start}
+                    onConfirm={voiceInput.stop}
+                    onCancel={voiceInput.cancel}
+                  />
+                ) : null}
                 {showStopAction ? (
                   <View className="flex-row items-center gap-2">
                     <ControlPill
@@ -1716,195 +1730,230 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               </Animated.View>
             ) : null}
           </ComposerDictationDraftContent>
-          {isExpanded ? (
-            <ComposerToolbarRow paddingBottom={0} paddingHorizontal={0} paddingTop={4}>
-              <ComposerToolbarScroller contentPaddingRight={8}>
-                <ComposerToolbarButton
-                  accessibilityLabel="Add attachment"
-                  icon="plus"
-                  onPress={() => {
-                    if (props.serverConfig?.environment.capabilities.fileAttachments) {
-                      Alert.alert("Add attachment", undefined, [
-                        { text: "Photos", onPress: () => void props.onPickDraftImages() },
-                        { text: "Files", onPress: () => void props.onPickDraftFiles() },
-                        { text: "Cancel", style: "cancel" },
-                      ]);
-                      return;
-                    }
-                    void props.onPickDraftImages();
-                  }}
-                  showChevron={false}
+          {isToolbarVisible ? (
+            <ComposerDictationToolbar
+              showsDictation={isVoiceInputPresented}
+              visible={isToolbarVisible}
+            >
+              <ComposerToolbarRow paddingBottom={0} paddingHorizontal={0} paddingTop={4}>
+                <ComposerDictationCancelAction
+                  presentation={voicePresentation}
+                  onCancel={voiceInput.cancel}
                 />
-                {quickQuestionAvailable ? (
-                  <QuickQuestionTrigger
-                    onPress={() => setQuickQuestionOpenScopeKey(quickQuestionScopeKey)}
+                {isVoiceInputPresented ? (
+                  <ComposerDictationStatus
+                    audioLevels={voiceInput.audioLevels}
+                    elapsedSeconds={voiceInput.elapsedSeconds}
+                    phase={voiceInput.state.phase}
+                    presentation={voicePresentation}
+                    onDismissError={voiceInput.cancel}
                   />
-                ) : null}
-                <ComposerInlineControl
-                  accessibilityLabel="Model and reasoning settings"
-                  emphasized
-                  iconNode={
-                    <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
-                  }
-                  label={currentModelOption?.label ?? currentModelSelection.model}
-                  maxWidth={152}
-                  onPress={openSettings}
-                />
-                {sessionHarnessRefinementActions.length > 0 ? (
-                  <ControlPillMenu
-                    title="Local harness"
-                    actions={sessionHarnessRefinementActions}
-                    onPressAction={({ nativeEvent }) => {
-                      if (
-                        parseSessionHarnessRefinementAction(
-                          nativeEvent.event,
-                          sessionHarnessRefinementScopeKey,
-                        ) === "refine"
-                      ) {
-                        confirmSessionHarnessRefinement(sessionHarnessRefinementScopeKey);
-                      }
-                    }}
-                  >
+                ) : (
+                  <ComposerToolbarScroller contentPaddingRight={8}>
                     <ComposerToolbarButton
-                      accessibilityLabel="Local harness refinement"
-                      icon="wand.and.stars"
-                      label="Refine"
+                      accessibilityLabel="Add attachment"
+                      icon="plus"
+                      onPress={() => {
+                        if (props.serverConfig?.environment.capabilities.fileAttachments) {
+                          Alert.alert("Add attachment", undefined, [
+                            { text: "Photos", onPress: () => void props.onPickDraftImages() },
+                            { text: "Files", onPress: () => void props.onPickDraftFiles() },
+                            { text: "Cancel", style: "cancel" },
+                          ]);
+                          return;
+                        }
+                        void props.onPickDraftImages();
+                      }}
+                      showChevron={false}
                     />
-                  </ControlPillMenu>
-                ) : null}
-                {props.sessionGoal ? (
-                  <ControlPillMenu
-                    title="Session goal · Managed in chat"
-                    actions={sessionGoalActions}
-                  >
-                    <ComposerToolbarButton
-                      accessibilityLabel={`Session goal ${formatSessionGoalStatus(props.sessionGoal.status).toLowerCase()}. Managed in chat.`}
-                      icon="target"
-                      label={
-                        props.sessionGoal.status === "idle"
-                          ? "No goal"
-                          : `Goal ${formatSessionGoalStatus(props.sessionGoal.status)}`
-                      }
-                    />
-                  </ControlPillMenu>
-                ) : null}
-                {props.contextWindow ||
-                (props.sessionCompaction?.available && sessionCompactionScopeKey) ? (
-                  props.sessionCompaction?.available && sessionCompactionScopeKey ? (
-                    <ControlPillMenu
-                      title="Context window"
-                      actions={sessionCompactionActions}
-                      onPressAction={({ nativeEvent }) =>
-                        handleSessionCompactionAction(nativeEvent.event)
-                      }
-                    >
-                      <ComposerToolbarButton
-                        accessibilityLabel={`${
-                          contextWindowPresentation?.accessibilityText ??
-                          "Context usage unavailable."
-                        } ${
-                          isSessionCompactionInProgress(props.sessionCompaction)
-                            ? "Compaction in progress."
-                            : "Compaction controls."
-                        }`}
-                        icon="gauge.with.dots.needle.50percent"
-                        label={contextWindowPresentation?.compactLabel ?? "Context"}
+                    {quickQuestionAvailable ? (
+                      <QuickQuestionTrigger
+                        onPress={() => setQuickQuestionOpenScopeKey(quickQuestionScopeKey)}
                       />
-                    </ControlPillMenu>
-                  ) : props.contextWindow ? (
-                    <ContextWindowIndicator snapshot={props.contextWindow} expanded />
-                  ) : null
-                ) : null}
-                {sessionAgentActions.length > 0 ? (
-                  <ControlPillMenu
-                    title="Active agents"
-                    actions={[...sessionAgentActions]}
-                    onPressAction={({ nativeEvent }) => handleSessionAgentAction(nativeEvent.event)}
-                  >
-                    <ComposerToolbarButton
-                      accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. View live activity, message, or stop an agent.`}
-                      icon="person.2"
-                      label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
-                    />
-                  </ControlPillMenu>
-                ) : null}
-                {showSessionInputQueueModes && props.sessionInputQueue ? (
-                  <ControlPillMenu
-                    title="Session input delivery"
-                    actions={sessionInputQueueActions}
-                    onPressAction={({ nativeEvent }) =>
-                      handleSessionInputQueueAction(nativeEvent.event)
-                    }
-                  >
-                    <ComposerToolbarButton
-                      accessibilityLabel={`Session input delivery. ${sessionQueueCount} pending. Steering ${props.sessionInputQueue.steeringMode === "all-at-once" ? "all at once" : "one at a time"}. Follow-ups ${props.sessionInputQueue.followUpMode === "all-at-once" ? "all at once" : "one at a time"}.`}
-                      icon="text.badge.plus"
-                      label={sessionQueueCount > 0 ? `Inputs ${sessionQueueCount}` : "Inputs"}
-                    />
-                  </ControlPillMenu>
-                ) : null}
-                {showSessionAgentDepth && props.sessionAgentDepth !== null ? (
-                  <ControlPillMenu
-                    title="Agent spawn depth"
-                    actions={sessionAgentDepthActions}
-                    onPressAction={({ nativeEvent }) =>
-                      void setSessionAgentDepth(nativeEvent.event)
-                    }
-                  >
-                    <ComposerToolbarButton
-                      accessibilityLabel={
-                        !props.sessionAgentDepth.writable
-                          ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, fixed by session policy`
-                          : props.sessionAgentDepth.settable
-                            ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}`
-                            : `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, unavailable until the session is idle`
+                    ) : null}
+                    <ComposerInlineControl
+                      accessibilityLabel="Model and reasoning settings"
+                      emphasized
+                      iconNode={
+                        <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
                       }
-                      icon="person.crop.circle"
-                      label={`Depth ${props.sessionAgentDepth.maxDepth}`}
-                      disabled={sessionAgentDepthDisabled}
+                      label={currentModelOption?.label ?? currentModelSelection.model}
+                      maxWidth={152}
+                      onPress={openSettings}
                     />
-                  </ControlPillMenu>
-                ) : null}
-                {sessionResourceInventory !== null ? (
-                  <ComposerToolbarButton
-                    accessibilityLabel={`Session resources. ${sessionResourceInventory.skills.length} skills, ${sessionResourceInventory.prompts.length} prompts.`}
-                    label={`Resources ${sessionResourceInventory.skills.length + sessionResourceInventory.prompts.length}`}
-                    onPress={() => setIsSessionResourcesOpen(true)}
-                    showChevron={false}
-                  />
-                ) : showSessionResourceReload ? (
-                  <ComposerToolbarButton
-                    accessibilityLabel={
-                      isReloadingSessionResources
-                        ? "Reloading session commands and resources"
-                        : "Reload session commands and resources after changing commands, skills, or prompts"
-                    }
-                    icon="arrow.clockwise"
-                    label={isReloadingSessionResources ? "Reloading…" : "Reload resources"}
-                    disabled={sessionResourceReloadDisabled || isReloadingSessionResources}
-                    onPress={() => void reloadSessionResources()}
-                    showChevron={false}
-                  />
-                ) : null}
-                {showStopAction ? (
-                  <ComposerToolbarButton
-                    accessibilityLabel="Stop"
-                    icon="stop.fill"
-                    variant="danger"
-                    onPress={props.onStopThread}
-                    showChevron={false}
-                  />
-                ) : null}
-              </ComposerToolbarScroller>
-              <ComposerToolbarButton
-                accessibilityLabel={sendLabel}
-                icon="arrow.up"
-                variant="primary"
-                disabled={!canSend || (canQueueFollowUp && isMutatingSessionInputQueue)}
-                onPress={canQueueFollowUp ? handleQueueFollowUp : handleSend}
-                showChevron={false}
-              />
-            </ComposerToolbarRow>
+                    {sessionHarnessRefinementActions.length > 0 ? (
+                      <ControlPillMenu
+                        title="Local harness"
+                        actions={sessionHarnessRefinementActions}
+                        onPressAction={({ nativeEvent }) => {
+                          if (
+                            parseSessionHarnessRefinementAction(
+                              nativeEvent.event,
+                              sessionHarnessRefinementScopeKey,
+                            ) === "refine"
+                          ) {
+                            confirmSessionHarnessRefinement(sessionHarnessRefinementScopeKey);
+                          }
+                        }}
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel="Local harness refinement"
+                          icon="wand.and.stars"
+                          label="Refine"
+                        />
+                      </ControlPillMenu>
+                    ) : null}
+                    {props.sessionGoal ? (
+                      <ControlPillMenu
+                        title="Session goal · Managed in chat"
+                        actions={sessionGoalActions}
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel={`Session goal ${formatSessionGoalStatus(props.sessionGoal.status).toLowerCase()}. Managed in chat.`}
+                          icon="target"
+                          label={
+                            props.sessionGoal.status === "idle"
+                              ? "No goal"
+                              : `Goal ${formatSessionGoalStatus(props.sessionGoal.status)}`
+                          }
+                        />
+                      </ControlPillMenu>
+                    ) : null}
+                    {props.contextWindow ||
+                    (props.sessionCompaction?.available && sessionCompactionScopeKey) ? (
+                      props.sessionCompaction?.available && sessionCompactionScopeKey ? (
+                        <ControlPillMenu
+                          title="Context window"
+                          actions={sessionCompactionActions}
+                          onPressAction={({ nativeEvent }) =>
+                            handleSessionCompactionAction(nativeEvent.event)
+                          }
+                        >
+                          <ComposerToolbarButton
+                            accessibilityLabel={`${
+                              contextWindowPresentation?.accessibilityText ??
+                              "Context usage unavailable."
+                            } ${
+                              isSessionCompactionInProgress(props.sessionCompaction)
+                                ? "Compaction in progress."
+                                : "Compaction controls."
+                            }`}
+                            icon="gauge.with.dots.needle.50percent"
+                            label={contextWindowPresentation?.compactLabel ?? "Context"}
+                          />
+                        </ControlPillMenu>
+                      ) : props.contextWindow ? (
+                        <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                      ) : null
+                    ) : null}
+                    {sessionAgentActions.length > 0 ? (
+                      <ControlPillMenu
+                        title="Active agents"
+                        actions={[...sessionAgentActions]}
+                        onPressAction={({ nativeEvent }) =>
+                          handleSessionAgentAction(nativeEvent.event)
+                        }
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. View live activity, message, or stop an agent.`}
+                          icon="person.2"
+                          label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
+                        />
+                      </ControlPillMenu>
+                    ) : null}
+                    {showSessionInputQueueModes && props.sessionInputQueue ? (
+                      <ControlPillMenu
+                        title="Session input delivery"
+                        actions={sessionInputQueueActions}
+                        onPressAction={({ nativeEvent }) =>
+                          handleSessionInputQueueAction(nativeEvent.event)
+                        }
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel={`Session input delivery. ${sessionQueueCount} pending. Steering ${props.sessionInputQueue.steeringMode === "all-at-once" ? "all at once" : "one at a time"}. Follow-ups ${props.sessionInputQueue.followUpMode === "all-at-once" ? "all at once" : "one at a time"}.`}
+                          icon="text.badge.plus"
+                          label={sessionQueueCount > 0 ? `Inputs ${sessionQueueCount}` : "Inputs"}
+                        />
+                      </ControlPillMenu>
+                    ) : null}
+                    {showSessionAgentDepth && props.sessionAgentDepth !== null ? (
+                      <ControlPillMenu
+                        title="Agent spawn depth"
+                        actions={sessionAgentDepthActions}
+                        onPressAction={({ nativeEvent }) =>
+                          void setSessionAgentDepth(nativeEvent.event)
+                        }
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel={
+                            !props.sessionAgentDepth.writable
+                              ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, fixed by session policy`
+                              : props.sessionAgentDepth.settable
+                                ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}`
+                                : `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, unavailable until the session is idle`
+                          }
+                          icon="person.crop.circle"
+                          label={`Depth ${props.sessionAgentDepth.maxDepth}`}
+                          disabled={sessionAgentDepthDisabled}
+                        />
+                      </ControlPillMenu>
+                    ) : null}
+                    {sessionResourceInventory !== null ? (
+                      <ComposerToolbarButton
+                        accessibilityLabel={`Session resources. ${sessionResourceInventory.skills.length} skills, ${sessionResourceInventory.prompts.length} prompts.`}
+                        label={`Resources ${sessionResourceInventory.skills.length + sessionResourceInventory.prompts.length}`}
+                        onPress={() => setIsSessionResourcesOpen(true)}
+                        showChevron={false}
+                      />
+                    ) : showSessionResourceReload ? (
+                      <ComposerToolbarButton
+                        accessibilityLabel={
+                          isReloadingSessionResources
+                            ? "Reloading session commands and resources"
+                            : "Reload session commands and resources after changing commands, skills, or prompts"
+                        }
+                        icon="arrow.clockwise"
+                        label={isReloadingSessionResources ? "Reloading…" : "Reload resources"}
+                        disabled={sessionResourceReloadDisabled || isReloadingSessionResources}
+                        onPress={() => void reloadSessionResources()}
+                        showChevron={false}
+                      />
+                    ) : null}
+                    {showStopAction ? (
+                      <ComposerToolbarButton
+                        accessibilityLabel="Stop"
+                        icon="stop.fill"
+                        variant="danger"
+                        onPress={props.onStopThread}
+                        showChevron={false}
+                      />
+                    ) : null}
+                  </ComposerToolbarScroller>
+                )}
+                <View className="shrink-0 flex-row items-center gap-2">
+                  {voiceInput.isAvailable ? (
+                    <ComposerDictationPrimaryAction
+                      state={voiceInput.state}
+                      presentation={voicePresentation}
+                      isAvailable={voiceInput.isAvailable}
+                      onStart={voiceInput.start}
+                      onConfirm={voiceInput.stop}
+                      onCancel={voiceInput.cancel}
+                    />
+                  ) : null}
+                  {isVoiceInputPresented ? null : (
+                    <ComposerToolbarButton
+                      accessibilityLabel={sendLabel}
+                      icon="arrow.up"
+                      variant="primary"
+                      disabled={!canSend || (canQueueFollowUp && isMutatingSessionInputQueue)}
+                      onPress={canQueueFollowUp ? handleQueueFollowUp : handleSend}
+                      showChevron={false}
+                    />
+                  )}
+                </View>
+              </ComposerToolbarRow>
+            </ComposerDictationToolbar>
           ) : null}
         </ComposerSurface>
 
