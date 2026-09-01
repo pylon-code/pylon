@@ -141,9 +141,7 @@ export interface RollbackSagaRepositoryShape {
     readonly expectedVersion: number;
     readonly state: RollbackSagaState;
   }) => Effect.Effect<Option.Option<RollbackSagaRecord>, RollbackSagaRepositoryError>;
-  readonly findLeaseByWorkspace: (
-    workspaceKey: string,
-  ) => Effect.Effect<
+  readonly findLeaseByWorkspace: (workspaceKey: string) => Effect.Effect<
     Option.Option<{
       readonly operationId: string;
       readonly threadId: ThreadId;
