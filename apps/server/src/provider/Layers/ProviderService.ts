@@ -1242,6 +1242,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           },
         });
       }
+      if (routed.adapter.prepareTurnRecovery !== undefined) {
+        yield* routed.adapter.prepareTurnRecovery(input);
+      }
       const turn = yield* routed.adapter.sendTurn(input);
       yield* directory.upsert({
         threadId: input.threadId,
@@ -1288,6 +1291,97 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           }),
       }),
     );
+  });
+
+  const recoverRestartSessions: ProviderServiceMethod<"recoverRestartSessions"> = Effect.fn(
+    "recoverRestartSessions",
+  )(function* () {
+    const bindings = yield* directory.listBindings();
+    for (const binding of bindings) {
+      let adoptedAdapter: ProviderAdapterShape<ProviderAdapterError> | undefined;
+      let mcpPrepared = false;
+      yield* Effect.gen(function* () {
+        const instanceId = yield* requireBindingInstanceId(
+          "ProviderService.recoverRestartSessions",
+          binding,
+        );
+        const adapter = yield* registry.getByInstance(instanceId);
+        if (
+          adapter.recoverSession === undefined ||
+          adapter.activateRecoveredSession === undefined
+        ) {
+          return;
+        }
+        const rawIncarnation = readRuntimePayloadString(
+          binding.runtimePayload,
+          "sessionIncarnationId",
+        );
+        const cwd = readPersistedCwd(binding.runtimePayload);
+        if (
+          rawIncarnation === undefined ||
+          cwd === undefined ||
+          binding.resumeCursor === undefined ||
+          binding.resumeCursor === null
+        ) {
+          return;
+        }
+        yield* prepareMcpSession(binding.threadId, instanceId);
+        mcpPrepared = true;
+        const modelSelection = readPersistedModelSelection(binding.runtimePayload);
+        const recovered = yield* adapter.recoverSession({
+          threadId: binding.threadId,
+          providerInstanceId: instanceId,
+          sessionIncarnationId: RuntimeSessionId.make(rawIncarnation),
+          runtimeMode: binding.runtimeMode ?? "full-access",
+          cwd,
+          ...(modelSelection === undefined ? {} : { modelSelection }),
+          resumeCursor: binding.resumeCursor,
+        });
+        if (recovered === null) {
+          yield* clearMcpSession(binding.threadId);
+          return;
+        }
+        adoptedAdapter = adapter;
+        currentSessionIncarnations.set(binding.threadId, {
+          id: RuntimeSessionId.make(rawIncarnation),
+          instanceId,
+          adapter,
+        });
+        yield* upsertSessionBinding(
+          { ...recovered, providerInstanceId: instanceId },
+          binding.threadId,
+          {
+            lastRuntimeEvent: "provider.restart-adopted",
+            lastRuntimeEventAt: yield* nowIso,
+          },
+        );
+        yield* adapter.activateRecoveredSession(binding.threadId);
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            if (adoptedAdapter !== undefined) {
+              yield* adoptedAdapter.stopSession(binding.threadId).pipe(
+                Effect.catchCause((cleanupCause) =>
+                  Effect.logWarning("failed to clean up adopted provider session", {
+                    threadId: binding.threadId,
+                    errorTag: causeErrorTag(cleanupCause),
+                  }),
+                ),
+              );
+              const current = currentSessionIncarnations.get(binding.threadId);
+              if (current?.adapter === adoptedAdapter) {
+                currentSessionIncarnations.delete(binding.threadId);
+              }
+            }
+            if (mcpPrepared) yield* clearMcpSession(binding.threadId);
+            yield* Effect.logWarning("failed to adopt recoverable provider session", {
+              threadId: binding.threadId,
+              errorTag: causeErrorTag(cause),
+            });
+          }),
+        ),
+      );
+    }
   });
 
   const interruptTurn: ProviderServiceMethod<"interruptTurn"> = Effect.fn("interruptTurn")(
@@ -2521,8 +2615,63 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     yield* analytics.flush;
   });
 
+  const runShutdown = Effect.fn("runShutdown")(function* () {
+    const currentAdapters = yield* getAdapterEntries;
+    if (currentAdapters.every(([, adapter]) => adapter.shutdown === undefined)) {
+      return yield* runStopAll();
+    }
+    const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
+    yield* Effect.forEach(
+      currentAdapters,
+      ([instanceId, adapter]) =>
+        adapter.shutdown !== undefined
+          ? adapter.shutdown()
+          : Effect.gen(function* () {
+              const activeSessions = yield* adapter.listSessions();
+              yield* Effect.forEach(activeSessions, (session) =>
+                Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
+                  upsertSessionBinding(
+                    { ...session, providerInstanceId: instanceId },
+                    session.threadId,
+                    {
+                      lastRuntimeEvent: "provider.stopAll",
+                      lastRuntimeEventAt,
+                    },
+                  ),
+                ),
+              );
+              yield* adapter.stopAll().pipe(
+                Effect.ensuring(
+                  Effect.forEach(activeSessions, (session) => clearMcpSession(session.threadId), {
+                    discard: true,
+                  }),
+                ),
+              );
+              yield* Effect.forEach(
+                bindings.filter((binding) => binding.providerInstanceId === instanceId),
+                (binding) =>
+                  Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
+                    directory.upsert({
+                      threadId: binding.threadId,
+                      provider: binding.provider,
+                      providerInstanceId: instanceId,
+                      status: "stopped",
+                      runtimePayload: {
+                        activeTurnId: null,
+                        lastRuntimeEvent: "provider.stopAll",
+                        lastRuntimeEventAt,
+                      },
+                    }),
+                  ),
+                { discard: true },
+              );
+            }),
+      { concurrency: "unbounded", discard: true },
+    );
+  });
+
   yield* Effect.addFinalizer(() =>
-    runStopAll().pipe(
+    runShutdown().pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("failed to stop provider service", {
           errorTag: causeErrorTag(cause),
@@ -2534,6 +2683,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   return {
     startSession,
     sendTurn,
+    recoverRestartSessions,
     interruptTurn,
     respondToRequest,
     respondToUserInput,

@@ -4,12 +4,13 @@ import {
   type ServerProvider,
   type ServerProviderDistribution,
 } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -122,6 +123,7 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const hostPlatform = yield* HostProcessPlatform;
+      const hostArchitecture = yield* HostProcessArchitecture;
       if (!isPrimeAgentProviderPlatformSupported(hostPlatform)) {
         return yield* new ProviderDriverError({
           driver: DRIVER_KIND,
@@ -214,6 +216,37 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         env: processEnv,
       });
 
+      const recoveryDistribution = yield* Effect.result(
+        Effect.gen(function* () {
+          const executablePath = path.resolve(
+            yield* resolveCommandPath(effectiveConfig.binaryPath || "prime-agent", {
+              env: processEnv,
+            }),
+          );
+          const publicPackage = yield* locatePrimeAgentPublicPackage(executablePath);
+          const distribution = yield* Effect.promise(() =>
+            inspectPrimeAgentDistribution(
+              {
+                stateDir: serverConfig.stateDir,
+                instanceId,
+                packageRoot: publicPackage.packageRoot,
+                platform: hostPlatform,
+                checkedAt: "1970-01-01T00:00:00.000Z",
+                enableUpdateChecks: false,
+              },
+              { loadLatestVerifiedPublication },
+            ),
+          );
+          return { publicPackage, distribution };
+        }),
+      );
+      const recoveryManagedBuildId =
+        Result.isSuccess(recoveryDistribution) &&
+        recoveryDistribution.success.distribution.classification === "pylon-managed" &&
+        recoveryDistribution.success.distribution.buildId !== null
+          ? recoveryDistribution.success.distribution.buildId
+          : undefined;
+
       const backend = yield* negotiatePrimeAgentBackend(
         {
           enabled: effectiveConfig.enabled,
@@ -223,6 +256,8 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
           environment: processEnv,
           stateDir: serverConfig.stateDir,
           providerInstanceId: instanceId,
+          recoveryEnabled: recoveryManagedBuildId !== undefined,
+          architecture: hostArchitecture,
         },
         {
           resolveExecutable: (command, resolvedEnvironment) =>
@@ -378,6 +413,7 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
         environment: processEnv,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,
+        ...(recoveryManagedBuildId === undefined ? {} : { recoveryManagedBuildId }),
       } as const;
       const adapter =
         backend.runtime === "daemon"

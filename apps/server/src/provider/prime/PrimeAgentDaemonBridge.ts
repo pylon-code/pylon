@@ -41,8 +41,24 @@ export class PrimeAgentDaemonBridgeError extends Schema.TaggedErrorClass<PrimeAg
   }
 }
 
+export interface PrimeAgentDaemonHello {
+  readonly socketPath: string;
+  readonly protocol: { readonly name: string; readonly version: number };
+  readonly schemaRevision?: number;
+  readonly appVersion?: string;
+  readonly buildId?: string;
+  readonly supervisorGeneration?: string;
+  readonly serverCapabilities: ReadonlyArray<string>;
+}
+
+export interface PrimeAgentDaemonEventCursor {
+  readonly generation: string;
+  readonly sequence: number;
+}
+
 export interface PrimeAgentDaemonClient {
   readonly isConnected: boolean;
+  readonly hello?: PrimeAgentDaemonHello;
   readonly connect: (timeoutMs?: number) => Promise<void>;
   readonly waitForHello: (timeoutMs?: number) => Promise<unknown>;
   readonly request: (
@@ -50,9 +66,9 @@ export interface PrimeAgentDaemonClient {
     timeoutMs?: number,
   ) => Promise<unknown>;
   readonly enableRequestRecovery?: () => void;
-  readonly supportsServerCapability?: (
-    capability: "queue_message_mutation" | "correlated_prompt_lifecycle_v1",
-  ) => boolean;
+  readonly supportsServerCapability?: {
+    bivarianceHack(capability: string): boolean;
+  }["bivarianceHack"];
   readonly enableAutoReconnect?: (options: {
     readonly recoverDaemon: () => Promise<void>;
     readonly timeoutMs?: number;
@@ -200,6 +216,8 @@ export interface PrimeAgentDaemonAgentConnection {
   readonly getSessionStats: () => Promise<unknown>;
   readonly getRlmMaxDepthStatus?: () => Promise<unknown>;
   readonly setRlmMaxDepth?: (maxDepth: number) => Promise<unknown>;
+  readonly getOwnedSessionContractProof?: () => unknown;
+  readonly disposeOwnedSession?: (options?: { readonly timeoutMs?: number }) => Promise<unknown>;
   readonly dispose: () => Promise<unknown>;
 }
 
@@ -225,6 +243,59 @@ export interface PrimeAgentDaemonAgentConnectionConstructor {
   ) => Promise<PrimeAgentDaemonAgentConnection>;
 }
 
+export interface PrimeAgentRecoverableOwnedSessionCreation {
+  readonly connection: PrimeAgentDaemonAgentConnection;
+  readonly state: Readonly<Record<string, unknown>>;
+  readonly recoveryHandle: string;
+  readonly supervisorGeneration: string;
+  readonly ownershipGeneration: number;
+}
+
+export interface PrimeAgentRecoverableOwnedSessionAdoptionProof {
+  readonly feature: "recoverable_owned_session_adoption_v1";
+  readonly status: "adopted";
+  readonly supervisorGeneration: string;
+  readonly ownershipGeneration: number;
+  readonly activeSessionId: string;
+  readonly sessionId: string;
+  readonly correlationId: string;
+  readonly lifecycle: unknown;
+  readonly cursor: PrimeAgentDaemonEventCursor;
+  readonly mcpOwnerId: string;
+}
+
+export interface PrimeAgentRecoverableOwnedSessionAdoption {
+  readonly connection: PrimeAgentDaemonAgentConnection;
+  readonly recoveryHandle: string;
+  readonly proof: PrimeAgentRecoverableOwnedSessionAdoptionProof;
+}
+
+export interface PrimeAgentRecoverableOwnedSessionCreateOptions {
+  readonly requestId: string;
+  readonly correlationId: string;
+  readonly mcpOwnerId: string;
+  readonly config: Readonly<Record<string, unknown>>;
+  readonly sessionPath?: string;
+  readonly continueRecent?: boolean;
+  readonly launchEnv: Readonly<Record<string, string>>;
+  readonly connectionOptions?: Readonly<Record<string, unknown>>;
+}
+
+export interface PrimeAgentRecoverableOwnedSessionAdoptionOptions {
+  readonly requestId: string;
+  readonly recoveryHandle: string;
+  readonly expectedSupervisorGeneration: string;
+  readonly activeSessionId: string;
+  readonly sessionId: string;
+  readonly correlationId: string;
+  readonly cursor: PrimeAgentDaemonEventCursor;
+  readonly previousMcpOwnerId: string;
+  readonly mcpOwnerId: string;
+  readonly config: Readonly<Record<string, unknown>>;
+  readonly launchEnv: Readonly<Record<string, string>>;
+  readonly connectionOptions?: Readonly<Record<string, unknown>>;
+}
+
 export interface PrimeAgentPublicPackage {
   readonly packageRoot: string;
   readonly moduleEntryPath: string;
@@ -236,6 +307,25 @@ export interface PrimeAgentDaemonBridge extends PrimeAgentPublicPackage {
   readonly protocolVersion: number;
   /** True only for the frozen Prime SDK feature contract, never from method presence. */
   readonly negotiatedDaemonSessionCapabilitiesAvailable: boolean;
+  /** Exact frozen client capability evidence used with the post-connect daemon gates. */
+  readonly sdkFeatures?: ReadonlyArray<string>;
+  readonly recoverableOwnedSessionAdoptionAvailable?: boolean;
+  readonly createRecoverableOwnedSession?: (
+    client: PrimeAgentDaemonClient,
+    options: PrimeAgentRecoverableOwnedSessionCreateOptions,
+  ) => Promise<PrimeAgentRecoverableOwnedSessionCreation>;
+  readonly adoptRecoverableOwnedSession?: (
+    client: PrimeAgentDaemonClient,
+    options: PrimeAgentRecoverableOwnedSessionAdoptionOptions,
+  ) => Promise<PrimeAgentRecoverableOwnedSessionAdoption>;
+  readonly confirmRecoverableOwnedSessionAdoption?: (
+    client: PrimeAgentDaemonClient,
+    confirmation: {
+      readonly requestId: string;
+      readonly recoveryHandle: string;
+      readonly proof: PrimeAgentRecoverableOwnedSessionAdoptionProof;
+    },
+  ) => Promise<void>;
   readonly DaemonClient: PrimeAgentDaemonClientConstructor;
   readonly DaemonAgentConnection: PrimeAgentDaemonAgentConnectionConstructor;
   readonly defaultDaemonSocketPath: () => string;
@@ -465,15 +555,12 @@ export const locatePrimeAgentPublicPackage = Effect.fn("locatePrimeAgentPublicPa
   });
 });
 
-function hasFrozenNegotiatedDaemonSessionCapabilitiesFeature(loadedModule: unknown): boolean {
-  if (!Predicate.isObject(loadedModule)) return false;
+function frozenSdkFeatures(loadedModule: unknown): ReadonlyArray<string> {
+  if (!Predicate.isObject(loadedModule)) return [];
   const features = loadedModule.PRIME_AGENT_SDK_FEATURES;
-  return (
-    Array.isArray(features) &&
-    Object.isFrozen(features) &&
-    features.every(Predicate.isString) &&
-    features.includes(PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE)
-  );
+  return Array.isArray(features) && Object.isFrozen(features) && features.every(Predicate.isString)
+    ? [...features]
+    : [];
 }
 
 function requireDaemonExports(input: {
@@ -520,8 +607,20 @@ function requireDaemonExports(input: {
   const daemonClient = input.loadedModule.DaemonClient;
   const daemonAgentConnection = input.loadedModule.DaemonAgentConnection;
   const defaultDaemonSocketPath = input.loadedModule.defaultDaemonSocketPath;
-  const negotiatedDaemonSessionCapabilitiesAvailable =
-    hasFrozenNegotiatedDaemonSessionCapabilitiesFeature(input.loadedModule);
+  const sdkFeatures = frozenSdkFeatures(input.loadedModule);
+  const negotiatedDaemonSessionCapabilitiesAvailable = sdkFeatures.includes(
+    PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE,
+  );
+  const createRecoverableOwnedSession = input.loadedModule.createRecoverableOwnedSession;
+  const adoptRecoverableOwnedSession = input.loadedModule.adoptRecoverableOwnedSession;
+  const confirmRecoverableOwnedSessionAdoption =
+    input.loadedModule.confirmRecoverableOwnedSessionAdoption;
+  const recoverableOwnedSessionAdoptionAvailable =
+    sdkFeatures.includes("recoverable_owned_session_adoption_v1") &&
+    sdkFeatures.includes("caller_owned_session_environment_cleanup_v1") &&
+    Predicate.isFunction(createRecoverableOwnedSession) &&
+    Predicate.isFunction(adoptRecoverableOwnedSession) &&
+    Predicate.isFunction(confirmRecoverableOwnedSessionAdoption);
   if (
     !Predicate.isFunction(daemonClient) ||
     !Predicate.isObject(daemonClient.prototype) ||
@@ -577,6 +676,22 @@ function requireDaemonExports(input: {
     protocolName: PRIME_AGENT_DAEMON_PROTOCOL_NAME,
     protocolVersion: metadata.value.DAEMON_PROTOCOL_VERSION,
     negotiatedDaemonSessionCapabilitiesAvailable,
+    sdkFeatures,
+    recoverableOwnedSessionAdoptionAvailable,
+    ...(recoverableOwnedSessionAdoptionAvailable
+      ? {
+          createRecoverableOwnedSession: createRecoverableOwnedSession as NonNullable<
+            PrimeAgentDaemonBridge["createRecoverableOwnedSession"]
+          >,
+          adoptRecoverableOwnedSession: adoptRecoverableOwnedSession as NonNullable<
+            PrimeAgentDaemonBridge["adoptRecoverableOwnedSession"]
+          >,
+          confirmRecoverableOwnedSessionAdoption:
+            confirmRecoverableOwnedSessionAdoption as NonNullable<
+              PrimeAgentDaemonBridge["confirmRecoverableOwnedSessionAdoption"]
+            >,
+        }
+      : {}),
     DaemonClient: daemonClient as PrimeAgentDaemonClientConstructor,
     DaemonAgentConnection:
       daemonAgentConnection as unknown as PrimeAgentDaemonAgentConnectionConstructor,

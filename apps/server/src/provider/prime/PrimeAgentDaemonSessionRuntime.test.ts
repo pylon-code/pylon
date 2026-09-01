@@ -301,6 +301,7 @@ function fixture(options?: {
   readonly verifyManagedSourceImpl?: () => Promise<boolean>;
   readonly unsubscribeImpl?: () => void;
   readonly disposeImpl?: () => Promise<unknown>;
+  readonly recoveryMode?: "create" | "adopt";
 }) {
   const captures: Captures = {
     order: [],
@@ -334,6 +335,19 @@ function fixture(options?: {
 
   class FakeClient implements PrimeAgentDaemonClient {
     isConnected = true;
+    hello = {
+      type: "daemon_hello" as const,
+      protocol: { name: "prime-agent.daemon" as const, version: 7 },
+      socketPath: "/tmp/pylon-prime.sock",
+      appVersion: "0.7.1",
+      schemaRevision: 30,
+      supervisorGeneration: "supervisor-1",
+      serverCapabilities: [
+        "daemon_recoverable_owned_session_adoption_v1",
+        "caller_owned_session_environment_cleanup_v1",
+        "authoritative_owned_session_cleanup_v1",
+      ],
+    };
     connect(): Promise<void> {
       return Promise.resolve();
     }
@@ -848,6 +862,10 @@ function fixture(options?: {
         Promise.resolve({ maxDepth, source: "chat", globalSaved: false })
       );
     }
+    disposeOwnedSession(): Promise<unknown> {
+      captures.order.push("dispose-owned");
+      return Promise.resolve({ status: "completed" });
+    }
     dispose(): Promise<unknown> {
       captures.order.push("dispose");
       captures.disposeCount += 1;
@@ -865,6 +883,51 @@ function fixture(options?: {
       options?.correlatedPromptLifecycleSdkFeature ??
       options?.correlatedPromptLifecycleCapability ??
       false,
+    sdkFeatures:
+      options?.recoveryMode === undefined
+        ? []
+        : ["recoverable_owned_session_adoption_v1", "caller_owned_session_environment_cleanup_v1"],
+    recoverableOwnedSessionAdoptionAvailable: options?.recoveryMode !== undefined,
+    ...(options?.recoveryMode === undefined
+      ? {}
+      : {
+          createRecoverableOwnedSession: async () => {
+            captures.order.push("create-recoverable");
+            return {
+              connection: new FakeConnection(),
+              recoveryHandle: "handle-1",
+              supervisorGeneration: "supervisor-1",
+              ownershipGeneration: 0,
+              state: {
+                activeSessionId: "active-secret-1",
+                sessionId: "session-1",
+                sessionFile: "/state/provider-sessions/thread-safe/session.jsonl",
+              },
+            };
+          },
+          adoptRecoverableOwnedSession: async () => {
+            captures.order.push("adopt-recoverable");
+            return {
+              connection: new FakeConnection(),
+              recoveryHandle: "handle-2",
+              proof: {
+                feature: "recoverable_owned_session_adoption_v1" as const,
+                status: "adopted" as const,
+                lifecycle: { phase: "owned" },
+                supervisorGeneration: "supervisor-1",
+                activeSessionId: "active-secret-1",
+                sessionId: "session-1",
+                correlationId: "correlation-1",
+                mcpOwnerId: "pylon:mcp-2",
+                ownershipGeneration: 1,
+                cursor: { generation: "events-1", sequence: 9 },
+              },
+            };
+          },
+          confirmRecoverableOwnedSessionAdoption: async () => {
+            captures.order.push("confirm-adoption");
+          },
+        }),
     DaemonClient: FakeClient,
     DaemonAgentConnection: FakeConnection,
     defaultDaemonSocketPath: () => "/tmp/prime-agent.sock",
@@ -873,6 +936,14 @@ function fixture(options?: {
     bridge,
     socket: "/tmp/pylon-prime.sock",
     sessionDir: "/state/shared-daemon-sessions",
+    launchEnvironment: { HOME: "/private/home" },
+    recoveryEnabled: options?.recoveryMode !== undefined,
+    platform: "darwin",
+    architecture: "arm64",
+    retainForRecovery: () => {
+      captures.order.push("retain-daemon");
+      return () => captures.order.push("release-daemon");
+    },
     prepare: () => Effect.void,
     openClient: () =>
       Effect.sync(() => {
@@ -890,6 +961,7 @@ function fixture(options?: {
     resumeSessionId?: string,
     mcpServer?: PrimeAgentDaemonSessionRuntimeInput["mcpServer"],
     expectedExtension?: { readonly path: string; readonly markerCommand: string },
+    recovery?: PrimeAgentDaemonSessionRuntimeInput["recovery"],
   ) =>
     makePrimeAgentDaemonSessionRuntime({
       manager,
@@ -917,6 +989,7 @@ function fixture(options?: {
       ...(resumeCursor === undefined ? {} : { resumeCursor }),
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
       ...(mcpServer === undefined ? {} : { mcpServer }),
+      ...(recovery === undefined ? {} : { recovery }),
     });
   const emit = (event: unknown) => Promise.resolve(listener?.(event));
   const emitWatch = (event: unknown) => Promise.resolve(watcherListener?.(event));
@@ -12920,6 +12993,146 @@ describe("Prime Agent live activity privacy boundary", () => {
         const error = yield* Fiber.join(askFiber);
         expect(error).toMatchObject({ operation: "side-question", reason: "request-failed" });
         expect(side.captures.sideQuestionAborts).toEqual([nativeId]);
+      }),
+    ),
+  );
+  it.effect("persists create authority before exposing a recoverable runtime", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const side = fixture({
+          recoveryMode: "create",
+          rawSnapshot: {
+            ...snapshot(),
+            lastEventCursor: { generation: "events-1", sequence: 4 },
+          },
+        });
+        const runtime = yield* side.make(
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            kind: "create",
+            requestId: "request-create-1",
+            correlationId: "correlation-1",
+            mcpOwnerId: "pylon:none:1",
+            onAuthorityReady: async (authority) => {
+              expect(authority.cursor).toEqual({ generation: "events-1", sequence: 4 });
+              side.captures.order.push("authority-durable");
+            },
+          },
+        );
+
+        expect(side.captures.order.indexOf("create-recoverable")).toBeLessThan(
+          side.captures.order.indexOf("authority-durable"),
+        );
+        expect(runtime.recoveryCorrelationId).toBe("correlation-1");
+        yield* runtime.detach!;
+      }),
+    ),
+  );
+
+  it.effect("commits adoption, restores MCP, then confirms before replay is exposed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const side = fixture({
+          recoveryMode: "adopt",
+          rawSnapshot: {
+            ...snapshot(),
+            lastEventCursor: { generation: "events-1", sequence: 9 },
+          },
+        });
+        const runtime = yield* side.make(
+          PRIME_AGENT_DAEMON_RESUME_CURSOR,
+          undefined,
+          undefined,
+          "session-1",
+          {
+            ownerId: "pylon:mcp-2",
+            server: {
+              name: "t3-code",
+              type: "http",
+              url: "http://127.0.0.1/mcp",
+              headers: {},
+            },
+          },
+          undefined,
+          {
+            kind: "adopt",
+            requestId: "request-adopt-1",
+            recoveryHandle: "handle-1",
+            expectedSupervisorGeneration: "supervisor-1",
+            activeSessionId: "active-secret-1",
+            sessionId: "session-1",
+            sessionFile: "/state/provider-sessions/thread-safe/session.jsonl",
+            correlationId: "correlation-1",
+            cursor: { generation: "events-1", sequence: 4 },
+            previousMcpOwnerId: "pylon:mcp-1",
+            mcpOwnerId: "pylon:mcp-2",
+            recoveryConfig: { cwd: "/work/project" },
+            launchEnvironment: { HOME: "/private/home" },
+            onAdoptionCommitted: async () => {
+              side.captures.order.push("ledger-committed");
+            },
+          },
+        );
+        const initial = yield* Stream.runHead(runtime.events);
+
+        expect(initial._tag).toBe("Some");
+        expect(side.captures.order).toEqual(
+          expect.arrayContaining([
+            "adopt-recoverable",
+            "retain-daemon",
+            "ledger-committed",
+            "replace-mcp",
+            "confirm-adoption",
+          ]),
+        );
+        expect(side.captures.order.indexOf("ledger-committed")).toBeLessThan(
+          side.captures.order.indexOf("replace-mcp"),
+        );
+        expect(side.captures.order.indexOf("replace-mcp")).toBeLessThan(
+          side.captures.order.indexOf("confirm-adoption"),
+        );
+        yield* runtime.detach!;
+      }),
+    ),
+  );
+
+  it.effect("uses authoritative owned cleanup and releases daemon retention only after proof", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const side = fixture({
+          recoveryMode: "create",
+          rawSnapshot: {
+            ...snapshot(),
+            lastEventCursor: { generation: "events-1", sequence: 4 },
+          },
+        });
+        const runtime = yield* side.make(
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            kind: "create",
+            requestId: "request-create-cleanup",
+            correlationId: "correlation-cleanup",
+            mcpOwnerId: "pylon:none:cleanup",
+            onAuthorityReady: async () => undefined,
+          },
+        );
+        yield* runtime.dispose;
+
+        expect(side.captures.order).toContain("dispose-owned");
+        expect(side.captures.order.indexOf("dispose-owned")).toBeLessThan(
+          side.captures.order.indexOf("release-daemon"),
+        );
+        expect(side.captures.order).not.toContain("dispose");
       }),
     ),
   );

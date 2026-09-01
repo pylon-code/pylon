@@ -303,6 +303,11 @@ export const reconcileProviderSessions = Effect.gen(function* () {
   const providerService = yield* ProviderService.ProviderService;
   const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
 
+  // Prime restart adoption must install exact incarnation fencing and release retained
+  // replay before generic orphan settlement can observe the thread as dead.
+  if (providerService.recoverRestartSessions !== undefined) {
+    yield* providerService.recoverRestartSessions();
+  }
   const liveThreadIds = new Set(
     (yield* providerService.listSessions()).map((session) => session.threadId),
   );

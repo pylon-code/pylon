@@ -3391,7 +3391,7 @@ describe("agent browser access", () => {
     const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
     return makeProviderServiceLive(options).pipe(
       Layer.provide(providerAdapterLayer),
-      Layer.provide(directoryLayer),
+      Layer.provideMerge(directoryLayer),
       Layer.provide(ServerSettings.ServerSettingsService.layerTest({ enableAgentBrowserAccess })),
       Layer.provide(serverConfigTestLayer),
       Layer.provide(AnalyticsService.layerTest),
@@ -3510,6 +3510,62 @@ describe("agent browser access", () => {
 
         assert.equal(yield* Deferred.await(revoked), threadId);
         assert.isUndefined(McpProviderSession.readMcpProviderSession(threadId));
+      }).pipe(Effect.provide(providerLayer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("restores MCP and the directory binding before exposing recovered activity", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-restart-adoption");
+      const codex = makeFakeCodexAdapter();
+      const order: string[] = [];
+      const recoveryAdapter: ProviderAdapterShape<ProviderAdapterError> = {
+        ...codex.adapter,
+        recoverSession: (input) =>
+          Effect.gen(function* () {
+            assert.isDefined(McpProviderSession.readMcpProviderSession(threadId));
+            order.push("recover");
+            return yield* codex.startSession(input);
+          }),
+        activateRecoveredSession: () =>
+          Effect.sync(() => {
+            order.push("activate");
+          }),
+      };
+      const providerLayer = makeAgentBrowserProviderLayer(
+        true,
+        { ...codex, adapter: recoveryAdapter },
+        {
+          issueMcpCredential: (request) =>
+            Effect.sync(() => {
+              order.push("mcp");
+              return issuedBrowserCredential(request.threadId);
+            }),
+          revokeMcpCredential: () => Effect.void,
+        },
+      );
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project",
+          runtimeMode: "full-access",
+        });
+        codex.removeSession(threadId);
+        order.length = 0;
+
+        yield* provider.recoverRestartSessions!();
+
+        assert.deepEqual(order, ["mcp", "recover", "activate"]);
+        const binding = Option.getOrThrow(yield* directory.getBinding(threadId));
+        assert.equal(
+          (binding.runtimePayload as { readonly lastRuntimeEvent?: string }).lastRuntimeEvent,
+          "provider.restart-adopted",
+        );
       }).pipe(Effect.provide(providerLayer));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
