@@ -9,6 +9,9 @@ const root = NodePath.resolve(import.meta.dirname, "..");
 const workflowPath = NodePath.join(root, ".github/workflows/prime-artifact-graduation.yml");
 const source = NodeFS.readFileSync(workflowPath, "utf8");
 const workflow = parse(source) as Readonly<Record<string, unknown>>;
+const publishingSurface =
+  /\b(?:npm publish|gh release|git push|create-release|stable dispatch)\b/iu;
+const skippedProof = /\b(?:it|describe)\.skip\b/u;
 
 function record(value: unknown, label: string): Readonly<Record<string, unknown>> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -17,15 +20,20 @@ function record(value: unknown, label: string): Readonly<Record<string, unknown>
   return value as Readonly<Record<string, unknown>>;
 }
 
+function assertNoPublishingOrSkippedProof(candidate: string): void {
+  if (publishingSurface.test(candidate)) {
+    throw new Error("Prime artifact graduation contains a publishing surface.");
+  }
+  if (skippedProof.test(candidate)) {
+    throw new Error("Prime artifact graduation contains a skipped proof.");
+  }
+}
+
 it("keeps Prime artifact graduation manual, protected, read-only, and immutable", () => {
   expect(workflow.name).toBe("Prime artifact graduation");
   const dispatch = record(record(workflow.on, "on").workflow_dispatch, "workflow_dispatch");
   const inputs = record(dispatch.inputs, "workflow_dispatch.inputs");
-  expect(Object.keys(inputs).toSorted()).toEqual([
-    "preview_tag",
-    "second_preview_tag",
-    "stock_version",
-  ]);
+  expect(Object.keys(inputs).toSorted()).toEqual(["preview_tag", "second_preview_tag"]);
   expect(record(inputs.preview_tag, "preview_tag")).toMatchObject({
     required: true,
     type: "string",
@@ -33,11 +41,6 @@ it("keeps Prime artifact graduation manual, protected, read-only, and immutable"
   expect(record(inputs.second_preview_tag, "second_preview_tag")).toMatchObject({
     required: false,
     default: "",
-    type: "string",
-  });
-  expect(record(inputs.stock_version, "stock_version")).toMatchObject({
-    required: true,
-    default: "0.8.1",
     type: "string",
   });
   expect(workflow.permissions).toEqual({ contents: "read" });
@@ -52,12 +55,16 @@ it("pins every action and exposes no publishing or secret-bearing surface", () =
   expect(uses.length).toBeGreaterThanOrEqual(3);
   for (const action of uses) expect(action).toMatch(/^[^@\s]+@[0-9a-f]{40}$/u);
   expect(source).not.toMatch(/\$\{\{\s*secrets\./u);
-  expect(source).not.toMatch(
-    /(?:npm publish|gh release|git push|create-release|stable dispatch)/iu,
-  );
+  expect(() => assertNoPublishingOrSkippedProof(source)).not.toThrow();
   expect(source).not.toContain("/releases/latest");
   expect(source).not.toMatch(/curl[^\n]*latest/iu);
   expect(source).toContain("persist-credentials: false");
+});
+
+it("keeps mutation sentinels for publishing commands and skipped proofs", () => {
+  for (const mutation of ["npm publish", "gh release create v1", 'it.skip("proof", () => {})']) {
+    expect(() => assertNoPublishingOrSkippedProof(`${source}\n${mutation}\n`)).toThrow();
+  }
 });
 
 it("downloads to runner temp, verifies before preview extraction, and runs every real proof", () => {
@@ -70,10 +77,10 @@ it("downloads to runner temp, verifies before preview extraction, and runs every
   expect(stockInstall).toBeGreaterThan(verify);
   expect(execute).toBeGreaterThan(stockInstall);
   expect(source).toContain("$RUNNER_TEMP/prime-preview");
-  expect(source).toContain("$RUNNER_TEMP/prime-stock");
+  expect(source).toContain("$RUNNER_TEMP/prime-stock/prime-agent-0.8.1.tgz");
   expect(source).toContain("--ignore-scripts");
   expect(source).not.toContain("--passWithNoTests");
-  expect(source).not.toMatch(/(?:it|describe)\.skip/u);
+  expect(() => assertNoPublishingOrSkippedProof(source)).not.toThrow();
   expect(source).toContain("PYLON_PRIME_GRADUATION_REQUIRED=1");
   expect(source).toContain("assert-results");
   for (const testFile of [

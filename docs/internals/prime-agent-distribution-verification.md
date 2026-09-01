@@ -48,17 +48,23 @@ fail-closed real-fixture gate. The gate has no skip or metadata-only success mod
 
 ## Protected real-artifact graduation
 
-The manually dispatched `Prime artifact graduation` workflow is the enforced public-artifact proof. It
-downloads one exact immutable preview release into runner-temporary storage, then calls
+The manually dispatched `Prime artifact graduation` workflow is the required public-artifact proof.
+Its `environment` field only selects the repository-owned `prime-graduation` environment; the workflow
+does not enforce that environment's reviewers, bypass policy, branch policy, secrets, or variables. The
+runbook requires an API readback before dispatch. The job downloads one exact immutable preview release
+into runner-temporary storage, then calls
 `verifyPrimePublicationArtifactDirectory` over the local release metadata, complete asset set, manifests,
 attestation bundles, source commit/tree receipt, and frozen signer workflow. That function uses the same
 server-owned Sigstore verifier and publication policy as the network loader. It exposes verified archive
 bytes only after every release, subject, source, workflow, recipe, and digest binding succeeds.
 
-The workflow then passes those bytes through the production managed tool store. Stock is independently
-downloaded at exact version and installed with lifecycle scripts disabled. Real opt-in tests consume the
-artifact directory rather than a source checkout or caller-supplied executable and repeat verification
-before installing their private managed copy. Ordinary pull-request CI can skip these public-network
+The workflow then passes those bytes through the production managed tool store. Stock is not a dispatch
+input. Pylon source freezes the reviewed Prime Agent 0.8.1 repository, release, asset identity, exact URL,
+size, SHA-256, and SHA-512. The downloader checks live metadata only against that identity and treats the
+independently pinned byte digests as the trust root before installing with lifecycle scripts disabled.
+Real opt-in tests consume the artifact directory rather than a source checkout or caller-supplied
+executable and repeat verification before installing their private managed copy. Ordinary pull-request
+CI can skip these public-network
 proofs; the protected workflow sets a required-fixture mode and rejects any skipped test. Its faux model
 backend needs no cloud credential.
 

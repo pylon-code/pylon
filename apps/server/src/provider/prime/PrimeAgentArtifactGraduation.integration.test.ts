@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import { makePrimeArtifactGraduationHarness } from "./PrimeAgentArtifactGraduation.test-fixture.ts";
 import { loadPrimeAgentDaemonBridge } from "./PrimeAgentDaemonBridge.ts";
 import { PRIME_MANAGED_TOOL_DIRECTORY } from "./PrimeAgentManagedToolStore.ts";
+import { PRIME_STOCK_ARTIFACT, verifyPrimeStockArtifactBytes } from "./PrimeAgentStockArtifact.ts";
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 const required = process.env.PYLON_PRIME_GRADUATION_REQUIRED === "1";
@@ -74,6 +75,7 @@ it.skipIf(!configured)(
     try {
       const stockRoot = NodePath.resolve(stockBinaryPath!, "../../..");
       const stockTarballBefore = await NodeFSP.readFile(stockTarballPath!);
+      verifyPrimeStockArtifactBytes(stockTarballBefore);
       const stockTreeBefore = await treeDigest(stockRoot);
       const harness = await makePrimeArtifactGraduationHarness({
         stateDir,
@@ -88,7 +90,7 @@ it.skipIf(!configured)(
 
       // eslint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This one opt-in proof combines the Promise-owned store lifecycle with the bridge Effect.
       const stockBridge = await Effect.runPromise(loadPrimeAgentDaemonBridge(stockBinaryPath!));
-      expect(stockBridge.version).toBe("0.8.1");
+      expect(stockBridge.version).toBe(PRIME_STOCK_ARTIFACT.version);
       expect(stockBridge.negotiatedDaemonSessionCapabilitiesAvailable).toBe(false);
 
       const install = await harness.command({
@@ -123,6 +125,7 @@ it.skipIf(!configured)(
       let rollbackBuildId = harness.artifacts[0]!.publication.buildId;
       if (harness.artifacts.length === 2) {
         harness.useArtifact(1);
+        const secondArtifact = harness.artifacts[1]!;
         const update = await harness.command({
           commandId: "graduation-update-second-preview",
           action: "update",
@@ -132,8 +135,27 @@ it.skipIf(!configured)(
         });
         expect(update).toMatchObject({
           status: "succeeded",
-          buildId: harness.artifacts[1]!.publication.buildId,
+          buildId: secondArtifact.publication.buildId,
         });
+        const updatedStatus = await harness.status();
+        const selectedSecondBuild = updatedStatus.availableBuilds.find(
+          (build) => build.buildId === secondArtifact.publication.buildId,
+        );
+        expect(selectedSecondBuild).toBeDefined();
+        expect(harness.binding().binaryPath).toBe(selectedSecondBuild!.binaryPath);
+        // eslint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This opt-in proof loads the exact launcher selected by the production managed store.
+        const secondBridge = await Effect.runPromise(
+          loadPrimeAgentDaemonBridge(selectedSecondBuild!.binaryPath),
+        );
+        expect(secondBridge.version).toBe(secondArtifact.publication.packageVersion);
+        expect(secondBridge.negotiatedDaemonSessionCapabilitiesAvailable).toBe(true);
+        const secondVersion = await execFile(selectedSecondBuild!.binaryPath, ["--version"], {
+          timeout: 30_000,
+          maxBuffer: 256 * 1024,
+          windowsHide: true,
+        });
+        expect(secondVersion.stdout).toContain(secondArtifact.publication.packageVersion);
+        expect(harness.binding().binaryPath).toBe(selectedSecondBuild!.binaryPath);
       } else {
         const update = await harness.command({
           commandId: "graduation-update-exact-no-op",
@@ -189,8 +211,9 @@ it.skipIf(!configured)(
       const result = {
         schemaVersion: 1,
         status: "passed",
-        stockVersion: "0.8.1",
-        stockSha256: digest(stockTarballBefore),
+        stockVersion: PRIME_STOCK_ARTIFACT.version,
+        stockSha256: PRIME_STOCK_ARTIFACT.sha256,
+        stockSha512: PRIME_STOCK_ARTIFACT.sha512,
         preview: harness.artifacts.map((artifact) => ({
           tag: artifact.publication.buildId,
           sequence: artifact.publication.sequence,
@@ -204,7 +227,7 @@ it.skipIf(!configured)(
           "signed-preview-capability",
           "side-by-side-install",
           "preview-start",
-          harness.artifacts.length === 2 ? "second-build-update" : "exact-update-no-op",
+          harness.artifacts.length === 2 ? "second-build-update-executed" : "exact-update-no-op",
           "rollback",
           "use-stock",
           "stock-bytes-unchanged",

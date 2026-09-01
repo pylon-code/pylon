@@ -12,11 +12,6 @@ on:
         required: false
         default: ""
         type: string
-      stock_version:
-        description: Exact stock Prime Agent version
-        required: true
-        default: 0.8.1
-        type: string
 
 permissions:
   contents: read
@@ -36,17 +31,14 @@ jobs:
         env:
           PREVIEW_TAG: ${{ inputs.preview_tag }}
           SECOND_PREVIEW_TAG: ${{ inputs.second_preview_tag }}
-          STOCK_VERSION: ${{ inputs.stock_version }}
         run: |
           set -euo pipefail
           preview_pattern='^pylon-build-g[0-9a-f]{12}-r[1-9][0-9]*$'
-          version_pattern='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
           [[ "$PREVIEW_TAG" =~ $preview_pattern ]]
           if test -n "$SECOND_PREVIEW_TAG"; then
             [[ "$SECOND_PREVIEW_TAG" =~ $preview_pattern ]]
             test "$SECOND_PREVIEW_TAG" != "$PREVIEW_TAG"
           fi
-          [[ "$STOCK_VERSION" =~ $version_pattern ]]
           install -d -m 700 "$RUNNER_TEMP/prime-graduation-results" "$RUNNER_TEMP/prime-sigstore-tuf"
           {
             echo "PYLON_PRIME_GRADUATION_REQUIRED=1"
@@ -58,7 +50,7 @@ jobs:
             else
               echo "PYLON_PRIME_SECOND_ARTIFACT_DIR="
             fi
-            echo "PYLON_PRIME_STOCK_TARBALL=$RUNNER_TEMP/prime-stock/prime-agent-$STOCK_VERSION.tgz"
+            echo "PYLON_PRIME_STOCK_TARBALL=$RUNNER_TEMP/prime-stock/prime-agent-0.8.1.tgz"
             echo "PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN=$RUNNER_TEMP/prime-stock-install/node_modules/.bin/prime-agent"
             echo "PYLON_PRIME_GRADUATION_RESULT=$RUNNER_TEMP/prime-graduation-results/cases.json"
             echo "PYLON_REAL_PRIME_AGENT_MULTI_PROOF=1"
@@ -81,17 +73,15 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Download exact public preview, attestations, and stock package
+      - name: Download exact public preview, attestations, and frozen stock package
         env:
           PREVIEW_TAG: ${{ inputs.preview_tag }}
-          STOCK_VERSION: ${{ inputs.stock_version }}
         run: |
           set -euo pipefail
           node apps/server/scripts/prime-artifact-graduation.ts download-preview \
             --tag "$PREVIEW_TAG" \
             --artifact-directory "$RUNNER_TEMP/prime-preview"
           node apps/server/scripts/prime-artifact-graduation.ts download-stock \
-            --version "$STOCK_VERSION" \
             --stock-directory "$RUNNER_TEMP/prime-stock"
 
       - name: Download optional exact second preview
@@ -127,9 +117,7 @@ jobs:
             --tuf-cache "$RUNNER_TEMP/prime-sigstore-tuf" \
             --output "$RUNNER_TEMP/prime-graduation-results/second-verification.json"
 
-      - name: Install exact stock fixture without lifecycle scripts
-        env:
-          STOCK_VERSION: ${{ inputs.stock_version }}
+      - name: Install frozen stock fixture without lifecycle scripts
         run: |
           set -euo pipefail
           npm install \
@@ -138,7 +126,7 @@ jobs:
             --no-audit \
             --no-fund \
             --package-lock=false \
-            "$RUNNER_TEMP/prime-stock/prime-agent-$STOCK_VERSION.tgz"
+            "$PYLON_PRIME_STOCK_TARBALL"
           test -x "$PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN"
 
       - name: Run real bridge, managed store, restart, crash-receipt, and native multi evidence

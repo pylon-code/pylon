@@ -21,12 +21,16 @@ import {
   PRIME_RELEASE_MANIFEST,
   verifyPrimePublicationArtifactDirectory,
 } from "../src/provider/prime/PrimeAgentDistributionVerifier.ts";
+import {
+  PRIME_STOCK_ARTIFACT,
+  verifyPrimeStockArtifactBytes,
+  verifyPrimeStockReleaseMetadata,
+} from "../src/provider/prime/PrimeAgentStockArtifact.ts";
 
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
 const MAX_ASSET_BYTES = 256 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 30_000;
 const PREVIEW_TAG = /^pylon-build-g[0-9a-f]{12}-r[1-9][0-9]*$/u;
-const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const SHA256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const GIT_SHA = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/u));
@@ -257,40 +261,28 @@ async function downloadPreview(): Promise<void> {
 }
 
 async function downloadStock(): Promise<void> {
-  const version = flag("version")!;
   const destination = await makeEmptyDirectory(flag("stock-directory")!);
-  if (!VERSION.test(version)) throw new Error("Stock Prime version is not exact.");
-  const repository = "PrimeIntellect-ai/prime-agent";
-  const tag = `v${version}`;
-  const assetName = `prime-agent-${version}.tgz`;
-  const expectedTarball = `https://github.com/${repository}/releases/download/${tag}/${assetName}`;
-  const releaseBytes = await fetchBounded(
-    `https://api.github.com/repos/${repository}/releases/tags/${tag}`,
+  const repositoryBytes = await fetchBounded(
+    `https://api.github.com/repos/${PRIME_STOCK_ARTIFACT.repository}`,
     MAX_JSON_BYTES,
     "application/vnd.github+json",
   );
-  const release = decodeGitHubRelease(parseJson(releaseBytes));
-  if (release.tag_name !== tag || release.draft || release.prerelease) {
-    throw new Error("Stock Prime release metadata is not the exact requested version.");
-  }
-  const matches = release.assets.filter((asset) => asset.name === assetName);
-  const asset = matches[0];
-  if (
-    matches.length !== 1 ||
-    !asset ||
-    asset.browser_download_url !== expectedTarball ||
-    typeof asset.digest !== "string" ||
-    !/^sha256:[0-9a-f]{64}$/u.test(asset.digest)
-  ) {
-    throw new Error("Stock Prime release has no exact digest-bearing root package.");
-  }
-  const tarball = await fetchBounded(expectedTarball, MAX_ASSET_BYTES, "application/octet-stream");
-  if (asset.size !== tarball.byteLength || asset.digest !== `sha256:${sha256(tarball)}`) {
-    throw new Error("Stock Prime tarball does not match its exact GitHub asset digest.");
-  }
+  const releaseBytes = await fetchBounded(
+    `https://api.github.com/repos/${PRIME_STOCK_ARTIFACT.repository}/releases/${PRIME_STOCK_ARTIFACT.releaseId}`,
+    MAX_JSON_BYTES,
+    "application/vnd.github+json",
+  );
+  verifyPrimeStockReleaseMetadata(parseJson(repositoryBytes), parseJson(releaseBytes));
+  const tarball = await fetchBounded(
+    PRIME_STOCK_ARTIFACT.url,
+    PRIME_STOCK_ARTIFACT.size,
+    "application/octet-stream",
+  );
+  verifyPrimeStockArtifactBytes(tarball);
+  await writeExclusive(NodePath.join(destination, "github-repository.json"), repositoryBytes);
   await writeExclusive(NodePath.join(destination, "github-release.json"), releaseBytes);
-  await writeExclusive(NodePath.join(destination, assetName), tarball);
-  console.log(`Downloaded exact stock Prime ${version}.`);
+  await writeExclusive(NodePath.join(destination, PRIME_STOCK_ARTIFACT.assetName), tarball);
+  console.log(`Downloaded frozen stock Prime ${PRIME_STOCK_ARTIFACT.version}.`);
 }
 
 async function verifyPreview(): Promise<void> {
