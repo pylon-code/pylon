@@ -58,12 +58,12 @@ import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
 import {
   convertPastedImagesToAttachments,
-  toUploadChatImageAttachments,
   pasteComposerClipboard,
   pickComposerFiles,
   pickComposerImages,
 } from "../lib/composerImages";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
+import { prepareTurnAttachments, validateDraftFileAttachments } from "../lib/attachmentUpload";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import {
   resolveModelSelectionRuntimeMode,
@@ -72,6 +72,7 @@ import {
 import { copyTextWithHaptic } from "../lib/copyTextWithHaptic";
 import { buildThreadFeed } from "../lib/threadActivity";
 import { appAtomRegistry } from "../state/atom-registry";
+import { serverEnvironment } from "../state/server";
 import {
   appendComposerDraftAttachments,
   appendComposerDraftText,
@@ -680,9 +681,55 @@ export function useThreadComposerState() {
     const attachments = draft.attachments;
     if (text.length === 0 && attachments.length === 0) return null;
 
+    if (attachments.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+      Alert.alert(
+        "Too many attachments",
+        `Remove attachments until there are at most ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS}.`,
+      );
+      return null;
+    }
+    const attachmentError = validateDraftFileAttachments({
+      attachments,
+      serverConfig: appAtomRegistry.get(
+        serverEnvironment.configValueAtom(selectedThreadShell.environmentId),
+      ),
+    });
+    if (attachmentError !== null) {
+      setPendingConnectionError(attachmentError);
+      return null;
+    }
+
     const metadata = makeQueuedMessageMetadata();
     const messageId = MessageId.make(metadata.messageId);
-    clearComposerDraftContent(threadKey);
+    // The follow-up command takes the same attachment union as thread.turn.start
+    // and the server normalizer branches on `"dataUrl" in attachment` for both,
+    // so files belong here exactly as they do on a normal send. Upload them
+    // first; sending the draft form would queue broken references.
+    let prepared: Awaited<ReturnType<typeof prepareTurnAttachments>>;
+    try {
+      prepared = await prepareTurnAttachments({
+        environmentId: selectedThreadShell.environmentId,
+        attachments,
+        persistUploadedReferences: async (draftAttachments) => {
+          await mergeComposerDraftContent(threadKey, { text, attachments: draftAttachments });
+          return "persisted";
+        },
+      });
+    } catch (error) {
+      setPendingConnectionError(
+        error instanceof Error ? error.message : "An attachment could not upload.",
+      );
+      return null;
+    }
+    if (prepared.status !== "ready") {
+      setPendingConnectionError("The attachments are no longer available.");
+      return null;
+    }
+
+    // Defer cleanup: the sweep would otherwise delete the local bytes while the
+    // queue call is still in flight, leaving a failure restore pointing at
+    // files that no longer exist.
+    clearComposerDraftContent(threadKey, { deferAttachmentCleanup: true });
     const result = await followUpInputQueue({
       environmentId: selectedThreadShell.environmentId,
       input: {
@@ -692,20 +739,18 @@ export function useThreadComposerState() {
           messageId,
           role: "user",
           text,
-          // Pylon's follow-up queue has no upload step, so it can only carry
-          // inline images. This mirrors what projectThreadStartTurn does when
-          // no upload has run. Files are filtered rather than sent as broken
-          // references; queuing a follow-up with a file is a known gap.
-          attachments: toUploadChatImageAttachments(
-            attachments.filter((attachment) => attachment.type === "image"),
-          ),
+          attachments: prepared.attachments,
         },
         createdAt: metadata.createdAt,
       },
     });
     if (result._tag === "Failure") {
+      prepared.releaseUploads();
       await mergeComposerDraftContent(threadKey, { text, attachments: [] });
-      appendComposerDraftAttachments(threadKey, attachments);
+      // Uncapped append, matching onSendMessage: the capped merge path would
+      // silently drop this message's files if the user attached more while the
+      // call was in flight.
+      appendComposerDraftAttachments(threadKey, attachments, { allowOverflow: true });
       if (!isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         setPendingConnectionError(
@@ -714,6 +759,8 @@ export function useThreadComposerState() {
       }
       return null;
     }
+    // Queued successfully, so the message owns the bytes now.
+    scheduleUnusedComposerAttachmentCleanup(attachments);
     return messageId;
   }, [
     followUpInputQueue,

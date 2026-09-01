@@ -418,9 +418,6 @@ const ContextWindowIndicator = memo(function ContextWindowIndicator(props: {
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
   const navigation = useNavigation();
   const foregroundColor = useUniwindTheme()["--color-foreground"];
-  // Upstream hardcodes #a3a3a3 here; Pylon reads the theme so the file glyph
-  // tracks light/dark like every other subtle icon.
-  const iconSubtleColor = useUniwindTheme()["--color-icon-subtle"];
   const bodyText = useScaledTextRole("body");
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
@@ -1595,7 +1592,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     <SymbolView
                       name="doc.text"
                       size={15}
-                      tintColor={iconSubtleColor}
+                      tintColorClassName="accent-icon-subtle"
                       type="monochrome"
                     />
                   </View>

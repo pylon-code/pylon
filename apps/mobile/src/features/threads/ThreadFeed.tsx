@@ -322,7 +322,12 @@ function MessageAttachmentFile(props: {
       {opening ? (
         <ActivityIndicator size="small" />
       ) : (
-        <SymbolView name="doc.text" size={16} tintColor="#a3a3a3" type="monochrome" />
+        <SymbolView
+          name="doc.text"
+          size={16}
+          tintColorClassName="accent-icon-subtle"
+          type="monochrome"
+        />
       )}
       <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>
         {attachment.name}
@@ -341,7 +346,12 @@ function MessageAttachmentFile(props: {
 function MessageAttachmentUnknown(props: { readonly name: string }) {
   return (
     <View className="flex-row items-center gap-2 py-1">
-      <SymbolView name="doc.text" size={16} tintColor="#a3a3a3" type="monochrome" />
+      <SymbolView
+        name="doc.text"
+        size={16}
+        tintColorClassName="accent-icon-subtle"
+        type="monochrome"
+      />
       <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>
         {props.name}
       </Text>

@@ -75,7 +75,12 @@ export function ComposerAttachmentStrip(props: ComposerAttachmentStripProps) {
                   borderRadius: radius,
                 }}
               >
-                <SymbolView name="doc.text" size={22} tintColor="#a3a3a3" type="monochrome" />
+                <SymbolView
+                  name="doc.text"
+                  size={22}
+                  tintColorClassName="accent-icon-subtle"
+                  type="monochrome"
+                />
                 <Text className="w-full text-center text-2xs text-foreground" numberOfLines={1}>
                   {attachment.name}
                 </Text>
