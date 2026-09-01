@@ -10,6 +10,8 @@ const VIDEO_MIME_TYPE_BY_EXTENSION = new Map([
 
 const PLAYABLE_VIDEO_MIME_TYPES = new Set(VIDEO_MIME_TYPE_BY_EXTENSION.values());
 
+export const VIDEO_FILE_EXTENSIONS = Object.freeze([...VIDEO_MIME_TYPE_BY_EXTENSION.keys()]);
+
 /**
  * The container this attachment should be presented as, or null when it is not
  * a video Pylon offers to play. Recognizes videos even when the file picker
