@@ -70,7 +70,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import type { ComposerEditorHandle } from "../../components/ComposerEditor";
 import type { StatusTone } from "../../components/StatusPill";
-import type { DraftComposerImageAttachment } from "../../lib/composerImages";
+import type { DraftComposerAttachment } from "../../lib/composerImages";
 import { CHAT_CONTENT_MAX_WIDTH, type LayoutVariant } from "../../lib/layout";
 import { IOS_NAV_BAR_HEIGHT } from "../../lib/layoutMetrics";
 import { scopedThreadKey } from "../../lib/scopedEntities";
@@ -138,7 +138,7 @@ export interface ThreadDetailScreenProps {
   readonly interactionError: string | null;
   readonly interactionCanRetry: boolean;
   readonly draftMessage: string;
-  readonly draftAttachments: ReadonlyArray<DraftComposerImageAttachment>;
+  readonly draftAttachments: ReadonlyArray<DraftComposerAttachment>;
   readonly connectionStateLabel: EnvironmentConnectionPhase;
   /** Message sync status for the selected thread (drives the composer status pill). */
   readonly threadSyncStatus?: EnvironmentThreadStatus;
@@ -156,6 +156,7 @@ export interface ThreadDetailScreenProps {
   readonly onOpenConnectionEditor: () => void;
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onPickDraftImages: () => Promise<void>;
+  readonly onPickDraftFiles: () => Promise<void>;
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
@@ -937,6 +938,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   bottomInset={hasBelowEditorWidgets ? 0 : composerBottomInset}
                   onChangeDraftMessage={props.onChangeDraftMessage}
                   onPickDraftImages={props.onPickDraftImages}
+                  onPickDraftFiles={props.onPickDraftFiles}
                   onNativePasteImages={props.onNativePasteImages}
                   onRemoveDraftImage={props.onRemoveDraftImage}
                   onStopThread={props.onStopThread}
