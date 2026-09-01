@@ -409,4 +409,59 @@ describe("deriveProviderModelsForDisplay", () => {
     expect(markup).toContain("stop-all maintenance remains external");
     expect(markup).toContain(`role="status">${reason}`);
   });
+
+  it("keeps managed maintenance visible but disabled while rollback owns the instance", () => {
+    const instanceId = ProviderInstanceId.make("primeAgent");
+    const driver = ProviderDriverKind.make("primeAgent");
+    const reason =
+      "Rollback is active on a thread owned by this provider. Provider changes and maintenance resume after recovery finishes.";
+    const liveProvider: ServerProvider = {
+      instanceId,
+      driver,
+      displayName: "Prime Agent",
+      enabled: true,
+      installed: true,
+      version: "0.8.1-pylon.1",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-08-31T12:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+      versionAdvisory: {
+        status: "behind_latest",
+        currentVersion: "0.8.1-pylon.1",
+        latestVersion: "0.8.1-pylon.2",
+        updateCommand: "prime-agent update",
+        canUpdate: true,
+        checkedAt: "2026-08-31T12:00:00.000Z",
+        message: "Managed update available.",
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      createElement(ProviderInstanceCard, {
+        instanceId,
+        instance: { driver, displayName: "Prime Agent" },
+        driverOption: undefined,
+        liveProvider,
+        mode: "editor",
+        mutationBlockedReason: reason,
+        onRunUpdate: () => undefined,
+        timestampFormat: DEFAULT_TIMESTAMP_FORMAT,
+        onUpdate: () => undefined,
+        hiddenModels: [],
+        favoriteModels: [],
+        modelOrder: [],
+        onHiddenModelsChange: () => undefined,
+        onFavoriteModelsChange: () => undefined,
+        onModelOrderChange: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain(reason);
+    expect(buttonTag(markup, "Update available — view details")).toContain('disabled=""');
+    expect(inertRegions(markup, "div").length).toBeGreaterThan(0);
+  });
 });

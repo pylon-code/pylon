@@ -9,6 +9,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   RuntimeSessionId,
+  ServerProviderMutationBusyError,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -105,6 +106,17 @@ export type RollbackCheckpointAnchor = typeof RollbackCheckpointAnchor.Type;
 export type RollbackSagaRepositoryError = PersistenceSqlError | PersistenceDecodeError;
 
 export interface RollbackSagaRepositoryShape {
+  /**
+   * Process-wide serialization point shared by rollback admission and provider
+   * mutations. Holding it closes the query/admit race between independent RPC
+   * clients without exposing private saga state.
+   */
+  readonly withMutationFence: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  /** Run a provider mutation only when none of its instances owns a saga. */
+  readonly withProviderMutationFence: <A, E, R, IdError, IdContext>(
+    providerInstanceIds: Effect.Effect<ReadonlyArray<ProviderInstanceId>, IdError, IdContext>,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | IdError | ServerProviderMutationBusyError, R | IdContext>;
   readonly admit: (state: RollbackSagaState) => Effect.Effect<void, RollbackSagaRepositoryError>;
   readonly get: (
     operationId: string,

@@ -24,6 +24,7 @@ import {
   isRollbackActive,
   type RollbackTarget,
 } from "@t3tools/client-runtime/rollback";
+import { resolveMobileRollbackStatus } from "./rollback-status-presentation";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
@@ -726,7 +727,10 @@ function ThreadRouteContent(
         : deriveRollbackTargets(selectedThreadDetail),
     [selectedThreadDetail],
   );
-  const rollbackStatus = selectedThreadDetail?.rollbackStatus ?? selectedThread?.rollbackStatus;
+  const rollbackStatus = resolveMobileRollbackStatus(
+    selectedThreadDetail?.rollbackStatus,
+    selectedThread?.rollbackStatus,
+  );
   const rollbackActive = isRollbackActive(rollbackStatus);
   const rollbackTargetIdle =
     selectedThreadDetail?.session !== null &&
@@ -738,6 +742,7 @@ function ThreadRouteContent(
     selectedThreadDetail.session.activeTurnRequestId === undefined &&
     selectedThreadDetail.latestTurn?.state !== "running" &&
     !rollbackActive &&
+    composer.selectedThreadQueueCount === 0 &&
     !composer.activeThreadBusy &&
     !rollbackCommandPending;
 

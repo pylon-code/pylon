@@ -985,6 +985,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        targetThread.rollbackStatus?.state === "pending" ||
+        targetThread.rollbackStatus?.state === "recovering" ||
+        targetThread.rollbackStatus?.state === "manual-recovery"
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' cannot start a turn while rollback recovery is active.`,
+        });
+      }
+      const observedSourceEpoch = command.sourceEpoch ?? 0;
+      const actualSourceEpoch = targetThread.sourceEpoch ?? 0;
+      if (observedSourceEpoch !== actualSourceEpoch) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread source epoch mismatch: expected ${observedSourceEpoch}; actual ${actualSourceEpoch}.`,
+        });
+      }
       const effectiveModelSelection = command.modelSelection ?? targetThread.modelSelection;
       const providerSettingsChanged =
         !Equal.equals(effectiveModelSelection, targetThread.modelSelection) ||
@@ -1080,6 +1098,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
+          sourceEpoch: actualSourceEpoch,
           admissionRequestedAt,
           admissionDeadlineAt,
           createdAt: command.createdAt,

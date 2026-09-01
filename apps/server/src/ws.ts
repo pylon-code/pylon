@@ -3,6 +3,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -17,6 +18,7 @@ import {
   AuthSessionId,
   ClientSurface,
   CommandId,
+  defaultInstanceIdForDriver,
   type DiscoveredLocalServerList,
   EventId,
   type EditorId,
@@ -35,6 +37,9 @@ import {
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_WS_METHODS,
   type ProjectId,
+  type ProviderInstanceId,
+  type ServerSettings as ContractServerSettings,
+  type ServerSettingsPatch,
   type ProjectEntriesFailure,
   type ProjectFileFailure,
   type ProjectFileOperation,
@@ -44,6 +49,7 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   ProviderUploadFeedbackError,
+  ProviderDriverKind,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   type ServerSelfUpdateError,
@@ -87,6 +93,7 @@ import {
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
+import { RollbackSagaRepository } from "./persistence/Services/RollbackSagas.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -313,6 +320,55 @@ function projectSetupScriptCompatibilityDetail(
   }
 }
 
+function sourceEpochMismatchFromError(
+  error: unknown,
+): { readonly expectedSourceEpoch: number; readonly actualSourceEpoch: number } | null {
+  if (typeof error !== "object" || error === null) return null;
+  const record = error as {
+    readonly detail?: unknown;
+    readonly message?: unknown;
+    readonly cause?: unknown;
+  };
+  for (const candidate of [record.detail, record.message]) {
+    if (typeof candidate !== "string") continue;
+    const match = /Thread source epoch mismatch: expected (\d+); actual (\d+)\./.exec(candidate);
+    if (match?.[1] !== undefined && match[2] !== undefined) {
+      return {
+        expectedSourceEpoch: Number(match[1]),
+        actualSourceEpoch: Number(match[2]),
+      };
+    }
+  }
+  return record.cause === undefined ? null : sourceEpochMismatchFromError(record.cause);
+}
+
+export function providerSettingsMutationInstanceIds(
+  current: ContractServerSettings,
+  patch: ServerSettingsPatch,
+): ReadonlyArray<ProviderInstanceId> {
+  const touched = new Set<ProviderInstanceId>();
+  if (patch.providerInstances !== undefined) {
+    const ids = new Set([
+      ...Object.keys(current.providerInstances),
+      ...Object.keys(patch.providerInstances),
+    ]);
+    for (const rawId of ids) {
+      const instanceId = rawId as ProviderInstanceId;
+      if (
+        !Equal.equals(current.providerInstances[instanceId], patch.providerInstances[instanceId])
+      ) {
+        touched.add(instanceId);
+      }
+    }
+  }
+  if (patch.providers !== undefined) {
+    for (const driver of Object.keys(patch.providers)) {
+      touched.add(defaultInstanceIdForDriver(ProviderDriverKind.make(driver)));
+    }
+  }
+  return [...touched];
+}
+
 export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
   {
@@ -455,6 +511,7 @@ const makeWsRpcLayer = (
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerService = yield* ProviderService.ProviderService;
       const rollbackSagaRunner = yield* RollbackSagaRunner;
+      const rollbackSagaRepository = yield* RollbackSagaRepository;
       const sideQuestionOwnership = makeSessionSideQuestionOwnership();
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const primeManagedMaintenance = yield* PrimeManagedMaintenance.PrimeManagedMaintenance;
@@ -559,13 +616,30 @@ const makeWsRpcLayer = (
           authorizeEffect(requiredScopeForRpcMethod(method), effect),
           traceAttributes,
         );
-      const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
-        isOrchestrationDispatchCommandError(cause)
-          ? cause
-          : new OrchestrationDispatchCommandError({
-              message: cause instanceof Error ? cause.message : fallbackMessage,
-              cause,
-            });
+      const toDispatchCommandError = (cause: unknown, fallbackMessage: string) => {
+        const mismatch = sourceEpochMismatchFromError(cause);
+        if (isOrchestrationDispatchCommandError(cause) && mismatch === null) return cause;
+        return new OrchestrationDispatchCommandError({
+          message:
+            mismatch === null
+              ? cause instanceof Error
+                ? cause.message
+                : fallbackMessage
+              : "This thread changed after the turn was composed. Review and reconfirm the message before sending it.",
+          cause,
+          ...(mismatch === null
+            ? {}
+            : {
+                reason: "source-epoch-mismatch" as const,
+                expectedSourceEpoch: mismatch.expectedSourceEpoch,
+                actualSourceEpoch: mismatch.actualSourceEpoch,
+              }),
+          ...(isOrchestrationDispatchCommandError(cause) &&
+          cause.bootstrapThreadDisposition !== undefined
+            ? { bootstrapThreadDisposition: cause.bootstrapThreadDisposition }
+            : {}),
+        });
+      };
       const randomUUID = crypto.randomUUIDv4.pipe(
         Effect.mapError((cause) =>
           toDispatchCommandError(cause, "Failed to generate orchestration command identifier."),
@@ -1161,6 +1235,7 @@ const makeWsRpcLayer = (
               }),
           threadResumeCompletionMarker: true,
           threadSnapshotPagination: true,
+          rollbackStatusStreaming: true,
         };
       });
 
@@ -1447,7 +1522,9 @@ const makeWsRpcLayer = (
               const isThisThreadDetailEvent = (event: OrchestrationEvent) =>
                 event.aggregateKind === "thread" &&
                 event.aggregateId === input.threadId &&
-                isThreadDetailEvent(event);
+                isThreadDetailEvent(event) &&
+                (input.rollbackStatusEvents === true ||
+                  event.type !== "thread.rollback-status-updated");
 
               const liveStream = orchestrationEngine.streamDomainEvents.pipe(
                 Stream.filter(isThisThreadDetailEvent),
@@ -1850,7 +1927,10 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,
-            providerMaintenanceRunner.updateProvider(input),
+            rollbackSagaRepository.withProviderMutationFence(
+              Effect.succeed([input.instanceId ?? defaultInstanceIdForDriver(input.provider)]),
+              providerMaintenanceRunner.updateProvider(input),
+            ),
             {
               "rpc.aggregate": "server",
             },
@@ -1943,9 +2023,14 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverUpdateSettings]: ({ patch }) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateSettings,
-            serverSettings
-              .updateSettings(patch)
-              .pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
+            rollbackSagaRepository.withProviderMutationFence(
+              serverSettings.getSettings.pipe(
+                Effect.map((current) => providerSettingsMutationInstanceIds(current, patch)),
+              ),
+              serverSettings
+                .updateSettings(patch)
+                .pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
+            ),
             {
               "rpc.aggregate": "server",
             },

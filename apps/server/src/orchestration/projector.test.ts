@@ -87,6 +87,7 @@ describe("orchestration projector", () => {
         worktreePath: null,
         continuedFromThreadId: null,
         latestTurn: null,
+        sourceEpoch: 0,
         createdAt: now,
         updatedAt: now,
         archivedAt: null,
@@ -703,6 +704,7 @@ describe("orchestration projector", () => {
     ).toEqual([{ id: "activity-1", turnId: "turn-1" }]);
     expect(thread?.checkpoints.map((checkpoint) => checkpoint.checkpointTurnCount)).toEqual([1]);
     expect(thread?.latestTurn?.turnId).toBe("turn-1");
+    expect(thread?.sourceEpoch).toBe(1);
   });
 
   it("does not fallback-retain messages tied to removed turn IDs", async () => {

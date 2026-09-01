@@ -2,10 +2,17 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { SqlError } from "effect/unstable/sql/SqlError";
-import { NonNegativeInt, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
+import {
+  NonNegativeInt,
+  ProjectId,
+  ServerProviderMutationBusyError,
+  ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
 import {
   PersistenceDecodeError,
   toPersistenceDecodeError,
@@ -60,7 +67,8 @@ const decodeAnchor = Schema.decodeUnknownEffect(RollbackCheckpointAnchor);
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  let nonterminalFenceCache: ReadonlyArray<typeof RollbackSagaRecord.Type> | null = null;
+  const mutationFence = yield* Semaphore.make(1);
+  let nonterminalFenceCache: ReadonlyArray<RollbackSagaRecord> | null = null;
 
   const mapSagaRow = Effect.fn("RollbackSagaRepository.mapSagaRow")(function* (
     row: typeof SagaDbRow.Type,
@@ -185,6 +193,42 @@ const make = Effect.gen(function* () {
   const listNonterminalForFence: RollbackSagaRepositoryShape["listNonterminalForFence"] = () =>
     nonterminalFenceCache === null ? listNonterminal() : Effect.succeed(nonterminalFenceCache);
 
+  const withMutationFence: RollbackSagaRepositoryShape["withMutationFence"] = (effect) =>
+    mutationFence.withPermits(1)(effect);
+
+  const withProviderMutationFence: RollbackSagaRepositoryShape["withProviderMutationFence"] = (
+    providerInstanceIds,
+    effect,
+  ) =>
+    mutationFence.withPermits(1)(
+      Effect.gen(function* () {
+        const requested = new Set(yield* providerInstanceIds);
+        if (requested.size === 0) return yield* effect;
+        const active = yield* listNonterminalForFence().pipe(
+          Effect.mapError(
+            (cause) =>
+              new ServerProviderMutationBusyError({
+                reason: "rollback-state-unavailable",
+                providerInstanceIds: [...requested],
+                threadIds: [],
+                cause,
+              }),
+          ),
+        );
+        const conflicts = active.filter((record) => requested.has(record.state.providerInstanceId));
+        if (conflicts.length > 0) {
+          return yield* new ServerProviderMutationBusyError({
+            reason: "rollback-active",
+            providerInstanceIds: [
+              ...new Set(conflicts.map((record) => record.state.providerInstanceId)),
+            ],
+            threadIds: [...new Set(conflicts.map((record) => record.threadId))],
+          });
+        }
+        return yield* effect;
+      }),
+    );
+
   const clearOwnersForStartup: RollbackSagaRepositoryShape["clearOwnersForStartup"] = () =>
     sql`UPDATE rollback_sagas SET owner_id = NULL WHERE terminal = 0`.pipe(
       Effect.asVoid,
@@ -250,7 +294,7 @@ const make = Effect.gen(function* () {
             phase, terminal, owner_id AS "ownerId", version,
             private_state_json AS "privateStateJson", created_at AS "createdAt", updated_at AS "updatedAt"
         `);
-          if (rows.length === 0) return Option.none<typeof RollbackSagaRecord.Type>();
+          if (rows.length === 0) return Option.none<RollbackSagaRecord>();
           yield* sql`DELETE FROM rollback_workspace_leases WHERE operation_id = ${input.operationId}`;
           return Option.some(rows[0]!);
         }),
@@ -391,6 +435,8 @@ const make = Effect.gen(function* () {
       );
 
   return RollbackSagaRepository.of({
+    withMutationFence,
+    withProviderMutationFence,
     admit,
     get,
     getByRequestEvent,

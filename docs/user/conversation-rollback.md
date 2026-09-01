@@ -24,6 +24,12 @@ Before Pylon starts, the confirmation names the selected message and explains th
 
 Newer history is retained until the rollback commits. Pylon then removes it only after the workspace and provider conversation both match the selected point.
 
+## Queued messages
+
+Pylon does not start a local rollback while that thread has queued messages. Send or cancel them first.
+
+If another client completes a rollback while this device is offline, messages composed here before the rollback remain saved on this device. Pylon holds them instead of sending or deleting them. Review each held message, then explicitly reconfirm it against the current thread or edit or cancel it.
+
 ## Progress and recovery
 
 Every connected web, desktop, or mobile client shows the same durable status. Sending messages, changing provider settings, and running Git actions stay blocked while the operation is pending or recovering.

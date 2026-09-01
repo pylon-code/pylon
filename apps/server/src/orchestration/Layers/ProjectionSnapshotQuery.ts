@@ -599,6 +599,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -640,6 +641,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -683,6 +685,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -1215,6 +1218,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -2228,6 +2232,7 @@ pending_approval_requests AS (
                   row.rollbackStatus == null || row.rollbackUpdatedAt == null
                     ? null
                     : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                sourceEpoch: row.sourceEpoch,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
                 archivedAt: row.archivedAt,
@@ -2444,6 +2449,7 @@ pending_approval_requests AS (
                     row.rollbackStatus == null || row.rollbackUpdatedAt == null
                       ? null
                       : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                  sourceEpoch: row.sourceEpoch,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   archivedAt: row.archivedAt,
@@ -2589,6 +2595,7 @@ pending_approval_requests AS (
                         row.rollbackStatus == null || row.rollbackUpdatedAt == null
                           ? null
                           : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                      sourceEpoch: row.sourceEpoch,
                       createdAt: row.createdAt,
                       updatedAt: row.updatedAt,
                       archivedAt: row.archivedAt,
@@ -2743,6 +2750,7 @@ pending_approval_requests AS (
                     row.rollbackStatus == null || row.rollbackUpdatedAt == null
                       ? null
                       : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                  sourceEpoch: row.sourceEpoch,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   archivedAt: row.archivedAt,
@@ -3047,6 +3055,7 @@ pending_approval_requests AS (
                 state: threadRow.value.rollbackStatus,
                 updatedAt: threadRow.value.rollbackUpdatedAt,
               },
+        sourceEpoch: threadRow.value.sourceEpoch,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
         archivedAt: threadRow.value.archivedAt,
@@ -3300,6 +3309,7 @@ pending_approval_requests AS (
           threadRow.value.rollbackUpdatedAt ?? null,
           Option.getOrNull(latestRollbackRow),
         ),
+        sourceEpoch: threadRow.value.sourceEpoch,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
         archivedAt: threadRow.value.archivedAt,

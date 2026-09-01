@@ -401,10 +401,11 @@ receipt path.
 - Authentication is managed in Prime Agent, not Pylon.
 - Formal Plan interaction mode is not supported. Pylon still shows bounded plan progress during Build
   turns through its managed daemon integration or plan updates from ACP compatibility mode.
-- Provider-conversation rollback and general per-item queue editing or reordering are not supported yet.
-  Pylon integrates Prime Agent 0.8.1's mutation API only for removing a lane's sole item. With multiple
-  count-only items, clients cannot identify a specific target safely without exposing queued text, and
-  ambiguous mutations are never retried.
+- General per-item queue editing or reordering is not supported yet. Pylon integrates Prime Agent
+  0.8.1's queue mutation API only for removing a lane's sole item. With multiple count-only items,
+  clients cannot identify a specific target safely without exposing queued text, and ambiguous
+  mutations are never retried. Exact conversation rollback is supported for eligible idle,
+  Pylon-managed native sessions; see [Conversation rollback](conversation-rollback.md).
 - Pylon does not present live Prime reasoning streams, durable or historical child-session transcripts,
   cost breakdowns, goal mutations, heartbeats, saved-session history, or native package or MCP catalogs as first-class features. Active children have only the bounded **Live activity** view described above.
 - Heartbeat creation remains unavailable even though Prime Agent 0.8.1 exposes heartbeat methods. Prime does not identify a scheduled run in a way Pylon can safely match to a durable conversation turn and filesystem checkpoint. Clearing a heartbeat also does not return its underlying session to the normal lifecycle, so stopping or deleting the Pylon thread could otherwise leave invisible work behind. Pylon will not offer creation until recovery, clearing, stopping, and deletion can be made authoritative.

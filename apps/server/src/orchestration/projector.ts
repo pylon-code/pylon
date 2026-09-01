@@ -299,6 +299,7 @@ export function projectEvent(
             worktreePath: payload.worktreePath,
             continuedFromThreadId: payload.continuedFromThreadId ?? null,
             latestTurn: null,
+            sourceEpoch: 0,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
             archivedAt: null,
@@ -808,6 +809,7 @@ export function projectEvent(
               proposedPlans,
               activities,
               latestTurn,
+              sourceEpoch: (thread.sourceEpoch ?? 0) + 1,
               rollbackStatus:
                 thread.rollbackStatus === null || thread.rollbackStatus === undefined
                   ? null

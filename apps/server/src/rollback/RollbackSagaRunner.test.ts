@@ -123,6 +123,8 @@ const makeEnvironment = (
   };
 
   const repository: RollbackSagaRepositoryShape = {
+    withMutationFence: (effect) => effect,
+    withProviderMutationFence: (_providerInstanceIds, effect) => effect,
     admit: () => Effect.void,
     get: (id) => Effect.succeed(id === operationId ? Option.some(record) : Option.none()),
     getByRequestEvent: (eventId) =>

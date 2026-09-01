@@ -6587,6 +6587,7 @@ function ChatViewContent(props: ChatViewProps) {
                 titleSeed: title,
                 runtimeMode,
                 interactionMode,
+                sourceEpoch: activeThread.sourceEpoch ?? 0,
                 ...(bootstrap ? { bootstrap } : {}),
                 createdAt: messageCreatedAt,
               },
@@ -7432,6 +7433,7 @@ function ChatViewContent(props: ChatViewProps) {
             titleSeed: activeThread.title,
             runtimeMode,
             interactionMode: nextInteractionMode,
+            sourceEpoch: activeThread.sourceEpoch ?? 0,
             ...(nextInteractionMode === "default" && activeProposedPlan
               ? {
                   sourceProposedPlan: {
@@ -7568,6 +7570,7 @@ function ChatViewContent(props: ChatViewProps) {
           titleSeed: nextThreadTitle,
           runtimeMode,
           interactionMode: "default",
+          sourceEpoch: 0,
           sourceProposedPlan: {
             threadId: activeThread.id,
             planId: activeProposedPlan.id,
@@ -7846,6 +7849,7 @@ function ChatViewContent(props: ChatViewProps) {
           titleSeed: nextThreadTitle,
           runtimeMode,
           interactionMode,
+          sourceEpoch: 0,
           createdAt,
         },
       });

@@ -292,6 +292,10 @@ const PersistenceLayerLive = PrimeAgentRecoveryLedger.layer.pipe(
   Layer.provideMerge(SqlitePersistenceLayerLive),
 );
 
+const PersistenceAndRollbackLayerLive = RollbackSagaRepositoryLive.pipe(
+  Layer.provideMerge(PersistenceLayerLive),
+);
+
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
 );
@@ -410,7 +414,8 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(VcsLayerLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
-  Layer.provideMerge(PersistenceLayerLive),
+  // Provider/settings RPC mutations and rollback admission must share this fence.
+  Layer.provideMerge(PersistenceAndRollbackLayerLive),
   // Both read a user-owned file out of the state directory and stream changes
   // to clients; neither depends on the other.
   Layer.provideMerge(Layer.mergeAll(Keybindings.layer, EnvironmentTheme.layer)),

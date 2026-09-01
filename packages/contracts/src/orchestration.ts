@@ -645,6 +645,8 @@ export const OrchestrationThread = Schema.Struct({
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   rollbackStatus: Schema.optional(Schema.NullOr(OrchestrationRollbackStatus)),
+  /** Server-owned source generation; advances only after a committed rollback. */
+  sourceEpoch: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -733,6 +735,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   rollbackStatus: Schema.optional(Schema.NullOr(OrchestrationRollbackStatus)),
+  /** Server-owned source generation; advances only after a committed rollback. */
+  sourceEpoch: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -859,6 +863,12 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
    * snapshot or catch-up replay and before it begins emitting live events.
    */
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Explicitly opts into `thread.rollback-status-updated`, which was added to
+   * the closed event union after thread streaming shipped. Absent means the
+   * subscriber is a legacy client and those frames are filtered.
+   */
+  rollbackStatusEvents: Schema.optionalKey(Schema.Boolean),
   /**
    * When provided, the fallback snapshot frame (sent when `afterSequence` is
    * missing or the catch-up gap is too large) is windowed to the last
@@ -1128,6 +1138,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /** Source epoch observed by the client when it composed this turn. */
+  sourceEpoch: Schema.optional(NonNegativeInt),
   /** Server-observed durable time; absent on historical/frozen-client events. */
   admissionRequestedAt: Schema.optional(IsoDateTime),
   /** Absolute durable provider admission deadline. */
@@ -1151,6 +1163,8 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /** Source epoch observed by the client when it composed this turn. */
+  sourceEpoch: Schema.optional(NonNegativeInt),
   /** Server-observed durable time; absent on historical/frozen-client events. */
   admissionRequestedAt: Schema.optional(IsoDateTime),
   /** Absolute durable provider admission deadline. */
@@ -1680,6 +1694,8 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /** Source epoch observed by the client when it composed this turn. */
+  sourceEpoch: Schema.optional(NonNegativeInt),
   /** Server-observed durable time; absent on historical/frozen-client events. */
   admissionRequestedAt: Schema.optional(IsoDateTime),
   /** Absolute durable provider admission deadline. */
@@ -2208,6 +2224,9 @@ export class OrchestrationDispatchCommandError extends Schema.TaggedErrorClass<O
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),
+    reason: Schema.optional(Schema.Literal("source-epoch-mismatch")),
+    expectedSourceEpoch: Schema.optional(NonNegativeInt),
+    actualSourceEpoch: Schema.optional(NonNegativeInt),
     bootstrapThreadDisposition: Schema.optional(Schema.Literal("deleted")),
   },
 ) {}

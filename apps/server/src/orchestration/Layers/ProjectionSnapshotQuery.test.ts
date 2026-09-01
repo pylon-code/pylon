@@ -329,6 +329,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           interactionMode: "default",
           runtimeMode: "full-access",
           rollbackStatus: null,
+          sourceEpoch: 0,
           branch: null,
           worktreePath: null,
           linkedPullRequest: {
@@ -349,7 +350,6 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               planId: "plan-1",
             },
           },
-          rollbackStatus: null,
           createdAt: "2026-02-24T00:00:02.000Z",
           updatedAt: "2026-02-24T00:00:03.000Z",
           archivedAt: null,
@@ -466,6 +466,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           interactionMode: "default",
           runtimeMode: "full-access",
           rollbackStatus: null,
+          sourceEpoch: 0,
           branch: null,
           worktreePath: null,
           linkedPullRequest: {
@@ -486,7 +487,6 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               planId: "plan-1",
             },
           },
-          rollbackStatus: null,
           createdAt: "2026-02-24T00:00:02.000Z",
           updatedAt: "2026-02-24T00:00:03.000Z",
           archivedAt: null,

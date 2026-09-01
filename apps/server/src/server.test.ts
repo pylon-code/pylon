@@ -29,6 +29,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ServerProviderMutationBusyError,
   ResolvedKeybindingRule,
   ThreadId,
   TurnId,
@@ -118,11 +119,15 @@ import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
-import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
+import {
+  OrchestrationCommandInvariantError,
+  OrchestrationListenerCallbackError,
+} from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import { RollbackSagaRunner } from "./rollback/RollbackSagaRunner.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import { RollbackSagaRepository } from "./persistence/Services/RollbackSagas.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import {
@@ -443,6 +448,7 @@ const buildAppUnderTest = (options?: {
     environmentTheme?: Partial<EnvironmentTheme.EnvironmentThemeService["Service"]>;
     providerRegistry?: Partial<ProviderRegistry.ProviderRegistry["Service"]>;
     providerService?: Partial<ProviderService.ProviderService["Service"]>;
+    rollbackSagaRepository?: Partial<RollbackSagaRepository["Service"]>;
     serverSettings?: Partial<ServerSettings.ServerSettingsService["Service"]>;
     externalLauncher?: Partial<ExternalLauncher.ExternalLauncher["Service"]>;
     vcsDriver?: Partial<VcsDriver.VcsDriver["Service"]>;
@@ -861,6 +867,26 @@ const buildAppUnderTest = (options?: {
           Layer.mock(RollbackSagaRunner)({
             run: () => Effect.void,
             recover: () => Effect.void,
+          }),
+          Layer.mock(RollbackSagaRepository)({
+            withMutationFence: (effect) => effect,
+            withProviderMutationFence: (_providerInstanceIds, effect) => effect,
+            admit: () => Effect.void,
+            get: () => Effect.succeed(Option.none()),
+            getByRequestEvent: () => Effect.succeed(Option.none()),
+            getActiveByThread: () => Effect.succeed(Option.none()),
+            listNonterminal: () => Effect.succeed([]),
+            listNonterminalForFence: () => Effect.succeed([]),
+            clearOwnersForStartup: () => Effect.void,
+            claim: () => Effect.succeed(Option.none()),
+            updateOwned: () => Effect.succeed(Option.none()),
+            releaseOwnerOwned: () => Effect.void,
+            releaseLeaseOwned: () => Effect.succeed(Option.none()),
+            findLeaseByWorkspace: () => Effect.succeed(Option.none()),
+            putCheckpointAnchor: () => Effect.void,
+            getCheckpointAnchor: () => Effect.succeed(Option.none()),
+            deleteCheckpointAnchorsAfter: () => Effect.void,
+            ...options?.layers?.rollbackSagaRepository,
           }),
         ),
       ),
@@ -5226,6 +5252,63 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("returns a typed busy error for provider maintenance and provider settings races", () =>
+    Effect.gen(function* () {
+      const busyInstanceId = ProviderInstanceId.make("primeAgent-work");
+      const busyThreadId = ThreadId.make("thread-active-rollback");
+      yield* buildAppUnderTest({
+        layers: {
+          rollbackSagaRepository: {
+            withProviderMutationFence: (providerInstanceIds, _effect) =>
+              providerInstanceIds.pipe(
+                Effect.flatMap(
+                  (ids) =>
+                    new ServerProviderMutationBusyError({
+                      reason: "rollback-active",
+                      providerInstanceIds: ids,
+                      threadIds: [busyThreadId],
+                    }),
+                ),
+              ),
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+
+      const maintenance = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverUpdateProvider]({
+            provider: ProviderDriverKind.make("primeAgent"),
+            instanceId: busyInstanceId,
+          }).pipe(Effect.result),
+        ),
+      );
+      assertTrue(maintenance._tag === "Failure");
+      assert.strictEqual(maintenance.failure._tag, "ServerProviderMutationBusyError");
+      if (maintenance.failure._tag === "ServerProviderMutationBusyError") {
+        assert.deepEqual(maintenance.failure.providerInstanceIds, [busyInstanceId]);
+        assert.deepEqual(maintenance.failure.threadIds, [busyThreadId]);
+      }
+
+      const settings = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverUpdateSettings]({
+            patch: {
+              providerInstances: {
+                [busyInstanceId]: { driver: ProviderDriverKind.make("primeAgent") },
+              },
+            },
+          }).pipe(Effect.result),
+        ),
+      );
+      assertTrue(settings._tag === "Failure");
+      assert.strictEqual(settings.failure._tag, "ServerProviderMutationBusyError");
+      if (settings.failure._tag === "ServerProviderMutationBusyError") {
+        assert.includeMembers([...settings.failure.providerInstanceIds], [busyInstanceId]);
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("refreshes providers for each subscribeServerConfig connection", () =>
     Effect.gen(function* () {
       const refreshCalls = yield* Ref.make(0);
@@ -6774,6 +6857,52 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("returns structured source epoch mismatch fields across websocket RPC", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: "thread.turn.start",
+                  detail: "Thread source epoch mismatch: expected 3; actual 4.",
+                }),
+              ),
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.turn.start",
+            commandId: CommandId.make("command-stale-epoch-rpc"),
+            threadId: defaultThreadId,
+            message: {
+              messageId: MessageId.make("message-stale-epoch-rpc"),
+              role: "user",
+              text: "Preserve this queued content",
+              attachments: [],
+            },
+            modelSelection: defaultModelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            sourceEpoch: 3,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }).pipe(Effect.result),
+        ),
+      );
+      assertTrue(result._tag === "Failure");
+      assert.strictEqual(result.failure._tag, "OrchestrationDispatchCommandError");
+      if (result.failure._tag === "OrchestrationDispatchCommandError") {
+        assert.strictEqual(result.failure.reason, "source-epoch-mismatch");
+        assert.strictEqual(result.failure.expectedSourceEpoch, 3);
+        assert.strictEqual(result.failure.actualSourceEpoch, 4);
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("routes websocket rpc orchestration shell snapshot errors", () =>
     Effect.gen(function* () {
       const projectionError = new PersistenceSqlError({
@@ -7247,6 +7376,163 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(Option.getOrThrow(first).kind, "snapshot");
       assert.equal(readEventsCalls, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("filters rollback-status replay for legacy clients without blocking later events", () =>
+    Effect.gen(function* () {
+      const occurredAt = "2026-01-01T00:00:00.000Z";
+      const rollbackEvent = {
+        sequence: 2,
+        eventId: EventId.make("event-replay-rollback-status"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.rollback-status-updated",
+        payload: {
+          threadId: defaultThreadId,
+          status: "recovering",
+          updatedAt: occurredAt,
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.rollback-status-updated" }>;
+      const messageEvent = {
+        sequence: 3,
+        eventId: EventId.make("event-after-rollback-status"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.message-sent",
+        payload: {
+          threadId: defaultThreadId,
+          messageId: MessageId.make("message-after-rollback-status"),
+          role: "assistant",
+          text: "Compatible later event",
+          turnId: null,
+          streaming: false,
+          createdAt: occurredAt,
+          updatedAt: occurredAt,
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(3),
+            readEvents: () => Stream.make(rollbackEvent, messageEvent),
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+
+      const legacyItems = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 1,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+      assert.deepEqual(
+        Array.from(legacyItems).map((item) =>
+          item.kind === "event" ? [item.event.type, item.event.sequence] : [item.kind],
+        ),
+        [["thread.message-sent", 3], ["synchronized"]],
+      );
+
+      const currentItems = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 1,
+            requestCompletionMarker: true,
+            rollbackStatusEvents: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      );
+      assert.deepEqual(
+        Array.from(currentItems).map((item) =>
+          item.kind === "event" ? [item.event.type, item.event.sequence] : [item.kind],
+        ),
+        [["thread.rollback-status-updated", 2], ["thread.message-sent", 3], ["synchronized"]],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "filters rollback-status live events for legacy clients while later sequences flow",
+    () =>
+      Effect.gen(function* () {
+        const occurredAt = "2026-01-01T00:00:00.000Z";
+        const rollbackEvent = {
+          sequence: 4,
+          eventId: EventId.make("event-live-rollback-status"),
+          aggregateKind: "thread",
+          aggregateId: defaultThreadId,
+          occurredAt,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.rollback-status-updated",
+          payload: { threadId: defaultThreadId, status: "recovering", updatedAt: occurredAt },
+        } satisfies Extract<OrchestrationEvent, { type: "thread.rollback-status-updated" }>;
+        const laterEvent = {
+          sequence: 5,
+          eventId: EventId.make("event-live-after-rollback-status"),
+          aggregateKind: "thread",
+          aggregateId: defaultThreadId,
+          occurredAt,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.message-sent",
+          payload: {
+            threadId: defaultThreadId,
+            messageId: MessageId.make("message-live-after-rollback-status"),
+            role: "assistant",
+            text: "Later live event",
+            turnId: null,
+            streaming: false,
+            createdAt: occurredAt,
+            updatedAt: occurredAt,
+          },
+        } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              latestSequence: Effect.succeed(3),
+              readEvents: () => Stream.empty,
+              streamDomainEvents: Stream.make(rollbackEvent, laterEvent),
+            },
+          },
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+              threadId: defaultThreadId,
+              afterSequence: 3,
+              requestCompletionMarker: true,
+            }).pipe(Stream.take(2), Stream.runCollect),
+          ),
+        );
+        assert.deepEqual(
+          Array.from(items).map((item) =>
+            item.kind === "event" ? [item.event.type, item.event.sequence] : [item.kind],
+          ),
+          [["synchronized"], ["thread.message-sent", 5]],
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscribeThread bounds catch-up replay to the captured head", () =>

@@ -618,6 +618,8 @@ interface ProviderInstanceCardProps {
   readonly selected?: boolean | undefined;
   readonly onSelect?: (() => void) | undefined;
   readonly readOnly?: boolean | undefined;
+  /** Server-owned rollback fence reason for this exact provider instance. */
+  readonly mutationBlockedReason?: string | undefined;
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
   /**
    * Pass `undefined` to hide the delete button entirely. Built-in default
@@ -688,6 +690,7 @@ export function ProviderInstanceCard({
   selected = false,
   onSelect,
   readOnly = false,
+  mutationBlockedReason,
   onUpdate,
   onDelete,
   headerAction,
@@ -703,6 +706,7 @@ export function ProviderInstanceCard({
   timestampFormat,
 }: ProviderInstanceCardProps) {
   const [activeTab, setActiveTab] = useState<"configuration" | "models">("configuration");
+  const writeBlocked = readOnly || mutationBlockedReason !== undefined;
   const enabled = resolveProviderInstanceEnabled(instance);
   const unavailable = getProviderUnavailablePresentation(liveProvider);
   // An unavailable shadow is fail-closed as disabled, but its platform or
@@ -974,9 +978,9 @@ export function ProviderInstanceCard({
       {summary.detail && !needsAttention ? <span>· {summary.detail}</span> : null}
       {canSignIn ? (
         <span
-          inert={readOnly}
-          aria-disabled={readOnly || undefined}
-          className={cn("inline-flex", readOnly && "opacity-50")}
+          inert={writeBlocked}
+          aria-disabled={writeBlocked || undefined}
+          className={cn("inline-flex", writeBlocked && "opacity-50")}
         >
           <Button
             variant="outline"
@@ -1062,9 +1066,10 @@ export function ProviderInstanceCard({
           </span>
         </button>
         <span className="flex h-5 shrink-0 items-center">
+          {mutationBlockedReason ? <span className="sr-only">{mutationBlockedReason}</span> : null}
           <Switch
             checked={enabled}
-            disabled={readOnly || unavailable !== null}
+            disabled={writeBlocked || unavailable !== null}
             onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
             aria-label={`Enable ${displayName}`}
           />
@@ -1094,9 +1099,9 @@ export function ProviderInstanceCard({
               The status line below keeps its email reveal clickable.
             */}
             <span
-              inert={readOnly}
-              aria-disabled={readOnly || undefined}
-              className={cn("inline-flex items-center gap-2", readOnly && "opacity-50")}
+              inert={writeBlocked}
+              aria-disabled={writeBlocked || undefined}
+              className={cn("inline-flex items-center gap-2", writeBlocked && "opacity-50")}
             >
               {versionAdvisory ? (
                 <Popover>
@@ -1113,6 +1118,7 @@ export function ProviderInstanceCard({
                             : "text-update-foreground hover:text-update-foreground",
                         )}
                         aria-label="Update available — view details"
+                        disabled={writeBlocked}
                       >
                         <ArrowUpCircleIcon className="size-3.5" />
                       </Button>
@@ -1145,7 +1151,7 @@ export function ProviderInstanceCard({
                           size="xs"
                           variant="default"
                           className="w-full"
-                          disabled={isUpdating}
+                          disabled={isUpdating || writeBlocked}
                           onClick={onRunUpdate}
                         >
                           {isUpdating ? <LoaderIcon className="animate-spin" /> : <DownloadIcon />}
@@ -1197,6 +1203,11 @@ export function ProviderInstanceCard({
             </span>
           </div>
           {editorStatusNode}
+          {mutationBlockedReason ? (
+            <p role="status" className="text-xs leading-snug text-warning">
+              {mutationBlockedReason}
+            </p>
+          ) : null}
           {summary.detail && needsAttention ? (
             <p className="text-[13px] leading-[1.45] text-muted-foreground/80 [overflow-wrap:anywhere]">
               {summary.detail}
@@ -1234,9 +1245,9 @@ export function ProviderInstanceCard({
           hidden={visibleTab !== "configuration"}
         >
           <div
-            inert={readOnly}
-            aria-disabled={readOnly || undefined}
-            className={cn("space-y-5 px-4 py-5", readOnly && "opacity-50 select-none")}
+            inert={writeBlocked}
+            aria-disabled={writeBlocked || undefined}
+            className={cn("space-y-5 px-4 py-5", writeBlocked && "opacity-50 select-none")}
           >
             {enabled && liveProvider?.usageLimits ? (
               <div className="grid max-w-lg gap-2.5">
@@ -1329,9 +1340,12 @@ export function ProviderInstanceCard({
         </ScrollArea>
         {driverOption !== undefined ? (
           <div
-            inert={readOnly}
-            aria-disabled={readOnly || undefined}
-            className={cn("px-4 py-5 lg:h-full lg:min-h-0", readOnly && "opacity-50 select-none")}
+            inert={writeBlocked}
+            aria-disabled={writeBlocked || undefined}
+            className={cn(
+              "px-4 py-5 lg:h-full lg:min-h-0",
+              writeBlocked && "opacity-50 select-none",
+            )}
             hidden={visibleTab !== "models"}
           >
             <ProviderModelsSection

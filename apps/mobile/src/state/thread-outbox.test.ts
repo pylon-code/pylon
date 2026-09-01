@@ -28,6 +28,7 @@ import {
   retryQueuedThreadMessage,
   resolveQueuedThreadSettings,
   shouldRetryThreadOutboxDelivery,
+  sourceEpochMismatchHold,
   threadOutboxRetryDelayMs,
   type QueuedThreadMessage,
 } from "./thread-outbox-model";
@@ -1461,6 +1462,90 @@ describe("thread outbox", () => {
     expect(resolveConfirmedThreadOutboxPlan({ ...creationBase, providers: undefined }).action).toBe(
       "wait",
     );
+  });
+
+  it("holds an offline turn across another client's rollback until explicit reconfirmation", () => {
+    const message = {
+      ...queuedMessage({
+        messageId: "message-before-cross-device-rollback",
+        createdAt: "2026-06-08T10:00:01.000Z",
+      }),
+      sourceEpoch: 4,
+    };
+    const thread = {
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+      sourceEpoch: 5,
+      session: { status: "ready" as const },
+    };
+    const plan = (candidate: QueuedThreadMessage) =>
+      resolveConfirmedThreadOutboxPlan({
+        message: candidate,
+        thread,
+        shellStatus: "live",
+        environmentConnected: true,
+        providers: [provider({ instanceId: "codex" })],
+        project: null,
+      });
+
+    expect(plan(message)).toMatchObject({
+      action: "hold",
+      hold: {
+        kind: "source-epoch-stale",
+        queuedSourceEpoch: 4,
+        currentSourceEpoch: 5,
+      },
+    });
+
+    const ordinaryRetry = retryQueuedThreadMessage(
+      {
+        ...message,
+        deliveryHold: {
+          kind: "source-epoch-stale",
+          reason: "Review and reconfirm.",
+          queuedSourceEpoch: 4,
+          currentSourceEpoch: 5,
+        },
+      },
+      {
+        commandId: CommandId.make("retry-without-reconfirmation"),
+        createdAt: "2026-06-08T10:01:00.000Z",
+      },
+    );
+    expect(ordinaryRetry.sourceEpoch).toBe(4);
+    expect(plan(ordinaryRetry)).toMatchObject({
+      action: "hold",
+      hold: { kind: "source-epoch-stale" },
+    });
+
+    const reconfirmed = retryQueuedThreadMessage(ordinaryRetry, {
+      commandId: CommandId.make("retry-after-reconfirmation"),
+      createdAt: "2026-06-08T10:02:00.000Z",
+      sourceEpoch: 5,
+    });
+    expect(reconfirmed.text).toBe(message.text);
+    expect(reconfirmed.attachments).toEqual(message.attachments);
+    expect(reconfirmed.sourceEpoch).toBe(5);
+    expect(plan(reconfirmed).action).toBe("send-existing");
+  });
+
+  it("maps an atomic server epoch rejection to the durable review hold", () => {
+    expect(
+      sourceEpochMismatchHold({
+        _tag: "OrchestrationDispatchCommandError",
+        reason: "source-epoch-mismatch",
+        expectedSourceEpoch: 7,
+        actualSourceEpoch: 8,
+      }),
+    ).toMatchObject({
+      kind: "source-epoch-stale",
+      queuedSourceEpoch: 7,
+      currentSourceEpoch: 8,
+    });
   });
 
   it("quiesces after a cross-device delete is converted to a durable hold", () => {

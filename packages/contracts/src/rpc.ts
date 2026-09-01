@@ -211,6 +211,7 @@ import {
   ServerConfigStreamEvent,
   ServerConfig,
   ServerProviderUpdateError,
+  ServerProviderMutationBusyError,
   ServerProviderLoginCancelInput,
   ServerProviderLoginError,
   ServerProviderLoginResult,
@@ -604,7 +605,11 @@ export const WsRollbackRecoverRpc = Rpc.make(WS_METHODS.rollbackRecover, {
 export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
   payload: ServerProviderUpdateInput,
   success: ServerProviderUpdatedPayload,
-  error: Schema.Union([ServerProviderUpdateError, EnvironmentAuthorizationError]),
+  error: Schema.Union([
+    ServerProviderUpdateError,
+    ServerProviderMutationBusyError,
+    EnvironmentAuthorizationError,
+  ]),
 });
 
 export const WsServerGetPrimeManagedMaintenanceRpc = Rpc.make(
@@ -682,6 +687,7 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
   error: Schema.Union([
     ServerSettingsUpdateConflictError,
     ServerSettingsError,
+    ServerProviderMutationBusyError,
     EnvironmentAuthorizationError,
   ]),
 });

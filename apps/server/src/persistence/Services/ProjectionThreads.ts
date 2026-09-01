@@ -39,6 +39,7 @@ export const ProjectionThread = Schema.Struct({
   latestTurnId: Schema.NullOr(TurnId),
   rollbackStatus: Schema.optional(Schema.NullOr(OrchestrationRollbackPublicState)),
   rollbackUpdatedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  sourceEpoch: NonNegativeInt,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),

@@ -11,7 +11,8 @@ import {
   type CodexArtifactTemplate,
 } from "@t3tools/client-runtime/codex-artifact-templates";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
-import type { RollbackTarget } from "@t3tools/client-runtime/rollback";
+import { isRollbackActive, type RollbackTarget } from "@t3tools/client-runtime/rollback";
+import { getMobileRollbackStatusPresentation } from "./rollback-status-presentation";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { HeaderHeightContext } from "@react-navigation/elements";
@@ -305,22 +306,12 @@ function RollbackStatusSurface(props: {
   readonly onRecover: (action: "retry-verification" | "resume-compensation") => Promise<void>;
 }) {
   if (!props.status) return null;
-  const severe = props.status.state === "manual-recovery" || props.status.state === "failed";
-  const title =
-    props.status.state === "pending"
-      ? "Rollback pending"
-      : props.status.state === "recovering"
-        ? "Rollback recovering"
-        : props.status.state === "manual-recovery"
-          ? "Manual recovery required"
-          : props.status.state === "completed"
-            ? "Rollback completed"
-            : "Rollback failed safely";
-  const actions = props.status.allowedActions ?? [];
+  const presentation = getMobileRollbackStatusPresentation(props.status);
+  const { severe, title, actions } = presentation;
   return (
     <View
-      accessibilityRole={severe ? "alert" : "summary"}
-      accessibilityLiveRegion={severe ? "assertive" : "polite"}
+      accessibilityRole={presentation.accessibilityRole}
+      accessibilityLiveRegion={presentation.accessibilityLiveRegion}
       className={`mb-3 gap-2 rounded-2xl border px-3 py-2.5 ${
         severe ? "border-red-500/50 bg-red-500/10" : "border-adaptive-neutral-300-700 bg-screen"
       }`}
@@ -328,9 +319,7 @@ function RollbackStatusSurface(props: {
       <Text className={`font-t3-semibold text-sm ${severe ? "text-red-500" : "text-foreground"}`}>
         {title}
       </Text>
-      <Text className="font-t3-regular text-xs text-foreground-muted">
-        {props.status.detail ?? "Pylon is verifying rollback state."}
-      </Text>
+      <Text className="font-t3-regular text-xs text-foreground-muted">{presentation.detail}</Text>
       {actions.length > 0 ? (
         <View className="flex-row flex-wrap gap-2">
           {actions.includes("retry-verification") ? (
@@ -945,6 +934,23 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     pending={props.rollbackCommandPending}
                     onRecover={props.onRecoverRollback}
                   />
+                  {props.localOutboxCount > 0 &&
+                  props.rollbackTargets.size > 0 &&
+                  !isRollbackActive(props.rollbackStatus) ? (
+                    <View
+                      accessibilityRole="summary"
+                      className="mb-3 rounded-xl border border-adaptive-neutral-300-700 bg-screen px-3 py-2"
+                    >
+                      <Text className="text-sm font-semibold text-foreground">
+                        Rollback paused for queued messages
+                      </Text>
+                      <Text className="mt-1 text-xs leading-5 text-foreground-muted">
+                        Send or cancel the queued{" "}
+                        {props.localOutboxCount === 1 ? "message" : "messages"} before starting
+                        rollback.
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
 
                 {props.activePendingApproval ||

@@ -37,6 +37,7 @@ import {
   resolveThreadOutboxFailureAction,
   shouldRetryThreadOutboxDelivery,
   threadOutboxDeliveryHoldsEqual,
+  sourceEpochMismatchHold,
   threadOutboxRetryDelayMs,
   type QueuedThreadCreation,
   type QueuedThreadMessage,
@@ -592,7 +593,11 @@ export function useThreadOutboxDrain(): void {
     const reportFailure = (
       commandResult: AtomCommandResult<unknown, unknown>,
       stage: ThreadOutboxCommandStage,
-    ): { readonly action: "retry" | "hold"; readonly message: string } | null => {
+    ): {
+      readonly action: "retry" | "hold";
+      readonly message: string;
+      readonly hold: QueuedThreadMessage["deliveryHold"];
+    } | null => {
       if (!AsyncResult.isFailure(commandResult)) {
         return null;
       }
@@ -610,8 +615,10 @@ export function useThreadOutboxDrain(): void {
         cause: commandResult.cause,
         action,
       });
+      const epochHold = stage === "start-turn" ? sourceEpochMismatchHold(error) : null;
       return {
         action,
+        hold: epochHold ?? undefined,
         message:
           error instanceof Error
             ? error.message
@@ -624,12 +631,13 @@ export function useThreadOutboxDrain(): void {
       message: QueuedThreadMessage,
       expectedRevision: number,
       reason: string,
+      hold?: QueuedThreadMessage["deliveryHold"],
     ): Promise<"held" | "retry" | "complete"> => {
       try {
         const updated = await updateThreadOutboxMessage(
           {
             ...message,
-            deliveryHold: {
+            deliveryHold: hold ?? {
               kind: "admission-rejected",
               reason,
               ...(message.modelSelection === undefined
@@ -709,6 +717,7 @@ export function useThreadOutboxDrain(): void {
           modelSelection: settings.modelSelection,
           runtimeMode: settings.runtimeMode,
           interactionMode: settings.interactionMode,
+          sourceEpoch: queuedMessage.sourceEpoch,
           createdAt: queuedMessage.createdAt,
         },
       });
@@ -717,7 +726,12 @@ export function useThreadOutboxDrain(): void {
         return "retry";
       }
       if (failure?.action === "hold") {
-        return persistRejectedAdmissionHold(persistedMessage, deliveryRevision, failure.message);
+        return persistRejectedAdmissionHold(
+          persistedMessage,
+          deliveryRevision,
+          failure.message,
+          failure.hold,
+        );
       }
 
       acknowledgedExistingThreadMessageIdsRef.current.add(persistedMessage.messageId);
@@ -808,7 +822,12 @@ export function useThreadOutboxDrain(): void {
         return "retry";
       }
       if (failure?.action === "hold") {
-        return persistRejectedAdmissionHold(persistedMessage, deliveryRevision, failure.message);
+        return persistRejectedAdmissionHold(
+          persistedMessage,
+          deliveryRevision,
+          failure.message,
+          failure.hold,
+        );
       }
 
       const outcome = await completeQueuedMessageDelivery(persistedMessage, deliveryRevision);

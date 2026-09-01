@@ -51,6 +51,8 @@ import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useEnvironmentSessionState } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { getRelativeTimeState } from "../../timestampFormat";
+import { useThreadShells } from "../../state/entities";
+import { rollbackBusyProviderInstanceIds } from "./providerRollbackMutation";
 import {
   ConnectionStatusDot,
   connectionPhaseDotClassName,
@@ -451,6 +453,11 @@ export function EnvironmentProviderSettings({
 }) {
   const settings = useEnvironmentSettings(environmentId);
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
+  const threadShells = useThreadShells() ?? [];
+  const rollbackBusyInstanceIds = useMemo(
+    () => rollbackBusyProviderInstanceIds(threadShells, environmentId),
+    [environmentId, threadShells],
+  );
   const serverProviders =
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
@@ -823,6 +830,7 @@ export function EnvironmentProviderSettings({
       favorite.provider === row.instanceId ? Result.succeed(favorite.model) : Result.failVoid,
     );
     const resetLabel = driverOption?.label ?? String(row.driver);
+    const rollbackMutationBlocked = rollbackBusyInstanceIds.has(row.instanceId);
 
     return (
       <ProviderInstanceCard
@@ -837,6 +845,11 @@ export function EnvironmentProviderSettings({
         selected={mode === "list" && selectedRow?.instanceId === row.instanceId}
         onSelect={mode === "list" ? () => setSelectedInstanceId(row.instanceId) : undefined}
         readOnly={readOnly}
+        mutationBlockedReason={
+          rollbackMutationBlocked
+            ? "Rollback is active on a thread owned by this provider. Provider changes and maintenance resume after recovery finishes."
+            : undefined
+        }
         onUpdate={(next) => {
           const wasEnabled = resolveProviderInstanceEnabled(row.instance);
           const isDisabling = next.enabled === false && wasEnabled;
@@ -866,7 +879,7 @@ export function EnvironmentProviderSettings({
           ) : null
         }
         {...(() => {
-          if (mode !== "editor" || readOnly) return {};
+          if (mode !== "editor" || readOnly || rollbackMutationBlocked) return {};
           const driverRows = orderRowsByDriver.get(row.driver) ?? [];
           if (driverRows.length < 2) return {};
           const position = driverRows.findIndex(
