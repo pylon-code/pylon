@@ -230,6 +230,7 @@ function managerFixture(options?: {
   readonly injectBridge?: boolean;
   readonly recoverable?: boolean;
   readonly sdkFeatures?: ReadonlyArray<string>;
+  readonly currentGeneration?: { readonly value: boolean };
 }) {
   const commands: CapturedCommand[] = [];
   const processes: FakeProcess[] = [];
@@ -335,6 +336,15 @@ function managerFixture(options?: {
         customModels: [],
       },
     },
+    ...(options?.currentGeneration === undefined
+      ? {}
+      : {
+          runtimeFence: {
+            generation: {},
+            configRevision: "test-revision",
+            isCurrent: Effect.sync(() => options.currentGeneration!.value),
+          },
+        }),
     stateDir: "/tmp/pylon-state",
     platform: options?.platform ?? "linux",
     tempDir: options?.tempDir ?? "/tmp",
@@ -660,6 +670,26 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
       expect(fixture.commands).toHaveLength(2);
       expect(fixture.processes[0]!.kills).toBe(1);
     }).pipe(Effect.scoped);
+  });
+
+  it.effect("retired cleanup kills only its captured child and never the successor socket", () => {
+    const currentGeneration = { value: true };
+    const fixture = managerFixture({ currentGeneration });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const manager = yield* fixture.make;
+        const client = yield* manager.openClient();
+        client.close();
+        currentGeneration.value = false;
+      }),
+    ).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(fixture.shutdownRequests).toEqual([]);
+          expect(fixture.processes[0]?.kills).toBe(1);
+        }),
+      ),
+    );
   });
 
   it.effect(

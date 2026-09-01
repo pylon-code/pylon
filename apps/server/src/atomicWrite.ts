@@ -5,6 +5,8 @@ import * as Path from "effect/Path";
 export const writeFileStringAtomically = (input: {
   readonly filePath: string;
   readonly contents: string;
+  /** Optional process-local fence checked immediately before the atomic rename. */
+  readonly commitGuard?: Effect.Effect<boolean>;
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -20,6 +22,7 @@ export const writeFileStringAtomically = (input: {
       const tempPath = path.join(tempDirectory, "contents.tmp");
 
       yield* fs.writeFileString(tempPath, input.contents);
+      if (input.commitGuard !== undefined && !(yield* input.commitGuard)) return;
       yield* fs.rename(tempPath, input.filePath);
     }),
   );

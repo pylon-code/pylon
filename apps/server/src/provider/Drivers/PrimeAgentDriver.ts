@@ -45,6 +45,7 @@ import {
   makePrimeDistributionNetworkDependencies,
 } from "../prime/PrimeAgentDistributionVerifier.ts";
 import { makePrimeAgentDaemonManager } from "../prime/PrimeAgentDaemonManager.ts";
+import { fencePrimeAgentAdapter } from "../prime/PrimeAgentGenerationFence.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -142,6 +143,8 @@ export const PrimeAgentDriver: ProviderDriver<
                 ? ({
                     kind: "ready",
                     preparation: result.identity,
+                    generation: result.identity.generation,
+                    configRevision: result.identity.configRevision,
                   } satisfies ProviderDriverPreflightResult<PrimeAgentMaterializedIdentity>)
                 : ({
                     kind: "unavailable",
@@ -151,7 +154,7 @@ export const PrimeAgentDriver: ProviderDriver<
           ),
       ),
     ),
-  create: ({ instanceId, displayName, accentColor, enabled }, identity) =>
+  create: ({ instanceId, displayName, accentColor, enabled, runtimeFence }, identity) =>
     Effect.gen(function* () {
       const hostPlatform = yield* HostProcessPlatform;
       if (!isPrimeAgentProviderPlatformSupported(hostPlatform)) {
@@ -161,7 +164,13 @@ export const PrimeAgentDriver: ProviderDriver<
           detail: unsupportedPlatformMessage(hostPlatform),
         });
       }
-      if (identity === undefined || identity.instanceId !== instanceId) {
+      if (
+        identity === undefined ||
+        identity.instanceId !== instanceId ||
+        runtimeFence === undefined ||
+        runtimeFence.generation !== identity.generation ||
+        runtimeFence.configRevision !== identity.configRevision
+      ) {
         return yield* new ProviderDriverError({
           driver: DRIVER_KIND,
           instanceId,
@@ -288,6 +297,7 @@ export const PrimeAgentDriver: ProviderDriver<
       const backend = yield* negotiatePrimeAgentBackend(
         {
           identity,
+          runtimeFence,
           stateDir: serverConfig.stateDir,
           platform: hostPlatform,
           recoveryEnabled: recoveryManagedBuildId !== undefined,
@@ -318,6 +328,7 @@ export const PrimeAgentDriver: ProviderDriver<
                 ? {}
                 : { fallbackCategory: backend.fallbackCategory }),
             },
+        runtimeFence,
       );
       const stampBackendSnapshot = (snapshot: ServerProviderDraft) =>
         stampPrimeAgentBackendSnapshot(
@@ -402,7 +413,12 @@ export const PrimeAgentDriver: ProviderDriver<
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
       const readBackends = provideBackendServices(
-        readPrimeAgentBackends(effectiveConfig, { processEnv }),
+        readPrimeAgentBackends(effectiveConfig, {
+          processEnv,
+          instanceId,
+          configRevision: runtimeContext.configRevision,
+          commitGuard: runtimeFence.isCurrent,
+        }),
       );
       // After a turn the credential Prime just used is fresh and the number
       // just changed: read again unless a reading under a minute old exists.
@@ -410,6 +426,9 @@ export const PrimeAgentDriver: ProviderDriver<
         refresh: provideBackendServices(
           readPrimeAgentCapacity(effectiveConfig, {
             processEnv,
+            instanceId,
+            configRevision: runtimeContext.configRevision,
+            commitGuard: runtimeFence.isCurrent,
             freshForMs: PRIME_AGENT_TURN_END_CAPACITY_FRESH_MS,
           }),
         ),
@@ -438,6 +457,7 @@ export const PrimeAgentDriver: ProviderDriver<
         ProviderSnapshotSettings<PrimeAgentSettings>
       >({
         maintenanceCapabilities,
+        commitGuard: runtimeFence.isCurrent,
         getSettings: snapshotSettings.getSettings,
         streamSettings: snapshotSettings.streamSettings,
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
@@ -474,7 +494,7 @@ export const PrimeAgentDriver: ProviderDriver<
         instanceId,
         ...(recoveryManagedBuildId === undefined ? {} : { recoveryManagedBuildId }),
       } as const;
-      const adapter =
+      const rawAdapter =
         backend.runtime === "daemon"
           ? yield* makePrimeAgentDaemonAdapter(effectiveConfig, backend.manager, {
               ...adapterOptions,
@@ -490,6 +510,7 @@ export const PrimeAgentDriver: ProviderDriver<
               ...adapterOptions,
               ...(backend.fallbackMessage ? { startupWarning: backend.fallbackMessage } : {}),
             });
+      const adapter = fencePrimeAgentAdapter(rawAdapter, runtimeFence);
 
       return {
         instanceId,
@@ -502,6 +523,7 @@ export const PrimeAgentDriver: ProviderDriver<
         adapter,
         textGeneration,
         capacity,
+        runtimeFence,
       } satisfies ProviderInstance;
     }),
 };

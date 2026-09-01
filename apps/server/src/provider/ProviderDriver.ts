@@ -62,6 +62,15 @@ export interface ProviderDriverMetadata {
  * instance of the same driver does not reach into the first instance's
  * state.
  */
+export interface ProviderRuntimeFence {
+  /** Opaque process-local identity. It must never cross a public or observability boundary. */
+  readonly generation: object;
+  /** Private disk-cache correlation only. It must never enter a provider snapshot. */
+  readonly configRevision?: string | undefined;
+  /** Re-read by every async result immediately before it commits side effects. */
+  readonly isCurrent: Effect.Effect<boolean>;
+}
+
 export interface ProviderInstance {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
@@ -80,6 +89,8 @@ export interface ProviderInstance {
    * drivers that use Pylon's configured accounts have nothing to read.
    */
   readonly capacity?: ProviderCapacitySource | undefined;
+  /** Server-private replacement fence. Prime is the first fenced driver. */
+  readonly runtimeFence?: ProviderRuntimeFence | undefined;
 }
 
 export interface ProviderCapacitySource {
@@ -98,7 +109,7 @@ export interface ProviderCapacityRefresh {
 export interface ProviderBackendCapacityRead {
   readonly backend: ServerProviderBackend;
   readonly didReadCapacity: boolean;
-  /** Secret-safe identity used only to retain a failed read for the same account. */
+  /** Private runtime-revision identity. Never derive this value from account or secret material. */
   readonly retentionIdentity?: string | undefined;
 }
 
@@ -159,6 +170,8 @@ export interface ProviderDriverCreateInput<Config> {
   readonly environment: ProviderInstanceEnvironment;
   readonly enabled: boolean;
   readonly config: Config;
+  /** Present only when preflight published a process-local replacement generation. */
+  readonly runtimeFence?: ProviderRuntimeFence | undefined;
 }
 
 /**
@@ -175,7 +188,14 @@ export interface ProviderDriverCreateInput<Config> {
  * `config` MUST yield instances with no shared mutable state.
  */
 export type ProviderDriverPreflightResult<Preparation> =
-  | { readonly kind: "ready"; readonly preparation: Preparation }
+  | {
+      readonly kind: "ready";
+      readonly preparation: Preparation;
+      /** Opaque process-local identity, published before an old scope is closed. */
+      readonly generation?: object | undefined;
+      /** Random server-owned correlation for private disk caches only. */
+      readonly configRevision?: string | undefined;
+    }
   | { readonly kind: "unavailable"; readonly error: ProviderDriverError };
 
 export interface ProviderDriver<Config, R = never, Preparation = unknown> {

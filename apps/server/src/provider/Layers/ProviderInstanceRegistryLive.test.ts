@@ -45,6 +45,7 @@ import * as DateTime from "effect/DateTime";
 import { createModelSelection } from "@t3tools/shared/model";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
@@ -381,6 +382,56 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       Effect.provide(testLayer),
     );
   });
+
+  it.live("rotates Prime generation only for material changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "prime-generation-fence-" });
+        const instanceId = ProviderInstanceId.make("primeAgent");
+        const entry = {
+          driver: ProviderDriverKind.make("primeAgent"),
+          displayName: "Prime A",
+          enabled: false,
+          config: makePrimeAgentConfig({
+            enabled: false,
+            binaryPath: "/opt/prime-a",
+            agentHomePath: root,
+          }),
+        } as const;
+        const { registry, mutator } = yield* makeProviderInstanceRegistry({
+          drivers: [PrimeAgentDriver],
+          configMap: { [instanceId]: entry },
+        });
+        const first = yield* registry.getInstance(instanceId);
+        expect(first?.runtimeFence).toBeDefined();
+        expect(yield* first!.runtimeFence!.isCurrent).toBe(true);
+
+        yield* mutator.reconcile({
+          [instanceId]: { ...entry, displayName: "Prime presentation only" },
+        });
+        const presentationOnly = yield* registry.getInstance(instanceId);
+        expect(presentationOnly?.adapter).toBe(first?.adapter);
+        expect(presentationOnly?.runtimeFence).toBe(first?.runtimeFence);
+        expect(yield* first!.runtimeFence!.isCurrent).toBe(true);
+
+        yield* mutator.reconcile({
+          [instanceId]: {
+            ...entry,
+            config: { ...entry.config, binaryPath: "/opt/prime-b" },
+          },
+        });
+        const replacement = yield* registry.getInstance(instanceId);
+        expect(replacement?.adapter).not.toBe(first?.adapter);
+        expect(replacement?.runtimeFence?.generation).not.toBe(first?.runtimeFence?.generation);
+        expect(replacement?.runtimeFence?.configRevision).not.toBe(
+          first?.runtimeFence?.configRevision,
+        );
+        expect(yield* first!.runtimeFence!.isCurrent).toBe(false);
+        expect(yield* replacement!.runtimeFence!.isCurrent).toBe(true);
+      }),
+    ).pipe(Effect.provideService(HostProcessPlatform, "linux"), Effect.provide(testLayer)),
+  );
 
   it.live("fails native Windows Prime closed across every routed entry point", () => {
     let processCalls = 0;

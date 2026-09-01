@@ -20,6 +20,7 @@ import { ChildProcess } from "effect/unstable/process";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import { resolveProviderHomePath } from "../../pathExpansion.ts";
+import type { ProviderRuntimeFence } from "../ProviderDriver.ts";
 import type { PrimeAgentMaterializedIdentity } from "./PrimeAgentRuntimeContext.ts";
 import {
   loadPrimeAgentDaemonBridge,
@@ -98,6 +99,7 @@ export interface PrimeAgentDaemonManager {
 export interface PrimeAgentDaemonManagerInput {
   readonly executablePath: string;
   readonly identity: PrimeAgentMaterializedIdentity;
+  readonly runtimeFence?: ProviderRuntimeFence | undefined;
   readonly stateDir: string;
   readonly connectTimeoutMs?: number;
   readonly readinessRetryDelay?: Duration.Input;
@@ -344,19 +346,24 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
   let retainedExistingDaemon = false;
   let closing = false;
 
+  const isCurrentGeneration = input.runtimeFence?.isCurrent ?? Effect.succeed(true);
   const removeSocket = () =>
-    fileSystem
-      .remove(socket, { force: true })
-      .pipe(
-        Effect.mapError((cause) =>
-          managerError(
-            socket,
-            "state-directory-failed",
-            "Could not clean the daemon socket.",
-            cause,
+    Effect.gen(function* () {
+      // Recheck at unlink, not when cleanup was scheduled: a replacement may now own this path.
+      if (!(yield* isCurrentGeneration)) return;
+      yield* fileSystem
+        .remove(socket, { force: true })
+        .pipe(
+          Effect.mapError((cause) =>
+            managerError(
+              socket,
+              "state-directory-failed",
+              "Could not clean the daemon socket.",
+              cause,
+            ),
           ),
-        ),
-      );
+        );
+    });
 
   const ensurePrivateSocketDirectory = Effect.fn(
     "PrimeAgentDaemonManager.ensurePrivateSocketDirectory",
@@ -516,6 +523,13 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       }),
     );
 
+    if (isRunning && !(yield* isCurrentGeneration)) {
+      yield* state.handle.kill().pipe(Effect.ignore);
+      yield* state.handle.exitCode.pipe(Effect.ignore);
+      yield* closeProcessScope(state);
+      return;
+    }
+
     if (isRunning) {
       if (controlPlaneReady) {
         controlClient = yield* connectClient({ bridge, socket, timeoutMs }).pipe(
@@ -526,7 +540,7 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
             ),
           ),
         );
-        if (controlClient) {
+        if (controlClient && (yield* isCurrentGeneration)) {
           yield* Effect.tryPromise({
             try: async () => {
               const response = await controlClient!.request({ type: "shutdown" }, timeoutMs);
@@ -553,6 +567,8 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
               }),
             ),
           );
+        } else {
+          yield* Effect.sync(() => controlClient?.close());
         }
       }
 
@@ -637,6 +653,14 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
   const retireExistingDaemon = Effect.fn("PrimeAgentDaemonManager.retireExistingDaemon")(function* (
     client: PrimeAgentDaemonClient,
   ) {
+    if (!(yield* isCurrentGeneration)) {
+      client.close();
+      return yield* managerError(
+        socket,
+        "readiness-failed",
+        "This Prime Agent runtime generation was replaced.",
+      );
+    }
     const response = yield* Effect.tryPromise({
       try: () => client.request({ type: "shutdown" }, timeoutMs),
       catch: (cause) =>
@@ -658,6 +682,13 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
   });
 
   const startLocked = Effect.fn("PrimeAgentDaemonManager.startLocked")(function* () {
+    if (!(yield* isCurrentGeneration)) {
+      return yield* managerError(
+        socket,
+        "readiness-failed",
+        "This Prime Agent runtime generation was replaced.",
+      );
+    }
     if (closing) {
       return yield* managerError(
         socket,
@@ -687,7 +718,13 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
           ),
         );
         if (Option.isSome(healthClient)) {
-          return healthClient.value;
+          if (yield* isCurrentGeneration) return healthClient.value;
+          healthClient.value.close();
+          return yield* managerError(
+            socket,
+            "readiness-failed",
+            "This Prime Agent runtime generation was replaced.",
+          );
         }
         running = undefined;
         yield* stopCapturedDaemon(current, false);
@@ -699,6 +736,13 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     }
 
     yield* ensurePrivateSocketDirectory();
+    if (!(yield* isCurrentGeneration)) {
+      return yield* managerError(
+        socket,
+        "readiness-failed",
+        "This Prime Agent runtime generation was replaced.",
+      );
+    }
     yield* fileSystem.makeDirectory(sessionDir, { recursive: true, mode: 0o700 }).pipe(
       Effect.andThen(fileSystem.chmod(sessionDir, 0o700)),
       Effect.mapError((cause) =>
@@ -725,6 +769,14 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
           "authoritative_owned_session_cleanup_v1",
         ].every((capability) => hello.value.serverCapabilities.includes(capability));
       if (recoverable) {
+        if (!(yield* isCurrentGeneration)) {
+          existing.value.close();
+          return yield* managerError(
+            socket,
+            "readiness-failed",
+            "This Prime Agent runtime generation was replaced.",
+          );
+        }
         retainedExistingDaemon = true;
         return existing.value;
       }
@@ -739,6 +791,14 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       ["--mode", "daemon", "--daemon-socket", socket, "--offline", "--session-dir", sessionDir],
       { env: launchEnvironment, extendEnv: false },
     );
+    if (!(yield* isCurrentGeneration)) {
+      yield* Scope.close(processScope, Exit.void).pipe(Effect.ignore);
+      return yield* managerError(
+        socket,
+        "readiness-failed",
+        "This Prime Agent runtime generation was replaced.",
+      );
+    }
     const handle = yield* spawner.spawn(command).pipe(
       Effect.provideService(Scope.Scope, processScope),
       Effect.mapError((cause) =>
@@ -757,6 +817,15 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       }),
       Effect.onError(() => stopCapturedDaemon(state, false)),
     );
+    if (!(yield* isCurrentGeneration)) {
+      readinessClient.close();
+      yield* stopCapturedDaemon(state, false);
+      return yield* managerError(
+        socket,
+        "readiness-failed",
+        "This Prime Agent runtime generation was replaced.",
+      );
+    }
     running = state;
     retainedExistingDaemon = false;
     return readinessClient;
@@ -779,9 +848,9 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       closing = true;
       const captured = running;
       running = undefined;
-      if (recoveryRetainers > 0) {
-        // The standalone process scope is deliberately left open. The daemon is detached
-        // from this Pylon process and retains the exact same supervisor generation.
+      if (recoveryRetainers > 0 && (yield* isCurrentGeneration)) {
+        // A server shutdown keeps recoverable work alive. A material replacement does not:
+        // its retired generation must release the stable socket before the successor uses it.
         return;
       }
       if (captured) {

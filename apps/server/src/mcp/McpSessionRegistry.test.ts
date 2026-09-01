@@ -127,3 +127,25 @@ it.effect("does not keep credentials of other threads alive", () =>
     expect(yield* registry.resolve(token)).toBeUndefined();
   }),
 );
+
+it.effect("keeps the current exact credential when retired issue and cleanup arrive late", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const threadId = ThreadId.make("thread-generation-fence");
+    const request = {
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("primeAgent"),
+    };
+    const first = yield* registry.issue(request);
+    const firstToken = first.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const replacement = yield* registry.issueIfCurrent(request, Effect.succeed(true));
+    expect(replacement).toBeDefined();
+    const replacementToken = replacement!.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    expect(yield* registry.resolve(firstToken)).toBeUndefined();
+
+    const retiredIssue = yield* registry.issueIfCurrent(request, Effect.succeed(false));
+    expect(retiredIssue).toBeUndefined();
+    yield* registry.revokeProviderSession(first.config.providerSessionId);
+    expect((yield* registry.resolve(replacementToken))?.threadId).toBe(threadId);
+  }),
+);

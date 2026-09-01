@@ -12,6 +12,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import { ProviderDriverError } from "../Errors.ts";
+import type { ProviderRuntimeFence } from "../ProviderDriver.ts";
 
 export const PRIME_AGENT_HOME_ENV = "PRIME_AGENT_CODING_AGENT_DIR" as const;
 export const PRIME_AGENT_COMPAT_HOME_ENV = "PRIME_AGENT_HOME" as const;
@@ -82,6 +83,7 @@ export type PrimeAgentRuntimeBackendIdentity =
 
 export interface PrimeAgentRuntimeContext extends PrimeAgentMaterializedIdentity {
   readonly backendKind: PrimeAgentRuntimeBackendIdentity["kind"];
+  readonly runtimeFence?: ProviderRuntimeFence | undefined;
   readonly backendIdentity: PrimeAgentRuntimeBackendIdentity;
 }
 
@@ -302,7 +304,11 @@ export const materializePrimeAgentIdentities = Effect.fn("materializePrimeAgentI
 export function bindPrimeAgentRuntimeContext(
   identity: PrimeAgentMaterializedIdentity,
   backendIdentity: PrimeAgentRuntimeBackendIdentity,
+  runtimeFence?: ProviderRuntimeFence,
 ): PrimeAgentRuntimeContext {
+  if (runtimeFence !== undefined && runtimeFence.generation !== identity.generation) {
+    throw new Error("Prime Agent runtime fence does not match its materialized generation.");
+  }
   const immutableBackendIdentity: PrimeAgentRuntimeBackendIdentity =
     backendIdentity.kind === "daemon"
       ? Object.freeze({
@@ -322,6 +328,7 @@ export function bindPrimeAgentRuntimeContext(
         });
   return Object.freeze({
     ...identity,
+    ...(runtimeFence === undefined ? {} : { runtimeFence }),
     backendKind: immutableBackendIdentity.kind,
     backendIdentity: immutableBackendIdentity,
   });

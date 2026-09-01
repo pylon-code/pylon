@@ -60,6 +60,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
+import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
@@ -134,7 +135,6 @@ import {
 } from "./PrimeAgentDaemonSessionRuntime.ts";
 import {
   PRIME_AGENT_SESSION_IDENTITY_FILENAME,
-  PRIME_AGENT_SESSION_IDENTITY_TEMP_FILENAME,
   decodePrimeAgentSessionIdentity,
   encodePrimeAgentSessionIdentity,
   primeAgentLegacySessionFileNames,
@@ -744,6 +744,17 @@ export function makePrimeAgentDaemonAdapter(
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
+    const commitGuard = primeRuntimeContext?.runtimeFence?.isCurrent ?? Effect.succeed(true);
+    const guardGeneration = <A, E>(effect: Effect.Effect<A, E>, stale: A) =>
+      Effect.flatMap(commitGuard, (current) =>
+        current
+          ? effect.pipe(
+              Effect.flatMap((result) =>
+                Effect.map(commitGuard, (stillCurrent) => (stillCurrent ? result : stale)),
+              ),
+            )
+          : Effect.succeed(stale),
+      );
     const ledgerService = yield* Effect.serviceOption(PrimeAgentRecoveryLedger);
     const rawRecoveryLedger = options?.recoveryLedger ?? Option.getOrUndefined(ledgerService);
     const recoveryLedger =
@@ -751,31 +762,69 @@ export function makePrimeAgentDaemonAdapter(
         ? undefined
         : {
             putPrepared: (input: Parameters<PrimeAgentRecoveryLedgerShape["putPrepared"]>[0]) =>
-              rawRecoveryLedger.putPrepared(input).pipe(Effect.orDie),
-            get: (threadId: string) => rawRecoveryLedger.get(threadId).pipe(Effect.orDie),
+              guardGeneration(
+                rawRecoveryLedger.putPrepared(input, { commitGuard }).pipe(Effect.orDie),
+                undefined,
+              ),
+            get: (threadId: string) =>
+              guardGeneration(rawRecoveryLedger.get(threadId).pipe(Effect.orDie), Option.none()),
             discardPrepared: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["discardPrepared"]>[0],
-            ) => rawRecoveryLedger.discardPrepared(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger.discardPrepared(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             markAdmitted: (input: Parameters<PrimeAgentRecoveryLedgerShape["markAdmitted"]>[0]) =>
-              rawRecoveryLedger.markAdmitted(input).pipe(Effect.orDie),
+              guardGeneration(
+                rawRecoveryLedger.markAdmitted(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             updateTranscriptProgress: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["updateTranscriptProgress"]>[0],
-            ) => rawRecoveryLedger.updateTranscriptProgress(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger
+                  .updateTranscriptProgress(input, { commitGuard })
+                  .pipe(Effect.orDie),
+                false,
+              ),
             claim: (input: Parameters<PrimeAgentRecoveryLedgerShape["claim"]>[0]) =>
-              rawRecoveryLedger.claim(input).pipe(Effect.orDie),
+              guardGeneration(
+                rawRecoveryLedger.claim(input, { commitGuard }).pipe(Effect.orDie),
+                Option.none(),
+              ),
             releaseClaim: (input: Parameters<PrimeAgentRecoveryLedgerShape["releaseClaim"]>[0]) =>
-              rawRecoveryLedger.releaseClaim(input).pipe(Effect.orDie),
+              guardGeneration(
+                rawRecoveryLedger.releaseClaim(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             commitAdoption: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["commitAdoption"]>[0],
-            ) => rawRecoveryLedger.commitAdoption(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger.commitAdoption(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             markNativeCleanup: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["markNativeCleanup"]>[0],
-            ) => rawRecoveryLedger.markNativeCleanup(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger.markNativeCleanup(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             markTerminalProjected: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["markTerminalProjected"]>[0],
-            ) => rawRecoveryLedger.markTerminalProjected(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger.markTerminalProjected(input, { commitGuard }).pipe(Effect.orDie),
+                undefined,
+              ),
             deleteIfSettled: (threadId: string) =>
-              rawRecoveryLedger.deleteIfSettled(threadId).pipe(Effect.orDie),
+              guardGeneration(
+                rawRecoveryLedger.deleteIfSettled(threadId, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
           };
     const crypto = yield* Crypto.Crypto;
     const runtimeContext = yield* Effect.context<never>();
@@ -791,6 +840,12 @@ export function makePrimeAgentDaemonAdapter(
     // The already-created manager owns its launch environment. Retaining this option keeps the
     // daemon adapter's construction boundary compatible with the other Prime adapter.
     void options?.environment;
+    const mcpSessionMatchesGeneration = (threadId: ThreadId): boolean =>
+      primeRuntimeContext?.runtimeFence === undefined ||
+      McpProviderSession.isMcpProviderSessionOwnedByGeneration(
+        threadId,
+        primeRuntimeContext.runtimeFence,
+      );
 
     const sessions = new Map<ThreadId, PrimeAgentDaemonSessionContext>();
     type PendingRecoveryStart =
@@ -865,22 +920,28 @@ export function makePrimeAgentDaemonAdapter(
       });
     yield* Queue.take(orderedRuntimeEventQueue).pipe(
       Effect.flatMap(({ event, terminalDelivery }) =>
-        PubSub.publish(runtimeEventPubSub, event).pipe(
-          Effect.flatMap((accepted) =>
-            Effect.sync(() => {
-              pendingOrderedRuntimeEvents -= 1;
-            }).pipe(
-              Effect.andThen(completeTerminalDelivery(terminalDelivery, accepted)),
-              Effect.andThen(accepted ? Effect.void : logRejectedRuntimeEvent(event)),
-            ),
-          ),
+        Effect.flatMap(commitGuard, (current) =>
+          current
+            ? PubSub.publish(runtimeEventPubSub, event).pipe(
+                Effect.flatMap((accepted) =>
+                  Effect.sync(() => {
+                    pendingOrderedRuntimeEvents -= 1;
+                  }).pipe(
+                    Effect.andThen(completeTerminalDelivery(terminalDelivery, accepted)),
+                    Effect.andThen(accepted ? Effect.void : logRejectedRuntimeEvent(event)),
+                  ),
+                ),
+              )
+            : Effect.sync(() => {
+                pendingOrderedRuntimeEvents -= 1;
+              }).pipe(Effect.andThen(completeTerminalDelivery(terminalDelivery, false))),
         ),
       ),
       Effect.forever,
       Effect.forkScoped,
     );
 
-    const offerOrderedRuntimeEvent = (entry: OrderedRuntimeEvent) =>
+    const offerOrderedRuntimeEventUnchecked = (entry: OrderedRuntimeEvent) =>
       Effect.sync(() => {
         if (
           pendingOrderedRuntimeEvents === 0 &&
@@ -907,6 +968,12 @@ export function makePrimeAgentDaemonAdapter(
                 ),
         ),
       );
+    const offerOrderedRuntimeEvent = (entry: OrderedRuntimeEvent) =>
+      Effect.flatMap(commitGuard, (current) =>
+        current
+          ? offerOrderedRuntimeEventUnchecked(entry)
+          : completeTerminalDelivery(entry.terminalDelivery, false).pipe(Effect.as(false)),
+      );
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
@@ -920,6 +987,18 @@ export function makePrimeAgentDaemonAdapter(
           }),
       ),
     );
+    const requireCurrentGeneration = (operation: string) =>
+      Effect.flatMap(commitGuard, (current) =>
+        current
+          ? Effect.void
+          : Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: operation,
+                detail: "The Prime Agent runtime was replaced while this operation was pending.",
+              }),
+            ),
+      );
     const makeEventStamp = () =>
       Effect.all({ eventId: Effect.map(randomUUIDv4, EventId.make), createdAt: nowIso });
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
@@ -1059,6 +1138,7 @@ export function makePrimeAgentDaemonAdapter(
             },
           },
           threadId,
+          commitGuard,
         );
       }).pipe(
         Effect.catchCause((cause) =>
@@ -3713,6 +3793,7 @@ export function makePrimeAgentDaemonAdapter(
               ? input.modelSelection.model.trim()
               : undefined;
           const model = selectedModel || "default";
+          yield* requireCurrentGeneration("startSession");
           const sessionDir = primeAgentSessionDirectory({
             stateDir: serverConfig.stateDir,
             instanceId: boundInstanceId,
@@ -3731,6 +3812,7 @@ export function makePrimeAgentDaemonAdapter(
                 }),
             ),
           );
+          yield* requireCurrentGeneration("startSession");
           const identityPath = path.join(sessionDir, PRIME_AGENT_SESSION_IDENTITY_FILENAME);
           let resumeSessionId: string | undefined;
           let expectedSessionFileName: string | undefined;
@@ -3822,7 +3904,14 @@ export function makePrimeAgentDaemonAdapter(
             rootSessionDir: sessionDir,
             ...(permissionToken === undefined ? {} : { permissionToken }),
           });
-          yield* fileSystem.writeFileString(managedExtensionPath, managedExtensionSource).pipe(
+          yield* writeFileStringAtomically({
+            filePath: managedExtensionPath,
+            contents: managedExtensionSource,
+            commitGuard,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.andThen(requireCurrentGeneration("startSession")),
             Effect.andThen(fileSystem.chmod(managedExtensionPath, 0o600)),
             Effect.mapError(
               (cause) =>
@@ -3843,7 +3932,11 @@ export function makePrimeAgentDaemonAdapter(
           const agentDir =
             primeRuntimeContext?.effectiveHome ?? primeAgentSettings.agentHomePath.trim();
           const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-          if (mcpSession !== undefined && mcpSession.providerInstanceId !== boundInstanceId) {
+          if (
+            mcpSession !== undefined &&
+            (mcpSession.providerInstanceId !== boundInstanceId ||
+              !mcpSessionMatchesGeneration(input.threadId))
+          ) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
               operation: "startSession",
@@ -4100,13 +4193,15 @@ export function makePrimeAgentDaemonAdapter(
               detail: "Prime Agent returned an invalid durable session identity.",
             });
           }
-          const identityTempPath = path.join(
-            sessionDir,
-            PRIME_AGENT_SESSION_IDENTITY_TEMP_FILENAME,
-          );
-          yield* fileSystem.writeFileString(identityTempPath, identitySource).pipe(
-            Effect.andThen(fileSystem.chmod(identityTempPath, 0o600)),
-            Effect.andThen(fileSystem.rename(identityTempPath, identityPath)),
+          yield* writeFileStringAtomically({
+            filePath: identityPath,
+            contents: identitySource,
+            commitGuard,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.andThen(requireCurrentGeneration("startSession")),
+            Effect.andThen(fileSystem.chmod(identityPath, 0o600)),
             Effect.mapError(
               (cause) =>
                 new ProviderAdapterProcessError({
@@ -4290,6 +4385,7 @@ export function makePrimeAgentDaemonAdapter(
             ...context.compaction,
             manualCompactionSettable: isManualCompactionSettable(context),
           };
+          yield* requireCurrentGeneration("startSession");
           sessions.set(input.threadId, context);
           scopeTransferred = true;
           if (recoveryStart === undefined) {
@@ -4460,7 +4556,8 @@ export function makePrimeAgentDaemonAdapter(
           const candidateMcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
           if (
             candidateMcpSession !== undefined &&
-            candidateMcpSession.providerInstanceId !== boundInstanceId
+            (candidateMcpSession.providerInstanceId !== boundInstanceId ||
+              !mcpSessionMatchesGeneration(input.threadId))
           ) {
             return undefined;
           }
@@ -4575,7 +4672,8 @@ export function makePrimeAgentDaemonAdapter(
       const candidateMcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
       if (
         candidateMcpSession !== undefined &&
-        candidateMcpSession.providerInstanceId !== boundInstanceId
+        (candidateMcpSession.providerInstanceId !== boundInstanceId ||
+          !mcpSessionMatchesGeneration(input.threadId))
       ) {
         return null;
       }

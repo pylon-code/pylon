@@ -1,3 +1,4 @@
+import type { ProviderRuntimeFence } from "../ProviderDriver.ts";
 import type { PrimeAgentMaterializedIdentity } from "./PrimeAgentRuntimeContext.ts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
@@ -27,6 +28,7 @@ export type PrimeAgentBackendSelection<Manager> =
 
 export interface PrimeAgentBackendNegotiationInput {
   readonly identity: PrimeAgentMaterializedIdentity;
+  readonly runtimeFence?: ProviderRuntimeFence | undefined;
   readonly stateDir: string;
   readonly platform: NodeJS.Platform;
   readonly recoveryEnabled?: boolean;
@@ -111,6 +113,7 @@ export function negotiatePrimeAgentBackend<
       dependencies.makeManager({
         executablePath: path.resolve(resolution.success),
         identity: input.identity,
+        ...(input.runtimeFence === undefined ? {} : { runtimeFence: input.runtimeFence }),
         stateDir: input.stateDir,
         platform: input.platform,
         ...(input.recoveryEnabled === undefined ? {} : { recoveryEnabled: input.recoveryEnabled }),

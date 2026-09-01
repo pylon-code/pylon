@@ -59,6 +59,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   readonly refreshInterval?: Duration.Input;
   readonly refreshOnInterval?: boolean;
   readonly checkProviderOnSettingsChange?: (previous: Settings, next: Settings) => boolean;
+  /** Process-local replacement fence. A stale async result is discarded at commit. */
+  readonly commitGuard?: Effect.Effect<boolean>;
 }): Effect.fn.Return<
   ManagedServerProviderShape,
   ServerSettingsError,
@@ -81,11 +83,13 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const settingsRef = yield* Ref.make(initialSettings);
   const enrichmentFiberRef = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null);
   const scope = yield* Effect.scope;
+  const isCommitCurrent = input.commitGuard ?? Effect.succeed(true);
 
   const publishEnrichedSnapshotBase = Effect.fn("publishEnrichedSnapshot")(function* (
     generation: number,
     nextSnapshot: ServerProvider,
   ) {
+    if (!(yield* isCommitCurrent)) return;
     const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
       if (state.enrichmentGeneration !== generation) {
         return [null, state] as const;
@@ -109,7 +113,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     if (snapshotToPublish === null) {
       return;
     }
-    yield* PubSub.publish(changesPubSub, snapshotToPublish);
+    if (yield* isCommitCurrent) {
+      yield* PubSub.publish(changesPubSub, snapshotToPublish);
+    }
   });
   const publishEnrichedSnapshot = (generation: number, nextSnapshot: ServerProvider) =>
     refreshSemaphore.withPermits(1)(publishEnrichedSnapshotBase(generation, nextSnapshot));
@@ -171,6 +177,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     input.checkProviderWithPublishedModels !== undefined
       ? input.checkProviderWithPublishedModels
       : input.checkProvider;
+    if (!(yield* isCommitCurrent)) return stateBeforeCheck.snapshot;
     const [nextSnapshot, nextGeneration] = yield* Ref.modify(snapshotStateRef, (state) => {
       const generation = input.enrichSnapshot
         ? state.enrichmentGeneration + 1
@@ -190,6 +197,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       ] as const;
     });
     yield* Ref.set(settingsRef, nextSettings);
+    if (!(yield* isCommitCurrent)) return nextSnapshot;
     yield* PubSub.publish(changesPubSub, nextSnapshot);
     yield* restartSnapshotEnrichment(nextSettings, nextSnapshot, nextGeneration);
     return nextSnapshot;
@@ -200,6 +208,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const publishModelsBase = Effect.fn("publishModels")(function* (
     models: ServerProvider["models"],
   ) {
+    if (!(yield* isCommitCurrent)) return;
     const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
       const snapshotWithModels = Equal.equals(state.snapshot.models, models)
         ? state.snapshot
@@ -222,7 +231,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     if (snapshotToPublish === null) {
       return;
     }
-    yield* PubSub.publish(changesPubSub, snapshotToPublish);
+    if (yield* isCommitCurrent) {
+      yield* PubSub.publish(changesPubSub, snapshotToPublish);
+    }
   });
   const publishModels = (models: ServerProvider["models"]) =>
     refreshSemaphore.withPermits(1)(publishModelsBase(models));

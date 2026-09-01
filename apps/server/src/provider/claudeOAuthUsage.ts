@@ -354,6 +354,9 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
   readonly freshForMs?: number | undefined;
   /** Share transient failures as well as successful readings and throttles. */
   readonly shareFailures?: boolean | undefined;
+  /** Private random cache correlation for fenced materializations. */
+  readonly configRevision?: string | undefined;
+  readonly commitGuard?: Effect.Effect<boolean> | undefined;
 }): Effect.fn.Return<
   ClaudeOAuthUsageRead,
   never,
@@ -362,7 +365,7 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
   const cacheDir = input.sharedCacheDir ?? (yield* resolveSharedUsageCacheDir);
   const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
   const shared = decideSharedUsageRead(
-    yield* readSharedUsageEntry(cacheDir, input.cacheKey),
+    yield* readSharedUsageEntry(cacheDir, input.cacheKey, input.configRevision),
     nowMs,
     input.freshForMs,
   );
@@ -384,7 +387,7 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
   if (!acquiredLock) {
     // Another server is reading this account right now; its answer lands in
     // the shared file shortly. Serve what is there and check back soon.
-    const existing = yield* readSharedUsageEntry(cacheDir, input.cacheKey);
+    const existing = yield* readSharedUsageEntry(cacheDir, input.cacheKey, input.configRevision);
     return {
       usageLimits: existing?.usageLimits,
       cacheForMs: SHARED_USAGE_BUSY_RETRY_MS,
@@ -396,8 +399,15 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
     const failedAt = DateTime.formatIso(DateTime.makeUnsafe(nowMs));
     const failedRead = input.shareFailures
       ? Effect.gen(function* () {
-          yield* markSharedUsageReadFailed(cacheDir, input.cacheKey, failedAt);
-          const retained = yield* readSharedUsageEntry(cacheDir, input.cacheKey);
+          yield* markSharedUsageReadFailed(cacheDir, input.cacheKey, failedAt, {
+            configRevision: input.configRevision,
+            commitGuard: input.commitGuard,
+          });
+          const retained = yield* readSharedUsageEntry(
+            cacheDir,
+            input.cacheKey,
+            input.configRevision,
+          );
           return {
             usageLimits: retained?.usageLimits,
             cacheForMs: SHARED_USAGE_FAILURE_BACKOFF_MS,
@@ -432,11 +442,17 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
     if (Option.isNone(attempt) || attempt.value.kind === "failed") return yield* failedRead;
     if (attempt.value.kind === "throttled") {
       const throttledForMs = throttleDelayFromRetryAfter(attempt.value.retryAfter, nowMs);
-      yield* writeSharedUsageEntry(cacheDir, input.cacheKey, {
-        version: 1,
-        readAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
-        throttledUntil: DateTime.formatIso(DateTime.makeUnsafe(nowMs + throttledForMs)),
-      });
+      yield* writeSharedUsageEntry(
+        cacheDir,
+        input.cacheKey,
+        {
+          version: 1,
+          ...(input.configRevision === undefined ? {} : { configRevision: input.configRevision }),
+          readAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+          throttledUntil: DateTime.formatIso(DateTime.makeUnsafe(nowMs + throttledForMs)),
+        },
+        input.commitGuard,
+      );
       return { usageLimits: undefined, cacheForMs: throttledForMs, didRead: false };
     }
 
@@ -446,11 +462,17 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
       input.source,
     );
     if (!usageLimits) return yield* failedRead;
-    yield* writeSharedUsageEntry(cacheDir, input.cacheKey, {
-      version: 1,
-      readAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
-      usageLimits,
-    });
+    yield* writeSharedUsageEntry(
+      cacheDir,
+      input.cacheKey,
+      {
+        version: 1,
+        ...(input.configRevision === undefined ? {} : { configRevision: input.configRevision }),
+        readAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+        usageLimits,
+      },
+      input.commitGuard,
+    );
     return { usageLimits, cacheForMs: SHARED_USAGE_READ_TTL_MS, didRead: true };
   }).pipe(Effect.ensuring(releaseSharedUsageLock(cacheDir, input.cacheKey)));
 });

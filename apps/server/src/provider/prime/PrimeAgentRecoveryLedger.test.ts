@@ -136,4 +136,27 @@ layer("PrimeAgentRecoveryLedger", (it) => {
       assert.isTrue(Option.isNone(yield* ledger.get(authority.threadId)));
     }),
   );
+
+  it.effect("skips mutations after a private commit guard retires", () =>
+    Effect.gen(function* () {
+      yield* migration050;
+      const ledger = yield* make;
+      yield* ledger.putPrepared(authority, { commitGuard: Effect.succeed(false) });
+      assert.isTrue(Option.isNone(yield* ledger.get(authority.threadId)));
+
+      yield* ledger.putPrepared(authority, { commitGuard: Effect.succeed(true) });
+      assert.isFalse(
+        yield* ledger.markAdmitted(
+          {
+            threadId: authority.threadId,
+            ownerToken: authority.ownerToken,
+            turnId: "turn-retired",
+            updatedAt: "2026-01-01T00:00:08.000Z",
+          },
+          { commitGuard: Effect.succeed(false) },
+        ),
+      );
+      assert.equal(Option.getOrThrow(yield* ledger.get(authority.threadId)).state, "prepared");
+    }),
+  );
 });

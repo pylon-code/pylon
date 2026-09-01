@@ -50,6 +50,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { buildUnavailableProviderSnapshot } from "../unavailableProviderSnapshot.ts";
@@ -66,6 +67,7 @@ import type {
   ProviderDriverCreateInput,
   ProviderDriverPreflightResult,
   ProviderInstance,
+  ProviderRuntimeFence,
 } from "../ProviderDriver.ts";
 
 /**
@@ -86,8 +88,15 @@ interface LiveEntry {
 interface RegistryState {
   readonly entries: Ref.Ref<ReadonlyMap<ProviderInstanceId, LiveEntry>>;
   readonly unavailable: Ref.Ref<ReadonlyMap<ProviderInstanceId, ServerProvider>>;
+  readonly generations: Ref.Ref<
+    ReadonlyMap<
+      ProviderInstanceId,
+      { readonly driver: ProviderDriverKind; readonly generation: object }
+    >
+  >;
   readonly changes: PubSub.PubSub<void>;
   readonly configured: Ref.Ref<ProviderInstanceConfigMap>;
+  readonly reconcileSemaphore: Semaphore.Semaphore;
 }
 
 /**
@@ -99,6 +108,60 @@ interface RegistryState {
  */
 const entryEqual = (a: ProviderInstanceConfig, b: ProviderInstanceConfig): boolean =>
   Equal.equals(a, b);
+
+/** Labels are presentation-only. They update the snapshot without rematerializing the runtime. */
+const materialEntryEqual = (a: ProviderInstanceConfig, b: ProviderInstanceConfig): boolean =>
+  Equal.equals(
+    {
+      driver: a.driver,
+      enabled: a.enabled,
+      environment: a.environment,
+      config: a.config,
+    },
+    {
+      driver: b.driver,
+      enabled: b.enabled,
+      environment: b.environment,
+      config: b.config,
+    },
+  );
+
+const applyEntryPresentation = (
+  provider: ServerProvider,
+  entry: ProviderInstanceConfig,
+): ServerProvider => {
+  const {
+    displayName: _displayName,
+    accentColor: _accentColor,
+    ...providerWithoutPresentation
+  } = provider;
+  return {
+    ...providerWithoutPresentation,
+    ...(entry.displayName ? { displayName: entry.displayName } : {}),
+    ...(entry.accentColor ? { accentColor: entry.accentColor } : {}),
+  };
+};
+
+const withEntryPresentation = (
+  instance: ProviderInstance,
+  entry: ProviderInstanceConfig,
+): ProviderInstance => ({
+  ...instance,
+  displayName: entry.displayName,
+  accentColor: entry.accentColor,
+  snapshot: {
+    maintenanceCapabilities: instance.snapshot.maintenanceCapabilities,
+    getSnapshot: instance.snapshot.getSnapshot.pipe(
+      Effect.map((provider) => applyEntryPresentation(provider, entry)),
+    ),
+    refresh: instance.snapshot.refresh.pipe(
+      Effect.map((provider) => applyEntryPresentation(provider, entry)),
+    ),
+    streamChanges: instance.snapshot.streamChanges.pipe(
+      Stream.map((provider) => applyEntryPresentation(provider, entry)),
+    ),
+  },
+});
 
 /**
  * Resolve an entry's enabled state. An explicit false on either the
@@ -127,6 +190,7 @@ const buildEntry = <R>(input: {
   readonly instanceId: ProviderInstanceId;
   readonly rawInstanceId: string;
   readonly entry: ProviderInstanceConfig;
+  readonly generations: RegistryState["generations"];
   readonly preflight?: ReadonlyMap<ProviderInstanceId, ProviderDriverPreflightResult<unknown>>;
 }): Effect.Effect<
   | { readonly kind: "live"; readonly live: LiveEntry }
@@ -135,7 +199,8 @@ const buildEntry = <R>(input: {
   R
 > =>
   Effect.gen(function* () {
-    const { driversById, parentScope, instanceId, rawInstanceId, entry, preflight } = input;
+    const { driversById, parentScope, instanceId, rawInstanceId, entry, generations, preflight } =
+      input;
     const driver = driversById.get(entry.driver);
     if (!driver) {
       return {
@@ -173,14 +238,6 @@ const buildEntry = <R>(input: {
     }
 
     const typedConfig = decodeResult.success;
-    const createInput = {
-      instanceId,
-      displayName: entry.displayName,
-      accentColor: entry.accentColor,
-      environment: entry.environment ?? [],
-      enabled: resolveEntryEnabled(entry, typedConfig),
-      config: typedConfig,
-    } satisfies ProviderDriverCreateInput<unknown>;
     const preparation = preflight?.get(instanceId);
     if (preflight !== undefined && preparation?.kind !== "ready") {
       const detail =
@@ -198,6 +255,34 @@ const buildEntry = <R>(input: {
         }),
       };
     }
+
+    const runtimeFence: ProviderRuntimeFence | undefined =
+      preparation?.kind === "ready" && preparation.generation !== undefined
+        ? Object.freeze({
+            generation: preparation.generation,
+            ...(preparation.configRevision === undefined
+              ? {}
+              : { configRevision: preparation.configRevision }),
+            isCurrent: Ref.get(generations).pipe(
+              Effect.map((current) => {
+                const published = current.get(instanceId);
+                return (
+                  published?.driver === entry.driver &&
+                  published.generation === preparation.generation
+                );
+              }),
+            ),
+          })
+        : undefined;
+    const createInput = {
+      instanceId,
+      displayName: entry.displayName,
+      accentColor: entry.accentColor,
+      environment: entry.environment ?? [],
+      enabled: resolveEntryEnabled(entry, typedConfig),
+      config: typedConfig,
+      ...(runtimeFence === undefined ? {} : { runtimeFence }),
+    } satisfies ProviderDriverCreateInput<unknown>;
 
     const childScope = yield* Scope.make();
     // Attach the child scope to the registry's parent scope: if the
@@ -232,7 +317,12 @@ const buildEntry = <R>(input: {
     return {
       kind: "live" as const,
       live: {
-        instance: createResult.success,
+        instance: withEntryPresentation(
+          runtimeFence === undefined
+            ? createResult.success
+            : { ...createResult.success, runtimeFence },
+          entry,
+        ),
         scope: childScope,
         entry,
       },
@@ -256,153 +346,202 @@ const makeReconcile = <R>(input: {
 }): ((configMap: ProviderInstanceConfigMap) => Effect.Effect<void, never, R>) => {
   const { state, driversById, parentScope } = input;
   return (configMap: ProviderInstanceConfigMap) =>
-    Effect.gen(function* () {
-      const previousEntries = yield* Ref.get(state.entries);
-      const previousUnavailable = yield* Ref.get(state.unavailable);
-      const previousConfigMap = yield* Ref.get(state.configured);
-      const nextRaw = Object.entries(configMap);
-      const nextKeys = new Set<ProviderInstanceId>(
-        nextRaw.map(([raw]) => ProviderInstanceId.make(raw)),
-      );
-      const changedPreflightDrivers = new Set<ProviderDriverKind>();
-      const preflightByDriver = new Map<
-        ProviderDriverKind,
-        ReadonlyMap<ProviderInstanceId, ProviderDriverPreflightResult<unknown>>
-      >();
+    state.reconcileSemaphore.withPermit(
+      Effect.gen(function* () {
+        const previousEntries = yield* Ref.get(state.entries);
+        const previousUnavailable = yield* Ref.get(state.unavailable);
+        const previousConfigMap = yield* Ref.get(state.configured);
+        const nextRaw = Object.entries(configMap);
+        const nextKeys = new Set<ProviderInstanceId>(
+          nextRaw.map(([raw]) => ProviderInstanceId.make(raw)),
+        );
+        const changedPreflightDrivers = new Set<ProviderDriverKind>();
+        const preflightByDriver = new Map<
+          ProviderDriverKind,
+          ReadonlyMap<ProviderInstanceId, ProviderDriverPreflightResult<unknown>>
+        >();
 
-      // Preflight the complete desired set before closing an old instance or
-      // starting a new one. An unchanged live instance is retained unless the
-      // set-wide result makes that instance unavailable.
-      for (const [driverKind, driver] of driversById) {
-        if (driver.preflight === undefined) continue;
-        const previousDriverEntries = driverConfigEntries(previousConfigMap, driverKind);
-        const nextDriverEntries = driverConfigEntries(configMap, driverKind);
-        if (Equal.equals(previousDriverEntries, nextDriverEntries)) continue;
-        changedPreflightDrivers.add(driverKind);
+        // Preflight the complete desired set before closing an old instance or
+        // starting a new one. An unchanged live instance is retained unless the
+        // set-wide result makes that instance unavailable.
+        for (const [driverKind, driver] of driversById) {
+          if (driver.preflight === undefined) continue;
+          const previousDriverEntries = driverConfigEntries(previousConfigMap, driverKind);
+          const nextDriverEntries = driverConfigEntries(configMap, driverKind);
+          const materialEntries = (
+            entries: ReadonlyArray<readonly [string, ProviderInstanceConfig]>,
+          ) =>
+            entries.map(
+              ([id, entry]) =>
+                [
+                  id,
+                  {
+                    driver: entry.driver,
+                    enabled: entry.enabled,
+                    environment: entry.environment,
+                    config: entry.config,
+                  },
+                ] as const,
+            );
+          if (
+            Equal.equals(materialEntries(previousDriverEntries), materialEntries(nextDriverEntries))
+          ) {
+            continue;
+          }
+          changedPreflightDrivers.add(driverKind);
 
-        const decoder = Schema.decodeUnknownEffect(driver.configSchema);
-        const decodedInputs: Array<ProviderDriverCreateInput<unknown>> = [];
-        for (const [rawInstanceId, entry] of nextDriverEntries) {
-          const decoded = yield* decoder(entry.config ?? driver.defaultConfig()).pipe(
-            Effect.result,
-          );
-          if (decoded._tag === "Failure") continue;
-          decodedInputs.push({
-            instanceId: ProviderInstanceId.make(rawInstanceId),
-            displayName: entry.displayName,
-            accentColor: entry.accentColor,
-            environment: entry.environment ?? [],
-            enabled: resolveEntryEnabled(entry, decoded.success),
-            config: decoded.success,
-          });
-        }
-        preflightByDriver.set(driverKind, yield* driver.preflight(decodedInputs));
-      }
-
-      // 1. Close scopes for instances that disappeared or whose config
-      //    changed. Do this BEFORE creating replacements so ids map 1-to-1
-      //    to live scopes at all times.
-      const removedIds: Array<ProviderInstanceId> = [];
-      const replacedIds = new Set<ProviderInstanceId>();
-      for (const [instanceId, live] of previousEntries) {
-        if (!nextKeys.has(instanceId)) {
-          removedIds.push(instanceId);
-          continue;
-        }
-        const nextEntry = configMap[instanceId];
-        const preflightResult = preflightByDriver.get(live.instance.driverKind)?.get(instanceId);
-        if (
-          (nextEntry !== undefined && !entryEqual(live.entry, nextEntry)) ||
-          preflightResult?.kind === "unavailable"
-        ) {
-          replacedIds.add(instanceId);
-        }
-      }
-      for (const id of [...removedIds, ...replacedIds]) {
-        const live = previousEntries.get(id);
-        if (live) {
-          yield* Scope.close(live.scope, Exit.void).pipe(Effect.ignore);
-        }
-      }
-
-      // 2. Build additions and replacements. Walk `nextRaw` so the final
-      //    entry order follows settings-author order.
-      const builtEntries = new Map<ProviderInstanceId, LiveEntry>();
-      const builtUnavailable = new Map<ProviderInstanceId, ServerProvider>();
-      let orderChanged = false;
-      const previousOrder = [...previousEntries.keys()];
-      const nextOrder: Array<ProviderInstanceId> = [];
-
-      for (const [rawInstanceId, entry] of nextRaw) {
-        const instanceId = ProviderInstanceId.make(rawInstanceId);
-        nextOrder.push(instanceId);
-
-        const existing = previousEntries.get(instanceId);
-        if (existing !== undefined && !replacedIds.has(instanceId)) {
-          // No-op update: keep the existing live entry and scope.
-          builtEntries.set(instanceId, existing);
-          continue;
-        }
-        const driver = driversById.get(entry.driver);
-        const previousShadow = previousUnavailable.get(instanceId);
-        if (
-          previousShadow !== undefined &&
-          driver?.preflight !== undefined &&
-          !changedPreflightDrivers.has(entry.driver)
-        ) {
-          builtUnavailable.set(instanceId, previousShadow);
-          continue;
+          const decoder = Schema.decodeUnknownEffect(driver.configSchema);
+          const decodedInputs: Array<ProviderDriverCreateInput<unknown>> = [];
+          for (const [rawInstanceId, entry] of nextDriverEntries) {
+            const decoded = yield* decoder(entry.config ?? driver.defaultConfig()).pipe(
+              Effect.result,
+            );
+            if (decoded._tag === "Failure") continue;
+            decodedInputs.push({
+              instanceId: ProviderInstanceId.make(rawInstanceId),
+              displayName: entry.displayName,
+              accentColor: entry.accentColor,
+              environment: entry.environment ?? [],
+              enabled: resolveEntryEnabled(entry, decoded.success),
+              config: decoded.success,
+            });
+          }
+          preflightByDriver.set(driverKind, yield* driver.preflight(decodedInputs));
         }
 
-        const result = yield* buildEntry({
-          driversById,
-          parentScope,
-          instanceId,
-          rawInstanceId,
-          entry,
-          ...(preflightByDriver.has(entry.driver)
-            ? { preflight: preflightByDriver.get(entry.driver)! }
-            : {}),
-        });
-        if (result.kind === "live") {
-          builtEntries.set(instanceId, result.live);
-        } else {
-          builtUnavailable.set(instanceId, result.snapshot);
-        }
-      }
-
-      if (previousOrder.length === nextOrder.length) {
-        for (let i = 0; i < previousOrder.length; i++) {
-          if (previousOrder[i] !== nextOrder[i]) {
-            orderChanged = true;
-            break;
+        // 1. Identify instances whose material runtime changed. Their generations
+        //    are retired before replacement construction, but their scopes close only
+        //    after the exact replacement is published.
+        const removedIds: Array<ProviderInstanceId> = [];
+        const replacedIds = new Set<ProviderInstanceId>();
+        const presentationChangedIds = new Set<ProviderInstanceId>();
+        for (const [instanceId, live] of previousEntries) {
+          if (!nextKeys.has(instanceId)) {
+            removedIds.push(instanceId);
+            continue;
+          }
+          const nextEntry = configMap[instanceId];
+          const preflightResult = preflightByDriver.get(live.instance.driverKind)?.get(instanceId);
+          if (
+            (nextEntry !== undefined && !materialEntryEqual(live.entry, nextEntry)) ||
+            preflightResult?.kind === "unavailable"
+          ) {
+            replacedIds.add(instanceId);
+          } else if (nextEntry !== undefined && !entryEqual(live.entry, nextEntry)) {
+            presentationChangedIds.add(instanceId);
           }
         }
-      } else {
-        orderChanged = true;
-      }
 
-      const entriesChanged =
-        orderChanged ||
-        removedIds.length > 0 ||
-        replacedIds.size > 0 ||
-        builtEntries.size !== previousEntries.size;
-      const unavailableChanged =
-        builtUnavailable.size !== previousUnavailable.size ||
-        [...builtUnavailable].some(([id, snapshot]) => {
-          const prev = previousUnavailable.get(id);
-          return prev === undefined || !Equal.equals(prev, snapshot);
-        }) ||
-        [...previousUnavailable].some(([id]) => !builtUnavailable.has(id));
+        // Publish the replacement generation before old fibers and scopes begin cleanup.
+        // An old callback becomes stale at this single atomic Ref update even if it runs late.
+        yield* Ref.update(state.generations, (previous) => {
+          const next = new Map(previous);
+          for (const id of [...removedIds, ...replacedIds]) next.delete(id);
+          for (const [rawInstanceId, entry] of nextRaw) {
+            const instanceId = ProviderInstanceId.make(rawInstanceId);
+            if (previousEntries.has(instanceId) && !replacedIds.has(instanceId)) continue;
+            const preparation = preflightByDriver.get(entry.driver)?.get(instanceId);
+            if (preparation?.kind === "ready" && preparation.generation !== undefined) {
+              next.set(instanceId, { driver: entry.driver, generation: preparation.generation });
+            }
+          }
+          return next;
+        });
 
-      yield* Ref.set(state.entries, builtEntries);
-      yield* Ref.set(state.unavailable, builtUnavailable);
-      yield* Ref.set(state.configured, configMap);
+        // 2. Build additions and replacements while retired scopes remain alive but fenced.
+        // This avoids an observable registry gap and makes all late old callbacks inert. Walk `nextRaw` so the final
+        //    entry order follows settings-author order.
+        const builtEntries = new Map<ProviderInstanceId, LiveEntry>();
+        const builtUnavailable = new Map<ProviderInstanceId, ServerProvider>();
+        let orderChanged = false;
+        const previousOrder = [...previousEntries.keys()];
+        const nextOrder: Array<ProviderInstanceId> = [];
 
-      if (entriesChanged || unavailableChanged) {
-        yield* PubSub.publish(state.changes, undefined);
-      }
-    });
+        for (const [rawInstanceId, entry] of nextRaw) {
+          const instanceId = ProviderInstanceId.make(rawInstanceId);
+          nextOrder.push(instanceId);
+
+          const existing = previousEntries.get(instanceId);
+          if (existing !== undefined && !replacedIds.has(instanceId)) {
+            // Presentation-only changes keep the exact runtime, generation, and config revision.
+            builtEntries.set(
+              instanceId,
+              presentationChangedIds.has(instanceId)
+                ? { ...existing, instance: withEntryPresentation(existing.instance, entry), entry }
+                : existing,
+            );
+            continue;
+          }
+          const driver = driversById.get(entry.driver);
+          const previousShadow = previousUnavailable.get(instanceId);
+          if (
+            previousShadow !== undefined &&
+            driver?.preflight !== undefined &&
+            !changedPreflightDrivers.has(entry.driver)
+          ) {
+            builtUnavailable.set(instanceId, previousShadow);
+            continue;
+          }
+
+          const result = yield* buildEntry({
+            driversById,
+            parentScope,
+            instanceId,
+            rawInstanceId,
+            entry,
+            generations: state.generations,
+            ...(preflightByDriver.has(entry.driver)
+              ? { preflight: preflightByDriver.get(entry.driver)! }
+              : {}),
+          });
+          if (result.kind === "live") {
+            builtEntries.set(instanceId, result.live);
+          } else {
+            builtUnavailable.set(instanceId, result.snapshot);
+          }
+        }
+
+        if (previousOrder.length === nextOrder.length) {
+          for (let i = 0; i < previousOrder.length; i++) {
+            if (previousOrder[i] !== nextOrder[i]) {
+              orderChanged = true;
+              break;
+            }
+          }
+        } else {
+          orderChanged = true;
+        }
+
+        const entriesChanged =
+          orderChanged ||
+          removedIds.length > 0 ||
+          replacedIds.size > 0 ||
+          presentationChangedIds.size > 0 ||
+          builtEntries.size !== previousEntries.size;
+        const unavailableChanged =
+          builtUnavailable.size !== previousUnavailable.size ||
+          [...builtUnavailable].some(([id, snapshot]) => {
+            const prev = previousUnavailable.get(id);
+            return prev === undefined || !Equal.equals(prev, snapshot);
+          }) ||
+          [...previousUnavailable].some(([id]) => !builtUnavailable.has(id));
+
+        // Publish the exact replacement before closing its predecessor. Consumers either see
+        // the old fenced instance or the new current instance, never a missing middle state.
+        yield* Ref.set(state.entries, builtEntries);
+        yield* Ref.set(state.unavailable, builtUnavailable);
+        yield* Ref.set(state.configured, configMap);
+
+        for (const id of [...removedIds, ...replacedIds]) {
+          const live = previousEntries.get(id);
+          if (live) yield* Scope.close(live.scope, Exit.void).pipe(Effect.ignore);
+        }
+
+        if (entriesChanged || unavailableChanged) {
+          yield* PubSub.publish(state.changes, undefined);
+        }
+      }),
+    );
 };
 
 /**
@@ -451,11 +590,25 @@ export const makeProviderInstanceRegistry = <R>(input: {
 
     const entries = yield* Ref.make<ReadonlyMap<ProviderInstanceId, LiveEntry>>(new Map());
     const unavailable = yield* Ref.make<ReadonlyMap<ProviderInstanceId, ServerProvider>>(new Map());
+    const generations = yield* Ref.make<
+      ReadonlyMap<
+        ProviderInstanceId,
+        { readonly driver: ProviderDriverKind; readonly generation: object }
+      >
+    >(new Map());
     const configured = yield* Ref.make<ProviderInstanceConfigMap>({});
     const changes = yield* PubSub.unbounded<void>();
+    const reconcileSemaphore = yield* Semaphore.make(1);
     yield* Effect.addFinalizer(() => PubSub.shutdown(changes));
 
-    const state: RegistryState = { entries, unavailable, changes, configured };
+    const state: RegistryState = {
+      entries,
+      unavailable,
+      generations,
+      changes,
+      configured,
+      reconcileSemaphore,
+    };
     const reconcileWithR = makeReconcile({ state, driversById, parentScope });
     const reconcile: ProviderInstanceRegistryMutatorShape["reconcile"] = (configMap) =>
       reconcileWithR(configMap).pipe(Effect.provideContext(driverContext));

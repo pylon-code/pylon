@@ -38,6 +38,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
@@ -66,6 +67,7 @@ import {
   capacityRefreshFromProviderBackends,
   type ProviderCapacityRefresh,
   type ProviderInstance,
+  type ProviderRuntimeFence,
 } from "../ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
@@ -277,13 +279,21 @@ const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
 // after `ProviderInstanceRegistry` rebuilds an instance (e.g. because
 // its settings changed), a fresh source rides the new PubSub instead
 // of a closed one.
-const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource => ({
+type RuntimeProviderSnapshotSource = ProviderSnapshotSource & {
+  readonly runtimeFence?: ProviderRuntimeFence | undefined;
+};
+
+const buildSnapshotSource = (instance: ProviderInstance): RuntimeProviderSnapshotSource => ({
   instanceId: instance.instanceId,
   driverKind: instance.driverKind,
   getSnapshot: instance.snapshot.getSnapshot,
   refresh: instance.snapshot.refresh,
   streamChanges: instance.snapshot.streamChanges,
+  ...(instance.runtimeFence === undefined ? {} : { runtimeFence: instance.runtimeFence }),
 });
+
+const sourceIsCurrent = (source: RuntimeProviderSnapshotSource): Effect.Effect<boolean> =>
+  source.runtimeFence?.isCurrent ?? Effect.succeed(true);
 
 export const ProviderRegistryLive = Layer.effect(
   ProviderRegistry,
@@ -336,7 +346,9 @@ export const ProviderRegistryLive = Layer.effect(
           if (fallbackProvider === undefined) {
             return undefined;
           }
-          return yield* readProviderStatusCache(filePath).pipe(
+          return yield* readProviderStatusCache(filePath, {
+            configRevision: source.runtimeFence?.configRevision,
+          }).pipe(
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.flatMap((cachedProvider) => {
               if (cachedProvider === undefined) {
@@ -402,7 +414,14 @@ export const ProviderRegistryLive = Layer.effect(
     // One capacity read in flight per instance, and no more than one a minute:
     // a burst of short turns must cost the backend one request, not one each.
     const capacityRunsRef = yield* Ref.make<
-      ReadonlyMap<ProviderInstanceId, { readonly startedAtMs: number; readonly running: boolean }>
+      ReadonlyMap<
+        ProviderInstanceId,
+        {
+          readonly startedAtMs: number;
+          readonly running: boolean;
+          readonly generation?: object | undefined;
+        }
+      >
     >(new Map());
     const registryScope = yield* Effect.scope;
 
@@ -413,28 +432,36 @@ export const ProviderRegistryLive = Layer.effect(
     const liveSubsRef = yield* Ref.make<ReadonlyMap<ProviderInstanceId, ProviderInstance>>(
       new Map(),
     );
+    const subscriptionFibersRef = yield* Ref.make<
+      ReadonlyMap<ProviderInstanceId, Fiber.Fiber<void, never>>
+    >(new Map());
     // Serialize `syncLiveSources` so a rapid burst of reconciles doesn't
     // interleave two passes clobbering each other's fiber bookkeeping.
     const syncSemaphore = yield* Semaphore.make(1);
 
-    const getLiveSources: Effect.Effect<ReadonlyArray<ProviderSnapshotSource>> = Ref.get(
+    const getLiveSources: Effect.Effect<ReadonlyArray<RuntimeProviderSnapshotSource>> = Ref.get(
       liveSubsRef,
     ).pipe(Effect.map((map) => Array.from(map.values(), buildSnapshotSource)));
 
-    const persistProvider = (provider: ServerProvider) =>
+    const persistProvider = (provider: ServerProvider, capturedFence?: ProviderRuntimeFence) =>
       Effect.gen(function* () {
-        // Persist every instance — the file name is the instance id, so
-        // multi-instance setups (e.g. `codex_personal`, `codex_work`) each
-        // get their own cache. We resolve the path fresh so snapshots
-        // produced by newly-added instances post-boot still land on disk
-        // without the aggregator holding a stale `cachePathByInstance`
-        // entry.
         const key = snapshotInstanceKey(provider);
+        const currentInstance = yield* instanceRegistry.getInstance(key);
+        if (currentInstance?.driverKind !== provider.driver) return;
+        const runtimeFence = capturedFence ?? currentInstance.runtimeFence;
+        if (runtimeFence !== undefined && !(yield* runtimeFence.isCurrent)) return;
         const filePath = yield* resolveProviderStatusCachePath({
           cacheDir: config.providerStatusCacheDir,
           instanceId: key,
         }).pipe(Effect.provideService(Path.Path, path));
-        yield* writeProviderStatusCache({ filePath, provider }).pipe(
+        yield* writeProviderStatusCache({
+          filePath,
+          provider,
+          ...(runtimeFence?.configRevision === undefined
+            ? {}
+            : { configRevision: runtimeFence.configRevision }),
+          ...(runtimeFence === undefined ? {} : { commitGuard: runtimeFence.isCurrent }),
+        }).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
           Effect.tapError(Effect.logError),
@@ -537,6 +564,7 @@ export const ProviderRegistryLive = Layer.effect(
         readonly publish?: boolean;
         readonly persist?: boolean;
         readonly replace?: boolean;
+        readonly runtimeFence?: ProviderRuntimeFence | undefined;
       },
     ) {
       const nextProvidersWithUpdateState = yield* Effect.forEach(
@@ -546,6 +574,9 @@ export const ProviderRegistryLive = Layer.effect(
           concurrency: "unbounded",
         },
       );
+      if (options?.runtimeFence !== undefined && !(yield* options.runtimeFence.isCurrent)) {
+        return yield* Ref.get(providersRef);
+      }
       const [previousProviders, providers, providersToPersist] = yield* Ref.modify(
         providersRef,
         (previousProviders) => {
@@ -573,15 +604,27 @@ export const ProviderRegistryLive = Layer.effect(
         },
       );
 
+      if (options?.runtimeFence !== undefined && !(yield* options.runtimeFence.isCurrent)) {
+        yield* Ref.update(providersRef, (current) =>
+          current === providers ? previousProviders : current,
+        );
+        return yield* Ref.get(providersRef);
+      }
       if (haveProvidersChanged(previousProviders, providers)) {
         if (options?.persist !== false) {
-          yield* Effect.forEach(providersToPersist, persistProvider, {
-            concurrency: "unbounded",
-            discard: true,
-          });
+          yield* Effect.forEach(
+            providersToPersist,
+            (provider) => persistProvider(provider, options?.runtimeFence),
+            {
+              concurrency: "unbounded",
+              discard: true,
+            },
+          );
         }
         if (options?.publish !== false) {
-          yield* PubSub.publish(changesPubSub, providers);
+          if (options?.runtimeFence === undefined || (yield* options.runtimeFence.isCurrent)) {
+            yield* PubSub.publish(changesPubSub, providers);
+          }
         }
       }
 
@@ -592,8 +635,13 @@ export const ProviderRegistryLive = Layer.effect(
       provider: ServerProvider,
       options?: {
         readonly publish?: boolean;
+        readonly replace?: boolean;
+        readonly runtimeFence?: ProviderRuntimeFence | undefined;
       },
     ) {
+      if (options?.runtimeFence !== undefined && !(yield* options.runtimeFence.isCurrent)) {
+        return yield* Ref.get(providersRef);
+      }
       return yield* upsertProviders([provider], options);
     });
 
@@ -602,7 +650,11 @@ export const ProviderRegistryLive = Layer.effect(
         readonly instanceId: ProviderInstanceId;
         readonly action: "update";
         readonly state: ServerProviderUpdateState | null;
+        readonly runtimeFence?: ProviderRuntimeFence | undefined;
       }) {
+        if (input.runtimeFence !== undefined && !(yield* input.runtimeFence.isCurrent)) {
+          return yield* Ref.get(providersRef);
+        }
         yield* Ref.update(maintenanceActionStatesRef, (previous) => {
           const previousActions = previous.get(input.instanceId);
           const nextActions = { ...previousActions };
@@ -621,6 +673,9 @@ export const ProviderRegistryLive = Layer.effect(
           return next;
         });
 
+        if (input.runtimeFence !== undefined && !(yield* input.runtimeFence.isCurrent)) {
+          return yield* Ref.get(providersRef);
+        }
         const existingProviders = yield* Ref.get(providersRef);
         const matchingProvider = existingProviders.find(
           (candidate) => candidate.instanceId === input.instanceId,
@@ -632,6 +687,7 @@ export const ProviderRegistryLive = Layer.effect(
         const nextProvider = yield* applyVolatileProviderState(matchingProvider);
         return yield* upsertProviders([nextProvider], {
           persist: false,
+          runtimeFence: input.runtimeFence,
         });
       },
     );
@@ -639,7 +695,11 @@ export const ProviderRegistryLive = Layer.effect(
     const setProviderRateLimitState = Effect.fn("setProviderRateLimitState")(function* (input: {
       readonly instanceId: ProviderInstanceId;
       readonly state: ServerProviderRateLimit | null;
+      readonly runtimeFence?: ProviderRuntimeFence | undefined;
     }) {
+      if (input.runtimeFence !== undefined && !(yield* input.runtimeFence.isCurrent)) {
+        return yield* Ref.get(providersRef);
+      }
       yield* Ref.update(rateLimitStatesRef, (previous) => {
         const next = new Map(previous);
         if (input.state === null) {
@@ -650,6 +710,9 @@ export const ProviderRegistryLive = Layer.effect(
         return next;
       });
 
+      if (input.runtimeFence !== undefined && !(yield* input.runtimeFence.isCurrent)) {
+        return yield* Ref.get(providersRef);
+      }
       const existingProviders = yield* Ref.get(providersRef);
       const matchingProvider = existingProviders.find(
         (candidate) => candidate.instanceId === input.instanceId,
@@ -663,6 +726,7 @@ export const ProviderRegistryLive = Layer.effect(
       const nextProvider = yield* applyVolatileProviderState(matchingProvider);
       return yield* upsertProviders([nextProvider], {
         persist: false,
+        runtimeFence: input.runtimeFence,
       });
     });
 
@@ -671,7 +735,11 @@ export const ProviderRegistryLive = Layer.effect(
       readonly source: string;
       readonly observedAt: string;
       readonly windows: ReadonlyArray<ServerProviderUsageWindow>;
+      readonly runtimeFence?: ProviderRuntimeFence | undefined;
     }) {
+      if (input.runtimeFence !== undefined && !(yield* input.runtimeFence.isCurrent)) {
+        return yield* Ref.get(providersRef);
+      }
       const pushed = input.windows.map(
         (window): PushedUsageWindow => ({ window, observedAt: input.observedAt }),
       );
@@ -687,6 +755,9 @@ export const ProviderRegistryLive = Layer.effect(
         return next;
       });
 
+      if (input.runtimeFence !== undefined && !(yield* input.runtimeFence.isCurrent)) {
+        return yield* Ref.get(providersRef);
+      }
       const existingProviders = yield* Ref.get(providersRef);
       const matchingProvider = existingProviders.find(
         (candidate) => candidate.instanceId === input.instanceId,
@@ -698,6 +769,7 @@ export const ProviderRegistryLive = Layer.effect(
       const nextProvider = yield* applyVolatileProviderState(matchingProvider);
       return yield* upsertProviders([nextProvider], {
         persist: false,
+        runtimeFence: input.runtimeFence,
       });
     });
 
@@ -705,27 +777,43 @@ export const ProviderRegistryLive = Layer.effect(
 
     const refreshProviderCapacity = Effect.fn("refreshProviderCapacity")(function* (
       instanceId: ProviderInstanceId,
+      capturedFence?: ProviderRuntimeFence,
     ) {
-      const capacity = (yield* Ref.get(liveSubsRef)).get(instanceId)?.capacity;
+      if (capturedFence !== undefined && !(yield* capturedFence.isCurrent)) return;
+      const instance = (yield* Ref.get(liveSubsRef)).get(instanceId);
+      const capacity = instance?.capacity;
       if (!capacity) return;
+      const runtimeFence = capturedFence ?? instance.runtimeFence;
+      if (runtimeFence !== undefined && !(yield* runtimeFence.isCurrent)) return;
+      if (
+        capturedFence !== undefined &&
+        instance.runtimeFence?.generation !== capturedFence.generation
+      )
+        return;
+      const generation = runtimeFence?.generation;
       const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
       const admitted = yield* Ref.modify(capacityRunsRef, (previous) => {
         const current = previous.get(instanceId);
         if (
           current &&
+          current.generation === generation &&
           (current.running || nowMs - current.startedAtMs < CAPACITY_REFRESH_FLOOR_MS)
         ) {
           return [false, previous] as const;
         }
         const next = new Map(previous);
-        next.set(instanceId, { startedAtMs: nowMs, running: true });
+        next.set(instanceId, {
+          startedAtMs: nowMs,
+          running: true,
+          ...(generation === undefined ? {} : { generation }),
+        });
         return [true, next] as const;
       });
       if (!admitted) return;
 
       const settle = Ref.update(capacityRunsRef, (previous) => {
         const current = previous.get(instanceId);
-        if (!current) return previous;
+        if (!current || current.generation !== generation) return previous;
         const next = new Map(previous);
         next.set(instanceId, { ...current, running: false });
         return next;
@@ -735,6 +823,7 @@ export const ProviderRegistryLive = Layer.effect(
           refresh === undefined
             ? Effect.void
             : Effect.gen(function* () {
+                if (runtimeFence !== undefined && !(yield* runtimeFence.isCurrent)) return;
                 const observedAtMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
                 const existingProviders = yield* Ref.get(providersRef);
                 const matchingProvider = existingProviders.find(
@@ -746,6 +835,7 @@ export const ProviderRegistryLive = Layer.effect(
                   refresh,
                   nowMs: observedAtMs,
                 });
+                if (runtimeFence !== undefined && !(yield* runtimeFence.isCurrent)) return;
                 yield* Ref.update(capacityOverlayRef, (previous) => {
                   const next = new Map(previous);
                   next.set(instanceId, {
@@ -756,7 +846,11 @@ export const ProviderRegistryLive = Layer.effect(
                 });
                 if (!matchingProvider) return;
                 const nextProvider = yield* applyVolatileProviderState(matchingProvider);
-                yield* upsertProviders([nextProvider], { persist: false });
+                if (runtimeFence !== undefined && !(yield* runtimeFence.isCurrent)) return;
+                yield* upsertProviders([nextProvider], {
+                  persist: false,
+                  runtimeFence,
+                });
               }),
         ),
         Effect.ensuring(settle),
@@ -766,12 +860,20 @@ export const ProviderRegistryLive = Layer.effect(
     });
 
     const refreshOneSource = Effect.fn("refreshOneSource")(function* (
-      providerSource: ProviderSnapshotSource,
+      providerSource: RuntimeProviderSnapshotSource,
     ) {
       return yield* providerSource.refresh.pipe(
         Effect.flatMap((nextProvider) =>
-          correlateSnapshotWithSource(providerSource, nextProvider).pipe(
-            Effect.flatMap(syncProvider),
+          sourceIsCurrent(providerSource).pipe(
+            Effect.flatMap((current) =>
+              current
+                ? correlateSnapshotWithSource(providerSource, nextProvider).pipe(
+                    Effect.flatMap((provider) =>
+                      syncProvider(provider, { runtimeFence: providerSource.runtimeFence }),
+                    ),
+                  )
+                : Ref.get(providersRef),
+            ),
           ),
         ),
       );
@@ -879,15 +981,73 @@ export const ProviderRegistryLive = Layer.effect(
           newlyAdded.push([instanceId, instance] as const);
         }
 
+        const retiredFencedIds = new Set<ProviderInstanceId>();
+        for (const [instanceId, previousInstance] of previousSubs) {
+          if (previousInstance.runtimeFence === undefined) continue;
+          const nextInstance = nextByInstance.get(instanceId);
+          if (nextInstance?.runtimeFence?.generation !== previousInstance.runtimeFence.generation) {
+            retiredFencedIds.add(instanceId);
+          }
+        }
+        if (retiredFencedIds.size > 0) {
+          const dropRetired = <A>(previous: ReadonlyMap<ProviderInstanceId, A>) => {
+            const next = new Map(previous);
+            for (const instanceId of retiredFencedIds) next.delete(instanceId);
+            return next;
+          };
+          yield* Effect.all(
+            [
+              Ref.update(maintenanceActionStatesRef, dropRetired),
+              Ref.update(rateLimitStatesRef, dropRetired),
+              Ref.update(pushedUsageRef, dropRetired),
+              Ref.update(capacityOverlayRef, dropRetired),
+              Ref.update(capacityRunsRef, dropRetired),
+            ],
+            { discard: true },
+          );
+          const [beforeRetirement, afterRetirement] = yield* Ref.modify(
+            providersRef,
+            (previous) => {
+              const next = previous.filter(
+                (provider) => !retiredFencedIds.has(snapshotInstanceKey(provider)),
+              );
+              return [[previous, next] as const, next];
+            },
+          );
+          if (haveProvidersChanged(beforeRetirement, afterRetirement)) {
+            yield* PubSub.publish(changesPubSub, afterRetirement);
+          }
+        }
+
         // Fork long-lived subscriptions to each new/rebuilt instance's
         // change stream before reading its current snapshot. If the
         // driver's own initial probe finishes during this sync, either
         // the current read or the active subscriber observes the result.
-        for (const [, instance] of newlyAdded) {
+        for (const [instanceId, instance] of newlyAdded) {
+          const previousFiber = (yield* Ref.get(subscriptionFibersRef)).get(instanceId);
+          if (previousFiber !== undefined) yield* Fiber.interrupt(previousFiber);
           const source = buildSnapshotSource(instance);
-          yield* Stream.runForEach(source.streamChanges, (provider) =>
-            correlateSnapshotWithSource(source, provider).pipe(Effect.flatMap(syncProvider)),
+          const fiber = yield* Stream.runForEach(source.streamChanges, (provider) =>
+            sourceIsCurrent(source).pipe(
+              Effect.flatMap((current) =>
+                current
+                  ? correlateSnapshotWithSource(source, provider).pipe(
+                      Effect.flatMap((correlated) =>
+                        syncProvider(correlated, {
+                          runtimeFence: source.runtimeFence,
+                          replace: retiredFencedIds.has(instanceId),
+                        }),
+                      ),
+                    )
+                  : Effect.void,
+              ),
+            ),
           ).pipe(Effect.forkScoped);
+          yield* Ref.update(subscriptionFibersRef, (previous) => {
+            const next = new Map(previous);
+            next.set(instanceId, fiber);
+            return next;
+          });
         }
         yield* Effect.yieldNow;
 
@@ -901,8 +1061,14 @@ export const ProviderRegistryLive = Layer.effect(
             Effect.gen(function* () {
               const source = buildSnapshotSource(instance);
               const provider = yield* source.getSnapshot;
+              if (!(yield* sourceIsCurrent(source))) return;
               yield* correlateSnapshotWithSource(source, provider).pipe(
-                Effect.flatMap(syncProvider),
+                Effect.flatMap((correlated) =>
+                  syncProvider(correlated, {
+                    runtimeFence: source.runtimeFence,
+                    replace: retiredFencedIds.has(instance.instanceId),
+                  }),
+                ),
               );
             }).pipe(Effect.ignoreCause({ log: true })),
           { concurrency: "unbounded", discard: true },
@@ -917,6 +1083,16 @@ export const ProviderRegistryLive = Layer.effect(
           nextSubs.set(instanceId, instance);
         }
         yield* Ref.set(liveSubsRef, nextSubs);
+        const subscriptionFibers = yield* Ref.get(subscriptionFibersRef);
+        for (const [instanceId, fiber] of subscriptionFibers) {
+          if (nextSubs.has(instanceId)) continue;
+          yield* Fiber.interrupt(fiber);
+          yield* Ref.update(subscriptionFibersRef, (previous) => {
+            const next = new Map(previous);
+            if (next.get(instanceId) === fiber) next.delete(instanceId);
+            return next;
+          });
+        }
 
         // Drop aggregator state for instances that have disappeared —
         // otherwise the UI would keep rendering ghosts.
@@ -1045,6 +1221,10 @@ export const ProviderRegistryLive = Layer.effect(
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
       getProviderMaintenanceCapabilitiesForInstance,
+      getProviderRuntimeFence: (instanceId: ProviderInstanceId) =>
+        instanceRegistry
+          .getInstance(instanceId)
+          .pipe(Effect.map((instance) => instance?.runtimeFence)),
       setProviderMaintenanceActionState,
       setProviderRateLimitState,
       mergeProviderUsageWindows,

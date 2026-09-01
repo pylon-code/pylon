@@ -214,6 +214,18 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
     }),
   );
   const timeoutMs = options.timeoutMs ?? PRIME_AGENT_TIMEOUT_MS;
+  const requireCurrentGeneration = (operation: PrimeAgentTextGenerationOperation) =>
+    boundRuntimeContext?.runtimeFence === undefined
+      ? Effect.void
+      : boundRuntimeContext.runtimeFence.isCurrent.pipe(
+          Effect.flatMap((current) =>
+            current
+              ? Effect.void
+              : Effect.fail(
+                  textGenerationError(operation, "This Prime Agent runtime was replaced."),
+                ),
+          ),
+        );
 
   const readBoundedImageFile = Effect.fn("readBoundedPrimeAgentImageFile")(function* (
     filePath: string,
@@ -318,6 +330,7 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
     readonly outputSchema: S;
     readonly modelSelection: ModelSelection;
   }): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
+    yield* requireCurrentGeneration(input.operation);
     const controls = resolvePrimeAgentTurnControls(input.modelSelection);
     if (controls._tag === "Invalid") {
       return yield* textGenerationError(input.operation, controls.issue);
@@ -375,7 +388,11 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
         .makeTempFileScoped({ prefix: "pylon-prime-text-", suffix: ".mjs" })
         .pipe(
           Effect.tap((filePath) =>
-            fileSystem.writeFileString(filePath, PRIME_AGENT_TEXT_GENERATION_HELPER_SOURCE),
+            requireCurrentGeneration(input.operation).pipe(
+              Effect.andThen(
+                fileSystem.writeFileString(filePath, PRIME_AGENT_TEXT_GENERATION_HELPER_SOURCE),
+              ),
+            ),
           ),
           Effect.mapError(() =>
             textGenerationError(
@@ -410,6 +427,7 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
         killSignal: "SIGTERM",
         forceKillAfter: PRIME_AGENT_FORCE_KILL_AFTER,
       });
+      yield* requireCurrentGeneration(input.operation);
       const child = yield* commandSpawner
         .spawn(command)
         .pipe(
@@ -450,6 +468,7 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
       );
     }
 
+    yield* requireCurrentGeneration(input.operation);
     const result = completed.value;
     if (result.stdout.truncated) {
       return yield* textGenerationError(

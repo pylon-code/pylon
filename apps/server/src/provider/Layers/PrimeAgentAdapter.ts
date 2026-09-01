@@ -210,6 +210,19 @@ export function makePrimeAgentAdapter(
       );
     }
     const effectiveSettings = primeRuntimeContext?.settings ?? primeAgentSettings;
+    const commitGuard = primeRuntimeContext?.runtimeFence?.isCurrent ?? Effect.succeed(true);
+    const requireCurrentGeneration = (operation: string) =>
+      Effect.flatMap(commitGuard, (current) =>
+        current
+          ? Effect.void
+          : Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: operation,
+                detail: "The Prime Agent runtime was replaced while this operation was pending.",
+              }),
+            ),
+      );
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -248,7 +261,9 @@ export function makePrimeAgentAdapter(
     ) => {
       const stampedEvent =
         sessionIncarnationId === undefined ? event : { ...event, sessionIncarnationId };
-      return PubSub.publish(runtimeEventPubSub, stampedEvent).pipe(
+      return Effect.flatMap(commitGuard, (current) =>
+        current ? PubSub.publish(runtimeEventPubSub, stampedEvent) : Effect.succeed(false),
+      ).pipe(
         Effect.flatMap((accepted) =>
           accepted
             ? Effect.void
@@ -298,6 +313,7 @@ export function makePrimeAgentAdapter(
             },
           },
           threadId,
+          commitGuard,
         );
       }).pipe(
         Effect.catchCause((cause) =>
@@ -515,6 +531,7 @@ export function makePrimeAgentAdapter(
           const modelSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const model = modelSelection?.model?.trim() || "default";
+          yield* requireCurrentGeneration("startSession");
           const sessionDir = primeAgentSessionDirectory({
             stateDir: serverConfig.stateDir,
             instanceId: boundInstanceId,
@@ -533,6 +550,7 @@ export function makePrimeAgentAdapter(
                 }),
             ),
           );
+          yield* requireCurrentGeneration("startSession");
 
           const sessionScope = yield* Scope.make("sequential");
           let sessionContext: PrimeAgentSessionContext | undefined;
@@ -546,7 +564,15 @@ export function makePrimeAgentAdapter(
             threadId: input.threadId,
           });
           const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-          if (mcpSession !== undefined && mcpSession.providerInstanceId !== boundInstanceId) {
+          if (
+            mcpSession !== undefined &&
+            (mcpSession.providerInstanceId !== boundInstanceId ||
+              (primeRuntimeContext?.runtimeFence !== undefined &&
+                !McpProviderSession.isMcpProviderSessionOwnedByGeneration(
+                  input.threadId,
+                  primeRuntimeContext.runtimeFence,
+                )))
+          ) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
               operation: "startSession",
@@ -756,6 +782,7 @@ export function makePrimeAgentAdapter(
             Effect.forkChild,
           );
           ctx.notificationFiber = notificationFiber;
+          yield* requireCurrentGeneration("startSession");
           sessions.set(input.threadId, ctx);
           sessionScopeTransferred = true;
 

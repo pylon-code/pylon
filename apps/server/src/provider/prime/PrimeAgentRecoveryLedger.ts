@@ -61,9 +61,16 @@ export class PrimeAgentRecoveryLedgerError extends Schema.TaggedErrorClass<Prime
   }
 }
 
+const isPrimeAgentRecoveryLedgerError = Schema.is(PrimeAgentRecoveryLedgerError);
+
+interface PrimeAgentRecoveryCommitOptions {
+  readonly commitGuard?: Effect.Effect<boolean> | undefined;
+}
+
 export interface PrimeAgentRecoveryLedgerShape {
   readonly putPrepared: (
     authority: PrimeAgentRecoveryAuthority,
+    options?: PrimeAgentRecoveryCommitOptions,
   ) => Effect.Effect<void, PrimeAgentRecoveryLedgerError>;
   readonly get: (
     threadId: string,
@@ -72,63 +79,91 @@ export interface PrimeAgentRecoveryLedgerShape {
     ReadonlyArray<PrimeAgentRecoveryAuthority>,
     PrimeAgentRecoveryLedgerError
   >;
-  readonly markAdmitted: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly turnId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
-  readonly discardPrepared: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
-  readonly updateTranscriptProgress: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly cursor: typeof RecoveryCursor.Type;
-    readonly messageCount: number;
-    readonly fingerprints: ReadonlyArray<string>;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly markAdmitted: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly turnId: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly discardPrepared: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly updateTranscriptProgress: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly cursor: typeof RecoveryCursor.Type;
+      readonly messageCount: number;
+      readonly fingerprints: ReadonlyArray<string>;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
   /** Compare-and-swap the last durable owner. Exactly one restarted Pylon process can win. */
-  readonly claim: (input: {
-    readonly threadId: string;
-    readonly expectedOwnerToken: string;
-    readonly nextOwnerToken: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<Option.Option<PrimeAgentRecoveryAuthority>, PrimeAgentRecoveryLedgerError>;
-  readonly releaseClaim: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly previousOwnerToken: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly claim: (
+    input: {
+      readonly threadId: string;
+      readonly expectedOwnerToken: string;
+      readonly nextOwnerToken: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<Option.Option<PrimeAgentRecoveryAuthority>, PrimeAgentRecoveryLedgerError>;
+  readonly releaseClaim: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly previousOwnerToken: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
   /** Persist the rotated bearer authority before the SDK confirmation step. */
-  readonly commitAdoption: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly recoveryHandle: string;
-    readonly ownershipGeneration: number;
-    readonly cursor: typeof RecoveryCursor.Type;
-    readonly mcpOwnerId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
-  readonly markNativeCleanup: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
-  readonly markTerminalProjected: (input: {
-    readonly threadId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<void, PrimeAgentRecoveryLedgerError>;
-  readonly markCheckpointQuiesced: (input: {
-    readonly threadId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<void, PrimeAgentRecoveryLedgerError>;
+  readonly commitAdoption: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly recoveryHandle: string;
+      readonly ownershipGeneration: number;
+      readonly cursor: typeof RecoveryCursor.Type;
+      readonly mcpOwnerId: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly markNativeCleanup: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly markTerminalProjected: (
+    input: {
+      readonly threadId: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<void, PrimeAgentRecoveryLedgerError>;
+  readonly markCheckpointQuiesced: (
+    input: {
+      readonly threadId: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<void, PrimeAgentRecoveryLedgerError>;
   /** Deletes only after native cleanup, terminal projection, and checkpoint quiescence all hold. */
   readonly deleteIfSettled: (
     threadId: string,
+    options?: PrimeAgentRecoveryCommitOptions,
   ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
 }
 
@@ -265,7 +300,7 @@ export const make = Effect.gen(function* () {
     Effect.try({
       try: () => decodeRows(rows, operation),
       catch: (cause) =>
-        Schema.is(PrimeAgentRecoveryLedgerError)(cause) ? cause : ledgerError(operation, cause),
+        isPrimeAgentRecoveryLedgerError(cause) ? cause : ledgerError(operation, cause),
     });
 
   const queryByThread = (threadId: string) =>
@@ -281,10 +316,12 @@ export const make = Effect.gen(function* () {
   const get: PrimeAgentRecoveryLedgerShape["get"] = (threadId) =>
     queryByThread(threadId).pipe(Effect.map((rows) => Option.fromNullishOr(rows[0])));
 
-  const putPrepared: PrimeAgentRecoveryLedgerShape["putPrepared"] = (authority) =>
-    sql
-      .unsafe(
-        `INSERT INTO prime_agent_recovery_ledger (
+  const putPrepared: PrimeAgentRecoveryLedgerShape["putPrepared"] = (authority, options) =>
+    Effect.flatMap(options?.commitGuard ?? Effect.succeed(true), (current) =>
+      current
+        ? sql
+            .unsafe(
+              `INSERT INTO prime_agent_recovery_ledger (
           thread_id, provider_instance_id, session_incarnation_id, admission_request_id, turn_id,
           package_root, package_version, managed_build_id, sdk_features_json, daemon_capabilities_json,
           protocol_name, protocol_version, schema_revision, active_session_id, native_session_id,
@@ -294,42 +331,44 @@ export const make = Effect.gen(function* () {
           native_cleanup_proven, terminal_projected, checkpoint_quiesced, updated_at
         ) VALUES (${Array.from({ length: 32 }, () => "?").join(",")})
 `,
-        [
-          authority.threadId,
-          authority.providerInstanceId,
-          authority.sessionIncarnationId,
-          authority.admissionRequestId,
-          authority.turnId,
-          authority.packageRoot,
-          authority.packageVersion,
-          authority.managedBuildId,
-          JSON.stringify(authority.sdkFeatures),
-          JSON.stringify(authority.daemonCapabilities),
-          authority.protocolName,
-          authority.protocolVersion,
-          authority.schemaRevision,
-          authority.activeSessionId,
-          authority.nativeSessionId,
-          authority.recoveryHandle,
-          authority.supervisorGeneration,
-          authority.ownershipGeneration,
-          authority.cursor.generation,
-          authority.cursor.sequence,
-          authority.correlationId,
-          authority.mcpOwnerId,
-          JSON.stringify(authority.recoveryConfig),
-          JSON.stringify(authority.launchEnvironment),
-          authority.transcriptMessageCount,
-          JSON.stringify(authority.transcriptFingerprints),
-          authority.ownerToken,
-          authority.state,
-          authority.nativeCleanupProven ? 1 : 0,
-          authority.terminalProjected ? 1 : 0,
-          authority.checkpointQuiesced ? 1 : 0,
-          authority.updatedAt,
-        ],
-      )
-      .pipe(Effect.mapError(mapSqlError("putPrepared")), Effect.asVoid);
+              [
+                authority.threadId,
+                authority.providerInstanceId,
+                authority.sessionIncarnationId,
+                authority.admissionRequestId,
+                authority.turnId,
+                authority.packageRoot,
+                authority.packageVersion,
+                authority.managedBuildId,
+                JSON.stringify(authority.sdkFeatures),
+                JSON.stringify(authority.daemonCapabilities),
+                authority.protocolName,
+                authority.protocolVersion,
+                authority.schemaRevision,
+                authority.activeSessionId,
+                authority.nativeSessionId,
+                authority.recoveryHandle,
+                authority.supervisorGeneration,
+                authority.ownershipGeneration,
+                authority.cursor.generation,
+                authority.cursor.sequence,
+                authority.correlationId,
+                authority.mcpOwnerId,
+                JSON.stringify(authority.recoveryConfig),
+                JSON.stringify(authority.launchEnvironment),
+                authority.transcriptMessageCount,
+                JSON.stringify(authority.transcriptFingerprints),
+                authority.ownerToken,
+                authority.state,
+                authority.nativeCleanupProven ? 1 : 0,
+                authority.terminalProjected ? 1 : 0,
+                authority.checkpointQuiesced ? 1 : 0,
+                authority.updatedAt,
+              ],
+            )
+            .pipe(Effect.mapError(mapSqlError("putPrepared")), Effect.asVoid)
+        : Effect.void,
+    );
 
   const listActive: PrimeAgentRecoveryLedgerShape["listActive"] = () =>
     sql
@@ -345,30 +384,38 @@ export const make = Effect.gen(function* () {
     operation: string,
     statement: string,
     parameters: ReadonlyArray<unknown>,
+    options?: PrimeAgentRecoveryCommitOptions,
   ) =>
-    sql.unsafe(statement, parameters).pipe(
-      Effect.mapError(mapSqlError(operation)),
-      Effect.map((rows) => Array.isArray(rows) && rows.length === 1),
+    Effect.flatMap(options?.commitGuard ?? Effect.succeed(true), (current) =>
+      current
+        ? sql.unsafe(statement, parameters).pipe(
+            Effect.mapError(mapSqlError(operation)),
+            Effect.map((rows) => Array.isArray(rows) && rows.length === 1),
+          )
+        : Effect.succeed(false),
     );
 
-  const markAdmitted: PrimeAgentRecoveryLedgerShape["markAdmitted"] = (input) =>
+  const markAdmitted: PrimeAgentRecoveryLedgerShape["markAdmitted"] = (input, options) =>
     conditionalUpdate(
       "markAdmitted",
       `UPDATE prime_agent_recovery_ledger SET turn_id=?, state='active', updated_at=?
        WHERE thread_id=? AND owner_token=? AND state='prepared' RETURNING thread_id`,
       [input.turnId, input.updatedAt, input.threadId, input.ownerToken],
+      options,
     );
 
-  const discardPrepared: PrimeAgentRecoveryLedgerShape["discardPrepared"] = (input) =>
+  const discardPrepared: PrimeAgentRecoveryLedgerShape["discardPrepared"] = (input, options) =>
     conditionalUpdate(
       "discardPrepared",
       `DELETE FROM prime_agent_recovery_ledger
        WHERE thread_id=? AND owner_token=? AND state='prepared' RETURNING thread_id`,
       [input.threadId, input.ownerToken],
+      options,
     );
 
   const updateTranscriptProgress: PrimeAgentRecoveryLedgerShape["updateTranscriptProgress"] = (
     input,
+    options,
   ) =>
     conditionalUpdate(
       "updateTranscriptProgress",
@@ -385,27 +432,30 @@ export const make = Effect.gen(function* () {
         input.threadId,
         input.ownerToken,
       ],
+      options,
     );
 
-  const claim: PrimeAgentRecoveryLedgerShape["claim"] = (input) =>
+  const claim: PrimeAgentRecoveryLedgerShape["claim"] = (input, options) =>
     conditionalUpdate(
       "claim",
       `UPDATE prime_agent_recovery_ledger SET owner_token=?, state='adopting', updated_at=?
        WHERE thread_id=? AND owner_token=? AND state='active' RETURNING thread_id`,
       [input.nextOwnerToken, input.updatedAt, input.threadId, input.expectedOwnerToken],
+      options,
     ).pipe(
       Effect.flatMap((claimed) => (claimed ? get(input.threadId) : Effect.succeed(Option.none()))),
     );
 
-  const releaseClaim: PrimeAgentRecoveryLedgerShape["releaseClaim"] = (input) =>
+  const releaseClaim: PrimeAgentRecoveryLedgerShape["releaseClaim"] = (input, options) =>
     conditionalUpdate(
       "releaseClaim",
       `UPDATE prime_agent_recovery_ledger SET owner_token=?, state='active', updated_at=?
        WHERE thread_id=? AND owner_token=? AND state='adopting' RETURNING thread_id`,
       [input.previousOwnerToken, input.updatedAt, input.threadId, input.ownerToken],
+      options,
     );
 
-  const commitAdoption: PrimeAgentRecoveryLedgerShape["commitAdoption"] = (input) =>
+  const commitAdoption: PrimeAgentRecoveryLedgerShape["commitAdoption"] = (input, options) =>
     conditionalUpdate(
       "commitAdoption",
       `UPDATE prime_agent_recovery_ledger
@@ -422,40 +472,49 @@ export const make = Effect.gen(function* () {
         input.threadId,
         input.ownerToken,
       ],
+      options,
     );
 
-  const markNativeCleanup: PrimeAgentRecoveryLedgerShape["markNativeCleanup"] = (input) =>
+  const markNativeCleanup: PrimeAgentRecoveryLedgerShape["markNativeCleanup"] = (input, options) =>
     conditionalUpdate(
       "markNativeCleanup",
       `UPDATE prime_agent_recovery_ledger
        SET native_cleanup_proven=1, state='terminal', updated_at=?
        WHERE thread_id=? AND owner_token=? RETURNING thread_id`,
       [input.updatedAt, input.threadId, input.ownerToken],
+      options,
     );
 
-  const markTerminalProjected: PrimeAgentRecoveryLedgerShape["markTerminalProjected"] = (input) =>
-    sql
-      .unsafe(
-        `UPDATE prime_agent_recovery_ledger SET terminal_projected=1, updated_at=? WHERE thread_id=?`,
-        [input.updatedAt, input.threadId],
-      )
-      .pipe(Effect.mapError(mapSqlError("markTerminalProjected")), Effect.asVoid);
+  const markTerminalProjected: PrimeAgentRecoveryLedgerShape["markTerminalProjected"] = (
+    input,
+    options,
+  ) =>
+    conditionalUpdate(
+      "markTerminalProjected",
+      `UPDATE prime_agent_recovery_ledger SET terminal_projected=1, updated_at=? WHERE thread_id=? RETURNING thread_id`,
+      [input.updatedAt, input.threadId],
+      options,
+    ).pipe(Effect.asVoid);
 
-  const markCheckpointQuiesced: PrimeAgentRecoveryLedgerShape["markCheckpointQuiesced"] = (input) =>
-    sql
-      .unsafe(
-        `UPDATE prime_agent_recovery_ledger SET checkpoint_quiesced=1, updated_at=? WHERE thread_id=?`,
-        [input.updatedAt, input.threadId],
-      )
-      .pipe(Effect.mapError(mapSqlError("markCheckpointQuiesced")), Effect.asVoid);
+  const markCheckpointQuiesced: PrimeAgentRecoveryLedgerShape["markCheckpointQuiesced"] = (
+    input,
+    options,
+  ) =>
+    conditionalUpdate(
+      "markCheckpointQuiesced",
+      `UPDATE prime_agent_recovery_ledger SET checkpoint_quiesced=1, updated_at=? WHERE thread_id=? RETURNING thread_id`,
+      [input.updatedAt, input.threadId],
+      options,
+    ).pipe(Effect.asVoid);
 
-  const deleteIfSettled: PrimeAgentRecoveryLedgerShape["deleteIfSettled"] = (threadId) =>
+  const deleteIfSettled: PrimeAgentRecoveryLedgerShape["deleteIfSettled"] = (threadId, options) =>
     conditionalUpdate(
       "deleteIfSettled",
       `DELETE FROM prime_agent_recovery_ledger
        WHERE thread_id=? AND native_cleanup_proven=1 AND terminal_projected=1 AND checkpoint_quiesced=1
        RETURNING thread_id`,
       [threadId],
+      options,
     );
 
   return {

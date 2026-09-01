@@ -5,6 +5,7 @@ import {
   ServerProvider as ServerProviderSchema,
 } from "@t3tools/contracts";
 import { causeErrorTag } from "@t3tools/shared/observability";
+import type * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -12,8 +13,16 @@ import * as Schema from "effect/Schema";
 
 import { writeFileStringAtomically } from "../atomicWrite.ts";
 
-const decodeProviderStatusCache = Schema.decodeUnknownEffect(
+const PrivateProviderStatusCache = Schema.Struct({
+  version: Schema.Literal(1),
+  configRevision: Schema.String,
+  provider: ServerProviderSchema,
+});
+const decodeLegacyProviderStatusCache = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ServerProviderSchema),
+);
+const decodePrivateProviderStatusCache = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PrivateProviderStatusCache),
 );
 
 const mergeProviderModels = (
@@ -115,7 +124,10 @@ export const resolveLegacyProviderStatusCachePath = Effect.fn(
   return path.join(input.cacheDir, `${input.provider}.json`);
 });
 
-export const readProviderStatusCache = (filePath: string) =>
+export const readProviderStatusCache = (
+  filePath: string,
+  options?: { readonly configRevision?: string | undefined },
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const exists = yield* fs.exists(filePath).pipe(Effect.orElseSucceed(() => false));
@@ -129,25 +141,43 @@ export const readProviderStatusCache = (filePath: string) =>
       return undefined;
     }
 
-    return yield* decodeProviderStatusCache(trimmed).pipe(
+    const expectedRevision = options?.configRevision;
+    const onDecodeFailure = (cause: Cause.Cause<unknown>) =>
+      Effect.logWarning("failed to parse provider status cache, ignoring", {
+        path: filePath,
+        errorTag: causeErrorTag(cause),
+      }).pipe(Effect.as(undefined));
+    if (expectedRevision === undefined) {
+      return yield* decodeLegacyProviderStatusCache(trimmed).pipe(
+        Effect.matchCauseEffect({
+          onFailure: onDecodeFailure,
+          onSuccess: Effect.succeed,
+        }),
+      );
+    }
+    const decoded = yield* decodePrivateProviderStatusCache(trimmed).pipe(
       Effect.matchCauseEffect({
-        onFailure: (cause) =>
-          Effect.logWarning("failed to parse provider status cache, ignoring", {
-            path: filePath,
-            errorTag: causeErrorTag(cause),
-          }).pipe(Effect.as(undefined)),
+        onFailure: onDecodeFailure,
         onSuccess: Effect.succeed,
       }),
     );
+    return decoded?.configRevision === expectedRevision ? decoded.provider : undefined;
   });
 
 export const writeProviderStatusCache = (input: {
   readonly filePath: string;
   readonly provider: ServerProvider;
+  readonly configRevision?: string | undefined;
+  readonly commitGuard?: Effect.Effect<boolean>;
 }) => {
   const { updateState: _updateState, ...cacheableProvider } = input.provider;
+  const contents =
+    input.configRevision === undefined
+      ? cacheableProvider
+      : { version: 1 as const, configRevision: input.configRevision, provider: cacheableProvider };
   return writeFileStringAtomically({
     filePath: input.filePath,
-    contents: `${JSON.stringify(cacheableProvider, null, 2)}\n`,
+    contents: `${JSON.stringify(contents, null, 2)}\n`,
+    ...(input.commitGuard === undefined ? {} : { commitGuard: input.commitGuard }),
   });
 };
