@@ -20,15 +20,17 @@ import * as Stream from "effect/Stream";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import { describe, expect, it } from "vite-plus/test";
 
-import { persistPrimeManagedReceipt } from "./PrimeAgentDistributionVerifier.ts";
+import { makePrimeArtifactGraduationHarness } from "./PrimeAgentArtifactGraduation.test-fixture.ts";
 
-const packageRoot = NodeProcess.env.PRIME_AGENT_REAL_PACKAGE_ROOT?.trim();
-const exactHead = "a3dd5ce633fef161d30ded9474f75a609a9e7a2a";
+const artifactDirectory = NodeProcess.env.PYLON_PRIME_ARTIFACT_DIR?.trim();
+const previewTag = NodeProcess.env.PYLON_PRIME_PREVIEW_TAG?.trim();
+const stockBinaryPath = NodeProcess.env.PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN?.trim();
 const skipReason =
   NodeProcess.platform === "win32"
-    ? "native Windows is unsupported; run the POSIX proof in WSL2 with a Linux PRIME_AGENT_REAL_PACKAGE_ROOT"
-    : `set PRIME_AGENT_REAL_PACKAGE_ROOT to the built exact Prime checkout at ${exactHead}`;
-const enabled = NodeProcess.platform !== "win32" && Boolean(packageRoot);
+    ? "native Windows is unsupported; run the POSIX proof in WSL2"
+    : "set the exact Prime graduation artifact directory, preview tag, and stock fixture";
+const enabled =
+  NodeProcess.platform !== "win32" && Boolean(artifactDirectory && previewTag && stockBinaryPath);
 const outerSafetyMs = 180_000;
 const maximumOutputBytes = 2 * 1024 * 1024;
 const providerInstanceId = "primeAgent";
@@ -304,7 +306,9 @@ const sanitizeServerEnvironment = (home) => {
       name.startsWith("RLM_") ||
       name === "PRIME_AGENT_CODING_AGENT_DIR" ||
       name === "PI_CODING_AGENT_DIR" ||
-      name === "PRIME_AGENT_REAL_PACKAGE_ROOT" ||
+      name === "PYLON_PRIME_ARTIFACT_DIR" ||
+      name === "PYLON_PRIME_PREVIEW_TAG" ||
+      name === "PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN" ||
       name === "FORCE_COLOR" ||
       name === "VITEST" ||
       name.startsWith("VITEST_") ||
@@ -325,57 +329,32 @@ const sanitizeServerEnvironment = (home) => {
   };
 };
 
-const createPrimeFacade = async (temp, sourceRoot, sourceCommit, sourceTree) => {
-  const codingAgentRoot = NodePath.join(sourceRoot, "packages", "coding-agent");
-  const sdkEntry = NodePath.join(codingAgentRoot, "dist", "index.js");
-  const cliEntry = NodePath.join(codingAgentRoot, "dist", "bundle", "cli.js");
-  const aiEntry = NodePath.join(sourceRoot, "packages", "ai", "dist", "index.js");
-  for (const required of [sdkEntry, cliEntry, aiEntry]) {
-    await NodeFSP.access(required);
+const createPrimeFacade = async (stateDir) => {
+  const harness = await makePrimeArtifactGraduationHarness({
+    stateDir,
+    artifactDirectory,
+    previewTag,
+    stockBinaryPath,
+    platform: NodeProcess.platform,
+  });
+  const receipt = await harness.command({
+    commandId: "restart-adoption-graduation-install",
+    action: "install",
+    channel: "preview",
+    allowPreview: true,
+    scheduleIfBusy: false,
+  });
+  if (receipt.status !== "succeeded") {
+    throw new Error(`verified Prime graduation install failed: ${receipt.message}`);
   }
-
-  const facadeRoot = NodePath.join(temp, "prime-package");
-  await NodeFSP.mkdir(facadeRoot, { recursive: true, mode: 0o700 });
-  const executable = NodePath.join(facadeRoot, "prime-agent");
-  const moduleEntry = NodePath.join(facadeRoot, "index.mjs");
-  const buildId = `pylon-build-g${sourceCommit.slice(0, 12)}-r1`;
-  await NodeFSP.writeFile(
-    executable,
-    `#!/usr/bin/env node\nprocess.argv[1] = ${JSON.stringify(cliEntry)};\nawait import(${JSON.stringify(NodeURL.pathToFileURL(cliEntry).href)});\n`,
-    { mode: 0o700 },
-  );
-  await NodeFSP.writeFile(
-    moduleEntry,
-    `export * from ${JSON.stringify(NodeURL.pathToFileURL(sdkEntry).href)};\n`,
-    "utf8",
-  );
-  await NodeFSP.writeFile(
-    NodePath.join(facadeRoot, "package.json"),
-    `${JSON.stringify(
-      {
-        name: "prime-agent",
-        version: "0.8.1",
-        type: "module",
-        exports: "./index.mjs",
-        bin: { "prime-agent": "./prime-agent" },
-        pylonDistribution: {
-          schemaVersion: 1,
-          repository: "https://github.com/pylon-code/prime-agent",
-          sourceCommit,
-          sourceTree,
-          buildId,
-          recipeRevision: 1,
-          node: "22.23.2",
-          npm: "11.10.1",
-          packageLockSha256: "0".repeat(64),
-        },
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-  return { facadeRoot, executable, sdkEntry, aiEntry, buildId };
+  const status = await harness.status();
+  const installed = status.availableBuilds.find((build) => build.buildId === receipt.buildId);
+  if (installed === undefined) throw new Error("verified Prime graduation build was not installed");
+  return {
+    facadeRoot: installed.packageRoot,
+    executable: installed.binaryPath,
+    sdkEntry: NodePath.join(installed.packageRoot, "dist", "index.js"),
+  };
 };
 
 const writeFixtureModelConfig = async (agentHome, port) => {
@@ -417,15 +396,7 @@ const writeFixtureModelConfig = async (agentHome, port) => {
   );
 };
 
-const preparePylonState = async (
-  baseDir,
-  executable,
-  agentHome,
-  facadeRoot,
-  buildId,
-  sourceCommit,
-  sourceTree,
-) => {
+const preparePylonState = async (baseDir, executable, agentHome) => {
   const stateDir = NodePath.join(baseDir, "userdata");
   await NodeFSP.mkdir(stateDir, { recursive: true, mode: 0o700 });
   await NodeFSP.writeFile(
@@ -449,23 +420,6 @@ const preparePylonState = async (
     )}\n`,
     { mode: 0o600 },
   );
-  await persistPrimeManagedReceipt({
-    stateDir,
-    instanceId: providerInstanceId,
-    packageRoot: facadeRoot,
-    platform: NodeProcess.platform,
-    publication: {
-      channel: "preview",
-      sequenceEpoch: 1,
-      sequence: 1,
-      buildId,
-      sourceCommit,
-      sourceTree,
-      recipeRevision: 1,
-      rootAsset: "pylon-prime-agent-0.8.1.tgz",
-      rootSha256: "1".repeat(64),
-    },
-  });
   return stateDir;
 };
 
@@ -901,33 +855,12 @@ const runRestartedTurn = ({ wsUrl, threadId, fixture, onRecoveredActivity }) =>
   );
 
 describe.skipIf(!enabled)(
-  `Prime Agent repeated Pylon-server restart adoption (${enabled ? "enabled" : skipReason})`,
+  `Prime Agent downloaded-artifact Pylon restart adoption (${enabled ? "enabled" : skipReason})`,
   () => {
     it(
       "adopts one live owned worker across the real server boundary and cleans it authoritatively",
       async () => {
         const repoRoot = NodePath.resolve(import.meta.dirname, "../../../../..");
-        const sourceRoot = NodePath.resolve(packageRoot);
-        const sourceHead = (
-          await runCaptured(
-            "git",
-            ["-C", sourceRoot, "rev-parse", "HEAD"],
-            { stdio: ["ignore", "pipe", "pipe"] },
-            5_000,
-            "Prime source HEAD",
-          )
-        ).trim();
-        const sourceTree = (
-          await runCaptured(
-            "git",
-            ["-C", sourceRoot, "rev-parse", "HEAD^{tree}"],
-            { stdio: ["ignore", "pipe", "pipe"] },
-            5_000,
-            "Prime source tree",
-          )
-        ).trim();
-        expect(sourceHead).toBe(exactHead);
-
         const temp = await NodeFSP.realpath(
           await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pylon-repeated-server-adoption-")),
         );
@@ -978,18 +911,12 @@ describe.skipIf(!enabled)(
           );
 
           fixture = await startFixtureBackend();
-          const primeFacade = await createPrimeFacade(temp, sourceRoot, sourceHead, sourceTree);
+          const stateDir = NodePath.join(baseDir, "userdata");
+          await NodeFSP.mkdir(stateDir, { recursive: true, mode: 0o700 });
+          const primeFacade = await createPrimeFacade(stateDir);
           primeSdkEntry = primeFacade.sdkEntry;
           await writeFixtureModelConfig(agentHome, fixture.port);
-          const stateDir = await preparePylonState(
-            baseDir,
-            primeFacade.executable,
-            agentHome,
-            primeFacade.facadeRoot,
-            primeFacade.buildId,
-            sourceHead,
-            sourceTree,
-          );
+          await preparePylonState(baseDir, primeFacade.executable, agentHome);
           const databasePath = NodePath.join(stateDir, "state.sqlite");
           daemonSocket = NodePath.join(
             NodeOS.tmpdir(),
@@ -1426,7 +1353,7 @@ describe.skipIf(!enabled)(
               ),
             ),
             primeFacade.facadeRoot,
-            sourceRoot,
+            artifactDirectory,
             home,
             agentHome,
             daemonSocket,

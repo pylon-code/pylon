@@ -46,6 +46,27 @@ Focused tests use deterministic manifests and a cryptographic-verifier seam, the
 and SLSA binding separately. Bridge CI can supply the first immutable artifact set through the
 fail-closed real-fixture gate. The gate has no skip or metadata-only success mode.
 
+## Protected real-artifact graduation
+
+The manually dispatched `Prime artifact graduation` workflow is the enforced public-artifact proof. It
+downloads one exact immutable preview release into runner-temporary storage, then calls
+`verifyPrimePublicationArtifactDirectory` over the local release metadata, complete asset set, manifests,
+attestation bundles, source commit/tree receipt, and frozen signer workflow. That function uses the same
+server-owned Sigstore verifier and publication policy as the network loader. It exposes verified archive
+bytes only after every release, subject, source, workflow, recipe, and digest binding succeeds.
+
+The workflow then passes those bytes through the production managed tool store. Stock is independently
+downloaded at exact version and installed with lifecycle scripts disabled. Real opt-in tests consume the
+artifact directory rather than a source checkout or caller-supplied executable and repeat verification
+before installing their private managed copy. Ordinary pull-request CI can skip these public-network
+proofs; the protected workflow sets a required-fixture mode and rejects any skipped test. Its faux model
+backend needs no cloud credential.
+
+The gate is deliberately non-publishing. A successful run emits only public build identities, digests,
+case names, and aggregate counts. The [Prime artifact graduation runbook](../operations/prime-artifact-graduation.md)
+requires its run URL before a separate human can approve Prime stable promotion. Native multi-instance
+execution remains evidence only and does not change the product capability gate.
+
 ## Private managed state
 
 Distribution state is scoped by a SHA-256 hash of the provider instance id below:

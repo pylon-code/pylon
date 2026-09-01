@@ -6,6 +6,7 @@ import {
   getServerProviderSupportedRuntimeModes,
   resolveServerProviderRuntimeMode,
   ServerConfig,
+  ServerPrimeManagedInstalledBuild,
   ServerProvider,
   ServerProviders,
   ServerUpsertKeybindingResult,
@@ -14,6 +15,7 @@ import {
 } from "./server.ts";
 
 const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
+const decodePrimeManagedInstalledBuild = Schema.decodeUnknownSync(ServerPrimeManagedInstalledBuild);
 const decodeServerProviders = Schema.decodeUnknownSync(ServerProviders);
 const decodeUpsertKeybindingResult = Schema.decodeUnknownSync(ServerUpsertKeybindingResult);
 const decodeAvailableEditors = Schema.decodeUnknownSync(ServerConfig.fields.availableEditors);
@@ -29,6 +31,24 @@ const baseProviderSnapshot = {
   checkedAt: "2026-04-10T00:00:00.000Z",
   models: [],
 };
+
+describe("ServerPrimeManagedInstalledBuild", () => {
+  it("never serializes the environment-native managed launcher path", () => {
+    const parsed = decodePrimeManagedInstalledBuild({
+      buildId: "pylon-build-g123456789abc-r1",
+      channel: "preview",
+      sequence: 1,
+      binaryPath: "/private/environment/provider-tools/prime-agent",
+    });
+
+    expect(parsed).toEqual({
+      buildId: "pylon-build-g123456789abc-r1",
+      channel: "preview",
+      sequence: 1,
+    });
+    expect(JSON.stringify(parsed)).not.toContain("/private/environment");
+  });
+});
 
 describe("ServerProvider", () => {
   it("defaults capability arrays when decoding provider snapshots", () => {

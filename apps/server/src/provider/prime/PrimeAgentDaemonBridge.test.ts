@@ -1,11 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 
+import { makePrimeArtifactGraduationHarness } from "./PrimeAgentArtifactGraduation.test-fixture.ts";
 import {
   isPathInside,
   loadPrimeAgentDaemonBridge,
@@ -16,9 +19,14 @@ import {
 } from "./PrimeAgentDaemonBridge.ts";
 
 const temporaryDirectories: Array<string> = [];
-const configuredNegotiatedProofArtifactBinary =
-  process.env.PYLON_PRIME_AGENT_NEGOTIATED_PROOF_ARTIFACT_BIN?.trim();
+const configuredGraduationArtifactDirectory = process.env.PYLON_PRIME_ARTIFACT_DIR?.trim();
+const configuredGraduationPreviewTag = process.env.PYLON_PRIME_PREVIEW_TAG?.trim();
 const configuredStockArtifactBinary = process.env.PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN?.trim();
+const configuredNegotiatedProofArtifact = Boolean(
+  configuredGraduationArtifactDirectory &&
+  configuredGraduationPreviewTag &&
+  configuredStockArtifactBinary,
+);
 
 function makeTemporaryDirectory(): string {
   const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "pylon-prime-bridge-"));
@@ -420,11 +428,37 @@ export class DaemonClient`,
     }),
   );
 
-  it.effect.skipIf(!configuredNegotiatedProofArtifactBinary)(
-    "loads the pinned negotiated-proof artifact through the public package bridge",
+  it.effect.skipIf(!configuredNegotiatedProofArtifact)(
+    "loads the verified graduation artifact through the public package bridge",
     () =>
       Effect.gen(function* () {
-        const bridge = yield* loadPrimeAgentDaemonBridge(configuredNegotiatedProofArtifactBinary!);
+        const stateDir = yield* Effect.promise(() =>
+          NodeFSP.realpath(
+            NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "pylon-prime-bridge-graduation-")),
+          ),
+        );
+        temporaryDirectories.push(stateDir);
+        const platform = yield* HostProcessPlatform;
+        const harness = yield* Effect.promise(() =>
+          makePrimeArtifactGraduationHarness({
+            stateDir,
+            artifactDirectory: configuredGraduationArtifactDirectory!,
+            previewTag: configuredGraduationPreviewTag!,
+            stockBinaryPath: configuredStockArtifactBinary!,
+            platform,
+          }),
+        );
+        const installed = yield* Effect.promise(() =>
+          harness.command({
+            commandId: "bridge-graduation-install",
+            action: "install",
+            channel: "preview",
+            allowPreview: true,
+            scheduleIfBusy: false,
+          }),
+        );
+        expect(installed.status).toBe("succeeded");
+        const bridge = yield* loadPrimeAgentDaemonBridge(harness.binding().binaryPath);
 
         expect(bridge.version).toBe("0.8.1");
         expect(bridge.protocolVersion).toBe(PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION);

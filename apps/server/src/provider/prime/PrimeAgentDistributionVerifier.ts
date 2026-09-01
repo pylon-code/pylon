@@ -26,6 +26,11 @@ export const PRIME_STABLE_MANIFEST = "pylon-stable-channel-v1.json";
 export const PRIME_RECEIPT_FILE = "managed-receipt-v1.json";
 export const PRIME_HIGH_WATER_FILE = "channel-high-water-v1.json";
 export const PRIME_RECEIPT_KEY_FILE = "receipt-auth-v1.key";
+export const PRIME_GRADUATION_RELEASE_METADATA = "github-release.json";
+export const PRIME_GRADUATION_COMMIT_METADATA = "github-commit.json";
+export const PRIME_GRADUATION_ATTESTATIONS = "github-attestations.json";
+export const PRIME_GRADUATION_PREVIEW_WORKFLOW = "pylon-preview-release.yml";
+export const PRIME_GRADUATION_ASSETS_DIRECTORY = "assets";
 
 const GITHUB_REPOSITORY_ID = "1349002285";
 const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
@@ -319,6 +324,7 @@ const GitHubReleaseAssetSchema = Schema.Struct({
   name: Schema.String,
   size: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   browser_download_url: Schema.String,
+  digest: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const GitHubReleaseSchema = Schema.Struct({
   id: POSITIVE_INT,
@@ -1996,6 +2002,305 @@ export function makeLatestPrimePublicationBundleLoader(
       });
     cache.bundleFlight = flight;
     return await flight;
+  };
+}
+
+const PRIME_GRADUATION_ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+
+async function readPrimeGraduationFixtureFile(
+  root: string,
+  relativePath: string,
+  maxBytes: number,
+): Promise<Buffer> {
+  const parts = relativePath.split("/");
+  if (
+    parts.length < 1 ||
+    parts.some(
+      (part) => !part || part === "." || part === ".." || !PRIME_GRADUATION_ASSET_NAME.test(part),
+    )
+  ) {
+    throw new Error("Prime graduation fixture contains an unsafe file name.");
+  }
+  const path = NodePath.join(root, ...parts);
+  if (NodePath.relative(root, path).startsWith("..")) {
+    throw new Error("Prime graduation fixture file escapes its root.");
+  }
+  const handle = await NodeFSP.open(
+    path,
+    NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size < 1n || before.size > BigInt(maxBytes)) {
+      throw new Error("Prime graduation fixture file exceeds its bounded size.");
+    }
+    const bytes = Buffer.alloc(Number(before.size));
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const read = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
+      if (read.bytesRead === 0) throw new Error("Prime graduation fixture file was truncated.");
+      offset += read.bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    const pathAfter = await NodeFSP.lstat(path, { bigint: true });
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      after.dev !== pathAfter.dev ||
+      after.ino !== pathAfter.ino ||
+      !pathAfter.isFile()
+    ) {
+      throw new Error("Prime graduation fixture file changed while it was read.");
+    }
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
+function parsePrimeGraduationJson(bytes: Buffer, label: string): unknown {
+  try {
+    return JSON.parse(bytes.toString("utf8")) as unknown;
+  } catch (cause) {
+    throw new Error(`${label} is not JSON.`, { cause });
+  }
+}
+
+export interface PrimeGraduationVerifiedArtifact {
+  readonly publication: VerifiedPrimePublication;
+  readonly rootArtifactBytes: Buffer;
+  readonly assetDigests: ReadonlyArray<{
+    readonly name: string;
+    readonly sha256: string;
+    readonly sha512: string;
+    readonly size: number;
+  }>;
+}
+
+/**
+ * Re-verifies a fully downloaded immutable preview from runner-local bytes. This boundary performs
+ * the same Sigstore, source-policy, release-shape, and digest checks as the network loader before it
+ * returns any archive bytes to the managed tool store.
+ */
+export async function verifyPrimePublicationArtifactDirectory(input: {
+  readonly tag?: string;
+  readonly artifactDirectory?: string;
+  readonly tufCachePath?: string;
+}): Promise<PrimeGraduationVerifiedArtifact> {
+  const required = requireRealPrimePublicationFixture(input);
+  if (!/^pylon-build-g[0-9a-f]{12}-r[1-9][0-9]*$/u.test(required.tag)) {
+    throw new Error("Prime artifact graduation requires an immutable preview tag.");
+  }
+  const root = NodePath.resolve(required.artifactDirectory);
+  if ((await NodeFSP.realpath(root)) !== root) {
+    throw new Error("Prime graduation fixture directory is not canonical.");
+  }
+  const expectedRootEntries = new Set([
+    PRIME_GRADUATION_RELEASE_METADATA,
+    PRIME_GRADUATION_COMMIT_METADATA,
+    PRIME_GRADUATION_ATTESTATIONS,
+    PRIME_GRADUATION_PREVIEW_WORKFLOW,
+    PRIME_GRADUATION_ASSETS_DIRECTORY,
+  ]);
+  const rootEntries = await NodeFSP.readdir(root, { withFileTypes: true });
+  if (
+    rootEntries.length !== expectedRootEntries.size ||
+    rootEntries.some((entry) => {
+      const expectedDirectory = entry.name === PRIME_GRADUATION_ASSETS_DIRECTORY;
+      return (
+        !expectedRootEntries.delete(entry.name) ||
+        entry.isSymbolicLink() ||
+        (expectedDirectory ? !entry.isDirectory() : !entry.isFile())
+      );
+    }) ||
+    expectedRootEntries.size !== 0
+  ) {
+    throw new Error("Prime graduation fixture root set is not exact.");
+  }
+
+  const release = decodeGitHubRelease(
+    parsePrimeGraduationJson(
+      await readPrimeGraduationFixtureFile(
+        root,
+        PRIME_GRADUATION_RELEASE_METADATA,
+        MAX_RELEASE_RESPONSE_BYTES,
+      ),
+      "Prime graduation release metadata",
+    ),
+  );
+  if (
+    release.tag_name !== required.tag ||
+    release.draft ||
+    !release.prerelease ||
+    !release.immutable
+  ) {
+    throw new Error("Prime graduation release is not the exact immutable preview tag.");
+  }
+  const releaseAssetNames = new Set<string>();
+  for (const asset of release.assets) {
+    if (
+      !PRIME_GRADUATION_ASSET_NAME.test(asset.name) ||
+      releaseAssetNames.has(asset.name) ||
+      asset.browser_download_url !==
+        `${PRIME_DISTRIBUTION_REPOSITORY_URL}/releases/download/${required.tag}/${asset.name}`
+    ) {
+      throw new Error("Prime graduation release asset identity is not exact.");
+    }
+    releaseAssetNames.add(asset.name);
+  }
+  const assetDirectory = NodePath.join(root, PRIME_GRADUATION_ASSETS_DIRECTORY);
+  if ((await NodeFSP.realpath(assetDirectory)) !== assetDirectory) {
+    throw new Error("Prime graduation asset directory is not canonical.");
+  }
+  const localAssetEntries = await NodeFSP.readdir(assetDirectory, { withFileTypes: true });
+  if (
+    localAssetEntries.length !== releaseAssetNames.size ||
+    localAssetEntries.some(
+      (entry) => entry.isSymbolicLink() || !entry.isFile() || !releaseAssetNames.delete(entry.name),
+    ) ||
+    releaseAssetNames.size !== 0
+  ) {
+    throw new Error("Prime graduation downloaded asset set is not exact.");
+  }
+
+  const releaseManifestBytes = await readPrimeGraduationFixtureFile(
+    root,
+    `${PRIME_GRADUATION_ASSETS_DIRECTORY}/${PRIME_RELEASE_MANIFEST}`,
+    MAX_MANIFEST_BYTES,
+  );
+  const previewManifestBytes = await readPrimeGraduationFixtureFile(
+    root,
+    `${PRIME_GRADUATION_ASSETS_DIRECTORY}/${PRIME_PREVIEW_MANIFEST}`,
+    MAX_MANIFEST_BYTES,
+  );
+  for (const [name, bytes] of [
+    [PRIME_RELEASE_MANIFEST, releaseManifestBytes],
+    [PRIME_PREVIEW_MANIFEST, previewManifestBytes],
+  ] as const) {
+    const metadata = releaseAsset(release, name);
+    if (metadata.size !== bytes.byteLength || metadata.digest !== `sha256:${sha256(bytes)}`) {
+      throw new Error("Prime graduation manifest bytes do not match GitHub asset metadata.");
+    }
+  }
+  const parsedRelease = parseReleaseManifest(releaseManifestBytes);
+  const expectedPreviewAssets = new Set([
+    PRIME_RELEASE_MANIFEST,
+    PRIME_PREVIEW_MANIFEST,
+    ...parsedRelease.assets.map((asset) => asset.file),
+  ]);
+  if (
+    release.assets.length !== expectedPreviewAssets.size ||
+    release.assets.some((asset) => !expectedPreviewAssets.delete(asset.name)) ||
+    expectedPreviewAssets.size !== 0
+  ) {
+    throw new Error("Prime graduation release asset set does not match its build manifest.");
+  }
+
+  const assetDigests: Array<{
+    readonly name: string;
+    readonly sha256: string;
+    readonly sha512: string;
+    readonly size: number;
+  }> = [];
+  let rootArtifactBytes: Buffer | undefined;
+  for (const expected of parsedRelease.assets) {
+    const releaseAssetMetadata = releaseAsset(release, expected.file);
+    const bytes = await readPrimeGraduationFixtureFile(
+      root,
+      `${PRIME_GRADUATION_ASSETS_DIRECTORY}/${expected.file}`,
+      MAX_ROOT_ARTIFACT_BYTES,
+    );
+    const sha256Digest = sha256(bytes);
+    const sha512Digest = sha512(bytes);
+    if (
+      bytes.byteLength !== expected.size ||
+      releaseAssetMetadata.size !== expected.size ||
+      releaseAssetMetadata.digest !== `sha256:${sha256Digest}` ||
+      sha256Digest !== expected.sha256 ||
+      sha512Digest !== expected.sha512
+    ) {
+      throw new Error("Prime graduation asset bytes do not match the signed build manifest.");
+    }
+    assetDigests.push({
+      name: expected.file,
+      size: bytes.byteLength,
+      sha256: sha256Digest,
+      sha512: sha512Digest,
+    });
+    if (expected.package === "prime-agent") rootArtifactBytes = bytes;
+  }
+  if (!rootArtifactBytes) throw new Error("Prime graduation fixture has no root Prime artifact.");
+
+  const attestations = decodeGitHubAttestations(
+    parsePrimeGraduationJson(
+      await readPrimeGraduationFixtureFile(
+        root,
+        PRIME_GRADUATION_ATTESTATIONS,
+        MAX_ATTESTATION_RESPONSE_BYTES,
+      ),
+      "Prime graduation attestations",
+    ),
+  ).attestations.map((entry) => entry.bundle);
+  const subjectDigests = [
+    ...parsedRelease.assets.map((asset) => asset.sha256),
+    sha256(releaseManifestBytes),
+    sha256(previewManifestBytes),
+  ];
+  const fixture: PrimePublicationFixture = {
+    channel: "preview",
+    releaseManifestBytes,
+    previewManifestBytes,
+    rootArtifactBytes,
+    attestationBundlesBySubjectSha256: new Map(
+      subjectDigests.map((digest) => [digest, attestations] as const),
+    ),
+  };
+  const commit = decodeGitHubCommit(
+    parsePrimeGraduationJson(
+      await readPrimeGraduationFixtureFile(
+        root,
+        PRIME_GRADUATION_COMMIT_METADATA,
+        MAX_RELEASE_RESPONSE_BYTES,
+      ),
+      "Prime graduation commit metadata",
+    ),
+  );
+  const workflowBytes = await readPrimeGraduationFixtureFile(
+    root,
+    PRIME_GRADUATION_PREVIEW_WORKFLOW,
+    MAX_MANIFEST_BYTES,
+  );
+  const trustedRoot = await getTrustedRoot({
+    ...(input.tufCachePath ? { cachePath: input.tufCachePath } : {}),
+    timeout: FETCH_TIMEOUT_MS,
+    retry: { retries: 1 },
+  });
+  const publication = await verifyPrimePublicationFixture(fixture, {
+    verifyBundle: async (bundle, expected) =>
+      verifyPrimeSigstoreBundle(bundle, trustedRoot, expected),
+    verifySourcePolicy: async (expected) => {
+      if (
+        expected.workflow !== PRIME_PREVIEW_WORKFLOW ||
+        expected.publicationPolicyRevision !== PRIME_PUBLICATION_POLICY.publicationPolicyRevision ||
+        expected.commit !== commit.sha ||
+        expected.tree !== commit.tree.sha ||
+        sha256(workflowBytes) !== PRIME_PUBLICATION_POLICY.previewWorkflowSha256
+      ) {
+        throw new Error(
+          "Prime graduation source head, tree, workflow, or policy revision is not exact.",
+        );
+      }
+    },
+  });
+  if (publication.buildId !== required.tag) {
+    throw new Error("Prime graduation tag and verified build identity differ.");
+  }
+  return {
+    publication,
+    rootArtifactBytes,
+    assetDigests: assetDigests.toSorted((left, right) => compareText(left.name, right.name)),
   };
 }
 

@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeHttp from "node:http";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 
@@ -29,6 +30,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
+import { makePrimeArtifactGraduationHarness } from "./PrimeAgentArtifactGraduation.test-fixture.ts";
 import { ServerConfig } from "../../config.ts";
 import { clearMcpProviderSession, setMcpProviderSession } from "../../mcp/McpProviderSession.ts";
 import { makePrimeAgentDaemonAdapter } from "./PrimeAgentDaemonAdapter.ts";
@@ -45,9 +47,14 @@ import {
 } from "./PrimeAgentDaemonSessionRuntime.ts";
 import type { PrimeAgentRuntimeContext } from "./PrimeAgentRuntimeContext.ts";
 
-const configuredExecutable = process.env.PYLON_REAL_PRIME_AGENT?.trim();
+const configuredArtifactDirectory = process.env.PYLON_PRIME_ARTIFACT_DIR?.trim();
+const configuredPreviewTag = process.env.PYLON_PRIME_PREVIEW_TAG?.trim();
+const configuredStockBinary = process.env.PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN?.trim();
 const configuredAuthHome = process.env.PYLON_REAL_PRIME_AGENT_AUTH_HOME?.trim();
 const runMultipleInstanceProof = process.env.PYLON_REAL_PRIME_AGENT_MULTI_PROOF === "1";
+const configuredGraduationArtifact = Boolean(
+  configuredArtifactDirectory && configuredPreviewTag && configuredStockBinary,
+);
 const configuredCount = Number(process.env.PYLON_REAL_PRIME_AGENT_MULTI_COUNT ?? "2");
 const RESOURCE_CEILINGS = new Map<
   number,
@@ -106,16 +113,53 @@ interface ResourceSnapshot {
   readonly socketCount: number;
 }
 
-function copyAuthFixture(home: string): void {
+function copyAuthFixture(home: string, fauxPort: number): void {
   NodeFS.mkdirSync(home, { recursive: true, mode: 0o700 });
-  if (!configuredAuthHome) return;
-  for (const fileName of ["auth.json", "settings.json"]) {
-    const source = NodePath.join(configuredAuthHome, fileName);
-    if (!NodeFS.existsSync(source)) continue;
-    const destination = NodePath.join(home, fileName);
-    NodeFS.copyFileSync(source, destination);
-    NodeFS.chmodSync(destination, 0o600);
+  if (configuredAuthHome) {
+    for (const fileName of ["auth.json", "settings.json"]) {
+      const source = NodePath.join(configuredAuthHome, fileName);
+      if (!NodeFS.existsSync(source)) continue;
+      const destination = NodePath.join(home, fileName);
+      NodeFS.copyFileSync(source, destination);
+      NodeFS.chmodSync(destination, 0o600);
+    }
   }
+  NodeFS.writeFileSync(
+    NodePath.join(home, "models.json"),
+    `${JSON.stringify(
+      {
+        providers: {
+          "faux-multi": {
+            baseUrl: `http://127.0.0.1:${fauxPort}/v1`,
+            api: "openai-completions",
+            apiKey: "faux-graduation-key",
+            authHeader: true,
+            compat: {
+              supportsDeveloperRole: false,
+              supportsReasoningEffort: false,
+              supportsUsageInStreaming: false,
+              maxTokensField: "max_tokens",
+            },
+            models: [
+              {
+                id: "faux-multi",
+                name: "Faux Multi",
+                reasoning: false,
+                input: ["text"],
+                contextWindow: 128_000,
+                maxTokens: 4_096,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              },
+            ],
+          },
+        },
+      },
+      null,
+      2,
+    )}
+`,
+    { mode: 0o600 },
+  );
 }
 
 function proofEnvironment(
@@ -133,6 +177,126 @@ function proofEnvironment(
     PRIME_AGENT_CODING_AGENT_DIR: home,
     PYLON_PRIME_MODEL_SENTINEL: modelSentinel,
     PYLON_PRIME_CREDENTIAL_SENTINEL: credentialSentinel,
+  });
+}
+
+interface FauxMultiBackend {
+  readonly port: number;
+  readonly reconnectAdmission: Promise<void>;
+  finishReconnect(): void;
+  close(): Promise<void>;
+}
+
+function startFauxMultiBackend(): Promise<FauxMultiBackend> {
+  return new Promise((resolve, reject) => {
+    const sockets = new Set<import("node:net").Socket>();
+    let resolveReconnect!: () => void;
+    const reconnectAdmission = new Promise<void>((admitted) => {
+      resolveReconnect = admitted;
+    });
+    let reconnectResponse: NodeHttp.ServerResponse | undefined;
+    let reconnectToken: string | undefined;
+    const chunk = (content: string, finishReason: string | null) =>
+      `data: ${JSON.stringify({
+        id: "faux-multi",
+        object: "chat.completion.chunk",
+        created: 0,
+        model: "faux-multi/faux-multi",
+        choices: [
+          {
+            index: 0,
+            delta: finishReason === null ? { role: "assistant", content } : {},
+            finish_reason: finishReason,
+          },
+        ],
+      })}
+
+`;
+    const finish = (response: NodeHttp.ServerResponse, token: string) => {
+      response.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "close",
+      });
+      response.end(`${chunk(token, null)}${chunk("", "stop")}data: [DONE]
+
+`);
+    };
+    const messageText = (content: unknown): string => {
+      if (typeof content === "string") return content;
+      if (!Array.isArray(content)) return "";
+      return content
+        .map((part) => {
+          if (typeof part === "string") return part;
+          if (typeof part !== "object" || part === null) return "";
+          const text = (part as Readonly<Record<string, unknown>>).text;
+          return typeof text === "string" ? text : "";
+        })
+        .join("");
+    };
+    const server = NodeHttp.createServer((request, response) => {
+      if (request.method === "GET" && request.url?.endsWith("/models")) {
+        response.writeHead(200, { "Content-Type": "application/json", Connection: "close" });
+        response.end(JSON.stringify({ object: "list", data: [] }));
+        return;
+      }
+      if (request.method !== "POST" || !request.url?.endsWith("/chat/completions")) {
+        response.writeHead(404, { Connection: "close" });
+        response.end();
+        return;
+      }
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (value: string) => {
+        body += value;
+      });
+      request.once("end", () => {
+        const payload = JSON.parse(body) as {
+          readonly messages?: ReadonlyArray<{ readonly content?: unknown }>;
+        };
+        const text = (payload.messages ?? [])
+          .toReversed()
+          .map((message) => messageText(message.content))
+          .find((message) => message.includes("PYLON_NATIVE_"));
+        const token = /PYLON_NATIVE_[A-Z0-9_]+/u.exec(text ?? "")?.[0] ?? "PYLON_NATIVE_OK";
+        if (token === "PYLON_NATIVE_AFTER_RECONNECT_OK") {
+          reconnectResponse = response;
+          reconnectToken = token;
+          resolveReconnect();
+          return;
+        }
+        finish(response, token);
+      });
+    });
+    server.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+    });
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        reject(new Error("Faux Prime multi backend has no TCP address."));
+        return;
+      }
+      resolve({
+        port: address.port,
+        reconnectAdmission,
+        finishReconnect() {
+          if (!reconnectResponse || !reconnectToken) {
+            throw new Error("Faux Prime reconnect request was not admitted.");
+          }
+          finish(reconnectResponse, reconnectToken);
+          reconnectResponse = undefined;
+          reconnectToken = undefined;
+        },
+        close: () =>
+          new Promise<void>((closed, closeRejected) => {
+            for (const socket of sockets) socket.destroy();
+            server.close((error) => (error ? closeRejected(error) : closed()));
+          }),
+      });
+    });
   });
 }
 
@@ -269,7 +433,7 @@ function safeCauseCategory(cause: Cause.Cause<unknown>): string {
   return Cause.hasInterruptsOnly(cause) ? "interrupted" : "defect";
 }
 
-it.live.skipIf(!configuredExecutable || !runMultipleInstanceProof)(
+it.live.skipIf(!configuredGraduationArtifact || !runMultipleInstanceProof)(
   "proves exact native Prime N=1/N=2/N=4 isolation, removal, and reconnect without ACP",
   () => {
     const lifecycle = {
@@ -280,9 +444,6 @@ it.live.skipIf(!configuredExecutable || !runMultipleInstanceProof)(
     };
     const proof = Effect.scoped(
       Effect.gen(function* () {
-        if (!configuredExecutable || !NodePath.isAbsolute(configuredExecutable)) {
-          return yield* Effect.die(new Error("The configured real Prime executable is invalid."));
-        }
         const resourceCeiling = RESOURCE_CEILINGS.get(configuredCount);
         if (resourceCeiling === undefined) {
           return yield* Effect.die(
@@ -294,7 +455,6 @@ it.live.skipIf(!configuredExecutable || !runMultipleInstanceProof)(
         }
 
         const platform = yield* HostProcessPlatform;
-        const executablePath = configuredExecutable;
         const root = NodeFS.mkdtempSync(
           NodePath.join(process.env.TMPDIR ?? "/tmp", "pylon-prime-native-proof-"),
         );
@@ -303,6 +463,36 @@ it.live.skipIf(!configuredExecutable || !runMultipleInstanceProof)(
         };
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true })),
+        );
+        const graduationStateDir = NodePath.join(root, "graduation-state");
+        NodeFS.mkdirSync(graduationStateDir, { recursive: true, mode: 0o700 });
+        const graduation = yield* Effect.promise(() =>
+          makePrimeArtifactGraduationHarness({
+            stateDir: graduationStateDir,
+            artifactDirectory: configuredArtifactDirectory!,
+            previewTag: configuredPreviewTag!,
+            stockBinaryPath: configuredStockBinary!,
+            platform,
+          }),
+        );
+        const installation = yield* Effect.promise(() =>
+          graduation.command({
+            commandId: "native-multi-graduation-install",
+            action: "install",
+            channel: "preview",
+            allowPreview: true,
+            scheduleIfBusy: false,
+          }),
+        );
+        if (installation.status !== "succeeded") {
+          return yield* Effect.die(
+            new Error(`Verified Prime graduation install failed: ${installation.message}`),
+          );
+        }
+        const executablePath = graduation.binding().binaryPath;
+        const fauxBackend = yield* Effect.acquireRelease(
+          Effect.promise(startFauxMultiBackend),
+          (backend) => Effect.promise(() => backend.close()),
         );
 
         const makeInstance = Effect.fn("makeRealPrimeNativeProofInstance")(function* (
@@ -313,7 +503,7 @@ it.live.skipIf(!configuredExecutable || !runMultipleInstanceProof)(
           const stateDir = NodePath.join(root, "state", name);
           const modelSentinel = `model-${index}`;
           const credentialSentinel = `credential-${index}`;
-          copyAuthFixture(home);
+          copyAuthFixture(home, fauxBackend.port);
           NodeFS.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
           NodeFS.writeFileSync(NodePath.join(home, "model-sentinel"), modelSentinel, {
             mode: 0o600,
@@ -464,7 +654,7 @@ it.live.skipIf(!configuredExecutable || !runMultipleInstanceProof)(
               providerInstanceId: instanceId,
               cwd: root,
               runtimeMode: "full-access",
-              modelSelection: { instanceId, model: "default" },
+              modelSelection: { instanceId, model: "faux-multi/faux-multi" },
             });
             return { manager, adapter, checkpointRef };
           }).pipe(Effect.provideService(Scope.Scope, scope));
@@ -712,11 +902,10 @@ it.live.skipIf(!configuredExecutable || !runMultipleInstanceProof)(
         }
         const reconnectTurn = yield* reconnecting.adapter.sendTurn({
           threadId: reconnecting.threadId,
-          input:
-            "Use the IPython tool exactly once to print PYLON_NATIVE_RECONNECT_TOOL_OK, then reply with exactly PYLON_NATIVE_AFTER_RECONNECT_OK and nothing else.",
+          input: "Reply with exactly PYLON_NATIVE_AFTER_RECONNECT_OK and nothing else.",
           attachments: [],
         });
-        yield* Deferred.await(reconnecting.reconnectToolObserved).pipe(
+        yield* Effect.promise(() => fauxBackend.reconnectAdmission).pipe(
           Effect.timeout(Duration.seconds(60)),
         );
         disconnect();
@@ -724,6 +913,7 @@ it.live.skipIf(!configuredExecutable || !runMultipleInstanceProof)(
           Effect.timeout(Duration.seconds(30)),
         );
         expect(NodeFS.existsSync(reconnecting.manager.socket)).toBe(true);
+        fauxBackend.finishReconnect();
         yield* waitForTurn(reconnecting, reconnectTurn.turnId);
         expect(removed.map((instance) => instance.openCount.value)).toEqual(removedOpenCounts);
 

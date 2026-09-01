@@ -250,7 +250,6 @@ export const ServerPrimeManagedInstalledBuild = Schema.Struct({
   buildId: TrimmedNonEmptyString,
   channel: ServerProviderDistributionChannel,
   sequence: Schema.Int.check(Schema.isGreaterThan(0)),
-  binaryPath: TrimmedNonEmptyString,
 });
 export type ServerPrimeManagedInstalledBuild = typeof ServerPrimeManagedInstalledBuild.Type;
 
