@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { useNavigation } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "react-native";
 import * as Cause from "effect/Cause";
@@ -65,7 +66,7 @@ import {
 } from "../lib/composerImages";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { prepareTurnAttachments, validateDraftFileAttachments } from "../lib/attachmentUpload";
-import { scopedThreadKey } from "../lib/scopedEntities";
+import { scopedProjectKey, scopedThreadKey } from "../lib/scopedEntities";
 import {
   canSendToModelSelection,
   resolveModelSelectionRuntimeMode,
@@ -95,10 +96,12 @@ import { useSelectedThreadDetail } from "../state/use-thread-detail";
 import { useThreadSelection } from "../state/use-thread-selection";
 import {
   enqueueThreadOutboxMessage,
-  removeThreadOutboxMessage,
+  resolveHeldSendSelectedProvider,
   retryQueuedThreadMessage,
-  updateThreadOutboxMessage,
+  updateThreadOutboxMessageIfCurrent,
 } from "./thread-outbox";
+import { removeThreadOutboxMessageIfCurrent } from "./thread-outbox-removal";
+import { recoverPendingSendToComposer } from "./thread-outbox-recovery";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
 import { useAtomCommand } from "./use-atom-command";
 import { threadEnvironment } from "./threads";
@@ -143,6 +146,7 @@ export function useThreadDraftForThread(input: {
 }
 
 export function useThreadComposerState() {
+  const navigation = useNavigation();
   const { selectedThread: selectedThreadShell } = useThreadSelection();
   const selectedThreadDetail = useSelectedThreadDetail();
   const selectedThreadContextWindow = useMemo(
@@ -263,17 +267,6 @@ export function useThreadComposerState() {
     : null;
   const modelSelection = composerSettings?.modelSelection ?? null;
 
-  useEffect(() => {
-    if (!selectedThreadKey || !composerSettings?.rejectedDraftProviderSelection) return;
-    // A draft can outlive another device binding the thread. Reject all of its
-    // provider-shaped settings together so a Codex mode cannot leak onto the
-    // now-authoritative Prime session; message text and attachments stay put.
-    updateComposerDraftSettings(selectedThreadKey, {
-      modelSelection: undefined,
-      runtimeMode: undefined,
-      interactionMode: undefined,
-    });
-  }, [composerSettings?.rejectedDraftProviderSelection, selectedThreadKey]);
   const selectedThreadResources = useMemo(() => {
     const session = selectedThreadDetail?.session;
     const instanceId = session?.providerInstanceId;
@@ -595,17 +588,11 @@ export function useThreadComposerState() {
     });
     const modelSelection = submissionSettings.modelSelection;
     if (
+      submissionSettings.rejectedDraftProviderSelection ||
       modelSelection === null ||
       !canSendToModelSelection(selectedThreadServerConfig, modelSelection)
     ) {
       return null;
-    }
-    if (submissionSettings.rejectedDraftProviderSelection) {
-      updateComposerDraftSettings(threadKey, {
-        modelSelection: undefined,
-        runtimeMode: undefined,
-        interactionMode: undefined,
-      });
     }
     const provider = selectedThreadServerConfig?.providers.find(
       (entry) => entry.instanceId === modelSelection.instanceId,
@@ -763,17 +750,11 @@ export function useThreadComposerState() {
       draft,
     });
     if (
+      submissionSettings.rejectedDraftProviderSelection ||
       submissionSettings.modelSelection === null ||
       !canSendToModelSelection(selectedThreadServerConfig, submissionSettings.modelSelection)
     ) {
       return null;
-    }
-    if (submissionSettings.rejectedDraftProviderSelection) {
-      updateComposerDraftSettings(threadKey, {
-        modelSelection: undefined,
-        runtimeMode: undefined,
-        interactionMode: undefined,
-      });
     }
     const text = draft.text.trim();
     const attachments = draft.attachments;
@@ -1128,8 +1109,7 @@ export function useThreadComposerState() {
       return;
     }
     const maxBytes =
-      selectedEnvironmentRuntime?.serverConfig?.environment.capabilities.fileAttachments
-        ?.maxUploadBytes;
+      selectedThreadServerConfig?.environment.capabilities.fileAttachments?.maxUploadBytes;
     if (maxBytes === undefined) {
       Alert.alert("Could not attach file", "This server does not support file attachments.");
       return;
@@ -1153,7 +1133,7 @@ export function useThreadComposerState() {
     if (problems.length > 0) {
       Alert.alert("Could not attach file", problems.join("\n\n"));
     }
-  }, [composerDrafts, selectedEnvironmentRuntime?.serverConfig, selectedThreadShell]);
+  }, [composerDrafts, selectedThreadServerConfig, selectedThreadShell]);
 
   const onPasteIntoDraft = useCallback(async () => {
     if (!selectedThreadShell) {
@@ -1236,6 +1216,7 @@ export function useThreadComposerState() {
       const currentInteractionMode = composerSettings?.interactionMode ?? thread?.interactionMode;
       updateComposerDraftSettings(selectedThreadKey, {
         modelSelection: value,
+        providerSelectionExplicit: true,
         ...(currentRuntimeMode
           ? {
               runtimeMode: resolveModelSelectionRuntimeMode(
@@ -1285,14 +1266,35 @@ export function useThreadComposerState() {
 
   const onManagePendingSends = useCallback(() => {
     const queuedMessage = selectedThreadQueuedMessages[0];
-    if (!queuedMessage) return;
+    if (!queuedMessage || !selectedThreadKey) return;
     const hold = queuedMessage.deliveryHold;
     const boundInstanceId = selectedSessionProviderInstanceId;
-    const exactBoundSelection =
-      boundInstanceId !== undefined &&
-      composerSettings?.modelSelection?.instanceId === boundInstanceId
-        ? composerSettings.modelSelection
-        : null;
+    const newThreadDestination =
+      queuedMessage.destination ??
+      (selectedThreadShell
+        ? {
+            projectId: selectedThreadShell.projectId,
+            ...(selectedThreadProject?.title === undefined
+              ? {}
+              : { projectTitle: selectedThreadProject.title }),
+            ...(selectedThreadProject?.workspaceRoot === undefined
+              ? {}
+              : { projectCwd: selectedThreadProject.workspaceRoot }),
+            workspaceMode:
+              selectedThreadShell.worktreePath === null
+                ? ("local" as const)
+                : ("worktree" as const),
+            branch: selectedThreadShell.branch,
+            worktreePath: null,
+          }
+        : null);
+    const selectedCompatibleSelection = hold
+      ? resolveHeldSendSelectedProvider({
+          boundInstanceId,
+          selectedModelSelection: composerSettings?.modelSelection,
+          providers: selectedThreadServerConfig?.providers,
+        })
+      : null;
     const freshRetry = (settings?: {
       readonly modelSelection?: ModelSelection;
       readonly runtimeMode?: RuntimeMode;
@@ -1305,33 +1307,126 @@ export function useThreadComposerState() {
         ...settings,
       });
     };
+    const recover = async (input: {
+      readonly draftKey: string;
+      readonly startNewThread: boolean;
+    }) => {
+      const destination = newThreadDestination;
+      try {
+        const result = await recoverPendingSendToComposer({
+          message: queuedMessage,
+          draftKey: input.draftKey,
+          ...(input.startNewThread && destination
+            ? {
+                workspaceSelection: {
+                  mode: destination.workspaceMode,
+                  branch: destination.branch,
+                  worktreePath: destination.worktreePath,
+                  startFromOrigin: destination.startFromOrigin ?? false,
+                },
+              }
+            : {}),
+        });
+        if (result === "queue-changed") {
+          Alert.alert(
+            "Pending send changed",
+            "Its content was restored, but a newer queued copy appeared and was kept. Review both before sending.",
+          );
+          return;
+        }
+        if (input.startNewThread && destination) {
+          navigation.navigate("NewTaskSheet", {
+            screen: "NewTaskDraft",
+            params: {
+              environmentId: String(queuedMessage.environmentId),
+              projectId: String(destination.projectId),
+            },
+          });
+        }
+      } catch (error) {
+        Alert.alert(
+          "Could not restore pending send",
+          error instanceof Error
+            ? error.message
+            : "The pending send remains safely held in the outbox.",
+        );
+      }
+    };
     const actions: Array<{
       text: string;
       style?: "default" | "cancel" | "destructive";
       onPress?: () => void;
-    }> = [
-      {
+    }> = [];
+
+    if (hold) {
+      actions.push({
+        text: "Edit pending send",
+        onPress: () => {
+          void recover({ draftKey: selectedThreadKey, startNewThread: false });
+        },
+      });
+      if (selectedCompatibleSelection !== null) {
+        const selectedProviderName =
+          selectedThreadServerConfig?.providers.find(
+            (provider) => provider.instanceId === selectedCompatibleSelection.instanceId,
+          )?.displayName ?? selectedCompatibleSelection.instanceId;
+        actions.push({
+          text: `Use ${selectedProviderName}`,
+          onPress: () => {
+            Alert.alert(
+              `Use ${selectedProviderName}?`,
+              "This explicitly retargets only this pending send. The provider proves the same continuation identity as the thread binding.",
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Use selected provider",
+                  onPress: () => {
+                    void updateThreadOutboxMessageIfCurrent(
+                      queuedMessage,
+                      freshRetry({
+                        modelSelection: selectedCompatibleSelection,
+                        runtimeMode: composerSettings?.runtimeMode,
+                        interactionMode: composerSettings?.interactionMode,
+                      }),
+                    )
+                      .then((updated) => {
+                        if (!updated) {
+                          Alert.alert(
+                            "Pending send changed",
+                            "A newer queued copy was kept. Open Manage again to review it.",
+                          );
+                        }
+                      })
+                      .catch((error: unknown) => {
+                        Alert.alert(
+                          "Could not update pending send",
+                          error instanceof Error ? error.message : "The original hold was kept.",
+                        );
+                      });
+                  },
+                },
+              ],
+            );
+          },
+        });
+      }
+      if (newThreadDestination) {
+        const newThreadDraftKey = `new-task:${scopedProjectKey(
+          queuedMessage.environmentId,
+          newThreadDestination.projectId,
+        )}`;
+        actions.push({
+          text: "Start a new thread",
+          onPress: () => {
+            void recover({ draftKey: newThreadDraftKey, startNewThread: true });
+          },
+        });
+      }
+    } else {
+      actions.push({
         text: "Retry",
         onPress: () => {
-          void updateThreadOutboxMessage(freshRetry());
-        },
-      },
-    ];
-    if (
-      (hold?.kind === "provider-binding-mismatch" ||
-        hold?.kind === "provider-binding-unresolved") &&
-      exactBoundSelection !== null
-    ) {
-      actions.push({
-        text: "Use bound provider",
-        onPress: () => {
-          void updateThreadOutboxMessage(
-            freshRetry({
-              modelSelection: exactBoundSelection,
-              runtimeMode: composerSettings?.runtimeMode,
-              interactionMode: composerSettings?.interactionMode,
-            }),
-          );
+          void updateThreadOutboxMessageIfCurrent(queuedMessage, freshRetry());
         },
       });
     }
@@ -1340,7 +1435,21 @@ export function useThreadComposerState() {
         text: "Delete pending send",
         style: "destructive",
         onPress: () => {
-          void removeThreadOutboxMessage(queuedMessage);
+          void removeThreadOutboxMessageIfCurrent(queuedMessage)
+            .then((removed) => {
+              if (!removed) {
+                Alert.alert(
+                  "Pending send changed",
+                  "A newer queued copy was kept. Open Manage again to delete it explicitly.",
+                );
+              }
+            })
+            .catch((error: unknown) => {
+              Alert.alert(
+                "Could not delete pending send",
+                error instanceof Error ? error.message : "The pending send was kept.",
+              );
+            });
         },
       },
       { text: "Cancel", style: "cancel" },
@@ -1350,7 +1459,16 @@ export function useThreadComposerState() {
       hold?.reason ?? "This message is saved on this device and waiting to be sent.",
       actions,
     );
-  }, [composerSettings, selectedSessionProviderInstanceId, selectedThreadQueuedMessages]);
+  }, [
+    composerSettings,
+    navigation,
+    selectedSessionProviderInstanceId,
+    selectedThreadKey,
+    selectedThreadProject,
+    selectedThreadQueuedMessages,
+    selectedThreadServerConfig,
+    selectedThreadShell,
+  ]);
 
   return {
     selectedThreadFeed,

@@ -279,6 +279,36 @@ export function preserveQueuedThreadDeliveryHold(
     : undefined;
 }
 
+/**
+ * A held existing-thread send may be explicitly retargeted only to a selected
+ * provider that is currently admissible and proves the thread binding's exact
+ * continuation identity. The returned selection is never rewritten.
+ */
+export function resolveHeldSendSelectedProvider(input: {
+  readonly boundInstanceId: ModelSelectionType["instanceId"] | undefined;
+  readonly selectedModelSelection: ModelSelectionType | null | undefined;
+  readonly providers: ReadonlyArray<ServerProvider> | null | undefined;
+}): ModelSelectionType | null {
+  const selection = input.selectedModelSelection;
+  if (input.boundInstanceId === undefined || selection == null) return null;
+  const transition = resolveProviderContinuationTransition({
+    providers: input.providers ?? [],
+    currentInstanceId: input.boundInstanceId,
+    targetInstanceId: selection.instanceId,
+  });
+  if (!transition.compatible) return null;
+  const provider = input.providers?.find(
+    (candidate) => candidate.instanceId === selection.instanceId,
+  );
+  return getProviderAdmissionAvailability({
+    provider,
+    instanceId: String(selection.instanceId),
+    providerSnapshotKnown: input.providers !== null && input.providers !== undefined,
+  }).status === "available"
+    ? selection
+    : null;
+}
+
 export function retryQueuedThreadMessage(
   message: QueuedThreadMessage,
   input: {

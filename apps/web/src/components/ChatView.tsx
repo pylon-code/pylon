@@ -279,6 +279,7 @@ import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
   finalizePromotedDraftThreadByRef,
+  flushComposerDraftStore,
   markPromotedDraftThreadByRef,
   useComposerDraftStore,
   useEffectiveComposerModelState,
@@ -1542,6 +1543,12 @@ function ChatViewContent(props: ChatViewProps) {
     (store) => store.setInteractionMode,
   );
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
+  const transferComposerContentSnapshotForProviderConflict = useComposerDraftStore(
+    (store) => store.transferComposerContentSnapshotForProviderConflict,
+  );
+  const continueComposerOnBoundProvider = useComposerDraftStore(
+    (store) => store.continueOnBoundProvider,
+  );
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const getDraftSessionByLogicalProjectKey = useComposerDraftStore(
     (store) => store.getDraftSessionByLogicalProjectKey,
@@ -5060,6 +5067,7 @@ function ChatViewContent(props: ChatViewProps) {
     [threadHandoffDiff.data?.diff],
   );
   const [isContinuingThreadOnAccount, setIsContinuingThreadOnAccount] = useState(false);
+  const [isStartingProviderConflictThread, setIsStartingProviderConflictThread] = useState(false);
   // Capacity for the account the composer will actually send to uses the
   // shared selection above, so the strip never names one account while the
   // composer is blocked on or sends to another.
@@ -7646,6 +7654,98 @@ function ChatViewContent(props: ChatViewProps) {
     composerRef,
   ]);
 
+  const onContinueProviderBindingConflict = useCallback(() => {
+    if (!activeThread || !isServerThread) return;
+    const conflict = useComposerDraftStore
+      .getState()
+      .getComposerDraft(composerDraftTarget)?.providerBindingConflict;
+    if (!conflict || activeThread.modelSelection.instanceId !== conflict.boundInstanceId) {
+      return;
+    }
+    continueComposerOnBoundProvider(composerDraftTarget, activeThread.modelSelection);
+    scheduleComposerFocus();
+  }, [
+    activeThread,
+    composerDraftTarget,
+    continueComposerOnBoundProvider,
+    isServerThread,
+    scheduleComposerFocus,
+  ]);
+
+  const onStartProviderBindingConflictThread = useCallback(async () => {
+    if (
+      !activeThread ||
+      !activeThreadRef ||
+      !activeProject ||
+      !isServerThread ||
+      isStartingProviderConflictThread
+    ) {
+      return;
+    }
+    const conflict = useComposerDraftStore
+      .getState()
+      .getComposerDraft(composerDraftTarget)?.providerBindingConflict;
+    if (!conflict) return;
+
+    setIsStartingProviderConflictThread(true);
+    const nextDraftId = newDraftId();
+    const nextThreadId = newThreadId();
+    const createdAt = new Date().toISOString();
+    const activeProjectRef = scopeProjectRef(activeProject.environmentId, activeProject.id);
+    const logicalProjectKey = deriveLogicalProjectKeyFromSettings(
+      activeProject,
+      projectGroupingSettings,
+    );
+    const nextRuntimeMode = conflict.runtimeMode ?? activeThread.runtimeMode;
+    const nextInteractionMode = conflict.interactionMode ?? activeThread.interactionMode;
+
+    try {
+      // Every state write lands before navigation. A navigation failure leaves
+      // a normal durable sidebar draft instead of splitting its content from
+      // the original provider/account selection.
+      setLogicalProjectDraftThreadId(logicalProjectKey, activeProjectRef, nextDraftId, {
+        threadId: nextThreadId,
+        createdAt,
+        branch: activeThread.branch,
+        worktreePath: activeThread.worktreePath,
+        envMode: activeThread.worktreePath === null ? "local" : "worktree",
+        startFromOrigin: false,
+        runtimeMode: nextRuntimeMode,
+        interactionMode: nextInteractionMode,
+      });
+      transferComposerContentSnapshotForProviderConflict(activeThreadRef, nextDraftId);
+      flushComposerDraftStore();
+      await navigate({
+        to: "/draft/$draftId",
+        params: buildDraftThreadRouteParams(nextDraftId),
+      });
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Draft moved to a new thread",
+          description:
+            error instanceof Error
+              ? `Could not open it automatically: ${error.message}`
+              : "Could not open it automatically. The draft remains in the sidebar.",
+        }),
+      );
+    } finally {
+      setIsStartingProviderConflictThread(false);
+    }
+  }, [
+    activeProject,
+    activeThread,
+    activeThreadRef,
+    composerDraftTarget,
+    isServerThread,
+    isStartingProviderConflictThread,
+    navigate,
+    projectGroupingSettings,
+    setLogicalProjectDraftThreadId,
+    transferComposerContentSnapshotForProviderConflict,
+  ]);
+
   // Continue a spent thread's work on another account.
   //
   // Only ever runs from the composer's handoff tab. Nothing switches accounts
@@ -8500,7 +8600,12 @@ function ChatViewContent(props: ChatViewProps) {
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             threadHandoffOffer={threadHandoffOffer}
                             isContinuingThreadOnAccount={isContinuingThreadOnAccount}
+                            isStartingProviderConflictThread={isStartingProviderConflictThread}
                             onContinueThreadOnAccount={onContinueThreadOnAccount}
+                            onContinueProviderBindingConflict={onContinueProviderBindingConflict}
+                            onStartProviderBindingConflictThread={
+                              onStartProviderBindingConflictThread
+                            }
                             onRespondToApproval={onRespondToApproval}
                             onSelectActivePendingUserInputOption={
                               onSelectActivePendingUserInputOption

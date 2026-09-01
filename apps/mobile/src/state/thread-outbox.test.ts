@@ -20,6 +20,7 @@ import {
   preserveQueuedThreadDeliveryHold,
   queuedCreationWorkspaceHold,
   resolveConfirmedThreadOutboxPlan,
+  resolveHeldSendSelectedProvider,
   resolveThreadOutboxDeliveryAction,
   resolveThreadOutboxDispatchStep,
   resolveThreadOutboxFailureAction,
@@ -254,6 +255,69 @@ describe("thread outbox", () => {
         session: thread.session,
       },
     });
+  });
+
+  it("offers held-send retarget only for an available exact continuation peer", () => {
+    const selected = {
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      model: "gpt-5.4",
+      options: [{ id: "reasoningEffort", value: "xhigh" }],
+    } as const;
+    const bound = provider({
+      instanceId: "codex",
+      driver: "codex",
+      continuationGroupKey: "codex:home:shared",
+    });
+    const compatible = provider({
+      instanceId: "codex_personal",
+      driver: "codex",
+      continuationGroupKey: "codex:home:shared",
+    });
+
+    expect(
+      resolveHeldSendSelectedProvider({
+        boundInstanceId: bound.instanceId,
+        selectedModelSelection: selected,
+        providers: [bound, compatible],
+      }),
+    ).toBe(selected);
+    expect(
+      resolveHeldSendSelectedProvider({
+        boundInstanceId: bound.instanceId,
+        selectedModelSelection: selected,
+        providers: [
+          bound,
+          provider({
+            instanceId: "codex_personal",
+            driver: "codex",
+            continuationGroupKey: "codex:home:other",
+          }),
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      resolveHeldSendSelectedProvider({
+        boundInstanceId: bound.instanceId,
+        selectedModelSelection: selected,
+        providers: [
+          bound,
+          provider({
+            instanceId: "codex_personal",
+            driver: "codex",
+            continuationGroupKey: "codex:home:shared",
+            availability: "unavailable",
+            unavailableReason: "Install this account first.",
+          }),
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      resolveHeldSendSelectedProvider({
+        boundInstanceId: bound.instanceId,
+        selectedModelSelection: selected,
+        providers: [bound],
+      }),
+    ).toBeNull();
   });
 
   it("holds exact unavailable bindings with remediation and resumes the same instance", () => {
@@ -1217,6 +1281,49 @@ describe("thread outbox", () => {
         serverConfig: null,
       }),
     ).toEqual({ step: "send" });
+  });
+
+  it("CAS recovery never removes or overwrites a concurrently replaced queue item", async () => {
+    const registry = AtomRegistry.make();
+    const stored = new Map<MessageId, QueuedThreadMessage>();
+    const manager = createThreadOutboxManager({
+      registry,
+      storage: {
+        load: async () => [...stored.values()],
+        write: async (message) => {
+          stored.set(message.messageId, message);
+        },
+        remove: async (message) => {
+          stored.delete(message.messageId);
+        },
+      },
+    });
+    const original = queuedMessage({
+      messageId: "message-cas",
+      createdAt: "2026-06-08T10:00:01.000Z",
+    });
+    const concurrentRetry = {
+      ...original,
+      commandId: CommandId.make("command-concurrent-retry"),
+      text: "newer queued content",
+    };
+
+    await manager.enqueue(original);
+    await manager.update(concurrentRetry);
+
+    await expect(manager.removeIfCurrent(original)).resolves.toBe(false);
+    await expect(
+      manager.updateIfCurrent(original, { ...original, text: "stale recovery write" }),
+    ).resolves.toBe(false);
+    expect(registry.get(manager.queuedMessagesByThreadKeyAtom)).toEqual({
+      "environment-1:thread-1": [concurrentRetry],
+    });
+    expect(stored.get(original.messageId)).toEqual(concurrentRetry);
+
+    await expect(manager.removeIfCurrent(concurrentRetry)).resolves.toBe(true);
+    expect(registry.get(manager.queuedMessagesByThreadKeyAtom)).toEqual({});
+    expect(stored.size).toBe(0);
+    registry.dispose();
   });
 
   it("only confirms a missing-thread message after shell synchronization is live", () => {

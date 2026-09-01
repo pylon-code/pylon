@@ -45,6 +45,8 @@ export interface ComposerDraft {
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly importedShareIds?: ReadonlyArray<string>;
   readonly modelSelection?: ModelSelection;
+  /** True when a human/recovered send chose the exact provider account. */
+  readonly providerSelectionExplicit?: boolean;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: ProviderInteractionMode;
   readonly workspaceSelection?: ComposerDraftWorkspaceSelection;
@@ -65,8 +67,21 @@ export interface ComposerDraftWorkspaceSelection {
 
 export type ComposerDraftSettingsUpdate = Pick<
   ComposerDraft,
-  "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceSelection"
+  | "modelSelection"
+  | "providerSelectionExplicit"
+  | "runtimeMode"
+  | "interactionMode"
+  | "workspaceSelection"
 >;
+
+export interface PendingSendComposerSnapshot {
+  readonly text: string;
+  readonly attachments: ReadonlyArray<DraftComposerAttachment>;
+  readonly modelSelection?: ModelSelection;
+  readonly runtimeMode?: RuntimeMode;
+  readonly interactionMode?: ProviderInteractionMode;
+  readonly workspaceSelection?: ComposerDraftWorkspaceSelection;
+}
 
 const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
   mode: Schema.Literals(["local", "worktree"]),
@@ -80,6 +95,7 @@ const ComposerDraftSchema = Schema.Struct({
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   importedShareIds: Schema.optional(Schema.Array(Schema.String)),
   modelSelection: Schema.optional(ModelSelectionSchema),
+  providerSelectionExplicit: Schema.optional(Schema.Boolean),
   runtimeMode: Schema.optional(RuntimeModeSchema),
   interactionMode: Schema.optional(ProviderInteractionModeSchema),
   workspaceSelection: Schema.optional(ComposerDraftWorkspaceSelectionSchema),
@@ -143,6 +159,7 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.text.length === 0 &&
     draft.attachments.length === 0 &&
     draft.modelSelection === undefined &&
+    draft.providerSelectionExplicit === undefined &&
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
     draft.workspaceSelection === undefined
@@ -169,6 +186,7 @@ export function decodePersistedComposerState(value: unknown): {
               // attachments were deliberately configured and are left alone.
               key.startsWith("new-task:") &&
               draft.modelSelection &&
+              draft.providerSelectionExplicit !== true &&
               draft.text.length === 0 &&
               draft.attachments.length === 0 &&
               draft.runtimeMode === undefined &&
@@ -660,6 +678,62 @@ export function updateComposerDraftSettings(
   });
 }
 
+export function restorePendingSendComposerDraftState(
+  current: Record<string, ComposerDraft>,
+  draftKey: string,
+  snapshot: PendingSendComposerSnapshot,
+): Record<string, ComposerDraft> {
+  const existing = normalizeDraft(current[draftKey]);
+  const attachmentIds = new Set(existing.attachments.map((attachment) => attachment.id));
+  const restoredAttachments = [
+    ...existing.attachments,
+    ...snapshot.attachments.filter((attachment) => {
+      if (attachmentIds.has(attachment.id)) return false;
+      attachmentIds.add(attachment.id);
+      return true;
+    }),
+  ];
+  const restored: ComposerDraft = {
+    ...existing,
+    text: mergeComposerDraftText(existing.text, snapshot.text),
+    // Recovery is intentionally uncapped. A user may already have started a
+    // new draft while the hold was open; truncating either set here would be
+    // irreversible. The composer can ask them to remove extras before send.
+    attachments: restoredAttachments,
+    ...(snapshot.modelSelection === undefined
+      ? {}
+      : { modelSelection: snapshot.modelSelection, providerSelectionExplicit: true }),
+    ...(snapshot.runtimeMode === undefined ? {} : { runtimeMode: snapshot.runtimeMode }),
+    ...(snapshot.interactionMode === undefined
+      ? {}
+      : { interactionMode: snapshot.interactionMode }),
+    ...(snapshot.workspaceSelection === undefined
+      ? {}
+      : { workspaceSelection: snapshot.workspaceSelection }),
+  };
+  if (
+    existing.text === restored.text &&
+    existing.attachments.length === restored.attachments.length &&
+    existing.modelSelection === restored.modelSelection &&
+    existing.providerSelectionExplicit === restored.providerSelectionExplicit &&
+    existing.runtimeMode === restored.runtimeMode &&
+    existing.interactionMode === restored.interactionMode &&
+    existing.workspaceSelection === restored.workspaceSelection
+  ) {
+    return current;
+  }
+  return { ...current, [draftKey]: restored };
+}
+
+export function restorePendingSendComposerDraft(
+  draftKey: string,
+  snapshot: PendingSendComposerSnapshot,
+): void {
+  updateComposerDrafts((current) =>
+    restorePendingSendComposerDraftState(current, draftKey, snapshot),
+  );
+}
+
 export function clearComposerDraftContentState(
   current: Record<string, ComposerDraft>,
   draftKey: string,
@@ -675,12 +749,18 @@ export function clearComposerDraftContentState(
   const {
     importedShareIds: _importedShareIds,
     modelSelection,
+    providerSelectionExplicit,
     workspaceSelection,
     ...retained
   } = existing;
   const draft = {
     ...retained,
-    ...(options?.clearModelSelection || modelSelection === undefined ? {} : { modelSelection }),
+    ...(options?.clearModelSelection || modelSelection === undefined
+      ? {}
+      : {
+          modelSelection,
+          ...(providerSelectionExplicit === undefined ? {} : { providerSelectionExplicit }),
+        }),
     ...(options?.clearWorkspaceSelection || workspaceSelection === undefined
       ? {}
       : { workspaceSelection }),

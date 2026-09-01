@@ -44,9 +44,11 @@ describe("resolveExistingThreadComposerSettings", () => {
         },
       }),
     ).toEqual({
-      ...primeThread,
+      modelSelection: selection("codex", "gpt-5-codex"),
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
       rejectedDraftProviderSelection: true,
-      providerBindingMismatch: false,
+      providerBindingMismatch: true,
     });
   });
 

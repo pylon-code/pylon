@@ -64,7 +64,7 @@ const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isReviewCommentContext = Schema.is(ReviewCommentContextSchema);
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
-const COMPOSER_DRAFT_STORAGE_VERSION = 9;
+const COMPOSER_DRAFT_STORAGE_VERSION = 10;
 const DraftThreadEnvModeSchema = Schema.Literals(["local", "worktree"]);
 export type DraftThreadEnvMode = typeof DraftThreadEnvModeSchema.Type;
 
@@ -198,6 +198,16 @@ const PersistedElementContextDraft = Schema.Struct({
 });
 type PersistedElementContextDraft = typeof PersistedElementContextDraft.Type;
 
+const PersistedComposerProviderBindingConflict = Schema.Struct({
+  boundInstanceId: ProviderInstanceId,
+  originalSelection: ModelSelection,
+  runtimeMode: Schema.NullOr(RuntimeMode),
+  interactionMode: Schema.NullOr(ProviderInteractionMode),
+});
+
+type PersistedComposerProviderBindingConflict =
+  typeof PersistedComposerProviderBindingConflict.Type;
+
 const PersistedComposerThreadDraftState = Schema.Struct({
   prompt: Schema.String,
   attachments: Schema.Array(PersistedComposerImageAttachment),
@@ -223,6 +233,7 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   // selections (project default / sticky) leave it unset so later seeds can
   // replace them; legacy entries predate the flag and read as seeded too.
   modelSelectionExplicit: Schema.optionalKey(Schema.Boolean),
+  providerBindingConflict: Schema.optionalKey(PersistedComposerProviderBindingConflict),
   runtimeMode: Schema.optionalKey(RuntimeMode),
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
 });
@@ -325,6 +336,16 @@ const PersistedComposerDraftStoreStorage = Schema.Struct({
  * Composer content keyed by either a draft session (`DraftId`) or a real server
  * thread (`ScopedThreadRef`). This is the editable payload shown in the composer.
  */
+export interface ComposerProviderBindingConflict {
+  /** Live provider/account another client bound this thread to. */
+  boundInstanceId: ProviderInstanceId;
+  /** Exact explicit target the unsent draft had before that binding appeared. */
+  originalSelection: ModelSelection;
+  /** Provider-shaped mode snapshots that follow the draft only into a new thread. */
+  runtimeMode: RuntimeMode | null;
+  interactionMode: ProviderInteractionMode | null;
+}
+
 export interface ComposerThreadDraftState {
   prompt: string;
   images: ComposerImageAttachment[];
@@ -358,6 +379,8 @@ export interface ComposerThreadDraftState {
    * may replace it. Legacy entries predate the flag and read as seeded.
    */
   modelSelectionExplicit?: boolean;
+  /** Durable user-decision barrier for a cross-client provider binding conflict. */
+  providerBindingConflict?: ComposerProviderBindingConflict;
   runtimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode | null;
 }
@@ -519,11 +542,25 @@ interface ComposerDraftStoreState {
   setStickyModelSelection: (modelSelection: ModelSelection | null | undefined) => void;
   setPrompt: (threadRef: ComposerThreadTarget, prompt: string) => void;
   setTerminalContexts: (threadRef: ComposerThreadTarget, contexts: TerminalContextDraft[]) => void;
-  /** Reconcile a stale cross-instance draft after a live session binds. */
-  reconcileProviderBinding: (
+  /**
+   * Record or clear a durable cross-client provider binding conflict without
+   * changing the draft's selected provider, model, modes, text, or attachments.
+   */
+  setProviderBindingConflict: (
     threadRef: ComposerThreadTarget,
-    providerInstanceId: ProviderInstanceId,
+    boundInstanceId: ProviderInstanceId | null,
   ) => void;
+  /** Apply the user's explicit choice to continue on the live bound provider. */
+  continueOnBoundProvider: (
+    threadRef: ComposerThreadTarget,
+    modelSelection: ModelSelection,
+  ) => void;
+  /**
+   * Atomically moves a complete unsent composer snapshot into a fresh draft
+   * after a provider-binding conflict. The snapshot includes every attachment
+   * and context type plus the exact original provider/model and mode choices.
+   */
+  transferComposerContentSnapshotForProviderConflict: (from: ScopedThreadRef, to: DraftId) => void;
   setModelSelection: (
     threadRef: ComposerThreadTarget,
     modelSelection: ModelSelection | null | undefined,
@@ -853,6 +890,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.reviewComments.length === 0 &&
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
+    draft.providerBindingConflict === undefined &&
     draft.runtimeMode === null &&
     draft.interactionMode === null
   );
@@ -1032,6 +1070,31 @@ function normalizeModelSelection(
 type NormalizedModelSelection = Omit<ModelSelection, "instanceId"> & {
   readonly instanceId: ProviderInstanceId;
 };
+
+function normalizeProviderBindingConflict(
+  value: unknown,
+): ComposerProviderBindingConflict | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Record<string, unknown>;
+  const boundInstanceId = normalizeProviderInstanceId(candidate.boundInstanceId);
+  const originalSelection = normalizeModelSelection(candidate.originalSelection);
+  if (
+    boundInstanceId === null ||
+    originalSelection === null ||
+    originalSelection.instanceId === boundInstanceId
+  ) {
+    return undefined;
+  }
+  return {
+    boundInstanceId,
+    originalSelection,
+    runtimeMode: isRuntimeMode(candidate.runtimeMode) ? candidate.runtimeMode : null,
+    interactionMode:
+      candidate.interactionMode === "plan" || candidate.interactionMode === "default"
+        ? candidate.interactionMode
+        : null,
+  };
+}
 
 // ── Legacy sync helpers (used only during migration from v2 storage) ──
 //
@@ -1864,6 +1927,19 @@ function normalizePersistedDraftsByThreadId(
     let modelSelectionByProvider: Partial<Record<ProviderInstanceId, ModelSelection>> = {};
     let activeProvider: ProviderInstanceId | null = null;
     let modelSelectionExplicit: true | undefined = undefined;
+    const normalizedProviderBindingConflict = normalizeProviderBindingConflict(
+      draftCandidate.providerBindingConflict,
+    );
+    const providerBindingConflict:
+      | DeepMutable<PersistedComposerProviderBindingConflict>
+      | undefined = normalizedProviderBindingConflict
+      ? {
+          ...normalizedProviderBindingConflict,
+          originalSelection: cloneModelSelection(
+            normalizedProviderBindingConflict.originalSelection,
+          ),
+        }
+      : undefined;
 
     if (
       draftCandidate.modelSelectionByProvider &&
@@ -1917,6 +1993,7 @@ function normalizePersistedDraftsByThreadId(
       elementContexts.length === 0 &&
       reviewComments.length === 0 &&
       !hasModelData &&
+      providerBindingConflict === undefined &&
       !runtimeMode &&
       !interactionMode
     ) {
@@ -1948,6 +2025,7 @@ function normalizePersistedDraftsByThreadId(
             ...(modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
           }
         : {}),
+      ...(providerBindingConflict ? { providerBindingConflict } : {}),
       ...(runtimeMode ? { runtimeMode } : {}),
       ...(interactionMode ? { interactionMode } : {}),
     };
@@ -1977,6 +2055,7 @@ function stripLegacyModelSeedsFromEmptyDraftSessions(
       if (
         draftThreadsByThreadKey[threadKey] === undefined ||
         draft.modelSelectionExplicit === true ||
+        draft.providerBindingConflict !== undefined ||
         persistedComposerDraftHasUserContent(draft)
       ) {
         return [[threadKey, draft]];
@@ -2050,6 +2129,7 @@ function partializeComposerDraftStoreState(
       draft.previewAnnotations.length === 0 &&
       draft.reviewComments.length === 0 &&
       !hasModelData &&
+      draft.providerBindingConflict === undefined &&
       draft.runtimeMode === null &&
       draft.interactionMode === null
     ) {
@@ -2126,6 +2206,18 @@ function partializeComposerDraftStoreState(
             ),
             activeProvider: draft.activeProvider,
             ...(draft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
+          }
+        : {}),
+      ...(draft.providerBindingConflict
+        ? {
+            providerBindingConflict: {
+              boundInstanceId: draft.providerBindingConflict.boundInstanceId,
+              originalSelection: cloneModelSelection(
+                draft.providerBindingConflict.originalSelection,
+              ),
+              runtimeMode: draft.providerBindingConflict.runtimeMode,
+              interactionMode: draft.providerBindingConflict.interactionMode,
+            },
           }
         : {}),
       ...(draft.runtimeMode ? { runtimeMode: draft.runtimeMode } : {}),
@@ -2390,6 +2482,16 @@ function toHydratedThreadDraft(
     modelSelectionByProvider,
     activeProvider,
     ...(persistedDraft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
+    ...(persistedDraft.providerBindingConflict
+      ? {
+          providerBindingConflict: {
+            ...persistedDraft.providerBindingConflict,
+            originalSelection: cloneModelSelection(
+              persistedDraft.providerBindingConflict.originalSelection,
+            ),
+          },
+        }
+      : {}),
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
   };
@@ -2913,35 +3015,170 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             return { draftsByThreadKey: nextDraftsByThreadKey };
           });
         },
-        reconcileProviderBinding: (threadRef, providerInstanceId) => {
+        setProviderBindingConflict: (threadRef, boundInstanceId) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
           if (threadKey.length === 0) return;
           set((state) => {
             const existing = state.draftsByThreadKey[threadKey];
-            const conflictingInstanceId = existing?.activeProvider;
+            if (!existing) return state;
+            if (boundInstanceId === null) {
+              if (existing.providerBindingConflict === undefined) return state;
+              const { providerBindingConflict: _conflict, ...nextDraft } = existing;
+              return {
+                draftsByThreadKey: {
+                  ...state.draftsByThreadKey,
+                  [threadKey]: nextDraft,
+                },
+              };
+            }
+            const originalSelection = existing.activeProvider
+              ? existing.modelSelectionByProvider[existing.activeProvider]
+              : undefined;
             if (
-              !existing ||
-              conflictingInstanceId == null ||
-              conflictingInstanceId === providerInstanceId
+              originalSelection === undefined ||
+              originalSelection.instanceId === boundInstanceId
             ) {
               return state;
             }
-            const modelSelectionByProvider = { ...existing.modelSelectionByProvider };
-            delete modelSelectionByProvider[conflictingInstanceId];
-            const { modelSelectionExplicit: _explicit, ...rest } = existing;
-            const nextDraft: ComposerThreadDraftState = {
-              ...rest,
-              modelSelectionByProvider,
-              activeProvider: providerInstanceId,
-              runtimeMode: null,
-              interactionMode: null,
+            const providerBindingConflict: ComposerProviderBindingConflict = {
+              boundInstanceId,
+              originalSelection: cloneModelSelection(originalSelection),
+              runtimeMode: existing.runtimeMode,
+              interactionMode: existing.interactionMode,
             };
+            if (Equal.equals(existing.providerBindingConflict, providerBindingConflict)) {
+              return state;
+            }
             return {
               draftsByThreadKey: {
                 ...state.draftsByThreadKey,
-                [threadKey]: nextDraft,
+                [threadKey]: {
+                  ...existing,
+                  providerBindingConflict,
+                },
               },
             };
+          });
+        },
+        continueOnBoundProvider: (threadRef, modelSelection) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) return;
+          const normalized = normalizeModelSelection(modelSelection);
+          if (!normalized) return;
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey];
+            if (
+              !existing?.providerBindingConflict ||
+              existing.providerBindingConflict.boundInstanceId !== normalized.instanceId
+            ) {
+              return state;
+            }
+            const { providerBindingConflict: _conflict, ...retained } = existing;
+            return {
+              draftsByThreadKey: {
+                ...state.draftsByThreadKey,
+                [threadKey]: {
+                  ...retained,
+                  modelSelectionByProvider: {
+                    ...existing.modelSelectionByProvider,
+                    [normalized.instanceId]: normalized,
+                  },
+                  activeProvider: normalized.instanceId,
+                  modelSelectionExplicit: true,
+                  // Provider-shaped modes from the conflicting selection do
+                  // not cross onto the bound runtime. The thread snapshot is
+                  // authoritative until the user changes them afterwards.
+                  runtimeMode: null,
+                  interactionMode: null,
+                },
+              },
+            };
+          });
+        },
+        transferComposerContentSnapshotForProviderConflict: (from, to) => {
+          const fromKey = resolveComposerDraftKey(get(), from) ?? "";
+          const toKey = resolveComposerDraftKey(get(), to) ?? "";
+          if (fromKey.length === 0 || toKey.length === 0 || fromKey === toKey) return;
+          set((state) => {
+            const source = state.draftsByThreadKey[fromKey];
+            const destinationSession = state.draftThreadsByThreadKey[toKey];
+            const conflict = source?.providerBindingConflict;
+            // This is intentionally not a general composer move. Conflict
+            // recovery always creates a fresh draft in the same environment.
+            // Refuse to overwrite another composer's state or to carry
+            // environment-bound uploads somewhere they cannot be reached.
+            if (
+              !source ||
+              !conflict ||
+              !destinationSession ||
+              destinationSession.environmentId !== from.environmentId ||
+              state.draftsByThreadKey[toKey] !== undefined
+            ) {
+              return state;
+            }
+
+            const originalSelection = cloneModelSelection(conflict.originalSelection);
+            const destinationThreadId = destinationSession.threadId;
+            const nextDestination: ComposerThreadDraftState = {
+              prompt: source.prompt,
+              images: source.images,
+              files: source.files,
+              nonPersistedImageIds: source.nonPersistedImageIds,
+              persistedAttachments: source.persistedAttachments,
+              terminalContexts: source.terminalContexts.map((context) => ({
+                ...context,
+                threadId: destinationThreadId,
+              })),
+              elementContexts: source.elementContexts.map((context) => ({
+                ...context,
+                threadId: destinationThreadId,
+              })),
+              previewAnnotations: source.previewAnnotations,
+              reviewComments: source.reviewComments,
+              modelSelectionByProvider: {
+                [originalSelection.instanceId]: originalSelection,
+              },
+              activeProvider: originalSelection.instanceId,
+              modelSelectionExplicit: true,
+              runtimeMode: conflict.runtimeMode ?? destinationSession.runtimeMode,
+              interactionMode: conflict.interactionMode ?? destinationSession.interactionMode,
+            };
+
+            const modelSelectionByProvider = { ...source.modelSelectionByProvider };
+            delete modelSelectionByProvider[originalSelection.instanceId];
+            const {
+              providerBindingConflict: _conflict,
+              modelSelectionExplicit: _explicit,
+              ...retainedSource
+            } = source;
+            // Do not revoke image preview URLs: ownership moves to the new
+            // composer in this same transaction.
+            const nextSource: ComposerThreadDraftState = {
+              ...retainedSource,
+              prompt: "",
+              images: [],
+              files: [],
+              nonPersistedImageIds: [],
+              persistedAttachments: [],
+              terminalContexts: [],
+              elementContexts: [],
+              previewAnnotations: [],
+              reviewComments: [],
+              modelSelectionByProvider,
+              activeProvider: conflict.boundInstanceId,
+              runtimeMode: null,
+              interactionMode: null,
+            };
+            const nextDraftsByThreadKey = {
+              ...state.draftsByThreadKey,
+              [toKey]: nextDestination,
+            };
+            if (shouldRemoveDraft(nextSource)) {
+              delete nextDraftsByThreadKey[fromKey];
+            } else {
+              nextDraftsByThreadKey[fromKey] = nextSource;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
           });
         },
         setModelSelection: (threadRef, modelSelection, opts) => {
@@ -3932,6 +4169,11 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
 );
 
 export const useComposerDraftStore = composerDraftStore;
+
+/** Force the latest conflict/move transaction into localStorage before navigation. */
+export function flushComposerDraftStore(): void {
+  composerDebouncedStorage.flush();
+}
 
 export function beginBackgroundDraftSubmissionByRef(threadRef: ScopedThreadRef): void {
   const threadKey = scopedThreadKey(threadRef);

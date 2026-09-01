@@ -99,6 +99,7 @@ import {
   type PersistedComposerImageAttachment,
   composerFileDedupKey,
   composerFileMatchesReattachMarker,
+  composerDraftHasUserContent,
   composerFileNeedsReattach,
   composerTargetKey,
   hydrateImagesFromPersisted,
@@ -447,6 +448,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 import type { ThreadHandoffOffer } from "./ThreadHandoff.logic";
 import { ThreadHandoffTab } from "./ThreadHandoffTab";
+import { ProviderBindingConflictNotice } from "./ProviderBindingConflictNotice";
 import { QuickQuestionDialog } from "./QuickQuestionDialog";
 import { SessionResourcesDialog } from "./SessionResourcesDialog";
 
@@ -837,6 +839,7 @@ export interface ChatComposerProps {
   // creation the offer leads to; the composer only shows it.
   threadHandoffOffer: ThreadHandoffOffer | null;
   isContinuingThreadOnAccount: boolean;
+  isStartingProviderConflictThread: boolean;
 
   // Callbacks
   onSend: (e?: { preventDefault: () => void }, intent?: ComposerSubmissionIntent) => void;
@@ -866,6 +869,8 @@ export interface ChatComposerProps {
   ) => Promise<ProviderCancelSessionSideQuestionResult>;
   onImplementPlanInNewThread: () => void;
   onContinueThreadOnAccount: () => void;
+  onContinueProviderBindingConflict: () => void;
+  onStartProviderBindingConflictThread: () => void;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
@@ -957,6 +962,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerElementContextsRef,
     threadHandoffOffer,
     isContinuingThreadOnAccount,
+    isStartingProviderConflictThread,
     onSend,
     onQueueFollowUp,
     onClearSessionInputQueue,
@@ -974,6 +980,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onCancelQuickQuestion,
     onImplementPlanInNewThread,
     onContinueThreadOnAccount,
+    onContinueProviderBindingConflict,
+    onStartProviderBindingConflictThread,
     onRespondToApproval,
     onSelectActivePendingUserInputOption,
     onAdvanceActivePendingUserInput,
@@ -999,8 +1007,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Store subscriptions (prompt / images / terminal contexts)
   // ------------------------------------------------------------------
   const composerDraft = useComposerThreadDraft(composerDraftTarget);
-  const reconcileComposerProviderBinding = useComposerDraftStore(
-    (state) => state.reconcileProviderBinding,
+  const setComposerProviderBindingConflict = useComposerDraftStore(
+    (state) => state.setProviderBindingConflict,
   );
   // Live target key, for async flows that must notice a thread switch that
   // happened while they awaited.
@@ -1210,6 +1218,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const noProviderAvailable = selectedProviderEntry === undefined;
   const providerSelectionBlocked = composerSelection.blockedByUnavailablePreference;
   const activeSessionInstanceId = activeThread?.session?.providerInstanceId;
+  const providerBindingConflict = composerDraft.providerBindingConflict;
   const draftSelectionForSelectedInstance =
     composerDraft.modelSelectionByProvider[selectedInstanceId];
   const selectedInstanceTransition = activeSessionInstanceId
@@ -1224,28 +1233,54 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadModelSelection?.instanceId === selectedInstanceId ||
     (composerDraft.activeProvider === selectedInstanceId &&
       draftSelectionForSelectedInstance?.instanceId === selectedInstanceId);
-  const boundProviderSelectionReason =
-    activeSessionInstanceId !== undefined && !hasSelectionOwnedBySelectedInstance
+  const shouldBlockProviderBindingConflict =
+    composerSelection.draftConflictsWithSessionBinding &&
+    composerDraft.modelSelectionExplicit === true &&
+    composerDraftHasUserContent(composerDraft);
+  const hasPendingProviderBindingConflict =
+    providerBindingConflict !== undefined || shouldBlockProviderBindingConflict;
+  const boundProviderSelectionReason = hasPendingProviderBindingConflict
+    ? "Choose whether this unsent message stays with its selected provider or this thread"
+    : activeSessionInstanceId !== undefined && !hasSelectionOwnedBySelectedInstance
       ? "Select a model for the thread’s bound provider"
       : null;
   const providerTurnUnavailable =
     !canStartComposerTurn(composerSelection) ||
     !selectedInstanceTransition.compatible ||
-    !hasSelectionOwnedBySelectedInstance;
+    !hasSelectionOwnedBySelectedInstance ||
+    hasPendingProviderBindingConflict;
   useEffect(() => {
-    if (
-      activeSessionInstanceId === undefined ||
-      !composerSelection.draftConflictsWithSessionBinding
-    ) {
-      return;
-    }
-    reconcileComposerProviderBinding(composerDraftTarget, activeSessionInstanceId);
+    setComposerProviderBindingConflict(
+      composerDraftTarget,
+      activeSessionInstanceId !== undefined && shouldBlockProviderBindingConflict
+        ? activeSessionInstanceId
+        : null,
+    );
   }, [
     activeSessionInstanceId,
     composerDraftTarget,
-    composerSelection.draftConflictsWithSessionBinding,
-    reconcileComposerProviderBinding,
+    setComposerProviderBindingConflict,
+    shouldBlockProviderBindingConflict,
   ]);
+  const conflictOriginalEntry = providerBindingConflict
+    ? providerInstanceEntries.find(
+        (entry) => entry.instanceId === providerBindingConflict.originalSelection.instanceId,
+      )
+    : undefined;
+  const conflictBoundEntry = providerBindingConflict
+    ? providerInstanceEntries.find(
+        (entry) => entry.instanceId === providerBindingConflict.boundInstanceId,
+      )
+    : undefined;
+  const conflictOriginalProviderName =
+    conflictOriginalEntry?.displayName ??
+    providerBindingConflict?.originalSelection.instanceId ??
+    "";
+  const conflictBoundProviderName =
+    conflictBoundEntry?.displayName ?? providerBindingConflict?.boundInstanceId ?? "";
+  const canContinueProviderBindingConflict =
+    providerBindingConflict !== undefined &&
+    activeThreadModelSelection?.instanceId === providerBindingConflict.boundInstanceId;
   // The driver kind follows the instance that will actually run the turn,
   // which can differ from the persisted selection when that selection is
   // disabled.
@@ -4257,6 +4292,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           onContinue={onContinueThreadOnAccount}
           isBusy={isContinuingThreadOnAccount}
         />
+        {providerBindingConflict ? (
+          <ProviderBindingConflictNotice
+            originalProviderName={conflictOriginalProviderName}
+            boundProviderName={conflictBoundProviderName}
+            canContinueOnBoundProvider={canContinueProviderBindingConflict}
+            isStartingNewThread={isStartingProviderConflictThread}
+            onContinueOnBoundProvider={onContinueProviderBindingConflict}
+            onStartNewThread={onStartProviderBindingConflictThread}
+          />
+        ) : null}
         <ComposerBanner.Dock>
           <ComposerBanner.Column>
             <ComposerBannerStack

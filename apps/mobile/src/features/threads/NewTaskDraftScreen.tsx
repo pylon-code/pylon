@@ -809,14 +809,16 @@ export function NewTaskDraftScreen(props: {
       return;
     }
     const draft = getComposerDraftSnapshot(draftKey);
-    // Snapshot read keeps just-typed selector state; the availability gate
-    // still applies so a stored selection on a disabled provider falls back
-    // to the flow's resolved model.
+    // Snapshot read keeps just-typed selector state. Ambient stale defaults
+    // may fall back, but a human/recovered exact provider choice must remain
+    // blocked rather than silently switch accounts.
     const modelSelection =
-      resolveSelectableModelSelection(
-        selectedEnvironmentServerConfig,
-        draft.modelSelection ?? null,
-      ) ?? flow.selectedModel;
+      draft.providerSelectionExplicit === true && draft.modelSelection !== undefined
+        ? resolveSelectableModelSelection(selectedEnvironmentServerConfig, draft.modelSelection)
+        : (resolveSelectableModelSelection(
+            selectedEnvironmentServerConfig,
+            draft.modelSelection ?? null,
+          ) ?? flow.selectedModel);
     const workspaceMode = draft.workspaceSelection?.mode ?? flow.workspaceMode;
     const selectedBranchName = draft.workspaceSelection?.branch ?? flow.selectedBranchName;
     const selectedWorktreePath =

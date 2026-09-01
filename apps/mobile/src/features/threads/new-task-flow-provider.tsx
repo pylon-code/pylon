@@ -439,10 +439,14 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       stickySelection: storedStickyModelSelection,
     },
   );
-  const draftModelSelection = resolveSelectableModelSelection(
+  const selectableDraftModelSelection = resolveSelectableModelSelection(
     selectedEnvironmentServerConfig,
     storedDraftModelSelection,
   );
+  const draftModelSelection =
+    selectedProjectDraft.providerSelectionExplicit === true && storedDraftModelSelection !== null
+      ? storedDraftModelSelection
+      : selectableDraftModelSelection;
   const projectDefaultModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
     storedProjectDefaultModelSelection,
@@ -530,6 +534,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       const modelSelection = options ? { ...option.selection, options } : option.selection;
       updateComposerDraftSettings(selectedProjectDraftKey, {
         modelSelection,
+        providerSelectionExplicit: true,
         runtimeMode: resolveModelSelectionRuntimeMode(
           selectedEnvironmentServerConfig,
           modelSelection,
@@ -559,6 +564,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
           };
       updateComposerDraftSettings(selectedProjectDraftKey, {
         modelSelection: nextSelection,
+        providerSelectionExplicit: true,
       });
       setStickyComposerModelSelection(nextSelection);
     },
@@ -886,6 +892,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       replaceComposerDraftAttachments(draftKey, message.attachments);
       updateComposerDraftSettings(draftKey, {
         modelSelection: message.modelSelection,
+        providerSelectionExplicit: message.modelSelection !== undefined,
         runtimeMode: message.runtimeMode,
         interactionMode: message.interactionMode,
         workspaceSelection: {

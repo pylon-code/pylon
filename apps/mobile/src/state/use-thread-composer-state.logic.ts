@@ -47,10 +47,13 @@ export function resolveExistingThreadComposerSettings(input: {
         })
       : null;
   const rejectedDraftProviderSelection = draftTransition?.compatible === false;
-  const canApplyDraftSettings = !rejectedDraftProviderSelection;
 
-  const modelSelection =
-    boundInstanceId === undefined
+  // A conflicting local draft is a durable blocked choice, not a stale seed.
+  // Keep its exact model/options/modes visible until the user explicitly picks
+  // a compatible continuation peer or moves the content into a new thread.
+  const modelSelection = rejectedDraftProviderSelection
+    ? (draftSelection ?? null)
+    : boundInstanceId === undefined
       ? (draftSelection ?? input.thread.modelSelection)
       : draftSelection !== undefined &&
           (draftSelection.instanceId === boundInstanceId || draftTransition?.compatible === true)
@@ -62,14 +65,13 @@ export function resolveExistingThreadComposerSettings(input: {
   return {
     modelSelection,
     runtimeMode:
-      canApplyDraftSettings && input.draft?.runtimeMode !== undefined
-        ? input.draft.runtimeMode
-        : input.thread.runtimeMode,
+      input.draft?.runtimeMode !== undefined ? input.draft.runtimeMode : input.thread.runtimeMode,
     interactionMode:
-      canApplyDraftSettings && input.draft?.interactionMode !== undefined
+      input.draft?.interactionMode !== undefined
         ? input.draft.interactionMode
         : input.thread.interactionMode,
     rejectedDraftProviderSelection,
-    providerBindingMismatch: boundInstanceId !== undefined && modelSelection === null,
+    providerBindingMismatch:
+      rejectedDraftProviderSelection || (boundInstanceId !== undefined && modelSelection === null),
   };
 }
