@@ -4,8 +4,8 @@ Pylon Mobile includes the Pylon, T3 Chat, Grove, Ocean, Ember, and Iris themes. 
 light and dark colors that apply throughout the app, including code reviews, file previews, the
 terminal, native headers, and sheets.
 
-On supported iOS versions, the new-task and thread composers use the system glass material.
-Other platforms use a themed background.
+On supported iOS versions, the new-task and thread composers, working timer, and scroll-to-end
+button use the system glass material. Other platforms use a themed background.
 
 To change themes:
 
