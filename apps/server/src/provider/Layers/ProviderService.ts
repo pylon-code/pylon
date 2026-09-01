@@ -656,15 +656,31 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         };
       }
 
-      if (
-        canonicalEvent.type === "turn.started" &&
-        canonicalEvent.admissionRequestId !== undefined
-      ) {
-        activeTurnAdmissions.set(canonicalEvent.threadId, {
-          requestId: canonicalEvent.admissionRequestId,
-          sessionIncarnationId: currentIncarnation.id,
-          turnId: canonicalEvent.turnId,
-        });
+      if (canonicalEvent.type === "turn.started") {
+        if (canonicalEvent.admissionRequestId !== undefined) {
+          activeTurnAdmissions.set(canonicalEvent.threadId, {
+            requestId: canonicalEvent.admissionRequestId,
+            sessionIncarnationId: currentIncarnation.id,
+            turnId: canonicalEvent.turnId,
+          });
+        }
+        yield* directory
+          .upsert({
+            threadId: canonicalEvent.threadId,
+            provider: canonicalEvent.provider,
+            providerInstanceId: source.instanceId,
+            status: "running",
+            runtimePayload: {
+              activeTurnId: canonicalEvent.turnId,
+              ...(canonicalEvent.admissionRequestId === undefined
+                ? {}
+                : { activeTurnRequestId: canonicalEvent.admissionRequestId }),
+              sessionIncarnationId: currentIncarnation.id,
+              lastRuntimeEvent: "turn.started",
+              lastRuntimeEventAt: canonicalEvent.createdAt,
+            },
+          })
+          .pipe(Effect.orDie);
       }
 
       yield* increment(providerRuntimeEventsTotal, {
@@ -1378,11 +1394,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           return;
         }
         adoptedAdapter = adapter;
+        const sessionIncarnationId = RuntimeSessionId.make(rawIncarnation);
         currentSessionIncarnations.set(binding.threadId, {
-          id: RuntimeSessionId.make(rawIncarnation),
+          id: sessionIncarnationId,
           instanceId,
           adapter,
         });
+        if (recovered.activeTurnId !== undefined && recovered.activeTurnRequestId !== undefined) {
+          activeTurnAdmissions.set(binding.threadId, {
+            requestId: recovered.activeTurnRequestId,
+            sessionIncarnationId,
+            turnId: recovered.activeTurnId,
+          });
+        }
         yield* upsertSessionBinding(
           { ...recovered, providerInstanceId: instanceId },
           binding.threadId,

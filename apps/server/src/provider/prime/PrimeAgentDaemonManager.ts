@@ -307,8 +307,11 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     ).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
   );
   let recoveryRetainers = 0;
+  let retainedExistingDaemon = false;
+  let adoptedExistingDaemon = false;
   const retainForRecovery = () => {
     recoveryRetainers += 1;
+    if (retainedExistingDaemon) adoptedExistingDaemon = true;
     let released = false;
     return () => {
       if (released) return;
@@ -330,7 +333,6 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
   const shutdownTimeout = input.shutdownTimeout ?? Duration.seconds(5);
   const semaphore = yield* Semaphore.make(1);
   let running: RunningDaemon | undefined;
-  let retainedExistingDaemon = false;
   let closing = false;
 
   const removeSocket = () =>
@@ -726,7 +728,16 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     const command = ChildProcess.make(
       input.executablePath,
       ["--mode", "daemon", "--daemon-socket", socket, "--offline", "--session-dir", sessionDir],
-      { env: launchEnvironment, extendEnv: false },
+      recoveryEnabled
+        ? {
+            env: launchEnvironment,
+            extendEnv: false,
+            detached: true,
+            stdin: "ignore",
+            stdout: "ignore",
+            stderr: "ignore",
+          }
+        : { env: launchEnvironment, extendEnv: false },
     );
     const handle = yield* spawner.spawn(command).pipe(
       Effect.provideService(Scope.Scope, processScope),
@@ -736,8 +747,10 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       Effect.onError(() => Scope.close(processScope, Exit.void).pipe(Effect.ignore)),
     );
     const state = { handle, scope: processScope } satisfies RunningDaemon;
-    yield* Effect.forkIn(drainProcessOutput(handle.stdout, "stdout"), processScope);
-    yield* Effect.forkIn(drainProcessOutput(handle.stderr, "stderr"), processScope);
+    if (!recoveryEnabled) {
+      yield* Effect.forkIn(drainProcessOutput(handle.stdout, "stdout"), processScope);
+      yield* Effect.forkIn(drainProcessOutput(handle.stderr, "stderr"), processScope);
+    }
 
     const readinessClient = yield* connectClient({ bridge, socket, timeoutMs }).pipe(
       Effect.retry({
@@ -778,9 +791,12 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
         return;
       }
       if (retainedExistingDaemon) {
-        // This process did not spawn the compatible supervisor. A competing replacement
-        // may already own it, so shutdown must never revoke that process's authority.
-        return;
+        // Do not revoke an untouched compatible supervisor owned by another
+        // process. Once this manager adopts one of its recoverable sessions,
+        // it owns the surviving supervisor and must retire it on clean shutdown.
+        if (!adoptedExistingDaemon) return;
+        const client = yield* connectClient({ bridge, socket, timeoutMs });
+        yield* retireExistingDaemon(client);
       }
     }),
   );

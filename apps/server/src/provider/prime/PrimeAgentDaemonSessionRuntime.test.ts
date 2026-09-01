@@ -13034,7 +13034,7 @@ describe("Prime Agent live activity privacy boundary", () => {
     ),
   );
 
-  it.effect("commits adoption, restores MCP, then confirms before replay is exposed", () =>
+  it.effect("commits adoption before replay and defers MCP replacement to the next prompt", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const side = fixture({
@@ -13086,15 +13086,18 @@ describe("Prime Agent live activity privacy boundary", () => {
             "adopt-recoverable",
             "retain-daemon",
             "ledger-committed",
-            "replace-mcp",
             "confirm-adoption",
           ]),
         );
+        expect(side.captures.order).not.toContain("replace-mcp");
         expect(side.captures.order.indexOf("ledger-committed")).toBeLessThan(
-          side.captures.order.indexOf("replace-mcp"),
-        );
-        expect(side.captures.order.indexOf("replace-mcp")).toBeLessThan(
           side.captures.order.indexOf("confirm-adoption"),
+        );
+
+        yield* runtime.prompt({ text: "next prompt after adoption" });
+        expect(side.captures.order).toContain("replace-mcp");
+        expect(side.captures.order.indexOf("confirm-adoption")).toBeLessThan(
+          side.captures.order.indexOf("replace-mcp"),
         );
         yield* runtime.detach!;
       }),

@@ -31,6 +31,10 @@ interface CapturedCommand {
   readonly options: {
     readonly env?: NodeJS.ProcessEnv;
     readonly extendEnv?: boolean;
+    readonly detached?: boolean;
+    readonly stdin?: "ignore";
+    readonly stdout?: "ignore";
+    readonly stderr?: "ignore";
   };
 }
 
@@ -423,6 +427,10 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
           manager.sessionDir,
         ]);
         expect(command.options.extendEnv).toBe(false);
+        expect(command.options).not.toHaveProperty("detached");
+        expect(command.options).not.toHaveProperty("stdin");
+        expect(command.options).not.toHaveProperty("stdout");
+        expect(command.options).not.toHaveProperty("stderr");
         expect(command.options.env).toMatchObject({
           PATH: "/usr/bin",
           KEEP_ME: "yes",
@@ -484,6 +492,26 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
       (tempDir) => Effect.promise(() => NodeFSP.rm(tempDir, { recursive: true, force: true })),
     ),
   );
+
+  it.effect("detaches a recovery supervisor from Pylon stdio while retaining its handle", () => {
+    const fixture = managerFixture({ recoverable: true });
+    return Effect.gen(function* () {
+      const manager = yield* fixture.make;
+      const client = yield* manager.openClient();
+      client.close();
+
+      expect(fixture.commands).toHaveLength(1);
+      expect(fixture.processes).toHaveLength(1);
+      expect(fixture.commands[0]!.options).toMatchObject({
+        detached: true,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        extendEnv: false,
+      });
+      expect(fixture.processes[0]!.handle.pid).toBe(1);
+    }).pipe(Effect.scoped);
+  });
 
   it.effect(
     "fails readiness without publishing a daemon and interrupts only its captured handle",
@@ -640,6 +668,27 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
       Effect.andThen(
         Effect.sync(() => {
           expect(fixture.shutdownRequests).toEqual([]);
+          expect(fixture.commands).toHaveLength(0);
+        }),
+      ),
+    );
+  });
+
+  it.effect("retires an adopted recovery supervisor on clean shutdown", () => {
+    const fixture = managerFixture({ existingLive: true, recoverable: true });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const manager = yield* fixture.make;
+        const client = yield* manager.openClient();
+        client.close();
+        const release = manager.retainForRecovery!();
+        release();
+        expect(fixture.shutdownRequests).toEqual([]);
+      }),
+    ).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(fixture.shutdownRequests).toEqual([fixture.paths.socket]);
           expect(fixture.commands).toHaveLength(0);
         }),
       ),

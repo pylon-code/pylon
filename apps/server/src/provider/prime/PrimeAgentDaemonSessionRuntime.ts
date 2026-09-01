@@ -2525,7 +2525,23 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         });
         if (mayCommit()) mcpAttached = true;
       });
-    yield* configureMcpServer().pipe(Effect.onError(() => closeAttachedSession));
+    let adoptionMcpRefreshPending =
+      input.recovery?.kind === "adopt" && input.mcpServer !== undefined;
+    if (adoptionMcpRefreshPending) {
+      // Recoverable adoption retags the surviving worker's existing MCP servers
+      // to the new owner. The admitted prompt is still running, so Prime cannot
+      // replace those servers until the next prompt admission boundary.
+      mcpAttached = true;
+    } else {
+      yield* configureMcpServer().pipe(Effect.onError(() => closeAttachedSession));
+    }
+    const refreshMcpAfterAdoption = Effect.fn(
+      "PrimeAgentDaemonSessionRuntime.refreshMcpAfterAdoption",
+    )(function* () {
+      if (!adoptionMcpRefreshPending) return;
+      yield* configureMcpServer();
+      adoptionMcpRefreshPending = false;
+    });
     let verifiedInventory:
       | readonly [typeof resourceSnapshotSchema.Type, typeof commandsSchema.Type]
       | undefined;
@@ -6749,6 +6765,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* requireCorrelatedPromptLifecycleAdmission("prompt");
       yield* requireCurrentCorrelatedPromptLifecycleProof("prompt");
       yield* awaitProviderRecovery;
+      yield* refreshMcpAfterAdoption();
       yield* requireCorrelatedPromptLifecycleAdmission("prompt");
       const proofEpoch = yield* requireCurrentCorrelatedPromptLifecycleProof("prompt");
       const images = yield* validateImages("prompt", promptInput.images);
@@ -6878,6 +6895,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         yield* requireCorrelatedPromptLifecycleAdmission("prompt");
       }
       yield* awaitProviderRecovery;
+      yield* refreshMcpAfterAdoption();
       const resumedAfterAbort = yield* resumeAfterAbort();
       const images = yield* validateImages("prompt", promptInput.images);
       yield* validatePromptContent("prompt", promptInput.text, images);

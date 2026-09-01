@@ -1412,20 +1412,6 @@ export function makePrimeAgentDaemonAdapter(
         }
       });
 
-    const correlatedTranscriptSnapshotIsExact = (
-      context: PrimeAgentDaemonSessionContext,
-      event: Extract<PrimeDaemonEvent, { readonly _tag: "SessionResynced" }>,
-    ): boolean => {
-      if (event.replayContinuity !== "complete") return false;
-      const reconciliation = reconcileTranscriptTail({
-        observed: context.nativeTranscript,
-        observedCount: context.nativeTranscriptMessageCount,
-        snapshot: event.messages,
-        snapshotCount: event.state.messageCount,
-      });
-      return reconciliation !== undefined && reconciliation.missingMessages.length === 0;
-    };
-
     const reconcileTranscriptSnapshotLocked = (
       context: PrimeAgentDaemonSessionContext,
       event: Extract<PrimeDaemonEvent, { readonly _tag: "SessionResynced" }>,
@@ -1875,6 +1861,9 @@ export function makePrimeAgentDaemonAdapter(
         if (turn === undefined || turn.correlationId !== lifecycle.correlationId) return false;
         const current = turn.correlatedLifecycle;
         if (current !== undefined) {
+          // The submit response and its lifecycle notification travel on separate
+          // channels, so the older notification can arrive after the response.
+          if (lifecycle.revision < current.revision) return false;
           if (lifecycle.revision === current.revision) {
             if (primeAgentPromptLifecycleIsSame(lifecycle, current)) return false;
             return yield* failCorrelatedProtocolLocked(context, turn);
@@ -2124,7 +2113,13 @@ export function makePrimeAgentDaemonAdapter(
 
     /** Must be called with the thread lock held. */
     const startBackgroundQuiescenceWatchLocked = (context: PrimeAgentDaemonSessionContext) => {
-      if (!context.runtime.rlmQuiescenceAvailable || context.stopped) return Effect.void;
+      if (
+        !context.runtime.rlmQuiescenceAvailable ||
+        context.stopped ||
+        context.activeTurn?.correlationId !== undefined
+      ) {
+        return Effect.void;
+      }
       if (context.backgroundQuiescencePending) {
         // The native call may finish later, but its aborted signal prevents that older watch
         // from clearing activity observed by the replacement generation.
@@ -2282,8 +2277,37 @@ export function makePrimeAgentDaemonAdapter(
                 context.managedPlanProjectionEnabled = true;
                 const activeTurn = context.activeTurn;
                 if (context.runtime.correlatedPromptLifecycleAvailable) {
-                  if (event.initialSnapshot !== true) {
-                    if (!correlatedTranscriptSnapshotIsExact(context, event)) {
+                  if (event.initialSnapshot === true) {
+                    const lifecycle =
+                      activeTurn?.correlationId === undefined
+                        ? undefined
+                        : event.promptLifecycles?.records.find(
+                            (candidate) => candidate.correlationId === activeTurn.correlationId,
+                          );
+                    if (lifecycle !== undefined) {
+                      yield* applyCorrelatedPromptLifecycleLocked(context, lifecycle, {
+                        authoritativeSnapshot: true,
+                      });
+                    }
+                  } else {
+                    const transcriptPlan = reconcileTranscriptTail({
+                      observed: context.nativeTranscript,
+                      observedCount: context.nativeTranscriptMessageCount,
+                      snapshot: event.messages,
+                      snapshotCount: event.state.messageCount,
+                    });
+                    const missingMessages = transcriptPlan?.missingMessages ?? [];
+                    const snapshotIsExactOrCurrentTerminal =
+                      missingMessages.length === 0 ||
+                      (missingMessages.length === 1 &&
+                        missingMessages[0]?.role === "assistant" &&
+                        context.nativeTranscript.at(-1)?.role === "user");
+                    const transcriptReconciled =
+                      event.replayContinuity === "complete" &&
+                      transcriptPlan !== undefined &&
+                      snapshotIsExactOrCurrentTerminal &&
+                      (yield* reconcileTranscriptSnapshotLocked(context, event));
+                    if (!transcriptReconciled) {
                       if (reconnectGeneration !== undefined) {
                         context.runtime.resolveReconnectSnapshot(reconnectGeneration, false, false);
                       }
@@ -4397,13 +4421,17 @@ export function makePrimeAgentDaemonAdapter(
       (manager.platform === "darwin" || manager.platform === "linux") &&
       (manager.architecture === "arm64" || manager.architecture === "x64");
 
-    const silentlyCloseSessionForRecovery = (context: PrimeAgentDaemonSessionContext) =>
-      Effect.gen(function* () {
+    const reserveSessionForRecoveryRestart = (context: PrimeAgentDaemonSessionContext) =>
+      Effect.sync(() => {
         context.stopped = true;
         sessions.delete(context.threadId);
-        if (context.eventFiber !== undefined) yield* Fiber.interrupt(context.eventFiber);
         context.backgroundQuiescenceController?.abort();
         context.backgroundQuiescenceController = undefined;
+      });
+
+    const closeReservedRecoverySession = (context: PrimeAgentDaemonSessionContext) =>
+      Effect.gen(function* () {
+        if (context.eventFiber !== undefined) yield* Fiber.interrupt(context.eventFiber);
         yield* Scope.close(context.scope, Exit.void).pipe(Effect.ignore);
       });
 
@@ -4461,12 +4489,13 @@ export function makePrimeAgentDaemonAdapter(
             resumeCursor: context.session.resumeCursor,
             sessionIncarnationId: context.sessionIncarnationId,
           } as const;
-          yield* silentlyCloseSessionForRecovery(context);
+          yield* reserveSessionForRecoveryRestart(context);
           pendingRecoveryStarts.set(input.threadId, recoveryStart);
-          return { restartInput, ownerToken } as const;
+          return { restartInput, ownerToken, context } as const;
         }),
       );
       if (plan === undefined) return;
+      yield* closeReservedRecoverySession(plan.context);
       const recoveryResult = yield* Effect.result(startSession(plan.restartInput));
       if (Result.isSuccess(recoveryResult)) return;
 
@@ -4538,6 +4567,10 @@ export function makePrimeAgentDaemonAdapter(
       ) {
         return null;
       }
+      const recoverySessionDir = authority.recoveryConfig.sessionDir;
+      if (typeof recoverySessionDir !== "string") {
+        return null;
+      }
       const ownerToken = yield* randomUUIDv4;
       const claimedAt = yield* nowIso;
       const claimed = yield* recoveryLedger!.claim({
@@ -4560,7 +4593,7 @@ export function makePrimeAgentDaemonAdapter(
         ownerToken,
         requestId,
         mcpOwnerId,
-        sessionFile: `${authority.nativeSessionId}.jsonl`,
+        sessionFile: path.join(recoverySessionDir, `${authority.nativeSessionId}.jsonl`),
       });
       const started = yield* Effect.result(
         startSession({
@@ -4609,7 +4642,7 @@ export function makePrimeAgentDaemonAdapter(
             context.recoveryPendingActivation = false;
             context.eventFiber = yield* context.runtime.events.pipe(
               Stream.runForEach((event) => consumeEvent(context, event)),
-              Effect.forkChild,
+              Effect.forkIn(context.scope),
             );
             if (context.runtime.inputAdmissionBusy) {
               yield* startBackgroundQuiescenceWatchLocked(context);
