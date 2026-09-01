@@ -38,7 +38,7 @@ when starting a thread or changing an existing thread's model.
 ## Changing projects
 
 On web and desktop, changing the project from a new thread keeps the current environment when that
-project exists there. If it does not, T3 Code selects another environment that has the project.
+project exists there. If it does not, Pylon selects another environment that has the project.
 
 ## Notices above the composer
 
