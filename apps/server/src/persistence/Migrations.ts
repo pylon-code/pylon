@@ -68,6 +68,7 @@ import Migration0054 from "./Migrations/054_RepairAutomaticSettlementTimestamps.
 import Migration0056 from "./Migrations/056_ProjectionProjectIcon.ts";
 import Migration0057 from "./Migrations/057_ProjectionThreadsActiveOrderKey.ts";
 import Migration0055 from "./Migrations/055_ProjectionThreadBranchPullRequest.ts";
+import Migration0058 from "./Migrations/058_ProjectionProjectsAutoPull.ts";
 /**
  * Migration loader with all migrations defined inline.
  *
@@ -165,6 +166,9 @@ export const migrationEntries = [
   [56, "ProjectionProjectIcon", Migration0056],
   // Upstream #9729 used 49; Pylon already uses that id for pending stops.
   [57, "ProjectionThreadsActiveOrderKey", Migration0057],
+  // Upstream #9277 used 45; Pylon already uses that id for auth session client
+  // connections and its lineage runs through 57.
+  [58, "ProjectionProjectsAutoPull", Migration0058],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
