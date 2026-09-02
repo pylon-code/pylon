@@ -1,4 +1,4 @@
-/* eslint-disable t3code/no-manual-effect-runtime-in-tests -- This opt-in POSIX proof drives two external server processes through their public RPC boundary. */
+/* eslint-disable t3code/no-manual-effect-runtime-in-tests -- This opt-in POSIX proof drives repeated external server processes through their public RPC boundary. */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
@@ -23,11 +23,11 @@ import { describe, expect, it } from "vite-plus/test";
 import { persistPrimeManagedReceipt } from "./PrimeAgentDistributionVerifier.ts";
 
 const packageRoot = NodeProcess.env.PRIME_AGENT_REAL_PACKAGE_ROOT?.trim();
-const exactHead = "507a52239d3ace7bb2b2965ade7779988fdb6344";
+const exactHead = "a3dd5ce633fef161d30ded9474f75a609a9e7a2a";
 const skipReason =
   NodeProcess.platform === "win32"
     ? "native Windows is unsupported; run the POSIX proof in WSL2 with a Linux PRIME_AGENT_REAL_PACKAGE_ROOT"
-    : "set PRIME_AGENT_REAL_PACKAGE_ROOT to the built exact Prime checkout at 507a52239d3ace7bb2b2965ade7779988fdb6344";
+    : `set PRIME_AGENT_REAL_PACKAGE_ROOT to the built exact Prime checkout at ${exactHead}`;
 const enabled = NodeProcess.platform !== "win32" && Boolean(packageRoot);
 const outerSafetyMs = 180_000;
 const maximumOutputBytes = 2 * 1024 * 1024;
@@ -654,6 +654,17 @@ const readLedger = (databasePath, threadId) => {
   }
 };
 
+const readOwnershipReceipt = async (stateDir) => {
+  const directory = NodePath.join(stateDir, "provider-sessions", "prime-agent", "native-ownership");
+  const entries = (await NodeFSP.readdir(directory)).filter(
+    (name) => name.endsWith(".json") && !name.endsWith(".json.lock"),
+  );
+  if (entries.length !== 1) {
+    throw new Error(`expected one Prime ownership receipt, found ${entries.length}`);
+  }
+  return JSON.parse(await NodeFSP.readFile(NodePath.join(directory, entries[0]), "utf8"));
+};
+
 const readProviderSessionRuntime = (databasePath, threadId) => {
   const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
   try {
@@ -890,7 +901,7 @@ const runRestartedTurn = ({ wsUrl, threadId, fixture, onRecoveredActivity }) =>
   );
 
 describe.skipIf(!enabled)(
-  `Prime Agent two-Pylon-server restart adoption (${enabled ? "enabled" : skipReason})`,
+  `Prime Agent repeated Pylon-server restart adoption (${enabled ? "enabled" : skipReason})`,
   () => {
     it(
       "adopts one live owned worker across the real server boundary and cleans it authoritatively",
@@ -918,7 +929,7 @@ describe.skipIf(!enabled)(
         expect(sourceHead).toBe(exactHead);
 
         const temp = await NodeFSP.realpath(
-          await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pylon-two-server-adoption-")),
+          await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pylon-repeated-server-adoption-")),
         );
         const home = NodePath.join(temp, "home");
         const baseDir = NodePath.join(temp, "server-home");
@@ -1019,7 +1030,7 @@ describe.skipIf(!enabled)(
               type: "project.create",
               commandId: `project-command-${NodeCrypto.randomUUID()}`,
               projectId,
-              title: "Two-server adoption proof",
+              title: "Repeated-server adoption proof",
               workspaceRoot: projectDir,
               defaultModelSelection: modelSelection,
               createdAt,
@@ -1100,6 +1111,19 @@ describe.skipIf(!enabled)(
             turn_id: activeSnapshot.thread.session.activeTurnId,
             state: "active",
           });
+          const receiptA = await readOwnershipReceipt(stateDir);
+          expect(receiptA).toMatchObject({
+            state: "acquired",
+            activeSessionId: ledgerA.active_session_id,
+            nativeSessionId: ledgerA.native_session_id,
+            recovery: {
+              threadId,
+              sessionIncarnationId: ledgerA.session_incarnation_id,
+              admissionRequestId: ledgerA.admission_request_id,
+              recoveryHandle: ledgerA.recovery_handle,
+              ownershipGeneration: ledgerA.ownership_generation,
+            },
+          });
           const sessionFilesBefore = await listSessionJsonlFiles(stateDir);
           expect(sessionFilesBefore).toHaveLength(1);
           expect(await NodeFSP.lstat(daemonSocket)).toMatchObject({});
@@ -1130,18 +1154,28 @@ describe.skipIf(!enabled)(
               stage: "after-claim-persisted",
               phase: "claimed",
               attempt: 0,
+              receipt: "current",
             },
             {
               label: "server C after native response",
               stage: "after-native-response-before-commit",
               phase: "requested",
               attempt: 1,
+              receipt: "current",
             },
             {
-              label: "server D after durable rotated receipt",
-              stage: "after-commit-before-confirm",
+              label: "server D after durable ledger commit",
+              stage: "after-commit-before-receipt",
               phase: "committed",
               attempt: 2,
+              receipt: "current",
+            },
+            {
+              label: "server E after durable receipt rotation",
+              stage: "after-receipt-before-confirm",
+              phase: "committed",
+              attempt: 2,
+              receipt: "staged",
             },
           ];
           let adoptionRequestId;
@@ -1195,6 +1229,24 @@ describe.skipIf(!enabled)(
               expect(crashLedger.adoption_recovery_handle).toBeNull();
               expect(crashLedger.adoption_proof_json).toBeNull();
             }
+            const crashReceipt = await readOwnershipReceipt(stateDir);
+            expect(crashReceipt).toMatchObject({
+              attemptId: receiptA.attemptId,
+              activeSessionId: ledgerA.active_session_id,
+              nativeSessionId: ledgerA.native_session_id,
+            });
+            if (crashCase.receipt === "staged") {
+              const adoptionProof = JSON.parse(crashLedger.adoption_proof_json);
+              expect(crashReceipt.recovery).toMatchObject({
+                threadId,
+                sessionIncarnationId: ledgerA.session_incarnation_id,
+                admissionRequestId: ledgerA.admission_request_id,
+                recoveryHandle: crashLedger.adoption_recovery_handle,
+                ownershipGeneration: adoptionProof.ownershipGeneration,
+              });
+            } else {
+              expect(crashReceipt.recovery).toEqual(receiptA.recovery);
+            }
             expect(fixture.records).toHaveLength(1);
             expect(processExists(workerPid)).toBe(true);
           }
@@ -1206,13 +1258,13 @@ describe.skipIf(!enabled)(
             projectDir,
             home,
             port: portB,
-            label: "server E",
+            label: "server F",
           });
           const wsB = await issueWebSocketUrl(serverB.baseUrl, bearerToken);
           await runRpc(
             wsB,
             (client) => client[WS_METHODS.serverProbe]({}),
-            "server E command readiness after repeated adoption recovery",
+            "server F command readiness after repeated adoption recovery",
           );
           expect(fixture.records).toHaveLength(1);
           const ledgerAfterRepeatedCrash = await waitForLedger(
@@ -1238,6 +1290,13 @@ describe.skipIf(!enabled)(
             adoptionAttempt: 0,
             ownerRotated: true,
             handleRotated: true,
+          });
+          expect((await readOwnershipReceipt(stateDir)).recovery).toMatchObject({
+            threadId,
+            sessionIncarnationId: ledgerAfterRepeatedCrash.session_incarnation_id,
+            admissionRequestId: ledgerAfterRepeatedCrash.admission_request_id,
+            recoveryHandle: ledgerAfterRepeatedCrash.recovery_handle,
+            ownershipGeneration: ledgerAfterRepeatedCrash.ownership_generation,
           });
           if (!processExists(workerPid)) {
             throw new Error(

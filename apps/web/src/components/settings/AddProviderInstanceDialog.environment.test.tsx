@@ -1,10 +1,10 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, EnvironmentId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { reactHookHarness as hooks } from "../../test/reactHookHarness";
 
 const settingsHooks = vi.hoisted(() => ({
-  read: vi.fn(() => ({ providerInstances: {} })),
+  read: vi.fn(),
   update: vi.fn(() => vi.fn()),
 }));
 
@@ -35,7 +35,8 @@ const remoteEnvironmentId = EnvironmentId.make("remote-device");
 describe("AddProviderInstanceDialog environment routing", () => {
   beforeEach(() => {
     hooks.reset();
-    settingsHooks.read.mockClear();
+    settingsHooks.read.mockReset();
+    settingsHooks.read.mockReturnValue(DEFAULT_SERVER_SETTINGS);
     settingsHooks.update.mockClear();
   });
 

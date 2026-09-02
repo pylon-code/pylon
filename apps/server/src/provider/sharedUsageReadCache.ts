@@ -61,6 +61,8 @@ export const SharedUsageReadEntry = Schema.Struct({
   throttledUntil: Schema.optional(Schema.String),
   /** Last failed attempt. It suppresses duplicate failures for a short window. */
   failedAt: Schema.optional(Schema.String),
+  /** Private random correlation used only by fenced provider materializations. */
+  configRevision: Schema.optional(Schema.String),
 });
 export type SharedUsageReadEntry = typeof SharedUsageReadEntry.Type;
 
@@ -192,6 +194,7 @@ const lockPath = (path: Path.Path, dir: string, key: string) => path.join(dir, `
 export const readSharedUsageEntry = Effect.fn("readSharedUsageEntry")(function* (
   dir: string,
   key: string,
+  expectedConfigRevision?: string,
 ): Effect.fn.Return<SharedUsageReadEntry | undefined, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -200,7 +203,9 @@ export const readSharedUsageEntry = Effect.fn("readSharedUsageEntry")(function* 
     Effect.catchCause(() => Effect.succeed(Option.none<string>())),
   );
   if (Option.isNone(raw)) return undefined;
-  return Option.getOrUndefined(decodeEntry(raw.value));
+  const decoded = Option.getOrUndefined(decodeEntry(raw.value));
+  if (expectedConfigRevision === undefined) return decoded;
+  return decoded?.configRevision === expectedConfigRevision ? decoded : undefined;
 });
 
 /**
@@ -212,6 +217,7 @@ export const writeSharedUsageEntry = Effect.fn("writeSharedUsageEntry")(function
   dir: string,
   key: string,
   entry: SharedUsageReadEntry,
+  commitGuard?: Effect.Effect<boolean>,
 ): Effect.fn.Return<void, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -220,6 +226,10 @@ export const writeSharedUsageEntry = Effect.fn("writeSharedUsageEntry")(function
   yield* Effect.gen(function* () {
     yield* fileSystem.makeDirectory(dir, { recursive: true });
     yield* fileSystem.writeFileString(temp, encodeEntry(entry));
+    if (commitGuard !== undefined && !(yield* commitGuard)) {
+      yield* fileSystem.remove(temp).pipe(Effect.ignore);
+      return;
+    }
     yield* fileSystem.rename(temp, target);
   }).pipe(Effect.catchCause(() => Effect.void));
 });
@@ -232,15 +242,25 @@ export const markSharedUsageReadFailed = Effect.fn("markSharedUsageReadFailed")(
   dir: string,
   key: string,
   failedAt: string,
+  options?: {
+    readonly configRevision?: string | undefined;
+    readonly commitGuard?: Effect.Effect<boolean> | undefined;
+  },
 ): Effect.fn.Return<void, never, FileSystem.FileSystem | Path.Path> {
-  const existing = yield* readSharedUsageEntry(dir, key);
-  yield* writeSharedUsageEntry(dir, key, {
-    version: 1,
-    readAt: existing?.readAt ?? failedAt,
-    ...(existing?.usageLimits ? { usageLimits: existing.usageLimits } : {}),
-    ...(existing?.throttledUntil ? { throttledUntil: existing.throttledUntil } : {}),
-    failedAt,
-  });
+  const existing = yield* readSharedUsageEntry(dir, key, options?.configRevision);
+  yield* writeSharedUsageEntry(
+    dir,
+    key,
+    {
+      version: 1,
+      readAt: existing?.readAt ?? failedAt,
+      ...(options?.configRevision === undefined ? {} : { configRevision: options.configRevision }),
+      ...(existing?.usageLimits ? { usageLimits: existing.usageLimits } : {}),
+      ...(existing?.throttledUntil ? { throttledUntil: existing.throttledUntil } : {}),
+      failedAt,
+    },
+    options?.commitGuard,
+  );
 });
 
 /**

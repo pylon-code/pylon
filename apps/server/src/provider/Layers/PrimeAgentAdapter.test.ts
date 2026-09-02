@@ -70,6 +70,51 @@ it("keeps every branded session id inside its Prime Agent storage root", () => {
   }
 });
 
+it.effect("rejects an MCP route owned by another provider instance before ACP launch", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const boundInstanceId = ProviderInstanceId.make("prime-acp-bound");
+      const threadId = ThreadId.make("prime-acp-mcp-mismatch");
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          McpProviderSession.setMcpProviderSession({
+            providerSessionId: "provider-session-mismatch",
+            threadId,
+            environmentId: EnvironmentId.make("environment-mismatch"),
+            providerInstanceId: ProviderInstanceId.make("prime-acp-other"),
+            endpoint: "http://127.0.0.1:4321/mcp/mismatch",
+            authorizationHeader: "Bearer must-not-route",
+          }),
+        ),
+        () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+      );
+      const adapter = yield* makePrimeAgentAdapter(decodeSettings({}), {
+        instanceId: boundInstanceId,
+      });
+
+      const result = yield* adapter
+        .startSession({
+          threadId,
+          provider: ProviderDriverKind.make("primeAgent"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "ProviderAdapterValidationError");
+        if (result.failure._tag === "ProviderAdapterValidationError") {
+          assert.equal(
+            result.failure.issue,
+            "The MCP route does not belong to this provider instance.",
+          );
+        }
+      }
+    }),
+  ).pipe(Effect.provide(testLayer)),
+);
+
 it.effect("validates Prime Agent session constraints and owns continuation storage", () =>
   Effect.gen(function* () {
     const tempDir = yield* Effect.promise(() =>

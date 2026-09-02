@@ -1943,6 +1943,19 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverMutateProviderInstances]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverMutateProviderInstances,
+            serverSettings.mutateProviderInstances(input).pipe(
+              Effect.map((receipt) => ({
+                ...receipt,
+                settings: ServerSettings.redactServerSettingsForClient(receipt.settings),
+              })),
+            ),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,

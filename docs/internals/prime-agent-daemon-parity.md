@@ -21,6 +21,44 @@ continues to project the authoritative source and value rather than assuming eit
 completion and assistant-boundary changes are handled separately below; live catalog changes remain
 provider-discovered rather than pinned in Pylon.
 
+## Multiple-instance capability gate
+
+Prime Agent multiple-instance support is disabled. The isolation, fencing, quarantine, and native
+preflight code remains in place, but neither static driver metadata nor live provider snapshots advertise
+support. Host CAS validation rejects a second enabled Prime instance with the graduation reason.
+
+The earlier opt-in macOS runs are exploratory only. They exercised N=2 and N=4 with temporary copies of
+one auth fixture and one package binary. They did not prove distinct account credentials, distinct package
+roots, worker-observed settings/auth/model canaries, distinct catalog and capacity results, a real call to
+each Pylon MCP bearer endpoint, or a Pylon-created canonical checkpoint. They also did not run N=1 in the
+same proof matrix. They therefore cannot graduate the capability.
+
+Graduation requires all of these enforced results on the exact publication candidate:
+
+- signed-in macOS N=1, N=2, and N=4 runs with distinct canonical auth homes and distinct package
+  roots/binaries; byte-reproducible builds are acceptable;
+- worker-observed credential, model, settings, and home canaries for every participant;
+- distinct account-backed catalog and capacity results;
+- one authenticated request to every instance's Pylon-created MCP bearer endpoint;
+- canonical checkpoint refs read from checkpoints actually created by Pylon, not values computed by the
+  test helper;
+- removal, reconnect, crash, and teardown barriers without cross-instance signaling or cleanup;
+- an enforced hosted Linux contract and a WSL2 path tied to the same publication. A statement that WSL2
+  reports `linux` is not a hosted proof.
+
+The proof ceilings below are conservative rejection limits, not product budgets. Any candidate exceeding
+one row fails graduation and leaves support disabled.
+
+| Instances | Readiness ceiling | Captured process ceiling | Aggregate RSS ceiling | FD ceiling | Private sockets |
+| --------: | ----------------: | -----------------------: | --------------------: | ---------: | --------------: |
+|         1 |             120 s |                       32 |                 8 GiB |     62,500 |               1 |
+|         2 |             180 s |                       64 |                16 GiB |    125,000 |               2 |
+|         4 |             240 s |                      128 |                32 GiB |    250,000 |               4 |
+
+The current fix environment did not have explicit per-instance signed-in auth homes and package roots, so
+macOS N=1/2/4 was not run as a graduation proof. No enforced hosted Linux/WSL2 publication path exists yet.
+Keeping `supportsMultipleInstances: false` is therefore intentional.
+
 ACP compatibility mode consumes Prime's correlated `ai.primeintellect.prime-agent`
 `session_info_update` envelopes. Prime Agent 0.8.1 does not resolve the standard ACP prompt until all
 causally admitted descendant and parent work settles; Pylon still validates the matching terminal event
@@ -44,6 +82,15 @@ Prime supervisor ownership is recorded outside the agent home. Since Prime Agent
 Prime event queues are bounded to 256 entries and preserve FIFO delivery with backpressure during normal operation; no sliding or dropping queue is used. Nonterminal ordinary daemon callbacks wait behind that queue through a separately serialized staging tail bounded to 256 raw events and 64 MiB of conservative structural weight. Reconnect and native-close admission fence new input synchronously, before either callback can wait in that tail. One normalized native close waits for every route admitted before it, but its potentially long worker-recovery operation does not occupy the tail, so later bounded recovery evidence can progress. Events received while that close is still being classified remain provisional; only a bounded assistant-terminal fact is retained until the post-ready snapshot becomes authoritative. Exceeding the staging bound emits one fixed terminal and discards staged work before it can enter provider recovery instead of retaining unbounded callback promises. Pre-snapshot raw and decoded admission reserves count and weight cumulatively and fails closed without waiting for a consumer. Adapter teardown allows one second for a stalled consumer to drain, then logs a structured forced-shutdown outcome and every rejected terminal event's safe type/thread identity before closing. These explicit exceptional paths prevent memory or scope deadlock; they are not silent loss.
 
 Prime session teardown first evicts the session under the adapter permit, then performs interaction cancellation, turn settlement, MCP release, runtime disposal, and terminal publication outside that permit. Each step has a bounded timeout and failure in one step does not skip the others. A start for the same thread waits on the old teardown gate only up to that bound, so a hung daemon finalizer cannot block replacement forever. `stopAll` cleans sessions with bounded parallelism rather than serially or with an unbounded fan-out. `SessionClosed`, explicit stop, scope shutdown, and duplicate late close notifications share the same idempotent cleanup path and publish at most one `session.exited` and one turn completion.
+
+The daemon manager's production syscall path is explicit. It starts the private daemon with
+`node:child_process.spawn` and does not register Effect's process-group-signaling child finalizer.
+Graceful stop is a typed `shutdown` request over the validated private daemon connection. Node exposes no
+API that atomically binds a Unix signal to `{ pid, startIdentity }`, so production installs no forced-signal
+callback and refuses `SIGKILL` rather than calling `process.kill`, `ChildProcess.kill`, or signaling a PGID.
+The remaining scope owns output drains only; closing it and unrefing the captured handle cannot signal a
+naturally exited, PID-reused, or still-live process. An uncertain stop therefore leaves the native ownership
+receipt dirty and the overlapping home quarantined.
 
 Daemon assistant messages receive opaque subscriber-local segment identifiers so separate model/tool
 cycles within one Pylon turn retain their chronological positions without persisting Prime's native

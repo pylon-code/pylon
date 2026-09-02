@@ -1,9 +1,10 @@
 # Prime Agent distribution verification
 
-Pylon verifies Prime distribution identity at the provider boundary. It does not use distribution
-identity to select the daemon SDK, infer capabilities, or suppress ACP fallback. Runtime negotiation
-continues to resolve and import the exact configured package and then negotiates post-attach
-capabilities.
+Pylon verifies Prime distribution identity at the provider boundary. Runtime negotiation resolves and
+imports the exact configured package, then negotiates daemon and post-attach capabilities. With one
+enabled instance, distribution identity does not suppress the explicit ACP compatibility fallback. With
+more than one enabled instance, the verified Pylon-managed identity is mandatory: an unmanaged or
+unproved participant is unavailable and ACP is not started.
 
 ## Publication contract
 

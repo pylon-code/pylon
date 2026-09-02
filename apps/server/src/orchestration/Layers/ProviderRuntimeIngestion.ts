@@ -28,6 +28,8 @@ import {
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -37,6 +39,8 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { readProviderRuntimeEventFence } from "../../provider/providerRuntimeFenceMetadata.ts";
+import type { ProviderRuntimeFence } from "../../provider/ProviderDriver.ts";
 import { PrimeAgentRecoveryLedger } from "../../provider/prime/PrimeAgentRecoveryLedger.ts";
 import {
   rateLimitFromRuntimeEventPayload,
@@ -57,6 +61,15 @@ import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { canReplaceThreadTitle } from "../threadTitles.ts";
+
+class PrivateProviderRuntimeEventFence extends Context.Service<
+  PrivateProviderRuntimeEventFence,
+  ProviderRuntimeFence
+>()("t3/orchestration/Layers/ProviderRuntimeIngestion/PrivateProviderRuntimeEventFence") {}
+
+class PrivateRetiredProviderRuntimeEvent extends Data.TaggedError(
+  "PrivateRetiredProviderRuntimeEvent",
+)<{}> {}
 
 /**
  * Thread activities are durable and replicated to every authenticated client
@@ -1505,7 +1518,21 @@ const make = Effect.gen(function* () {
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const threadPlanProgress = yield* ThreadPlanProgressService;
   const crypto = yield* Crypto.Crypto;
-  const orchestrationEngine = yield* OrchestrationEngineService;
+  const rawOrchestrationEngine = yield* OrchestrationEngineService;
+  const requireRuntimeEventCurrent = Effect.gen(function* () {
+    const runtimeFence = Option.getOrUndefined(
+      yield* Effect.serviceOption(PrivateProviderRuntimeEventFence),
+    );
+    if (runtimeFence === undefined || (yield* runtimeFence.isCurrent)) return;
+    return yield* new PrivateRetiredProviderRuntimeEvent();
+  });
+  const commitRuntimeMutation = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    requireRuntimeEventCurrent.pipe(Effect.andThen(effect));
+  const orchestrationEngine = {
+    ...rawOrchestrationEngine,
+    dispatch: (command: Parameters<typeof rawOrchestrationEngine.dispatch>[0]) =>
+      requireRuntimeEventCurrent.pipe(Effect.andThen(rawOrchestrationEngine.dispatch(command))),
+  };
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const recoveryLedger = Option.getOrUndefined(
@@ -1516,8 +1543,18 @@ const make = Effect.gen(function* () {
   const settleRecoveryTerminalProjection = (threadId: ThreadId, updatedAt: string) =>
     recoveryLedger === undefined
       ? Effect.void
-      : recoveryLedger.markTerminalProjected({ threadId, updatedAt }).pipe(
-          Effect.andThen(recoveryLedger.deleteIfSettled(threadId)),
+      : Effect.gen(function* () {
+          yield* requireRuntimeEventCurrent;
+          const runtimeFence = Option.getOrUndefined(
+            yield* Effect.serviceOption(PrivateProviderRuntimeEventFence),
+          );
+          const commitOptions =
+            runtimeFence === undefined ? undefined : { commitGuard: runtimeFence.isCurrent };
+          yield* recoveryLedger.markTerminalProjected({ threadId, updatedAt }, commitOptions);
+          yield* requireRuntimeEventCurrent;
+          yield* recoveryLedger.deleteIfSettled(threadId, commitOptions);
+        }).pipe(
+          Effect.catchTag("PrivateRetiredProviderRuntimeEvent", () => Effect.void),
           Effect.catchCause(() =>
             Effect.logWarning("failed to settle Prime Agent terminal projection proof", {
               threadId,
@@ -1567,7 +1604,9 @@ const make = Effect.gen(function* () {
   });
 
   const rememberTaskDescription = (threadId: ThreadId, taskId: string, description: string) =>
-    Cache.set(taskDescriptionByTaskKey, providerTaskKey(threadId, taskId), description);
+    commitRuntimeMutation(
+      Cache.set(taskDescriptionByTaskKey, providerTaskKey(threadId, taskId), description),
+    );
 
   // Entries are left in place after completion so replayed or duplicate
   // terminal events stay titled; TTL, capacity, and the session-exit sweep
@@ -1597,17 +1636,19 @@ const make = Effect.gen(function* () {
   const rememberAssistantMessageId = (threadId: ThreadId, turnId: TurnId, messageId: MessageId) =>
     Cache.getOption(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId)).pipe(
       Effect.flatMap((existingIds) =>
-        Cache.set(
-          turnMessageIdsByTurnKey,
-          providerTurnKey(threadId, turnId),
-          Option.match(existingIds, {
-            onNone: () => new Set([messageId]),
-            onSome: (ids) => {
-              const nextIds = new Set(ids);
-              nextIds.add(messageId);
-              return nextIds;
-            },
-          }),
+        commitRuntimeMutation(
+          Cache.set(
+            turnMessageIdsByTurnKey,
+            providerTurnKey(threadId, turnId),
+            Option.match(existingIds, {
+              onNone: () => new Set([messageId]),
+              onSome: (ids) => {
+                const nextIds = new Set(ids);
+                nextIds.add(messageId);
+                return nextIds;
+              },
+            }),
+          ),
         ),
       ),
     );
@@ -1621,9 +1662,13 @@ const make = Effect.gen(function* () {
             const nextIds = new Set(ids);
             nextIds.delete(messageId);
             if (nextIds.size === 0) {
-              return Cache.invalidate(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId));
+              return commitRuntimeMutation(
+                Cache.invalidate(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId)),
+              );
             }
-            return Cache.set(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId), nextIds);
+            return commitRuntimeMutation(
+              Cache.set(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId), nextIds),
+            );
           },
         }),
       ),
@@ -1637,7 +1682,9 @@ const make = Effect.gen(function* () {
     );
 
   const clearAssistantMessageIdsForTurn = (threadId: ThreadId, turnId: TurnId) =>
-    Cache.invalidate(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId));
+    commitRuntimeMutation(
+      Cache.invalidate(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId)),
+    );
 
   const getAssistantSegmentStateForTurn = (threadId: ThreadId, turnId: TurnId) =>
     Cache.getOption(assistantSegmentStateByTurnKey, providerTurnKey(threadId, turnId));
@@ -1646,10 +1693,15 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     turnId: TurnId,
     state: AssistantSegmentState,
-  ) => Cache.set(assistantSegmentStateByTurnKey, providerTurnKey(threadId, turnId), state);
+  ) =>
+    commitRuntimeMutation(
+      Cache.set(assistantSegmentStateByTurnKey, providerTurnKey(threadId, turnId), state),
+    );
 
   const clearAssistantSegmentStateForTurn = (threadId: ThreadId, turnId: TurnId) =>
-    Cache.invalidate(assistantSegmentStateByTurnKey, providerTurnKey(threadId, turnId));
+    commitRuntimeMutation(
+      Cache.invalidate(assistantSegmentStateByTurnKey, providerTurnKey(threadId, turnId)),
+    );
 
   const getActiveAssistantMessageIdForTurn = (threadId: ThreadId, turnId: TurnId) =>
     getAssistantSegmentStateForTurn(threadId, turnId).pipe(
@@ -1724,12 +1776,16 @@ const make = Effect.gen(function* () {
             onSome: (text) => `${text}${delta}`,
           });
           if (nextText.length <= MAX_BUFFERED_ASSISTANT_CHARS) {
-            yield* Cache.set(bufferedAssistantTextByMessageId, messageId, nextText);
+            yield* commitRuntimeMutation(
+              Cache.set(bufferedAssistantTextByMessageId, messageId, nextText),
+            );
             return "";
           }
 
           // Safety valve: flush full buffered text as an assistant delta to cap memory.
-          yield* Cache.invalidate(bufferedAssistantTextByMessageId, messageId);
+          yield* commitRuntimeMutation(
+            Cache.invalidate(bufferedAssistantTextByMessageId, messageId),
+          );
           return nextText;
         }),
       ),
@@ -1738,38 +1794,40 @@ const make = Effect.gen(function* () {
   const takeBufferedAssistantText = (messageId: MessageId) =>
     Cache.getOption(bufferedAssistantTextByMessageId, messageId).pipe(
       Effect.flatMap((existingText) =>
-        Cache.invalidate(bufferedAssistantTextByMessageId, messageId).pipe(
+        commitRuntimeMutation(Cache.invalidate(bufferedAssistantTextByMessageId, messageId)).pipe(
           Effect.as(Option.getOrElse(existingText, () => "")),
         ),
       ),
     );
 
   const clearBufferedAssistantText = (messageId: MessageId) =>
-    Cache.invalidate(bufferedAssistantTextByMessageId, messageId);
+    commitRuntimeMutation(Cache.invalidate(bufferedAssistantTextByMessageId, messageId));
 
   const appendBufferedProposedPlan = (planId: string, delta: string, createdAt: string) =>
     Cache.getOption(bufferedProposedPlanById, planId).pipe(
       Effect.flatMap((existingEntry) => {
         const existing = Option.getOrUndefined(existingEntry);
-        return Cache.set(bufferedProposedPlanById, planId, {
-          text: `${existing?.text ?? ""}${delta}`,
-          createdAt:
-            existing?.createdAt && existing.createdAt.length > 0 ? existing.createdAt : createdAt,
-        });
+        return commitRuntimeMutation(
+          Cache.set(bufferedProposedPlanById, planId, {
+            text: `${existing?.text ?? ""}${delta}`,
+            createdAt:
+              existing?.createdAt && existing.createdAt.length > 0 ? existing.createdAt : createdAt,
+          }),
+        );
       }),
     );
 
   const takeBufferedProposedPlan = (planId: string) =>
     Cache.getOption(bufferedProposedPlanById, planId).pipe(
       Effect.flatMap((existingEntry) =>
-        Cache.invalidate(bufferedProposedPlanById, planId).pipe(
+        commitRuntimeMutation(Cache.invalidate(bufferedProposedPlanById, planId)).pipe(
           Effect.as(Option.getOrUndefined(existingEntry)),
         ),
       ),
     );
 
   const clearBufferedProposedPlan = (planId: string) =>
-    Cache.invalidate(bufferedProposedPlanById, planId);
+    commitRuntimeMutation(Cache.invalidate(bufferedProposedPlanById, planId));
 
   const clearAssistantMessageState = (messageId: MessageId) =>
     clearBufferedAssistantText(messageId);
@@ -2022,7 +2080,7 @@ const make = Effect.gen(function* () {
               }).pipe(Effect.asVoid);
             }
 
-            yield* Cache.invalidate(turnMessageIdsByTurnKey, key);
+            yield* commitRuntimeMutation(Cache.invalidate(turnMessageIdsByTurnKey, key));
           }),
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
@@ -2030,7 +2088,7 @@ const make = Effect.gen(function* () {
         assistantSegmentKeys,
         (key) =>
           key.startsWith(prefix)
-            ? Cache.invalidate(assistantSegmentStateByTurnKey, key)
+            ? commitRuntimeMutation(Cache.invalidate(assistantSegmentStateByTurnKey, key))
             : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
@@ -2038,14 +2096,16 @@ const make = Effect.gen(function* () {
         proposedPlanKeys,
         (key) =>
           key.startsWith(proposedPlanPrefix)
-            ? Cache.invalidate(bufferedProposedPlanById, key)
+            ? commitRuntimeMutation(Cache.invalidate(bufferedProposedPlanById, key))
             : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
       yield* Effect.forEach(
         taskDescriptionKeys,
         (key) =>
-          key.startsWith(prefix) ? Cache.invalidate(taskDescriptionByTaskKey, key) : Effect.void,
+          key.startsWith(prefix)
+            ? commitRuntimeMutation(Cache.invalidate(taskDescriptionByTaskKey, key))
+            : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
     });
@@ -2144,11 +2204,14 @@ const make = Effect.gen(function* () {
     event: Extract<ProviderRuntimeEvent, { type: "account.rate-limits.updated" }>,
   ) {
     if (event.providerInstanceId === undefined) return;
+    const runtimeFence = readProviderRuntimeEventFence(event);
+    if (runtimeFence !== undefined && !(yield* runtimeFence.isCurrent)) return;
     const state = rateLimitFromRuntimeEventPayload(event.payload, event.createdAt);
     if (state) {
       yield* providerRegistry.setProviderRateLimitState({
         instanceId: event.providerInstanceId,
         state,
+        runtimeFence,
       });
     }
     const usage = usageWindowsFromRuntimeEventPayload(event.payload);
@@ -2158,12 +2221,15 @@ const make = Effect.gen(function* () {
         source: usage.source,
         observedAt: event.createdAt,
         windows: usage.windows,
+        runtimeFence,
       });
     }
   });
 
-  const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
-    Effect.gen(function* () {
+  const processRuntimeEvent = (event: ProviderRuntimeEvent) => {
+    const runtimeFence = readProviderRuntimeEventFence(event);
+    const process = Effect.gen(function* () {
+      if (runtimeFence !== undefined && !(yield* runtimeFence.isCurrent)) return;
       // Non-assistant deltas cannot change any projection this path derives.
       if (event.type === "content.delta" && event.payload.streamKind !== "assistant_text") {
         return;
@@ -2177,7 +2243,10 @@ const make = Effect.gen(function* () {
       // on purpose — the account is shared by every thread — and cheap: the
       // registry floors it per instance and runs it off this path.
       if (event.type === "turn.completed" && event.providerInstanceId !== undefined) {
-        yield* providerRegistry.refreshProviderCapacity(event.providerInstanceId);
+        yield* providerRegistry.refreshProviderCapacity(
+          event.providerInstanceId,
+          readProviderRuntimeEventFence(event),
+        );
       }
 
       let thread = yield* resolveThreadShell(event.threadId);
@@ -2926,12 +2995,14 @@ const make = Effect.gen(function* () {
         }
       }
 
+      yield* requireRuntimeEventCurrent;
       if (event.type === "task.started" || event.type === "task.progress") {
         const description = event.payload.description?.trim();
         if (description) {
           yield* rememberTaskDescription(thread.id, event.payload.taskId, description);
         }
       }
+      yield* requireRuntimeEventCurrent;
       // Working-indicator plan progress: current step while the turn runs,
       // cleared on settle so a finished plan never lingers as stale UI.
       // Events carrying a turn id that conflicts with the active turn are
@@ -2993,6 +3064,7 @@ const make = Effect.gen(function* () {
         }
       }
 
+      yield* requireRuntimeEventCurrent;
       const activities = runtimeEventToActivities(event, taskTitle);
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
@@ -3008,6 +3080,14 @@ const make = Effect.gen(function* () {
         ),
       ).pipe(Effect.asVoid);
     });
+    const scopedProcess =
+      runtimeFence === undefined
+        ? process
+        : process.pipe(Effect.provideService(PrivateProviderRuntimeEventFence, runtimeFence));
+    return scopedProcess.pipe(
+      Effect.catchTag("PrivateRetiredProviderRuntimeEvent", () => Effect.void),
+    );
+  };
 
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
 

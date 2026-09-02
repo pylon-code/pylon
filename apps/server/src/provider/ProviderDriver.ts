@@ -46,11 +46,12 @@ export interface ProviderDriverMetadata {
   readonly displayName: string;
   /**
    * Whether the driver may be instantiated more than once concurrently.
-   * Defaults to `true`. Set to `false` for drivers that wrap a global
-   * resource (e.g. a single desktop app socket) — the registry then
-   * rejects multi-instance configurations with a clear error.
+   * Missing is fail-closed. Drivers must publish `true` only after their
+   * per-instance process, credential, state, and cleanup boundaries are proved.
    */
   readonly supportsMultipleInstances?: boolean;
+  /** Actionable explanation when multiple enabled instances are unavailable. */
+  readonly multipleInstancesUnavailableReason?: string | undefined;
 }
 
 /**
@@ -62,6 +63,15 @@ export interface ProviderDriverMetadata {
  * instance of the same driver does not reach into the first instance's
  * state.
  */
+export interface ProviderRuntimeFence {
+  /** Opaque process-local identity. It must never cross a public or observability boundary. */
+  readonly generation: object;
+  /** Private disk-cache correlation only. It must never enter a provider snapshot. */
+  readonly configRevision?: string | undefined;
+  /** Re-read by every async result immediately before it commits side effects. */
+  readonly isCurrent: Effect.Effect<boolean>;
+}
+
 export interface ProviderInstance {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
@@ -80,6 +90,8 @@ export interface ProviderInstance {
    * drivers that use Pylon's configured accounts have nothing to read.
    */
   readonly capacity?: ProviderCapacitySource | undefined;
+  /** Server-private replacement fence. Prime is the first fenced driver. */
+  readonly runtimeFence?: ProviderRuntimeFence | undefined;
 }
 
 export interface ProviderCapacitySource {
@@ -98,7 +110,7 @@ export interface ProviderCapacityRefresh {
 export interface ProviderBackendCapacityRead {
   readonly backend: ServerProviderBackend;
   readonly didReadCapacity: boolean;
-  /** Secret-safe identity used only to retain a failed read for the same account. */
+  /** Private runtime-revision identity. Never derive this value from account or secret material. */
   readonly retentionIdentity?: string | undefined;
 }
 
@@ -159,6 +171,8 @@ export interface ProviderDriverCreateInput<Config> {
   readonly environment: ProviderInstanceEnvironment;
   readonly enabled: boolean;
   readonly config: Config;
+  /** Present only when preflight published a process-local replacement generation. */
+  readonly runtimeFence?: ProviderRuntimeFence | undefined;
 }
 
 /**
@@ -174,7 +188,20 @@ export interface ProviderDriverCreateInput<Config> {
  * scope closes. Two calls to `create` with different `instanceId` /
  * `config` MUST yield instances with no shared mutable state.
  */
-export interface ProviderDriver<Config, R = never> {
+export type ProviderDriverPreflightResult<Preparation> =
+  | {
+      readonly kind: "ready";
+      readonly preparation: Preparation;
+      /** Opaque process-local identity, published before an old scope is closed. */
+      readonly generation?: object | undefined;
+      /** Random server-owned correlation for private disk caches only. */
+      readonly configRevision?: string | undefined;
+      /** Close the retired driver set before any replacement can become reachable. */
+      readonly teardownBeforeCreate?: boolean | undefined;
+    }
+  | { readonly kind: "unavailable"; readonly error: ProviderDriverError };
+
+export interface ProviderDriver<Config, R = never, Preparation = unknown> {
   readonly driverKind: ProviderDriverKind;
   readonly metadata: ProviderDriverMetadata;
   /**
@@ -204,14 +231,30 @@ export interface ProviderDriver<Config, R = never> {
    */
   readonly defaultConfig: () => Config;
   /**
+   * Optional driver-wide identity preflight. The registry runs this for the
+   * complete driver set before it closes or creates any affected instance.
+   * The registry must apply unavailable set-wide results to already-live
+   * participants before it starts replacements or additions.
+   */
+  readonly preflight?: (
+    inputs: ReadonlyArray<ProviderDriverCreateInput<Config>>,
+  ) => Effect.Effect<
+    ReadonlyMap<ProviderInstanceId, ProviderDriverPreflightResult<Preparation>>,
+    never,
+    R
+  >;
+  /**
    * Materialize one instance. The returned effect runs in a scope owned
    * by the registry; closing that scope releases every resource the
    * driver opened. Failures become unavailable shadow snapshots — the
    * driver MUST NOT throw defects.
    */
-  readonly create: (
-    input: ProviderDriverCreateInput<Config>,
-  ) => Effect.Effect<ProviderInstance, ProviderDriverError, R | Scope.Scope>;
+  readonly create: {
+    bivarianceHack(
+      input: ProviderDriverCreateInput<Config>,
+      preparation?: Preparation,
+    ): Effect.Effect<ProviderInstance, ProviderDriverError, R | Scope.Scope>;
+  }["bivarianceHack"];
 }
 
 /**
@@ -224,4 +267,4 @@ export interface ProviderDriver<Config, R = never> {
 // needs the original `Config` type. Using `unknown` instead would force
 // `create` callers into casts since `unknown` is not assignable to a
 // concrete `Config` from inside the driver body.
-export type AnyProviderDriver<R = never> = ProviderDriver<any, R>;
+export type AnyProviderDriver<R = never> = ProviderDriver<any, R, unknown>;

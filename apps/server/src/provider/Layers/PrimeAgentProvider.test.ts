@@ -21,7 +21,7 @@ import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { primeAgentCredentialFingerprint, readPrimeAgentBackends } from "../primeAgentBackends.ts";
+import { readPrimeAgentBackends } from "../primeAgentBackends.ts";
 import {
   acquireSharedUsageLock,
   readSharedUsageEntry,
@@ -765,7 +765,12 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
         );
         const readBackends = readPrimeAgentBackends(
           { agentHomePath: home },
-          { sharedCacheDir: cacheDir, freshForMs: 0 },
+          {
+            sharedCacheDir: cacheDir,
+            freshForMs: 0,
+            instanceId: "primeAgent",
+            configRevision: "test-revision",
+          },
         ).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
@@ -796,15 +801,11 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
         yield* Deferred.await(codexFinalized);
         const anthropicEntry = yield* readSharedUsageEntry(
           cacheDir,
-          sharedUsageReadKey([
-            "prime-anthropic",
-            home,
-            primeAgentCredentialFingerprint("anthropic-secret"),
-          ]),
+          sharedUsageReadKey(["prime", "primeAgent", "anthropic", "test-revision"]),
         );
         const codexEntry = yield* readSharedUsageEntry(
           cacheDir,
-          sharedUsageReadKey(["prime-codex", home, "acct_123"]),
+          sharedUsageReadKey(["prime", "primeAgent", "openai-codex", "test-revision"]),
         );
 
         expect(snapshot.status).toBe("ready");
@@ -851,6 +852,8 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
         {
           sharedCacheDir: cacheDir,
           freshForMs: 0,
+          instanceId: "primeAgent",
+          configRevision: "test-revision",
           readCodexWindows: () =>
             Effect.succeed({
               rateLimits: {
@@ -879,11 +882,7 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
       const snapshot = yield* Fiber.join(provider);
       const anthropicEntry = yield* readSharedUsageEntry(
         cacheDir,
-        sharedUsageReadKey([
-          "prime-anthropic",
-          home,
-          primeAgentCredentialFingerprint("anthropic-secret"),
-        ]),
+        sharedUsageReadKey(["prime", "primeAgent", "anthropic", "test-revision"]),
       );
 
       expect(snapshot.backends).toEqual([
@@ -941,6 +940,8 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
         {
           sharedCacheDir: cacheDir,
           freshForMs: 0,
+          instanceId: "primeAgent",
+          configRevision: "test-revision",
           readCodexWindows: () =>
             Deferred.succeed(codexStarted, undefined).pipe(
               Effect.andThen(Effect.never),
@@ -971,11 +972,12 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
 
       expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true);
       const anthropicKey = sharedUsageReadKey([
-        "prime-anthropic",
-        home,
-        primeAgentCredentialFingerprint("anthropic-secret"),
+        "prime",
+        "primeAgent",
+        "anthropic",
+        "test-revision",
       ]);
-      const codexKey = sharedUsageReadKey(["prime-codex", home, "acct_123"]);
+      const codexKey = sharedUsageReadKey(["prime", "primeAgent", "openai-codex", "test-revision"]);
       expect(yield* readSharedUsageEntry(cacheDir, anthropicKey)).toBeUndefined();
       expect(yield* readSharedUsageEntry(cacheDir, codexKey)).toBeUndefined();
 

@@ -1,7 +1,13 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { describe, expect, it } from "@effect/vitest";
 import {
   PROVIDER_AGENT_CONTROL_ID_MAX_CHARS,
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 
 import * as Cause from "effect/Cause";
@@ -28,12 +34,14 @@ import {
   type PrimeAgentDaemonExtensionUiResponse,
   type PrimeAgentDaemonImage,
   type PrimeAgentDaemonPromptOptions,
+  type PrimeAgentOwnedSessionContractProof,
   type PrimeAgentDaemonQueuedMessageMutation,
   type PrimeAgentDaemonSessionWatcher,
   type PrimeAgentDaemonServiceTier,
   type PrimeAgentDaemonThinkingLevel,
 } from "./PrimeAgentDaemonBridge.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import { PrimeAgentOwnershipReceiptStore } from "./PrimeAgentOwnershipReceipt.ts";
 import { PRIME_AGENT_PLAN_TOOL_DEFINITION } from "./PrimeAgentManagedExtension.ts";
 import { PRIME_AGENT_EVENT_BUFFER_CAPACITY } from "./PrimeAgentEventBuffer.ts";
 import {
@@ -279,6 +287,7 @@ function fixture(options?: {
   readonly correlatedPromptLifecycleProof?: boolean;
   readonly omitNegotiatedCapabilityAccessor?: boolean;
   readonly negotiatedCapabilityProofImpl?: () => boolean;
+  readonly ownedSessionContractProofImpl?: () => PrimeAgentOwnedSessionContractProof | undefined;
   readonly submitCorrelatedPromptImpl?: (
     message: string,
     options: {
@@ -302,6 +311,7 @@ function fixture(options?: {
   readonly unsubscribeImpl?: () => void;
   readonly disposeImpl?: () => Promise<unknown>;
   readonly recoveryMode?: "create" | "adopt";
+  readonly ownershipStore?: PrimeAgentOwnershipReceiptStore;
 }) {
   const captures: Captures = {
     order: [],
@@ -576,11 +586,28 @@ function fixture(options?: {
       captures.connectionCalls.push({ method: "getPromptLifecycles", args: [] });
       return options?.getPromptLifecyclesImpl?.() ?? Promise.resolve({ records: [], expired: [] });
     }
-    supportsNegotiatedCapability(capability: "correlated_prompt_lifecycle_v1"): boolean {
-      return (
-        capability === "correlated_prompt_lifecycle_v1" &&
-        (options?.negotiatedCapabilityProofImpl?.() ?? correlatedPromptLifecycleProof)
-      );
+    supportsNegotiatedCapability(capability: string): boolean {
+      return capability === "caller_owned_session_environment_cleanup_v1"
+        ? true
+        : capability === "correlated_prompt_lifecycle_v1" &&
+            (options?.negotiatedCapabilityProofImpl?.() ?? correlatedPromptLifecycleProof);
+    }
+    getOwnedSessionContractProof(): PrimeAgentOwnedSessionContractProof | undefined {
+      if (options?.ownedSessionContractProofImpl !== undefined) {
+        return options.ownedSessionContractProofImpl();
+      }
+      return {
+        feature: "caller_owned_session_environment_cleanup_v1" as const,
+        status: "attached" as const,
+        daemon: {
+          protocolName: "prime-agent.daemon",
+          protocolVersion: 7,
+          schemaRevision: 30,
+          appVersion: "0.7.1",
+          supervisorGeneration: "supervisor-1",
+          transportGeneration: 0,
+        },
+      };
     }
     waitForHeadlessCompletion(
       waitOptions: { readonly waitForRlmQuiescence?: boolean } = {},
@@ -862,9 +889,18 @@ function fixture(options?: {
         Promise.resolve({ maxDepth, source: "chat", globalSaved: false })
       );
     }
-    disposeOwnedSession(): Promise<unknown> {
+    async disposeOwnedSession(): Promise<unknown> {
       captures.order.push("dispose-owned");
-      return Promise.resolve({ status: "completed" });
+      captures.disposeCount += 1;
+      await options?.disposeImpl?.();
+      const started = this.getOwnedSessionContractProof();
+      return {
+        feature: "caller_owned_session_environment_cleanup_v1",
+        status: "completed",
+        started,
+        observed: started?.daemon,
+        daemonReplaced: false,
+      };
     }
     dispose(): Promise<unknown> {
       captures.order.push("dispose");
@@ -932,8 +968,24 @@ function fixture(options?: {
     DaemonAgentConnection: FakeConnection,
     defaultDaemonSocketPath: () => "/tmp/prime-agent.sock",
   };
+  const identity = {
+    instanceId: ProviderInstanceId.make("primeAgent"),
+    generation: { _tag: "PrimeAgentRuntimeGeneration" as const },
+    configRevision: "runtime-test-revision",
+    effectiveHome: "/state/prime-agent-home",
+    launchEnv: { HOME: "/private/home" },
+    nativeMultipleInstancesRequired: false,
+    settings: {
+      enabled: true,
+      binaryPath: "prime-agent",
+      agentHomePath: "/state/prime-agent-home",
+      launchArgs: "",
+      customModels: [],
+    },
+  };
   const manager: PrimeAgentDaemonManager = {
     bridge,
+    identity,
     socket: "/tmp/pylon-prime.sock",
     sessionDir: "/state/shared-daemon-sessions",
     launchEnvironment: { HOME: "/private/home" },
@@ -965,6 +1017,31 @@ function fixture(options?: {
   ) =>
     makePrimeAgentDaemonSessionRuntime({
       manager,
+      runtimeContext: {
+        ...identity,
+        backendKind: "daemon",
+        backendIdentity: {
+          kind: "daemon",
+          proof: {
+            sdkFeatures: [
+              "negotiated_daemon_session_capabilities_v1",
+              "caller_owned_session_environment_cleanup_v1",
+            ],
+            requiredServerCapabilities: [
+              "caller_owned_session_environment_cleanup_v1",
+              "authoritative_owned_session_cleanup_v1",
+            ],
+          },
+        },
+        ...(options?.ownershipStore === undefined
+          ? {}
+          : {
+              nativeOwnership: {
+                store: options.ownershipStore,
+                adoptableReceipts: [],
+              },
+            }),
+      },
       cwd: "/work/project",
       sessionDir: "/state/provider-sessions/thread-safe",
       agentDir: "/state/prime-agent-home",
@@ -1042,6 +1119,51 @@ function captureNextSetConstruction<A>(run: () => A): readonly [A, Set<unknown>]
 }
 
 describe("PrimeAgentDaemonSessionRuntime", () => {
+  it.effect("rejects a missing current owned-attachment proof before prompt admission", () =>
+    Effect.gen(function* () {
+      const test = fixture({ ownedSessionContractProofImpl: () => undefined });
+
+      const error = yield* Effect.flip(Effect.scoped(test.make()));
+
+      expect(error).toMatchObject({
+        operation: "attach-session",
+        reason: "invalid-response",
+      });
+      expect(error.detail).not.toContain("active-secret-1");
+      expect(test.captures.connectionCalls.some((call) => call.method === "prompt")).toBe(false);
+      expect(test.captures.disposeCount).toBe(1);
+      expect(test.captures.closeCount).toBe(1);
+    }),
+  );
+
+  it.effect("rejects a current proof that contradicts the successful daemon hello", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        ownedSessionContractProofImpl: () => ({
+          feature: "caller_owned_session_environment_cleanup_v1",
+          status: "attached",
+          daemon: {
+            protocolName: "prime-agent.daemon",
+            protocolVersion: 7,
+            schemaRevision: 30,
+            appVersion: "0.7.1",
+            supervisorGeneration: "stale-supervisor",
+            transportGeneration: 0,
+          },
+        }),
+      });
+
+      const error = yield* Effect.flip(Effect.scoped(test.make()));
+
+      expect(error).toMatchObject({
+        operation: "attach-session",
+        reason: "invalid-response",
+      });
+      expect(error.detail).not.toContain("stale-supervisor");
+      expect(test.captures.disposeCount).toBe(1);
+    }),
+  );
+
   it.effect("keeps a server offer on the ordinary prompt path without the frozen SDK feature", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1060,6 +1182,9 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(
           test.captures.connectionCalls.filter((call) => call.method === "submitCorrelatedPrompt"),
         ).toHaveLength(0);
+        expect(
+          test.captures.commands.some((command) => command.type === "complete_owned_session"),
+        ).toBe(false);
       }),
     ),
   );
@@ -3249,6 +3374,8 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
               {
                 type: "create",
                 lifecycle: "client_owned",
+                launchEnv: { HOME: "/private/home" },
+                launchEnvMode: "replace",
                 continueRecent: false,
                 config: {
                   cwd: "/work/project",
@@ -3296,6 +3423,50 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
       }),
   );
 
+  it.effect("persists native ownership before create and clears it only after proved cleanup", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const root = yield* Effect.acquireRelease(
+          Effect.promise(() =>
+            NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "prime-owner-order-")),
+          ),
+          (directory) =>
+            Effect.promise(() => NodeFSP.rm(directory, { recursive: true, force: true })),
+        );
+        class ObservedOwnershipStore extends PrimeAgentOwnershipReceiptStore {
+          receiptWritten = false;
+          override async begin(input: Parameters<PrimeAgentOwnershipReceiptStore["begin"]>[0]) {
+            const handle = await super.begin(input);
+            this.receiptWritten = true;
+            return handle;
+          }
+        }
+        const ownershipStore = new ObservedOwnershipStore(root, {
+          inspectProcessIdentity: async (pid) => `test:${pid}`,
+        });
+        let receiptPresentBeforeCreate = false;
+        const side = fixture({
+          ownershipStore,
+          createRequestObserved: () => {
+            receiptPresentBeforeCreate = ownershipStore.receiptWritten;
+          },
+        });
+        const runtime = yield* side.make();
+
+        expect(receiptPresentBeforeCreate).toBe(true);
+        expect(yield* Effect.promise(() => ownershipStore.scan())).toMatchObject({
+          corrupt: false,
+          receipts: [{ state: "acquired" }],
+        });
+        yield* runtime.dispose;
+        expect(yield* Effect.promise(() => ownershipStore.scan())).toMatchObject({
+          corrupt: false,
+          receipts: [],
+        });
+      }),
+    ),
+  );
+
   it.effect("attaches Pylon's scoped MCP server before the initial snapshot and releases it", () =>
     Effect.gen(function* () {
       const { captures, make } = fixture();
@@ -3334,7 +3505,9 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         method: "releaseAcpMcpServers",
         args: [mcpServer.ownerId, [mcpServer.server.name]],
       });
-      expect(captures.order.indexOf("release-mcp")).toBeLessThan(captures.order.indexOf("dispose"));
+      expect(captures.order.indexOf("release-mcp")).toBeLessThan(
+        captures.order.indexOf("dispose-owned"),
+      );
       expect(captures.disposeCount).toBe(1);
       expect(captures.closeCount).toBe(1);
     }),
@@ -12630,7 +12803,7 @@ describe("Prime Agent live activity privacy boundary", () => {
             schedulerChecks += 1;
             // The first checks enter dispose and elect this fiber. Yield once
             // immediately afterward, before the returned owner onExit is installed.
-            return schedulerChecks === 3;
+            return schedulerChecks === 4;
           },
           makeDispatcher: () => ({
             scheduleTask: (task) => {
@@ -12681,7 +12854,7 @@ describe("Prime Agent live activity privacy boundary", () => {
           ),
           Effect.forkChild({ startImmediately: true }),
         );
-        expect(schedulerChecks).toBe(3);
+        expect(schedulerChecks).toBe(4);
         expect(scheduledTasks).toHaveLength(1);
 
         const cancelledWaiter = yield* runtime.dispose.pipe(
@@ -12733,10 +12906,10 @@ describe("Prime Agent live activity privacy boundary", () => {
 
         expect(Exit.isFailure(ownerExit)).toBe(true);
         if (Exit.isFailure(ownerExit)) expect(Cause.hasInterruptsOnly(ownerExit.cause)).toBe(true);
-        expect(sharedWaiterExit).toEqual(ownerExit);
-        expect(lateExit).toEqual(ownerExit);
+        expect(sharedWaiterExit).toEqual(Exit.void);
+        expect(lateExit).toEqual(Exit.void);
         const scopeCloseExit = yield* Scope.close(sessionScope, Exit.void).pipe(Effect.exit);
-        expect(Exit.isFailure(scopeCloseExit)).toBe(true);
+        expect(scopeCloseExit).toEqual(Exit.void);
         if (Exit.isFailure(scopeCloseExit)) {
           expect(Cause.hasInterruptsOnly(scopeCloseExit.cause)).toBe(true);
         }
@@ -12751,7 +12924,7 @@ describe("Prime Agent live activity privacy boundary", () => {
         expect(side.captures.order).toEqual([
           "retire",
           "unsubscribe",
-          "dispose",
+          "dispose-owned",
           "close",
           "queue-shutdown",
           "queue-shutdown",

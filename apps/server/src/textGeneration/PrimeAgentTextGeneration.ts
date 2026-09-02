@@ -28,6 +28,7 @@ import {
   PRIME_AGENT_HOME_ENV,
 } from "../provider/acp/PrimeAgentAcpSupport.ts";
 import { locatePrimeAgentPublicPackage } from "../provider/prime/PrimeAgentDaemonBridge.ts";
+import type { PrimeAgentRuntimeContext } from "../provider/prime/PrimeAgentRuntimeContext.ts";
 import {
   PRIME_AGENT_INHERIT_MODEL_OPTION,
   resolvePrimeAgentTurnControls,
@@ -75,6 +76,7 @@ export interface PrimeAgentTextGenerationOptions {
   readonly timeoutMs?: number | undefined;
   /** Test-only hook used to prove a validated image identity cannot be swapped before open. */
   readonly beforeImageOpen?: ((filePath: string) => Effect.Effect<void, never>) | undefined;
+  readonly runtimeContext?: PrimeAgentRuntimeContext;
 }
 
 function effectiveEnvironmentHome(environment: NodeJS.ProcessEnv): string {
@@ -190,10 +192,11 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverConfig = yield* ServerConfig.ServerConfig;
-  const resolvedEnvironment = makePrimeAgentEnvironment(
-    primeAgentSettings,
-    environment ?? process.env,
-  );
+  const boundRuntimeContext = options.runtimeContext;
+  const effectiveSettings = boundRuntimeContext?.settings ?? primeAgentSettings;
+  const resolvedEnvironment =
+    boundRuntimeContext?.launchEnv ??
+    makePrimeAgentEnvironment(effectiveSettings, environment ?? process.env);
   const helperEnvironment = Object.fromEntries(
     Object.entries(resolvedEnvironment).filter(([name]) => {
       const normalizedName = name.toUpperCase();
@@ -211,6 +214,18 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
     }),
   );
   const timeoutMs = options.timeoutMs ?? PRIME_AGENT_TIMEOUT_MS;
+  const requireCurrentGeneration = (operation: PrimeAgentTextGenerationOperation) =>
+    boundRuntimeContext?.runtimeFence === undefined
+      ? Effect.void
+      : boundRuntimeContext.runtimeFence.isCurrent.pipe(
+          Effect.flatMap((current) =>
+            current
+              ? Effect.void
+              : Effect.fail(
+                  textGenerationError(operation, "This Prime Agent runtime was replaced."),
+                ),
+          ),
+        );
 
   const readBoundedImageFile = Effect.fn("readBoundedPrimeAgentImageFile")(function* (
     filePath: string,
@@ -315,6 +330,7 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
     readonly outputSchema: S;
     readonly modelSelection: ModelSelection;
   }): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
+    yield* requireCurrentGeneration(input.operation);
     const controls = resolvePrimeAgentTurnControls(input.modelSelection);
     if (controls._tag === "Invalid") {
       return yield* textGenerationError(input.operation, controls.issue);
@@ -326,17 +342,19 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
     const serviceTier =
       controls.serviceTier === PRIME_AGENT_INHERIT_MODEL_OPTION ? undefined : controls.serviceTier;
 
-    const agentDir = resolvePrimeAgentTextGenerationHomePath({
-      environment: resolvedEnvironment,
-      cwd: input.cwd,
-    });
+    const agentDir =
+      boundRuntimeContext?.effectiveHome ??
+      resolvePrimeAgentTextGenerationHomePath({
+        environment: resolvedEnvironment,
+        cwd: input.cwd,
+      });
     const requestEnvironment = {
       ...helperEnvironment,
       NO_COLOR: "1",
       [PRIME_AGENT_HOME_ENV]: agentDir,
     };
     const executablePath = yield* resolveCommandPath(
-      primeAgentSettings.binaryPath.trim() || "prime-agent",
+      effectiveSettings.binaryPath.trim() || "prime-agent",
       { env: requestEnvironment },
     ).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -370,7 +388,11 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
         .makeTempFileScoped({ prefix: "pylon-prime-text-", suffix: ".mjs" })
         .pipe(
           Effect.tap((filePath) =>
-            fileSystem.writeFileString(filePath, PRIME_AGENT_TEXT_GENERATION_HELPER_SOURCE),
+            requireCurrentGeneration(input.operation).pipe(
+              Effect.andThen(
+                fileSystem.writeFileString(filePath, PRIME_AGENT_TEXT_GENERATION_HELPER_SOURCE),
+              ),
+            ),
           ),
           Effect.mapError(() =>
             textGenerationError(
@@ -405,6 +427,7 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
         killSignal: "SIGTERM",
         forceKillAfter: PRIME_AGENT_FORCE_KILL_AFTER,
       });
+      yield* requireCurrentGeneration(input.operation);
       const child = yield* commandSpawner
         .spawn(command)
         .pipe(
@@ -445,6 +468,7 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
       );
     }
 
+    yield* requireCurrentGeneration(input.operation);
     const result = completed.value;
     if (result.stdout.truncated) {
       return yield* textGenerationError(

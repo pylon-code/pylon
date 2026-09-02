@@ -44,6 +44,7 @@ export type ProviderSessionDirectoryWriteError =
 export interface ProviderSessionDirectoryShape {
   readonly upsert: (
     binding: ProviderRuntimeBinding,
+    options?: { readonly commitGuard?: Effect.Effect<boolean> | undefined },
   ) => Effect.Effect<void, ProviderSessionDirectoryWriteError>;
 
   readonly getProvider: (

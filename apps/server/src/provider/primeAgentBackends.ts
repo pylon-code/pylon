@@ -107,13 +107,8 @@ export interface PrimeAgentBackendSignIn {
   readonly accessToken?: string | undefined;
 }
 
-/** One-way identity for cache and retention keys; never sent or logged. */
-export function primeAgentCredentialFingerprint(credential: string): string {
-  return NodeCrypto.createHash("sha256").update(credential).digest("hex").slice(0, 24);
-}
-
-const capacityRetentionIdentity = (backend: string, credentialIdentity: string) =>
-  `${backend}:${primeAgentCredentialFingerprint(credentialIdentity)}`;
+const capacityRetentionIdentity = (backend: string, configRevision: string) =>
+  `${backend}:${configRevision}`;
 
 function freshAccessToken(
   entry: {
@@ -285,7 +280,9 @@ function enforceFailedCapacityRetention(
 
 const readPrimeAgentCodexCapacity = Effect.fn("readPrimeAgentCodexCapacity")(function* (input: {
   readonly signIn: { readonly accessToken: string; readonly accountId: string };
-  readonly homePath: string;
+  readonly cacheKey: string;
+  readonly configRevision: string;
+  readonly commitGuard: Effect.Effect<boolean> | undefined;
   readonly nowMs: number;
   readonly freshForMs: number | undefined;
   readonly sharedCacheDir: string | undefined;
@@ -295,9 +292,9 @@ const readPrimeAgentCodexCapacity = Effect.fn("readPrimeAgentCodexCapacity")(fun
   }) => Effect.Effect<CodexSchema.V2GetAccountRateLimitsResponse | undefined>;
 }): Effect.fn.Return<PrimeAgentCapacityRead, never, FileSystem.FileSystem | Path.Path> {
   const cacheDir = input.sharedCacheDir ?? (yield* resolveSharedUsageCacheDir);
-  const cacheKey = sharedUsageReadKey(["prime-codex", input.homePath, input.signIn.accountId]);
+  const cacheKey = input.cacheKey;
   const shared = decideSharedUsageRead(
-    yield* readSharedUsageEntry(cacheDir, cacheKey),
+    yield* readSharedUsageEntry(cacheDir, cacheKey, input.configRevision),
     input.nowMs,
     input.freshForMs,
   );
@@ -311,7 +308,7 @@ const readPrimeAgentCodexCapacity = Effect.fn("readPrimeAgentCodexCapacity")(fun
     };
   }
   if (shared.kind === "throttled") {
-    const retained = yield* readSharedUsageEntry(cacheDir, cacheKey);
+    const retained = yield* readSharedUsageEntry(cacheDir, cacheKey, input.configRevision);
     return {
       ...(retained?.usageLimits ? { usageLimits: retained.usageLimits } : {}),
       didReadCapacity: false,
@@ -319,7 +316,7 @@ const readPrimeAgentCodexCapacity = Effect.fn("readPrimeAgentCodexCapacity")(fun
   }
   const acquiredLock = yield* acquireSharedUsageLock(cacheDir, cacheKey, input.nowMs);
   if (!acquiredLock) {
-    const retained = yield* readSharedUsageEntry(cacheDir, cacheKey);
+    const retained = yield* readSharedUsageEntry(cacheDir, cacheKey, input.configRevision);
     return {
       ...(retained?.usageLimits ? { usageLimits: retained.usageLimits } : {}),
       didReadCapacity: false,
@@ -332,11 +329,19 @@ const readPrimeAgentCodexCapacity = Effect.fn("readPrimeAgentCodexCapacity")(fun
       ? usageLimitsFromCodexRateLimits(response, readAt, "primeAgentCodex")
       : undefined;
     if (usageLimits) {
-      yield* writeSharedUsageEntry(cacheDir, cacheKey, { version: 1, readAt, usageLimits });
+      yield* writeSharedUsageEntry(
+        cacheDir,
+        cacheKey,
+        { version: 1, configRevision: input.configRevision, readAt, usageLimits },
+        input.commitGuard,
+      );
       return { usageLimits, didReadCapacity: true };
     }
-    yield* markSharedUsageReadFailed(cacheDir, cacheKey, readAt);
-    const retained = yield* readSharedUsageEntry(cacheDir, cacheKey);
+    yield* markSharedUsageReadFailed(cacheDir, cacheKey, readAt, {
+      configRevision: input.configRevision,
+      commitGuard: input.commitGuard,
+    });
+    const retained = yield* readSharedUsageEntry(cacheDir, cacheKey, input.configRevision);
     return {
       ...(retained?.usageLimits ? { usageLimits: retained.usageLimits } : {}),
       didReadCapacity: false,
@@ -346,6 +351,9 @@ const readPrimeAgentCodexCapacity = Effect.fn("readPrimeAgentCodexCapacity")(fun
 
 export interface ReadPrimeAgentBackendsOptions extends PrimeAgentHomeResolutionOptions {
   readonly sharedCacheDir?: string | undefined;
+  readonly instanceId?: string | undefined;
+  readonly configRevision?: string | undefined;
+  readonly commitGuard?: Effect.Effect<boolean> | undefined;
   /**
    * How recent a shared reading must be to be served instead of read again.
    * The periodic probe leaves this at the shared window; the turn-end read
@@ -390,6 +398,10 @@ export const readPrimeAgentCapacity = Effect.fn("readPrimeAgentCapacity")(functi
   if (Option.isNone(raw) || Option.isNone(decodePrimeAuthFile(raw.value))) return undefined;
 
   const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+  // Missing revision is deliberately uncorrelated: legacy callers always start cold.
+  const configRevision = options?.configRevision ?? NodeCrypto.randomUUID();
+  const cacheKeyForBackend = (backend: string) =>
+    sharedUsageReadKey(["prime", options?.instanceId ?? "uncorrelated", backend, configRevision]);
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const readWindows =
     options?.readCodexWindows ??
@@ -403,16 +415,17 @@ export const readPrimeAgentCapacity = Effect.fn("readPrimeAgentCapacity")(functi
     (signIn) =>
       Effect.gen(function* () {
         if (signIn.backend === PRIME_AGENT_ANTHROPIC_BACKEND && signIn.accessToken) {
-          const credentialFingerprint = primeAgentCredentialFingerprint(signIn.accessToken);
-          const retentionIdentity = capacityRetentionIdentity(signIn.backend, signIn.accessToken);
+          const retentionIdentity = capacityRetentionIdentity(signIn.backend, configRevision);
           const read = yield* fetchOAuthUsageWithToken({
             token: signIn.accessToken,
-            cacheKey: sharedUsageReadKey(["prime-anthropic", homePath, credentialFingerprint]),
+            cacheKey: cacheKeyForBackend(signIn.backend),
             checkedAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
             source: "primeAgentOAuth",
             sharedCacheDir: options?.sharedCacheDir,
             freshForMs: options?.freshForMs,
             shareFailures: true,
+            configRevision,
+            commitGuard: options?.commitGuard,
           });
           return {
             backend: {
@@ -430,7 +443,9 @@ export const readPrimeAgentCapacity = Effect.fn("readPrimeAgentCapacity")(functi
         ) {
           const read = yield* readPrimeAgentCodexCapacity({
             signIn: { accessToken: signIn.accessToken, accountId: signIn.accountId },
-            homePath,
+            cacheKey: cacheKeyForBackend(signIn.backend),
+            configRevision,
+            commitGuard: options?.commitGuard,
             nowMs,
             freshForMs: options?.freshForMs,
             sharedCacheDir: options?.sharedCacheDir,
@@ -443,7 +458,7 @@ export const readPrimeAgentCapacity = Effect.fn("readPrimeAgentCapacity")(functi
               ...(read.usageLimits ? { usageLimits: read.usageLimits } : {}),
             },
             didReadCapacity: read.didReadCapacity,
-            retentionIdentity: capacityRetentionIdentity(signIn.backend, signIn.accountId),
+            retentionIdentity: capacityRetentionIdentity(signIn.backend, configRevision),
           } satisfies ProviderBackendCapacityRead;
         }
         return {
@@ -453,7 +468,7 @@ export const readPrimeAgentCapacity = Effect.fn("readPrimeAgentCapacity")(functi
           },
           didReadCapacity: false,
           ...(signIn.accountId
-            ? { retentionIdentity: capacityRetentionIdentity(signIn.backend, signIn.accountId) }
+            ? { retentionIdentity: capacityRetentionIdentity(signIn.backend, configRevision) }
             : {}),
         } satisfies ProviderBackendCapacityRead;
       }),

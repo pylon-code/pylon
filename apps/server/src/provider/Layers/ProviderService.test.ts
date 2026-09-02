@@ -2664,6 +2664,62 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
     }),
   );
 
+  it.effect("quarantines a session result released after its Prime generation retires", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-generation-replaced-start");
+      const current = yield* Ref.make(true);
+      Object.assign(fanout.codex.adapter, {
+        runtimeFence: {
+          generation: {},
+          configRevision: "private-test-revision",
+          isCurrent: Ref.get(current),
+        },
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          delete (fanout.codex.adapter as { runtimeFence?: unknown }).runtimeFence;
+        }),
+      );
+      const startEntered = yield* Deferred.make<ProviderSessionStartInput>();
+      const releaseStart = yield* Deferred.make<ProviderSession>();
+      fanout.codex.startSession.mockImplementationOnce((input) =>
+        Deferred.succeed(startEntered, input).pipe(Effect.andThen(Deferred.await(releaseStart))),
+      );
+
+      const startFiber = yield* provider
+        .startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      const startInput = yield* Deferred.await(startEntered);
+      yield* Ref.set(current, false);
+      const now = "2026-01-01T00:00:00.000Z";
+      yield* Deferred.succeed(releaseStart, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        sessionIncarnationId: startInput.sessionIncarnationId,
+        status: "ready",
+        runtimeMode: "full-access",
+        threadId,
+        cwd: process.cwd(),
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      assert.equal(Exit.isFailure(yield* Fiber.await(startFiber)), true);
+      assert.equal(Option.isNone(yield* directory.getBinding(threadId)), true);
+      assert.deepEqual(
+        (yield* provider.listSessions()).filter((session) => session.threadId === threadId),
+        [],
+      );
+    }),
+  );
+
   it.effect("keeps Stop authoritative while an account transition is starting", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

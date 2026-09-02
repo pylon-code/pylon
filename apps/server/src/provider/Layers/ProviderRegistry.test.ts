@@ -330,6 +330,7 @@ function makeMutableServerSettingsService(
           yield* PubSub.publish(changes, next);
           return next;
         }),
+      mutateProviderInstances: () => Effect.die(new Error("unused in this test")),
       get streamChanges() {
         return Stream.fromPubSub(changes);
       },
@@ -344,7 +345,7 @@ function makeMutableServerSettingsService(
 
 describe("mergeProviderCapacityRefresh", () => {
   const checkedAt = "2026-08-04T18:00:00.000Z";
-  const retentionIdentity = "openai-codex:fingerprint-a";
+  const retentionIdentity = "openai-codex:revision-a";
   const usageAt = (at: string, usedPercent: number) => ({
     source: "primeAgentCodex",
     checkedAt: at,
@@ -413,7 +414,7 @@ describe("mergeProviderCapacityRefresh", () => {
               backend: "anthropic",
               usageLimits: usageAt(checkedAt, 41),
             },
-            retentionIdentity: "anthropic:fingerprint-a",
+            retentionIdentity: "anthropic:revision-a",
           },
         ],
         refresh: {
@@ -421,7 +422,7 @@ describe("mergeProviderCapacityRefresh", () => {
             {
               backend: { backend: "anthropic" },
               didReadCapacity: false,
-              retentionIdentity: "anthropic:fingerprint-b",
+              retentionIdentity: "anthropic:revision-b",
             },
           ],
         },
@@ -430,7 +431,7 @@ describe("mergeProviderCapacityRefresh", () => {
       [
         {
           backend: { backend: "anthropic" },
-          retentionIdentity: "anthropic:fingerprint-b",
+          retentionIdentity: "anthropic:revision-b",
         },
       ],
     );
@@ -1362,7 +1363,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           } as const satisfies ServerProvider;
           const changes = yield* PubSub.unbounded<ServerProvider>();
           const reads = yield* Ref.make(0);
-          const sameAccountIdentity = "anthropic:fingerprint-a";
+          const sameAccountIdentity = "anthropic:revision-a";
           const instance = {
             instanceId: primeInstanceId,
             driverKind: primeDriver,
@@ -1520,7 +1521,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                     },
                   },
                   didReadCapacity: true,
-                  retentionIdentity: "anthropic:fingerprint-b",
+                  retentionIdentity: "anthropic:revision-b",
                 },
               ],
             });
@@ -3185,4 +3186,175 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
       );
     });
   },
+);
+
+it.effect(
+  "drops deferred Prime snapshot, capacity, and volatile writes after generation B wins",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make("primeAgent");
+        const driver = ProviderDriverKind.make("primeAgent");
+        const current = yield* Ref.make(true);
+        const falseChecks = yield* Ref.make(0);
+        const bothRetiredCommitsChecked = yield* Deferred.make<void>();
+        const isCurrent = Ref.get(current).pipe(
+          Effect.tap((value) =>
+            value
+              ? Effect.void
+              : Ref.updateAndGet(falseChecks, (count) => count + 1).pipe(
+                  Effect.flatMap((count) =>
+                    count >= 2
+                      ? Deferred.succeed(bothRetiredCommitsChecked, undefined).pipe(Effect.asVoid)
+                      : Effect.void,
+                  ),
+                ),
+          ),
+        );
+        const runtimeFence = {
+          generation: {},
+          configRevision: "revision-a",
+          isCurrent,
+        };
+        const snapshotStarted = yield* Deferred.make<void>();
+        const releaseSnapshot = yield* Deferred.make<void>();
+        const capacityStarted = yield* Deferred.make<void>();
+        const releaseCapacity = yield* Deferred.make<void>();
+        const baseProvider = {
+          instanceId,
+          driver,
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-06-10T00:00:00.000Z",
+          version: "1.0.0",
+          models: [],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const staleProvider = {
+          ...baseProvider,
+          checkedAt: "2026-06-10T00:01:00.000Z",
+          models: [
+            {
+              slug: "stale-model",
+              name: "Stale Model",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        } as const satisfies ServerProvider;
+        const instance = {
+          instanceId,
+          driverKind: driver,
+          continuationIdentity: {
+            driverKind: driver,
+            continuationKey: "primeAgent:instance:primeAgent",
+          },
+          displayName: undefined,
+          enabled: true,
+          runtimeFence,
+          snapshot: {
+            maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+              provider: driver,
+              packageName: null,
+            }),
+            getSnapshot: Effect.succeed(baseProvider),
+            refresh: Deferred.succeed(snapshotStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseSnapshot)),
+              Effect.as(staleProvider),
+            ),
+            streamChanges: Stream.empty,
+          },
+          adapter: {} as ProviderInstance["adapter"],
+          textGeneration: {} as ProviderInstance["textGeneration"],
+          capacity: {
+            refresh: Deferred.succeed(capacityStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseCapacity)),
+              Effect.as({
+                backends: [
+                  {
+                    backend: {
+                      backend: "anthropic",
+                      usageLimits: {
+                        source: "stale-capacity",
+                        checkedAt: "2026-06-10T00:01:00.000Z",
+                        windows: [{ label: "Session", usedPercent: 99 }],
+                      },
+                    },
+                    didReadCapacity: true,
+                    retentionIdentity: "anthropic:revision-a",
+                  },
+                ],
+              }),
+            ),
+          },
+        } satisfies ProviderInstance;
+        const instanceRegistryLayer = Layer.succeed(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          {
+            getInstance: () => Effect.succeed(instance),
+            listInstances: Effect.succeed([instance]),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+          },
+        );
+        const scope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+        const services = yield* Layer.build(
+          ProviderRegistryLive.pipe(
+            Layer.provideMerge(instanceRegistryLayer),
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), {
+                prefix: "provider-generation-fence-",
+              }),
+            ),
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ).pipe(Scope.provide(scope));
+        const registry = yield* ProviderRegistry.ProviderRegistry.pipe(Effect.provide(services));
+
+        const snapshotFiber = yield* registry.refresh().pipe(Effect.forkChild);
+        yield* registry.refreshProviderCapacity(instanceId);
+        yield* Deferred.await(snapshotStarted);
+        yield* Deferred.await(capacityStarted);
+        yield* Ref.set(current, false);
+        yield* Deferred.succeed(releaseSnapshot, undefined);
+        yield* Deferred.succeed(releaseCapacity, undefined);
+        yield* Deferred.await(bothRetiredCommitsChecked);
+        yield* Fiber.join(snapshotFiber);
+
+        yield* registry.setProviderMaintenanceActionState({
+          instanceId,
+          action: "update",
+          state: {
+            status: "running",
+            startedAt: "2026-06-10T00:02:00.000Z",
+            finishedAt: null,
+            message: "stale maintenance",
+            output: null,
+          },
+          runtimeFence,
+        });
+        yield* registry.setProviderRateLimitState({
+          instanceId,
+          state: {
+            status: "rejected",
+            observedAt: "2026-06-10T00:02:00.000Z",
+          },
+          runtimeFence,
+        });
+        yield* registry.mergeProviderUsageWindows({
+          instanceId,
+          source: "stale-usage",
+          observedAt: "2026-06-10T00:02:00.000Z",
+          windows: [{ label: "Session", usedPercent: 100 }],
+          runtimeFence,
+        });
+
+        assert.deepStrictEqual(yield* registry.getProviders, [baseProvider]);
+      }),
+    ),
 );

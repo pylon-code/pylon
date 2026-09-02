@@ -102,7 +102,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
     );
 
   const mutationPermit = Semaphore.makeUnsafe(1);
-  const upsert: ProviderSessionDirectoryShape["upsert"] = Effect.fn(function* (binding) {
+  const upsert: ProviderSessionDirectoryShape["upsert"] = Effect.fn(function* (binding, options) {
     return yield* mutationPermit.withPermit(
       Effect.gen(function* () {
         const existing = yield* repository
@@ -132,6 +132,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
             issue: "providerInstanceId is required for provider session runtime bindings.",
           });
         }
+        if (options?.commitGuard !== undefined && !(yield* options.commitGuard)) return;
         yield* repository
           .upsert({
             threadId: resolvedThreadId,

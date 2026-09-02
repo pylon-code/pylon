@@ -32,7 +32,11 @@ shadow with WSL2 guidance; it does not fall back to ACP. Web, desktop, and mobil
 when they connect to a WSL2 or remote environment, and Windows desktop packaging is independent of
 provider-runtime support. Revisit native execution only after upstream Prime Agent supports Windows;
 that review must then validate its public process, transport, SDK, and ACP contracts before removing the
-gate. One scoped daemon belongs to a provider instance, while each Pylon thread owns an isolated, deterministic native session
+gate. Multiple enabled Prime instances remain disabled pending the signed-in N=1/2/4 macOS and enforced
+Linux/WSL2 graduation matrix. The host CAS transaction rejects a second enabled instance before
+persistence. The native isolation, managed-artifact proof, overlapping-home rejection, and set-wide
+teardown code remains fail-closed behind that gate. One scoped daemon belongs to a provider instance,
+while each Pylon thread owns an isolated, deterministic native session
 directory. The client-visible continuation cursor stays an opaque marker; a server-private sidecar
 binds it to the exact stable Prime transcript identity and verifies the saved file before cold
 resume. On POSIX filesystems the thread session directory is owner-only, and its identity,

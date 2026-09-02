@@ -74,6 +74,8 @@ export function buildUnavailableProviderSnapshot(
           : input.driverKind,
       availability: "unavailable",
       unavailableReason: input.reason,
+      supportsMultipleInstances: false,
+      multipleInstancesUnavailableReason: input.reason,
     };
   });
 }

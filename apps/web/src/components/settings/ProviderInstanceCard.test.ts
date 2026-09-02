@@ -366,4 +366,47 @@ describe("deriveProviderModelsForDisplay", () => {
     expect(markup).not.toContain("Unavailable");
     expect(buttonTag(markup, "Enable Codex")).not.toContain('disabled=""');
   });
+
+  it("shows Prime isolation, ACP, maintenance, and unsupported-host guidance accessibly", () => {
+    const instanceId = ProviderInstanceId.make("primeAgent");
+    const driver = ProviderDriverKind.make("primeAgent");
+    const reason = "Multiple Prime Agent instances require WSL2 on this host.";
+    const markup = renderToStaticMarkup(
+      createElement(ProviderInstanceCard, {
+        instanceId,
+        instance: { driver, enabled: true, config: { agentHomePath: "~/prime/work" } },
+        driverOption: undefined,
+        liveProvider: {
+          instanceId,
+          driver,
+          enabled: true,
+          installed: true,
+          version: "0.8.1",
+          status: "warning",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-09-01T00:00:00.000Z",
+          message: "Using ACP compatibility mode.",
+          models: [],
+          slashCommands: [],
+          skills: [],
+          supportsMultipleInstances: false,
+          multipleInstancesUnavailableReason: reason,
+        },
+        mode: "editor",
+        timestampFormat: DEFAULT_TIMESTAMP_FORMAT,
+        onUpdate: () => undefined,
+        hiddenModels: [],
+        favoriteModels: [],
+        modelOrder: [],
+        onHiddenModelsChange: () => undefined,
+        onFavoriteModelsChange: () => undefined,
+        onModelOrderChange: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain("sign in separately");
+    expect(markup).toContain("It does not enable multiple Prime instances");
+    expect(markup).toContain("stop-all maintenance remains external");
+    expect(markup).toContain(`role="status">${reason}`);
+  });
 });

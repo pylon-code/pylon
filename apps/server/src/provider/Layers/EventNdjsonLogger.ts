@@ -61,7 +61,11 @@ export type EventNdjsonStream = "native" | "canonical" | "orchestration";
 
 export interface EventNdjsonLogger {
   readonly filePath: string;
-  readonly write: (event: unknown, threadId: ThreadId | null) => Effect.Effect<void>;
+  readonly write: (
+    event: unknown,
+    threadId: ThreadId | null,
+    commitGuard?: Effect.Effect<boolean>,
+  ) => Effect.Effect<void>;
   readonly close: () => Effect.Effect<void>;
 }
 
@@ -134,6 +138,7 @@ export interface PendingRecord {
   readonly threadSegment: string;
   readonly line: string;
   readonly bytes: number;
+  readonly commitGuard?: Effect.Effect<boolean> | undefined;
 }
 
 interface StoreState {
@@ -540,17 +545,34 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
   const flush = Effect.fnUntraced(function* (timerFired: boolean, close: boolean) {
     const startedAt = yield* Clock.currentTimeMillis;
     const result = yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
-      Effect.sync(() =>
-        drainPending({
+      Effect.gen(function* () {
+        const currentRecords = yield* Effect.forEach(state.pending, (record) =>
+          Effect.map(record.commitGuard ?? Effect.succeed(true), (current) => ({
+            record,
+            current,
+          })),
+        );
+        const pending = currentRecords
+          .filter((entry) => entry.current)
+          .map((entry) => entry.record);
+        const currentState =
+          pending.length === state.pending.length
+            ? state
+            : {
+                ...state,
+                pending,
+                pendingBytes: pending.reduce((total, record) => total + record.bytes, 0),
+              };
+        return drainPending({
           directory,
           options: resolved,
-          state,
+          state: currentState,
           filePrefix,
           now: startedAt,
           timerFired,
           close,
-        }),
-      ),
+        });
+      }),
     );
 
     for (const failure of result.failures) {
@@ -603,7 +625,11 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
     const existing = loggerViews.get(stream);
     if (existing) return existing;
 
-    const write = Effect.fnUntraced(function* (event: unknown, threadId: ThreadId | null) {
+    const write = Effect.fnUntraced(function* (
+      event: unknown,
+      threadId: ThreadId | null,
+      commitGuard?: Effect.Effect<boolean>,
+    ) {
       if (!shouldPersist(stream, event)) return;
       const payload = yield* serializeEvent(event);
       if (payload === undefined) return;
@@ -611,28 +637,36 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
       const observedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
       const line = `[${observedAt}] ${resolveStreamLabel(stream)}: ${payload}\n`;
       const bytes = Buffer.byteLength(line);
-      const action = yield* SynchronizedRef.modifyEffect(stateRef, (state) => {
-        if (state.closed) {
-          return Effect.succeed([{ flush: false }, state] as const);
-        }
-        const pending = state.pending;
-        pending.push({ stream, threadSegment: resolveThreadSegment(threadId), line, bytes });
-        const pendingBytes = state.pendingBytes + bytes;
-        const flush =
-          resolved.batchWindowMs === 0 ||
-          pending.length >= resolved.maxBufferedRecords ||
-          pendingBytes >= resolved.maxBufferedBytes;
-        const schedule = !flush && !state.flushScheduled;
-        const nextState = {
-          ...state,
-          pending,
-          pendingBytes,
-          flushScheduled: state.flushScheduled || schedule,
-        };
-        return (schedule ? scheduleFlush() : Effect.void).pipe(
-          Effect.as([{ flush }, nextState] as const),
-        );
-      }).pipe(Effect.uninterruptible);
+      const action = yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
+        Effect.gen(function* () {
+          if (state.closed || (commitGuard !== undefined && !(yield* commitGuard))) {
+            return [{ flush: false }, state] as const;
+          }
+          const pending = state.pending;
+          pending.push({
+            stream,
+            threadSegment: resolveThreadSegment(threadId),
+            line,
+            bytes,
+            ...(commitGuard === undefined ? {} : { commitGuard }),
+          });
+          const pendingBytes = state.pendingBytes + bytes;
+          const flush =
+            resolved.batchWindowMs === 0 ||
+            pending.length >= resolved.maxBufferedRecords ||
+            pendingBytes >= resolved.maxBufferedBytes;
+          const schedule = !flush && !state.flushScheduled;
+          const nextState = {
+            ...state,
+            pending,
+            pendingBytes,
+            flushScheduled: state.flushScheduled || schedule,
+          };
+          return yield* (schedule ? scheduleFlush() : Effect.void).pipe(
+            Effect.as([{ flush }, nextState] as const),
+          );
+        }),
+      ).pipe(Effect.uninterruptible);
 
       if (action.flush) {
         yield* flush(false, false);

@@ -13,6 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Stream from "effect/Stream";
 
 import type { PrimeDaemonEvent } from "./PrimeAgentDaemonEvents.ts";
+import { sanitizePrimeAgentDaemonEnvironment } from "./PrimeAgentDaemonBridge.ts";
 import { makePrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import {
   makePrimeAgentDaemonSessionRuntime,
@@ -22,6 +23,48 @@ import {
 const configuredExecutable = process.env.PYLON_REAL_PRIME_AGENT?.trim();
 const configuredAuthHome = process.env.PYLON_REAL_PRIME_AGENT_AUTH_HOME?.trim();
 const providerInstanceId = ProviderInstanceId.make("prime-real-integration");
+
+const makeTestIdentity = (agentHomePath: string) => ({
+  instanceId: providerInstanceId,
+  generation: { _tag: "PrimeAgentRuntimeGeneration" as const },
+  configRevision: "real-integration-test",
+  effectiveHome: agentHomePath,
+  nativeMultipleInstancesRequired: false,
+  launchEnv: sanitizePrimeAgentDaemonEnvironment({
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    ),
+    PRIME_AGENT_HOME: agentHomePath,
+    PRIME_AGENT_CODING_AGENT_DIR: agentHomePath,
+  }),
+  settings: {
+    enabled: true,
+    binaryPath: configuredExecutable ?? "prime-agent",
+    agentHomePath,
+    launchArgs: "",
+    customModels: [],
+  },
+});
+
+const makeTestRuntimeContext = (identity: ReturnType<typeof makeTestIdentity>) => ({
+  ...identity,
+  backendKind: "daemon" as const,
+  backendIdentity: {
+    kind: "daemon" as const,
+    proof: {
+      sdkFeatures: [
+        "negotiated_daemon_session_capabilities_v1",
+        "caller_owned_session_environment_cleanup_v1",
+      ],
+      requiredServerCapabilities: [
+        "caller_owned_session_environment_cleanup_v1",
+        "authoritative_owned_session_cleanup_v1",
+      ] as const,
+    },
+  },
+});
 
 type TurnCompleted = Extract<PrimeDaemonEvent, { readonly _tag: "TurnCompleted" }>;
 
@@ -137,18 +180,19 @@ it.live.skipIf(!configuredExecutable)(
 
         const first = yield* Effect.scoped(
           Effect.gen(function* () {
+            const identity = makeTestIdentity(agentHomePath);
+            const runtimeContext = makeTestRuntimeContext(identity);
             const manager = yield* makePrimeAgentDaemonManager({
               executablePath: configuredExecutable,
-              settings: { agentHomePath },
-              environment: process.env,
+              identity,
               stateDir,
-              providerInstanceId,
               tempDir: "/tmp",
             });
             yield* manager.prepare();
 
             const primary = yield* makePrimeAgentDaemonSessionRuntime({
               manager,
+              runtimeContext,
               cwd: root,
               sessionDir: NodePath.join(manager.sessionDir, "phase-1-primary"),
               thinkingLevel: "off",
@@ -156,6 +200,7 @@ it.live.skipIf(!configuredExecutable)(
             });
             const interrupted = yield* makePrimeAgentDaemonSessionRuntime({
               manager,
+              runtimeContext,
               cwd: root,
               sessionDir: NodePath.join(manager.sessionDir, "phase-1-interrupted"),
               thinkingLevel: "off",
@@ -236,6 +281,7 @@ it.live.skipIf(!configuredExecutable)(
             };
             const reconnecting = yield* makePrimeAgentDaemonSessionRuntime({
               manager: reconnectManager,
+              runtimeContext,
               cwd: root,
               sessionDir: NodePath.join(manager.sessionDir, "phase-1-reconnecting"),
               thinkingLevel: "off",
@@ -336,16 +382,17 @@ it.live.skipIf(!configuredExecutable)(
 
         const restarted = yield* Effect.scoped(
           Effect.gen(function* () {
+            const identity = makeTestIdentity(agentHomePath);
+            const runtimeContext = makeTestRuntimeContext(identity);
             const manager = yield* makePrimeAgentDaemonManager({
               executablePath: configuredExecutable,
-              settings: { agentHomePath },
-              environment: process.env,
+              identity,
               stateDir,
-              providerInstanceId,
               tempDir: "/tmp",
             });
             const runtime = yield* makePrimeAgentDaemonSessionRuntime({
               manager,
+              runtimeContext,
               cwd: root,
               sessionDir: NodePath.join(manager.sessionDir, "phase-1-primary"),
               disableExtensionDiscovery: true,

@@ -75,6 +75,58 @@ export const PrimeAgentRecoveryAuthority = Schema.Struct({
 });
 export type PrimeAgentRecoveryAuthority = typeof PrimeAgentRecoveryAuthority.Type;
 
+export interface PrimeAgentRecoveryOwnershipIdentity {
+  readonly threadId: string;
+  readonly sessionIncarnationId: string;
+  readonly admissionRequestId: string;
+  readonly recoveryHandle: string;
+  readonly ownershipGeneration: number;
+}
+
+/**
+ * The current identity remains valid while adoption is durable. The staged identity
+ * is valid only after the complete rotated proof was committed and before finalization.
+ */
+export function primeAgentRecoveryOwnershipIdentities(
+  authority: PrimeAgentRecoveryAuthority,
+): ReadonlyArray<PrimeAgentRecoveryOwnershipIdentity> {
+  const current = {
+    threadId: authority.threadId,
+    sessionIncarnationId: authority.sessionIncarnationId,
+    admissionRequestId: authority.admissionRequestId,
+    recoveryHandle: authority.recoveryHandle,
+    ownershipGeneration: authority.ownershipGeneration,
+  };
+  const proof = authority.adoptionProof;
+  const stagedHandle = authority.adoptionRecoveryHandle;
+  const exactStaged =
+    authority.state === "adopting" &&
+    (authority.adoptionPhase === "committed" || authority.adoptionPhase === "confirming") &&
+    stagedHandle !== null &&
+    stagedHandle !== authority.recoveryHandle &&
+    proof !== null &&
+    proof.supervisorGeneration === authority.supervisorGeneration &&
+    proof.ownershipGeneration > authority.ownershipGeneration &&
+    proof.activeSessionId === authority.activeSessionId &&
+    proof.sessionId === authority.nativeSessionId &&
+    proof.correlationId === authority.correlationId &&
+    proof.mcpOwnerId === authority.adoptionMcpOwnerId &&
+    proof.cursor.generation === authority.cursor.generation &&
+    proof.cursor.sequence >= authority.cursor.sequence;
+  return exactStaged
+    ? [
+        current,
+        {
+          threadId: authority.threadId,
+          sessionIncarnationId: authority.sessionIncarnationId,
+          admissionRequestId: authority.admissionRequestId,
+          recoveryHandle: stagedHandle,
+          ownershipGeneration: proof.ownershipGeneration,
+        },
+      ]
+    : [current];
+}
+
 export class PrimeAgentRecoveryLedgerError extends Schema.TaggedErrorClass<PrimeAgentRecoveryLedgerError>()(
   "PrimeAgentRecoveryLedgerError",
   {
@@ -89,9 +141,14 @@ export class PrimeAgentRecoveryLedgerError extends Schema.TaggedErrorClass<Prime
 
 const isPrimeAgentRecoveryLedgerError = Schema.is(PrimeAgentRecoveryLedgerError);
 
+interface PrimeAgentRecoveryCommitOptions {
+  readonly commitGuard?: Effect.Effect<boolean> | undefined;
+}
+
 export interface PrimeAgentRecoveryLedgerShape {
   readonly putPrepared: (
     authority: PrimeAgentRecoveryAuthority,
+    options?: PrimeAgentRecoveryCommitOptions,
   ) => Effect.Effect<void, PrimeAgentRecoveryLedgerError>;
   readonly get: (
     threadId: string,
@@ -100,98 +157,125 @@ export interface PrimeAgentRecoveryLedgerShape {
     ReadonlyArray<PrimeAgentRecoveryAuthority>,
     PrimeAgentRecoveryLedgerError
   >;
-  readonly markAdmitted: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly turnId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
-  readonly discardPrepared: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
-  readonly updateTranscriptProgress: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly cursor: typeof RecoveryCursor.Type;
-    readonly messageCount: number;
-    readonly fingerprints: ReadonlyArray<string>;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly markAdmitted: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly turnId: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly discardPrepared: (
+    input: { readonly threadId: string; readonly ownerToken: string },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly updateTranscriptProgress: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly cursor: typeof RecoveryCursor.Type;
+      readonly messageCount: number;
+      readonly fingerprints: ReadonlyArray<string>;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
   /**
    * Compare-and-swap one stable adoption route without replacing the current native authority.
    * The old owner and bearer handle remain current until native confirmation succeeds.
    */
-  readonly claim: (input: {
-    readonly threadId: string;
-    readonly expectedOwnerToken: string;
-    readonly nextOwnerToken: string;
-    readonly requestId: string;
-    readonly mcpOwnerId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<Option.Option<PrimeAgentRecoveryAuthority>, PrimeAgentRecoveryLedgerError>;
+  readonly claim: (
+    input: {
+      readonly threadId: string;
+      readonly expectedOwnerToken: string;
+      readonly nextOwnerToken: string;
+      readonly requestId: string;
+      readonly mcpOwnerId: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<Option.Option<PrimeAgentRecoveryAuthority>, PrimeAgentRecoveryLedgerError>;
   /** Records an attempt before the native prepare request can begin. */
-  readonly beginAdoptionAttempt: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly requestId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<Option.Option<PrimeAgentRecoveryAuthority>, PrimeAgentRecoveryLedgerError>;
+  readonly beginAdoptionAttempt: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly requestId: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<Option.Option<PrimeAgentRecoveryAuthority>, PrimeAgentRecoveryLedgerError>;
   /** Releases only a never-started claim. Any native ambiguity keeps the durable route. */
-  readonly releaseClaim: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly previousOwnerToken: string;
-    readonly requestId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly releaseClaim: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly previousOwnerToken: string;
+      readonly requestId: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
   /** Persist the complete rotated receipt separately before the SDK confirmation step. */
-  readonly commitAdoption: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly requestId: string;
-    readonly recoveryHandle: string;
-    readonly proof: PrimeAgentRecoveryAdoptionProof;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly commitAdoption: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly requestId: string;
+      readonly recoveryHandle: string;
+      readonly proof: PrimeAgentRecoveryAdoptionProof;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
   /** Records the confirmation attempt before it can close the old-handle retry window. */
-  readonly beginAdoptionConfirmation: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly requestId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<Option.Option<PrimeAgentRecoveryAuthority>, PrimeAgentRecoveryLedgerError>;
+  readonly beginAdoptionConfirmation: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly requestId: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<Option.Option<PrimeAgentRecoveryAuthority>, PrimeAgentRecoveryLedgerError>;
   /** Promotes the staged receipt only after exact native confirmation. */
-  readonly finalizeAdoption: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly requestId: string;
-    readonly recoveryHandle: string;
-    readonly proof: PrimeAgentRecoveryAdoptionProof;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
-  readonly quarantineAdoption: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly requestId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
-  readonly markNativeCleanup: (input: {
-    readonly threadId: string;
-    readonly ownerToken: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
-  readonly markTerminalProjected: (input: {
-    readonly threadId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<void, PrimeAgentRecoveryLedgerError>;
-  readonly markCheckpointQuiesced: (input: {
-    readonly threadId: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<void, PrimeAgentRecoveryLedgerError>;
+  readonly finalizeAdoption: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly requestId: string;
+      readonly recoveryHandle: string;
+      readonly proof: PrimeAgentRecoveryAdoptionProof;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly quarantineAdoption: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly requestId: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly markNativeCleanup: (
+    input: { readonly threadId: string; readonly ownerToken: string; readonly updatedAt: string },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  readonly markTerminalProjected: (
+    input: { readonly threadId: string; readonly updatedAt: string },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<void, PrimeAgentRecoveryLedgerError>;
+  readonly markCheckpointQuiesced: (
+    input: { readonly threadId: string; readonly updatedAt: string },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<void, PrimeAgentRecoveryLedgerError>;
   /** Deletes only after native cleanup, terminal projection, and checkpoint quiescence all hold. */
   readonly deleteIfSettled: (
     threadId: string,
+    options?: PrimeAgentRecoveryCommitOptions,
   ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
 }
 
@@ -383,10 +467,12 @@ export const make = Effect.gen(function* () {
   const get: PrimeAgentRecoveryLedgerShape["get"] = (threadId) =>
     queryByThread(threadId).pipe(Effect.map((rows) => Option.fromNullishOr(rows[0])));
 
-  const putPrepared: PrimeAgentRecoveryLedgerShape["putPrepared"] = (authority) =>
-    sql
-      .unsafe(
-        `INSERT INTO prime_agent_recovery_ledger (
+  const putPrepared: PrimeAgentRecoveryLedgerShape["putPrepared"] = (authority, options) =>
+    Effect.flatMap(options?.commitGuard ?? Effect.succeed(true), (current) =>
+      current
+        ? sql
+            .unsafe(
+              `INSERT INTO prime_agent_recovery_ledger (
           thread_id, provider_instance_id, session_incarnation_id, admission_request_id, turn_id,
           package_root, package_version, managed_build_id, sdk_features_json, daemon_capabilities_json,
           protocol_name, protocol_version, schema_revision, active_session_id, native_session_id,
@@ -399,50 +485,52 @@ export const make = Effect.gen(function* () {
           updated_at
         ) VALUES (${Array.from({ length: 40 }, () => "?").join(",")})
 `,
-        [
-          authority.threadId,
-          authority.providerInstanceId,
-          authority.sessionIncarnationId,
-          authority.admissionRequestId,
-          authority.turnId,
-          authority.packageRoot,
-          authority.packageVersion,
-          authority.managedBuildId,
-          JSON.stringify(authority.sdkFeatures),
-          JSON.stringify(authority.daemonCapabilities),
-          authority.protocolName,
-          authority.protocolVersion,
-          authority.schemaRevision,
-          authority.activeSessionId,
-          authority.nativeSessionId,
-          authority.recoveryHandle,
-          authority.supervisorGeneration,
-          authority.ownershipGeneration,
-          authority.cursor.generation,
-          authority.cursor.sequence,
-          authority.correlationId,
-          authority.mcpOwnerId,
-          JSON.stringify(authority.recoveryConfig),
-          JSON.stringify(authority.launchEnvironment),
-          authority.transcriptMessageCount,
-          JSON.stringify(authority.transcriptFingerprints),
-          authority.ownerToken,
-          authority.state,
-          authority.adoptionPreviousOwnerToken,
-          authority.adoptionOwnerToken,
-          authority.adoptionRequestId,
-          authority.adoptionMcpOwnerId,
-          authority.adoptionPhase,
-          authority.adoptionAttempt,
-          authority.adoptionRecoveryHandle,
-          authority.adoptionProof === null ? null : JSON.stringify(authority.adoptionProof),
-          authority.nativeCleanupProven ? 1 : 0,
-          authority.terminalProjected ? 1 : 0,
-          authority.checkpointQuiesced ? 1 : 0,
-          authority.updatedAt,
-        ],
-      )
-      .pipe(Effect.mapError(mapSqlError("putPrepared")), Effect.asVoid);
+              [
+                authority.threadId,
+                authority.providerInstanceId,
+                authority.sessionIncarnationId,
+                authority.admissionRequestId,
+                authority.turnId,
+                authority.packageRoot,
+                authority.packageVersion,
+                authority.managedBuildId,
+                JSON.stringify(authority.sdkFeatures),
+                JSON.stringify(authority.daemonCapabilities),
+                authority.protocolName,
+                authority.protocolVersion,
+                authority.schemaRevision,
+                authority.activeSessionId,
+                authority.nativeSessionId,
+                authority.recoveryHandle,
+                authority.supervisorGeneration,
+                authority.ownershipGeneration,
+                authority.cursor.generation,
+                authority.cursor.sequence,
+                authority.correlationId,
+                authority.mcpOwnerId,
+                JSON.stringify(authority.recoveryConfig),
+                JSON.stringify(authority.launchEnvironment),
+                authority.transcriptMessageCount,
+                JSON.stringify(authority.transcriptFingerprints),
+                authority.ownerToken,
+                authority.state,
+                authority.adoptionPreviousOwnerToken,
+                authority.adoptionOwnerToken,
+                authority.adoptionRequestId,
+                authority.adoptionMcpOwnerId,
+                authority.adoptionPhase,
+                authority.adoptionAttempt,
+                authority.adoptionRecoveryHandle,
+                authority.adoptionProof === null ? null : JSON.stringify(authority.adoptionProof),
+                authority.nativeCleanupProven ? 1 : 0,
+                authority.terminalProjected ? 1 : 0,
+                authority.checkpointQuiesced ? 1 : 0,
+                authority.updatedAt,
+              ],
+            )
+            .pipe(Effect.mapError(mapSqlError("putPrepared")), Effect.asVoid)
+        : Effect.void,
+    );
 
   const listActive: PrimeAgentRecoveryLedgerShape["listActive"] = () =>
     sql
@@ -458,30 +546,38 @@ export const make = Effect.gen(function* () {
     operation: string,
     statement: string,
     parameters: ReadonlyArray<unknown>,
+    options?: PrimeAgentRecoveryCommitOptions,
   ) =>
-    sql.unsafe(statement, parameters).pipe(
-      Effect.mapError(mapSqlError(operation)),
-      Effect.map((rows) => Array.isArray(rows) && rows.length === 1),
+    Effect.flatMap(options?.commitGuard ?? Effect.succeed(true), (current) =>
+      current
+        ? sql.unsafe(statement, parameters).pipe(
+            Effect.mapError(mapSqlError(operation)),
+            Effect.map((rows) => Array.isArray(rows) && rows.length === 1),
+          )
+        : Effect.succeed(false),
     );
 
-  const markAdmitted: PrimeAgentRecoveryLedgerShape["markAdmitted"] = (input) =>
+  const markAdmitted: PrimeAgentRecoveryLedgerShape["markAdmitted"] = (input, options) =>
     conditionalUpdate(
       "markAdmitted",
       `UPDATE prime_agent_recovery_ledger SET turn_id=?, state='active', updated_at=?
        WHERE thread_id=? AND owner_token=? AND state='prepared' RETURNING thread_id`,
       [input.turnId, input.updatedAt, input.threadId, input.ownerToken],
+      options,
     );
 
-  const discardPrepared: PrimeAgentRecoveryLedgerShape["discardPrepared"] = (input) =>
+  const discardPrepared: PrimeAgentRecoveryLedgerShape["discardPrepared"] = (input, options) =>
     conditionalUpdate(
       "discardPrepared",
       `DELETE FROM prime_agent_recovery_ledger
        WHERE thread_id=? AND owner_token=? AND state='prepared' RETURNING thread_id`,
       [input.threadId, input.ownerToken],
+      options,
     );
 
   const updateTranscriptProgress: PrimeAgentRecoveryLedgerShape["updateTranscriptProgress"] = (
     input,
+    options,
   ) =>
     conditionalUpdate(
       "updateTranscriptProgress",
@@ -498,9 +594,10 @@ export const make = Effect.gen(function* () {
         input.threadId,
         input.ownerToken,
       ],
+      options,
     );
 
-  const claim: PrimeAgentRecoveryLedgerShape["claim"] = (input) =>
+  const claim: PrimeAgentRecoveryLedgerShape["claim"] = (input, options) =>
     conditionalUpdate(
       "claim",
       `UPDATE prime_agent_recovery_ledger
@@ -518,11 +615,15 @@ export const make = Effect.gen(function* () {
         input.threadId,
         input.expectedOwnerToken,
       ],
+      options,
     ).pipe(
       Effect.flatMap((claimed) => (claimed ? get(input.threadId) : Effect.succeed(Option.none()))),
     );
 
-  const beginAdoptionAttempt: PrimeAgentRecoveryLedgerShape["beginAdoptionAttempt"] = (input) =>
+  const beginAdoptionAttempt: PrimeAgentRecoveryLedgerShape["beginAdoptionAttempt"] = (
+    input,
+    options,
+  ) =>
     conditionalUpdate(
       "beginAdoptionAttempt",
       `UPDATE prime_agent_recovery_ledger
@@ -539,11 +640,12 @@ export const make = Effect.gen(function* () {
         input.requestId,
         PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS,
       ],
+      options,
     ).pipe(
       Effect.flatMap((started) => (started ? get(input.threadId) : Effect.succeed(Option.none()))),
     );
 
-  const releaseClaim: PrimeAgentRecoveryLedgerShape["releaseClaim"] = (input) =>
+  const releaseClaim: PrimeAgentRecoveryLedgerShape["releaseClaim"] = (input, options) =>
     conditionalUpdate(
       "releaseClaim",
       `UPDATE prime_agent_recovery_ledger
@@ -563,9 +665,10 @@ export const make = Effect.gen(function* () {
         input.ownerToken,
         input.requestId,
       ],
+      options,
     );
 
-  const commitAdoption: PrimeAgentRecoveryLedgerShape["commitAdoption"] = (input) => {
+  const commitAdoption: PrimeAgentRecoveryLedgerShape["commitAdoption"] = (input, options) => {
     const proofJson = encodeAdoptionProof(input.proof);
     return conditionalUpdate(
       "commitAdoption",
@@ -587,11 +690,13 @@ export const make = Effect.gen(function* () {
         input.recoveryHandle,
         proofJson,
       ],
+      options,
     );
   };
 
   const beginAdoptionConfirmation: PrimeAgentRecoveryLedgerShape["beginAdoptionConfirmation"] = (
     input,
+    options,
   ) =>
     conditionalUpdate(
       "beginAdoptionConfirmation",
@@ -609,11 +714,12 @@ export const make = Effect.gen(function* () {
         input.requestId,
         PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS,
       ],
+      options,
     ).pipe(
       Effect.flatMap((started) => (started ? get(input.threadId) : Effect.succeed(Option.none()))),
     );
 
-  const finalizeAdoption: PrimeAgentRecoveryLedgerShape["finalizeAdoption"] = (input) => {
+  const finalizeAdoption: PrimeAgentRecoveryLedgerShape["finalizeAdoption"] = (input, options) => {
     const proofJson = encodeAdoptionProof(input.proof);
     return conditionalUpdate(
       "finalizeAdoption",
@@ -641,10 +747,14 @@ export const make = Effect.gen(function* () {
         input.recoveryHandle,
         proofJson,
       ],
+      options,
     );
   };
 
-  const quarantineAdoption: PrimeAgentRecoveryLedgerShape["quarantineAdoption"] = (input) =>
+  const quarantineAdoption: PrimeAgentRecoveryLedgerShape["quarantineAdoption"] = (
+    input,
+    options,
+  ) =>
     conditionalUpdate(
       "quarantineAdoption",
       `UPDATE prime_agent_recovery_ledger
@@ -659,40 +769,49 @@ export const make = Effect.gen(function* () {
         input.requestId,
         PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS,
       ],
+      options,
     );
 
-  const markNativeCleanup: PrimeAgentRecoveryLedgerShape["markNativeCleanup"] = (input) =>
+  const markNativeCleanup: PrimeAgentRecoveryLedgerShape["markNativeCleanup"] = (input, options) =>
     conditionalUpdate(
       "markNativeCleanup",
       `UPDATE prime_agent_recovery_ledger
        SET native_cleanup_proven=1, state='terminal', updated_at=?
        WHERE thread_id=? AND owner_token=? RETURNING thread_id`,
       [input.updatedAt, input.threadId, input.ownerToken],
+      options,
     );
 
-  const markTerminalProjected: PrimeAgentRecoveryLedgerShape["markTerminalProjected"] = (input) =>
-    sql
-      .unsafe(
-        `UPDATE prime_agent_recovery_ledger SET terminal_projected=1, updated_at=? WHERE thread_id=?`,
-        [input.updatedAt, input.threadId],
-      )
-      .pipe(Effect.mapError(mapSqlError("markTerminalProjected")), Effect.asVoid);
+  const markTerminalProjected: PrimeAgentRecoveryLedgerShape["markTerminalProjected"] = (
+    input,
+    options,
+  ) =>
+    conditionalUpdate(
+      "markTerminalProjected",
+      `UPDATE prime_agent_recovery_ledger SET terminal_projected=1, updated_at=? WHERE thread_id=? RETURNING thread_id`,
+      [input.updatedAt, input.threadId],
+      options,
+    ).pipe(Effect.asVoid);
 
-  const markCheckpointQuiesced: PrimeAgentRecoveryLedgerShape["markCheckpointQuiesced"] = (input) =>
-    sql
-      .unsafe(
-        `UPDATE prime_agent_recovery_ledger SET checkpoint_quiesced=1, updated_at=? WHERE thread_id=?`,
-        [input.updatedAt, input.threadId],
-      )
-      .pipe(Effect.mapError(mapSqlError("markCheckpointQuiesced")), Effect.asVoid);
+  const markCheckpointQuiesced: PrimeAgentRecoveryLedgerShape["markCheckpointQuiesced"] = (
+    input,
+    options,
+  ) =>
+    conditionalUpdate(
+      "markCheckpointQuiesced",
+      `UPDATE prime_agent_recovery_ledger SET checkpoint_quiesced=1, updated_at=? WHERE thread_id=? RETURNING thread_id`,
+      [input.updatedAt, input.threadId],
+      options,
+    ).pipe(Effect.asVoid);
 
-  const deleteIfSettled: PrimeAgentRecoveryLedgerShape["deleteIfSettled"] = (threadId) =>
+  const deleteIfSettled: PrimeAgentRecoveryLedgerShape["deleteIfSettled"] = (threadId, options) =>
     conditionalUpdate(
       "deleteIfSettled",
       `DELETE FROM prime_agent_recovery_ledger
        WHERE thread_id=? AND native_cleanup_proven=1 AND terminal_projected=1 AND checkpoint_quiesced=1
        RETURNING thread_id`,
       [threadId],
+      options,
     );
 
   return {

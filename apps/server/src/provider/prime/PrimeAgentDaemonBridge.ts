@@ -14,6 +14,8 @@ export const PRIME_AGENT_DAEMON_PROTOCOL_NAME = "prime-agent.daemon" as const;
 export const PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION = 7 as const;
 export const PRIME_AGENT_NEGOTIATED_DAEMON_SESSION_CAPABILITIES_FEATURE =
   "negotiated_daemon_session_capabilities_v1" as const;
+export const PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE =
+  "caller_owned_session_environment_cleanup_v1" as const;
 
 const bridgeErrorReason = Schema.Literals([
   "path-not-found",
@@ -51,6 +53,51 @@ export interface PrimeAgentDaemonHello {
   readonly serverCapabilities: ReadonlyArray<string>;
 }
 
+export interface PrimeAgentOwnedSessionDaemonIdentity {
+  readonly protocolName: string;
+  readonly protocolVersion: number;
+  readonly schemaRevision: number;
+  readonly appVersion?: string;
+  readonly buildId?: string;
+  readonly supervisorGeneration: string;
+  readonly transportGeneration: number;
+}
+
+export interface PrimeAgentOwnedSessionContractProof {
+  readonly feature: typeof PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE;
+  readonly status: "attached";
+  readonly daemon: PrimeAgentOwnedSessionDaemonIdentity;
+}
+
+interface PrimeAgentOwnedSessionDisposeBase {
+  readonly feature: typeof PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE;
+  readonly started?: PrimeAgentOwnedSessionContractProof;
+  readonly observed?: PrimeAgentOwnedSessionDaemonIdentity;
+}
+
+/** Frozen observable cleanup outcomes from Prime Agent #37. */
+export type PrimeAgentOwnedSessionDisposeResult =
+  | (PrimeAgentOwnedSessionDisposeBase & {
+      readonly status: "completed" | "already_completed";
+      readonly started: PrimeAgentOwnedSessionContractProof;
+      readonly observed: PrimeAgentOwnedSessionDaemonIdentity;
+      readonly daemonReplaced: boolean;
+    })
+  | (PrimeAgentOwnedSessionDisposeBase & {
+      readonly status: "replacement_settled";
+      readonly started: PrimeAgentOwnedSessionContractProof;
+      readonly observed: PrimeAgentOwnedSessionDaemonIdentity;
+      readonly daemonReplaced: true;
+    })
+  | (PrimeAgentOwnedSessionDisposeBase & { readonly status: "owner_mismatch" })
+  | (PrimeAgentOwnedSessionDisposeBase & {
+      readonly status: "uncertain";
+      readonly reason: "active" | "stopping";
+    })
+  | (PrimeAgentOwnedSessionDisposeBase & {
+      readonly status: "transport_failure" | "unsupported";
+    });
+
 export interface PrimeAgentDaemonEventCursor {
   readonly generation: string;
   readonly sequence: number;
@@ -58,6 +105,8 @@ export interface PrimeAgentDaemonEventCursor {
 
 export interface PrimeAgentDaemonClient {
   readonly isConnected: boolean;
+  /** Public random protocol identity. Exact native multi-instance proofs compare it. */
+  readonly clientId?: string;
   readonly hello?: PrimeAgentDaemonHello;
   readonly connect: (timeoutMs?: number) => Promise<void>;
   readonly waitForHello: (timeoutMs?: number) => Promise<unknown>;
@@ -155,7 +204,7 @@ export interface PrimeAgentDaemonAgentConnection {
   ) => Promise<unknown>;
   readonly cancelPromptLifecycle?: (correlationId: string) => Promise<unknown>;
   readonly getPromptLifecycles?: () => Promise<unknown>;
-  readonly supportsNegotiatedCapability?: (capability: "correlated_prompt_lifecycle_v1") => boolean;
+  readonly supportsNegotiatedCapability?: (capability: string) => boolean;
   readonly waitForHeadlessCompletion?: (options?: {
     readonly waitForRlmQuiescence?: boolean;
   }) => Promise<unknown>;
@@ -216,7 +265,7 @@ export interface PrimeAgentDaemonAgentConnection {
   readonly getSessionStats: () => Promise<unknown>;
   readonly getRlmMaxDepthStatus?: () => Promise<unknown>;
   readonly setRlmMaxDepth?: (maxDepth: number) => Promise<unknown>;
-  readonly getOwnedSessionContractProof?: () => unknown;
+  readonly getOwnedSessionContractProof?: () => PrimeAgentOwnedSessionContractProof | undefined;
   readonly disposeOwnedSession?: (options?: { readonly timeoutMs?: number }) => Promise<unknown>;
   readonly dispose: () => Promise<unknown>;
 }
@@ -228,6 +277,8 @@ export type PrimeAgentDaemonAgentConnectionOptions = Readonly<Record<string, unk
   readonly recoverDaemon?: () => Promise<void>;
   /** Fresh owner-held configuration used only if a client-owned worker must be relaunched. */
   readonly ownedSessionRecoveryConfig?: Readonly<Record<string, unknown>>;
+  /** Exact immutable caller environment used for create, attach fallback, and recovery. */
+  readonly ownedSessionLaunchEnv?: Readonly<Record<string, string>>;
 };
 
 export interface PrimeAgentDaemonAgentConnectionConstructor {
@@ -337,7 +388,7 @@ const packageIdentitySchema = Schema.Struct({
 });
 
 const primeAgentPackageSchema = Schema.Struct({
-  name: Schema.Literal("prime-agent"),
+  name: Schema.Literals(["prime-agent", "@earendil-works/pi-coding-agent"]),
   version: Schema.String,
   exports: Schema.Union([
     Schema.String,
@@ -409,7 +460,10 @@ async function locatePrimeAgentPackage(binaryPath: string): Promise<LocatedPacka
           root: directory,
           cause: new Error("package.json must contain string name and version fields"),
         };
-      } else if (identity.value.name === "prime-agent") {
+      } else if (
+        identity.value.name === "prime-agent" ||
+        identity.value.name === "@earendil-works/pi-coding-agent"
+      ) {
         const manifest = decodePrimeAgentPackage(rawManifest);
         if (Option.isNone(manifest)) {
           throw bridgeError(
@@ -643,6 +697,9 @@ function requireDaemonExports(input: {
     !Predicate.isFunction(daemonAgentConnection.prototype.dispose) ||
     (negotiatedDaemonSessionCapabilitiesAvailable &&
       !Predicate.isFunction(daemonAgentConnection.prototype.supportsNegotiatedCapability)) ||
+    (sdkFeatures.includes(PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE) &&
+      (!Predicate.isFunction(daemonAgentConnection.prototype.getOwnedSessionContractProof) ||
+        !Predicate.isFunction(daemonAgentConnection.prototype.disposeOwnedSession))) ||
     !Predicate.isFunction(defaultDaemonSocketPath)
   ) {
     throw bridgeError(
