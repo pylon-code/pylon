@@ -2,6 +2,8 @@
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import type * as Path from "effect/Path";
+
 /**
  * Expand a leading `~` (or `~/…`, `~\…`) in a user-supplied path to the
  * current user's home directory. Spawned processes don't get shell
@@ -39,4 +41,20 @@ export function resolveProviderHomePath(value: string): string {
   return NodePath.isAbsolute(expanded)
     ? NodePath.resolve(expanded)
     : NodePath.resolve(NodeOS.homedir(), expanded);
+}
+
+/**
+ * Same expansion as `expandHomePath`, but joins with a caller-supplied
+ * `Path.Path` service instead of `node:path`. Use this inside Effect code that
+ * already has `Path.Path` in context so the platform layer stays in control of
+ * separator handling.
+ */
+export function expandHomePathWith(value: string, path: Path.Path): string {
+  if (value === "~") {
+    return NodeOS.homedir();
+  }
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return path.join(NodeOS.homedir(), value.slice(2));
+  }
+  return value;
 }

@@ -24,7 +24,6 @@
 import {
   CodexSettings,
   ProviderDriverKind,
-  type ServerProvider,
   type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -47,7 +46,7 @@ import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
-import type { ServerProviderDraft } from "../providerSnapshot.ts";
+import { withInstanceIdentity } from "./instanceIdentity.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
@@ -92,28 +91,6 @@ export type CodexDriverEnv =
   | ServerConfig
   | ServerSettingsService;
 
-/**
- * Stamp instance identity onto a `ServerProvider` snapshot produced by the
- * driver-kind-only codex helpers. Once `buildServerProvider` in
- * `providerSnapshot.ts` is widened to accept `instanceId`/`driver`, this
- * wrapper disappears.
- */
-const withInstanceIdentity =
-  (input: {
-    readonly instanceId: ProviderInstance["instanceId"];
-    readonly displayName: string | undefined;
-    readonly accentColor: string | undefined;
-    readonly continuationGroupKey: string;
-  }) =>
-  (snapshot: ServerProviderDraft): ServerProvider => ({
-    ...snapshot,
-    instanceId: input.instanceId,
-    driver: DRIVER_KIND,
-    ...(input.displayName ? { displayName: input.displayName } : {}),
-    ...(input.accentColor ? { accentColor: input.accentColor } : {}),
-    continuation: { groupKey: input.continuationGroupKey },
-  });
-
 export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
   driverKind: DRIVER_KIND,
   metadata: {
@@ -136,6 +113,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const continuationIdentity = codexContinuationIdentity(homeLayout);
       const stampIdentity = withInstanceIdentity({
         instanceId,
+        driverKind: DRIVER_KIND,
         displayName,
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
