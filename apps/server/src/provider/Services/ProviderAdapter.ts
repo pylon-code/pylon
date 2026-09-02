@@ -115,6 +115,9 @@ export interface ProviderAdapterCapabilities {
    * callers must never assume legacy rollback support.
    */
   readonly conversationRollback?: ProviderConversationRollbackMode;
+  /** Starts a resumed turn with no synthetic user prompt. Omitted means the
+      adapter needs an explicit continuation instruction. */
+  readonly promptlessTurnContinuation?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {
