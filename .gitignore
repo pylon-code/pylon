@@ -41,4 +41,9 @@ node_modules/
 
 # Agent worktrees (created by EnterWorktree / git worktree)
 .claude/worktrees/
+
+# Agent scratch output. AGENTS.md keeps working material out of the worktree;
+# these are a safety net so a stray `git add -A` cannot commit it.
+.jcode/
+.playwright-cli/
 .prime/
