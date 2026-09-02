@@ -423,6 +423,9 @@ function useUpdateSettingsTarget(
             if (environmentId) {
               targets.add(environmentId);
             }
+            if (targets.size === 0) {
+              warnUnsaved();
+            }
             for (const targetId of targets) {
               void persistServerSettings({
                 environmentId: targetId,
