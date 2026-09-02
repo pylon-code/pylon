@@ -1,6 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { PrimeAgentSettings, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  PrimeAgentSettings,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -24,6 +29,7 @@ import {
   sharedUsageReadKey,
 } from "../sharedUsageReadCache.ts";
 import {
+  applyPrimeAgentDistribution,
   buildInitialPrimeAgentProviderSnapshot,
   checkPrimeAgentProviderStatus,
   parsePrimeAgentModelDiscoveryOutput,
@@ -97,6 +103,45 @@ function mockPrimeAgentSpawner(input: {
     }),
   );
 }
+
+describe("PrimeAgentProvider distribution", () => {
+  it("keeps runtime readiness independent and maps only signed build identity to advisory", () => {
+    const snapshot: ServerProvider = {
+      instanceId: ProviderInstanceId.make("primeAgent"),
+      driver: ProviderDriverKind.make("primeAgent"),
+      enabled: true,
+      installed: true,
+      version: "0.8.1",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    };
+    const result = applyPrimeAgentDistribution(snapshot, {
+      classification: "pylon-managed",
+      channel: "preview",
+      buildId: "pylon-build-g0123456789ab-r1",
+      sequence: 9,
+      latestBuildId: "pylon-build-gabcdef012345-r1",
+      latestSequence: 10,
+      updateAvailable: true,
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      message: "A signed preview build is available.",
+    });
+
+    expect(result.status).toBe("ready");
+    expect(result.version).toBe("0.8.1");
+    expect(result.versionAdvisory).toMatchObject({
+      status: "behind_latest",
+      currentVersion: "pylon-build-g0123456789ab-r1",
+      latestVersion: "pylon-build-gabcdef012345-r1",
+      canUpdate: false,
+      updateCommand: null,
+    });
+  });
+});
 
 describe("PrimeAgentProvider models", () => {
   it("always publishes the synthetic default model before unique custom models", () => {
