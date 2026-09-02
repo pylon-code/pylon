@@ -50,6 +50,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
 } from "@t3tools/contracts";
+import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -1396,9 +1397,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
 
+    const inputTextWithCitations =
+      parsed.input === undefined ? undefined : expandAssistantCitationsForProvider(parsed.input);
+    if (inputTextWithCitations !== parsed.input) {
+      yield* decodeInputOrValidationError({
+        operation: "ProviderService.sendTurn",
+        schema: ProviderSendTurnInput.fields.input,
+        payload: inputTextWithCitations,
+      });
+    }
+
+    // Pylon keeps the attachment path lines in a shared helper; feed it the
+    // citation-expanded text so both transforms land in the provider prompt.
     const inputTextWithAttachmentPaths = appendAttachmentPathLines(
       serverConfig.attachmentsDir,
-      parsed.input,
+      inputTextWithCitations,
       attachments,
     );
 
