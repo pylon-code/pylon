@@ -135,6 +135,7 @@ import {
   removeComposerDraftsForEnvironment,
   resetComposerDraftsLoadState,
   restoreComposerDraftSnapshotState,
+  restorePendingSendComposerDraftState,
   setComposerDraftText,
   setStickyComposerModelSelection,
   stickyComposerModelSelectionAtom,
@@ -609,6 +610,65 @@ describe("mobile composer drafts", () => {
     }
   });
 
+  it("restores a held send with exact content, attachments, and selection without truncation", () => {
+    const existingAttachment = {
+      id: "existing-image",
+      previewUri: "file:///existing.png",
+      type: "image" as const,
+      name: "existing.png",
+      mimeType: "image/png",
+      sizeBytes: 10,
+      dataUrl: "data:image/png;base64,AA==",
+    };
+    const heldAttachment = {
+      id: "held-image",
+      previewUri: "file:///held.png",
+      type: "image" as const,
+      name: "held.png",
+      mimeType: "image/png",
+      sizeBytes: 12,
+      dataUrl: "data:image/png;base64,AQ==",
+    };
+    const selection = {
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      model: "gpt-5.4",
+      options: [{ id: "reasoningEffort", value: "xhigh" }],
+    } as const;
+    const initial = {
+      "environment-1:thread-1": {
+        text: "newer local text",
+        attachments: [existingAttachment],
+      },
+    };
+
+    const restored = restorePendingSendComposerDraftState(initial, "environment-1:thread-1", {
+      text: "held exact text",
+      attachments: [heldAttachment],
+      modelSelection: selection,
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    });
+    expect(restored["environment-1:thread-1"]).toEqual({
+      text: "newer local text\n\nheld exact text",
+      attachments: [existingAttachment, heldAttachment],
+      modelSelection: selection,
+      providerSelectionExplicit: true,
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    });
+    // A crash after the draft flush but before queue removal can replay this
+    // restore after restart. It must not duplicate either payload slice.
+    expect(
+      restorePendingSendComposerDraftState(restored, "environment-1:thread-1", {
+        text: "held exact text",
+        attachments: [heldAttachment],
+        modelSelection: selection,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+      }),
+    ).toEqual(restored);
+  });
+
   it("hydrates selector state even when the message content is empty", () => {
     expect(
       decodePersistedComposerDrafts({
@@ -622,6 +682,7 @@ describe("mobile composer drafts", () => {
               model: "gpt-5.4",
               options: [{ id: "reasoningEffort", value: "xhigh" }],
             },
+            providerSelectionExplicit: true,
             runtimeMode: "approval-required",
             interactionMode: "plan",
             workspaceSelection: {
@@ -641,6 +702,7 @@ describe("mobile composer drafts", () => {
           model: "gpt-5.4",
           options: [{ id: "reasoningEffort", value: "xhigh" }],
         },
+        providerSelectionExplicit: true,
         runtimeMode: "approval-required",
         interactionMode: "plan",
         workspaceSelection: {

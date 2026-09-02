@@ -348,6 +348,15 @@ function mapSessionRow(
       : {}),
     ...(row.activeTurnRequestId !== null ? { activeTurnRequestId: row.activeTurnRequestId } : {}),
     ...(row.failedTurnRequestId !== null ? { failedTurnRequestId: row.failedTurnRequestId } : {}),
+    ...(row.pendingStopRequestId !== null
+      ? {
+          pendingStopRequestId: row.pendingStopRequestId,
+          pendingStopProviderInstanceId: row.pendingStopProviderInstanceId,
+          pendingStopSessionIncarnationId: row.pendingStopSessionIncarnationId,
+          pendingStopTurnRequestId: row.pendingStopTurnRequestId,
+          pendingStopTurnId: row.pendingStopTurnId,
+        }
+      : {}),
     activeTurnId: row.activeTurnId,
     lastError: row.lastError,
     updatedAt: row.updatedAt,
@@ -661,6 +670,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_turn_session_id AS "pendingTurnSessionId",
           active_turn_request_id AS "activeTurnRequestId",
           failed_turn_request_id AS "failedTurnRequestId",
+          pending_stop_request_id AS "pendingStopRequestId",
+          pending_stop_provider_instance_id AS "pendingStopProviderInstanceId",
+          pending_stop_session_incarnation_id AS "pendingStopSessionIncarnationId",
+          pending_stop_turn_request_id AS "pendingStopTurnRequestId",
+          pending_stop_turn_id AS "pendingStopTurnId",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           updated_at AS "updatedAt"
@@ -694,6 +708,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.pending_turn_session_id AS "pendingTurnSessionId",
           sessions.active_turn_request_id AS "activeTurnRequestId",
           sessions.failed_turn_request_id AS "failedTurnRequestId",
+          sessions.pending_stop_request_id AS "pendingStopRequestId",
+          sessions.pending_stop_provider_instance_id AS "pendingStopProviderInstanceId",
+          sessions.pending_stop_session_incarnation_id AS "pendingStopSessionIncarnationId",
+          sessions.pending_stop_turn_request_id AS "pendingStopTurnRequestId",
+          sessions.pending_stop_turn_id AS "pendingStopTurnId",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
@@ -731,6 +750,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.pending_turn_session_id AS "pendingTurnSessionId",
           sessions.active_turn_request_id AS "activeTurnRequestId",
           sessions.failed_turn_request_id AS "failedTurnRequestId",
+          sessions.pending_stop_request_id AS "pendingStopRequestId",
+          sessions.pending_stop_provider_instance_id AS "pendingStopProviderInstanceId",
+          sessions.pending_stop_session_incarnation_id AS "pendingStopSessionIncarnationId",
+          sessions.pending_stop_turn_request_id AS "pendingStopTurnRequestId",
+          sessions.pending_stop_turn_id AS "pendingStopTurnId",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
@@ -1184,6 +1208,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_turn_session_id AS "pendingTurnSessionId",
           active_turn_request_id AS "activeTurnRequestId",
           failed_turn_request_id AS "failedTurnRequestId",
+          pending_stop_request_id AS "pendingStopRequestId",
+          pending_stop_provider_instance_id AS "pendingStopProviderInstanceId",
+          pending_stop_session_incarnation_id AS "pendingStopSessionIncarnationId",
+          pending_stop_turn_request_id AS "pendingStopTurnRequestId",
+          pending_stop_turn_id AS "pendingStopTurnId",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           updated_at AS "updatedAt"
@@ -1833,6 +1862,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     : {}),
                   ...(row.failedTurnRequestId !== null
                     ? { failedTurnRequestId: row.failedTurnRequestId }
+                    : {}),
+                  ...(row.pendingStopRequestId !== null
+                    ? {
+                        pendingStopRequestId: row.pendingStopRequestId,
+                        pendingStopProviderInstanceId: row.pendingStopProviderInstanceId,
+                        pendingStopSessionIncarnationId: row.pendingStopSessionIncarnationId,
+                        pendingStopTurnRequestId: row.pendingStopTurnRequestId,
+                        pendingStopTurnId: row.pendingStopTurnId,
+                      }
                     : {}),
                   activeTurnId: row.activeTurnId,
                   lastError: row.lastError,

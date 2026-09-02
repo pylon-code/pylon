@@ -206,7 +206,6 @@ it.effect("resolves Prime capacity homes from the merged instance environment", 
     assert.equal(
       resolvePrimeAgentHomePath({ agentHomePath: "" }, path, {
         processEnv: { HOME: "/instance/home" },
-        platform: "linux",
       }),
       "/instance/home/.prime/agent",
     );
@@ -216,7 +215,6 @@ it.effect("resolves Prime capacity homes from the merged instance environment", 
           HOME: "/instance/home",
           PRIME_AGENT_CODING_AGENT_DIR: "/instance/prime-home",
         },
-        platform: "linux",
       }),
       "/instance/prime-home",
     );
@@ -226,39 +224,8 @@ it.effect("resolves Prime capacity homes from the merged instance environment", 
           HOME: "/instance/home",
           PRIME_AGENT_CODING_AGENT_DIR: "~/.prime-alt",
         },
-        platform: "linux",
       }),
       "/instance/home/.prime-alt",
-    );
-    assert.equal(
-      resolvePrimeAgentHomePath({ agentHomePath: "" }, path, {
-        processEnv: {
-          UserProfile: "C:\\Users\\Instance",
-          HomeDrive: "D:",
-          HomePath: "\\Ignored",
-        },
-        platform: "win32",
-      }),
-      "C:\\Users\\Instance\\.prime\\agent",
-    );
-    assert.equal(
-      resolvePrimeAgentHomePath({ agentHomePath: "" }, path, {
-        processEnv: { HOMEDRIVE: "D:", HOMEPATH: "\\Profiles\\DriveUser" },
-        platform: "win32",
-      }),
-      "D:\\Profiles\\DriveUser\\.prime\\agent",
-    );
-    assert.equal(
-      resolvePrimeAgentHomePath({ agentHomePath: "" }, path, {
-        processEnv: {
-          USERPROFILE: "C:\\Users\\Base",
-          PRIME_AGENT_CODING_AGENT_DIR: "C:\\prime-base",
-          UserProfile: "D:\\Users\\Instance",
-          prime_agent_coding_agent_dir: "~\\prime-instance",
-        },
-        platform: "win32",
-      }),
-      "D:\\Users\\Instance\\prime-instance",
     );
     assert.equal(
       resolvePrimeAgentHomePath({ agentHomePath: "/explicit/prime-home" }, path, {
@@ -266,7 +233,6 @@ it.effect("resolves Prime capacity homes from the merged instance environment", 
           HOME: "/instance/home",
           PRIME_AGENT_CODING_AGENT_DIR: "relative-home",
         },
-        platform: "linux",
       }),
       "/explicit/prime-home",
     );
@@ -276,7 +242,6 @@ it.effect("resolves Prime capacity homes from the merged instance environment", 
           HOME: "/instance/home",
           PRIME_AGENT_CODING_AGENT_DIR: "relative-home",
         },
-        platform: "linux",
       }),
       undefined,
     );
@@ -297,7 +262,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, UnreachableHttpClient))(
 
         const result = yield* readPrimeAgentCapacity(
           { agentHomePath: "" },
-          { processEnv: { HOME: home }, platform: "linux" },
+          { processEnv: { HOME: home } },
         );
         assert.deepStrictEqual(result, { backends: [] });
       }).pipe(Effect.scoped),
@@ -312,7 +277,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, UnreachableHttpClient))(
               HOME: "/server/account",
               PRIME_AGENT_CODING_AGENT_DIR: "relative-prime-home",
             },
-            platform: "linux",
           },
         );
         assert.equal(result, undefined);

@@ -10,7 +10,6 @@ import {
   TextGenerationError,
 } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { PRIME_AGENT_TEXT_GENERATION_HELPER_SOURCE } from "@t3tools/shared/primeAgentTextGenerationHelper";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 import { resolveCommandPath } from "@t3tools/shared/shell";
@@ -78,82 +77,30 @@ export interface PrimeAgentTextGenerationOptions {
   readonly beforeImageOpen?: ((filePath: string) => Effect.Effect<void, never>) | undefined;
 }
 
-function pathApiForPlatform(platform: NodeJS.Platform) {
-  return platform === "win32" ? NodePath.win32 : NodePath.posix;
-}
-
-function environmentValueLast(
-  environment: NodeJS.ProcessEnv,
-  name: string,
-  platform: NodeJS.Platform,
-): string | undefined {
-  if (platform !== "win32") return environment[name];
-  const entries = Object.entries(environment);
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const [candidate, value] = entries[index]!;
-    if (candidate.toUpperCase() === name.toUpperCase()) return value;
-  }
-  return undefined;
-}
-
-/** Apply Windows' case-insensitive, last-assignment-wins environment semantics. */
-export function normalizePrimeAgentTextGenerationEnvironment(
-  environment: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform,
-): NodeJS.ProcessEnv {
-  if (platform !== "win32") return { ...environment };
-  const normalized = new Map<string, string | undefined>();
-  for (const [name, value] of Object.entries(environment)) {
-    normalized.set(name.toUpperCase(), value);
-  }
-  return Object.fromEntries(normalized);
-}
-
-function effectiveEnvironmentHome(
-  environment: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform,
-): string {
-  const pathApi = pathApiForPlatform(platform);
-  const candidates =
-    platform === "win32"
-      ? [
-          environmentValueLast(environment, "USERPROFILE", platform)?.trim(),
-          `${environmentValueLast(environment, "HOMEDRIVE", platform)?.trim() ?? ""}${environmentValueLast(environment, "HOMEPATH", platform)?.trim() ?? ""}`,
-        ]
-      : [environment.HOME?.trim()];
-  const configuredHome = candidates.find((candidate): candidate is string =>
-    Boolean(candidate && pathApi.isAbsolute(candidate)),
-  );
-  if (configuredHome) {
-    return pathApi.normalize(configuredHome);
-  }
-  return NodeOS.homedir();
+function effectiveEnvironmentHome(environment: NodeJS.ProcessEnv): string {
+  const configuredHome = environment.HOME?.trim();
+  return configuredHome && NodePath.isAbsolute(configuredHome)
+    ? NodePath.normalize(configuredHome)
+    : NodeOS.homedir();
 }
 
 /** Resolve Prime's final merged agent-dir environment for one helper cwd. */
 export function resolvePrimeAgentTextGenerationHomePath(input: {
   readonly environment: NodeJS.ProcessEnv;
   readonly cwd: string;
-  readonly platform: NodeJS.Platform;
 }): string {
-  const platform = input.platform;
-  const pathApi = pathApiForPlatform(platform);
-  const effectiveHome = effectiveEnvironmentHome(input.environment, platform);
-  const configured = environmentValueLast(
-    input.environment,
-    PRIME_AGENT_HOME_ENV,
-    platform,
-  )?.trim();
-  if (!configured) return pathApi.join(effectiveHome, ".prime", "agent");
+  const effectiveHome = effectiveEnvironmentHome(input.environment);
+  const configured = input.environment[PRIME_AGENT_HOME_ENV]?.trim();
+  if (!configured) return NodePath.join(effectiveHome, ".prime", "agent");
   const expanded =
     configured === "~"
       ? effectiveHome
-      : configured.startsWith("~/") || configured.startsWith("~\\")
-        ? pathApi.join(effectiveHome, configured.slice(2))
+      : configured.startsWith("~/")
+        ? NodePath.join(effectiveHome, configured.slice(2))
         : configured;
-  return pathApi.isAbsolute(expanded)
-    ? pathApi.resolve(expanded)
-    : pathApi.resolve(input.cwd, expanded);
+  return NodePath.isAbsolute(expanded)
+    ? NodePath.resolve(expanded)
+    : NodePath.resolve(input.cwd, expanded);
 }
 
 function textGenerationError(
@@ -243,14 +190,9 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverConfig = yield* ServerConfig.ServerConfig;
-  const hostPlatform = yield* HostProcessPlatform;
-  const normalizedInputEnvironment = normalizePrimeAgentTextGenerationEnvironment(
+  const resolvedEnvironment = makePrimeAgentEnvironment(
+    primeAgentSettings,
     environment ?? process.env,
-    hostPlatform,
-  );
-  const resolvedEnvironment = normalizePrimeAgentTextGenerationEnvironment(
-    makePrimeAgentEnvironment(primeAgentSettings, normalizedInputEnvironment),
-    hostPlatform,
   );
   const helperEnvironment = Object.fromEntries(
     Object.entries(resolvedEnvironment).filter(([name]) => {
@@ -387,7 +329,6 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
     const agentDir = resolvePrimeAgentTextGenerationHomePath({
       environment: resolvedEnvironment,
       cwd: input.cwd,
-      platform: hostPlatform,
     });
     const requestEnvironment = {
       ...helperEnvironment,

@@ -158,15 +158,15 @@ export type ServerProviderBackend = typeof ServerProviderBackend.Type;
 /**
  * Availability of a configured provider instance from the runtime's POV.
  *
- *  - `available` — the build ships this driver and an instance is wired
- *    up. Default for legacy snapshots produced from the closed
- *    `ServerSettings.providers` map.
- *  - `unavailable` — the user's `ServerSettings.providerInstances` (or a
- *    persisted thread / session binding) references a driver this build
- *    doesn't ship. Common after rolling back from a fork or PR branch
- *    that introduced a new driver. The snapshot is preserved so the UI
- *    can render "missing driver" affordances and so the data round-trips
- *    when the user moves back to the fork.
+ *  - `available` — this build and its current host/runtime can materialize
+ *    the configured driver instance. Default for legacy snapshots produced
+ *    from the closed `ServerSettings.providers` map.
+ *  - `unavailable` — the configured driver instance cannot materialize in
+ *    this build or on the current host/runtime. This includes drivers absent
+ *    after a rollback as well as shipped drivers that reject the host platform
+ *    or another runtime prerequisite. The snapshot is preserved so clients
+ *    can show the supplied remediation without silently changing the stored
+ *    provider choice, and so configuration round-trips when it is usable again.
  *
  * Snapshots with `availability: "unavailable"` MUST set
  * `installed: false` and `enabled: false`; the runtime refuses turn
@@ -276,11 +276,11 @@ export const ServerProvider = Schema.Struct({
   // Optional for back-compat: every legacy producer omits this field and
   // an absent value is interpreted as `"available"` by consumers (see
   // `isProviderAvailable`). New `ProviderInstanceRegistry` outputs set it
-  // explicitly so the UI can render unavailable shadows from
-  // `ServerSettings.providerInstances`.
+  // explicitly so clients can render unavailable shadows from configured
+  // instances that this build or host/runtime cannot materialize.
   availability: Schema.optional(ServerProviderAvailability),
   // Human-readable reason populated when `availability === "unavailable"`.
-  // Surfaces in the UI alongside the missing-driver affordance.
+  // Surfaces in clients alongside the unavailable-provider affordance.
   unavailableReason: Schema.optional(TrimmedNonEmptyString),
   models: Schema.Array(ServerProviderModel),
   slashCommands: Schema.Array(ServerProviderSlashCommand).pipe(

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { getProviderUnavailablePresentation } from "@t3tools/client-runtime/providerAvailability";
 import type {
   EnvironmentId,
   ModelSelection,
@@ -36,6 +37,7 @@ import {
   resolveDefaultableModelSelection,
   resolveModelSelectionRuntimeMode,
   resolveNewTaskModelSelection,
+  resolveNewTaskUnavailableProvider,
   resolveSelectableModelSelection,
   showModelSelectionInteractionModeToggle,
 } from "../../lib/modelOptions";
@@ -66,6 +68,7 @@ import { useDebouncedValue, usePaginatedBranches } from "../../state/queries";
 import { vcsEnvironment } from "../../state/vcs";
 import {
   flattenQueuedThreadMessages,
+  preserveQueuedThreadDeliveryHold,
   threadOutboxManager,
   type QueuedThreadMessage,
 } from "../../state/thread-outbox";
@@ -421,19 +424,33 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     selectedProjectDraft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
 
   // Stored selections only count while their provider is usable on the
-  // server; otherwise the server's default model wins instead of silently
-  // targeting a disabled provider. The draft selection is an explicit pick
-  // and passes through as-is; the project default (last used, possibly from
-  // desktop) is implicit and additionally never resolves to a legacy model.
-  const draftModelSelection = resolveSelectableModelSelection(
+  // server. Ordinary disabled or removed choices keep the existing default
+  // fallback. An explicitly unavailable choice is different: preserve its
+  // server status for remediation and require a new pick instead of silently
+  // switching providers. Project and sticky defaults also reject legacy models.
+  const storedDraftModelSelection = selectedProjectDraft.modelSelection ?? null;
+  const storedProjectDefaultModelSelection = selectedProject?.defaultModelSelection ?? null;
+  const storedStickyModelSelection = useStickyComposerModelSelection();
+  const unavailablePreferredProvider = resolveNewTaskUnavailableProvider(
     selectedEnvironmentServerConfig,
-    selectedProjectDraft.modelSelection ?? null,
+    {
+      draftSelection: storedDraftModelSelection,
+      projectDefaultSelection: storedProjectDefaultModelSelection,
+      stickySelection: storedStickyModelSelection,
+    },
   );
+  const selectableDraftModelSelection = resolveSelectableModelSelection(
+    selectedEnvironmentServerConfig,
+    storedDraftModelSelection,
+  );
+  const draftModelSelection =
+    selectedProjectDraft.providerSelectionExplicit === true && storedDraftModelSelection !== null
+      ? storedDraftModelSelection
+      : selectableDraftModelSelection;
   const projectDefaultModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
-    selectedProject?.defaultModelSelection ?? null,
+    storedProjectDefaultModelSelection,
   );
-  const storedStickyModelSelection = useStickyComposerModelSelection();
   const stickyModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
     storedStickyModelSelection,
@@ -459,6 +476,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     projectDefaultSelection: projectDefaultModelSelection,
     stickySelection: stickyModelSelection,
     modelOptions,
+    unavailablePreferredProvider,
   });
   const selectedModelKey = selectedModel
     ? `${selectedModel.instanceId}:${selectedModel.model}`
@@ -484,13 +502,24 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         option.selection.instanceId === selectedModel.instanceId &&
         option.selection.model === selectedModel.model,
     ) ?? null;
-  const selectedProviderStatus = useMemo(
-    () =>
-      selectedEnvironmentServerConfig?.providers.find(
-        (provider) => provider.instanceId === selectedModel?.instanceId,
-      ) ?? null,
-    [selectedEnvironmentServerConfig, selectedModel?.instanceId],
-  );
+  const selectedProviderStatus = useMemo(() => {
+    if (unavailablePreferredProvider) return unavailablePreferredProvider;
+    const selected = selectedEnvironmentServerConfig?.providers.find(
+      (provider) => provider.instanceId === selectedModel?.instanceId,
+    );
+    if (selected) return selected;
+    if (modelOptions.length > 0) return null;
+    return (
+      selectedEnvironmentServerConfig?.providers.find((provider) =>
+        getProviderUnavailablePresentation(provider),
+      ) ?? null
+    );
+  }, [
+    modelOptions.length,
+    selectedEnvironmentServerConfig,
+    selectedModel?.instanceId,
+    unavailablePreferredProvider,
+  ]);
   const setSelectedModelKey = useCallback(
     // Options ride along in the same write: a follow-up setSelectedModelOptions
     // call would rebuild the selection from the stale pre-switch model.
@@ -505,6 +534,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       const modelSelection = options ? { ...option.selection, options } : option.selection;
       updateComposerDraftSettings(selectedProjectDraftKey, {
         modelSelection,
+        providerSelectionExplicit: true,
         runtimeMode: resolveModelSelectionRuntimeMode(
           selectedEnvironmentServerConfig,
           modelSelection,
@@ -534,6 +564,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
           };
       updateComposerDraftSettings(selectedProjectDraftKey, {
         modelSelection: nextSelection,
+        providerSelectionExplicit: true,
       });
       setStickyComposerModelSelection(nextSelection);
     },
@@ -861,6 +892,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       replaceComposerDraftAttachments(draftKey, message.attachments);
       updateComposerDraftSettings(draftKey, {
         modelSelection: message.modelSelection,
+        providerSelectionExplicit: message.modelSelection !== undefined,
         runtimeMode: message.runtimeMode,
         interactionMode: message.interactionMode,
         workspaceSelection: {
@@ -914,6 +946,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       const projectCwd = usingPendingSnapshot
         ? editingPendingTask?.creation?.projectCwd
         : selectedProject.workspaceRoot;
+      const preservedDeliveryHold = preserveQueuedThreadDeliveryHold(editingPendingTask, metadata);
       return {
         environmentId: selectedProject.environmentId,
         threadId: ThreadId.make(metadata.threadId),
@@ -927,6 +960,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
           draftModelSelection,
           draft.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         ),
+        ...(preservedDeliveryHold === undefined ? {} : { deliveryHold: preservedDeliveryHold }),
         interactionMode:
           planModeEnabled &&
           showModelSelectionInteractionModeToggle(

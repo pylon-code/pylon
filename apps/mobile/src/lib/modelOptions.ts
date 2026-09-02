@@ -1,8 +1,14 @@
+import {
+  getProviderAdmissionAvailability,
+  getProviderUnavailablePresentation,
+  type ProviderUnavailablePresentation,
+} from "@t3tools/client-runtime/providerAvailability";
 import type {
   ModelCapabilities,
   ModelSelection,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
+  ServerProvider,
 } from "@t3tools/contracts";
 import {
   getServerProviderSupportedRuntimeModes,
@@ -69,9 +75,10 @@ function normalizeSelectionOptions(
 
 /**
  * A stored model selection is only usable when its provider instance is
- * currently enabled, installed, and authenticated on the server. Returns the
- * selection unchanged when usable, otherwise `null` so callers fall through to
- * the server's default model. A missing config (environment offline) cannot be
+ * currently enabled, installed, authenticated, and available on the server.
+ * Returns the selection unchanged when usable, otherwise `null`. Callers can
+ * either fall through or hold an unavailable choice for explicit remediation.
+ * A missing config (environment offline) cannot be
  * validated, so stored selections pass through untouched.
  */
 export function resolveSelectableModelSelection(
@@ -84,10 +91,11 @@ export function resolveSelectableModelSelection(
   const provider = config.providers.find(
     (candidate) => candidate.instanceId === selection.instanceId,
   );
-  return provider &&
-    provider.enabled &&
-    provider.installed &&
-    provider.auth.status !== "unauthenticated"
+  return getProviderAdmissionAvailability({
+    provider,
+    instanceId: String(selection.instanceId),
+    providerSnapshotKnown: true,
+  }).status === "available"
     ? selection
     : null;
 }
@@ -121,6 +129,67 @@ export function getModelSelectionProvider(
   );
 }
 
+export function getModelSelectionUnavailablePresentation(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection | null | undefined,
+): ProviderUnavailablePresentation | null {
+  return getProviderUnavailablePresentation(getModelSelectionProvider(config, selection));
+}
+
+/** Keep unavailable provider shadows from reaching turn submission locally. */
+export function canSendToModelSelection(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection | null | undefined,
+): boolean {
+  if (!selection) return false;
+  return (
+    getProviderAdmissionAvailability({
+      provider: getModelSelectionProvider(config, selection),
+      instanceId: String(selection.instanceId),
+      providerSnapshotKnown: config !== null && config !== undefined,
+    }).status !== "unavailable"
+  );
+}
+
+/**
+ * Preserve the highest-priority stored choice when its provider is explicitly
+ * unavailable. The new-task screen can then show the server's remediation and
+ * require a new explicit choice instead of silently switching providers.
+ */
+export function resolveNewTaskUnavailableProvider(
+  config: T3ServerConfig | null | undefined,
+  input: {
+    readonly draftSelection: ModelSelection | null;
+    readonly projectDefaultSelection: ModelSelection | null;
+    readonly stickySelection: ModelSelection | null;
+  },
+): ServerProvider | null {
+  const candidates = [
+    { selection: input.draftSelection, defaultable: false },
+    { selection: input.projectDefaultSelection, defaultable: true },
+    { selection: input.stickySelection, defaultable: true },
+  ] as const;
+  for (const candidate of candidates) {
+    if (!candidate.selection) continue;
+    const provider = getModelSelectionProvider(config, candidate.selection);
+    if (
+      provider &&
+      getProviderAdmissionAvailability({
+        provider,
+        instanceId: String(candidate.selection.instanceId),
+        providerSnapshotKnown: true,
+      }).status === "unavailable"
+    ) {
+      return provider;
+    }
+    const usable = candidate.defaultable
+      ? resolveDefaultableModelSelection(config, candidate.selection)
+      : resolveSelectableModelSelection(config, candidate.selection);
+    if (usable) return null;
+  }
+  return null;
+}
+
 export function getModelSelectionSupportedRuntimeModes(
   config: T3ServerConfig | null | undefined,
   selection: ModelSelection | null | undefined,
@@ -151,7 +220,18 @@ export function resolveNewTaskModelSelection(input: {
   readonly projectDefaultSelection: ModelSelection | null;
   readonly stickySelection: ModelSelection | null;
   readonly modelOptions: ReadonlyArray<ModelOption>;
+  readonly unavailablePreferredProvider?: ServerProvider | null;
 }): ModelSelection | null {
+  if (
+    input.unavailablePreferredProvider &&
+    getProviderAdmissionAvailability({
+      provider: input.unavailablePreferredProvider,
+      instanceId: String(input.unavailablePreferredProvider.instanceId),
+      providerSnapshotKnown: true,
+    }).status === "unavailable"
+  ) {
+    return null;
+  }
   return (
     input.draftSelection ??
     input.projectDefaultSelection ??
@@ -169,7 +249,13 @@ export function buildModelOptions(
   const options = new Map<string, ModelOption>();
 
   for (const provider of config?.providers ?? []) {
-    if (!provider.enabled || !provider.installed || provider.auth.status === "unauthenticated") {
+    if (
+      getProviderAdmissionAvailability({
+        provider,
+        instanceId: String(provider.instanceId),
+        providerSnapshotKnown: true,
+      }).status !== "available"
+    ) {
       continue;
     }
 
@@ -211,23 +297,25 @@ export function buildModelOptions(
       const provider = config?.providers.find(
         (candidate) => candidate.instanceId === fallbackModelSelection.instanceId,
       );
-      const providerLabel = provider
-        ? providerDisplayLabel(provider)
-        : fallbackModelSelection.instanceId;
-      options.set(key, {
-        key,
-        label: fallbackModelSelection.model,
-        subtitle: "",
-        providerKey: fallbackModelSelection.instanceId,
-        providerLabel,
-        providerDriver: provider?.driver ?? fallbackModelSelection.instanceId,
-        supportedRuntimeModes: getServerProviderSupportedRuntimeModes(provider),
-        requiresNewThreadForModelChange: provider?.requiresNewThreadForModelChange === true,
-        isDefault: false,
-        isLegacy: false,
-        capabilities: null,
-        selection: fallbackModelSelection,
-      });
+      if (getProviderUnavailablePresentation(provider) === null) {
+        const providerLabel = provider
+          ? providerDisplayLabel(provider)
+          : fallbackModelSelection.instanceId;
+        options.set(key, {
+          key,
+          label: fallbackModelSelection.model,
+          subtitle: "",
+          providerKey: fallbackModelSelection.instanceId,
+          providerLabel,
+          providerDriver: provider?.driver ?? fallbackModelSelection.instanceId,
+          supportedRuntimeModes: getServerProviderSupportedRuntimeModes(provider),
+          requiresNewThreadForModelChange: provider?.requiresNewThreadForModelChange === true,
+          isDefault: false,
+          isLegacy: false,
+          capabilities: null,
+          selection: fallbackModelSelection,
+        });
+      }
     }
   }
 

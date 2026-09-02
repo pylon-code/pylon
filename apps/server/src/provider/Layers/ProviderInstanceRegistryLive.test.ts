@@ -30,15 +30,20 @@ import {
   type CursorSettings,
   type GrokSettings,
   type OpenCodeSettings,
+  type PrimeAgentSettings,
   ProviderDriverKind,
   type ProviderInstanceConfigMap,
   ProviderInstanceId,
+  TextGenerationError,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { createModelSelection } from "@t3tools/shared/model";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import type { BuiltInDriversEnv } from "../builtInDrivers.ts";
@@ -49,10 +54,18 @@ import { CodexDriver } from "../Drivers/CodexDriver.ts";
 import { CursorDriver } from "../Drivers/CursorDriver.ts";
 import { GrokDriver } from "../Drivers/GrokDriver.ts";
 import { OpenCodeDriver } from "../Drivers/OpenCodeDriver.ts";
+import {
+  PrimeAgentDriver,
+  PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE,
+} from "../Drivers/PrimeAgentDriver.ts";
+import { ProviderDriverError, ProviderUnsupportedError } from "../Errors.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
+import { makeProviderAdapterRegistry } from "./ProviderAdapterRegistry.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
+import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
+import { makeTextGenerationFromRegistry } from "../../textGeneration/TextGeneration.ts";
 
 const TestHttpClientLive = Layer.succeed(
   HttpClient.HttpClient,
@@ -132,6 +145,15 @@ const makeOpenCodeConfig = (overrides: Partial<OpenCodeSettings>): OpenCodeSetti
   binaryPath: "opencode",
   serverUrl: "",
   serverPassword: "",
+  customModels: [],
+  ...overrides,
+});
+
+const makePrimeAgentConfig = (overrides: Partial<PrimeAgentSettings>): PrimeAgentSettings => ({
+  enabled: true,
+  binaryPath: "prime-agent",
+  agentHomePath: "",
+  launchArgs: "",
   customModels: [],
   ...overrides,
 });
@@ -292,6 +314,122 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         expect(ghost.unavailableReason).toMatch(/ghostDriver/);
       }).pipe(Effect.provide(testLayer)),
   );
+
+  it.live("fails native Windows Prime closed across every routed entry point", () => {
+    let processCalls = 0;
+    let networkProbeCalls = 0;
+    const trackingSpawner = ChildProcessSpawner.make(() =>
+      Effect.sync(() => {
+        processCalls += 1;
+        throw new Error("native Windows Prime must not spawn a process");
+      }),
+    );
+    const trackingHttpClient = HttpClient.make((request) =>
+      Effect.sync(() => {
+        networkProbeCalls += 1;
+        return HttpClientResponse.fromWeb(request, Response.json({}));
+      }),
+    );
+
+    return Effect.gen(function* () {
+      expect(yield* HostProcessPlatform).toBe("win32");
+      expect(yield* ChildProcessSpawner.ChildProcessSpawner).toBe(trackingSpawner);
+      expect(yield* HttpClient.HttpClient).toBe(trackingHttpClient);
+
+      const primeId = ProviderInstanceId.make("primeAgent");
+      const codexId = ProviderInstanceId.make("codex");
+      const primeConfig = makePrimeAgentConfig({});
+
+      const materialization = yield* PrimeAgentDriver.create({
+        instanceId: primeId,
+        displayName: "Prime Agent",
+        accentColor: undefined,
+        environment: [],
+        enabled: true,
+        config: primeConfig,
+      }).pipe(Effect.result);
+      expect(materialization._tag).toBe("Failure");
+      if (materialization._tag === "Failure") {
+        expect(materialization.failure).toBeInstanceOf(ProviderDriverError);
+        expect(materialization.failure.detail).toBe(PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE);
+      }
+
+      const configMap: ProviderInstanceConfigMap = {
+        [primeId]: {
+          driver: ProviderDriverKind.make("primeAgent"),
+          displayName: "Prime Agent",
+          enabled: true,
+          config: primeConfig,
+        },
+        [codexId]: {
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Codex",
+          enabled: false,
+          config: makeCodexConfig({}),
+        },
+      };
+      const { registry } = yield* makeProviderInstanceRegistry({
+        drivers: [PrimeAgentDriver, CodexDriver],
+        configMap,
+      });
+
+      expect(yield* registry.getInstance(primeId)).toBeUndefined();
+      const unavailable = yield* registry.listUnavailable;
+      expect(unavailable).toHaveLength(1);
+      expect(unavailable[0]).toMatchObject({
+        instanceId: primeId,
+        driver: "primeAgent",
+        availability: "unavailable",
+        enabled: false,
+        installed: false,
+        status: "disabled",
+        models: [],
+      });
+      expect(unavailable[0]!.message).toContain(PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE);
+      expect(unavailable[0]!.unavailableReason).toContain(
+        PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE,
+      );
+      expect(unavailable[0]!.updateState).toBeUndefined();
+      expect(unavailable[0]!.versionAdvisory).toBeUndefined();
+
+      const codex = yield* registry.getInstance(codexId);
+      expect(codex).toBeDefined();
+      expect((yield* codex!.snapshot.getSnapshot).enabled).toBe(false);
+
+      const adapterRegistry = yield* makeProviderAdapterRegistry().pipe(
+        Effect.provideService(ProviderInstanceRegistry, registry),
+      );
+      const interactiveStart = yield* adapterRegistry.getByInstance(primeId).pipe(Effect.result);
+      expect(interactiveStart._tag).toBe("Failure");
+      if (interactiveStart._tag === "Failure") {
+        expect(interactiveStart.failure).toBeInstanceOf(ProviderUnsupportedError);
+      }
+
+      const textGeneration = makeTextGenerationFromRegistry(registry);
+      const backgroundGeneration = yield* textGeneration
+        .generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Native Windows must fail closed",
+          modelSelection: createModelSelection(primeId, "default"),
+        })
+        .pipe(Effect.result);
+      expect(backgroundGeneration._tag).toBe("Failure");
+      if (backgroundGeneration._tag === "Failure") {
+        expect(backgroundGeneration.failure).toBeInstanceOf(TextGenerationError);
+        expect(backgroundGeneration.failure.detail).toBe(
+          PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE,
+        );
+      }
+
+      expect(processCalls).toBe(0);
+      expect(networkProbeCalls).toBe(0);
+    }).pipe(
+      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, trackingSpawner),
+      Effect.provideService(HttpClient.HttpClient, trackingHttpClient),
+      Effect.provide(testLayer),
+    );
+  });
 });
 
 describe("ProviderInstanceRegistryLive — all drivers slice", () => {

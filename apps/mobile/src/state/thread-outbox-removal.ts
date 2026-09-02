@@ -81,6 +81,21 @@ export async function removeThreadOutboxMessage(
   return true;
 }
 
+/**
+ * Removes only the exact queue snapshot the caller inspected, then releases
+ * the files owned by that snapshot.
+ */
+export async function removeThreadOutboxMessageIfCurrent(
+  message: QueuedThreadMessage,
+): Promise<boolean> {
+  const removed = await threadOutboxManager.removeIfCurrent(message);
+  if (!removed) {
+    return false;
+  }
+  await cleanUpRemovedMessages([message]);
+  return true;
+}
+
 /** Removes every queued message of an environment and releases their files. */
 export async function clearThreadOutboxEnvironment(environmentId: EnvironmentId): Promise<void> {
   // clearEnvironment loads and merges persisted messages itself and reports

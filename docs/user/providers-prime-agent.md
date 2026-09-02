@@ -1,7 +1,10 @@
 # Prime Agent
 
 Pylon can run [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent) as a provider on the
-device that owns your environment. Prime Agent is not bundled with Pylon.
+device that owns your environment. Prime Agent is not bundled with Pylon. The environment host must
+run macOS, Linux, or WSL2. A Pylon server running directly on Windows shows Prime Agent as unavailable
+and does not start Prime Agent. Run the server and Prime Agent inside WSL2 instead. Any Pylon web,
+desktop, or mobile client can also connect to a WSL2 or remote environment that runs Prime Agent.
 
 ## Install And Sign In
 
@@ -97,7 +100,8 @@ session rather than guessing whether it was your answer or unrelated background 
 Restarting the Pylon server is a separate boundary and does not yet adopt Prime work that is still running
 in another process.
 
-On Windows, Pylon currently uses ACP compatibility mode because Prime Agent 0.8.1's public named-pipe daemon transport does not expose a verifiable per-user ACL or authenticated handshake. Native daemon mode remains fail-closed there until the transport can prevent another local OS user from impersonating or connecting to the daemon.
+Native Windows is not a Prime Agent provider runtime. Pylon does not fall back to ACP there. Use
+WSL2, where the server runs as Linux, or connect this client to another supported environment.
 
 Pylon uses a short-lived, prompt-free Prime Agent RPC process to bootstrap the configured-model
 catalog until a compatible daemon session publishes a usable list from Prime Agent's public model

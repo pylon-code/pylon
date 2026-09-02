@@ -4,12 +4,15 @@ import { ProviderInstanceId, type ModelSelection, type ServerConfig } from "@t3t
 
 import {
   buildModelOptions,
+  canSendToModelSelection,
   groupByProvider,
   getModelSelectionSupportedRuntimeModes,
+  getModelSelectionUnavailablePresentation,
   resolveDefaultableModelSelection,
   resolveModelSelectionRuntimeMode,
   showModelSelectionInteractionModeToggle,
   resolveNewTaskModelSelection,
+  resolveNewTaskUnavailableProvider,
   resolveSelectableModelSelection,
   type ModelOption,
 } from "./modelOptions";
@@ -242,6 +245,132 @@ describe("mobile model options", () => {
     expect(resolveSelectableModelSelection(config, removed)).toBeNull();
     // No config (environment offline) — nothing to validate against.
     expect(resolveSelectableModelSelection(null, disabled)).toBe(disabled);
+  });
+
+  it("blocks existing-thread sends and gives the unavailable reason precedence", () => {
+    const reason =
+      "Prime Agent is unavailable because this Pylon server is running on native Windows. Run the Pylon server and Prime Agent in WSL2, or connect this client to a Pylon server running in WSL2 or another remote environment.";
+    const config = {
+      providers: [
+        {
+          instanceId: "primeAgent",
+          driver: "primeAgent",
+          displayName: "Prime Agent",
+          enabled: true,
+          installed: true,
+          availability: "unavailable",
+          unavailableReason: reason,
+          message: "Disabled",
+          auth: { status: "authenticated" },
+          models: [
+            {
+              slug: "default",
+              name: "Prime Agent Default",
+              isCustom: false,
+              isDefault: true,
+              capabilities: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+    const selection = {
+      instanceId: ProviderInstanceId.make("primeAgent"),
+      model: "default",
+    };
+
+    expect(resolveSelectableModelSelection(config, selection)).toBeNull();
+    expect(canSendToModelSelection(config, selection)).toBe(false);
+    expect(canSendToModelSelection(null, selection)).toBe(true);
+    expect(getModelSelectionUnavailablePresentation(config, selection)).toEqual({
+      headline: "Unavailable",
+      detail: reason,
+    });
+    expect(buildModelOptions(config, selection)).toEqual([]);
+  });
+
+  it("holds an unavailable stored choice instead of silently falling back for a new task", () => {
+    const unavailable = {
+      instanceId: "primeAgent",
+      driver: "primeAgent",
+      displayName: "Prime Agent",
+      enabled: false,
+      installed: false,
+      availability: "unavailable",
+      unavailableReason: "Run Prime Agent in WSL2.",
+      auth: { status: "unknown" },
+      models: [],
+    };
+    const config = {
+      providers: [
+        unavailable,
+        {
+          instanceId: "codex",
+          driver: "codex",
+          displayName: "Codex",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [
+            {
+              slug: "gpt-default",
+              name: "GPT Default",
+              isCustom: false,
+              isDefault: true,
+              capabilities: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+    const storedPrime = {
+      instanceId: ProviderInstanceId.make("primeAgent"),
+      model: "default",
+    };
+    const options = buildModelOptions(config, null);
+
+    expect(options).toHaveLength(1);
+    expect(resolveSelectableModelSelection(config, storedPrime)).toBeNull();
+    const unavailablePreferredProvider = resolveNewTaskUnavailableProvider(config, {
+      draftSelection: null,
+      projectDefaultSelection: storedPrime,
+      stickySelection: null,
+    });
+    expect(unavailablePreferredProvider).toMatchObject(unavailable);
+    expect(
+      resolveNewTaskModelSelection({
+        draftSelection: null,
+        projectDefaultSelection: null,
+        stickySelection: null,
+        modelOptions: options,
+        unavailablePreferredProvider,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps an authoritative disabled stored choice blocked for remediation", () => {
+    const disabled = {
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      enabled: false,
+      installed: true,
+      auth: { status: "authenticated" },
+      models: [],
+    };
+    const config = { providers: [disabled] } as unknown as ServerConfig;
+    const selection = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "sonnet",
+    };
+
+    expect(
+      resolveNewTaskUnavailableProvider(config, {
+        draftSelection: selection,
+        projectDefaultSelection: null,
+        stickySelection: null,
+      }),
+    ).toBe(disabled);
+    expect(getModelSelectionUnavailablePresentation(config, selection)).toBeNull();
   });
 
   it("keeps legacy models out of implicit defaults", () => {

@@ -229,6 +229,9 @@ layer("048_ProjectionThreadSessionPendingTurnRequest", (it) => {
         DELETE FROM projection_state
         WHERE projector IN ('projection.thread-sessions', 'projection.thread-turns')
       `;
+      // The current projector repository reads the additive pending-stop
+      // columns introduced immediately after this historical migration.
+      yield* runMigrations({ toMigrationInclusive: 49 });
       yield* projectionPipeline.bootstrap;
       assert.deepStrictEqual(yield* readPendingSessionRows, migrated);
     }),

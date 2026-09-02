@@ -1,5 +1,7 @@
 import type { ServerProvider, ServerProviderVersionAdvisory } from "@t3tools/contracts";
 
+import { getProviderUnavailablePresentation } from "../../providerInstances";
+
 /**
  * Visual treatment for each server-reported provider status. Centralized so
  * the default-driver card and per-instance cards share the same language.
@@ -35,6 +37,8 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
       detail: "Waiting for the server to report installation and authentication details.",
     };
   }
+  const unavailable = getProviderUnavailablePresentation(provider);
+  if (unavailable) return unavailable;
   if (!provider.enabled) {
     return {
       headline: "Disabled",

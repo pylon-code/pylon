@@ -199,6 +199,14 @@ export interface ProviderServiceShape {
    */
   readonly listSessions: () => Effect.Effect<ReadonlyArray<ProviderSession>>;
 
+  /** Read the exact durable continuation even when no adapter runtime is live. */
+  readonly getSessionContinuation?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<
+    { readonly providerInstanceId: ProviderInstanceId; readonly resumeCursor: unknown } | null,
+    ProviderServiceError
+  >;
+
   /** Inventory exactly one configured provider instance without coupling failures. */
   readonly listSessionsForInstance?: (
     instanceId: ProviderInstanceId,

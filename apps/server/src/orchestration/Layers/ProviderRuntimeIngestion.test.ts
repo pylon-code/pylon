@@ -895,6 +895,13 @@ describe("ProviderRuntimeIngestion", () => {
             threadId,
             requestId,
             messageId,
+            expectedProviderInstanceId: null,
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
             session: {
               threadId,
               status: "starting",
@@ -1183,6 +1190,13 @@ describe("ProviderRuntimeIngestion", () => {
       threadId,
       requestId,
       messageId,
+      expectedProviderInstanceId: null,
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      },
+      runtimeMode: "approval-required",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       session: {
         threadId,
         status: "starting",
@@ -1559,15 +1573,180 @@ describe("ProviderRuntimeIngestion", () => {
       },
     });
 
-    thread = await waitForThread(
-      harness.readModel,
-      (entry) =>
-        entry.session?.status === "ready" &&
-        entry.session?.activeTurnId === null &&
-        entry.session?.lastError === null,
-    );
-    expect(thread.session?.status).toBe("ready");
-    expect(thread.session?.lastError).toBeNull();
+    await harness.drain();
+    thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    )!;
+    expect(thread.session?.status).toBe("stopped");
+    expect(thread.session?.lastError).toBe("provider crashed");
+  });
+
+  it("rejects same-incarnation lifecycle and targeted turn events behind a durable stop", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const instanceId = ProviderInstanceId.make("codex");
+    const incarnationId = RuntimeSessionId.make("session-stopped-barrier");
+    const turnRequestId = CommandId.make("cmd-stopped-barrier-turn");
+    const turnId = TurnId.make("turn-stopped-barrier");
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-stopped-barrier-seed"),
+      threadId,
+      session: {
+        threadId,
+        status: "stopped",
+        providerName: ProviderDriverKind.make("codex"),
+        providerInstanceId: instanceId,
+        runtimeMode: "approval-required",
+        sessionIncarnationId: incarnationId,
+        activeTurnRequestId: turnRequestId,
+        pendingStopRequestId: CommandId.make("cmd-stopped-barrier-stop"),
+        pendingStopProviderInstanceId: instanceId,
+        pendingStopSessionIncarnationId: incarnationId,
+        pendingStopTurnRequestId: turnRequestId,
+        pendingStopTurnId: turnId,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    const eventBase = {
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: instanceId,
+      sessionIncarnationId: incarnationId,
+      threadId,
+      admissionRequestId: turnRequestId,
+      turnId,
+      createdAt: "2026-01-01T00:00:02.000Z",
+    } as const;
+    harness.emit({
+      ...eventBase,
+      type: "session.started",
+      eventId: EventId.make("evt-stopped-barrier-session-started"),
+      payload: {},
+    });
+    harness.emit({
+      ...eventBase,
+      type: "thread.started",
+      eventId: EventId.make("evt-stopped-barrier-thread-started"),
+      payload: {},
+    });
+    harness.emit({
+      ...eventBase,
+      type: "session.state.changed",
+      eventId: EventId.make("evt-stopped-barrier-state-ready"),
+      payload: { state: "ready" },
+    });
+    harness.emit({
+      ...eventBase,
+      type: "turn.completed",
+      eventId: EventId.make("evt-stopped-barrier-turn-completed"),
+      status: "completed",
+    });
+    harness.emit({
+      ...eventBase,
+      type: "runtime.error",
+      eventId: EventId.make("evt-stopped-barrier-runtime-error"),
+      payload: { message: "late stopped runtime error" },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session).toMatchObject({
+      status: "stopped",
+      sessionIncarnationId: incarnationId,
+      pendingStopRequestId: CommandId.make("cmd-stopped-barrier-stop"),
+      activeTurnId: null,
+      lastError: null,
+    });
+    expect(
+      thread?.activities.some((activity) => String(activity.id).startsWith("evt-stopped-barrier")),
+    ).toBe(false);
+  });
+
+  it("lets exact exit clear an old pending target without exposing a later incarnation", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const instanceId = ProviderInstanceId.make("codex");
+    const oldIncarnationId = RuntimeSessionId.make("session-old-stop-target");
+    const newIncarnationId = RuntimeSessionId.make("session-new-after-stop");
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-new-session-with-old-stop-target"),
+      threadId,
+      session: {
+        threadId,
+        status: "ready",
+        providerName: ProviderDriverKind.make("codex"),
+        providerInstanceId: instanceId,
+        runtimeMode: "approval-required",
+        sessionIncarnationId: newIncarnationId,
+        pendingStopRequestId: CommandId.make("cmd-old-stop-target"),
+        pendingStopProviderInstanceId: instanceId,
+        pendingStopSessionIncarnationId: oldIncarnationId,
+        pendingStopTurnRequestId: CommandId.make("cmd-old-stop-turn"),
+        pendingStopTurnId: TurnId.make("turn-old-stop"),
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    const oldEventBase = {
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: instanceId,
+      sessionIncarnationId: oldIncarnationId,
+      threadId,
+      createdAt: "2026-01-01T00:00:02.000Z",
+    } as const;
+    harness.emit({
+      ...oldEventBase,
+      type: "session.state.changed",
+      eventId: EventId.make("evt-old-stop-state-before-exit"),
+      payload: { state: "error", reason: "must not replace new session" },
+    });
+    harness.emit({
+      ...oldEventBase,
+      type: "session.exited",
+      eventId: EventId.make("evt-old-stop-exit"),
+      payload: {},
+    });
+    await harness.drain();
+
+    let thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session).toMatchObject({
+      status: "ready",
+      sessionIncarnationId: newIncarnationId,
+      activeTurnId: null,
+      lastError: null,
+    });
+    expect(thread?.session?.pendingStopRequestId).toBeUndefined();
+
+    harness.emit({
+      ...oldEventBase,
+      type: "runtime.error",
+      eventId: EventId.make("evt-old-stop-error-after-exit"),
+      payload: { message: "late old error" },
+    });
+    await harness.drain();
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("ready");
+    expect(thread?.session?.lastError).toBeNull();
+
+    harness.emit({
+      ...oldEventBase,
+      sessionIncarnationId: newIncarnationId,
+      type: "session.state.changed",
+      eventId: EventId.make("evt-new-session-waiting"),
+      payload: { state: "waiting", reason: "waiting for approval" },
+    });
+    await harness.drain();
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.sessionIncarnationId).toBe(newIncarnationId);
   });
 
   it("projects harness refinement lifecycle on the session incarnation", async () => {
@@ -4981,7 +5160,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(completedPayload?.title).toBe("wait for codex review to finish");
   });
 
-  it("titles task completion from persisted activities after the description cache is swept", async () => {
+  it("rejects task completion after the exact session has exited", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -5031,21 +5210,16 @@ describe("ProviderRuntimeIngestion", () => {
       },
     });
 
-    const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some(
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(
+      thread?.activities.some(
         (activity: ProviderRuntimeTestActivity) => activity.id === "evt-swept-task-completed",
       ),
-    );
-
-    const completed = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-swept-task-completed",
-    );
-    const completedPayload =
-      completed?.payload && typeof completed.payload === "object"
-        ? (completed.payload as Record<string, unknown>)
-        : undefined;
-
-    expect(completedPayload?.title).toBe("Watch round-3 CI and bots");
+    ).toBe(false);
+    expect(thread?.session?.status).toBe("stopped");
   });
 
   it("projects structured user input request and resolution as thread activities", async () => {

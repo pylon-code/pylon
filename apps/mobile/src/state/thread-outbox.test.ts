@@ -4,8 +4,10 @@ import {
   EnvironmentId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { AtomRegistry } from "effect/unstable/reactivity";
 
@@ -15,9 +17,15 @@ import {
   groupQueuedThreadMessages,
   isQueuedThreadCreationSendable,
   modelSelectionsEqual,
+  preserveQueuedThreadDeliveryHold,
+  queuedCreationWorkspaceHold,
+  resolveConfirmedThreadOutboxPlan,
+  resolveHeldSendSelectedProvider,
   resolveThreadOutboxDeliveryAction,
   resolveThreadOutboxDispatchStep,
   resolveThreadOutboxFailureAction,
+  resolveQueuedThreadAdmission,
+  retryQueuedThreadMessage,
   resolveQueuedThreadSettings,
   shouldRetryThreadOutboxDelivery,
   threadOutboxRetryDelayMs,
@@ -40,6 +48,34 @@ function queuedMessage(input: {
     text: input.messageId,
     attachments: [],
     createdAt: input.createdAt,
+  };
+}
+
+function provider(input: {
+  readonly instanceId: string;
+  readonly availability?: "available" | "unavailable";
+  readonly unavailableReason?: string;
+  readonly status?: ServerProvider["status"];
+  readonly driver?: string;
+  readonly continuationGroupKey?: string;
+}): ServerProvider {
+  return {
+    instanceId: ProviderInstanceId.make(input.instanceId),
+    driver: ProviderDriverKind.make(input.driver ?? "primeAgent"),
+    enabled: input.availability !== "unavailable",
+    installed: true,
+    version: null,
+    status: input.status ?? (input.availability === "unavailable" ? "disabled" : "ready"),
+    ...(input.availability ? { availability: input.availability } : {}),
+    ...(input.unavailableReason ? { unavailableReason: input.unavailableReason } : {}),
+    ...(input.continuationGroupKey
+      ? { continuation: { groupKey: input.continuationGroupKey } }
+      : {}),
+    auth: { status: "authenticated" },
+    checkedAt: "2026-08-06T12:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
   };
 }
 
@@ -132,6 +168,305 @@ describe("thread outbox", () => {
       runtimeMode: selectedMessage.runtimeMode,
       interactionMode: selectedMessage.interactionMode,
     });
+  });
+
+  it("durably holds a queued turn whose snapshot conflicts with the live binding", () => {
+    const message = {
+      ...queuedMessage({
+        messageId: "message-binding",
+        createdAt: "2026-06-08T10:00:01.000Z",
+      }),
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+        options: [{ id: "reasoningEffort", value: "xhigh" }],
+      },
+    } satisfies QueuedThreadMessage;
+    const admission = resolveQueuedThreadAdmission({
+      message,
+      thread: {
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("primeAgent"),
+          model: "kimi-k2.5",
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        session: { providerInstanceId: ProviderInstanceId.make("primeAgent") },
+      },
+      providers: [provider({ instanceId: "primeAgent" })],
+    });
+
+    expect(admission.action).toBe("hold");
+    if (admission.action !== "hold") return;
+    expect(admission.hold.kind).toBe("provider-binding-mismatch");
+    expect(
+      decodeQueuedThreadMessage(
+        encodeQueuedThreadMessage({ ...message, deliveryHold: admission.hold }),
+      ).deliveryHold,
+    ).toEqual(admission.hold);
+  });
+
+  it("dispatches a compatible account with the target-owned model and options intact", () => {
+    const targetSelection = {
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      model: "gpt-5.4",
+      options: [{ id: "reasoningEffort", value: "xhigh" }],
+    } as const;
+    const thread = {
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.3-codex",
+      },
+      runtimeMode: "approval-required" as const,
+      interactionMode: "default" as const,
+      session: { providerInstanceId: ProviderInstanceId.make("codex") },
+    };
+    const admission = resolveQueuedThreadAdmission({
+      message: {
+        ...queuedMessage({
+          messageId: "message-compatible-account",
+          createdAt: "2026-06-08T10:00:01.000Z",
+        }),
+        modelSelection: targetSelection,
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+      },
+      thread,
+      providers: [
+        provider({
+          instanceId: "codex",
+          driver: "codex",
+          continuationGroupKey: "codex:home:shared",
+        }),
+        provider({
+          instanceId: "codex_personal",
+          driver: "codex",
+          continuationGroupKey: "codex:home:shared",
+        }),
+      ],
+    });
+
+    expect(admission).toEqual({
+      action: "send",
+      settings: {
+        modelSelection: targetSelection,
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        session: thread.session,
+      },
+    });
+  });
+
+  it("offers held-send retarget only for an available exact continuation peer", () => {
+    const selected = {
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      model: "gpt-5.4",
+      options: [{ id: "reasoningEffort", value: "xhigh" }],
+    } as const;
+    const bound = provider({
+      instanceId: "codex",
+      driver: "codex",
+      continuationGroupKey: "codex:home:shared",
+    });
+    const compatible = provider({
+      instanceId: "codex_personal",
+      driver: "codex",
+      continuationGroupKey: "codex:home:shared",
+    });
+
+    expect(
+      resolveHeldSendSelectedProvider({
+        boundInstanceId: bound.instanceId,
+        selectedModelSelection: selected,
+        providers: [bound, compatible],
+      }),
+    ).toBe(selected);
+    expect(
+      resolveHeldSendSelectedProvider({
+        boundInstanceId: bound.instanceId,
+        selectedModelSelection: selected,
+        providers: [
+          bound,
+          provider({
+            instanceId: "codex_personal",
+            driver: "codex",
+            continuationGroupKey: "codex:home:other",
+          }),
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      resolveHeldSendSelectedProvider({
+        boundInstanceId: bound.instanceId,
+        selectedModelSelection: selected,
+        providers: [
+          bound,
+          provider({
+            instanceId: "codex_personal",
+            driver: "codex",
+            continuationGroupKey: "codex:home:shared",
+            availability: "unavailable",
+            unavailableReason: "Install this account first.",
+          }),
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      resolveHeldSendSelectedProvider({
+        boundInstanceId: bound.instanceId,
+        selectedModelSelection: selected,
+        providers: [bound],
+      }),
+    ).toBeNull();
+  });
+
+  it("holds exact unavailable bindings with remediation and resumes the same instance", () => {
+    const selection = {
+      instanceId: ProviderInstanceId.make("primeAgent"),
+      model: "kimi-k2.5",
+      options: [{ id: "thinking", value: true }],
+    } as const;
+    const message = {
+      ...queuedMessage({
+        messageId: "message-unavailable",
+        createdAt: "2026-06-08T10:00:01.000Z",
+      }),
+      modelSelection: selection,
+    } satisfies QueuedThreadMessage;
+    const thread = {
+      modelSelection: selection,
+      runtimeMode: "approval-required" as const,
+      interactionMode: "plan" as const,
+      session: { providerInstanceId: selection.instanceId },
+    };
+    const reason = "Restore Prime Agent inside WSL2.";
+
+    expect(
+      resolveQueuedThreadAdmission({
+        message,
+        thread,
+        providers: [
+          provider({
+            instanceId: "primeAgent",
+            availability: "unavailable",
+            unavailableReason: reason,
+          }),
+        ],
+      }),
+    ).toMatchObject({
+      action: "hold",
+      hold: { kind: "provider-unavailable", reason },
+    });
+    expect(
+      resolveQueuedThreadAdmission({
+        message,
+        thread,
+        providers: [provider({ instanceId: "primeAgent", availability: "available" })],
+      }),
+    ).toEqual({ action: "send", settings: thread });
+  });
+
+  it("waits on unknown provider snapshots, admits warnings, and holds hard errors", () => {
+    const message = queuedMessage({
+      messageId: "message-provider-tri-state",
+      createdAt: "2026-06-08T10:00:01.000Z",
+    });
+    const thread = {
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+    };
+
+    expect(resolveQueuedThreadAdmission({ message, thread, providers: undefined })).toEqual({
+      action: "wait",
+    });
+    expect(
+      resolveQueuedThreadAdmission({
+        message,
+        thread,
+        providers: [provider({ instanceId: "codex", status: "warning" })],
+      }).action,
+    ).toBe("send");
+    expect(
+      resolveQueuedThreadAdmission({
+        message,
+        thread,
+        providers: [provider({ instanceId: "codex", status: "error" })],
+      }).action,
+    ).toBe("hold");
+  });
+
+  it("keeps persisted holds inert for existing turns and task creation", () => {
+    for (const isCreation of [false, true]) {
+      expect(
+        resolveThreadOutboxDeliveryAction({
+          isCreation,
+          threadExists: !isCreation,
+          shellStatus: "live",
+          environmentConnected: true,
+          threadStatus: "ready",
+          hasDeliveryHold: true,
+        }),
+      ).toBe("wait");
+    }
+  });
+
+  it("preserves a held creation only while an edit keeps every durable identifier", () => {
+    const held = {
+      ...queuedMessage({
+        messageId: "message-held-edit",
+        createdAt: "2026-06-08T10:00:01.000Z",
+      }),
+      deliveryHold: {
+        kind: "project-workspace-unavailable" as const,
+        reason: "Retarget this task.",
+      },
+    };
+    const identity = {
+      threadId: held.threadId,
+      commandId: held.commandId,
+      messageId: held.messageId,
+      createdAt: held.createdAt,
+    };
+
+    expect(preserveQueuedThreadDeliveryHold(held, identity)).toBe(held.deliveryHold);
+    expect(
+      preserveQueuedThreadDeliveryHold(held, {
+        ...identity,
+        commandId: CommandId.make("command-explicit-retry"),
+      }),
+    ).toBeUndefined();
+    expect(preserveQueuedThreadDeliveryHold(null, identity)).toBeUndefined();
+  });
+
+  it("mints a fresh admission request when a held send is retried", () => {
+    const original = {
+      ...queuedMessage({
+        messageId: "message-held-retry",
+        createdAt: "2026-06-08T10:00:01.000Z",
+      }),
+      text: "preserve me",
+      deliveryHold: {
+        kind: "admission-rejected" as const,
+        reason: "PreviouslyRejected",
+      },
+    };
+    const retried = retryQueuedThreadMessage(original, {
+      commandId: CommandId.make("command-held-retry-fresh"),
+      createdAt: "2026-06-08T10:00:02.000Z",
+    });
+
+    expect(retried).toMatchObject({
+      messageId: original.messageId,
+      commandId: CommandId.make("command-held-retry-fresh"),
+      text: "preserve me",
+      createdAt: "2026-06-08T10:00:02.000Z",
+    });
+    expect(retried.commandId).not.toBe(original.commandId);
+    expect(retried.deliveryHold).toBeUndefined();
   });
 
   it("compares model options as part of the queued settings change", () => {
@@ -948,14 +1283,57 @@ describe("thread outbox", () => {
     ).toEqual({ step: "send" });
   });
 
-  it("only removes a missing-thread message after shell synchronization is live", () => {
+  it("CAS recovery never removes or overwrites a concurrently replaced queue item", async () => {
+    const registry = AtomRegistry.make();
+    const stored = new Map<MessageId, QueuedThreadMessage>();
+    const manager = createThreadOutboxManager({
+      registry,
+      storage: {
+        load: async () => [...stored.values()],
+        write: async (message) => {
+          stored.set(message.messageId, message);
+        },
+        remove: async (message) => {
+          stored.delete(message.messageId);
+        },
+      },
+    });
+    const original = queuedMessage({
+      messageId: "message-cas",
+      createdAt: "2026-06-08T10:00:01.000Z",
+    });
+    const concurrentRetry = {
+      ...original,
+      commandId: CommandId.make("command-concurrent-retry"),
+      text: "newer queued content",
+    };
+
+    await manager.enqueue(original);
+    await manager.update(concurrentRetry);
+
+    await expect(manager.removeIfCurrent(original)).resolves.toBe(false);
+    await expect(
+      manager.updateIfCurrent(original, { ...original, text: "stale recovery write" }),
+    ).resolves.toBe(false);
+    expect(registry.get(manager.queuedMessagesByThreadKeyAtom)).toEqual({
+      "environment-1:thread-1": [concurrentRetry],
+    });
+    expect(stored.get(original.messageId)).toEqual(concurrentRetry);
+
+    await expect(manager.removeIfCurrent(concurrentRetry)).resolves.toBe(true);
+    expect(registry.get(manager.queuedMessagesByThreadKeyAtom)).toEqual({});
+    expect(stored.size).toBe(0);
+    registry.dispose();
+  });
+
+  it("only confirms a missing-thread message after shell synchronization is live", () => {
     expect(
       resolveThreadOutboxDeliveryAction({
         isCreation: false,
         threadExists: false,
         shellStatus: "synchronizing",
         environmentConnected: true,
-        threadBusy: false,
+        threadStatus: null,
       }),
     ).toBe("wait");
     expect(
@@ -964,28 +1342,37 @@ describe("thread outbox", () => {
         threadExists: false,
         shellStatus: "live",
         environmentConnected: true,
-        threadBusy: false,
+        threadStatus: null,
       }),
-    ).toBe("remove");
+    ).toBe("confirm");
     expect(
       resolveThreadOutboxDeliveryAction({
         isCreation: false,
         threadExists: true,
         shellStatus: "live",
         environmentConnected: true,
-        threadBusy: false,
+        threadStatus: null,
       }),
     ).toBe("send");
   });
 
-  it("sends existing-thread messages whenever connected so queued messages can steer", () => {
+  it("waits for starting admission but lets running sessions steer", () => {
     expect(
       resolveThreadOutboxDeliveryAction({
         isCreation: false,
         threadExists: true,
         shellStatus: "live",
         environmentConnected: true,
-        threadBusy: true,
+        threadStatus: "starting",
+      }),
+    ).toBe("wait");
+    expect(
+      resolveThreadOutboxDeliveryAction({
+        isCreation: false,
+        threadExists: true,
+        shellStatus: "live",
+        environmentConnected: true,
+        threadStatus: "running",
       }),
     ).toBe("send");
     expect(
@@ -994,9 +1381,176 @@ describe("thread outbox", () => {
         threadExists: true,
         shellStatus: "live",
         environmentConnected: false,
-        threadBusy: true,
+        threadStatus: "running",
       }),
     ).toBe("wait");
+  });
+
+  it("recomputes every live authority after durable confirmation", () => {
+    const message = queuedMessage({
+      messageId: "message-post-confirm-existing",
+      createdAt: "2026-06-08T10:00:01.000Z",
+    });
+    const thread = {
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+      session: { status: "ready" as const },
+    };
+    const destination = {
+      projectId: ProjectId.make("project-post-confirm"),
+      projectTitle: "Project",
+      projectCwd: "/workspace/current",
+      workspaceMode: "local" as const,
+      branch: null,
+      worktreePath: null,
+    };
+    const base = {
+      message: { ...message, destination },
+      thread,
+      shellStatus: "live" as const,
+      environmentConnected: true,
+      providers: [provider({ instanceId: "codex", status: "warning" })],
+      project: null,
+    };
+
+    expect(resolveConfirmedThreadOutboxPlan(base).action).toBe("send-existing");
+    expect(resolveConfirmedThreadOutboxPlan({ ...base, environmentConnected: false }).action).toBe(
+      "wait",
+    );
+    expect(
+      resolveConfirmedThreadOutboxPlan({
+        ...base,
+        thread: { ...thread, session: { status: "starting" } },
+      }).action,
+    ).toBe("wait");
+    expect(resolveConfirmedThreadOutboxPlan({ ...base, thread: undefined })).toMatchObject({
+      action: "hold",
+      hold: { kind: "thread-missing" },
+      creation: destination,
+    });
+    expect(resolveConfirmedThreadOutboxPlan({ ...base, providers: undefined }).action).toBe("wait");
+
+    const creationMessage = {
+      ...message,
+      modelSelection: thread.modelSelection,
+      creation: {
+        projectId: ProjectId.make("project-post-confirm"),
+        workspaceMode: "local" as const,
+        branch: null,
+        worktreePath: null,
+        startFromOrigin: false,
+      },
+    };
+    const creationBase = {
+      ...base,
+      message: creationMessage,
+      thread: undefined,
+      project: { workspaceRoot: "/workspace/current" },
+    };
+    expect(resolveConfirmedThreadOutboxPlan(creationBase)).toMatchObject({
+      action: "send-creation",
+      projectCwd: "/workspace/current",
+    });
+    expect(resolveConfirmedThreadOutboxPlan({ ...creationBase, project: undefined })).toMatchObject(
+      { action: "hold", hold: { kind: "project-workspace-unavailable" } },
+    );
+    expect(resolveConfirmedThreadOutboxPlan({ ...creationBase, providers: undefined }).action).toBe(
+      "wait",
+    );
+  });
+
+  it("quiesces after a cross-device delete is converted to a durable hold", () => {
+    const destination = {
+      projectId: ProjectId.make("project-cross-device-delete"),
+      projectTitle: "Cross-device project",
+      projectCwd: "/workspace/cross-device",
+      workspaceMode: "local" as const,
+      branch: null,
+      worktreePath: null,
+    };
+    const message = {
+      ...queuedMessage({
+        messageId: "message-cross-device-delete",
+        createdAt: "2026-06-08T10:00:01.000Z",
+      }),
+      destination,
+    };
+    const confirmed = resolveConfirmedThreadOutboxPlan({
+      message,
+      thread: undefined,
+      shellStatus: "live",
+      environmentConnected: true,
+      providers: [provider({ instanceId: "codex", status: "ready" })],
+      project: null,
+    });
+    expect(confirmed).toMatchObject({
+      action: "hold",
+      hold: { kind: "thread-missing" },
+      creation: destination,
+    });
+    if (confirmed.action !== "hold" || confirmed.creation === undefined) {
+      throw new Error("Expected retargetable missing-thread hold");
+    }
+    const held = {
+      ...message,
+      deliveryHold: confirmed.hold,
+      creation: confirmed.creation,
+    };
+
+    expect(
+      resolveThreadOutboxDeliveryAction({
+        isCreation: true,
+        threadExists: false,
+        shellStatus: "live",
+        environmentConnected: true,
+        threadStatus: null,
+        hasDeliveryHold: true,
+      }),
+    ).toBe("wait");
+    expect(
+      resolveConfirmedThreadOutboxPlan({
+        message: held,
+        thread: undefined,
+        shellStatus: "live",
+        environmentConnected: true,
+        providers: [provider({ instanceId: "codex", status: "ready" })],
+        project: { workspaceRoot: "/workspace/cross-device" },
+      }),
+    ).toEqual({ action: "wait" });
+  });
+
+  it("turns a live missing project workspace into a durable creation hold", () => {
+    const message = {
+      ...queuedMessage({
+        messageId: "message-missing-project",
+        createdAt: "2026-06-08T10:00:01.000Z",
+      }),
+      creation: {
+        projectId: ProjectId.make("project-missing"),
+        workspaceMode: "local" as const,
+        branch: null,
+        worktreePath: null,
+        startFromOrigin: false,
+      },
+    };
+
+    expect(
+      queuedCreationWorkspaceHold({ message, project: undefined, shellStatus: "cached" }),
+    ).toBe(null);
+    expect(
+      queuedCreationWorkspaceHold({ message, project: undefined, shellStatus: "live" }),
+    ).toMatchObject({ kind: "project-workspace-unavailable" });
+    expect(
+      queuedCreationWorkspaceHold({
+        message,
+        project: { workspaceRoot: "/workspace/retargeted" },
+        shellStatus: "live",
+      }),
+    ).toBe(null);
   });
 
   it("sends queued creations once connected and live, removing already-created ones", () => {
@@ -1006,7 +1560,7 @@ describe("thread outbox", () => {
         threadExists: false,
         shellStatus: "cached",
         environmentConnected: false,
-        threadBusy: false,
+        threadStatus: null,
       }),
     ).toBe("wait");
     // Connected but not yet synchronized: a previously delivered creation may
@@ -1017,7 +1571,7 @@ describe("thread outbox", () => {
         threadExists: false,
         shellStatus: "synchronizing",
         environmentConnected: true,
-        threadBusy: false,
+        threadStatus: null,
       }),
     ).toBe("wait");
     expect(
@@ -1026,7 +1580,7 @@ describe("thread outbox", () => {
         threadExists: false,
         shellStatus: "live",
         environmentConnected: true,
-        threadBusy: false,
+        threadStatus: null,
       }),
     ).toBe("send");
     expect(
@@ -1035,7 +1589,7 @@ describe("thread outbox", () => {
         threadExists: true,
         shellStatus: "live",
         environmentConnected: true,
-        threadBusy: true,
+        threadStatus: "running",
       }),
     ).toBe("remove");
   });
@@ -1093,8 +1647,8 @@ describe("thread outbox", () => {
     expect(shouldRetryThreadOutboxDelivery(new Error("Thread no longer exists"))).toBe(false);
   });
 
-  it("retains queued messages when settings synchronization fails before startTurn", () => {
-    const deterministicFailure = new Error("Thread no longer exists");
+  it("holds every domain failure before acceptance without losing content", () => {
+    const deterministicFailure = new Error("Thread already has pending turn admission");
 
     expect(
       resolveThreadOutboxFailureAction({
@@ -1102,13 +1656,37 @@ describe("thread outbox", () => {
         error: deterministicFailure,
         interrupted: false,
       }),
-    ).toBe("retry");
+    ).toBe("hold");
     expect(
       resolveThreadOutboxFailureAction({
         stage: "start-turn",
         error: deterministicFailure,
         interrupted: false,
       }),
-    ).toBe("restore");
+    ).toBe("hold");
+
+    const message = {
+      ...queuedMessage({
+        messageId: "message-admission-rejected",
+        createdAt: "2026-06-08T10:00:01.000Z",
+      }),
+      text: "keep this pending prose",
+      attachments: [
+        {
+          id: "image-1",
+          previewUri: "file:///preview.png",
+          type: "image" as const,
+          name: "preview.png",
+          mimeType: "image/png",
+          sizeBytes: 4,
+          dataUrl: "data:image/png;base64,AAAA",
+        },
+      ],
+      deliveryHold: {
+        kind: "admission-rejected" as const,
+        reason: deterministicFailure.message,
+      },
+    };
+    expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(message))).toEqual(message);
   });
 });

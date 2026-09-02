@@ -111,6 +111,14 @@ export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
 
 export const ProviderStopSessionInput = Schema.Struct({
   threadId: ThreadId,
+  /** Optional exact target. Omitted callers retain the legacy stop-current behavior. */
+  expectedProviderInstanceId: Schema.optional(Schema.NullOr(ProviderInstanceId)),
+  expectedSessionIncarnationId: Schema.optional(Schema.NullOr(RuntimeSessionId)),
+  expectedAdmissionRequestId: Schema.optional(Schema.NullOr(CommandId)),
+  /** Quarantine cleanup removes the exact runtime directory row instead of tombstoning it. */
+  removeBinding: Schema.optional(Schema.Boolean),
+  /** Exact quarantine must not invalidate a newer start reservation. */
+  invalidateStartReservation: Schema.optional(Schema.Boolean),
 });
 export type ProviderStopSessionInput = typeof ProviderStopSessionInput.Type;
 

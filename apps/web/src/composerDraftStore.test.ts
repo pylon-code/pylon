@@ -1612,6 +1612,272 @@ describe("composerDraftStore modelSelection", () => {
     resetComposerDraftStore();
   });
 
+  it("durably blocks a cross-client binding without changing content or explicit routing", () => {
+    const store = useComposerDraftStore.getState();
+    const image = makeImage({ id: "binding-image", previewUrl: "data:image/png;base64,AQ==" });
+    const file = makeFile("binding-file");
+    const originalSelection = modelSelection(CODEX_DRIVER, "gpt-5.4", {
+      reasoningEffort: "high",
+    });
+    store.setPrompt(threadRef, "keep this prompt");
+    store.addImage(threadRef, image);
+    store.addFiles(threadRef, [file]);
+    store.setModelSelection(threadRef, originalSelection, { explicit: true });
+    store.setRuntimeMode(threadRef, "approval-required");
+    store.setInteractionMode(threadRef, "plan");
+    store.syncPersistedAttachments(threadRef, [
+      {
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+        dataUrl: image.previewUrl,
+      },
+    ]);
+
+    store.setProviderBindingConflict(threadRef, CLAUDE_AGENT_INSTANCE);
+
+    const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft).toMatchObject({
+      prompt: "keep this prompt",
+      activeProvider: CODEX_INSTANCE,
+      modelSelectionExplicit: true,
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+      providerBindingConflict: {
+        boundInstanceId: CLAUDE_AGENT_INSTANCE,
+        originalSelection,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+      },
+    });
+    expect(draft?.images.map((entry) => entry.id)).toEqual([image.id]);
+    expect(draft?.files.map((entry) => entry.id)).toEqual([file.id]);
+    expect(draft?.modelSelectionByProvider[CODEX_INSTANCE]).toEqual(originalSelection);
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const options = persistApi.getOptions();
+    const persisted = options.partialize(useComposerDraftStore.getState());
+    const hydrated = options.merge(persisted, useComposerDraftStore.getState());
+    const hydratedDraft = hydrated.getComposerDraft(threadRef);
+    expect(hydratedDraft?.providerBindingConflict).toEqual(draft?.providerBindingConflict);
+    expect(hydratedDraft?.prompt).toBe("keep this prompt");
+    expect(hydratedDraft?.images.map((entry) => entry.id)).toEqual([image.id]);
+    expect(hydratedDraft?.files.map((entry) => entry.id)).toEqual([file.id]);
+    expect(hydratedDraft?.modelSelectionByProvider[CODEX_INSTANCE]).toEqual(originalSelection);
+  });
+
+  it("changes routing only after the user chooses the bound provider", () => {
+    const store = useComposerDraftStore.getState();
+    const originalSelection = modelSelection(CODEX_DRIVER, "gpt-5.4");
+    const boundSelection = modelSelection(CLAUDE_AGENT_DRIVER, "claude-sonnet-4-5");
+    store.setPrompt(threadRef, "keep this prompt");
+    store.setModelSelection(threadRef, originalSelection, { explicit: true });
+    store.setProviderBindingConflict(threadRef, CLAUDE_AGENT_INSTANCE);
+
+    store.continueOnBoundProvider(threadRef, boundSelection);
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toMatchObject({
+      prompt: "keep this prompt",
+      activeProvider: CLAUDE_AGENT_INSTANCE,
+      modelSelectionExplicit: true,
+      runtimeMode: null,
+      interactionMode: null,
+    });
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.providerBindingConflict).toBeUndefined();
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CLAUDE_AGENT_INSTANCE],
+    ).toEqual(boundSelection);
+  });
+
+  it("atomically transfers a complete blocked composer snapshot with its exact selection", () => {
+    const store = useComposerDraftStore.getState();
+    const destinationDraftId = DraftId.make("draft-provider-conflict-destination");
+    const destinationThreadId = ThreadId.make("thread-provider-conflict-destination");
+    const projectRef = scopeProjectRef(
+      TEST_ENVIRONMENT_ID,
+      ProjectId.make("project-provider-conflict"),
+    );
+    const originalSelection = modelSelection(CODEX_DRIVER, "gpt-5.4", {
+      reasoningEffort: "xhigh",
+      fastMode: true,
+    });
+    const boundSelection = modelSelection(CLAUDE_AGENT_DRIVER, "claude-sonnet-4-5");
+    const image = makeImage({
+      id: "move-conflict-image",
+      previewUrl: "data:image/png;base64,AQ==",
+    });
+    const file = makeFile("move-conflict-file");
+    const reviewComment = {
+      id: "move-conflict-comment",
+      sectionId: "file:src/app.ts",
+      sectionTitle: "File comment",
+      filePath: "src/app.ts",
+      startIndex: 1,
+      endIndex: 2,
+      rangeLabel: "L2 to L3",
+      text: "Keep this configurable.",
+      diff: "@@ -2,2 +2,2 @@\n two\n three",
+    } as const;
+    const previewAnnotation = {
+      id: "move-conflict-annotation",
+      pageUrl: "https://example.com/dashboard",
+      pageTitle: "Dashboard",
+      comment: "Keep the primary action visible.",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: "2026-09-02T10:00:00.000Z",
+    } as const;
+
+    store.setModelSelection(threadRef, boundSelection);
+    store.setModelSelection(threadRef, originalSelection, { explicit: true });
+    store.setRuntimeMode(threadRef, "approval-required");
+    store.setInteractionMode(threadRef, "plan");
+    store.addTerminalContext(threadRef, makeTerminalContext({ id: "move-conflict-terminal" }));
+    store.setPrompt(threadRef, `${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} move this exact prompt`);
+    store.addElementContext(threadRef, {
+      pageUrl: "https://example.com/dashboard",
+      pageTitle: "Dashboard",
+      tagName: "button",
+      selector: "button.submit",
+      htmlPreview: "<button>Save</button>",
+      componentName: "SubmitButton",
+      source: null,
+      styles: ".submit { color: white; }",
+    });
+    store.addPreviewAnnotation(threadRef, previewAnnotation);
+    store.addReviewComment(threadRef, reviewComment);
+    store.addImage(threadRef, image);
+    store.syncPersistedAttachments(threadRef, [
+      {
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+        dataUrl: image.previewUrl,
+      },
+    ]);
+    store.addFiles(threadRef, [file]);
+    store.setFileUpload(threadRef, file.id, TEST_ENVIRONMENT_ID, "pending-move-conflict-file");
+    store.setProviderBindingConflict(threadRef, CLAUDE_AGENT_INSTANCE);
+    store.setProjectDraftThreadId(projectRef, destinationDraftId, {
+      threadId: destinationThreadId,
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    });
+
+    store.transferComposerContentSnapshotForProviderConflict(threadRef, destinationDraftId);
+
+    const destination = store.getComposerDraft(destinationDraftId);
+    expect(destination).toMatchObject({
+      prompt: `${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} move this exact prompt`,
+      activeProvider: CODEX_INSTANCE,
+      modelSelectionExplicit: true,
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    });
+    expect(destination?.images.map((entry) => entry.id)).toEqual([image.id]);
+    expect(destination?.files).toMatchObject([
+      {
+        id: file.id,
+        uploadedAttachmentId: "pending-move-conflict-file",
+        uploadEnvironmentId: TEST_ENVIRONMENT_ID,
+      },
+    ]);
+    expect(destination?.terminalContexts).toMatchObject([
+      { id: "move-conflict-terminal", threadId: destinationThreadId },
+    ]);
+    expect(destination?.elementContexts).toMatchObject([{ threadId: destinationThreadId }]);
+    expect(destination?.previewAnnotations).toEqual([previewAnnotation]);
+    expect(destination?.reviewComments).toEqual([reviewComment]);
+    expect(destination?.modelSelectionByProvider).toEqual({
+      [CODEX_INSTANCE]: originalSelection,
+    });
+
+    const source = store.getComposerDraft(threadRef);
+    expect(source).toMatchObject({
+      prompt: "",
+      images: [],
+      files: [],
+      terminalContexts: [],
+      elementContexts: [],
+      previewAnnotations: [],
+      reviewComments: [],
+      activeProvider: CLAUDE_AGENT_INSTANCE,
+      runtimeMode: null,
+      interactionMode: null,
+    });
+    expect(source?.providerBindingConflict).toBeUndefined();
+    expect(source?.modelSelectionByProvider[CODEX_INSTANCE]).toBeUndefined();
+    expect(source?.modelSelectionByProvider[CLAUDE_AGENT_INSTANCE]).toEqual(boundSelection);
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const options = persistApi.getOptions();
+    const hydrated = options.merge(
+      options.partialize(useComposerDraftStore.getState()),
+      useComposerDraftStore.getInitialState(),
+    );
+    const hydratedDestination = hydrated.getComposerDraft(destinationDraftId);
+    expect(hydratedDestination?.files).toMatchObject([
+      {
+        id: file.id,
+        uploadedAttachmentId: "pending-move-conflict-file",
+        uploadEnvironmentId: TEST_ENVIRONMENT_ID,
+      },
+    ]);
+    expect(hydratedDestination?.terminalContexts).toMatchObject([
+      { id: "move-conflict-terminal", threadId: destinationThreadId },
+    ]);
+    expect(hydratedDestination?.elementContexts).toMatchObject([{ threadId: destinationThreadId }]);
+    expect(hydratedDestination?.previewAnnotations).toEqual([previewAnnotation]);
+    expect(hydratedDestination?.reviewComments).toEqual([reviewComment]);
+    expect(hydratedDestination?.modelSelectionByProvider[CODEX_INSTANCE]).toEqual(
+      originalSelection,
+    );
+  });
+
+  it("does not overwrite an existing destination composer during conflict recovery", () => {
+    const store = useComposerDraftStore.getState();
+    const destinationDraftId = DraftId.make("draft-provider-conflict-existing");
+    const originalSelection = modelSelection(CODEX_DRIVER, "gpt-5.4");
+    store.setPrompt(threadRef, "source content");
+    store.setModelSelection(threadRef, originalSelection, { explicit: true });
+    store.setProviderBindingConflict(threadRef, CLAUDE_AGENT_INSTANCE);
+    store.setProjectDraftThreadId(
+      scopeProjectRef(TEST_ENVIRONMENT_ID, ProjectId.make("project-provider-conflict-existing")),
+      destinationDraftId,
+      { threadId: ThreadId.make("thread-provider-conflict-existing") },
+    );
+    store.setPrompt(destinationDraftId, "unrelated destination content");
+
+    store.transferComposerContentSnapshotForProviderConflict(threadRef, destinationDraftId);
+
+    expect(store.getComposerDraft(threadRef)?.prompt).toBe("source content");
+    expect(store.getComposerDraft(threadRef)?.providerBindingConflict).toBeDefined();
+    expect(store.getComposerDraft(destinationDraftId)?.prompt).toBe(
+      "unrelated destination content",
+    );
+  });
+
   it("stores a model selection in the draft", () => {
     const store = useComposerDraftStore.getState();
     store.setModelSelection(

@@ -201,6 +201,21 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
       return true;
     });
 
+  /**
+   * Compare-and-set rewrite for a caller holding an exact queue snapshot.
+   * The revision fence also catches a replacement published while this
+   * mutation waits for earlier durable writes.
+   */
+  const updateIfCurrent = (
+    expected: QueuedThreadMessage,
+    replacement: QueuedThreadMessage,
+  ): Promise<boolean> => {
+    if (!currentMessages().some((candidate) => candidate === expected)) {
+      return Promise.resolve(false);
+    }
+    return update(replacement, revisions.get(expected.messageId) ?? 0);
+  };
+
   // `expectedRevision` makes the removal a compare-and-set too: an edit
   // accepted after the caller decided to remove (restore-to-composer reads
   // the payload it is about to delete) keeps the newer message queued.
@@ -266,6 +281,15 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
       bumpRevision(message.messageId);
       return removed;
     });
+
+  /** Remove only the exact queue snapshot the caller inspected. */
+  const removeIfCurrent = (expected: QueuedThreadMessage): Promise<boolean> => {
+    if (!currentMessages().some((candidate) => candidate === expected)) {
+      return Promise.resolve(false);
+    }
+    const expectedRevision = revisions.get(expected.messageId) ?? 0;
+    return remove(expected, expectedRevision).then((removed) => removed !== null);
+  };
 
   const clearEnvironment = (
     environmentId: EnvironmentId,
@@ -386,7 +410,9 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
     /** Current write revision for a queued message; input to update's CAS. */
     revisionOf: (messageId: MessageId): number => revisions.get(messageId) ?? 0,
     update,
+    updateIfCurrent,
     remove,
+    removeIfCurrent,
     clearEnvironment,
   };
 }

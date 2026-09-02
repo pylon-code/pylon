@@ -13,6 +13,10 @@
  * @module providerInstances
  */
 import {
+  getProviderAdmissionAvailability,
+  getProviderUnavailablePresentation,
+} from "@t3tools/client-runtime/providerAvailability";
+import {
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
@@ -28,6 +32,8 @@ import {
 } from "@t3tools/contracts";
 
 import { formatProviderDriverKindLabel } from "./providerModels";
+
+export { getProviderUnavailablePresentation };
 
 /**
  * Local-only placeholder used while a draft has no provider it can safely
@@ -78,7 +84,13 @@ export interface ProviderInstanceEntry {
  * `ready` probe status can remain in the streamed snapshot until reconciliation.
  */
 export function isProviderInstancePickerReady(entry: ProviderInstanceEntry): boolean {
-  return entry.enabled && entry.isAvailable && entry.status === "ready";
+  return (
+    getProviderAdmissionAvailability({
+      provider: entry.snapshot,
+      instanceId: String(entry.instanceId),
+      providerSnapshotKnown: true,
+    }).status === "available"
+  );
 }
 
 /** Picker rails contain configured, enabled instances only. */
@@ -438,15 +450,22 @@ export function resolveSelectableProviderInstance(
 
 /**
  * Resolve the model selection persisted for a project or new thread. A valid
- * stored selection is preserved byte-for-byte. Falling back to another
- * instance also resets the model to that instance's own default, avoiding
- * cross-provider instance/model pairs.
+ * stored selection is preserved byte-for-byte. A stored selection whose entry
+ * is explicitly unavailable is also preserved so the composer can show the
+ * server's remediation and require an explicit replacement. Ordinary missing,
+ * disabled, stale, and errored selections keep the existing fallback behavior.
+ * Falling back to another instance resets the model to that instance's own
+ * default, avoiding cross-provider instance/model pairs.
  */
 export function resolveDefaultProviderModelSelection(
   providers: ReadonlyArray<ServerProvider>,
   selection: ModelSelection | null | undefined,
   nowMs: number = Date.now(),
 ): ModelSelection | null {
+  const storedProvider = providers.find(
+    (provider) => provider.instanceId === selection?.instanceId,
+  );
+  if (selection && getProviderUnavailablePresentation(storedProvider)) return selection;
   const instanceId = resolveSelectableProviderInstance(providers, selection?.instanceId, nowMs);
   if (instanceId === undefined) return null;
   if (selection?.instanceId === instanceId) return selection;

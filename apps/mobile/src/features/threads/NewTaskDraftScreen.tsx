@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useFontFamily } from "../../lib/useFontFamily";
 
+import { getProviderAdmissionUnavailableReason } from "@t3tools/client-runtime/providerAvailability";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -38,6 +39,7 @@ import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { COMPOSER_LAYOUT_TRANSITION, ComposerSurface } from "./ThreadComposer";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
+import { ProviderUnavailableNotice } from "./ProviderUnavailableNotice";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
 import {
   ComposerDictationCancelAction,
@@ -158,6 +160,15 @@ export function NewTaskDraftScreen(props: {
     connectedEnvironments.find(
       (environment) => environment.environmentId === selectedProject.environmentId,
     )?.connectionState === "connected";
+  const providerAdmissionReason = getProviderAdmissionUnavailableReason({
+    provider: flow.selectedProviderStatus,
+    instanceId: flow.selectedModel ? String(flow.selectedModel.instanceId) : undefined,
+    providerSnapshotKnown: selectedEnvironmentServerConfig != null,
+  });
+  const providerUnavailable =
+    providerAdmissionReason === null
+      ? null
+      : { headline: "Unavailable" as const, detail: providerAdmissionReason };
   const promptInputRef = useRef<ComposerEditorHandle>(null);
   const loadedBranchesProjectKeyRef = useRef<string | null>(null);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
@@ -794,18 +805,20 @@ export function NewTaskDraftScreen(props: {
     if (voiceInput.blocksSubmission) return;
     const selectedProject = flow.selectedProject;
     const draftKey = flow.draftKey;
-    if (!selectedProject || !draftKey) {
+    if (!selectedProject || !draftKey || providerUnavailable) {
       return;
     }
     const draft = getComposerDraftSnapshot(draftKey);
-    // Snapshot read keeps just-typed selector state; the availability gate
-    // still applies so a stored selection on a disabled provider falls back
-    // to the flow's resolved model.
+    // Snapshot read keeps just-typed selector state. Ambient stale defaults
+    // may fall back, but a human/recovered exact provider choice must remain
+    // blocked rather than silently switch accounts.
     const modelSelection =
-      resolveSelectableModelSelection(
-        selectedEnvironmentServerConfig,
-        draft.modelSelection ?? null,
-      ) ?? flow.selectedModel;
+      draft.providerSelectionExplicit === true && draft.modelSelection !== undefined
+        ? resolveSelectableModelSelection(selectedEnvironmentServerConfig, draft.modelSelection)
+        : (resolveSelectableModelSelection(
+            selectedEnvironmentServerConfig,
+            draft.modelSelection ?? null,
+          ) ?? flow.selectedModel);
     const workspaceMode = draft.workspaceSelection?.mode ?? flow.workspaceMode;
     const selectedBranchName = draft.workspaceSelection?.branch ?? flow.selectedBranchName;
     const selectedWorktreePath =
@@ -837,19 +850,23 @@ export function NewTaskDraftScreen(props: {
     }
 
     const editingPendingTask = flow.editingPendingTask;
+    const retryTurnMetadata =
+      editingPendingTask?.deliveryHold === undefined ? null : makeTurnCommandMetadata();
 
     if (!environmentConnected) {
       // Offline: park the task in the outbox; the drain sends it when the
-      // environment reconnects. Editing an existing pending task re-queues it
-      // under its original identifiers.
-      const metadata = editingPendingTask
-        ? {
-            threadId: editingPendingTask.threadId,
-            commandId: editingPendingTask.commandId,
-            messageId: editingPendingTask.messageId,
-            createdAt: editingPendingTask.createdAt,
-          }
-        : makeTurnCommandMetadata();
+      // environment reconnects. Ordinary edits preserve their identifiers;
+      // explicitly submitting a held retarget uses the fresh metadata above.
+      const metadata =
+        retryTurnMetadata ??
+        (editingPendingTask
+          ? {
+              threadId: editingPendingTask.threadId,
+              commandId: editingPendingTask.commandId,
+              messageId: editingPendingTask.messageId,
+              createdAt: editingPendingTask.createdAt,
+            }
+          : makeTurnCommandMetadata());
       const message = flow.buildPendingTaskMessage(metadata);
       if (!message) {
         return;
@@ -857,6 +874,19 @@ export function NewTaskDraftScreen(props: {
       flow.setSubmitting(true);
       try {
         await enqueueThreadOutboxMessage(message);
+        if (
+          editingPendingTask !== null &&
+          editingPendingTask.deliveryHold !== undefined &&
+          editingPendingTask.messageId !== message.messageId
+        ) {
+          try {
+            await removeThreadOutboxMessage(editingPendingTask);
+          } catch (error) {
+            // The replacement is already durable and the old entry remains
+            // held, so neither copy can lose or double-send the content.
+            console.warn("[new-task] failed to remove retargeted held task", error);
+          }
+        }
       } catch (error) {
         Alert.alert(
           "Could not queue task",
@@ -912,7 +942,7 @@ export function NewTaskDraftScreen(props: {
       },
       ...(editingPendingTask
         ? {
-            turnMetadata: {
+            turnMetadata: retryTurnMetadata ?? {
               threadId: editingPendingTask.threadId,
               commandId: editingPendingTask.commandId,
               messageId: editingPendingTask.messageId,
@@ -972,8 +1002,9 @@ export function NewTaskDraftScreen(props: {
 
   const isAndroid = Platform.OS === "android";
   const canStart =
-    Boolean(flow.selectedProject) &&
+    Boolean(flow.selectedProject?.workspaceRoot?.trim()) &&
     Boolean(flow.selectedModel) &&
+    providerUnavailable === null &&
     flow.prompt.trim().length > 0 &&
     isIncomingShareReady &&
     !isImportingShare &&
@@ -1140,6 +1171,11 @@ export function NewTaskDraftScreen(props: {
       ) : null}
       <View className="pb-1">{workspaceControls}</View>
 
+      <ProviderUnavailableNotice
+        provider={flow.selectedProviderStatus}
+        reason={providerAdmissionReason}
+      />
+
       <ComposerSurface
         style={{
           borderRadius: 26,
@@ -1247,11 +1283,15 @@ export function NewTaskDraftScreen(props: {
               {voicePresentation.showsSend ? (
                 <ComposerActionButton
                   accessibilityLabel={
-                    flow.submitting
-                      ? "Starting task"
-                      : environmentConnected
-                        ? "Start task"
-                        : "Queue task"
+                    providerUnavailable
+                      ? `Start unavailable. ${providerUnavailable.detail}`
+                      : flow.submitting
+                        ? "Starting task"
+                        : !canStart
+                          ? "Start unavailable. Add a message and complete the task setup."
+                          : environmentConnected
+                            ? "Start task"
+                            : "Queue task. The environment is disconnected; this task will remain queued."
                   }
                   disabled={!canStart}
                   icon={environmentConnected ? "arrow.up" : "tray.and.arrow.up"}

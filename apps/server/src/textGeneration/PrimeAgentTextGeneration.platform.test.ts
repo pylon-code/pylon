@@ -1,7 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { PrimeAgentSettings, ProviderInstanceId } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -21,17 +20,16 @@ const TestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "pylon-prime-platform-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
-it.layer(TestLayer)("PrimeAgentTextGeneration platform subprocess", (it) => {
+it.layer(TestLayer)("PrimeAgentTextGeneration POSIX subprocess", (it) => {
   it.effect("spawns the selected public ESM SDK with exact instance affinity and cleans up", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const hostPlatform = yield* HostProcessPlatform;
       const root = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "pylon prime platform with spaces ",
       });
       const packageRoot = path.join(root, "Selected Prime Package With Spaces");
-      const binaryName = hostPlatform === "win32" ? "prime-agent.cmd" : "prime-agent";
+      const binaryName = "prime-agent";
       const binaryPath = path.join(packageRoot, "bin", binaryName);
       const sdkEntryPath = path.join(packageRoot, "public sdk entry.js");
       const cwd = path.join(root, "Project Working Directory With Spaces");
@@ -52,13 +50,8 @@ it.layer(TestLayer)("PrimeAgentTextGeneration platform subprocess", (it) => {
           exports: { ".": { import: "./public sdk entry.js" } },
         }),
       );
-      yield* fileSystem.writeFileString(
-        binaryPath,
-        hostPlatform === "win32" ? "@echo off\r\nexit /b 0\r\n" : "#!/usr/bin/env node\n",
-      );
-      if (hostPlatform !== "win32") {
-        yield* fileSystem.chmod(binaryPath, 0o755);
-      }
+      yield* fileSystem.writeFileString(binaryPath, "#!/usr/bin/env node\n");
+      yield* fileSystem.chmod(binaryPath, 0o755);
       yield* fileSystem.writeFileString(sdkEntryPath, FAKE_PUBLIC_SDK);
 
       const realSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;

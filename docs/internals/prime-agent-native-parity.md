@@ -16,11 +16,12 @@ Use the independently installed Prime Agent package and its public detached-daem
 - import `DaemonClient` and `DaemonAgentConnection` from that exact installation at runtime;
 - never add or bundle the 260+ MiB Prime package as a Pylon dependency;
 - launch one private, scoped daemon per configured Prime provider instance;
-- use a short, stable Pylon-owned socket/pipe name so the user's normal Prime daemon is untouched; contain POSIX sockets in an owner-only directory below a trusted private or sticky temporary root;
+- use a short, stable Pylon-owned socket name so the user's normal Prime daemon is untouched; contain it in an owner-only directory below a trusted private or sticky temporary root;
 - strip every inherited `PRIME_AGENT_INTERNAL_*` variable before launch, because Pylon may itself be running inside a Prime worker;
 - create one client-owned Prime daemon session per live Pylon thread;
 - persist exact Prime session identity in a server-private thread sidecar while keeping the client-visible provider resume cursor opaque, then rehydrate after server restart;
-- keep ACP as an explicit compatibility fallback for installations without the supported daemon API and for Windows until Prime's named pipe has verifiable per-user access control or peer authentication.
+- keep ACP as an explicit compatibility fallback on supported hosts when daemon setup cannot be used;
+- support provider execution on macOS, Linux, and WSL2 only; reject native `win32` at the driver boundary before any Prime process or probe and direct users to WSL2.
 
 Prime Agent 0.8.1 exposes `prime-agent.daemon` protocol 7, schema revision 22. Pylon accepts protocol 7 or newer through the installed high-level client and negotiates server capabilities rather than pinning an internal wire schema. The shipped capability decisions now live in the [daemon parity ledger](prime-agent-daemon-parity.md); this document remains the original delivery plan.
 
@@ -95,7 +96,7 @@ Each slice includes contracts, adapter operation/event mapping, command/event/pr
 7. **Goal and automation:** goals/gates, heartbeats, schedules, notifications.
 8. **Side questions and history:** independent side cards, history tree, fork to a new Pylon thread/worktree.
 9. **Generic provider auth and permission gate:** supported auth callbacks, credential status, host-gated approvals.
-10. **Hardening:** packaged desktop, Windows named pipe/process behavior, remote/relay/tunnel, concurrency and resource use, upgrade/reconnect compatibility.
+10. **Hardening:** packaged desktop, WSL2 and remote Windows-client behavior, concurrency and resource use, upgrade/reconnect compatibility. Revisit native Windows only after upstream Prime Agent supports it and its public process, transport, SDK, and ACP contracts can be validated.
 
 ## Verification rules
 

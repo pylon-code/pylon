@@ -31,7 +31,13 @@ remain distinct without exposing or persisting Prime's identifier. Missing token
 behavior. Invalid terminal correlation fails closed. Older ACP releases that publish no completion
 metadata retain prompt-response settlement.
 
-Daemon mode is currently disabled on Windows. Prime Agent 0.8.1's named-pipe transport exposes neither a verifiable per-user ACL nor an authenticated peer handshake, so Pylon selects ACP compatibility mode rather than trust a forgeable stable pipe name.
+Prime Agent provider execution is supported on macOS, Linux, and WSL2, which reports itself as Linux.
+A native `win32` Pylon server fails closed at `PrimeAgentDriver.create`, before daemon or ACP selection,
+status and catalog probes, capacity reads, background writing, or install/update resolution. It exposes
+only the typed unavailable provider snapshot with WSL2 guidance and never uses native ACP as a fallback.
+Web, desktop, and mobile clients remain supported when they connect to a WSL2 or remote environment.
+Revisit native execution only after upstream Prime Agent supports Windows, then revalidate its public
+process, transport, SDK, and ACP contracts before changing this ledger or removing the driver gate.
 
 Prime supervisor ownership is recorded outside the agent home. Since Prime Agent 0.8.0, the daemon has retained the registry at `~/.prime/supervisor-owners` so macOS cleanup cannot delete a long-running supervisor's authority record, and the location is deliberately global per user rather than per agent directory. Pylon therefore writes ownership records there even when a provider instance sets its own agent home, and daemon start, stop, and renewal briefly take that registry's advisory lock alongside any other Prime daemon on the machine. This is safe for Pylon because ownership conflicts are keyed on socket path and worker descriptor directory: Pylon derives a unique socket per `(state directory, provider instance)` and the descriptor directory hashes that socket, so a Pylon daemon never claims ownership over a user's interactive `prime-agent` daemon even when both share the default `~/.prime/agent` home. Prime exposes an internal environment override for the registry location; Pylon does not use it, because it strips every `PRIME_AGENT_INTERNAL_*` variable from the daemon environment by design and will not build product behavior on an unsupported knob.
 
@@ -189,8 +195,9 @@ of Pylon's managed-path check. Approval-required sessions retain the stronger fa
 explicit extension, discovery and automatic reconnect disabled, zero RLM child depth, and no non-warning
 extension diagnostic from any path.
 
-This bridge is daemon-only. ACP fallback is selected on Windows, when daemon mode is disabled or
-unavailable, and when custom Prime launch arguments are configured. Prime Agent 0.8.1 ACP does not load
+This bridge is daemon-only. On supported hosts, ACP fallback is selected when daemon mode is disabled or
+unavailable and when custom Prime launch arguments are configured. Native Windows stops at the driver
+boundary instead. Prime Agent 0.8.1 ACP does not load
 the managed bridge and drops custom tool-result `details`, so those sessions retain only Prime's standard
 ACP `PlanUpdated` handling. Matching managed-tool parity in ACP requires a separately reviewed bounded
 content envelope and credible extension verifier, or another scoped transport; it is not implied by this

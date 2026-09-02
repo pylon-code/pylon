@@ -377,6 +377,16 @@ export const OrchestrationSession = Schema.Struct({
   activeTurnRequestId: Schema.optional(CommandId),
   /** Failed admission lineage retained until an exact retry or explicit stop. */
   failedTurnRequestId: Schema.optional(CommandId),
+  /** Durable marker for an exact provider stop that still needs cleanup. */
+  pendingStopRequestId: Schema.optional(CommandId),
+  /** Provider binding captured by the pending stop. Null means no binding existed yet. */
+  pendingStopProviderInstanceId: Schema.optional(Schema.NullOr(ProviderInstanceId)),
+  /** Runtime incarnation captured by the pending stop. Null covers pre-bind admission. */
+  pendingStopSessionIncarnationId: Schema.optional(Schema.NullOr(RuntimeSessionId)),
+  /** Admission lineage captured by the pending stop. */
+  pendingStopTurnRequestId: Schema.optional(Schema.NullOr(CommandId)),
+  /** Active orchestration turn captured by the pending stop. */
+  pendingStopTurnId: Schema.optional(Schema.NullOr(TurnId)),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
@@ -1255,18 +1265,27 @@ const ThreadSessionApplyLifecycleCommand = Schema.Struct({
   expectedActiveTurnRequestId: Schema.NullOr(CommandId),
   expectedActiveTurnId: Schema.NullOr(TurnId),
   expectedFailedTurnRequestId: Schema.NullOr(CommandId),
+  expectedPendingStopRequestId: Schema.optional(Schema.NullOr(CommandId)),
+  expectedPendingStopSessionIncarnationId: Schema.optional(Schema.NullOr(RuntimeSessionId)),
   allowFailedTurnRequestClear: Schema.optionalKey(Schema.Literal(true)),
   session: OrchestrationSession,
   createdAt: IsoDateTime,
 });
 
-/** Atomically binds a provider session only while the exact admission is current. */
+/**
+ * Atomically binds a provider session and its accepted provider-shaped settings
+ * only while the exact admission and previous binding are current.
+ */
 const ThreadSessionBindPendingCommand = Schema.Struct({
   type: Schema.Literal("thread.session.bind-pending"),
   commandId: CommandId,
   threadId: ThreadId,
   requestId: CommandId,
   messageId: MessageId,
+  expectedProviderInstanceId: Schema.NullOr(ProviderInstanceId),
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
   session: OrchestrationSession,
   createdAt: IsoDateTime,
 });
@@ -1573,10 +1592,20 @@ export const ThreadMessageSentPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+const ThreadTurnAdmissionIntent = Schema.Struct({
+  kind: Schema.Literals(["steer", "start", "compatible-transition"]),
+  expectedProviderInstanceId: Schema.NullOr(ProviderInstanceId),
+  expectedSessionIncarnationId: Schema.NullOr(RuntimeSessionId),
+  expectedActiveTurnRequestId: Schema.NullOr(CommandId),
+  targetModelSelection: ModelSelection,
+});
+
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   modelSelection: Schema.optional(ModelSelection),
+  /** Decision-time admission plan. Optional only for historical persisted events. */
+  admissionIntent: Schema.optional(ThreadTurnAdmissionIntent),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   interactionMode: ProviderInteractionMode.pipe(
@@ -1638,6 +1667,16 @@ export const ThreadRevertedPayload = Schema.Struct({
 
 export const ThreadSessionStopRequestedPayload = Schema.Struct({
   threadId: ThreadId,
+  /** Exact provider binding observed when the stop was decided. */
+  targetProviderInstanceId: Schema.optional(Schema.NullOr(ProviderInstanceId)),
+  /** Exact provider runtime incarnation observed when the stop was decided. */
+  targetSessionIncarnationId: Schema.optional(Schema.NullOr(RuntimeSessionId)),
+  /** Exact pending session lineage observed when the stop was decided. */
+  targetPendingTurnSessionId: Schema.optional(Schema.NullOr(RuntimeSessionId)),
+  /** Exact pending or active turn admission owned by this stop. */
+  targetTurnRequestId: Schema.optional(Schema.NullOr(CommandId)),
+  /** Exact active orchestration turn owned by this stop. */
+  targetTurnId: Schema.optional(Schema.NullOr(TurnId)),
   createdAt: IsoDateTime,
 });
 

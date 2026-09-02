@@ -46,19 +46,28 @@ function renderPendingActions(isRunning: boolean) {
   );
 }
 
-function renderStandaloneStop() {
+function renderStandaloneStop({
+  isRunning = true,
+  isStopCapable,
+  isConnecting = false,
+}: {
+  isRunning?: boolean;
+  isStopCapable?: boolean;
+  isConnecting?: boolean;
+} = {}) {
   return renderToStaticMarkup(
     createElement(ComposerPrimaryActions, {
       compact: true,
       pendingAction: null,
-      isRunning: true,
+      isRunning,
+      ...(isStopCapable === undefined ? {} : { isStopCapable }),
       canQueueFollowUp: false,
       onQueueFollowUp: () => {},
       showPlanFollowUpPrompt: false,
       promptHasText: false,
       isSendBusy: false,
       sendDisabledReason: null,
-      isConnecting: false,
+      isConnecting,
       isEnvironmentUnavailable: false,
       isPreparingWorktree: false,
       hasSendableContent: false,
@@ -98,6 +107,8 @@ function renderRunningActions(showSendWhileRunning: boolean, hasSendableContent:
 function renderQueueCapableRunningActions(
   showSendWhileRunning: boolean,
   hasSendableContent: boolean,
+  sendDisabledReason: string | null = null,
+  isEnvironmentUnavailable = false,
 ) {
   return renderToStaticMarkup(
     createElement(ComposerPrimaryActions, {
@@ -109,9 +120,9 @@ function renderQueueCapableRunningActions(
       showPlanFollowUpPrompt: false,
       promptHasText: hasSendableContent,
       isSendBusy: false,
-      sendDisabledReason: null,
+      sendDisabledReason,
       isConnecting: false,
-      isEnvironmentUnavailable: false,
+      isEnvironmentUnavailable,
       isPreparingWorktree: false,
       hasSendableContent,
       showSendWhileRunning,
@@ -122,7 +133,10 @@ function renderQueueCapableRunningActions(
   );
 }
 
-function renderSendButton(sendDisabledReason: string | null = null) {
+function renderSendButton(
+  sendDisabledReason: string | null = null,
+  isEnvironmentUnavailable = false,
+) {
   return renderToStaticMarkup(
     createElement(ComposerPrimaryActions, {
       compact: true,
@@ -135,7 +149,7 @@ function renderSendButton(sendDisabledReason: string | null = null) {
       isSendBusy: false,
       sendDisabledReason,
       isConnecting: false,
-      isEnvironmentUnavailable: false,
+      isEnvironmentUnavailable,
       isPreparingWorktree: false,
       hasSendableContent: true,
       onPreviousPendingQuestion: () => {},
@@ -246,6 +260,28 @@ describe("ComposerPrimaryActions", () => {
 
     expect(markup).toContain("disabled");
     expect(markup).toContain('aria-label="Sending feedback"');
+  });
+
+  it("keeps a concrete provider reason when the aggregate unavailable flag is also set", () => {
+    const reason = "Select a model for the thread’s bound provider";
+    const sendMarkup = renderSendButton(reason, true);
+    const queueMarkup = renderQueueCapableRunningActions(true, true, reason, true);
+
+    expect(sendMarkup).toContain(`aria-label="${reason}"`);
+    expect(sendMarkup).not.toContain('aria-label="Environment disconnected"');
+    expect(queueMarkup).toContain(`aria-label="${reason}"`);
+    expect(queueMarkup).not.toContain('aria-label="Environment disconnected"');
+  });
+
+  it("offers Stop generation while provider admission is still starting", () => {
+    const markup = renderStandaloneStop({
+      isRunning: false,
+      isStopCapable: true,
+      isConnecting: true,
+    });
+
+    expect(markup).toContain('aria-label="Stop generation"');
+    expect(markup).not.toContain('aria-label="Connecting…"');
   });
 
   it("offers Stop generation while a running turn is waiting for user input", () => {
