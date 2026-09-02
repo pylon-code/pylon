@@ -165,7 +165,7 @@ import {
 } from "~/lib/openPullRequestLink";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { isPreviewSupportedInRuntime } from "../previewStateStore";
-import { resolvePathLinkTarget } from "../terminal-links";
+import { isAbsolutePath, resolvePathLinkTarget } from "../terminal-links";
 import {
   isBrowserPreviewFile,
   openFileInPreview,
@@ -189,6 +189,8 @@ interface ChatMarkdownProps {
   parseRawHtml?: boolean;
   /** Append a prompt that invokes a newly created artifact-template skill. */
   onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
+  /** Directory that anchors relative links and images; defaults to `cwd`. Set
+      to the file's own directory when rendering a markdown file. */
   imageBaseDir?: string | undefined;
   onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
   extraRemarkPlugins?: NonNullable<ReactMarkdownOptions["remarkPlugins"]>;
@@ -1032,7 +1034,9 @@ interface MarkdownFileLinkProps {
   targetPath: string;
   iconPath: string;
   displayPath: string;
-  workspaceRelativePath: string | null;
+  /** What the files panel opens: workspace-relative inside the workspace, the
+      absolute host path outside it, null when the panel cannot show the file. */
+  panelPath: string | null;
   line?: number | undefined;
   label: string;
   copyMarkdown: string;
@@ -1044,7 +1048,7 @@ interface MarkdownFileLinkProps {
         fileManagerTargetPath?: string,
       ) => Promise<AtomCommandResult<unknown, unknown>>)
     | undefined;
-  onOpenInPanel: (workspaceRelativePath: string, line: number | undefined) => void;
+  onOpenInPanel: (panelPath: string, line: number | undefined) => void;
   getOpenInEditorMenuLabel: () => string;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   onOpenMedia?: (() => void) | undefined;
@@ -1623,7 +1627,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   targetPath,
   iconPath,
   displayPath,
-  workspaceRelativePath,
+  panelPath,
   line,
   label,
   copyMarkdown,
@@ -1677,8 +1681,8 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   }, [iconPath, onOpen, targetPath]);
 
   const handleOpenInFilePreview = useCallback(() => {
-    if (threadRef && workspaceRelativePath) {
-      onOpenInPanel(workspaceRelativePath, line);
+    if (threadRef && panelPath) {
+      onOpenInPanel(panelPath, line);
       return;
     }
     if (onOpenMedia) {
@@ -1686,7 +1690,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       return;
     }
     handleOpenInEditor();
-  }, [handleOpenInEditor, line, onOpenInPanel, onOpenMedia, threadRef, workspaceRelativePath]);
+  }, [handleOpenInEditor, line, onOpenInPanel, onOpenMedia, panelPath, threadRef]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!onOpenInBrowser) {
@@ -1887,7 +1891,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
 
   const canOpenInEditor = onOpen !== undefined;
   const canOpenInBrowser = onOpenInBrowser !== undefined;
-  const canOpenInPanel = threadRef !== undefined && Boolean(workspaceRelativePath);
+  const canOpenInPanel = threadRef !== undefined && Boolean(panelPath);
   const hasPrimaryAction = hasMarkdownFilePrimaryAction({
     canOpenInEditor,
     canOpenInBrowser,
@@ -1974,7 +1978,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.targetPath === next.targetPath &&
     previous.iconPath === next.iconPath &&
     previous.displayPath === next.displayPath &&
-    previous.workspaceRelativePath === next.workspaceRelativePath &&
+    previous.panelPath === next.panelPath &&
     previous.line === next.line &&
     previous.label === next.label &&
     previous.copyMarkdown === next.copyMarkdown &&
@@ -2124,24 +2128,24 @@ function ChatMarkdown({
     for (const href of extractMarkdownLinkHrefs(renderCodexFileCitationsAsMarkdown(text))) {
       const normalizedHref = normalizeMarkdownLinkHrefKey(href);
       if (metaByHref.has(normalizedHref)) continue;
-      const meta = resolveMarkdownFileLinkMeta(normalizedHref, cwd);
+      const meta = resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd);
       if (meta) {
         metaByHref.set(normalizedHref, meta);
       }
     }
     return metaByHref;
-  }, [cwd, text]);
+  }, [cwd, imageBaseDir, text]);
   const inlineCodeFileLinkMetaByText = useMemo(() => {
     const metaByText = new Map<string, MarkdownFileLinkMeta>();
     for (const span of extractInlineCodeSpans(text)) {
       if (metaByText.has(span)) continue;
-      const meta = resolveInlineCodeFileLinkMeta(span, cwd);
+      const meta = resolveInlineCodeFileLinkMeta(span, cwd, imageBaseDir ?? cwd);
       if (meta) {
         metaByText.set(span, meta);
       }
     }
     return metaByText;
-  }, [cwd, text]);
+  }, [cwd, imageBaseDir, text]);
   const fileLinkParentSuffixByPath = useMemo(() => {
     const filePaths = [
       ...[...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath),
@@ -2249,12 +2253,13 @@ function ChatMarkdown({
       return openFileInPreview({
         threadRef,
         filePath: path,
+        workspaceRoot: cwd,
         httpBaseUrl: preparedConnection.value.httpBaseUrl,
         createAssetUrl,
         openPreview,
       });
     },
-    [createAssetUrl, openPreview, preparedConnection, threadRef],
+    [createAssetUrl, cwd, openPreview, preparedConnection, threadRef],
   );
   const findWorkspaceBasenameMatch = useCallback(
     async (workspaceRelativePath: string) => {
@@ -2277,23 +2282,23 @@ function ChatMarkdown({
     [cwd, environmentId, searchProjectEntries],
   );
   // A bare filename resolves to the workspace root, which is rarely where the
-  // file is, so ask the index before opening.
+  // file is, so ask the index before opening. Absolute host paths open as-is.
   const openFileInPanel = useCallback(
-    (workspaceRelativePath: string, line: number | undefined) => {
+    (panelPath: string, line: number | undefined) => {
       if (!threadRef) return;
       // Claimed on every open so a synchronous one supersedes a lookup already
       // in flight.
       const isLatestLookup = claimWorkspaceBasenameLookup();
       const openAt = (path: string) =>
         useRightPanelStore.getState().openFile(threadRef, path, line);
-      if (!cwd || !needsWorkspaceBasenameLookup(workspaceRelativePath)) {
-        openAt(workspaceRelativePath);
+      if (!cwd || !needsWorkspaceBasenameLookup(panelPath)) {
+        openAt(panelPath);
         return;
       }
       void (async () => {
-        const match = await findWorkspaceBasenameMatch(workspaceRelativePath);
+        const match = await findWorkspaceBasenameMatch(panelPath);
         if (!isLatestLookup()) return;
-        openAt(match ?? workspaceRelativePath);
+        openAt(match ?? panelPath);
       })();
     },
     [cwd, findWorkspaceBasenameMatch, threadRef],
@@ -2341,6 +2346,11 @@ function ChatMarkdown({
         mediaMimeTypeFromExtension(
           fileLinkMeta.basename.slice(fileLinkMeta.basename.lastIndexOf(".")),
         ) !== null;
+      // Media outside the workspace keeps the expanded preview; other host
+      // files (a report in a temp dir) open read-only in the files panel.
+      const panelPath =
+        fileLinkMeta.workspaceRelativePath ??
+        (!canPreviewMedia && isAbsolutePath(fileLinkMeta.filePath) ? fileLinkMeta.filePath : null);
 
       return (
         <MarkdownFileLink
@@ -2348,7 +2358,7 @@ function ChatMarkdown({
           targetPath={fileLinkMeta.targetPath}
           iconPath={fileLinkMeta.filePath}
           displayPath={fileLinkMeta.displayPath}
-          workspaceRelativePath={fileLinkMeta.workspaceRelativePath}
+          panelPath={panelPath}
           line={fileLinkMeta.line}
           label={labelParts.join(" · ")}
           copyMarkdown={copyMarkdown}
@@ -2465,7 +2475,7 @@ function ChatMarkdown({
         const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
         const fileLinkMeta = normalizedHref
           ? (markdownFileLinkMetaByHref.get(normalizedHref) ??
-            resolveMarkdownFileLinkMeta(normalizedHref, cwd))
+            resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd))
           : null;
         if (!fileLinkMeta) {
           const faviconHost = resolveExternalWebLinkHost(href);
@@ -2617,7 +2627,7 @@ function ChatMarkdown({
           const codeText = nodeToPlainText(children);
           const fileLinkMeta =
             inlineCodeFileLinkMetaByText.get(codeText.trim()) ??
-            resolveInlineCodeFileLinkMeta(codeText, cwd);
+            resolveInlineCodeFileLinkMeta(codeText, cwd, imageBaseDir ?? cwd);
           if (fileLinkMeta) {
             return fileLinkChip(
               fileLinkMeta,
