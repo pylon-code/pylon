@@ -8,7 +8,9 @@ import { describe, expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -35,6 +37,7 @@ interface CapturedCommand {
     readonly stdin?: "ignore";
     readonly stdout?: "ignore";
     readonly stderr?: "ignore";
+    readonly output?: "ignore" | "pipe";
   };
 }
 
@@ -42,16 +45,23 @@ interface FakeProcess {
   handle: ChildProcessSpawner.ChildProcessHandle;
   running: boolean;
   kills: number;
+  handleKills: number;
+  readonly killSignals: string[];
   readonly complete: () => void;
 }
 
-function fakeProcess(pid: number): Effect.Effect<FakeProcess> {
+function fakeProcess(
+  pid: number,
+  options?: { readonly killHangs?: boolean; readonly postKillExitHangs?: boolean },
+): Effect.Effect<FakeProcess> {
   return Effect.sync(() => {
     let exitCompleted = false;
     let exitResume: ((effect: Effect.Effect<ChildProcessSpawner.ExitCode>) => void) | undefined;
     const process: FakeProcess = {
       running: true,
       kills: 0,
+      handleKills: 0,
+      killSignals: [],
       complete: () => {
         process.running = false;
         exitCompleted = true;
@@ -67,11 +77,12 @@ function fakeProcess(pid: number): Effect.Effect<FakeProcess> {
       pid: ChildProcessSpawner.ProcessId(pid),
       exitCode,
       isRunning: Effect.sync(() => process.running),
-      kill: () =>
+      kill: (killOptions) =>
         Effect.sync(() => {
-          process.kills += 1;
-          process.complete();
-        }),
+          process.handleKills += 1;
+          process.killSignals.push(killOptions?.killSignal ?? "SIGTERM");
+          if (options?.postKillExitHangs !== true) process.complete();
+        }).pipe(options?.killHangs === true ? Effect.andThen(Effect.never) : (effect) => effect),
       unref: Effect.succeed(Effect.void),
       stdin: Sink.drain,
       stdout: Stream.empty,
@@ -95,6 +106,9 @@ function fakeBridge(input: {
   readonly existingLive?: { value: boolean };
   readonly readinessFailures?: { value: number };
   readonly calls?: { connect: number; readiness: number; hello: number; prompt: number };
+  readonly shutdownHangs?: boolean;
+  readonly shutdownDoesNotExit?: boolean;
+  readonly shutdownRejects?: boolean;
 }): PrimeAgentDaemonBridge {
   const hello =
     input.hello ??
@@ -141,8 +155,10 @@ function fakeBridge(input: {
       if (command.type === "shutdown") {
         input.shutdownRequests.push(this.socketPath);
         input.events?.push(input.existingLive?.value === true ? "existing-shutdown" : "shutdown");
+        if (input.shutdownHangs === true) return new Promise<unknown>(() => undefined);
+        if (input.shutdownRejects === true) return Promise.reject(new Error("shutdown rejected"));
         if (input.existingLive) input.existingLive.value = false;
-        input.processes.at(-1)?.complete();
+        if (input.shutdownDoesNotExit !== true) input.processes.at(-1)?.complete();
       }
       return Promise.resolve({ type: "response", success: true });
     }
@@ -158,6 +174,25 @@ function fakeBridge(input: {
     }
     subscribe(): () => void {
       return () => undefined;
+    }
+    supportsNegotiatedCapability(): boolean {
+      return true;
+    }
+    getOwnedSessionContractProof() {
+      return {
+        feature: "caller_owned_session_environment_cleanup_v1" as const,
+        status: "attached" as const,
+        daemon: {
+          protocolName: "prime-agent.daemon",
+          protocolVersion: 7,
+          schemaRevision: 30,
+          supervisorGeneration: "supervisor-1",
+          transportGeneration: 0,
+        },
+      };
+    }
+    disposeOwnedSession(): Promise<void> {
+      return Promise.resolve();
     }
     getCommands(): Promise<unknown> {
       return Promise.resolve([]);
@@ -192,8 +227,11 @@ function fakeBridge(input: {
     version: "0.7.1",
     protocolName: "prime-agent.daemon",
     protocolVersion: 7,
-    negotiatedDaemonSessionCapabilitiesAvailable: false,
-    sdkFeatures: [],
+    negotiatedDaemonSessionCapabilitiesAvailable: true,
+    sdkFeatures: [
+      "negotiated_daemon_session_capabilities_v1",
+      "caller_owned_session_environment_cleanup_v1",
+    ],
     recoverableOwnedSessionAdoptionAvailable: false,
     DaemonClient: FakeClient,
     DaemonAgentConnection: FakeAgentConnection,
@@ -211,6 +249,21 @@ function managerFixture(options?: {
   readonly platform?: NodeJS.Platform;
   readonly injectBridge?: boolean;
   readonly recoverable?: boolean;
+  readonly sdkFeatures?: ReadonlyArray<string>;
+  readonly currentGeneration?: { readonly value: boolean };
+  readonly shutdownTimeout?: Duration.Input;
+  readonly shutdownHangs?: boolean;
+  readonly shutdownDoesNotExit?: boolean;
+  readonly shutdownRejects?: boolean;
+  readonly killHangs?: boolean;
+  readonly postKillExitHangs?: boolean;
+  readonly scopeCloseBarrier?: Promise<void>;
+  readonly socketCleanupHangs?: boolean;
+  readonly staleProcessIdentity?: boolean;
+  readonly processIdentity?: { value: string };
+  readonly beforeAtomicSignal?: () => Promise<void>;
+  readonly atomicSignalAvailable?: boolean;
+  readonly instanceId?: string;
 }) {
   const commands: CapturedCommand[] = [];
   const processes: FakeProcess[] = [];
@@ -220,9 +273,12 @@ function managerFixture(options?: {
   const readinessFailures = { value: options?.readinessFailures ?? 0 };
   const connectionAvailable = { value: true };
   const calls = { connect: 0, readiness: 0, hello: 0, prompt: 0 };
+  let identityInspections = 0;
+  let socketCleanupCalls = 0;
+  const instanceId = ProviderInstanceId.make(options?.instanceId ?? "prime-work");
   const paths = derivePrimeAgentDaemonPaths({
     stateDir: "/tmp/pylon-state",
-    providerInstanceId: ProviderInstanceId.make("prime-work"),
+    providerInstanceId: instanceId,
     platform: options?.platform ?? "linux",
     tempDir: options?.tempDir ?? "/tmp",
   });
@@ -250,14 +306,28 @@ function managerFixture(options?: {
     readinessFailures,
     connectionAvailable,
     calls,
+    ...(options?.shutdownHangs === undefined ? {} : { shutdownHangs: options.shutdownHangs }),
+    ...(options?.shutdownDoesNotExit === undefined
+      ? {}
+      : { shutdownDoesNotExit: options.shutdownDoesNotExit }),
+    ...(options?.shutdownRejects === undefined ? {} : { shutdownRejects: options.shutdownRejects }),
     ...(options?.hello === undefined && recoveryHello === undefined
       ? {}
       : { hello: options?.hello ?? recoveryHello }),
     ...(options?.failConnect === undefined ? {} : { failConnect: options.failConnect }),
   });
+  if (options?.sdkFeatures !== undefined) {
+    Object.assign(bridge, {
+      sdkFeatures: [...options.sdkFeatures],
+      negotiatedDaemonSessionCapabilitiesAvailable: options.sdkFeatures.includes(
+        "negotiated_daemon_session_capabilities_v1",
+      ),
+    });
+  }
   if (options?.recoverable) {
     Object.assign(bridge, {
       sdkFeatures: [
+        "negotiated_daemon_session_capabilities_v1",
         "recoverable_owned_session_adoption_v1",
         "caller_owned_session_environment_cleanup_v1",
       ],
@@ -271,41 +341,105 @@ function managerFixture(options?: {
       confirmRecoverableOwnedSessionAdoption: async () => undefined,
     });
   }
-  const spawner = Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) =>
-      Effect.gen(function* () {
-        commands.push(command as unknown as CapturedCommand);
-        events.push("spawn");
-        if (processes.length > 0 && options?.restoreConnectionOnSpawn) {
-          connectionAvailable.value = true;
-        }
-        const process = yield* fakeProcess(processes.length + 1);
-        processes.push(process);
-        return process.handle;
-      }),
-    ),
-  );
+  const spawnProcess: NonNullable<
+    Parameters<typeof makePrimeAgentDaemonManager>[0]["spawnProcess"]
+  > = ({ executablePath, args, environment, output }) =>
+    Effect.gen(function* () {
+      commands.push({
+        command: executablePath,
+        args,
+        options: { env: environment, extendEnv: false, output },
+      });
+      events.push("spawn");
+      if (processes.length > 0 && options?.restoreConnectionOnSpawn) {
+        connectionAvailable.value = true;
+      }
+      if (options?.scopeCloseBarrier !== undefined) {
+        yield* Effect.addFinalizer(() => Effect.promise(() => options.scopeCloseBarrier!));
+      }
+      const process = yield* fakeProcess(processes.length + 1, {
+        ...(options?.killHangs === undefined ? {} : { killHangs: options.killHangs }),
+        ...(options?.postKillExitHangs === undefined
+          ? {}
+          : { postKillExitHangs: options.postKillExitHangs }),
+      });
+      processes.push(process);
+      return process.handle;
+    });
   const make = makePrimeAgentDaemonManager({
     executablePath: "/resolved/bin/prime-agent",
-    settings: { agentHomePath: "~/.prime/pylon" },
-    environment: {
-      PATH: "/usr/bin",
-      PRIME_AGENT_INTERNAL_ROLE: "worker",
-      PRIME_AGENT_INTERNAL_TOKEN: "secret",
-      KEEP_ME: "yes",
+    identity: {
+      instanceId,
+      generation: { _tag: "PrimeAgentRuntimeGeneration" },
+      configRevision: "test-revision",
+      effectiveHome: NodePath.resolve(process.env.HOME!, ".prime/pylon"),
+      nativeMultipleInstancesRequired: false,
+      launchEnv: {
+        PATH: "/usr/bin",
+        KEEP_ME: "yes",
+        PRIME_AGENT_HOME: NodePath.resolve(process.env.HOME!, ".prime/pylon"),
+        PRIME_AGENT_CODING_AGENT_DIR: NodePath.resolve(process.env.HOME!, ".prime/pylon"),
+      },
+      settings: {
+        enabled: true,
+        binaryPath: "prime-agent",
+        agentHomePath: NodePath.resolve(process.env.HOME!, ".prime/pylon"),
+        launchArgs: "",
+        customModels: [],
+      },
     },
+    ...(options?.currentGeneration === undefined
+      ? {}
+      : {
+          runtimeFence: {
+            generation: {},
+            configRevision: "test-revision",
+            isCurrent: Effect.sync(() => options.currentGeneration!.value),
+          },
+        }),
     stateDir: "/tmp/pylon-state",
-    providerInstanceId: ProviderInstanceId.make("prime-work"),
     platform: options?.platform ?? "linux",
     tempDir: options?.tempDir ?? "/tmp",
     readinessRetryDelay: Duration.zero,
     readinessRetries: 4,
-    shutdownTimeout: Duration.zero,
+    shutdownTimeout: options?.shutdownTimeout ?? Duration.millis(100),
     recoveryEnabled: options?.recoverable === true,
     architecture: "arm64",
+    spawnProcess,
+    inspectProcessIdentity: async (pid) => {
+      identityInspections += 1;
+      return `${options?.processIdentity?.value ?? "test"}:${pid}`;
+    },
+    ...(options?.atomicSignalAvailable === false
+      ? {}
+      : {
+          signalProcessIdentity: async ({ pid, startIdentity }) => {
+            identityInspections += 1;
+            await options?.beforeAtomicSignal?.();
+            const currentIdentity =
+              options?.staleProcessIdentity === true && identityInspections > 1
+                ? `stale:${pid}`
+                : `${options?.processIdentity?.value ?? "test"}:${pid}`;
+            if (currentIdentity !== startIdentity) return false;
+            const process = processes.find((candidate) => candidate.handle.pid === pid);
+            if (process === undefined) return false;
+            process.kills += 1;
+            process.killSignals.push("SIGKILL");
+            if (options?.killHangs === true) await new Promise<void>(() => undefined);
+            if (options?.postKillExitHangs !== true) process.complete();
+            return true;
+          },
+        }),
+    ...(options?.socketCleanupHangs === true
+      ? {
+          removePrivateSocket: async () => {
+            socketCleanupCalls += 1;
+            if (socketCleanupCalls > 1) await new Promise<void>(() => undefined);
+          },
+        }
+      : {}),
     ...(options?.injectBridge === false ? {} : { bridge }),
-  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, spawner)));
+  }).pipe(Effect.provide(NodeServices.layer));
   return {
     make,
     commands,
@@ -316,6 +450,16 @@ function managerFixture(options?: {
     connectionAvailable,
     calls,
   };
+}
+
+function closeFixtureLive(fixture: ReturnType<typeof managerFixture>) {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const manager = yield* fixture.make;
+      const client = yield* manager.openClient();
+      client.close();
+    }),
+  );
 }
 
 describe("PrimeAgentDaemonManager paths and environment", () => {
@@ -364,6 +508,22 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
         detail: expect.stringContaining("verified per-user ACL or authenticated handshake"),
       });
       expect(fixture.commands).toHaveLength(0);
+    });
+  });
+
+  it.effect("rejects missing frozen SDK proof before spawning or opening a daemon", () => {
+    const fixture = managerFixture({
+      sdkFeatures: ["negotiated_daemon_session_capabilities_v1"],
+    });
+    return Effect.gen(function* () {
+      const result = yield* fixture.make.pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.reason).toBe("incompatible-hello");
+        expect(result.failure.detail).not.toContain("/resolved/bin/prime-agent");
+      }
+      expect(fixture.commands).toEqual([]);
+      expect(fixture.calls.connect).toBe(0);
     });
   });
 
@@ -503,10 +663,7 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
       expect(fixture.commands).toHaveLength(1);
       expect(fixture.processes).toHaveLength(1);
       expect(fixture.commands[0]!.options).toMatchObject({
-        detached: true,
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
+        output: "ignore",
         extendEnv: false,
       });
       expect(fixture.processes[0]!.handle.pid).toBe(1);
@@ -631,6 +788,26 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
     }).pipe(Effect.scoped);
   });
 
+  it.effect("retired cleanup kills only its captured child and never the successor socket", () => {
+    const currentGeneration = { value: true };
+    const fixture = managerFixture({ currentGeneration });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const manager = yield* fixture.make;
+        const client = yield* manager.openClient();
+        client.close();
+        currentGeneration.value = false;
+      }),
+    ).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(fixture.shutdownRequests).toEqual([]);
+          expect(fixture.processes[0]?.kills).toBe(1);
+        }),
+      ),
+    );
+  });
+
   it.effect(
     "requests public graceful shutdown and awaits the captured child without killing it",
     () => {
@@ -669,6 +846,164 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
         Effect.sync(() => {
           expect(fixture.shutdownRequests).toEqual([]);
           expect(fixture.commands).toHaveLength(0);
+        }),
+      ),
+    );
+  });
+
+  it.effect("contains only the exact instance-private daemon during cleanup", () =>
+    Effect.gen(function* () {
+      const first = managerFixture({ instanceId: "prime-first" });
+      const second = managerFixture({ instanceId: "prime-second" });
+      const firstScope = yield* Scope.make("sequential");
+      const secondScope = yield* Scope.make("sequential");
+      yield* Effect.gen(function* () {
+        const firstManager = yield* first.make.pipe(Effect.provideService(Scope.Scope, firstScope));
+        const secondManager = yield* second.make.pipe(
+          Effect.provideService(Scope.Scope, secondScope),
+        );
+        const firstClient = yield* firstManager.openClient();
+        firstClient.close();
+        const secondClient = yield* secondManager.openClient();
+        secondClient.close();
+
+        expect(first.paths.socket).not.toBe(second.paths.socket);
+        yield* Scope.close(firstScope, Exit.void);
+        expect(first.processes[0]?.running).toBe(false);
+        expect(second.processes[0]?.running).toBe(true);
+        expect(second.shutdownRequests).toEqual([]);
+      }).pipe(
+        Effect.ensuring(Scope.close(firstScope, Exit.void).pipe(Effect.ignore)),
+        Effect.ensuring(Scope.close(secondScope, Exit.void).pipe(Effect.ignore)),
+      );
+    }),
+  );
+
+  it.live("bounds a hung graceful shutdown before exact-identity force containment", () => {
+    const fixture = managerFixture({ shutdownHangs: true, shutdownTimeout: Duration.millis(5) });
+    return closeFixtureLive(fixture).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(fixture.shutdownRequests).toEqual([fixture.paths.socket]);
+          expect(fixture.processes[0]?.kills).toBe(1);
+          expect(fixture.processes[0]?.handleKills).toBe(0);
+          expect(fixture.processes[0]?.killSignals).toEqual(["SIGKILL"]);
+        }),
+      ),
+    );
+  });
+
+  it.live("bounds a hung force-kill request", () => {
+    const fixture = managerFixture({
+      shutdownRejects: true,
+      shutdownDoesNotExit: true,
+      killHangs: true,
+      shutdownTimeout: Duration.millis(5),
+    });
+    return closeFixtureLive(fixture).pipe(
+      Effect.andThen(Effect.sync(() => expect(fixture.processes[0]?.kills).toBe(1))),
+    );
+  });
+
+  it.live("bounds the post-kill exit receipt wait", () => {
+    const fixture = managerFixture({
+      shutdownRejects: true,
+      shutdownDoesNotExit: true,
+      postKillExitHangs: true,
+      shutdownTimeout: Duration.millis(5),
+    });
+    return closeFixtureLive(fixture).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(fixture.processes[0]?.kills).toBe(1);
+          expect(fixture.processes[0]?.running).toBe(true);
+        }),
+      ),
+    );
+  });
+
+  it.live("bounds private socket cleanup and process scope close barriers", () => {
+    let releaseScope!: () => void;
+    const scopeCloseBarrier = new Promise<void>((resolve) => {
+      releaseScope = resolve;
+    });
+    const fixture = managerFixture({
+      socketCleanupHangs: true,
+      scopeCloseBarrier,
+      shutdownTimeout: Duration.millis(5),
+    });
+    return closeFixtureLive(fixture).pipe(
+      Effect.ensuring(Effect.sync(() => releaseScope())),
+      Effect.andThen(Effect.sync(() => expect(fixture.processes[0]?.running).toBe(false))),
+    );
+  });
+
+  it.live("refuses forced signaling when the host has no atomic identity-bound syscall", () => {
+    const fixture = managerFixture({
+      shutdownRejects: true,
+      shutdownDoesNotExit: true,
+      atomicSignalAvailable: false,
+      shutdownTimeout: Duration.millis(5),
+    });
+    return closeFixtureLive(fixture).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(fixture.processes[0]?.kills).toBe(0);
+          expect(fixture.processes[0]?.handleKills).toBe(0);
+          expect(fixture.processes[0]?.running).toBe(true);
+        }),
+      ),
+    );
+  });
+
+  it.live(
+    "rechecks identity inside the atomic signal barrier and scope close sends no fallback signal",
+    () => {
+      const identity = { value: "captured" };
+      let entered!: () => void;
+      let release!: () => void;
+      const signalEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const signalRelease = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const fixture = managerFixture({
+        shutdownRejects: true,
+        shutdownDoesNotExit: true,
+        processIdentity: identity,
+        beforeAtomicSignal: async () => {
+          entered();
+          await signalRelease;
+        },
+        shutdownTimeout: Duration.millis(50),
+      });
+      return Effect.gen(function* () {
+        const closing = yield* closeFixtureLive(fixture).pipe(Effect.forkChild);
+        yield* Effect.promise(() => signalEntered);
+        identity.value = "reused";
+        release();
+        yield* Fiber.join(closing);
+        expect(fixture.processes[0]?.kills).toBe(0);
+        expect(fixture.processes[0]?.handleKills).toBe(0);
+        expect(fixture.processes[0]?.running).toBe(true);
+      }).pipe(Effect.ensuring(Effect.sync(() => release())));
+    },
+  );
+
+  it.live("never signals a stale or unproved PID/start identity", () => {
+    const fixture = managerFixture({
+      shutdownRejects: true,
+      shutdownDoesNotExit: true,
+      staleProcessIdentity: true,
+      shutdownTimeout: Duration.millis(5),
+    });
+    return closeFixtureLive(fixture).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          expect(fixture.processes[0]?.kills).toBe(0);
+          expect(fixture.processes[0]?.handleKills).toBe(0);
+          expect(fixture.processes[0]?.running).toBe(true);
         }),
       ),
     );

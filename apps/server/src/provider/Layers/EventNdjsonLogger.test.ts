@@ -626,4 +626,32 @@ describe("EventNdjsonLogger", () => {
       }
     }),
   );
+  it.effect("drops buffered records whose private generation retires before flush", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
+      const basePath = NodePath.join(tempDir, "provider-native.ndjson");
+      let current = true;
+
+      try {
+        const logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "native",
+          batchWindowMs: 60_000,
+        });
+        assert.notEqual(logger, undefined);
+        if (!logger) return;
+
+        yield* logger.write(
+          { id: "retired-before-flush" },
+          ThreadId.make("thread-retired"),
+          Effect.sync(() => current),
+        );
+        current = false;
+        yield* logger.close();
+
+        assert.isFalse(NodeFS.existsSync(ownedLogPath(basePath, "thread-retired")));
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
 });

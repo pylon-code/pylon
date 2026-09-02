@@ -10,6 +10,7 @@ import * as NodeSqliteClient from "../../persistence/NodeSqliteClient.ts";
 import {
   make,
   PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS,
+  primeAgentRecoveryOwnershipIdentities,
   type PrimeAgentRecoveryAdoptionProof,
   type PrimeAgentRecoveryAuthority,
   type PrimeAgentRecoveryLedgerShape,
@@ -121,6 +122,15 @@ layer("PrimeAgentRecoveryLedger", (it) => {
         assert.equal(claimed.adoptionRequestId, "a".repeat(48));
         assert.equal(claimed.adoptionPhase, "claimed");
         assert.equal(claimed.adoptionAttempt, 0);
+        assert.deepEqual(primeAgentRecoveryOwnershipIdentities(claimed), [
+          {
+            threadId: authority.threadId,
+            sessionIncarnationId: authority.sessionIncarnationId,
+            admissionRequestId: authority.admissionRequestId,
+            recoveryHandle: authority.recoveryHandle,
+            ownershipGeneration: authority.ownershipGeneration,
+          },
+        ]);
         assert.isTrue(
           Option.isNone(
             yield* ledger.claim({
@@ -161,6 +171,22 @@ layer("PrimeAgentRecoveryLedger", (it) => {
         assert.equal(committed.ownerToken, authority.ownerToken);
         assert.equal(committed.adoptionRecoveryHandle, "private-handle-2");
         assert.deepEqual(committed.adoptionProof, proof);
+        assert.deepEqual(primeAgentRecoveryOwnershipIdentities(committed), [
+          {
+            threadId: authority.threadId,
+            sessionIncarnationId: authority.sessionIncarnationId,
+            admissionRequestId: authority.admissionRequestId,
+            recoveryHandle: authority.recoveryHandle,
+            ownershipGeneration: authority.ownershipGeneration,
+          },
+          {
+            threadId: authority.threadId,
+            sessionIncarnationId: authority.sessionIncarnationId,
+            admissionRequestId: authority.admissionRequestId,
+            recoveryHandle: "private-handle-2",
+            ownershipGeneration: proof.ownershipGeneration,
+          },
+        ]);
 
         const retried = Option.getOrThrow(
           yield* ledger.beginAdoptionAttempt({
@@ -203,6 +229,10 @@ layer("PrimeAgentRecoveryLedger", (it) => {
         );
         assert.equal(confirming.adoptionPhase, "confirming");
         assert.equal(confirming.adoptionAttempt, 3);
+        assert.deepEqual(
+          primeAgentRecoveryOwnershipIdentities(confirming),
+          primeAgentRecoveryOwnershipIdentities(committed),
+        );
         const confirmationRetried = Option.getOrThrow(
           yield* ledger.beginAdoptionConfirmation({
             threadId: authority.threadId,
@@ -232,6 +262,15 @@ layer("PrimeAgentRecoveryLedger", (it) => {
         assert.equal(adopted.mcpOwnerId, proof.mcpOwnerId);
         assert.equal(adopted.adoptionRequestId, null);
         assert.equal(adopted.adoptionProof, null);
+        assert.deepEqual(primeAgentRecoveryOwnershipIdentities(adopted), [
+          {
+            threadId: authority.threadId,
+            sessionIncarnationId: authority.sessionIncarnationId,
+            admissionRequestId: authority.admissionRequestId,
+            recoveryHandle: "private-handle-2",
+            ownershipGeneration: proof.ownershipGeneration,
+          },
+        ]);
       }),
   );
 
@@ -422,6 +461,29 @@ layer("PrimeAgentRecoveryLedger", (it) => {
       });
       assert.isTrue(yield* ledger.deleteIfSettled(authority.threadId));
       assert.isTrue(Option.isNone(yield* ledger.get(authority.threadId)));
+    }),
+  );
+
+  it.effect("skips mutations after a private commit guard retires", () =>
+    Effect.gen(function* () {
+      yield* migration050;
+      const ledger = yield* make;
+      yield* ledger.putPrepared(authority, { commitGuard: Effect.succeed(false) });
+      assert.isTrue(Option.isNone(yield* ledger.get(authority.threadId)));
+
+      yield* ledger.putPrepared(authority, { commitGuard: Effect.succeed(true) });
+      assert.isFalse(
+        yield* ledger.markAdmitted(
+          {
+            threadId: authority.threadId,
+            ownerToken: authority.ownerToken,
+            turnId: "turn-retired",
+            updatedAt: "2026-01-01T00:00:08.000Z",
+          },
+          { commitGuard: Effect.succeed(false) },
+        ),
+      );
+      assert.equal(Option.getOrThrow(yield* ledger.get(authority.threadId)).state, "prepared");
     }),
   );
 });

@@ -42,6 +42,7 @@ import type {
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
+import type { ProviderRuntimeFence } from "../ProviderDriver.ts";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 export type ProviderConversationRollbackMode = "absolute" | "relative" | "unsupported";
@@ -84,6 +85,8 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly provider: ProviderDriverKind;
   readonly capabilities: ProviderAdapterCapabilities;
+  /** Server-private materialization fence. It never crosses provider contracts. */
+  readonly runtimeFence?: ProviderRuntimeFence | undefined;
 
   /**
    * Start a provider-backed session.

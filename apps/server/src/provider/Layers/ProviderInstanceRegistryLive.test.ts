@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 /**
  * Multi-instance validation slices for `ProviderInstanceRegistryLive`.
  *
@@ -22,6 +23,10 @@
  * binaries. That keeps the assertions focused on registry routing
  * behaviour rather than the runtime details of each provider.
  */
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -40,6 +45,7 @@ import * as DateTime from "effect/DateTime";
 import { createModelSelection } from "@t3tools/shared/model";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
@@ -315,6 +321,122 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       }).pipe(Effect.provide(testLayer)),
   );
 
+  it.live("rejects multiple Prime instances at the graduation gate before any Prime work", () => {
+    let processCalls = 0;
+    let networkCalls = 0;
+    const trackingSpawner = ChildProcessSpawner.make(() =>
+      Effect.sync(() => {
+        processCalls += 1;
+        throw new Error("overlap preflight must run before process work");
+      }),
+    );
+    const trackingHttpClient = HttpClient.make((request) =>
+      Effect.sync(() => {
+        networkCalls += 1;
+        return HttpClientResponse.fromWeb(request, Response.json({}));
+      }),
+    );
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const root = yield* Effect.acquireRelease(
+          Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "prime-registry-"))),
+          (directory) =>
+            Effect.promise(() => NodeFSP.rm(directory, { recursive: true, force: true })),
+        );
+        const shared = NodePath.join(root, "shared");
+        yield* Effect.promise(() => NodeFSP.mkdir(shared, { recursive: true }));
+        const parentId = ProviderInstanceId.make("prime-parent");
+        const childId = ProviderInstanceId.make("prime-child");
+        const { registry } = yield* makeProviderInstanceRegistry({
+          drivers: [PrimeAgentDriver],
+          configMap: {
+            [parentId]: {
+              driver: ProviderDriverKind.make("primeAgent"),
+              enabled: true,
+              config: makePrimeAgentConfig({ agentHomePath: shared }),
+            },
+            [childId]: {
+              driver: ProviderDriverKind.make("primeAgent"),
+              enabled: true,
+              config: makePrimeAgentConfig({ agentHomePath: NodePath.join(shared, "nested") }),
+            },
+          },
+        });
+
+        expect(yield* registry.listInstances).toEqual([]);
+        const unavailable = yield* registry.listUnavailable;
+        expect(unavailable.map((snapshot) => snapshot.instanceId).toSorted()).toEqual(
+          [parentId, childId].toSorted(),
+        );
+        expect(
+          unavailable.every((snapshot) => snapshot.unavailableReason?.includes("N=1/2/4")),
+        ).toBe(true);
+        expect(processCalls).toBe(0);
+        expect(networkCalls).toBe(0);
+      }),
+    ).pipe(
+      Effect.provideService(HostProcessPlatform, "linux"),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, trackingSpawner),
+      Effect.provideService(HttpClient.HttpClient, trackingHttpClient),
+      Effect.provide(testLayer),
+    );
+  });
+
+  it.live("rotates Prime generation only for material changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "prime-generation-fence-" });
+        const instanceId = ProviderInstanceId.make("primeAgent");
+        const entry = {
+          driver: ProviderDriverKind.make("primeAgent"),
+          displayName: "Prime A",
+          enabled: false,
+          config: makePrimeAgentConfig({
+            enabled: false,
+            binaryPath: "/opt/prime-a",
+            agentHomePath: root,
+          }),
+        } as const;
+        const { registry, mutator } = yield* makeProviderInstanceRegistry({
+          drivers: [PrimeAgentDriver],
+          configMap: { [instanceId]: entry },
+        });
+        const first = yield* registry.getInstance(instanceId);
+        expect((yield* first!.snapshot.getSnapshot).supportsMultipleInstances).toBe(false);
+        expect((yield* first!.snapshot.getSnapshot).multipleInstancesUnavailableReason).toContain(
+          "ACP compatibility",
+        );
+        expect(first?.runtimeFence).toBeDefined();
+        expect(yield* first!.runtimeFence!.isCurrent).toBe(true);
+
+        yield* mutator.reconcile({
+          [instanceId]: { ...entry, displayName: "Prime presentation only" },
+        });
+        const presentationOnly = yield* registry.getInstance(instanceId);
+        expect(presentationOnly?.adapter).toBe(first?.adapter);
+        expect(presentationOnly?.runtimeFence).toBe(first?.runtimeFence);
+        expect(yield* first!.runtimeFence!.isCurrent).toBe(true);
+
+        yield* mutator.reconcile({
+          [instanceId]: {
+            ...entry,
+            config: { ...entry.config, binaryPath: "/opt/prime-b" },
+          },
+        });
+        const replacement = yield* registry.getInstance(instanceId);
+        expect(replacement?.adapter).not.toBe(first?.adapter);
+        expect(replacement?.runtimeFence?.generation).not.toBe(first?.runtimeFence?.generation);
+        expect(replacement?.runtimeFence?.configRevision).not.toBe(
+          first?.runtimeFence?.configRevision,
+        );
+        expect(yield* first!.runtimeFence!.isCurrent).toBe(false);
+        expect(yield* replacement!.runtimeFence!.isCurrent).toBe(true);
+      }),
+    ).pipe(Effect.provideService(HostProcessPlatform, "linux"), Effect.provide(testLayer)),
+  );
+
   it.live("fails native Windows Prime closed across every routed entry point", () => {
     let processCalls = 0;
     let networkProbeCalls = 0;
@@ -384,6 +506,8 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         installed: false,
         status: "disabled",
         models: [],
+        supportsMultipleInstances: false,
+        multipleInstancesUnavailableReason: PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE,
       });
       expect(unavailable[0]!.message).toContain(PRIME_AGENT_NATIVE_WINDOWS_UNAVAILABLE_MESSAGE);
       expect(unavailable[0]!.unavailableReason).toContain(

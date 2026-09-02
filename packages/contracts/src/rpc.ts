@@ -244,7 +244,15 @@ import {
   ResourceTelemetrySnapshot,
 } from "./resourceTelemetry.ts";
 import { UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
-import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
+import {
+  ServerProviderInstancesMutationConflictError,
+  ServerProviderInstancesMutationInput,
+  ServerProviderInstancesMutationReceipt,
+  ServerSettings,
+  ServerSettingsError,
+  ServerSettingsPatch,
+  ServerSettingsUpdateConflictError,
+} from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
@@ -356,6 +364,7 @@ export const WS_METHODS = {
   serverRemoveKeybinding: "server.removeKeybinding",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  serverMutateProviderInstances: "server.mutateProviderInstances",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
@@ -660,8 +669,25 @@ export const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
 export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
   payload: Schema.Struct({ patch: ServerSettingsPatch }),
   success: ServerSettings,
-  error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+  error: Schema.Union([
+    ServerSettingsUpdateConflictError,
+    ServerSettingsError,
+    EnvironmentAuthorizationError,
+  ]),
 });
+
+export const WsServerMutateProviderInstancesRpc = Rpc.make(
+  WS_METHODS.serverMutateProviderInstances,
+  {
+    payload: ServerProviderInstancesMutationInput,
+    success: ServerProviderInstancesMutationReceipt,
+    error: Schema.Union([
+      ServerProviderInstancesMutationConflictError,
+      ServerSettingsError,
+      EnvironmentAuthorizationError,
+    ]),
+  },
+);
 
 export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
   payload: Schema.Struct({}),
@@ -1318,6 +1344,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRemoveKeybindingRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsServerMutateProviderInstancesRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,

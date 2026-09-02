@@ -297,6 +297,9 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       instanceId,
       provider,
     );
+    const runtimeFence = yield* (
+      providerRegistry.getProviderRuntimeFence?.(instanceId) ?? Effect.succeed(undefined)
+    );
     const update = capabilities.update;
     if (!update) {
       return yield* new ServerProviderUpdateError({
@@ -310,6 +313,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
         instanceId,
         action: "update",
         state,
+        runtimeFence,
       });
     const setQueuedState = setUpdateState(
       makeUpdateState({
@@ -341,6 +345,17 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
 
             const result = yield* runMaintenanceCommand(update.executable, update.args);
             const finishedAt = yield* nowIso;
+            if (runtimeFence !== undefined && !(yield* runtimeFence.isCurrent)) {
+              return yield* finish(
+                makeUpdateState({
+                  status: "unchanged",
+                  startedAt,
+                  finishedAt,
+                  message: "The provider runtime changed while the update was running.",
+                  output: null,
+                }),
+              );
+            }
             if (result.timedOut || result.exitCode !== 0) {
               return yield* finish(
                 makeUpdateState({

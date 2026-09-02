@@ -4,6 +4,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
+  ServerProviderInstancesMutationId,
   ServerSettings,
   ServerSettingsPatch,
 } from "@t3tools/contracts";
@@ -25,6 +26,26 @@ import * as ServerSettingsModule from "./serverSettings.ts";
 
 const decodeSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
+
+let providerMutationSequence = 0;
+const updateSettingsWithProviderInstances = Effect.fn("updateSettingsWithProviderInstances")(
+  function* (
+    serverSettings: ServerSettingsModule.ServerSettingsService["Service"],
+    patch: ServerSettingsPatch,
+  ) {
+    const current = ServerSettingsModule.redactServerSettingsForClient(
+      yield* serverSettings.getSettings,
+    );
+    const receipt = yield* serverSettings.mutateProviderInstances({
+      mutationId: ServerProviderInstancesMutationId.make(
+        `server-settings-test-${providerMutationSequence++}`,
+      ),
+      expectedProviderInstances: current.providerInstances,
+      patch,
+    });
+    return receipt.settings;
+  },
+);
 
 const makeServerSettingsLayer = () =>
   ServerSettingsModule.layer.pipe(
@@ -314,7 +335,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
 
-      const next = yield* serverSettings.updateSettings({
+      const next = yield* updateSettingsWithProviderInstances(serverSettings, {
         providerInstances: {
           [ProviderInstanceId.make("claude_openrouter")]: {
             driver: ProviderDriverKind.make("claudeAgent"),
@@ -342,7 +363,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
         const instanceId = ProviderInstanceId.make("claude_openrouter");
 
-        const next = yield* serverSettings.updateSettings({
+        const next = yield* updateSettingsWithProviderInstances(serverSettings, {
           providers: {
             claudeAgent: {
               enabled: false,
@@ -373,7 +394,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       const instanceId = ProviderInstanceId.make("openrouter_text");
 
-      const next = yield* serverSettings.updateSettings({
+      const next = yield* updateSettingsWithProviderInstances(serverSettings, {
         providerInstances: {
           [instanceId]: {
             driver: ProviderDriverKind.make("openrouter"),
@@ -407,7 +428,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           model: "gpt-5.4-mini",
         };
 
-        yield* serverSettings.updateSettings({
+        yield* updateSettingsWithProviderInstances(serverSettings, {
           providerInstances: {
             [instanceId]: {
               driver: ProviderDriverKind.make("codex"),
@@ -418,7 +439,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           sourceControlWriterModelSelection,
         });
 
-        const next = yield* serverSettings.updateSettings({
+        const next = yield* updateSettingsWithProviderInstances(serverSettings, {
           providerInstances: {
             [instanceId]: {
               driver: ProviderDriverKind.make("codex"),
@@ -445,7 +466,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           sourceControlWriterModelSelection,
         );
 
-        const restored = yield* serverSettings.updateSettings({
+        const restored = yield* updateSettingsWithProviderInstances(serverSettings, {
           providerInstances: {
             [instanceId]: {
               driver: ProviderDriverKind.make("codex"),
@@ -499,7 +520,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       const codexId = ProviderInstanceId.make("codex");
 
-      yield* serverSettings.updateSettings({
+      yield* updateSettingsWithProviderInstances(serverSettings, {
         providerInstances: {
           [codexId]: {
             driver: ProviderDriverKind.make("codex"),
@@ -511,7 +532,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         },
       });
 
-      const next = yield* serverSettings.updateSettings({
+      const next = yield* updateSettingsWithProviderInstances(serverSettings, {
         providerInstances: {
           [codexId]: {
             driver: ProviderDriverKind.make("codex"),
@@ -749,7 +770,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       assert.isFalse(initial.providers.opencode.enabled);
       assert.isFalse(initial.providers.cursor.enabled);
 
-      const next = yield* serverSettings.updateSettings({
+      const next = yield* updateSettingsWithProviderInstances(serverSettings, {
         addProjectBaseDirectory: "~/Development",
         providerInstances: {
           [ProviderInstanceId.make("grok")]: {
@@ -817,7 +838,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       const grokId = ProviderInstanceId.make("grok");
 
-      const next = yield* serverSettings.updateSettings({
+      const next = yield* updateSettingsWithProviderInstances(serverSettings, {
         providerInstances: {
           [grokId]: {
             driver: ProviderDriverKind.make("grok"),
@@ -1008,7 +1029,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const fileSystem = yield* FileSystem.FileSystem;
       const instanceId = ProviderInstanceId.make("codex_personal");
 
-      const next = yield* serverSettings.updateSettings({
+      const next = yield* updateSettingsWithProviderInstances(serverSettings, {
         providerInstances: {
           [instanceId]: {
             driver: ProviderDriverKind.make("codex"),
@@ -1044,7 +1065,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         { name: "ANTHROPIC_BASE_URL", value: "https://openrouter.ai/api", sensitive: false },
       ]);
 
-      const roundTripped = yield* serverSettings.updateSettings({
+      const roundTripped = yield* updateSettingsWithProviderInstances(serverSettings, {
         providerInstances: {
           [instanceId]: {
             driver: ProviderDriverKind.make("codex"),
@@ -1062,6 +1083,65 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         roundTripped.providerInstances[instanceId]?.environment?.[0]?.value,
         "sk-or-secret",
       );
+
+      const expectedProviderInstances =
+        ServerSettingsModule.redactServerSettingsForClient(roundTripped).providerInstances;
+      const mutated = yield* serverSettings.mutateProviderInstances({
+        mutationId: ServerProviderInstancesMutationId.make("sensitive-provider-cas"),
+        expectedProviderInstances,
+        patch: {
+          providerInstances: {
+            ...expectedProviderInstances,
+            [instanceId]: {
+              ...expectedProviderInstances[instanceId]!,
+              displayName: "Codex Personal CAS",
+            },
+          },
+        },
+      });
+      assert.equal(mutated.disposition, "applied");
+      assert.equal(
+        mutated.settings.providerInstances[instanceId]?.displayName,
+        "Codex Personal CAS",
+      );
+      assert.equal(
+        mutated.settings.providerInstances[instanceId]?.environment?.[0]?.value,
+        "sk-or-secret",
+      );
+
+      const currentProviderInstances = ServerSettingsModule.redactServerSettingsForClient(
+        mutated.settings,
+      ).providerInstances;
+      for (const providerInstances of [{}, currentProviderInstances]) {
+        const rejected = yield* serverSettings
+          .updateSettings({ providerInstances })
+          .pipe(Effect.flip);
+        assert.deepInclude(rejected, {
+          _tag: "ServerSettingsUpdateConflictError",
+          reason: "provider-instances-upgrade-required",
+        });
+      }
+
+      const stale = yield* serverSettings
+        .mutateProviderInstances({
+          mutationId: ServerProviderInstancesMutationId.make("stale-secret-deletion"),
+          expectedProviderInstances: {},
+          patch: { providerInstances: {} },
+        })
+        .pipe(Effect.flip);
+      assert.deepInclude(stale, {
+        _tag: "ServerProviderInstancesMutationConflictError",
+        reason: "stale",
+      });
+
+      const compatible = yield* serverSettings.updateSettings({
+        addProjectBaseDirectory: "~/LegacyCompatible",
+      });
+      assert.equal(compatible.addProjectBaseDirectory, "~/LegacyCompatible");
+      assert.equal(
+        compatible.providerInstances[instanceId]?.environment?.[0]?.value,
+        "sk-or-secret",
+      );
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
   it.effect(
@@ -1070,13 +1150,19 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       Effect.gen(function* () {
         const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
         const instanceId = ProviderInstanceId.make("prime_work");
-        yield* serverSettings.updateSettings({
-          providerInstances: {
-            [instanceId]: {
-              driver: ProviderDriverKind.make("primeAgent"),
-              displayName: "Prime Work",
-              environment: [{ name: "PRIME_PROFILE", value: "work", sensitive: false }],
-              config: { binaryPath: "/opt/prime/stock", homePath: "/tmp/prime-work" },
+        const initial = yield* serverSettings.getSettings;
+        yield* serverSettings.mutateProviderInstances({
+          mutationId: ServerProviderInstancesMutationId.make("test-prime-managed-binding-create"),
+          expectedProviderInstances: initial.providerInstances,
+          patch: {
+            providerInstances: {
+              [instanceId]: {
+                driver: ProviderDriverKind.make("primeAgent"),
+                displayName: "Prime Work",
+                enabled: false,
+                environment: [{ name: "PRIME_PROFILE", value: "work", sensitive: false }],
+                config: { binaryPath: "/opt/prime/stock", agentHomePath: "/tmp/prime-work" },
+              },
             },
           },
         });
@@ -1102,14 +1188,18 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           environment: [{ name: "PRIME_PROFILE", value: "work", sensitive: false }],
           config: {
             binaryPath: "/tmp/pylon-managed/.bin/prime-agent",
-            homePath: "/tmp/prime-work",
+            agentHomePath: "/tmp/prime-work",
           },
         });
 
-        yield* serverSettings.updateSettings({
-          providerInstances: {
-            ...selected.providerInstances,
-            [instanceId]: { ...selected.providerInstances[instanceId]!, displayName: "Changed" },
+        yield* serverSettings.mutateProviderInstances({
+          mutationId: ServerProviderInstancesMutationId.make("test-prime-managed-binding-change"),
+          expectedProviderInstances: selected.providerInstances,
+          patch: {
+            providerInstances: {
+              ...selected.providerInstances,
+              [instanceId]: { ...selected.providerInstances[instanceId]!, displayName: "Changed" },
+            },
           },
         });
         assert.isUndefined(

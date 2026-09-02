@@ -16,7 +16,6 @@ import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import {
-  primeAgentCredentialFingerprint,
   primeAgentSignInsFromAuthFile,
   readPrimeAgentBackends,
   readPrimeAgentCapacity,
@@ -45,13 +44,6 @@ const AUTH_FILE = {
 };
 
 describe("primeAgentSignInsFromAuthFile", () => {
-  it("builds stable secret-safe credential fingerprints", () => {
-    const fingerprint = primeAgentCredentialFingerprint("access-secret");
-    assert.strictEqual(fingerprint, primeAgentCredentialFingerprint("access-secret"));
-    assert.notStrictEqual(fingerprint, primeAgentCredentialFingerprint("different-secret"));
-    assert.notInclude(fingerprint, "access-secret");
-  });
-
   it("keeps each backend's identity and its token while fresh", () => {
     assert.deepStrictEqual(primeAgentSignInsFromAuthFile(JSON.stringify(AUTH_FILE), NOW), [
       { backend: "anthropic", accessToken: "access-secret" },
@@ -301,6 +293,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, UnreachableHttpClient))(
           { agentHomePath: home },
           {
             sharedCacheDir: cacheDir,
+            instanceId: "primeAgent",
+            configRevision: "test-revision",
             readCodexWindows: (signIn) =>
               Effect.sync(() => {
                 reads.push(`${signIn.accountId}:${signIn.accessToken}`);
@@ -331,6 +325,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, UnreachableHttpClient))(
           { agentHomePath: home },
           {
             sharedCacheDir: cacheDir,
+            instanceId: "primeAgent",
+            configRevision: "test-revision",
             readCodexWindows: () => Effect.die("must be served from the shared reading"),
           },
         );
@@ -360,6 +356,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, UnreachableHttpClient))(
           });
         const options = {
           sharedCacheDir: cacheDir,
+          instanceId: "primeAgent",
+          configRevision: "test-revision",
           freshForMs: 0,
           readCodexWindows: read,
         };
@@ -400,6 +398,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, UnreachableHttpClient))(
         let reads = 0;
         const options = {
           sharedCacheDir: cacheDir,
+          instanceId: "primeAgent",
+          configRevision: "test-revision",
           freshForMs: 0,
           readCodexWindows: () =>
             Effect.sync(() => {
@@ -420,7 +420,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, UnreachableHttpClient))(
       }).pipe(Effect.scoped),
     );
 
-    it.effect("does not reuse Anthropic capacity after a token re-login", () => {
+    it.effect("does not reuse Anthropic capacity after its private config revision rotates", () => {
       let calls = 0;
       const httpClient = HttpClient.make((request) =>
         Effect.sync(() => {
@@ -451,16 +451,31 @@ it.layer(Layer.mergeAll(NodeServices.layer, UnreachableHttpClient))(
         yield* writeAuth("token-a");
         const first = yield* readPrimeAgentCapacity(
           { agentHomePath: home },
-          { sharedCacheDir: cacheDir, freshForMs: 0 },
+          {
+            sharedCacheDir: cacheDir,
+            instanceId: "primeAgent",
+            configRevision: "revision-a",
+            freshForMs: 0,
+          },
         );
         yield* writeAuth("token-b");
         const relogged = yield* readPrimeAgentCapacity(
           { agentHomePath: home },
-          { sharedCacheDir: cacheDir, freshForMs: 0 },
+          {
+            sharedCacheDir: cacheDir,
+            instanceId: "primeAgent",
+            configRevision: "revision-b",
+            freshForMs: 0,
+          },
         );
         const snapshot = yield* readPrimeAgentBackends(
           { agentHomePath: home },
-          { sharedCacheDir: cacheDir, freshForMs: 0 },
+          {
+            sharedCacheDir: cacheDir,
+            instanceId: "primeAgent",
+            configRevision: "revision-b",
+            freshForMs: 0,
+          },
         );
 
         assert.strictEqual(calls, 2);

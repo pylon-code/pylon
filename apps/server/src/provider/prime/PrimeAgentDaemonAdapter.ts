@@ -61,6 +61,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
+import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
@@ -93,9 +94,11 @@ import {
   type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import type { PrimeAgentRuntimeContext } from "./PrimeAgentRuntimeContext.ts";
 import {
   PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS,
   PrimeAgentRecoveryLedger,
+  primeAgentRecoveryOwnershipIdentities,
   type PrimeAgentRecoveryAdoptionProof,
   type PrimeAgentRecoveryAuthority,
   type PrimeAgentRecoveryLedgerShape,
@@ -134,9 +137,12 @@ import {
   type PrimeAgentDaemonSessionRuntimeError,
   type PrimeAgentDaemonSessionRuntimeInput,
 } from "./PrimeAgentDaemonSessionRuntime.ts";
+import type {
+  PrimeAgentAcquiredOwnershipReceipt,
+  PrimeAgentOwnershipAdoptionClaim,
+} from "./PrimeAgentOwnershipReceipt.ts";
 import {
   PRIME_AGENT_SESSION_IDENTITY_FILENAME,
-  PRIME_AGENT_SESSION_IDENTITY_TEMP_FILENAME,
   decodePrimeAgentSessionIdentity,
   encodePrimeAgentSessionIdentity,
   primeAgentLegacySessionFileNames,
@@ -156,7 +162,8 @@ const PRIME_AGENT_RECOVERY_TEST_CRASH_STAGE = "PRIME_AGENT_INTERNAL_PYLON_RECOVE
 type PrimeAgentRecoveryTestCrashStage =
   | "after-claim-persisted"
   | "after-native-response-before-commit"
-  | "after-commit-before-confirm";
+  | "after-commit-before-receipt"
+  | "after-receipt-before-confirm";
 
 function crashAtPrimeAgentRecoveryTestBarrier(stage: PrimeAgentRecoveryTestCrashStage): void {
   if (process.env[PRIME_AGENT_RECOVERY_TEST_CRASH_STAGE] === stage) {
@@ -180,6 +187,7 @@ export interface PrimeAgentDaemonAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: ProviderInstanceId;
+  readonly runtimeContext?: PrimeAgentRuntimeContext;
   /** Present only after the exact selected package passed Pylon managed-distribution proof. */
   readonly recoveryManagedBuildId?: string;
   readonly recoveryLedger?: PrimeAgentRecoveryLedgerShape;
@@ -794,9 +802,34 @@ export function makePrimeAgentDaemonAdapter(
 ) {
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("primeAgent");
+    const primeRuntimeContext = options?.runtimeContext;
+    if (
+      primeRuntimeContext !== undefined &&
+      (primeRuntimeContext.backendKind !== "daemon" ||
+        primeRuntimeContext.instanceId !== boundInstanceId ||
+        primeRuntimeContext.instanceId !== manager.identity.instanceId ||
+        primeRuntimeContext.configRevision !== manager.identity.configRevision ||
+        primeRuntimeContext.effectiveHome !== manager.identity.effectiveHome ||
+        primeRuntimeContext.launchEnv !== manager.identity.launchEnv)
+    ) {
+      return yield* Effect.die(
+        new Error("The Prime Agent runtime context does not own this daemon adapter."),
+      );
+    }
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
+    const commitGuard = primeRuntimeContext?.runtimeFence?.isCurrent ?? Effect.succeed(true);
+    const guardGeneration = <A, E>(effect: Effect.Effect<A, E>, stale: A) =>
+      Effect.flatMap(commitGuard, (current) =>
+        current
+          ? effect.pipe(
+              Effect.flatMap((result) =>
+                Effect.map(commitGuard, (stillCurrent) => (stillCurrent ? result : stale)),
+              ),
+            )
+          : Effect.succeed(stale),
+      );
     const ledgerService = yield* Effect.serviceOption(PrimeAgentRecoveryLedger);
     const rawRecoveryLedger = options?.recoveryLedger ?? Option.getOrUndefined(ledgerService);
     const recoveryLedger =
@@ -804,43 +837,99 @@ export function makePrimeAgentDaemonAdapter(
         ? undefined
         : {
             putPrepared: (input: Parameters<PrimeAgentRecoveryLedgerShape["putPrepared"]>[0]) =>
-              rawRecoveryLedger.putPrepared(input).pipe(Effect.orDie),
-            get: (threadId: string) => rawRecoveryLedger.get(threadId).pipe(Effect.orDie),
+              guardGeneration(
+                rawRecoveryLedger.putPrepared(input, { commitGuard }).pipe(Effect.orDie),
+                undefined,
+              ),
+            get: (threadId: string) =>
+              guardGeneration(rawRecoveryLedger.get(threadId).pipe(Effect.orDie), Option.none()),
             discardPrepared: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["discardPrepared"]>[0],
-            ) => rawRecoveryLedger.discardPrepared(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger.discardPrepared(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             markAdmitted: (input: Parameters<PrimeAgentRecoveryLedgerShape["markAdmitted"]>[0]) =>
-              rawRecoveryLedger.markAdmitted(input).pipe(Effect.orDie),
+              guardGeneration(
+                rawRecoveryLedger.markAdmitted(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             updateTranscriptProgress: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["updateTranscriptProgress"]>[0],
-            ) => rawRecoveryLedger.updateTranscriptProgress(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger
+                  .updateTranscriptProgress(input, { commitGuard })
+                  .pipe(Effect.orDie),
+                false,
+              ),
             claim: (input: Parameters<PrimeAgentRecoveryLedgerShape["claim"]>[0]) =>
-              rawRecoveryLedger.claim(input).pipe(Effect.orDie),
+              guardGeneration(
+                rawRecoveryLedger.claim(input, { commitGuard }).pipe(Effect.orDie),
+                Option.none(),
+              ),
             beginAdoptionAttempt: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["beginAdoptionAttempt"]>[0],
-            ) => rawRecoveryLedger.beginAdoptionAttempt(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger.beginAdoptionAttempt(input, { commitGuard }).pipe(Effect.orDie),
+                Option.none(),
+              ),
             releaseClaim: (input: Parameters<PrimeAgentRecoveryLedgerShape["releaseClaim"]>[0]) =>
-              rawRecoveryLedger.releaseClaim(input).pipe(Effect.orDie),
+              guardGeneration(
+                rawRecoveryLedger.releaseClaim(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             commitAdoption: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["commitAdoption"]>[0],
-            ) => rawRecoveryLedger.commitAdoption(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger.commitAdoption(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             beginAdoptionConfirmation: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["beginAdoptionConfirmation"]>[0],
-            ) => rawRecoveryLedger.beginAdoptionConfirmation(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger
+                  .beginAdoptionConfirmation(input, { commitGuard })
+                  .pipe(Effect.orDie),
+                Option.none(),
+              ),
             finalizeAdoption: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["finalizeAdoption"]>[0],
-            ) => rawRecoveryLedger.finalizeAdoption(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger.finalizeAdoption(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             quarantineAdoption: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["quarantineAdoption"]>[0],
-            ) => rawRecoveryLedger.quarantineAdoption(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger.quarantineAdoption(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             markNativeCleanup: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["markNativeCleanup"]>[0],
-            ) => rawRecoveryLedger.markNativeCleanup(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger.markNativeCleanup(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
             markTerminalProjected: (
               input: Parameters<PrimeAgentRecoveryLedgerShape["markTerminalProjected"]>[0],
-            ) => rawRecoveryLedger.markTerminalProjected(input).pipe(Effect.orDie),
+            ) =>
+              guardGeneration(
+                rawRecoveryLedger.markTerminalProjected(input, { commitGuard }).pipe(Effect.orDie),
+                undefined,
+              ),
             deleteIfSettled: (threadId: string) =>
-              rawRecoveryLedger.deleteIfSettled(threadId).pipe(Effect.orDie),
+              guardGeneration(
+                rawRecoveryLedger.deleteIfSettled(threadId, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
           };
     const crypto = yield* Crypto.Crypto;
     const runtimeContext = yield* Effect.context<never>();
@@ -856,6 +945,12 @@ export function makePrimeAgentDaemonAdapter(
     // The already-created manager owns its launch environment. Retaining this option keeps the
     // daemon adapter's construction boundary compatible with the other Prime adapter.
     void options?.environment;
+    const mcpSessionMatchesGeneration = (threadId: ThreadId): boolean =>
+      primeRuntimeContext?.runtimeFence === undefined ||
+      McpProviderSession.isMcpProviderSessionOwnedByGeneration(
+        threadId,
+        primeRuntimeContext.runtimeFence,
+      );
 
     const sessions = new Map<ThreadId, PrimeAgentDaemonSessionContext>();
     type PendingRecoveryStart =
@@ -876,6 +971,8 @@ export function makePrimeAgentDaemonAdapter(
           readonly requestId: string;
           readonly mcpOwnerId: string;
           readonly sessionFile: string;
+          readonly ownershipClaim: PrimeAgentOwnershipAdoptionClaim;
+          readonly previousOwnershipReceipt: PrimeAgentAcquiredOwnershipReceipt;
         };
     const pendingRecoveryStarts = new Map<ThreadId, PendingRecoveryStart>();
     const activeTeardowns = new Map<
@@ -930,22 +1027,28 @@ export function makePrimeAgentDaemonAdapter(
       });
     yield* Queue.take(orderedRuntimeEventQueue).pipe(
       Effect.flatMap(({ event, terminalDelivery }) =>
-        PubSub.publish(runtimeEventPubSub, event).pipe(
-          Effect.flatMap((accepted) =>
-            Effect.sync(() => {
-              pendingOrderedRuntimeEvents -= 1;
-            }).pipe(
-              Effect.andThen(completeTerminalDelivery(terminalDelivery, accepted)),
-              Effect.andThen(accepted ? Effect.void : logRejectedRuntimeEvent(event)),
-            ),
-          ),
+        Effect.flatMap(commitGuard, (current) =>
+          current
+            ? PubSub.publish(runtimeEventPubSub, event).pipe(
+                Effect.flatMap((accepted) =>
+                  Effect.sync(() => {
+                    pendingOrderedRuntimeEvents -= 1;
+                  }).pipe(
+                    Effect.andThen(completeTerminalDelivery(terminalDelivery, accepted)),
+                    Effect.andThen(accepted ? Effect.void : logRejectedRuntimeEvent(event)),
+                  ),
+                ),
+              )
+            : Effect.sync(() => {
+                pendingOrderedRuntimeEvents -= 1;
+              }).pipe(Effect.andThen(completeTerminalDelivery(terminalDelivery, false))),
         ),
       ),
       Effect.forever,
       Effect.forkScoped,
     );
 
-    const offerOrderedRuntimeEvent = (entry: OrderedRuntimeEvent) =>
+    const offerOrderedRuntimeEventUnchecked = (entry: OrderedRuntimeEvent) =>
       Effect.sync(() => {
         if (
           pendingOrderedRuntimeEvents === 0 &&
@@ -972,6 +1075,12 @@ export function makePrimeAgentDaemonAdapter(
                 ),
         ),
       );
+    const offerOrderedRuntimeEvent = (entry: OrderedRuntimeEvent) =>
+      Effect.flatMap(commitGuard, (current) =>
+        current
+          ? offerOrderedRuntimeEventUnchecked(entry)
+          : completeTerminalDelivery(entry.terminalDelivery, false).pipe(Effect.as(false)),
+      );
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
@@ -985,6 +1094,18 @@ export function makePrimeAgentDaemonAdapter(
           }),
       ),
     );
+    const requireCurrentGeneration = (operation: string) =>
+      Effect.flatMap(commitGuard, (current) =>
+        current
+          ? Effect.void
+          : Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: operation,
+                detail: "The Prime Agent runtime was replaced while this operation was pending.",
+              }),
+            ),
+      );
     const randomAdoptionRequestId = crypto.randomBytes(24).pipe(
       Effect.map((bytes) => Buffer.from(bytes).toString("hex")),
       Effect.mapError(
@@ -1044,6 +1165,37 @@ export function makePrimeAgentDaemonAdapter(
           Effect.asVoid,
         );
       });
+    const runBoundedTeardownBarrier = Effect.fn(
+      "PrimeAgentDaemonAdapter.runBoundedTeardownBarrier",
+    )(function* <E, R>(input: {
+      readonly threadId: ThreadId;
+      readonly phase: string;
+      readonly effect: Effect.Effect<void, E, R>;
+    }) {
+      const barrierFiber = yield* input.effect.pipe(Effect.interruptible, Effect.forkDetach);
+      const settled = yield* Fiber.await(barrierFiber).pipe(
+        Effect.timeoutOption(Duration.millis(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS)),
+      );
+      if (Option.isNone(settled)) {
+        yield* Effect.logWarning("Prime Agent daemon teardown barrier timed out.", {
+          threadId: input.threadId,
+          phase: input.phase,
+          timeoutMs: PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS,
+        });
+        yield* Fiber.interrupt(barrierFiber).pipe(Effect.forkDetach);
+        return false;
+      }
+      if (Exit.isFailure(settled.value)) {
+        yield* Effect.logError("Prime Agent daemon teardown barrier failed.", {
+          threadId: input.threadId,
+          phase: input.phase,
+          cause: Cause.pretty(settled.value.cause),
+        });
+        return false;
+      }
+      return true;
+    });
+
     const withThreadLock = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(getThreadSemaphore(threadId), (semaphore) =>
         semaphore.withPermit(effect).pipe(Effect.ensuring(drainActiveTeardown(threadId))),
@@ -1136,6 +1288,7 @@ export function makePrimeAgentDaemonAdapter(
             },
           },
           threadId,
+          commitGuard,
         );
       }).pipe(
         Effect.catchCause((cause) =>
@@ -3609,16 +3762,11 @@ export function makePrimeAgentDaemonAdapter(
       });
 
       return Effect.gen(function* () {
-        yield* Scope.close(context.scope, Exit.void).pipe(
-          Effect.timeoutOption(Duration.millis(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS)),
-          Effect.catchCause((cause) =>
-            Effect.logError("Prime Agent daemon session scope cleanup failed.", {
-              threadId: context.threadId,
-              cause: Cause.pretty(cause),
-            }).pipe(Effect.as(Option.none())),
-          ),
-          Effect.forkDetach,
-        );
+        yield* runBoundedTeardownBarrier({
+          threadId: context.threadId,
+          phase: "session-scope-close",
+          effect: Scope.close(context.scope, Exit.void),
+        });
         const workFiber = yield* teardownWork.pipe(Effect.forkDetach);
         const workResult = yield* Fiber.join(workFiber).pipe(
           Effect.exit,
@@ -3636,7 +3784,10 @@ export function makePrimeAgentDaemonAdapter(
             cause: Cause.pretty(workResult.value.cause),
           });
         }
-        yield* publishTerminalOnce;
+        yield* publishTerminalOnce.pipe(
+          Effect.timeoutOption(Duration.millis(PRIME_AGENT_TERMINAL_EVENT_TIMEOUT_MS)),
+          Effect.asVoid,
+        );
       }).pipe(
         Effect.ensuring(
           Deferred.succeed(context.teardownCompletion, undefined).pipe(
@@ -3814,6 +3965,7 @@ export function makePrimeAgentDaemonAdapter(
               ? input.modelSelection.model.trim()
               : undefined;
           const model = selectedModel || "default";
+          yield* requireCurrentGeneration("startSession");
           const sessionDir = primeAgentSessionDirectory({
             stateDir: serverConfig.stateDir,
             instanceId: boundInstanceId,
@@ -3832,6 +3984,7 @@ export function makePrimeAgentDaemonAdapter(
                 }),
             ),
           );
+          yield* requireCurrentGeneration("startSession");
           const identityPath = path.join(sessionDir, PRIME_AGENT_SESSION_IDENTITY_FILENAME);
           let resumeSessionId: string | undefined;
           let expectedSessionFileName: string | undefined;
@@ -3923,7 +4076,14 @@ export function makePrimeAgentDaemonAdapter(
             rootSessionDir: sessionDir,
             ...(permissionToken === undefined ? {} : { permissionToken }),
           });
-          yield* fileSystem.writeFileString(managedExtensionPath, managedExtensionSource).pipe(
+          yield* writeFileStringAtomically({
+            filePath: managedExtensionPath,
+            contents: managedExtensionSource,
+            commitGuard,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.andThen(requireCurrentGeneration("startSession")),
             Effect.andThen(fileSystem.chmod(managedExtensionPath, 0o600)),
             Effect.mapError(
               (cause) =>
@@ -3941,10 +4101,26 @@ export function makePrimeAgentDaemonAdapter(
           yield* Effect.addFinalizer(() =>
             scopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
           );
-          const agentDir = primeAgentSettings.agentHomePath.trim();
+          const agentDir =
+            primeRuntimeContext?.effectiveHome ?? primeAgentSettings.agentHomePath.trim();
           const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          if (
+            mcpSession !== undefined &&
+            (mcpSession.providerInstanceId !== boundInstanceId ||
+              !mcpSessionMatchesGeneration(input.threadId))
+          ) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: "The MCP route does not belong to this provider instance.",
+            });
+          }
           const runtime = yield* runtimeFactory({
             manager,
+            ...(primeRuntimeContext === undefined ? {} : { runtimeContext: primeRuntimeContext }),
+            ...(recoveryStart?.kind === "adopt"
+              ? { ownershipReceipt: recoveryStart.ownershipClaim.handle }
+              : {}),
             cwd,
             sessionDir,
             ...(mcpSession === undefined
@@ -3994,6 +4170,9 @@ export function makePrimeAgentDaemonAdapter(
                     recovery: {
                       kind: "create" as const,
                       requestId: yield* randomUUIDv4,
+                      threadId: input.threadId,
+                      sessionIncarnationId: input.sessionIncarnationId!,
+                      admissionRequestId: recoveryStart.admissionRequestId,
                       correlationId: recoveryStart.correlationId,
                       mcpOwnerId: recoveryStart.mcpOwnerId,
                       onAuthorityReady: (authority) =>
@@ -4031,7 +4210,8 @@ export function makePrimeAgentDaemonAdapter(
                               correlationId: recoveryStart.correlationId,
                               mcpOwnerId: recoveryStart.mcpOwnerId,
                               recoveryConfig: authority.recoveryConfig,
-                              launchEnvironment: authority.launchEnvironment,
+                              launchEnvironment:
+                                primeRuntimeContext?.launchEnv ?? authority.launchEnvironment,
                               transcriptMessageCount: recoveryStart.transcriptMessageCount,
                               transcriptFingerprints: [...recoveryStart.transcriptFingerprints],
                               ownerToken: recoveryStart.ownerToken,
@@ -4067,7 +4247,8 @@ export function makePrimeAgentDaemonAdapter(
                       previousMcpOwnerId: recoveryStart.authority.mcpOwnerId,
                       mcpOwnerId: recoveryStart.mcpOwnerId,
                       recoveryConfig: recoveryStart.authority.recoveryConfig,
-                      launchEnvironment: recoveryStart.authority.launchEnvironment,
+                      launchEnvironment:
+                        primeRuntimeContext?.launchEnv ?? recoveryStart.authority.launchEnvironment,
                       onAdoptionAttemptStarted: () =>
                         runPromise(
                           Effect.gen(function* () {
@@ -4136,7 +4317,44 @@ export function makePrimeAgentDaemonAdapter(
                                 detail: "Recoverable Prime Agent ownership was superseded.",
                               });
                             }
-                            crashAtPrimeAgentRecoveryTestBarrier("after-commit-before-confirm");
+                            crashAtPrimeAgentRecoveryTestBarrier("after-commit-before-receipt");
+                            const ownershipStore = primeRuntimeContext?.nativeOwnership?.store;
+                            if (ownershipStore === undefined) {
+                              return yield* new ProviderAdapterProcessError({
+                                provider: PROVIDER,
+                                threadId: input.threadId,
+                                detail: "Prime Agent native ownership storage is unavailable.",
+                              });
+                            }
+                            const rotated = yield* Effect.tryPromise({
+                              try: () =>
+                                ownershipStore.rotateAdoptionRecovery(
+                                  recoveryStart.ownershipClaim,
+                                  {
+                                    threadId: recoveryStart.authority.threadId,
+                                    sessionIncarnationId:
+                                      recoveryStart.authority.sessionIncarnationId,
+                                    admissionRequestId: recoveryStart.authority.admissionRequestId,
+                                    recoveryHandle,
+                                    ownershipGeneration: proof.ownershipGeneration,
+                                  },
+                                ),
+                              catch: (cause) =>
+                                new ProviderAdapterProcessError({
+                                  provider: PROVIDER,
+                                  threadId: input.threadId,
+                                  detail: "Could not durably rotate Prime Agent native ownership.",
+                                  cause,
+                                }),
+                            });
+                            if (rotated === undefined) {
+                              return yield* new ProviderAdapterProcessError({
+                                provider: PROVIDER,
+                                threadId: input.threadId,
+                                detail: "Prime Agent native ownership rotation was superseded.",
+                              });
+                            }
+                            crashAtPrimeAgentRecoveryTestBarrier("after-receipt-before-confirm");
                           }),
                         ),
                       onAdoptionConfirming: ({ recoveryHandle, proof }) =>
@@ -4312,13 +4530,15 @@ export function makePrimeAgentDaemonAdapter(
               detail: "Prime Agent returned an invalid durable session identity.",
             });
           }
-          const identityTempPath = path.join(
-            sessionDir,
-            PRIME_AGENT_SESSION_IDENTITY_TEMP_FILENAME,
-          );
-          yield* fileSystem.writeFileString(identityTempPath, identitySource).pipe(
-            Effect.andThen(fileSystem.chmod(identityTempPath, 0o600)),
-            Effect.andThen(fileSystem.rename(identityTempPath, identityPath)),
+          yield* writeFileStringAtomically({
+            filePath: identityPath,
+            contents: identitySource,
+            commitGuard,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.andThen(requireCurrentGeneration("startSession")),
+            Effect.andThen(fileSystem.chmod(identityPath, 0o600)),
             Effect.mapError(
               (cause) =>
                 new ProviderAdapterProcessError({
@@ -4502,6 +4722,7 @@ export function makePrimeAgentDaemonAdapter(
             ...context.compaction,
             manualCompactionSettable: isManualCompactionSettable(context),
           };
+          yield* requireCurrentGeneration("startSession");
           sessions.set(input.threadId, context);
           scopeTransferred = true;
           if (recoveryStart === undefined) {
@@ -4673,8 +4894,16 @@ export function makePrimeAgentDaemonAdapter(
           if (admissionRequestId === undefined || admissionRequestId.length === 0) {
             return undefined;
           }
+          const candidateMcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          if (
+            candidateMcpSession !== undefined &&
+            (candidateMcpSession.providerInstanceId !== boundInstanceId ||
+              !mcpSessionMatchesGeneration(input.threadId))
+          ) {
+            return undefined;
+          }
           const ownerToken = yield* randomUUIDv4;
-          const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          const mcpSession = candidateMcpSession;
           const recoveryStart: PendingRecoveryStart = {
             kind: "create",
             admissionRequestId,
@@ -4817,6 +5046,86 @@ export function makePrimeAgentDaemonAdapter(
         return null;
       }
 
+      const candidateMcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+      if (
+        candidateMcpSession !== undefined &&
+        (candidateMcpSession.providerInstanceId !== boundInstanceId ||
+          !mcpSessionMatchesGeneration(input.threadId))
+      ) {
+        return null;
+      }
+      const ownershipAuthority = authority;
+      const nativeOwnership = primeRuntimeContext?.nativeOwnership;
+      const adoptionConfigRevision = primeRuntimeContext?.configRevision;
+      const adoptionEffectiveHome = primeRuntimeContext?.effectiveHome;
+      const adoptionReceipt = nativeOwnership?.adoptableReceipts.find(
+        (receipt) =>
+          receipt.instanceId === ownershipAuthority.providerInstanceId &&
+          receipt.effectiveHome === adoptionEffectiveHome &&
+          receipt.activeSessionId === ownershipAuthority.activeSessionId &&
+          receipt.nativeSessionId === ownershipAuthority.nativeSessionId &&
+          receipt.recovery !== undefined &&
+          primeAgentRecoveryOwnershipIdentities(ownershipAuthority).some(
+            (accepted) =>
+              receipt.recovery?.threadId === accepted.threadId &&
+              receipt.recovery.sessionIncarnationId === accepted.sessionIncarnationId &&
+              receipt.recovery.admissionRequestId === accepted.admissionRequestId &&
+              receipt.recovery.recoveryHandle === accepted.recoveryHandle &&
+              receipt.recovery.ownershipGeneration === accepted.ownershipGeneration,
+          ),
+      );
+      if (
+        nativeOwnership === undefined ||
+        adoptionConfigRevision === undefined ||
+        adoptionReceipt === undefined ||
+        adoptionReceipt.recovery === undefined
+      ) {
+        return null;
+      }
+      const claimOwnershipReceipt = () =>
+        Effect.tryPromise({
+          try: () =>
+            nativeOwnership.store.claimForAdoption({
+              receipt: adoptionReceipt,
+              nextConfigRevision: adoptionConfigRevision,
+              recovery: adoptionReceipt.recovery!,
+            }),
+          catch: (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+              detail: "Could not durably claim Prime Agent native ownership.",
+              cause,
+            }),
+        });
+      const rotateOwnershipReceipt = (
+        claim: PrimeAgentOwnershipAdoptionClaim,
+        recoveryHandle: string,
+        proof: PrimeAgentRecoveryAdoptionProof,
+      ) =>
+        Effect.tryPromise({
+          try: () =>
+            nativeOwnership.store.rotateAdoptionRecovery(claim, {
+              threadId: ownershipAuthority.threadId,
+              sessionIncarnationId: ownershipAuthority.sessionIncarnationId,
+              admissionRequestId: ownershipAuthority.admissionRequestId,
+              recoveryHandle,
+              ownershipGeneration: proof.ownershipGeneration,
+            }),
+          catch: (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+              detail: "Could not durably rotate Prime Agent native ownership.",
+              cause,
+            }),
+        });
+      let ownershipClaim: PrimeAgentOwnershipAdoptionClaim | undefined;
+      if (authority.state === "adopting") {
+        ownershipClaim = yield* claimOwnershipReceipt();
+        if (ownershipClaim === undefined) return null;
+      }
+
       if (
         authority.state === "adopting" &&
         (authority.adoptionPhase === "committed" || authority.adoptionPhase === "confirming")
@@ -4828,6 +5137,7 @@ export function makePrimeAgentDaemonAdapter(
           manager.bridge.confirmRecoverableOwnedSessionAdoption;
         if (
           route === undefined ||
+          ownershipClaim === undefined ||
           proof === null ||
           recoveryHandle === null ||
           confirmRecoverableOwnedSessionAdoption === undefined ||
@@ -4839,6 +5149,14 @@ export function makePrimeAgentDaemonAdapter(
         ) {
           return null;
         }
+        const rotatedOwnershipClaim = yield* rotateOwnershipReceipt(
+          ownershipClaim,
+          recoveryHandle,
+          proof,
+        );
+        if (rotatedOwnershipClaim === undefined) return null;
+        ownershipClaim = rotatedOwnershipClaim;
+        crashAtPrimeAgentRecoveryTestBarrier("after-receipt-before-confirm");
         const confirming = yield* recoveryLedger!.beginAdoptionConfirmation({
           threadId: input.threadId,
           ownerToken: route.ownerToken,
@@ -4912,11 +5230,10 @@ export function makePrimeAgentDaemonAdapter(
       if (authority.state === "active") {
         const ownerToken = yield* randomUUIDv4;
         const requestId = yield* randomAdoptionRequestId;
-        const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
         const mcpOwnerId =
-          mcpSession === undefined
+          candidateMcpSession === undefined
             ? `pylon:none:${yield* randomUUIDv4}`
-            : `pylon:${mcpSession.providerSessionId}`;
+            : `pylon:${candidateMcpSession.providerSessionId}`;
         const claimed = yield* recoveryLedger!.claim({
           threadId: input.threadId,
           expectedOwnerToken: authority.ownerToken,
@@ -4929,11 +5246,25 @@ export function makePrimeAgentDaemonAdapter(
         authority = claimed.value;
         route = completePrimeAgentAdoptionRoute(authority);
         crashAtPrimeAgentRecoveryTestBarrier("after-claim-persisted");
+        if (ownershipClaim === undefined) {
+          ownershipClaim = yield* claimOwnershipReceipt();
+          if (ownershipClaim === undefined) {
+            yield* recoveryLedger!.releaseClaim({
+              threadId: input.threadId,
+              ownerToken,
+              previousOwnerToken: authority.ownerToken,
+              requestId,
+              updatedAt: yield* nowIso,
+            });
+            return null;
+          }
+        }
       } else {
         route = completePrimeAgentAdoptionRoute(authority);
       }
       if (
         route === undefined ||
+        ownershipClaim === undefined ||
         authority.adoptionAttempt >= PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS
       ) {
         if (route !== undefined) {
@@ -4973,6 +5304,8 @@ export function makePrimeAgentDaemonAdapter(
         requestId: route.requestId,
         mcpOwnerId: route.mcpOwnerId,
         sessionFile: path.join(recoverySessionDir, `${authority.nativeSessionId}.jsonl`),
+        ownershipClaim,
+        previousOwnershipReceipt: adoptionReceipt,
       });
       const started = yield* Effect.result(
         startSession({
@@ -4996,6 +5329,10 @@ export function makePrimeAgentDaemonAdapter(
           current.adoptionPhase === "claimed" &&
           current.adoptionAttempt === 0
         ) {
+          const releasedOwnership = yield* Effect.tryPromise(() =>
+            nativeOwnership.store.releaseAdoptionClaim(ownershipClaim, adoptionReceipt),
+          ).pipe(Effect.orElseSucceed(() => false));
+          if (!releasedOwnership) return null;
           yield* recoveryLedger!.releaseClaim({
             threadId: input.threadId,
             ownerToken: route.ownerToken,
@@ -7377,15 +7714,29 @@ export function makePrimeAgentDaemonAdapter(
                 if (context.recoveryOwnerToken !== undefined) {
                   context.stopped = true;
                   sessions.delete(context.threadId);
-                  if (context.eventFiber !== undefined) yield* Fiber.interrupt(context.eventFiber);
+                  if (context.eventFiber !== undefined) {
+                    yield* runBoundedTeardownBarrier({
+                      threadId: context.threadId,
+                      phase: "recovery-event-fiber-interrupt",
+                      effect: Fiber.interrupt(context.eventFiber).pipe(Effect.asVoid),
+                    });
+                  }
                   context.backgroundQuiescenceController?.abort();
                   context.backgroundQuiescenceController = undefined;
-                  yield* (context.runtime.detach ?? context.runtime.dispose).pipe(
-                    Effect.mapError((error) =>
-                      runtimeOperationError(context.threadId, "shutdown", error),
+                  yield* runBoundedTeardownBarrier({
+                    threadId: context.threadId,
+                    phase: "recovery-runtime-detach",
+                    effect: (context.runtime.detach ?? context.runtime.dispose).pipe(
+                      Effect.mapError((error) =>
+                        runtimeOperationError(context.threadId, "shutdown", error),
+                      ),
                     ),
-                  );
-                  yield* Scope.close(context.scope, Exit.void).pipe(Effect.ignore);
+                  });
+                  yield* runBoundedTeardownBarrier({
+                    threadId: context.threadId,
+                    phase: "recovery-session-scope-close",
+                    effect: Scope.close(context.scope, Exit.void),
+                  });
                   return undefined;
                 }
                 return yield* stopSessionInternal(context);
@@ -7393,17 +7744,27 @@ export function makePrimeAgentDaemonAdapter(
             ),
           { concurrency: "unbounded" },
         );
-        yield* Effect.forEach(
-          ordinaryCompletions.filter((completion) => completion !== undefined),
-          Deferred.await,
-          { concurrency: "unbounded", discard: true },
-        );
+        const ordinary = ordinaryCompletions.filter((completion) => completion !== undefined);
+        const drained = yield* Effect.forEach(ordinary, Deferred.await, {
+          concurrency: "unbounded",
+          discard: true,
+        }).pipe(Effect.timeoutOption(Duration.millis(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS)));
+        if (Option.isNone(drained) && ordinary.length > 0) {
+          yield* Effect.logWarning("Prime Agent shutdown reached its session teardown bound.", {
+            sessionCount: ordinary.length,
+            timeoutMs: PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS,
+          });
+        }
       });
 
     yield* Effect.addFinalizer(() =>
       shutdownPrimeAgentEventPubSub({
         component: "daemon",
         pubSub: runtimeEventPubSub,
+        // Recovery shutdown has three ordered bounded phases: event-fiber stop,
+        // owner detach, then scope close. Keep the outer event drain long enough
+        // for all phases while retaining one fixed total bound.
+        timeoutMs: PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS * 4,
         drain: shutdown().pipe(
           Effect.andThen(
             Effect.suspend(() =>
@@ -7416,7 +7777,13 @@ export function makePrimeAgentDaemonAdapter(
         ),
       }).pipe(
         Effect.ensuring(Queue.shutdown(orderedRuntimeEventQueue)),
-        Effect.ensuring(managedNativeEventLogger?.close() ?? Effect.void),
+        Effect.ensuring(
+          (managedNativeEventLogger?.close() ?? Effect.void).pipe(
+            Effect.interruptible,
+            Effect.timeoutOption(Duration.millis(PRIME_AGENT_SESSION_TEARDOWN_TIMEOUT_MS)),
+            Effect.asVoid,
+          ),
+        ),
       ),
     );
 

@@ -25,18 +25,23 @@ import {
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import {
+  PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE,
+  PRIME_AGENT_DAEMON_PROTOCOL_NAME,
   type PrimeAgentDaemonAcpMcpServer,
   type PrimeAgentDaemonAgentConnection,
+  type PrimeAgentDaemonClient,
   type PrimeAgentDaemonEventCursor,
   type PrimeAgentRecoverableOwnedSessionAdoptionProof,
   type PrimeAgentDaemonExtensionUiResponse,
@@ -45,6 +50,8 @@ import {
   type PrimeAgentDaemonQueuedMessageLane,
   type PrimeAgentDaemonServiceTier,
   type PrimeAgentDaemonThinkingLevel,
+  type PrimeAgentOwnedSessionContractProof,
+  type PrimeAgentOwnedSessionDisposeResult,
 } from "./PrimeAgentDaemonBridge.ts";
 import {
   decodePrimeAgentDaemonChildren,
@@ -66,6 +73,8 @@ import {
   type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
+import type { PrimeAgentOwnershipReceiptHandle } from "./PrimeAgentOwnershipReceipt.ts";
+import type { PrimeAgentRuntimeContext } from "./PrimeAgentRuntimeContext.ts";
 import {
   PRIME_AGENT_PLAN_TOOL_DEFINITION,
   PRIME_AGENT_PLAN_TOOL_NAME,
@@ -854,6 +863,9 @@ export class PrimeAgentDaemonSessionRuntimeError extends Schema.TaggedErrorClass
 
 export interface PrimeAgentDaemonSessionRuntimeInput {
   readonly manager: PrimeAgentDaemonManager;
+  readonly runtimeContext?: PrimeAgentRuntimeContext;
+  /** Exact dirty receipt claimed by identity-safe restart adoption. */
+  readonly ownershipReceipt?: PrimeAgentOwnershipReceiptHandle;
   readonly cwd: string;
   /** Isolated, deterministic, server-owned directory for this Pylon thread. */
   readonly sessionDir: string;
@@ -889,6 +901,9 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
     | {
         readonly kind: "create";
         readonly requestId: string;
+        readonly threadId?: string;
+        readonly sessionIncarnationId?: string;
+        readonly admissionRequestId?: string;
         readonly correlationId: string;
         readonly mcpOwnerId: string;
         readonly onAuthorityReady: (authority: {
@@ -1196,7 +1211,12 @@ export interface PrimeAgentDaemonSessionRuntime {
   ) => PrimeAgentDaemonEventCursor | undefined;
   /** Close only this Pylon owner. The recoverable worker and MCP authority stay with the daemon. */
   readonly detach?: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
-  /** Explicit cleanup requires Prime's authoritative owned-session result. */
+  /** Preserves Prime's fixed authoritative cleanup outcome for private lifecycle decisions. */
+  readonly disposeOwnedSession?: Effect.Effect<
+    PrimeAgentOwnedSessionDisposeResult,
+    PrimeAgentDaemonSessionRuntimeError
+  >;
+  /** Compatibility view: only proved settlement succeeds. */
   readonly dispose: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
 }
 
@@ -1369,6 +1389,55 @@ function recoveryCursorFromSnapshot(value: unknown): PrimeAgentDaemonEventCursor
     : undefined;
 }
 
+function currentOwnedSessionContractProof(
+  connection: PrimeAgentDaemonAgentConnection,
+  client: PrimeAgentDaemonClient,
+): PrimeAgentOwnedSessionContractProof | undefined {
+  try {
+    if (
+      !Predicate.isFunction(connection.getOwnedSessionContractProof) ||
+      !Predicate.isFunction(connection.supportsNegotiatedCapability) ||
+      connection.supportsNegotiatedCapability(
+        PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE,
+      ) !== true
+    ) {
+      return undefined;
+    }
+    const proof = connection.getOwnedSessionContractProof();
+    const hello = client.hello;
+    if (proof === undefined || hello === undefined) return undefined;
+    return proof.feature === PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE &&
+      proof.status === "attached" &&
+      proof.daemon.protocolName === PRIME_AGENT_DAEMON_PROTOCOL_NAME &&
+      proof.daemon.protocolName === hello.protocol.name &&
+      proof.daemon.protocolVersion === hello.protocol.version &&
+      Number.isSafeInteger(proof.daemon.protocolVersion) &&
+      proof.daemon.schemaRevision === hello.schemaRevision &&
+      Number.isSafeInteger(proof.daemon.schemaRevision) &&
+      proof.daemon.supervisorGeneration.length > 0 &&
+      proof.daemon.supervisorGeneration === hello.supervisorGeneration &&
+      Number.isSafeInteger(proof.daemon.transportGeneration) &&
+      proof.daemon.transportGeneration >= 0 &&
+      hello.serverCapabilities.includes(
+        PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE,
+      ) &&
+      hello.serverCapabilities.includes("authoritative_owned_session_cleanup_v1") &&
+      (hello.appVersion === undefined || proof.daemon.appVersion === hello.appVersion) &&
+      (hello.buildId === undefined || proof.daemon.buildId === hello.buildId)
+      ? proof
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasCurrentOwnedSessionContractProof(
+  connection: PrimeAgentDaemonAgentConnection,
+  client: PrimeAgentDaemonClient,
+): boolean {
+  return currentOwnedSessionContractProof(connection, client) !== undefined;
+}
+
 export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemonSessionRuntime")(
   function* (
     input: PrimeAgentDaemonSessionRuntimeInput,
@@ -1377,6 +1446,21 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     PrimeAgentDaemonSessionRuntimeError,
     Scope.Scope
   > {
+    const primeRuntimeContext = input.runtimeContext;
+    if (
+      primeRuntimeContext === undefined ||
+      primeRuntimeContext.backendKind !== "daemon" ||
+      primeRuntimeContext.instanceId !== input.manager.identity.instanceId ||
+      primeRuntimeContext.configRevision !== input.manager.identity.configRevision ||
+      primeRuntimeContext.effectiveHome !== input.manager.identity.effectiveHome ||
+      primeRuntimeContext.launchEnv !== input.manager.identity.launchEnv
+    ) {
+      return yield* runtimeError(
+        "create-session",
+        "invalid-input",
+        "The Prime Agent runtime context does not own this daemon manager.",
+      );
+    }
     const cwd = yield* validateNonEmpty("create-session", "cwd", input.cwd);
     const sessionDir = yield* validateNonEmpty("create-session", "sessionDir", input.sessionDir);
     const shouldContinue = input.resumeCursor !== undefined;
@@ -1424,7 +1508,53 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let disposed = false;
     let detached = false;
     let disposeStarted = false;
-    const disposeCompletion = yield* Deferred.make<void, PrimeAgentDaemonSessionRuntimeError>();
+    const ownershipStore = primeRuntimeContext.nativeOwnership?.store;
+    let ownershipReceipt = input.ownershipReceipt;
+    if (
+      ownershipReceipt !== undefined &&
+      (input.recovery?.kind !== "adopt" ||
+        ownershipReceipt.instanceId !== primeRuntimeContext.instanceId ||
+        ownershipReceipt.currentConfigRevision !== primeRuntimeContext.configRevision ||
+        ownershipReceipt.effectiveHome !== primeRuntimeContext.effectiveHome)
+    ) {
+      client.close();
+      return yield* runtimeError(
+        "create-session",
+        "invalid-input",
+        "The native ownership receipt does not belong to this adoption generation.",
+      );
+    }
+    if (
+      ownershipStore !== undefined &&
+      input.recovery?.kind === "adopt" &&
+      ownershipReceipt === undefined
+    ) {
+      client.close();
+      return yield* runtimeError(
+        "create-session",
+        "invalid-input",
+        "Recoverable adoption is missing its exact native ownership receipt.",
+      );
+    }
+    const beginOwnershipReceipt = () =>
+      Effect.tryPromise({
+        try: () =>
+          ownershipStore!.begin({
+            instanceId: primeRuntimeContext.instanceId,
+            configRevision: primeRuntimeContext.configRevision,
+            effectiveHome: primeRuntimeContext.effectiveHome,
+          }),
+        catch: () =>
+          runtimeError(
+            "create-session",
+            "request-failed",
+            "Could not durably record native ownership before session creation.",
+          ),
+      }).pipe(Effect.tap((receipt) => Effect.sync(() => (ownershipReceipt = receipt))));
+    const disposeCompletion = yield* Deferred.make<
+      PrimeAgentOwnedSessionDisposeResult | undefined,
+      PrimeAgentDaemonSessionRuntimeError
+    >();
     let needsResumeAfterAbort = false;
     let connectionGeneration = 0;
     type RouteRetirementSignal = {
@@ -1881,6 +2011,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "Recoverable Prime Agent execution is unavailable.",
         );
       }
+      if (ownershipStore !== undefined) yield* beginOwnershipReceipt();
       const created = yield* Effect.tryPromise({
         try: () =>
           createRecoverableOwnedSession(client, {
@@ -1996,9 +2127,12 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       sessionFile = recovery.sessionFile;
       adoptedRecovery = { recoveryHandle: adopted.recoveryHandle, proof: adopted.proof };
     } else {
+      if (ownershipStore !== undefined) yield* beginOwnershipReceipt();
       const createCommand = {
         type: "create",
         lifecycle: "client_owned",
+        launchEnv: input.manager.launchEnvironment ?? {},
+        launchEnvMode: "replace",
         ...(resumeSessionId === undefined
           ? { continueRecent: shouldContinue }
           : { sessionPath: resumeSessionId, continueRecent: false }),
@@ -2027,6 +2161,16 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       if (Option.isNone(created)) {
         yield* closeClient;
         const alreadyActive = decodeCreateSessionAlreadyActiveFailure(createResponse);
+        const failed = decodeCreateFailure(createResponse);
+        if (
+          ownershipStore !== undefined &&
+          ownershipReceipt !== undefined &&
+          (Option.isSome(alreadyActive) || Option.isSome(failed))
+        ) {
+          yield* Effect.tryPromise(() => ownershipStore.proveNeverAcquired(ownershipReceipt!)).pipe(
+            Effect.ignore,
+          );
+        }
         if (Option.isSome(alreadyActive)) {
           return yield* runtimeError(
             "create-session",
@@ -2034,7 +2178,6 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             "SessionAlreadyActiveError: Prime Agent session is already active in another client.",
           );
         }
-        const failed = decodeCreateFailure(createResponse);
         return yield* runtimeError(
           "create-session",
           Option.isSome(failed) ? "request-failed" : "invalid-response",
@@ -2078,6 +2221,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             supportsExtensionUi: true,
             ownedSession: true,
             ownedSessionRecoveryConfig: sessionRuntimeConfig,
+            ownedSessionLaunchEnv: input.manager.launchEnvironment ?? {},
             ...(input.disableAutoReconnect === true
               ? {}
               : { recoverDaemon: input.manager.recover }),
@@ -2111,6 +2255,83 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       await connection?.dispose().catch(() => undefined);
       client.close();
     });
+    const initialOwnedSessionContractProof = currentOwnedSessionContractProof(connection, client);
+    if (initialOwnedSessionContractProof === undefined) {
+      yield* closeUnusableAttachedConnection;
+      if (ownershipReceipt !== undefined) ownershipStore?.markUnsafe(ownershipReceipt);
+      return yield* runtimeError(
+        "attach-session",
+        "invalid-response",
+        "Prime Agent did not prove the required caller-owned session contract for this attachment.",
+      );
+    }
+    if (ownershipStore !== undefined && ownershipReceipt !== undefined) {
+      const recoveryIdentity =
+        input.recovery?.kind === "create" &&
+        createdRecovery !== undefined &&
+        input.recovery.threadId !== undefined &&
+        input.recovery.sessionIncarnationId !== undefined &&
+        input.recovery.admissionRequestId !== undefined
+          ? {
+              threadId: input.recovery.threadId,
+              sessionIncarnationId: input.recovery.sessionIncarnationId,
+              admissionRequestId: input.recovery.admissionRequestId,
+              recoveryHandle: createdRecovery.recoveryHandle,
+              ownershipGeneration: createdRecovery.ownershipGeneration,
+            }
+          : undefined;
+      const ownershipUpdate =
+        input.recovery?.kind === "adopt"
+          ? ownershipStore.refreshAttachProof(ownershipReceipt, initialOwnedSessionContractProof)
+          : ownershipStore
+              .markAcquired(ownershipReceipt, {
+                activeSessionId,
+                nativeSessionId: sessionId,
+                attachProof: initialOwnedSessionContractProof,
+                ...(recoveryIdentity === undefined ? {} : { recovery: recoveryIdentity }),
+              })
+              .then((handle) => {
+                ownershipReceipt = handle;
+              });
+      const recorded = yield* Effect.tryPromise(() => ownershipUpdate).pipe(Effect.result);
+      if (Result.isFailure(recorded)) {
+        ownershipStore.markUnsafe(ownershipReceipt);
+        yield* closeUnusableAttachedConnection;
+        return yield* runtimeError(
+          "attach-session",
+          "request-failed",
+          "Prime Agent native ownership could not be durably acquired.",
+        );
+      }
+    }
+    let ownedSessionContractProofCurrent = true;
+    const requireCurrentOwnedSessionContract = (operation: "prompt" | "steer" | "follow-up") =>
+      Effect.suspend(() => {
+        const proof = currentOwnedSessionContractProof(connection!, client);
+        ownedSessionContractProofCurrent = ownedSessionContractProofCurrent && proof !== undefined;
+        if (!ownedSessionContractProofCurrent || proof === undefined) {
+          if (ownershipReceipt !== undefined) ownershipStore?.markUnsafe(ownershipReceipt);
+          return runtimeError(
+            operation,
+            "incompatible-api",
+            "Prime Agent no longer proves the caller-owned session contract for this attachment.",
+          );
+        }
+        return ownershipStore === undefined || ownershipReceipt === undefined
+          ? Effect.void
+          : Effect.tryPromise(() =>
+              ownershipStore.refreshAttachProof(ownershipReceipt!, proof),
+            ).pipe(
+              Effect.mapError(() =>
+                runtimeError(
+                  operation,
+                  "request-failed",
+                  "Prime Agent native ownership proof could not be durably refreshed.",
+                ),
+              ),
+            );
+      });
+
     if (input.manager.bridge.negotiatedDaemonSessionCapabilitiesAvailable) {
       if (!Predicate.isFunction(connection.supportsNegotiatedCapability)) {
         yield* closeUnusableAttachedConnection;
@@ -4449,6 +4670,18 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         Predicate.isObject(raw) && "type" in raw && Predicate.isString(raw.type)
           ? raw.type
           : undefined;
+      const rawStatus =
+        rawType === "connection_status" &&
+        Predicate.isObject(raw) &&
+        "status" in raw &&
+        Predicate.isString(raw.status)
+          ? raw.status
+          : undefined;
+      if (rawStatus === "reconnecting") {
+        ownedSessionContractProofCurrent = false;
+      } else if (rawStatus === "connected" || rawType === "session_resynced") {
+        ownedSessionContractProofCurrent = hasCurrentOwnedSessionContractProof(connection!, client);
+      }
       if (correlatedPromptLifecycleAvailable) {
         if (rawType !== "closed") return routeWorkerAwareRawEvent(raw);
         if (correlatedWorkerCloseRoute !== undefined) return correlatedWorkerCloseRoute;
@@ -6914,6 +7147,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
       yield* awaitProviderRecovery;
       yield* refreshMcpAfterAdoption();
+      yield* requireCurrentOwnedSessionContract("prompt");
       const resumedAfterAbort = yield* resumeAfterAbort();
       const images = yield* validateImages("prompt", promptInput.images);
       yield* validatePromptContent("prompt", promptInput.text, images);
@@ -7031,6 +7265,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* validatePromptContent("steer", promptInput.text, images);
       const recovery = yield* inputAdmissionAfterRecovery("steer");
       if (recovery === "recovering") return recovery;
+      yield* requireCurrentOwnedSessionContract("steer");
       const method = yield* requireMethod("steer", connection!.steer);
       yield* callVoid("steer", () => method.call(connection, promptInput.text, images));
       return "accepted" as const;
@@ -7044,6 +7279,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* validatePromptContent("follow-up", promptInput.text, images);
       const recovery = yield* inputAdmissionAfterRecovery("follow-up");
       if (recovery === "recovering") return recovery;
+      yield* requireCurrentOwnedSessionContract("follow-up");
       const method = yield* requireMethod("follow-up", connection!.followUp);
       yield* callVoid("follow-up", () => method.call(connection, promptInput.text, images));
       return "accepted" as const;
@@ -7907,60 +8143,67 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }),
     );
 
-    const dispose = Effect.uninterruptibleMask((restore) => {
+    const disposeOwnedSession = Effect.uninterruptibleMask((restore) => {
       // Scope cleanup and explicit teardown can race. Every caller joins the
-      // first bounded native disposal instead of treating "started" as done.
-      if (disposeStarted) return restore(Deferred.await(disposeCompletion));
-      disposeStarted = true;
-
-      const recoveryOwned = input.recovery !== undefined;
-      const nativeDispose = recoveryOwned
-        ? Effect.tryPromise({
-            try: async () => {
-              const cleanup = connection?.disposeOwnedSession;
-              if (!Predicate.isFunction(cleanup)) {
-                throw new Error("authoritative cleanup is unavailable");
-              }
-              const result = await cleanup.call(connection, { timeoutMs: COMMAND_TIMEOUT_MS });
-              if (
-                !Predicate.isObject(result) ||
-                (result.status !== "completed" && result.status !== "already_completed")
-              ) {
-                throw new Error("authoritative cleanup was not proven");
-              }
-            },
-            catch: () =>
-              runtimeError(
+      // first exact generation/attachment/session disposal.
+      const awaitDisposeCompletion = restore(Deferred.await(disposeCompletion)).pipe(
+        Effect.flatMap((outcome) =>
+          outcome === undefined
+            ? runtimeError(
                 "dispose",
                 "request-failed",
-                "Prime Agent could not prove authoritative native cleanup.",
-              ),
-          }).pipe(
-            Effect.tap(() =>
-              Effect.sync(() => {
-                releaseManagerRecoveryRetention?.();
-                releaseManagerRecoveryRetention = undefined;
-              }),
-            ),
-          )
-        : Effect.tryPromise({
-            try: () => connection!.dispose(),
-            catch: () =>
-              runtimeError("dispose", "request-failed", "Could not dispose the daemon session."),
-          }).pipe(
-            Effect.flatMap((output) =>
-              output === undefined
-                ? Effect.void
-                : Effect.fail(
-                    runtimeError(
-                      "dispose",
-                      "invalid-response",
-                      "The daemon dispose operation returned an invalid response.",
-                    ),
-                  ),
-            ),
-          );
-      const boundedNativeDispose = nativeDispose.pipe(
+                "The owned session was detached without authoritative cleanup.",
+              )
+            : Effect.succeed(outcome),
+        ),
+      );
+      if (disposeStarted) return awaitDisposeCompletion;
+      disposeStarted = true;
+      if (ownershipStore !== undefined && ownershipReceipt !== undefined) {
+        ownershipStore.markUnsafe(ownershipReceipt);
+      }
+
+      const nativeDispose = Effect.tryPromise({
+        try: async () => {
+          const cleanup = connection?.disposeOwnedSession;
+          if (!Predicate.isFunction(cleanup)) {
+            return {
+              feature: PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE,
+              status: "unsupported",
+            } satisfies PrimeAgentOwnedSessionDisposeResult;
+          }
+          const proof = currentOwnedSessionContractProof(connection!, client);
+          if (proof !== undefined) {
+            if (ownershipStore !== undefined && ownershipReceipt !== undefined) {
+              await ownershipStore.refreshAttachProof(ownershipReceipt, proof);
+            }
+          }
+          const result = await cleanup.call(connection, { timeoutMs: COMMAND_TIMEOUT_MS });
+          if (
+            !Predicate.isObject(result) ||
+            result.feature !== PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE ||
+            !Predicate.isString(result.status) ||
+            ![
+              "completed",
+              "already_completed",
+              "replacement_settled",
+              "owner_mismatch",
+              "uncertain",
+              "transport_failure",
+              "unsupported",
+            ].includes(result.status)
+          ) {
+            throw new Error("authoritative cleanup returned an invalid outcome");
+          }
+          return result as unknown as PrimeAgentOwnedSessionDisposeResult;
+        },
+        catch: () =>
+          runtimeError(
+            "dispose",
+            "request-failed",
+            "Prime Agent could not return an authoritative native cleanup outcome.",
+          ),
+      }).pipe(
         Effect.timeoutOrElse({
           duration: COMMAND_TIMEOUT_MS,
           orElse: () =>
@@ -7970,10 +8213,39 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               "Timed out while disposing the daemon session.",
             ),
         }),
+        Effect.tap((result) =>
+          Effect.gen(function* () {
+            const settled =
+              result.status === "completed" ||
+              result.status === "already_completed" ||
+              result.status === "replacement_settled";
+            if (!settled) {
+              if (ownershipReceipt !== undefined) ownershipStore?.markUnsafe(ownershipReceipt);
+              return;
+            }
+            if (ownershipStore !== undefined && ownershipReceipt !== undefined) {
+              const cleared = yield* Effect.tryPromise(() =>
+                ownershipStore.clearAfterCleanup(ownershipReceipt!, {
+                  activeSessionId,
+                  nativeSessionId: sessionId,
+                  result,
+                }),
+              ).pipe(Effect.orElseSucceed(() => false));
+              if (!cleared) {
+                ownershipStore.markUnsafe(ownershipReceipt);
+                return yield* runtimeError(
+                  "dispose",
+                  "invalid-response",
+                  "Authoritative cleanup did not match the exact native ownership receipt.",
+                );
+              }
+            }
+            releaseManagerRecoveryRetention?.();
+            releaseManagerRecoveryRetention = undefined;
+          }),
+        ),
       );
-      const beginDisposeOwner = retireLocalOwner.pipe(
-        Effect.map(() => [...activePrivateSideQuestions.entries()] as const),
-      );
+      const nativeSideQuestions = [...activePrivateSideQuestions.entries()] as const;
       const disposeOwnerBody = (
         nativeSideQuestions: ReadonlyArray<readonly [string, ActivePrivateSideQuestion]>,
       ) =>
@@ -7981,11 +8253,19 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           bestEffortAbortSideQuestion(nativeId, active),
         ).pipe(
           Effect.andThen(failActivePrivateSideQuestions()),
-          Effect.andThen(recoveryOwned ? Effect.void : releaseMcpServer),
+          Effect.andThen(input.recovery === undefined ? releaseMcpServer : Effect.void),
+          Effect.timeoutOption(COMMAND_TIMEOUT_MS),
+          Effect.asVoid,
         );
-      return beginDisposeOwner.pipe(
-        Effect.flatMap((nativeSideQuestions) => restore(disposeOwnerBody(nativeSideQuestions))),
-        Effect.onExit(() => boundedNativeDispose),
+      const work = Effect.gen(function* () {
+        const retirement = yield* retireLocalOwner.pipe(Effect.exit);
+        const localCleanup = yield* disposeOwnerBody(nativeSideQuestions).pipe(Effect.exit);
+        const nativeCleanup = yield* nativeDispose.pipe(Effect.exit);
+        if (Exit.isFailure(retirement)) return yield* Effect.failCause(retirement.cause);
+        if (Exit.isFailure(localCleanup)) return yield* Effect.failCause(localCleanup.cause);
+        return yield* nativeCleanup;
+      }).pipe(
+        Effect.interruptible,
         Effect.ensuring(
           Effect.gen(function* () {
             disposed = true;
@@ -7999,9 +8279,32 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         ),
         Effect.onExit((exit) => Deferred.done(disposeCompletion, exit).pipe(Effect.ignore)),
       );
+      return Effect.gen(function* () {
+        // Cleanup authority belongs to the exact session, not to the first caller's
+        // interruptibility. Install one detached cleanup fiber before any caller waits.
+        yield* Effect.sync(() => {
+          void runPromise(work).catch(() => undefined);
+        });
+        return yield* awaitDisposeCompletion;
+      });
     });
+    const dispose = disposeOwnedSession.pipe(
+      Effect.flatMap((result) =>
+        result.status === "completed" ||
+        result.status === "already_completed" ||
+        result.status === "replacement_settled"
+          ? Effect.void
+          : runtimeError(
+              "dispose",
+              result.status === "uncertain" ? "request-timed-out" : "request-failed",
+              `Prime Agent native cleanup did not settle (${result.status}).`,
+            ),
+      ),
+    );
 
-    yield* Effect.addFinalizer(() => (detached ? Effect.void : dispose.pipe(Effect.ignore)));
+    yield* Effect.addFinalizer(() =>
+      detached ? Effect.void : disposeOwnedSession.pipe(Effect.ignore),
+    );
 
     return {
       resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,
@@ -8115,6 +8418,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           }),
       recoveryCursorForEvent: (event) => consumedRecoveryCursors.get(event),
       detach,
+      disposeOwnedSession,
       dispose,
     } satisfies PrimeAgentDaemonSessionRuntime;
   },

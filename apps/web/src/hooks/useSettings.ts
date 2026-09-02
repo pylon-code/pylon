@@ -14,6 +14,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   DEFAULT_SERVER_SETTINGS,
   type EnvironmentId,
+  ServerProviderInstancesMutationId,
   ServerSettings,
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
@@ -49,6 +50,7 @@ let clientSettingsSnapshot = DEFAULT_CLIENT_SETTINGS;
 let clientSettingsHydrated = false;
 let clientSettingsHydrationPromise: Promise<void> | null = null;
 let clientSettingsHydrationGeneration = 0;
+let providerInstancesMutationSequence = 0;
 
 function emitClientSettingsChange() {
   for (const listener of clientSettingsListeners) {
@@ -311,17 +313,35 @@ export function usePrimarySettings<T = UnifiedSettings>(
  * Server keys are optimistically patched in atom-backed server state, then
  * persisted via RPC. Client keys go through client persistence.
  */
-function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
+function useUpdateSettingsTarget(
+  environmentId: EnvironmentId | null,
+  currentSettings: UnifiedSettings,
+) {
   const persistServerSettings = useAtomCommand(
     serverEnvironment.updateSettings,
     "server settings update",
+  );
+  const mutateProviderInstances = useAtomCommand(
+    serverEnvironment.mutateProviderInstances,
+    "provider instance update",
   );
   const updateSettings = useCallback(
     (patch: UnifiedSettingsPatch) => {
       const { serverPatch, clientPatch } = splitPatch(patch);
 
-      if (Object.keys(serverPatch).length > 0) {
-        if (environmentId) {
+      if (Object.keys(serverPatch).length > 0 && environmentId) {
+        if (serverPatch.providerInstances !== undefined) {
+          void mutateProviderInstances({
+            environmentId,
+            input: {
+              mutationId: ServerProviderInstancesMutationId.make(
+                `pylon:${Math.trunc(globalThis.performance.timeOrigin).toString(36)}:${providerInstancesMutationSequence++}`,
+              ),
+              expectedProviderInstances: currentSettings.providerInstances,
+              patch: serverPatch,
+            },
+          });
+        } else {
           void persistServerSettings({
             environmentId,
             input: { patch: serverPatch },
@@ -335,18 +355,26 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
         });
       }
     },
-    [environmentId, persistServerSettings],
+    [
+      currentSettings.providerInstances,
+      environmentId,
+      mutateProviderInstances,
+      persistServerSettings,
+    ],
   );
 
   return updateSettings;
 }
 
 export function useUpdateEnvironmentSettings(environmentId: EnvironmentId) {
-  return useUpdateSettingsTarget(environmentId);
+  const settings = useEnvironmentSettings(environmentId);
+  return useUpdateSettingsTarget(environmentId, settings);
 }
 
 export function useUpdatePrimarySettings() {
-  return useUpdateSettingsTarget(usePrimaryEnvironment()?.environmentId ?? null);
+  const environmentId = usePrimaryEnvironment()?.environmentId ?? null;
+  const settings = usePrimarySettings();
+  return useUpdateSettingsTarget(environmentId, settings);
 }
 
 export function useUpdateClientSettings() {

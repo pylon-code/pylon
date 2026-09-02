@@ -4,7 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { it, assert } from "@effect/vitest";
 import { assertSome } from "@effect/vitest/utils";
 import * as Effect from "effect/Effect";
@@ -267,5 +267,21 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
       }).pipe(Effect.provide(directoryLayer));
 
       NodeFS.rmSync(tempDir, { recursive: true, force: true });
+    }));
+  it("skips a session binding when its private commit guard retires", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.make("thread-retired-generation");
+
+      yield* directory.upsert(
+        {
+          provider: ProviderDriverKind.make("primeAgent"),
+          providerInstanceId: ProviderInstanceId.make("primeAgent"),
+          threadId,
+        },
+        { commitGuard: Effect.succeed(false) },
+      );
+
+      assert.isTrue(Option.isNone(yield* directory.getBinding(threadId)));
     }));
 });

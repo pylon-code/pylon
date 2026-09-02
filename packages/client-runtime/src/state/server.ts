@@ -842,6 +842,12 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    mutateProviderInstances: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mutate-provider-instances",
+      tag: WS_METHODS.serverMutateProviderInstances,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     signalProcess: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:signal-process",
       tag: WS_METHODS.serverSignalProcess,

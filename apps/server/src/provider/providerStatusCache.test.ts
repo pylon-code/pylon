@@ -10,6 +10,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Logger from "effect/Logger";
+import * as Ref from "effect/Ref";
 
 import {
   hydrateCachedProvider,
@@ -118,6 +119,42 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
       assert.deepStrictEqual(yield* readProviderStatusCache(codexPath), codexProvider);
       assert.deepStrictEqual(yield* readProviderStatusCache(claudePath), claudeProvider);
       assert.deepStrictEqual(yield* readProviderStatusCache(openCodePath), openCodeProvider);
+    }),
+  );
+
+  it.effect("treats legacy, mismatched, and stale guarded Prime revisions as cold", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-provider-cache-fence-" });
+      const cachePath = `${tempDir}/primeAgent.json`;
+      const current = yield* Ref.make(true);
+      const currentProvider = makeProvider(ProviderDriverKind.make("primeAgent"), {
+        version: "2.0.0",
+      });
+      yield* writeProviderStatusCache({
+        filePath: cachePath,
+        provider: currentProvider,
+        configRevision: "revision-b",
+        commitGuard: Ref.get(current),
+      });
+
+      yield* Ref.set(current, false);
+      yield* writeProviderStatusCache({
+        filePath: cachePath,
+        provider: { ...currentProvider, version: "1.0.0" },
+        configRevision: "revision-a",
+        commitGuard: Ref.get(current),
+      });
+
+      assert.deepStrictEqual(
+        yield* readProviderStatusCache(cachePath, { configRevision: "revision-b" }),
+        currentProvider,
+      );
+      assert.strictEqual(
+        yield* readProviderStatusCache(cachePath, { configRevision: "revision-a" }),
+        undefined,
+      );
+      assert.strictEqual(yield* readProviderStatusCache(cachePath), undefined);
     }),
   );
 

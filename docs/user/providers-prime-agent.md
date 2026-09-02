@@ -61,10 +61,28 @@ An empty **Agent home path** uses Prime Agent's normal `~/.prime/agent` director
 when this provider instance should use a separate Prime Agent home. If the app cannot find a CLI
 installed outside the system path, set **Binary path** to the complete path of `prime-agent`.
 
-Pylon normally uses Prime Agent's native daemon API. A non-empty **Launch arguments** value selects
-ACP compatibility mode instead, because the daemon API cannot safely preserve arbitrary CLI
-arguments. Pylon shows that fallback in the provider status rather than silently discarding the
-arguments.
+Pylon normally uses Prime Agent's native daemon API. With one enabled instance, a non-empty
+**Launch arguments** value selects ACP compatibility mode instead, because the daemon API cannot safely
+preserve arbitrary CLI arguments. Pylon shows that fallback in the provider status rather than silently
+discarding the arguments. ACP compatibility is disabled while more than one Prime instance is enabled.
+
+## Multiple Prime Accounts
+
+Multiple enabled Prime Agent instances are not available yet. Pylon keeps this capability disabled until
+signed-in macOS and hosted Linux/WSL2 graduation checks prove separate credentials, models, capacity,
+MCP access, checkpoints, cleanup, and resource limits at N=1, N=2, and N=4.
+
+Use one enabled Prime Agent instance per Pylon environment. The host rejects a second enabled instance
+before settings are saved and explains the pending proof. The distinct-home and native isolation work is
+retained for a later release, but it is not advertised as supported behavior.
+
+Native Windows does not run Prime Agent. Run the Pylon environment inside WSL2 or on another macOS/Linux
+host. Web, desktop, and mobile clients see the host environment's same capability and unavailable reason.
+
+Pylon never runs OS-user-global Prime maintenance such as update, doctor, shutdown, or stop-all for a
+provider instance. Run global Prime maintenance outside Pylon only after considering every Prime
+session owned by that OS user. Web, desktop, and mobile receive the same host capability state. Mobile
+does not offer a disabled or unavailable Prime instance as a fallback model.
 
 ### Optional Pylon-managed installation
 

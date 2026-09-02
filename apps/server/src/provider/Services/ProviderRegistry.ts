@@ -18,6 +18,7 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 import type { ProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
+import type { ProviderRuntimeFence } from "../ProviderDriver.ts";
 
 export type ProviderMaintenanceActionKind = "update";
 
@@ -59,6 +60,11 @@ export interface ProviderRegistryShape {
     provider: ProviderDriverKind,
   ) => Effect.Effect<ProviderMaintenanceCapabilities>;
 
+  /** Private process-local fence capture for long-running maintenance work. */
+  readonly getProviderRuntimeFence?: (
+    instanceId: ProviderInstanceId,
+  ) => Effect.Effect<ProviderRuntimeFence | undefined>;
+
   /**
    * Apply volatile maintenance-action state to one configured instance.
    * This state is never persisted to disk. Today only update actions are
@@ -69,6 +75,7 @@ export interface ProviderRegistryShape {
     readonly instanceId: ProviderInstanceId;
     readonly action: ProviderMaintenanceActionKind;
     readonly state: ServerProviderUpdateState | null;
+    readonly runtimeFence?: ProviderRuntimeFence | undefined;
   }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
   /**
@@ -84,6 +91,7 @@ export interface ProviderRegistryShape {
   readonly setProviderRateLimitState: (input: {
     readonly instanceId: ProviderInstanceId;
     readonly state: ServerProviderRateLimit | null;
+    readonly runtimeFence?: ProviderRuntimeFence | undefined;
   }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
   /**
@@ -104,6 +112,7 @@ export interface ProviderRegistryShape {
     readonly source: string;
     readonly observedAt: string;
     readonly windows: ReadonlyArray<ServerProviderUsageWindow>;
+    readonly runtimeFence?: ProviderRuntimeFence | undefined;
   }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
   /**
@@ -116,7 +125,10 @@ export interface ProviderRegistryShape {
    * a burst of short turns costs one read. Unknown instances and instances
    * without a capacity source are no-ops.
    */
-  readonly refreshProviderCapacity: (instanceId: ProviderInstanceId) => Effect.Effect<void>;
+  readonly refreshProviderCapacity: (
+    instanceId: ProviderInstanceId,
+    runtimeFence?: ProviderRuntimeFence,
+  ) => Effect.Effect<void>;
 
   /**
    * Stream of provider snapshot updates — one emission per aggregated

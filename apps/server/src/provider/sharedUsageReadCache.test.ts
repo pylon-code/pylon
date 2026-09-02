@@ -5,6 +5,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 
 import {
   acquireSharedUsageLock,
@@ -216,6 +217,32 @@ it.layer(NodeServices.layer)("shared usage read cache", (it) => {
 
       yield* fs.writeFileString(path.join(dir, `${key}.json`), "{not json");
       assert.strictEqual(yield* readSharedUsageEntry(dir, key), undefined);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("cold-misses mismatched revisions and rejects a retired write", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-usage-fence-" });
+      const key = sharedUsageReadKey(["prime", "primeAgent", "anthropic", "revision-b"]);
+      const current = yield* Ref.make(true);
+      const entry = {
+        version: 1 as const,
+        configRevision: "revision-b",
+        readAt: at(0),
+        usageLimits: usage(at(0)),
+      };
+      yield* writeSharedUsageEntry(dir, key, entry, Ref.get(current));
+      yield* Ref.set(current, false);
+      yield* writeSharedUsageEntry(
+        dir,
+        key,
+        { ...entry, configRevision: "revision-a", readAt: at(1_000) },
+        Ref.get(current),
+      );
+
+      assert.deepStrictEqual(yield* readSharedUsageEntry(dir, key, "revision-b"), entry);
+      assert.strictEqual(yield* readSharedUsageEntry(dir, key, "revision-a"), undefined);
     }).pipe(Effect.scoped),
   );
 
