@@ -26,6 +26,7 @@ import {
   omitSupersededLifecycleMarkers,
   resolveWorkEntryToolPresentation,
   summarizeToolGroup,
+  toolGroupAction,
   toolGroupSummaryKind,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolSuccess,
@@ -1220,6 +1221,13 @@ function workEntryHeading(workEntry: WorkLogEntry): string {
   return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
 }
 
+function singleToolCallLabel(activity: ThreadFeedActivity): string {
+  const presentation = resolveWorkEntryToolPresentation(activity.workEntry, "completed");
+  if (presentation) return presentation.displayName;
+  const command = activity.workEntry.command?.trim();
+  return command || activity.summary;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
@@ -2021,14 +2029,23 @@ function appendToolGroupRows(
   const latestActivity = latestActiveActivity ?? activities.at(-1)!;
   // Only the trailing active call owns the live slot; completed calls yield to Thinking.
   const shimmer = activeTail && active;
+  const singleActivity = activities.length === 1 ? latestActivity : null;
   const summary = live
     ? liveToolActivitySummary(latestActivity, active)
-    : activities.every((activity) => !activity.toolLike)
-      ? activities.at(-1)!.workEntry.label
-      : summarizeToolGroup(activities.map((activity) => activity.workEntry));
+    : singleActivity !== null &&
+        singleActivity.toolLike &&
+        toolGroupAction(singleActivity.workEntry) !== "edit"
+      ? singleToolCallLabel(singleActivity)
+      : activities.every((activity) => !activity.toolLike)
+        ? activities.at(-1)!.workEntry.label
+        : summarizeToolGroup(activities.map((activity) => activity.workEntry));
   const summaryToolIcon = live
     ? resolveWorkEntryToolPresentation(latestActivity.workEntry)?.icon
-    : undefined;
+    : singleActivity !== null &&
+        singleActivity.toolLike &&
+        toolGroupAction(singleActivity.workEntry) !== "edit"
+      ? resolveWorkEntryToolPresentation(singleActivity.workEntry, "completed")?.icon
+      : undefined;
   result.push({
     type: "work-toggle",
     // The shimmering trailing row is the turn's live slot; it keeps that
