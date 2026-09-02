@@ -440,6 +440,7 @@ import {
   shouldWriteThreadErrorToCurrentServerThread,
   startNewThreadForProject,
   codexArtifactTemplatePromptToAppend,
+  toolGroupConsumesUpwardNavigation,
   waitForStartedServerThread,
 } from "./ChatView.logic";
 import type { ThreadSyncPhase } from "../threadSync";
@@ -4607,7 +4608,11 @@ export default function ChatView(props: ChatViewProps) {
         // Only an upward wheel is a navigation intent; wheeling down while
         // following either does nothing (at the end) or moves toward it.
         const handleWheel = (event: WheelEvent) => {
-          if (event.deltaY < 0 && contentScrollsUp()) {
+          if (
+            event.deltaY < 0 &&
+            contentScrollsUp() &&
+            !toolGroupConsumesUpwardNavigation(event.target)
+          ) {
             handleManualNavigation();
           }
         };
@@ -4644,7 +4649,7 @@ export default function ChatView(props: ChatViewProps) {
             case "PageUp":
             case "Home":
             case "ArrowUp":
-              if (contentScrollsUp()) {
+              if (contentScrollsUp() && !toolGroupConsumesUpwardNavigation(event.target)) {
                 handleManualNavigation();
               }
               break;
