@@ -328,6 +328,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
           interactionMode: "default",
           runtimeMode: "full-access",
+          rollbackStatus: null,
           branch: null,
           worktreePath: null,
           linkedPullRequest: {
@@ -458,6 +459,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
           interactionMode: "default",
           runtimeMode: "full-access",
+          rollbackStatus: null,
           branch: null,
           worktreePath: null,
           linkedPullRequest: {

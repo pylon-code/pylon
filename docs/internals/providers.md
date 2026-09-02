@@ -24,6 +24,12 @@ adapter in a child scope. Adapter implementations live beside them in
 [`ProviderAdapter.ts`][adapter]. Read the driver plus its adapter to see how a specific agent's
 transport, config, and event shapes are mapped.
 
+### Absolute conversation rollback
+
+The optional `absoluteConversationRollback` adapter boundary captures, inspects, and applies a private JSON anchor with a stable equality digest. The durable rollback saga accepts only adapters that declare `conversationRollback: "absolute"` and implement all three operations. Relative turn counts and uninspectable no-op paths always fail closed.
+
+All built-in production adapters currently omit this boundary and remain `unsupported`. The foundation provides only the provider-neutral contract, private persistence, leases, compensation, and reconciliation. A later provider-specific phase must prove its immutable anchor semantics before changing that declaration. Anchors, native session identities, receipts, and recovery paths must not enter orchestration events, logs, shell projections, or client payloads.
+
 Prime Agent uses its public detached-daemon APIs as the primary runtime on macOS, Linux, and WSL2
 (which reports itself as Linux). `PrimeAgentDriver.create` rejects a native `win32` server before
 maintenance resolution, backend negotiation, status or catalog probes, capacity reads, adapter

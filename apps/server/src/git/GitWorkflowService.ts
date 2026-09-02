@@ -1,6 +1,9 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as NodeFS from "node:fs";
 
 import {
   GitManagerError,
@@ -31,6 +34,15 @@ import {
 import * as GitManager from "./GitManager.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import { RollbackSagaRepository } from "../persistence/Services/RollbackSagas.ts";
+
+function canonicalWorkspacePath(cwd: string): string {
+  try {
+    return NodeFS.realpathSync(cwd);
+  } catch {
+    return cwd;
+  }
+}
 
 export class GitWorkflowService extends Context.Service<
   GitWorkflowService,
@@ -141,6 +153,44 @@ export const make = Effect.gen(function* () {
   const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
+  const rollbackRepository = yield* Effect.serviceOption(RollbackSagaRepository);
+
+  const workspaceIsRollbackFenced = Effect.fn("GitWorkflowService.workspaceIsRollbackFenced")(
+    function* (cwd: string) {
+      if (Option.isNone(rollbackRepository)) return false;
+      const canonical = canonicalWorkspacePath(cwd);
+      const active = yield* rollbackRepository.value
+        .listNonterminalForFence()
+        .pipe(Effect.orElseSucceed(() => null));
+      if (active === null) return true;
+      return active.some((record) => record.state.workspaceCwd === canonical);
+    },
+  );
+  const ensureMutationCommand = Effect.fn("GitWorkflowService.ensureMutationCommand")(function* (
+    operation: string,
+    cwd: string,
+  ) {
+    if (yield* workspaceIsRollbackFenced(cwd)) {
+      return yield* new GitCommandError({
+        operation,
+        command: "rollback-fence",
+        cwd,
+        detail: "The workspace is fenced by an active rollback operation.",
+      });
+    }
+  });
+  const ensureMutationWorkflow = Effect.fn("GitWorkflowService.ensureMutationWorkflow")(function* (
+    operation: string,
+    cwd: string,
+  ) {
+    if (yield* workspaceIsRollbackFenced(cwd)) {
+      return yield* new GitManagerError({
+        operation,
+        cwd,
+        detail: "The workspace is fenced by an active rollback operation.",
+      });
+    }
+  });
 
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
     operation: string,
@@ -281,21 +331,24 @@ export const make = Effect.gen(function* () {
     invalidateRemoteStatus: gitManager.invalidateRemoteStatus,
     invalidateStatus: gitManager.invalidateStatus,
     pullCurrentBranch: (cwd) =>
-      ensureGitCommand("GitWorkflowService.pullCurrentBranch", cwd).pipe(
+      ensureMutationCommand("GitWorkflowService.pullCurrentBranch", cwd).pipe(
+        Effect.andThen(ensureGitCommand("GitWorkflowService.pullCurrentBranch", cwd)),
         Effect.andThen(git.pullCurrentBranch(cwd)),
       ),
     runStackedAction: (input, options) =>
-      ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
+      ensureMutationWorkflow("GitWorkflowService.runStackedAction", input.cwd).pipe(
+        Effect.andThen(ensureGit("GitWorkflowService.runStackedAction", input.cwd)),
         Effect.andThen(gitManager.runStackedAction(input, options)),
       ),
     resolvePullRequest: routeGitManager(
       "GitWorkflowService.resolvePullRequest",
       gitManager.resolvePullRequest,
     ),
-    preparePullRequestThread: routeGitManager(
-      "GitWorkflowService.preparePullRequestThread",
-      gitManager.preparePullRequestThread,
-    ),
+    preparePullRequestThread: (input) =>
+      ensureMutationWorkflow("GitWorkflowService.preparePullRequestThread", input.cwd).pipe(
+        Effect.andThen(ensureGit("GitWorkflowService.preparePullRequestThread", input.cwd)),
+        Effect.andThen(gitManager.preparePullRequestThread(input)),
+      ),
     listRefs: (input) =>
       detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
         Effect.flatMap((isGitRepository) =>
@@ -303,7 +356,8 @@ export const make = Effect.gen(function* () {
         ),
       ),
     createWorktree: (input) =>
-      ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
+      ensureMutationCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
+        Effect.andThen(ensureGitCommand("GitWorkflowService.createWorktree", input.cwd)),
         Effect.andThen(git.createWorktree(input)),
       ),
     fetchRemote: (input) =>
@@ -319,7 +373,8 @@ export const make = Effect.gen(function* () {
         Effect.andThen(git.resolveRemoteTrackingCommit(input)),
       ),
     removeWorktree: (input) =>
-      ensureGitCommand("GitWorkflowService.removeWorktree", input.cwd).pipe(
+      ensureMutationCommand("GitWorkflowService.removeWorktree", input.cwd).pipe(
+        Effect.andThen(ensureGitCommand("GitWorkflowService.removeWorktree", input.cwd)),
         Effect.andThen(git.removeWorktree(input)),
       ),
     pruneWorktrees: (input) =>
@@ -327,15 +382,18 @@ export const make = Effect.gen(function* () {
         Effect.andThen(git.pruneWorktrees(input)),
       ),
     createRef: (input) =>
-      ensureGitCommand("GitWorkflowService.createRef", input.cwd).pipe(
+      ensureMutationCommand("GitWorkflowService.createRef", input.cwd).pipe(
+        Effect.andThen(ensureGitCommand("GitWorkflowService.createRef", input.cwd)),
         Effect.andThen(git.createRef(input)),
       ),
     switchRef: (input) =>
-      ensureGitCommand("GitWorkflowService.switchRef", input.cwd).pipe(
+      ensureMutationCommand("GitWorkflowService.switchRef", input.cwd).pipe(
+        Effect.andThen(ensureGitCommand("GitWorkflowService.switchRef", input.cwd)),
         Effect.andThen(Effect.scoped(git.switchRef(input))),
       ),
     renameBranch: (input) =>
-      ensureGit("GitWorkflowService.renameBranch", input.cwd).pipe(
+      ensureMutationWorkflow("GitWorkflowService.renameBranch", input.cwd).pipe(
+        Effect.andThen(ensureGit("GitWorkflowService.renameBranch", input.cwd)),
         Effect.andThen(git.renameBranch(input)),
       ),
   });

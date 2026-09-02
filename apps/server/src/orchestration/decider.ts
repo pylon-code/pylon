@@ -1884,11 +1884,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.revert.complete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const currentRevision = thread.checkpoints.reduce(
+        (maximum, checkpoint) => Math.max(maximum, checkpoint.checkpointTurnCount),
+        0,
+      );
+      if (
+        currentRevision !== command.sourceRevision ||
+        command.targetRevision !== command.turnCount ||
+        command.targetRevision >= command.sourceRevision
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Rollback completion lost its exact source/target revision compare-and-set.",
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -1900,6 +1914,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           turnCount: command.turnCount,
+          operationId: command.operationId,
+          sourceRevision: command.sourceRevision,
+          targetRevision: command.targetRevision,
+        },
+      };
+    }
+
+    case "thread.rollback.status.set": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.rollback-status-updated",
+        payload: {
+          threadId: command.threadId,
+          status: command.status,
+          updatedAt: command.createdAt,
         },
       };
     }

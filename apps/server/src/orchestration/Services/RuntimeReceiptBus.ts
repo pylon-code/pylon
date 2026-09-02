@@ -49,7 +49,16 @@ export const TurnProcessingQuiescedReceipt = Schema.Struct({
 });
 export type TurnProcessingQuiescedReceipt = typeof TurnProcessingQuiescedReceipt.Type;
 
+export const RollbackSagaPhaseReceipt = Schema.Struct({
+  type: Schema.Literal("rollback.saga.phase"),
+  operationId: Schema.String,
+  phase: Schema.String,
+  createdAt: IsoDateTime,
+});
+export type RollbackSagaPhaseReceipt = typeof RollbackSagaPhaseReceipt.Type;
+
 export const OrchestrationRuntimeReceipt = Schema.Union([
+  RollbackSagaPhaseReceipt,
   CheckpointBaselineCapturedReceipt,
   CheckpointDiffFinalizedReceipt,
   TurnProcessingQuiescedReceipt,

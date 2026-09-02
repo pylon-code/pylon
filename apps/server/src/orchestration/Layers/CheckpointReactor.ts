@@ -5,6 +5,7 @@ import {
   MessageId,
   type ProjectId,
   type ProviderInstanceId,
+  type RuntimeSessionId,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
@@ -17,7 +18,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type * as PlatformError from "effect/PlatformError";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { isTemporaryWorktreeBranch } from "@t3tools/shared/git";
@@ -35,11 +35,12 @@ import { forkParked } from "../../serverActivation.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { RuntimeReceiptBus } from "../Services/RuntimeReceiptBus.ts";
-import type { CheckpointStoreError } from "../../checkpointing/Errors.ts";
-import type { OrchestrationDispatchError } from "../Errors.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
+import { RollbackSagaRepository } from "../../persistence/Services/RollbackSagas.ts";
+import { RollbackSagaRunner } from "../../rollback/RollbackSagaRunner.ts";
+import { RollbackWorkspace } from "../../rollback/RollbackWorkspace.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -51,6 +52,11 @@ type ReactorInput =
   | {
       readonly source: "domain";
       readonly event: OrchestrationEvent;
+    }
+  | {
+      readonly source: "saga";
+      readonly operationId: string;
+      readonly recovering: boolean;
     };
 
 function toTurnId(value: string | undefined): TurnId | null {
@@ -77,7 +83,7 @@ function checkpointStatusFromRuntime(status: string | undefined): "ready" | "mis
   }
 }
 
-const make = Effect.gen(function* () {
+export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const randomUUID = crypto.randomUUIDv4;
   const serverEventId = randomUUID.pipe(Effect.map(EventId.make));
@@ -93,6 +99,9 @@ const make = Effect.gen(function* () {
   const receiptBus = yield* RuntimeReceiptBus;
   const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
+  const rollbackRepository = yield* Effect.serviceOption(RollbackSagaRepository);
+  const rollbackRunner = yield* Effect.serviceOption(RollbackSagaRunner);
+  const rollbackWorkspace = yield* Effect.serviceOption(RollbackWorkspace);
 
   const appendRevertFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -164,6 +173,7 @@ const make = Effect.gen(function* () {
       readonly threadId: ThreadId;
       readonly cwd: string;
       readonly providerInstanceId: ProviderInstanceId;
+      readonly sessionIncarnationId: RuntimeSessionId | undefined;
     }>
   > {
     const sessions = yield* providerService.listSessions();
@@ -174,6 +184,7 @@ const make = Effect.gen(function* () {
           cwd: session.cwd,
           providerInstanceId:
             session.providerInstanceId ?? defaultInstanceIdForDriver(session.provider),
+          sessionIncarnationId: session.sessionIncarnationId,
         })
       : Option.none();
   });
@@ -231,6 +242,52 @@ const make = Effect.gen(function* () {
     return cwd;
   });
 
+  const capturePrivateCheckpointAnchor = Effect.fn("capturePrivateCheckpointAnchor")(
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly cwd: string;
+      readonly checkpointTurnCount: number;
+      readonly checkpointRef: ReturnType<typeof checkpointRefForThreadTurn>;
+      readonly capturedAt: string;
+    }) {
+      const session = yield* resolveSessionRuntimeForThread(input.threadId);
+      if (
+        Option.isNone(session) ||
+        session.value.sessionIncarnationId === undefined ||
+        Option.isNone(rollbackRepository) ||
+        Option.isNone(rollbackWorkspace)
+      )
+        return;
+      const capabilities = yield* providerService
+        .getCapabilities(session.value.providerInstanceId)
+        .pipe(Effect.option);
+      if (Option.isNone(capabilities) || capabilities.value.conversationRollback !== "absolute")
+        return;
+      if (
+        providerService.hasAbsoluteConversationRollback === undefined ||
+        providerService.captureConversationAnchor === undefined ||
+        !(yield* providerService.hasAbsoluteConversationRollback(input.threadId))
+      )
+        return;
+      const checkpoint = yield* rollbackWorkspace.value.resolveCheckpoint({
+        cwd: input.cwd,
+        checkpointRef: input.checkpointRef,
+      });
+      const anchor = yield* providerService.captureConversationAnchor(input.threadId);
+      yield* rollbackRepository.value.putCheckpointAnchor({
+        threadId: input.threadId,
+        checkpointTurnCount: input.checkpointTurnCount,
+        providerInstanceId: session.value.providerInstanceId,
+        sessionIncarnationId: session.value.sessionIncarnationId,
+        checkpointRef: input.checkpointRef,
+        checkpointOid: checkpoint.oid,
+        anchor: anchor.anchor,
+        anchorDigest: anchor.digest,
+        capturedAt: input.capturedAt,
+      });
+    },
+  );
+
   // Shared tail for both capture paths: creates the git checkpoint ref, diffs
   // it against the previous turn, then dispatches the domain events to update
   // the orchestration read model.
@@ -269,6 +326,13 @@ const make = Effect.gen(function* () {
     yield* checkpointStore.captureCheckpoint({
       cwd: input.cwd,
       checkpointRef: targetCheckpointRef,
+    });
+    yield* capturePrivateCheckpointAnchor({
+      threadId: input.threadId,
+      cwd: input.cwd,
+      checkpointTurnCount: input.turnCount,
+      checkpointRef: targetCheckpointRef,
+      capturedAt: input.createdAt,
     });
 
     // Refresh the workspace entry index so the @-mention file picker
@@ -707,6 +771,14 @@ const make = Effect.gen(function* () {
   ) {
     const now = DateTime.formatIso(yield* DateTime.now);
 
+    const admitted = Option.isSome(rollbackRepository)
+      ? yield* rollbackRepository.value.getByRequestEvent(event.eventId).pipe(Effect.option)
+      : Option.none();
+    if (Option.isSome(admitted) && Option.isSome(admitted.value) && Option.isSome(rollbackRunner)) {
+      yield* rollbackRunner.value.run(admitted.value.value.operationId, false);
+      return;
+    }
+
     const thread = yield* resolveThreadDetail(event.payload.threadId);
     if (!thread) {
       yield* appendRevertFailureActivity({
@@ -846,14 +918,14 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const processInput = (
-    input: ReactorInput,
-  ): Effect.Effect<
-    void,
-    CheckpointStoreError | OrchestrationDispatchError | PlatformError.PlatformError,
-    never
-  > =>
-    input.source === "domain" ? processDomainEvent(input.event) : processRuntimeEvent(input.event);
+  const processInput = (input: ReactorInput) =>
+    input.source === "domain"
+      ? processDomainEvent(input.event)
+      : input.source === "runtime"
+        ? processRuntimeEvent(input.event)
+        : Option.isSome(rollbackRunner)
+          ? rollbackRunner.value.run(input.operationId, input.recovering)
+          : Effect.void;
 
   const processInputSafely = (input: ReactorInput) =>
     processInput(input).pipe(
@@ -863,8 +935,8 @@ const make = Effect.gen(function* () {
         }
         return Effect.logWarning("checkpoint reactor failed to process input", {
           source: input.source,
-          eventType: input.event.type,
-          cause: Cause.pretty(cause),
+          eventType: input.source === "saga" ? "rollback.saga.reconcile" : input.event.type,
+          cause: input.source === "saga" ? "rollback saga step failed" : Cause.pretty(cause),
         });
       }),
     );
@@ -872,6 +944,17 @@ const make = Effect.gen(function* () {
   const worker = yield* makeDrainableWorker(processInputSafely);
 
   const start: CheckpointReactorShape["start"] = Effect.fn("start")(function* () {
+    if (Option.isSome(rollbackRepository) && Option.isSome(rollbackRunner)) {
+      yield* rollbackRepository.value.clearOwnersForStartup().pipe(Effect.orDie);
+      const pendingRollbacks = yield* rollbackRepository.value.listNonterminal().pipe(Effect.orDie);
+      yield* Effect.forEach(
+        pendingRollbacks,
+        (record) =>
+          worker.enqueue({ source: "saga", operationId: record.operationId, recovering: true }),
+        { concurrency: 1, discard: true },
+      );
+    }
+
     yield* forkParked(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
         if (

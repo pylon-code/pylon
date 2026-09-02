@@ -735,6 +735,18 @@ export function projectEvent(
         };
       });
 
+    case "thread.rollback-status-updated":
+      return Effect.succeed({
+        ...nextBase,
+        threads: updateThread(nextBase.threads, event.payload.threadId, {
+          rollbackStatus:
+            event.payload.status === null
+              ? null
+              : { state: event.payload.status, updatedAt: event.payload.updatedAt },
+          updatedAt: event.payload.updatedAt,
+        }),
+      });
+
     case "thread.reverted":
       return decodeForEvent(ThreadRevertedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => {
@@ -780,6 +792,7 @@ export function projectEvent(
               proposedPlans,
               activities,
               latestTurn,
+              rollbackStatus: null,
               updatedAt: event.occurredAt,
             }),
           };

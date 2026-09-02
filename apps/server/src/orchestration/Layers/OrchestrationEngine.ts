@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import type {
   OrchestrationClientOrigin,
   OrchestrationEvent,
@@ -5,7 +6,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
-import { OrchestrationCommand } from "@t3tools/contracts";
+import { CommandId, OrchestrationCommand } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -21,6 +22,7 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as NodeFS from "node:fs";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
@@ -41,6 +43,8 @@ import {
 } from "../Errors.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
+import { RollbackAdmission } from "../../rollback/RollbackAdmission.ts";
+import { RollbackSagaRepository } from "../../persistence/Services/RollbackSagas.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -52,6 +56,14 @@ const isOrchestrationCommandPreviouslyRejectedError = Schema.is(
 );
 const isOrchestrationCommandIdConflictError = Schema.is(OrchestrationCommandIdConflictError);
 const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvariantError);
+
+function canonicalWorkspacePath(cwd: string): string {
+  try {
+    return NodeFS.realpathSync(cwd);
+  } catch {
+    return cwd;
+  }
+}
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
@@ -87,6 +99,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const crypto = yield* Crypto.Crypto;
+  const rollbackAdmission = yield* Effect.serviceOption(RollbackAdmission);
+  const rollbackRepository = yield* Effect.serviceOption(RollbackSagaRepository);
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
@@ -105,6 +119,74 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       }
       return nextReadModel;
     });
+
+  const assertRollbackFenceAllows = Effect.fn("OrchestrationEngine.assertRollbackFenceAllows")(
+    function* (command: OrchestrationCommand) {
+      if (Option.isNone(rollbackRepository)) return;
+      const active = yield* rollbackRepository.value.listNonterminalForFence().pipe(
+        Effect.mapError(
+          () =>
+            new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "Rollback mutation fence could not be verified.",
+            }),
+        ),
+      );
+      if (active.length === 0) return;
+      if (
+        command.type === "project.create" ||
+        command.type === "project.meta.update" ||
+        command.type === "project.delete"
+      ) {
+        if (
+          command.type !== "project.create" &&
+          active.some((record) => record.projectId === command.projectId)
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "This project is fenced by an active rollback operation.",
+          });
+        }
+        return;
+      }
+      const safeForOwnedThread =
+        command.type === "thread.rollback.status.set" ||
+        command.type === "thread.revert.complete" ||
+        (command.type === "thread.session.set" &&
+          ["idle", "ready", "interrupted", "stopped", "error"].includes(command.session.status));
+      const owned = active.find((record) => record.threadId === command.threadId);
+      if (owned !== undefined && !safeForOwnedThread) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This thread is fenced by an active rollback operation.",
+        });
+      }
+      if (
+        command.type !== "thread.turn.start" &&
+        command.type !== "thread.input-queue.follow-up" &&
+        command.type !== "thread.approval.respond" &&
+        command.type !== "thread.user-input.respond" &&
+        command.type !== "thread.turn.diff.complete" &&
+        command.type !== "thread.checkpoint.revert"
+      )
+        return;
+      const thread = commandReadModel.threads.find(
+        (candidate) => candidate.id === command.threadId,
+      );
+      const project =
+        thread === undefined
+          ? undefined
+          : commandReadModel.projects.find((candidate) => candidate.id === thread.projectId);
+      if (!thread || !project) return;
+      const candidateCwd = canonicalWorkspacePath(thread.worktreePath ?? project.workspaceRoot);
+      if (active.some((record) => record.state.workspaceCwd === candidateCwd)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This workspace is fenced by another thread's active rollback operation.",
+        });
+      }
+    },
+  );
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
     const dispatchStartSequence = commandReadModel.snapshotSequence;
@@ -169,6 +251,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
+        yield* assertRollbackFenceAllows(envelope.command);
+
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
@@ -184,7 +268,50 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 }),
           ),
         );
-        const plannedEvents = Array.isArray(eventBase) ? eventBase : [eventBase];
+        const commandEvents = Array.isArray(eventBase) ? eventBase : [eventBase];
+        const preparedRollback =
+          envelope.command.type === "thread.checkpoint.revert" &&
+          Option.isSome(rollbackAdmission) &&
+          commandEvents[0]?.type === "thread.checkpoint-revert-requested"
+            ? yield* rollbackAdmission.value.prepare({
+                command: envelope.command,
+                readModel: commandReadModel,
+                requestEventId: commandEvents[0].eventId,
+              })
+            : Option.none();
+        const pendingRollbackEvent = Option.isSome(preparedRollback)
+          ? yield* decideOrchestrationCommand({
+              command: {
+                type: "thread.rollback.status.set",
+                commandId: CommandId.make(
+                  `server:rollback-admitted:${preparedRollback.value.operationId}`,
+                ),
+                threadId: preparedRollback.value.threadId,
+                status: "pending",
+                createdAt: preparedRollback.value.createdAt,
+              },
+              readModel: commandReadModel,
+            }).pipe(
+              Effect.provideService(Crypto.Crypto, crypto),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail: "Failed to persist the durable rollback status.",
+                    cause,
+                  }),
+              ),
+            )
+          : null;
+        const plannedEvents =
+          pendingRollbackEvent === null
+            ? commandEvents
+            : [
+                ...commandEvents,
+                ...(Array.isArray(pendingRollbackEvent)
+                  ? pendingRollbackEvent
+                  : [pendingRollbackEvent]),
+              ];
         // Stamp the dispatching client's origin onto every event the command
         // produced. The decider stays pure; attribution is an engine concern.
         const eventBases =
@@ -197,6 +324,24 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              if (Option.isSome(preparedRollback)) {
+                if (Option.isNone(rollbackRepository)) {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail: "Durable rollback persistence is unavailable.",
+                  });
+                }
+                yield* rollbackRepository.value.admit(preparedRollback.value).pipe(
+                  Effect.mapError(
+                    () =>
+                      new OrchestrationCommandInvariantError({
+                        commandType: envelope.command.type,
+                        detail:
+                          "Rollback admission lost its operation or workspace lease compare-and-set.",
+                      }),
+                  ),
+                );
+              }
               const committedEvents: OrchestrationEvent[] = [];
               let nextCommandReadModel = commandReadModel;
 

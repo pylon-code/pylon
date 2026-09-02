@@ -525,6 +525,19 @@ export function applyThreadDetailEvent(
     }
 
     // ── Revert ──────────────────────────────────────────────────────
+    case "thread.rollback-status-updated":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          rollbackStatus:
+            event.payload.status === null
+              ? null
+              : { state: event.payload.status, updatedAt: event.payload.updatedAt },
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
     case "thread.reverted": {
       const checkpoints = pipe(
         thread.checkpoints,
@@ -556,6 +569,7 @@ export function applyThreadDetailEvent(
           messages,
           proposedPlans,
           activities,
+          rollbackStatus: null,
           latestTurn:
             latestCheckpoint === null
               ? null

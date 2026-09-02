@@ -95,6 +95,7 @@ import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import { RollbackSagaRepository } from "../../persistence/Services/RollbackSagas.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
 /**
@@ -314,6 +315,26 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+  const rollbackRepository = yield* Effect.serviceOption(RollbackSagaRepository);
+  const assertNotRollbackFenced = Effect.fn("ProviderService.assertNotRollbackFenced")(function* (
+    threadId: ThreadId,
+    operation: string,
+  ) {
+    if (Option.isNone(rollbackRepository)) return;
+    const active = yield* rollbackRepository.value
+      .getActiveByThread(threadId)
+      .pipe(
+        Effect.mapError(() =>
+          toValidationError(operation, "Rollback mutation fence could not be verified."),
+        ),
+      );
+    if (Option.isSome(active)) {
+      return yield* toValidationError(
+        operation,
+        "The provider session is fenced by an active rollback operation.",
+      );
+    }
+  });
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const issueMcpCredential =
     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
@@ -1364,6 +1385,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderSendTurnInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(parsed.threadId, "ProviderService.sendTurn");
 
     const attachments = parsed.attachments ?? [];
     if (!parsed.input && attachments.length === 0) {
@@ -1691,6 +1713,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         schema: ProviderInterruptTurnInput,
         payload: rawInput,
       });
+      yield* assertNotRollbackFenced(input.threadId, "ProviderService.interruptTurn");
       let metricProvider = "unknown";
       return yield* Effect.gen(function* () {
         const routed = yield* resolveRoutableSession({
@@ -1773,6 +1796,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderRespondToUserInputInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.respondToUserInput");
     let metricProvider = "unknown";
     return yield* Effect.gen(function* () {
       const routed = yield* resolveRoutableSession({
@@ -1807,6 +1831,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderRespondToInteractionInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.respondToInteraction");
     let metricProvider = "unknown";
     return yield* Effect.gen(function* () {
       const routed = yield* resolveRoutableSession({
@@ -2128,6 +2153,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderFollowUpInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(parsed.threadId, "ProviderService.followUp");
     const input = { ...parsed, attachments: parsed.attachments ?? [] };
     if (!input.input && input.attachments.length === 0) {
       return yield* new ProviderValidationError({
@@ -2207,6 +2233,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderClearSessionInputQueueInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.clearSessionInputQueue");
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.clearSessionInputQueue",
@@ -2238,6 +2265,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         schema: ProviderRemoveOnlySessionInputQueueItemInput,
         payload: rawInput,
       });
+      yield* assertNotRollbackFenced(
+        input.threadId,
+        "ProviderService.removeOnlySessionInputQueueItem",
+      );
       const routed = yield* resolveRoutableSession({
         threadId: input.threadId,
         operation: "ProviderService.removeOnlySessionInputQueueItem",
@@ -2271,6 +2302,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderSetSessionInputQueueModeInput,
       payload: rawInput,
     });
+    yield* assertNotRollbackFenced(input.threadId, "ProviderService.setSessionInputQueueMode");
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.setSessionInputQueueMode",
@@ -2465,6 +2497,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         schema: ProviderStopSessionInput,
         payload: rawInput,
       });
+      yield* assertNotRollbackFenced(input.threadId, "ProviderService.stopSession");
       let metricProvider = "unknown";
       // Invalidate before the first directory read. A first-turn start can be
       // inside adapter creation without having a persisted binding yet; stop
@@ -2851,6 +2884,86 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const getInstanceInfo: ProviderServiceMethod<"getInstanceInfo"> = (instanceId) =>
     registry.getInstanceInfo(instanceId);
 
+  const resolveAbsoluteConversationRollback = Effect.fn(
+    "ProviderService.resolveAbsoluteConversationRollback",
+  )(function* (threadId: ThreadId) {
+    const routed = yield* resolveRoutableSession({
+      threadId,
+      operation: "ProviderService.absoluteConversationRollback",
+      allowRecovery: true,
+    });
+    const operations = routed.adapter.absoluteConversationRollback;
+    if (
+      routed.adapter.capabilities.conversationRollback !== "absolute" ||
+      operations === undefined
+    ) {
+      return yield* toValidationError(
+        "ProviderService.absoluteConversationRollback",
+        "Exact provider conversation rollback is unavailable.",
+      );
+    }
+    return { routed, operations } as const;
+  });
+
+  const hasAbsoluteConversationRollback: NonNullable<
+    ProviderServiceMethod<"hasAbsoluteConversationRollback">
+  > = Effect.fn("hasAbsoluteConversationRollback")(function* (threadId) {
+    const routed = yield* resolveRoutableSession({
+      threadId,
+      operation: "ProviderService.hasAbsoluteConversationRollback",
+      allowRecovery: true,
+    });
+    return (
+      routed.adapter.capabilities.conversationRollback === "absolute" &&
+      routed.adapter.absoluteConversationRollback !== undefined
+    );
+  });
+
+  const captureConversationAnchor: NonNullable<ProviderServiceMethod<"captureConversationAnchor">> =
+    Effect.fn("captureConversationAnchor")(function* (threadId) {
+      const { operations } = yield* resolveAbsoluteConversationRollback(threadId);
+      return yield* operations
+        .captureAnchor(threadId)
+        .pipe(
+          Effect.mapError(() =>
+            toValidationError(
+              "ProviderService.captureConversationAnchor",
+              "The provider could not prove its current conversation anchor.",
+            ),
+          ),
+        );
+    });
+
+  const inspectConversationAnchor: NonNullable<ProviderServiceMethod<"inspectConversationAnchor">> =
+    Effect.fn("inspectConversationAnchor")(function* (threadId) {
+      const { operations } = yield* resolveAbsoluteConversationRollback(threadId);
+      return yield* operations
+        .inspectAnchor(threadId)
+        .pipe(
+          Effect.mapError(() =>
+            toValidationError(
+              "ProviderService.inspectConversationAnchor",
+              "The provider could not inspect its current conversation anchor.",
+            ),
+          ),
+        );
+    });
+
+  const applyConversationAnchor: NonNullable<ProviderServiceMethod<"applyConversationAnchor">> =
+    Effect.fn("applyConversationAnchor")(function* (input) {
+      const { operations } = yield* resolveAbsoluteConversationRollback(input.threadId);
+      return yield* operations
+        .applyAnchor(input.threadId, input.anchor)
+        .pipe(
+          Effect.mapError(() =>
+            toValidationError(
+              "ProviderService.applyConversationAnchor",
+              "The provider did not prove an exact conversation anchor update.",
+            ),
+          ),
+        );
+    });
+
   const rollbackConversation: ProviderServiceMethod<"rollbackConversation"> = Effect.fn(
     "rollbackConversation",
   )(function* (rawInput) {
@@ -3096,6 +3209,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,
+    hasAbsoluteConversationRollback,
+    captureConversationAnchor,
+    inspectConversationAnchor,
+    applyConversationAnchor,
     uploadFeedback,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each

@@ -507,6 +507,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           latest_turn_id AS "latestTurnId",
+          rollback_status AS "rollbackStatus",
+          rollback_updated_at AS "rollbackUpdatedAt",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -546,6 +548,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           latest_turn_id AS "latestTurnId",
+          rollback_status AS "rollbackStatus",
+          rollback_updated_at AS "rollbackUpdatedAt",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -587,6 +591,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           latest_turn_id AS "latestTurnId",
+          rollback_status AS "rollbackStatus",
+          rollback_updated_at AS "rollbackUpdatedAt",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -1107,6 +1113,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           latest_turn_id AS "latestTurnId",
+          rollback_status AS "rollbackStatus",
+          rollback_updated_at AS "rollbackUpdatedAt",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -1416,6 +1424,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             'thread.proposed-plan-upserted',
             'thread.activity-appended',
             'thread.turn-diff-completed',
+            'thread.rollback-status-updated',
             'thread.reverted',
             'thread.session-set'
           )
@@ -2080,6 +2089,10 @@ pending_approval_requests AS (
                   ? {}
                   : { linkedPullRequest: row.linkedPullRequest }),
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
+                rollbackStatus:
+                  row.rollbackStatus == null || row.rollbackUpdatedAt == null
+                    ? null
+                    : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
                 archivedAt: row.archivedAt,
@@ -2292,6 +2305,10 @@ pending_approval_requests AS (
                     ? {}
                     : { linkedPullRequest: row.linkedPullRequest }),
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
+                  rollbackStatus:
+                    row.rollbackStatus == null || row.rollbackUpdatedAt == null
+                      ? null
+                      : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   archivedAt: row.archivedAt,
@@ -2433,6 +2450,10 @@ pending_approval_requests AS (
                         ? {}
                         : { linkedPullRequest: row.linkedPullRequest }),
                       latestTurn: latestTurnByThread.get(row.threadId) ?? null,
+                      rollbackStatus:
+                        row.rollbackStatus == null || row.rollbackUpdatedAt == null
+                          ? null
+                          : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
                       createdAt: row.createdAt,
                       updatedAt: row.updatedAt,
                       archivedAt: row.archivedAt,
@@ -2583,6 +2604,10 @@ pending_approval_requests AS (
                     ? {}
                     : { linkedPullRequest: row.linkedPullRequest }),
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
+                  rollbackStatus:
+                    row.rollbackStatus == null || row.rollbackUpdatedAt == null
+                      ? null
+                      : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   archivedAt: row.archivedAt,
@@ -2878,6 +2903,13 @@ pending_approval_requests AS (
           ? {}
           : { linkedPullRequest: threadRow.value.linkedPullRequest }),
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
+        rollbackStatus:
+          threadRow.value.rollbackStatus == null || threadRow.value.rollbackUpdatedAt == null
+            ? null
+            : {
+                state: threadRow.value.rollbackStatus,
+                updatedAt: threadRow.value.rollbackUpdatedAt,
+              },
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
         archivedAt: threadRow.value.archivedAt,
@@ -3117,6 +3149,13 @@ pending_approval_requests AS (
           ? {}
           : { linkedPullRequest: threadRow.value.linkedPullRequest }),
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
+        rollbackStatus:
+          threadRow.value.rollbackStatus == null || threadRow.value.rollbackUpdatedAt == null
+            ? null
+            : {
+                state: threadRow.value.rollbackStatus,
+                updatedAt: threadRow.value.rollbackUpdatedAt,
+              },
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
         archivedAt: threadRow.value.archivedAt,
