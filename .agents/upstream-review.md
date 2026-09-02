@@ -15,6 +15,34 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-02 — scoped adoption, cursor unchanged
+
+**Not a batch review.** The developer asked for upstream's Claude Fable 5.1
+support specifically, ahead of any other upstream work, so this session reviewed
+exactly one change set out of the 129 commits sitting in
+`9b2d04317c68233782e0630464ac86d77d0686f3..57a66608b918d673eeec7e6c94ea5906b756fcd0`.
+The other 128 commits were **not** reviewed and have received no decision.
+
+`reviewed-through` therefore stays at `9b2d0431`. A later full review must treat
+the whole range as unreviewed apart from the row below, which it should skip as
+already adopted.
+
+| ID  | Upstream                                       | Decision | Pylon reference | Notes                                                                                                                                                                                                                                                       |
+| --- | ---------------------------------------------- | -------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S-1 | `c17d02cff` / `#9078` — Claude Fable 5.1 model | adopted  | `#247`          | Clean `cherry-pick -x`, no conflicts, applied line-for-line. Self-contained: it does not depend on `#9084` (remote manifest discovery), which is the large `ClaudeProvider.ts` restructure that follows it upstream and was deliberately left out of scope. |
+
+Two consequences worth carrying forward. The bundled manifest swap promotes
+`claude-fable-5-1` into the current Claude set and thereby marks
+`claude-fable-5` **legacy** — that is upstream's intent, since 5.1 supersedes 5
+in the same tier, but it is a user-visible change to an existing model's status.
+And the catalog is gated on Claude Code `v2.1.257`, so the model stays hidden on
+older CLIs rather than failing at spawn time.
+
+`#9084` (`03542836`, remote Claude model manifest) is a separate 26-file
+restructure that another session had begun stacking on the same branch. It was
+split back out and is **not** adopted here; it remains undecided in the
+unreviewed range above.
+
 ## 2026-09-01 — `1f8ed54add4133ac39effceded8fc1fff12d8e03..9b2d04317c68233782e0630464ac86d77d0686f3`
 
 Twenty-nine upstream commits, reviewed as change sets C-1 through C-21. The
