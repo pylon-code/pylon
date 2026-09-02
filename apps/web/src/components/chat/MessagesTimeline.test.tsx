@@ -563,7 +563,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain('data-anchor-index="0"');
-    expect(markup).toContain('data-anchor-offset="16"');
+    expect(markup).toContain('data-anchor-offset="24"');
     expect(markup).toContain('data-anchor-on-ready="true"');
     expect(markup).not.toContain("data-anchor-max-size=");
     expect(markup).toContain('data-content-inset-end="144"');
@@ -1433,7 +1433,30 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("tool call failed");
   });
 
-  it("keeps terminal command copy live while the parent turn is active", () => {
+  it("renders initial thinking as the shared live activity row", () => {
+    const turnId = TurnId.make("turn-live");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt={MESSAGE_CREATED_AT}
+        latestTurn={{
+          turnId,
+          state: "running",
+          startedAt: MESSAGE_CREATED_AT,
+          completedAt: null,
+        }}
+        runningTurnId={turnId}
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain("Thinking");
+    expect(markup).toContain("lucide-brain");
+    expect(markup).toContain('data-timeline-row-id="live-activity-row"');
+  });
+
+  it("keeps the completed command in the shared activity row", () => {
     const turnId = TurnId.make("turn-live");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -1449,19 +1472,19 @@ describe("MessagesTimeline", () => {
         runningTurnId={turnId}
         timelineEntries={[
           {
-            id: "entry-failed",
+            id: "entry-completed",
             kind: "work",
             createdAt: MESSAGE_CREATED_AT,
             entry: {
-              id: "work-failed",
+              id: "work-completed",
               createdAt: MESSAGE_CREATED_AT,
               turnId,
-              toolCallId: "call-failed",
+              toolCallId: "call-completed",
               label: "Run lint",
               tone: "tool",
               itemType: "command_execution",
               command: "pnpm lint",
-              toolLifecycleStatus: "failed",
+              toolLifecycleStatus: "completed",
             },
           },
         ]}
@@ -1469,8 +1492,11 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Running pnpm");
-    expect(markup).toContain("tool call failed");
-    expect(markup).toContain("lucide-x");
+    expect(markup).toContain("lucide-terminal");
+    expect(markup).toContain("live-activity-focus");
+    expect(markup).not.toContain("Ran pnpm");
+    expect(markup).not.toContain("Thinking");
+    expect(markup).not.toContain('data-timeline-row-kind="thinking"');
     expect(markup).not.toContain('data-slot="dot-matrix"');
   });
 
@@ -1522,15 +1548,17 @@ describe("MessagesTimeline", () => {
     expect(workingIndex).toBeGreaterThan(userIndex);
     expect(assistantIndex).toBeGreaterThan(workingIndex);
     expect(markup).toContain('class="border-b border-border/60 pb-2 pt-1"');
-    // #8734 lays the row out with flex so a long plan step truncates.
+    // #8734 lays the row out with flex so a long plan step truncates; #8922
+    // pins it to h-6 so swapping between "Working for" and the worktree-setup
+    // label cannot change the row's height.
     expect(markup).toContain(
-      'class="flex min-w-0 items-baseline px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
+      'class="flex h-6 min-w-0 items-baseline px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
     );
     expect(markup).not.toContain('class="pt-0.5 pb-5 pl-1.5"');
     expect(markup).not.toContain('data-slot="dot-matrix"');
   });
 
-  it("aligns the iconless Thinking row with the working timer", () => {
+  it("aligns the Thinking row with the working timer", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -1543,7 +1571,12 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Working for");
     expect(markup).toContain("Thinking");
     expect(markup).not.toContain('data-slot="dot-matrix"');
-    expect(markup).toContain("gap-1.5 py-0.5 px-1");
+    // #9098 gave the row a brain glyph, so it is no longer iconless and its own
+    // padding tightened to px-0.5. Alignment now comes from the size-6 icon box
+    // matching the working row's h-6, which is what this asserts.
+    expect(markup).toContain("gap-1.5 py-0.5 px-0.5");
+    expect(markup).toContain("flex size-6 shrink-0 items-center justify-center");
+    expect(markup).toContain("flex h-6 min-w-0 items-baseline px-1");
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", () => {
