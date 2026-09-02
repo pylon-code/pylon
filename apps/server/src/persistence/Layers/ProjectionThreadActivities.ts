@@ -132,7 +132,13 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
           AND kind IN (
             'user-input.requested',
             'user-input.resolved',
-            'provider.user-input.respond.failed'
+            'provider.user-input.respond.failed',
+            -- Pylon's Prime adapter emits generic interaction activities for the
+            -- same pending-input shell count. shouldRefreshThreadShellSummary
+            -- already wakes on these, so omitting them here refreshes to zero.
+            'interaction.requested',
+            'interaction.resolved',
+            'provider.interaction.respond.failed'
           )
         ORDER BY
           CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
