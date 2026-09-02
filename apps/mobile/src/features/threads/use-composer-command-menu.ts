@@ -2,6 +2,7 @@ import {
   dedupeProviderSkillsByName,
   getProviderSkillsForSlashMenu,
   getProviderSlashCommandsForSlashMenu,
+  isProviderSkillUserInvocable,
 } from "@t3tools/client-runtime/providerSkills";
 import type { ComposerPathSearchEntry } from "@t3tools/client-runtime/state/threads";
 import {
@@ -160,7 +161,7 @@ export function buildComposerCommandItems({
 
   if (trigger.kind === "skill") {
     const enabledSkills = dedupeProviderSkillsByName(
-      (selectedProviderStatus?.skills ?? []).filter((s) => s.enabled),
+      (selectedProviderStatus?.skills ?? []).filter(isProviderSkillUserInvocable),
     );
     const normalizedQuery = normalizeSearchQuery(trigger.query, {
       trimLeadingPattern: /^\$+/,
