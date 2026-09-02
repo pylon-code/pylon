@@ -2338,7 +2338,7 @@ function ChatMarkdown({
                 // makes the whole label one unbreakable run.
                 <MarkdownLinkContext value>
                   <MarkdownExternalLinkContent host={faviconHost} plainText={plainHastText(node)}>
-                    {linkChildren}
+                    {children}
                   </MarkdownExternalLinkContent>
                 </MarkdownLinkContext>
               ) : (
