@@ -776,6 +776,21 @@ export function useThreadComposerState() {
     const attachments = draft.attachments;
     if (text.length === 0 && attachments.length === 0) return null;
 
+    // Same gate onSendMessage applies: queueing while an upload is still in
+    // flight would start a second transfer of the same bytes alongside the
+    // background worker's.
+    if (
+      composerAttachmentUploadBlockReason({
+        environmentId: selectedThreadShell.environmentId,
+        attachments,
+        connected: selectedEnvironmentRuntime?.connectionState === "connected",
+        serverConfig: selectedEnvironmentRuntime?.serverConfig ?? null,
+        states: appAtomRegistry.get(composerAttachmentUploadsAtom),
+      }) !== null
+    ) {
+      return null;
+    }
+
     if (attachments.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
       Alert.alert(
         "Too many attachments",

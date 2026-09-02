@@ -1797,7 +1797,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     />
                     {canQueueFollowUp ? (
                       <ControlPill
-                        accessibilityLabel="Queue follow-up"
+                        accessibilityLabel={attachmentBlockReason ?? "Queue follow-up"}
                         icon="arrow.up"
                         variant="primary"
                         disabled={!canSend || isMutatingSessionInputQueue}
