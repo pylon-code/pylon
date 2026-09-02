@@ -26,6 +26,11 @@ import {
   type UnifiedSettings,
 } from "@t3tools/contracts/settings";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
+import {
+  findSharedSettingsMismatches,
+  pickSharedServerSettings,
+  splitSharedServerPatch,
+} from "@t3tools/client-runtime/state/shared-settings";
 import { ensureLocalApi } from "~/localApi";
 import {
   getThemeDefinition,
@@ -36,7 +41,11 @@ import {
 } from "~/themePalette";
 import * as Struct from "effect/Struct";
 import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
-import { usePrimaryEnvironment } from "~/state/environments";
+import {
+  type EnvironmentPresentation,
+  useEnvironments,
+  usePrimaryEnvironment,
+} from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useTheme } from "./useTheme";
 
@@ -310,10 +319,37 @@ export function usePrimarySettings<T = UnifiedSettings>(
 }
 
 /**
+ * Whether an environment can hold every shared key right now. Gated on the
+ * auto-settlement capability because it is the newest of the shared keys: a
+ * server that has it has all of them. Older servers drop unknown keys on
+ * write, so a mismatch against them could never clear, and their decoded
+ * defaults must not be treated as real values.
+ */
+function supportsSharedSettings(environment: EnvironmentPresentation): boolean {
+  return (
+    environment.connection.phase === "connected" &&
+    environment.serverConfig?.environment.capabilities.threadAutoSettlement === true
+  );
+}
+
+/** Environments that can receive a shared settings write right now. */
+function useConnectedEnvironmentIds(): ReadonlyArray<EnvironmentId> {
+  const { environments } = useEnvironments();
+  return useMemo(
+    () =>
+      environments.filter(supportsSharedSettings).map((environment) => environment.environmentId),
+    [environments],
+  );
+}
+
+/**
  * Returns an updater that routes each key to the correct backing store.
  *
  * Server keys are optimistically patched in atom-backed server state, then
- * persisted via RPC. Client keys go through client persistence.
+ * persisted via RPC. Shared server keys (see `SHARED_SERVER_SETTING_KEYS`)
+ * are written to every connected environment, not only the target, so a user
+ * preference does not silently drift between machines. Client keys go through
+ * client persistence.
  */
 function useUpdateSettingsTarget(
   environmentId: EnvironmentId | null,
@@ -327,12 +363,16 @@ function useUpdateSettingsTarget(
     serverEnvironment.mutateProviderInstances,
     "provider instance update",
   );
+  const connectedEnvironmentIds = useConnectedEnvironmentIds();
   const updateSettings = useCallback(
     (patch: UnifiedSettingsPatch) => {
       const { serverPatch, clientPatch } = splitPatch(patch);
 
-      if (Object.keys(serverPatch).length > 0 && environmentId) {
-        if (serverPatch.providerInstances !== undefined) {
+      if (Object.keys(serverPatch).length > 0) {
+        // Provider-instance edits go through their own optimistic mutation so
+        // two writers cannot clobber each other's list. They are never shared
+        // keys, so they bypass the shared/local split entirely.
+        if (serverPatch.providerInstances !== undefined && environmentId) {
           void mutateProviderInstances({
             environmentId,
             input: {
@@ -344,10 +384,25 @@ function useUpdateSettingsTarget(
             },
           });
         } else {
-          void persistServerSettings({
-            environmentId,
-            input: { patch: serverPatch },
-          });
+          const { sharedPatch, localPatch } = splitSharedServerPatch(serverPatch);
+          if (environmentId && Object.keys(localPatch).length > 0) {
+            void persistServerSettings({
+              environmentId,
+              input: { patch: localPatch },
+            });
+          }
+          if (Object.keys(sharedPatch).length > 0) {
+            const targets = new Set(connectedEnvironmentIds);
+            if (environmentId) {
+              targets.add(environmentId);
+            }
+            for (const targetId of targets) {
+              void persistServerSettings({
+                environmentId: targetId,
+                input: { patch: sharedPatch },
+              });
+            }
+          }
         }
       }
       if (Object.keys(clientPatch).length > 0) {
@@ -358,6 +413,7 @@ function useUpdateSettingsTarget(
       }
     },
     [
+      connectedEnvironmentIds,
       currentSettings.providerInstances,
       environmentId,
       mutateProviderInstances,
@@ -366,6 +422,60 @@ function useUpdateSettingsTarget(
   );
 
   return updateSettings;
+}
+
+/**
+ * Connected environments whose shared settings differ from the primary's,
+ * plus an action that writes the primary's values to all of them. Drift
+ * happens when an environment was offline during an edit or was changed by
+ * an older client.
+ */
+export function useSharedSettingsSync() {
+  const primaryEnvironment = usePrimaryEnvironment();
+  const primaryEnvironmentId = primaryEnvironment?.environmentId ?? null;
+  // Read the loaded config, not `primaryServerSettingsAtom`: that atom falls
+  // back to defaults while the primary is disconnected, and "apply to all"
+  // must never push defaults over real values. Same for a primary too old to
+  // hold the shared keys: its decoded defaults are not a source of truth.
+  const primarySettings =
+    primaryEnvironment !== null && supportsSharedSettings(primaryEnvironment)
+      ? (primaryEnvironment.serverConfig?.settings ?? null)
+      : null;
+  const { environments } = useEnvironments();
+  const persistServerSettings = useAtomCommand(
+    serverEnvironment.updateSettings,
+    "server settings update",
+  );
+
+  const mismatches = useMemo(
+    () =>
+      findSharedSettingsMismatches({
+        primaryEnvironmentId,
+        primarySettings,
+        environments: environments.map((environment) => ({
+          environmentId: environment.environmentId,
+          label: environment.label,
+          connected: supportsSharedSettings(environment),
+          settings: environment.serverConfig?.settings ?? null,
+        })),
+      }),
+    [environments, primaryEnvironmentId, primarySettings],
+  );
+
+  const applyToAll = useCallback(() => {
+    if (primarySettings === null) {
+      return;
+    }
+    const patch = pickSharedServerSettings(primarySettings);
+    for (const mismatch of mismatches) {
+      void persistServerSettings({
+        environmentId: mismatch.environmentId,
+        input: { patch },
+      });
+    }
+  }, [mismatches, persistServerSettings, primarySettings]);
+
+  return { mismatches, applyToAll };
 }
 
 export function useUpdateEnvironmentSettings(environmentId: EnvironmentId) {
