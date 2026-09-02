@@ -15,7 +15,7 @@ Each environment owns its automatic settlement settings. The server checks them 
 desktop, or mobile client is connected. By default, it settles threads after three days without
 activity and when their pull request merges. An eligible idle thread also settles when its pull
 request closes. An open pull request blocks inactivity settlement. Active work, pending input, and
-live background work keep the thread active. T3 Code settles from a closed or merged pull request
+live background work keep the thread active. Pylon settles from a closed or merged pull request
 only when its timestamp is not older than the user's latest activity. If that timestamp is not
 available, the inactivity rule still applies. A manual un-settle also keeps the thread active.
 Change these rules in **Settings > General** for the environment. A settings change affects future

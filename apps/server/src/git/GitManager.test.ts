@@ -1523,6 +1523,19 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
                 updatedAt: "2026-04-02T10:00:00Z",
               },
             ]),
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 512,
+                title: "Merged then pruned",
+                url: "https://github.com/pingdotgg/t3code/pull/512",
+                baseRefName: "main",
+                headRefName: "feature/merged-then-pruned",
+                state: "MERGED",
+                mergedAt: "2026-04-02T10:00:00Z",
+                updatedAt: "2026-04-02T10:00:00Z",
+              },
+            ]),
           ],
         },
       });
@@ -1532,11 +1545,11 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(first.pr?.state).toBe("merged");
 
       // Merging on the host deletes the remote head, and a prune drops the
-      // remote-tracking ref along with `@{upstream}`. From remote refs alone
-      // that is indistinguishable from a branch that was never published, so
-      // the unpublished-branch skip fires here. Skipping means "we did not
-      // ask", not "there is no PR": blanking the badge would also deny
-      // auto-settle the merged state it waits for.
+      // remote-tracking ref along with `@{upstream}`. #8600 made that
+      // distinguishable from a never-published branch: prune leaves
+      // `branch.<name>.remote` and `.merge` behind as evidence the branch was
+      // published, so the lookup runs instead of skipping and the badge comes
+      // from live state rather than the last-known fallback.
       yield* runGit(repoDir, ["push", "origin", "--delete", "feature/merged-then-pruned"]);
       yield* runGit(repoDir, ["fetch", "--prune", "origin"]);
 
@@ -1545,8 +1558,8 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
 
       expect(second.pr?.number).toBe(512);
       expect(second.pr?.state).toBe("merged");
-      // The saved API call is the point of the skip, so it must still be saved.
-      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+      // The branch is now identifiable as published, so asking again is correct.
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
     }),
   );
 
