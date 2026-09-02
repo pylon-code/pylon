@@ -348,6 +348,27 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         Effect.asVoid,
       )
     : Effect.void;
+  const instanceMaintenanceState = yield* SynchronizedRef.make(
+    new Map<ProviderInstanceId, { readonly pendingStarts: number; readonly fenceToken?: string }>(),
+  );
+  const beginInstanceStart = (instanceId: ProviderInstanceId) =>
+    SynchronizedRef.modify(instanceMaintenanceState, (current) => {
+      const state = current.get(instanceId) ?? { pendingStarts: 0 };
+      if (state.fenceToken !== undefined) return [false, current] as const;
+      const next = new Map(current);
+      next.set(instanceId, { ...state, pendingStarts: state.pendingStarts + 1 });
+      return [true, next] as const;
+    });
+  const finishInstanceStart = (instanceId: ProviderInstanceId) =>
+    SynchronizedRef.update(instanceMaintenanceState, (current) => {
+      const state = current.get(instanceId);
+      if (!state) return current;
+      const next = new Map(current);
+      const pendingStarts = Math.max(0, state.pendingStarts - 1);
+      if (pendingStarts === 0 && state.fenceToken === undefined) next.delete(instanceId);
+      else next.set(instanceId, { ...state, pendingStarts });
+      return next;
+    });
   const reserveStartSession = (threadId: ThreadId) =>
     SynchronizedRef.modify(startReservations, (current) => {
       const previous = current.get(threadId);
@@ -882,10 +903,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       } as const;
     }
 
+    if (!(yield* beginInstanceStart(instanceId))) {
+      return yield* toValidationError(
+        input.operation,
+        `Provider instance '${instanceId}' is fenced for scheduled host maintenance.`,
+      );
+    }
     const recovered = yield* recoverSessionForThread({
       binding,
       operation: input.operation,
-    });
+    }).pipe(Effect.ensuring(finishInstanceStart(instanceId)));
     return {
       adapter: recovered.adapter,
       instanceId,
@@ -942,6 +969,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "ProviderService.startSession",
         parsed,
       );
+      if (!(yield* beginInstanceStart(resolvedInstanceId))) {
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          `Provider instance '${resolvedInstanceId}' is fenced for scheduled host maintenance.`,
+        );
+      }
       let metricProvider = parsed.provider ?? String(resolvedInstanceId);
       yield* Effect.annotateCurrentSpan({
         "provider.operation": "start-session",
@@ -1130,7 +1163,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             }),
           ),
         )
-        .pipe(Effect.ensuring(releaseStartReservation(threadId, reservation.token)));
+        .pipe(
+          Effect.ensuring(releaseStartReservation(threadId, reservation.token)),
+          Effect.ensuring(finishInstanceStart(resolvedInstanceId)),
+        );
     },
   );
 
@@ -2382,6 +2418,61 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const releaseProviderMaintenance: ProviderServiceMethod<"releaseProviderMaintenance"> = (
+    reservation,
+  ) =>
+    SynchronizedRef.update(instanceMaintenanceState, (current) => {
+      const entry = [...current.entries()].find(
+        ([, state]) => state.fenceToken === reservation.token,
+      );
+      if (!entry) return current;
+      const [instanceId, state] = entry;
+      const next = new Map(current);
+      if (state.pendingStarts === 0) next.delete(instanceId);
+      else next.set(instanceId, { pendingStarts: state.pendingStarts });
+      return next;
+    });
+
+  const reserveProviderMaintenance: ProviderServiceMethod<"reserveProviderMaintenance"> = Effect.fn(
+    "reserveProviderMaintenance",
+  )(function* (instanceId) {
+    const token = NodeCrypto.randomUUID();
+    const fenced = yield* SynchronizedRef.modify(instanceMaintenanceState, (current) => {
+      const state = current.get(instanceId) ?? { pendingStarts: 0 };
+      if (state.fenceToken !== undefined || state.pendingStarts > 0) {
+        return [false, current] as const;
+      }
+      const next = new Map(current);
+      next.set(instanceId, { pendingStarts: 0, fenceToken: token });
+      return [true, next] as const;
+    });
+    if (!fenced) {
+      return {
+        status: "busy",
+        reasons: ["a provider session start or another maintenance reservation is pending"],
+      } as const;
+    }
+    const reservation = { token };
+    const sessions = yield* listSessionsForInstance(instanceId).pipe(
+      Effect.onError(() => releaseProviderMaintenance(reservation)),
+    );
+    const activeIncarnation = [...currentSessionIncarnations.values()].some(
+      (incarnation) => incarnation.instanceId === instanceId,
+    );
+    if (sessions.length > 0 || activeIncarnation) {
+      yield* releaseProviderMaintenance(reservation);
+      return {
+        status: "busy",
+        reasons: [
+          sessions.some((session) => session.activeTurnId !== undefined)
+            ? "an active or admitted provider turn exists"
+            : "an active provider session or owned runtime exists",
+        ],
+      } as const;
+    }
+    return { status: "reserved", reservation } as const;
+  });
+
   const getCapabilities: ProviderServiceMethod<"getCapabilities"> = (instanceId) =>
     registry.getByInstance(instanceId).pipe(Effect.map((adapter) => adapter.capabilities));
 
@@ -2560,6 +2651,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     listSessions,
     getSessionContinuation,
     listSessionsForInstance,
+    reserveProviderMaintenance,
+    releaseProviderMaintenance,
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,

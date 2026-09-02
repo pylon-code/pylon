@@ -34,10 +34,16 @@ SLSA bindings:
 - one stable-manifest subject for stable promotion.
 
 The fetch and trusted-root functions are injected. Production keeps Sigstore TUF cache data below the
-Pylon runtime state directory rather than writing to an unrelated user cache. Focused tests use
-deterministic manifests and a cryptographic-verifier seam, then exercise certificate and SLSA binding separately. Bridge CI can
-supply the first immutable artifact set through the fail-closed real-fixture gate. The gate has no
-skip or metadata-only success mode.
+Pylon runtime state directory rather than writing to an unrelated user cache. Verified channel,
+publication, attestation, and installer-bundle results use one process-wide repository/channel TTL
+and single flight shared by provider status and host maintenance. Short failure and rate-limit TTLs
+bound retry traffic; explicit maintenance refreshes still reuse a just-fresh status result. One
+multi-subject preview attestation is fetched and verified once for its exact subject set rather than
+once per subject. Candidate and request counts remain bounded.
+
+Focused tests use deterministic manifests and a cryptographic-verifier seam, then exercise certificate
+and SLSA binding separately. Bridge CI can supply the first immutable artifact set through the
+fail-closed real-fixture gate. The gate has no skip or metadata-only success mode.
 
 ## Private managed state
 
@@ -61,13 +67,14 @@ private key authenticates canonical receipt and high-water JSON with HMAC-SHA-25
 - root package asset name and SHA-256;
 - the canonical selected package root.
 
-The status path never creates a managed install receipt. The module exposes an exclusive receipt
-persistence function for a future managed installer, and that function accepts the verified
-publication result and refuses to replace existing state. It creates the private directory and files
-with no replacement only after the exact package metadata matches the verified build. This slice has
-no installer caller. The status path can atomically advance the adjacent high-water after a newer
-exact signed sequence verifies. It writes an owner-only temporary, fsyncs it, renames it inside the
-private directory, and fsyncs the directory. Neither path mutates the selected package.
+The status path never creates a managed install receipt. The managed tool store is the sole caller of
+the exclusive receipt persistence function. It passes an already verified publication and refuses to
+replace existing state. It creates the private directory and files with no replacement only after the
+exact installed package metadata matches the verified build. The status path can atomically advance
+the adjacent high-water after a newer exact signed sequence verifies. It writes an owner-only
+temporary, fsyncs it, renames it inside the private directory, and fsyncs the directory. Receipt
+persistence does not mutate the selected package. See [Prime Agent managed installation](./prime-agent-managed-install.md)
+for extraction, selection, rollback, and cleanup ownership.
 
 A lower sequence or a different build at the same sequence is a replay. It cannot replace the local
 high-water. If the feed is offline, rate-limited, malformed, or replayed, the authenticated installed
@@ -88,8 +95,8 @@ Classification never changes provider readiness. Only `pylon-managed` can receiv
 advisory. Advisory order comes from channel sequence and build ID, never SemVer. The existing optional
 version-advisory UI receives that already-decided status only to reuse its provider-neutral update
 marker; it never compares the values. Settings also shows the distribution label. Web and desktop use
-that shared view. Mobile receives the same optional contract and continues to operate the provider,
-but currently has no provider-management detail surface.
+that shared view and invoke environment-owned managed maintenance RPCs. Mobile shows read-only host
+maintenance status and host-control instructions for each Prime instance under its environment.
 
 Stock Prime Agent 0.8.1 remains ready and manually maintained. Linux and macOS use private receipts;
 WSL2 follows Linux. Native Windows and `.cmd` receipt admission are explicitly unavailable until Prime
@@ -97,6 +104,7 @@ supports native Windows distributions.
 
 ## Scope boundary
 
-This verifier fetches only bounded public manifests, attestation bundles, and trust material for proof
-and advisory. It has no download-to-install, package install, switch, update, cleanup, or removal path.
-It does not generalize Prime feed semantics to Codex, Claude, Cursor, Grok, OpenCode, or Comet.
+The verifier itself fetches only bounded public manifests, attestation bundles, trust material, and an
+optional exact root artifact. It has no extraction, selection, cleanup, or removal authority. The
+managed tool store consumes its verified publication bundle through that narrow seam. Neither module
+generalizes Prime feed semantics to Codex, Claude, Cursor, Grok, OpenCode, or Comet.

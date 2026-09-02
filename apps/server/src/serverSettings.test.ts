@@ -1064,4 +1064,61 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       );
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
+  it.effect(
+    "compare-and-sets the complete Prime instance binding without changing sibling fields",
+    () =>
+      Effect.gen(function* () {
+        const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+        const instanceId = ProviderInstanceId.make("prime_work");
+        yield* serverSettings.updateSettings({
+          providerInstances: {
+            [instanceId]: {
+              driver: ProviderDriverKind.make("primeAgent"),
+              displayName: "Prime Work",
+              environment: [{ name: "PRIME_PROFILE", value: "work", sensitive: false }],
+              config: { binaryPath: "/opt/prime/stock", homePath: "/tmp/prime-work" },
+            },
+          },
+        });
+        const readBinding = serverSettings.readPrimeAgentBinaryBinding!;
+        const listBindings = serverSettings.listPrimeAgentBinaryBindings!;
+        const compareAndSet = serverSettings.compareAndSetPrimeAgentBinaryPath!;
+        const expected = yield* readBinding(instanceId);
+        assert.isDefined(expected);
+        assert.deepEqual(
+          (yield* listBindings).find((entry) => entry.instanceId === instanceId),
+          { instanceId, binding: expected },
+        );
+        const committed = yield* compareAndSet({
+          instanceId,
+          expected,
+          binaryPath: "/tmp/pylon-managed/.bin/prime-agent",
+        });
+        assert.isDefined(committed);
+        const selected = yield* serverSettings.getSettings;
+        assert.deepInclude(selected.providerInstances[instanceId], {
+          driver: ProviderDriverKind.make("primeAgent"),
+          displayName: "Prime Work",
+          environment: [{ name: "PRIME_PROFILE", value: "work", sensitive: false }],
+          config: {
+            binaryPath: "/tmp/pylon-managed/.bin/prime-agent",
+            homePath: "/tmp/prime-work",
+          },
+        });
+
+        yield* serverSettings.updateSettings({
+          providerInstances: {
+            ...selected.providerInstances,
+            [instanceId]: { ...selected.providerInstances[instanceId]!, displayName: "Changed" },
+          },
+        });
+        assert.isUndefined(
+          yield* compareAndSet({
+            instanceId,
+            expected: committed,
+            binaryPath: "/tmp/pylon-managed/other/.bin/prime-agent",
+          }),
+        );
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
 });

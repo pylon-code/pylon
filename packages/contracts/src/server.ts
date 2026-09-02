@@ -212,6 +212,85 @@ export type ServerProviderDistributionClassification =
 export const ServerProviderDistributionChannel = Schema.Literals(["preview", "stable"]);
 export type ServerProviderDistributionChannel = typeof ServerProviderDistributionChannel.Type;
 
+export const ServerPrimeManagedAction = Schema.Literals([
+  "install",
+  "update",
+  "rollback",
+  "use-stock",
+  "cleanup",
+]);
+export type ServerPrimeManagedAction = typeof ServerPrimeManagedAction.Type;
+
+export const ServerPrimeManagedOperationStatus = Schema.Literals([
+  "queued",
+  "downloading",
+  "verifying",
+  "installing",
+  "waiting-for-quiescence",
+  "switching",
+  "succeeded",
+  "failed",
+]);
+export type ServerPrimeManagedOperationStatus = typeof ServerPrimeManagedOperationStatus.Type;
+
+export const ServerPrimeManagedCommandReceipt = Schema.Struct({
+  commandId: TrimmedNonEmptyString,
+  instanceId: ProviderInstanceId,
+  action: ServerPrimeManagedAction,
+  status: ServerPrimeManagedOperationStatus,
+  channel: Schema.NullOr(ServerProviderDistributionChannel),
+  buildId: Schema.NullOr(TrimmedNonEmptyString),
+  message: TrimmedNonEmptyString,
+  startedAt: IsoDateTime,
+  finishedAt: Schema.NullOr(IsoDateTime),
+});
+export type ServerPrimeManagedCommandReceipt = typeof ServerPrimeManagedCommandReceipt.Type;
+
+export const ServerPrimeManagedInstalledBuild = Schema.Struct({
+  buildId: TrimmedNonEmptyString,
+  channel: ServerProviderDistributionChannel,
+  sequence: Schema.Int.check(Schema.isGreaterThan(0)),
+  binaryPath: TrimmedNonEmptyString,
+});
+export type ServerPrimeManagedInstalledBuild = typeof ServerPrimeManagedInstalledBuild.Type;
+
+export const ServerPrimeManagedMaintenance = Schema.Struct({
+  supported: Schema.Boolean,
+  controlsAvailable: Schema.Boolean,
+  mode: Schema.Literals(["stock", "managed"]),
+  selectedBuildId: Schema.NullOr(TrimmedNonEmptyString),
+  channel: Schema.NullOr(ServerProviderDistributionChannel),
+  availableBuilds: Schema.Array(ServerPrimeManagedInstalledBuild),
+  scheduled: Schema.NullOr(ServerPrimeManagedCommandReceipt),
+  operation: Schema.NullOr(ServerPrimeManagedCommandReceipt),
+  message: TrimmedNonEmptyString,
+  guidance: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type ServerPrimeManagedMaintenance = typeof ServerPrimeManagedMaintenance.Type;
+
+export const ServerPrimeManagedCommandInput = Schema.Struct({
+  commandId: TrimmedNonEmptyString,
+  instanceId: ProviderInstanceId,
+  action: ServerPrimeManagedAction,
+  channel: Schema.optional(ServerProviderDistributionChannel),
+  allowPreview: Schema.optional(Schema.Boolean),
+  buildId: Schema.optional(TrimmedNonEmptyString),
+  scheduleIfBusy: Schema.optional(Schema.Boolean),
+});
+export type ServerPrimeManagedCommandInput = typeof ServerPrimeManagedCommandInput.Type;
+
+export class ServerPrimeManagedMaintenanceError extends Schema.TaggedErrorClass<ServerPrimeManagedMaintenanceError>()(
+  "ServerPrimeManagedMaintenanceError",
+  {
+    instanceId: ProviderInstanceId,
+    reason: TrimmedNonEmptyString,
+  },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
+
 /**
  * Signed build identity for provider distributions that publish one.
  *

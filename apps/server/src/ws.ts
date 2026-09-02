@@ -95,6 +95,7 @@ import {
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
+import * as PrimeManagedMaintenance from "./provider/prime/PrimeManagedMaintenance.ts";
 import { toProviderMessageSessionAgentError } from "./provider/providerMessageSessionAgentRpcError.ts";
 import { toProviderSessionCompactionError } from "./provider/providerSessionCompactionRpcError.ts";
 import { toProviderRefineSessionHarnessError } from "./provider/providerRefineSessionHarnessRpcError.ts";
@@ -452,6 +453,7 @@ const makeWsRpcLayer = (
       const providerService = yield* ProviderService.ProviderService;
       const sideQuestionOwnership = makeSessionSideQuestionOwnership();
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
+      const primeManagedMaintenance = yield* PrimeManagedMaintenance.PrimeManagedMaintenance;
       const providerLogin = yield* ProviderLoginCoordinator;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
@@ -1843,6 +1845,18 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverGetPrimeManagedMaintenance]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetPrimeManagedMaintenance,
+            primeManagedMaintenance.status(input.instanceId),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverRunPrimeManagedMaintenance]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverRunPrimeManagedMaintenance,
+            primeManagedMaintenance.run(input),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverStartProviderLogin]: (input) =>
           observeRpcEffect(WS_METHODS.serverStartProviderLogin, providerLogin.start(input), {
             "rpc.aggregate": "server",
@@ -2755,6 +2769,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
             makeWsRpcLayer(session, clientOrigin, previewAutomationBroker).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(ProviderMaintenanceRunner.layer),
+              Layer.provide(PrimeManagedMaintenance.layer),
               Layer.provide(
                 ProviderLoginCoordinatorLive.pipe(Layer.provide(ProviderLoginSessionsLive)),
               ),

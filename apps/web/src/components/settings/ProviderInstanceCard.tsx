@@ -21,6 +21,8 @@ import {
   type ProviderInstanceEnvironmentVariable,
   type ProviderInstanceId,
   type ProviderDriverKind,
+  type ServerPrimeManagedAction,
+  type ServerPrimeManagedMaintenance,
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
@@ -32,6 +34,13 @@ import {
   getProviderUnavailablePresentation,
   normalizeProviderAccentColor,
 } from "../../providerInstances";
+import { serverEnvironment } from "../../state/server";
+import { useEnvironmentQuery } from "../../state/query";
+import { useAtomCommand } from "../../state/use-atom-command";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { ProviderSignInDialog } from "./ProviderSignInDialog";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Badge } from "../ui/badge";
@@ -373,6 +382,218 @@ function ProviderEnvironmentSection(props: {
       <span className="text-xs text-muted-foreground">
         Sensitive values are stored separately and are not returned to the app after saving.
       </span>
+    </div>
+  );
+}
+
+let primeManagedCommandSequence = 0;
+function primeManagedCommandId(action: ServerPrimeManagedAction): string {
+  primeManagedCommandSequence += 1;
+  return `prime-managed:${action}:${Date.now()}:${primeManagedCommandSequence}`;
+}
+
+function PrimeManagedMaintenanceSection(props: {
+  readonly environmentId: EnvironmentId | undefined;
+  readonly instanceId: ProviderInstanceId;
+  readonly readOnly: boolean;
+  readonly distributionMessage: string | null;
+}) {
+  const target =
+    props.environmentId === undefined
+      ? null
+      : serverEnvironment.primeManagedMaintenance({
+          environmentId: props.environmentId,
+          input: { instanceId: props.instanceId },
+        });
+  const { data, error, isPending, refresh } = useEnvironmentQuery(target);
+  const runMaintenance = useAtomCommand(serverEnvironment.runPrimeManagedMaintenance, {
+    reportFailure: false,
+  });
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const [runningAction, setRunningAction] = useState<ServerPrimeManagedAction | null>(null);
+  const [commandError, setCommandError] = useState<string | null>(null);
+  const [previewConfirmed, setPreviewConfirmed] = useState(false);
+
+  const run = async (
+    action: ServerPrimeManagedAction,
+    options: { readonly channel?: "stable" | "preview"; readonly buildId?: string } = {},
+  ) => {
+    if (props.environmentId === undefined || runningAction !== null) return;
+    setRunningAction(action);
+    setCommandError(null);
+    const result = await runMaintenance({
+      environmentId: props.environmentId,
+      input: {
+        commandId: primeManagedCommandId(action),
+        instanceId: props.instanceId,
+        action,
+        ...(options.channel ? { channel: options.channel } : {}),
+        ...(options.channel === "preview" ? { allowPreview: true } : {}),
+        ...(options.buildId ? { buildId: options.buildId } : {}),
+        scheduleIfBusy: true,
+      },
+    });
+    setRunningAction(null);
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        const cause = squashAtomCommandFailure(result);
+        setCommandError(cause instanceof Error ? cause.message : "Prime maintenance failed.");
+      }
+      return;
+    }
+    await refresh();
+    await refreshProviders({ environmentId: props.environmentId, input: {} });
+  };
+
+  const maintenance = data as ServerPrimeManagedMaintenance | null;
+  const queryError = error;
+  const selectedBuildId = maintenance?.selectedBuildId ?? null;
+  const operation = maintenance?.scheduled ?? maintenance?.operation ?? null;
+  const canWrite = maintenance?.controlsAvailable === true && !props.readOnly;
+  const stableAction: ServerPrimeManagedAction =
+    maintenance?.mode === "managed" ? "update" : "install";
+
+  return (
+    <div className="grid max-w-lg gap-3 rounded-md border border-border/70 bg-muted/20 p-3">
+      <div className="grid gap-1">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs font-medium text-foreground">Pylon-managed Prime</p>
+          <Button type="button" size="xs" variant="ghost" onClick={refresh}>
+            Refresh status
+          </Button>
+        </div>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {maintenance?.message ??
+            (isPending
+              ? "Reading host maintenance status."
+              : "Host maintenance status is unavailable.")}
+        </p>
+        {props.distributionMessage ? (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {props.distributionMessage}
+          </p>
+        ) : null}
+        {maintenance?.guidance ? (
+          <p className="text-xs leading-relaxed text-warning">{maintenance.guidance}</p>
+        ) : null}
+        {operation ? (
+          <p
+            className={cn(
+              "text-xs leading-relaxed",
+              operation.status === "failed" ? "text-destructive" : "text-muted-foreground",
+            )}
+          >
+            <span className="font-medium capitalize">{operation.status.replaceAll("-", " ")}</span>
+            {` · ${operation.message}`}
+          </p>
+        ) : null}
+        {queryError || commandError ? (
+          <p className="text-xs leading-relaxed text-destructive">
+            {commandError ?? queryError} Check the environment connection and retry. The selected
+            Prime binary was not changed unless the status above confirms the switch.
+          </p>
+        ) : null}
+      </div>
+
+      {maintenance?.supported === false ? null : (
+        <div className="grid gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="xs"
+              disabled={!canWrite || runningAction !== null}
+              onClick={() => void run(stableAction, { channel: "stable" })}
+            >
+              {runningAction === stableAction
+                ? "Working…"
+                : maintenance?.mode === "managed"
+                  ? "Update stable"
+                  : "Install stable"}
+            </Button>
+            {maintenance?.mode === "managed" ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                disabled={!canWrite || runningAction !== null}
+                onClick={() => void run("use-stock")}
+              >
+                Use stock/configured Prime
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              disabled={!canWrite || runningAction !== null}
+              onClick={() => void run("cleanup")}
+            >
+              Prune unreferenced builds
+            </Button>
+          </div>
+
+          <label className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+            <Checkbox
+              checked={previewConfirmed}
+              disabled={!canWrite || runningAction !== null}
+              onCheckedChange={(checked) => setPreviewConfirmed(Boolean(checked))}
+              aria-label="Confirm Prime preview channel opt-in"
+            />
+            <span>I understand preview builds are less stable and explicitly opt in.</span>
+          </label>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            className="w-fit"
+            disabled={!canWrite || !previewConfirmed || runningAction !== null}
+            onClick={() =>
+              void run(maintenance?.mode === "managed" ? "update" : "install", {
+                channel: "preview",
+              })
+            }
+          >
+            {runningAction === "install" || runningAction === "update"
+              ? "Working…"
+              : "Install/update preview"}
+          </Button>
+
+          {maintenance && maintenance.availableBuilds.length > 0 ? (
+            <div className="grid gap-1.5 border-t border-border/60 pt-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Verified rollback builds
+              </p>
+              {maintenance.availableBuilds.map((build) => (
+                <div
+                  key={build.buildId}
+                  className="flex min-w-0 items-center justify-between gap-2"
+                >
+                  <code className="min-w-0 truncate text-[11px] text-muted-foreground">
+                    {build.buildId} · {build.channel} #{build.sequence}
+                  </code>
+                  {build.buildId === selectedBuildId ? (
+                    <Badge size="sm" variant="secondary">
+                      Selected
+                    </Badge>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      disabled={!canWrite || runningAction !== null}
+                      onClick={() => void run("rollback", { buildId: build.buildId })}
+                    >
+                      Roll back
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -1047,6 +1268,15 @@ export function ProviderInstanceCard({
                 description="Used to distinguish this instance in picker rails and model lists."
               />
             </div>
+
+            {instance.driver === "primeAgent" ? (
+              <PrimeManagedMaintenanceSection
+                environmentId={environmentId}
+                instanceId={instanceId}
+                readOnly={readOnly}
+                distributionMessage={liveProvider?.distribution?.message ?? null}
+              />
+            ) : null}
 
             <div>
               <ProviderEnvironmentSection

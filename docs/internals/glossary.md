@@ -112,6 +112,12 @@ The live backend agent implementation and its event stream. The main service is 
 
 The backend agent runtime that actually performs work. Five drivers ship built in: Codex, Claude, Cursor, Grok, and OpenCode. See [ProviderService.ts][14], [ProviderAdapter.ts][15], and [CodexAdapter.ts][17] as a representative adapter.
 
+#### Managed provider build
+
+A signed provider CLI build installed side by side in an environment's runtime home and selected for
+one provider instance. It does not replace the user's stock installation. Prime Agent is the first
+provider with this lifecycle. See [Prime Agent managed installation](./prime-agent-managed-install.md).
+
 #### Session
 
 The live provider-backed runtime attached to a thread. Session shape is in [the orchestration contracts][1], and lifecycle is managed in [ProviderService.ts][14].

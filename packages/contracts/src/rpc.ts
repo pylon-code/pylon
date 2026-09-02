@@ -216,6 +216,10 @@ import {
   ServerProviderLoginStartInput,
   ServerProviderLoginSubmitInput,
   ServerProviderUpdateInput,
+  ServerPrimeManagedCommandInput,
+  ServerPrimeManagedCommandReceipt,
+  ServerPrimeManagedMaintenance,
+  ServerPrimeManagedMaintenanceError,
   ServerLifecycleStreamEvent,
   ServerRemoveKeybindingInput,
   ServerRemoveKeybindingResult,
@@ -341,6 +345,8 @@ export const WS_METHODS = {
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
+  serverGetPrimeManagedMaintenance: "server.getPrimeManagedMaintenance",
+  serverRunPrimeManagedMaintenance: "server.runPrimeManagedMaintenance",
   serverStartProviderLogin: "server.startProviderLogin",
   serverSubmitProviderLoginCode: "server.submitProviderLoginCode",
   serverCancelProviderLogin: "server.cancelProviderLogin",
@@ -581,6 +587,24 @@ export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvide
   success: ServerProviderUpdatedPayload,
   error: Schema.Union([ServerProviderUpdateError, EnvironmentAuthorizationError]),
 });
+
+export const WsServerGetPrimeManagedMaintenanceRpc = Rpc.make(
+  WS_METHODS.serverGetPrimeManagedMaintenance,
+  {
+    payload: Schema.Struct({ instanceId: ProviderInstanceId }),
+    success: ServerPrimeManagedMaintenance,
+    error: Schema.Union([ServerPrimeManagedMaintenanceError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsServerRunPrimeManagedMaintenanceRpc = Rpc.make(
+  WS_METHODS.serverRunPrimeManagedMaintenance,
+  {
+    payload: ServerPrimeManagedCommandInput,
+    success: ServerPrimeManagedCommandReceipt,
+    error: Schema.Union([ServerPrimeManagedMaintenanceError, EnvironmentAuthorizationError]),
+  },
+);
 
 /**
  * Sign in to a provider account from the client.
@@ -1283,6 +1307,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderSetSessionAutoCompactionRpc,
   WsProviderRefineSessionHarnessRpc,
   WsServerUpdateProviderRpc,
+  WsServerGetPrimeManagedMaintenanceRpc,
+  WsServerRunPrimeManagedMaintenanceRpc,
   WsServerStartProviderLoginRpc,
   WsServerSubmitProviderLoginCodeRpc,
   WsServerCancelProviderLoginRpc,

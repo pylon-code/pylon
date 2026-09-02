@@ -44,6 +44,7 @@ import {
   makePrimeDistributionNetworkDependencies,
 } from "../prime/PrimeAgentDistributionVerifier.ts";
 import { makePrimeAgentDaemonManager } from "../prime/PrimeAgentDaemonManager.ts";
+import { resolvePrimeManagedBuildReceiptTarget } from "../prime/PrimeAgentManagedToolStore.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -177,19 +178,23 @@ export const PrimeAgentDriver: ProviderDriver<PrimeAgentSettings, PrimeAgentDriv
             }),
           );
           const publicPackage = yield* locatePrimeAgentPublicPackage(executablePath);
-          return yield* Effect.promise(() =>
-            inspectPrimeAgentDistribution(
+          return yield* Effect.promise(async () => {
+            const managedReceipt = await resolvePrimeManagedBuildReceiptTarget({
+              stateDir: serverConfig.stateDir,
+              packageRoot: publicPackage.packageRoot,
+            });
+            return await inspectPrimeAgentDistribution(
               {
-                stateDir: serverConfig.stateDir,
-                instanceId,
+                stateDir: managedReceipt?.stateDir ?? serverConfig.stateDir,
+                instanceId: managedReceipt?.instanceId ?? instanceId,
                 packageRoot: publicPackage.packageRoot,
                 platform: hostPlatform,
                 checkedAt: snapshot.checkedAt,
                 ...(enableUpdateChecks === undefined ? {} : { enableUpdateChecks }),
               },
               { loadLatestVerifiedPublication },
-            ),
-          );
+            );
+          });
         }).pipe(
           Effect.catchCause(() =>
             Effect.succeed({

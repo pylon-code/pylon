@@ -40,6 +40,7 @@ policy in [CONTRIBUTING.md](../CONTRIBUTING.md); agent rules in [AGENTS.md](../A
 - [CI gates](./internals/ci.md)
 - [Prime Agent native parity](./internals/prime-agent-native-parity.md)
 - [Prime Agent distribution verification](./internals/prime-agent-distribution-verification.md)
+- [Prime Agent managed installation](./internals/prime-agent-managed-install.md)
 - [Prime Agent integration investigation](./internals/prime-agent-integration.md)
 - [Engineering work artifacts](./internals/work-artifacts.md)
 
@@ -49,4 +50,5 @@ policy in [CONTRIBUTING.md](../CONTRIBUTING.md); agent rules in [AGENTS.md](../A
 - [Model manifest publishing](./operations/model-manifest.md)
 - [Observability](./operations/observability.md)
 - [Relay observability](./operations/relay-observability.md)
+- [Prime Agent managed rollback](./operations/prime-agent-managed-rollback.md)
 - [Mobile app store screenshots](./operations/mobile-app-store-screenshots.md)

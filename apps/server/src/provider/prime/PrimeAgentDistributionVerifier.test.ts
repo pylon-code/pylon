@@ -11,6 +11,9 @@ import {
   authenticatePrimeManagedState,
   canonicalPrimeDistributionJson,
   inspectPrimeAgentDistribution,
+  invalidatePrimeDistributionCache,
+  makeLatestPrimePublicationBundleLoader,
+  makeLatestPrimePublicationLoader,
   PRIME_DISTRIBUTION_REF,
   PRIME_DISTRIBUTION_REPOSITORY,
   PRIME_DISTRIBUTION_REPOSITORY_URL,
@@ -27,6 +30,7 @@ import {
   primeDistributionStateDirectory,
   requireRealPrimePublicationFixture,
   type ExpectedPrimeAttestation,
+  type PrimeDistributionNetworkDependencies,
   type PrimeManagedStatePayload,
   type PrimePublicationFixture,
   type PrimeSlsaStatement,
@@ -37,6 +41,7 @@ import {
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  invalidatePrimeDistributionCache();
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -255,6 +260,113 @@ const validVerification = {
   },
   verifySourcePolicy: async () => {},
 };
+
+function githubAsset(id: number, name: string, url: string) {
+  return { id, name, size: 1, browser_download_url: url };
+}
+
+function makeNetworkHarness(input: {
+  readonly channel: "preview" | "stable";
+  readonly candidates: number;
+  readonly key: string;
+  readonly now?: () => number;
+  readonly failureTtlMs?: number;
+  readonly rateLimitTtlMs?: number;
+  readonly refreshReuseMs?: number;
+  readonly failListOnceWith403?: boolean;
+}) {
+  const fixture = syntheticPublication(input.channel);
+  const releaseManifest = JSON.parse(fixture.releaseManifestBytes.toString("utf8")) as {
+    assets: ReadonlyArray<{ readonly file: string }>;
+  };
+  const stableManifest = fixture.stableManifestBytes
+    ? (JSON.parse(fixture.stableManifestBytes.toString("utf8")) as { readonly tag: string })
+    : undefined;
+  const validTag = input.channel === "preview" ? BUILD_ID : stableManifest!.tag;
+  const bytes = new Map<string, Buffer>();
+  const previewAssets = [
+    githubAsset(1, PRIME_RELEASE_MANIFEST, "fixture://valid/release"),
+    githubAsset(2, PRIME_PREVIEW_MANIFEST, "fixture://valid/preview"),
+    ...releaseManifest.assets.map((asset, index) =>
+      githubAsset(index + 3, asset.file, `fixture://valid/${asset.file}`),
+    ),
+  ];
+  bytes.set("fixture://valid/release", fixture.releaseManifestBytes);
+  bytes.set("fixture://valid/preview", fixture.previewManifestBytes);
+  bytes.set(
+    `${PRIME_DISTRIBUTION_REPOSITORY_URL}/releases/download/${BUILD_ID}/${fixture.verified.rootAsset}`,
+    fixture.rootArtifactBytes!,
+  );
+  const validPreviewRelease = {
+    id: 10_000,
+    tag_name: BUILD_ID,
+    draft: false,
+    prerelease: true,
+    immutable: true,
+    assets: previewAssets,
+  };
+  bytes.set("fixture://valid/stable", fixture.stableManifestBytes ?? Buffer.alloc(0));
+  const validRelease =
+    input.channel === "preview"
+      ? validPreviewRelease
+      : {
+          id: 20_000,
+          tag_name: validTag,
+          draft: false,
+          prerelease: false,
+          immutable: true,
+          assets: [githubAsset(20_001, "pylon-stable-channel-v1.json", "fixture://valid/stable")],
+        };
+  // Duplicate valid entries let the test exercise the exact maximum candidate work without needing
+  // twelve unrelated cryptographic fixtures. GitHub ids are distinct; immutable tags/content match.
+  const releases = Array.from({ length: input.candidates }, (_, index) => ({
+    ...validRelease,
+    id: validRelease.id + index,
+  }));
+
+  let jsonRequests = 0;
+  let byteRequests = 0;
+  let trustedRootRequests = 0;
+  let listRequests = 0;
+  const dependencyShape = (): PrimeDistributionNetworkDependencies => ({
+    cache: {
+      key: input.key,
+      ...(input.now ? { now: input.now } : {}),
+      ...(input.failureTtlMs === undefined ? {} : { failureTtlMs: input.failureTtlMs }),
+      ...(input.rateLimitTtlMs === undefined ? {} : { rateLimitTtlMs: input.rateLimitTtlMs }),
+      ...(input.refreshReuseMs === undefined ? {} : { refreshReuseMs: input.refreshReuseMs }),
+    },
+    fetchJson: async (url) => {
+      jsonRequests += 1;
+      if (url.endsWith("/releases?per_page=100")) {
+        listRequests += 1;
+        if (input.failListOnceWith403 && listRequests === 1) {
+          throw new Error("Pylon distribution fetch failed with HTTP 403.");
+        }
+        return releases;
+      }
+      if (url.includes("/releases/tags/")) return validPreviewRelease;
+      if (url.includes("/attestations/")) return { attestations: [{ bundle: { proof: url } }] };
+      throw new Error(`Unexpected JSON request: ${url}`);
+    },
+    fetchBytes: async (url) => {
+      byteRequests += 1;
+      const value = bytes.get(url);
+      if (!value) throw new Error(`Unexpected byte request: ${url}`);
+      return value;
+    },
+    getTrustedRoot: async () => {
+      trustedRootRequests += 1;
+      return {} as Awaited<ReturnType<PrimeDistributionNetworkDependencies["getTrustedRoot"]>>;
+    },
+    verifyBundle: validVerification.verifyBundle,
+    verifySourcePolicy: validVerification.verifySourcePolicy,
+  });
+  return {
+    dependencyShape,
+    counts: () => ({ jsonRequests, byteRequests, trustedRootRequests, listRequests }),
+  };
+}
 
 async function makePackage(input?: {
   readonly version?: string;
@@ -534,6 +646,127 @@ describe("Pylon Prime publication verification", () => {
     for (const mutation of mutations) {
       expect(() => assertPrimeAttestationBinding(mutation, expected)).toThrow(/SLSA provenance/u);
     }
+  });
+
+  it.each([
+    { channel: "stable" as const, candidates: 1, jsonRequests: 4, byteRequests: 3 },
+    { channel: "stable" as const, candidates: 7, jsonRequests: 22, byteRequests: 21 },
+    { channel: "preview" as const, candidates: 12, jsonRequests: 13, byteRequests: 24 },
+  ])(
+    "bounds $channel verification requests across $candidates feed candidates",
+    async ({ channel, candidates, jsonRequests, byteRequests }) => {
+      const harness = makeNetworkHarness({
+        channel,
+        candidates,
+        key: `request-count-${channel}-${candidates}`,
+      });
+      const loader = makeLatestPrimePublicationLoader(harness.dependencyShape());
+      await expect(loader(channel)).resolves.toMatchObject({ channel });
+      expect(harness.counts()).toEqual({
+        jsonRequests,
+        byteRequests,
+        trustedRootRequests: 1,
+        listRequests: 1,
+      });
+    },
+  );
+
+  it("single-flights concurrent multi-instance status and maintenance loaders process-wide", async () => {
+    const harness = makeNetworkHarness({ channel: "stable", candidates: 1, key: "concurrent" });
+    const leftStatus = makeLatestPrimePublicationLoader(harness.dependencyShape());
+    const rightStatus = makeLatestPrimePublicationLoader(harness.dependencyShape());
+    const maintenance = makeLatestPrimePublicationBundleLoader(harness.dependencyShape());
+    const [left, right, bundle] = await Promise.all([
+      leftStatus("stable"),
+      rightStatus("stable"),
+      maintenance("stable", { refresh: true }),
+    ]);
+    expect(left).toEqual(right);
+    expect(bundle.publication).toEqual(left);
+    expect(digest("sha256", bundle.rootArtifactBytes)).toBe(left.rootSha256);
+    expect(harness.counts()).toEqual({
+      jsonRequests: 4,
+      byteRequests: 4,
+      trustedRootRequests: 1,
+      listRequests: 1,
+    });
+
+    await makeLatestPrimePublicationLoader(harness.dependencyShape())("stable");
+    await makeLatestPrimePublicationBundleLoader(harness.dependencyShape())("stable", {
+      refresh: true,
+    });
+    expect(harness.counts()).toEqual({
+      jsonRequests: 4,
+      byteRequests: 4,
+      trustedRootRequests: 1,
+      listRequests: 1,
+    });
+  });
+
+  it("caches 403 failures for the bounded retry TTL, then retries", async () => {
+    let now = 0;
+    const harness = makeNetworkHarness({
+      channel: "preview",
+      candidates: 1,
+      key: "rate-limit",
+      now: () => now,
+      rateLimitTtlMs: 100,
+      failListOnceWith403: true,
+    });
+    const loader = makeLatestPrimePublicationLoader(harness.dependencyShape());
+    await expect(loader("preview")).rejects.toThrow(/HTTP 403/u);
+    await expect(loader("preview", { refresh: true })).rejects.toThrow(/HTTP 403/u);
+    now = 99;
+    await expect(loader("preview")).rejects.toThrow(/HTTP 403/u);
+    expect(harness.counts().listRequests).toBe(1);
+
+    now = 100;
+    await expect(loader("preview")).resolves.toMatchObject({ channel: "preview" });
+    expect(harness.counts()).toEqual({
+      jsonRequests: 3,
+      byteRequests: 2,
+      trustedRootRequests: 1,
+      listRequests: 2,
+    });
+  });
+
+  it("reuses just-fresh status for maintenance and supports exact cache invalidation", async () => {
+    let now = 0;
+    const key = "explicit-refresh-and-invalidation";
+    const harness = makeNetworkHarness({
+      channel: "preview",
+      candidates: 1,
+      key,
+      now: () => now,
+      refreshReuseMs: 50,
+    });
+    const status = makeLatestPrimePublicationLoader(harness.dependencyShape());
+    const maintenance = makeLatestPrimePublicationBundleLoader(harness.dependencyShape());
+    await status("preview");
+    await maintenance("preview", { refresh: true });
+    expect(harness.counts()).toEqual({
+      jsonRequests: 2,
+      byteRequests: 3,
+      trustedRootRequests: 1,
+      listRequests: 1,
+    });
+
+    now = 51;
+    await status("preview", { refresh: true });
+    expect(harness.counts()).toEqual({
+      jsonRequests: 4,
+      byteRequests: 5,
+      trustedRootRequests: 2,
+      listRequests: 2,
+    });
+    invalidatePrimeDistributionCache({ key, channel: "preview" });
+    await status("preview");
+    expect(harness.counts()).toEqual({
+      jsonRequests: 6,
+      byteRequests: 7,
+      trustedRootRequests: 3,
+      listRequests: 3,
+    });
   });
 
   it("keeps the real immutable fixture gate fail-closed until all exact inputs exist", () => {
