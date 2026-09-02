@@ -2519,8 +2519,10 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
   const showFailedIndicator = workEntryDisplayIndicatesToolFailure(workEntry);
-  const entryIconName = showWarningIndicator ? "circle-alert" : workEntryIconName(workEntry);
-  const displayText = workEntryPreview(workEntry, workspaceRoot) ?? toolWorkEntryHeading(workEntry);
+  const entryIconName =
+    showWarningIndicator || showFailedIndicator ? "circle-alert" : workEntryIconName(workEntry);
+  const previewText = workEntryPreview(workEntry, workspaceRoot) ?? toolWorkEntryHeading(workEntry);
+  const displayText = expanded && workEntry.command?.trim() ? "Command" : previewText;
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
   const viewedImagePath = workEntryViewedImagePath(workEntry);
   const viewedImage =
@@ -2561,8 +2563,8 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
         : "text-foreground/80";
   const showEntryIcon = !isExpandedToolGroupEntry || showWarningIndicator || showFailedIndicator;
   const accessibleDisplayText = showFailedIndicator
-    ? `${displayText}, tool call failed`
-    : displayText;
+    ? `${previewText}, tool call failed`
+    : previewText;
   const rowToggleProps = canExpand
     ? {
         role: "button" as const,
