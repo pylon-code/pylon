@@ -80,6 +80,42 @@ vi.mock("./entities", () => ({
   useThreadShells: () => [],
 }));
 
+vi.mock("./projects", async () => {
+  const { Atom } = await import("effect/unstable/reactivity");
+  return {
+    environmentProjects: {
+      projectsAtom: Atom.make([]).pipe(Atom.keepAlive),
+    },
+  };
+});
+
+vi.mock("./presentation", async () => {
+  const { Atom } = await import("effect/unstable/reactivity");
+  return {
+    environmentPresentations: {
+      presentationAtom: Atom.family(() => Atom.make(null).pipe(Atom.keepAlive)),
+    },
+  };
+});
+
+vi.mock("./shell", async () => {
+  const { Atom } = await import("effect/unstable/reactivity");
+  return {
+    environmentShell: {
+      stateValueAtom: Atom.family(() =>
+        Atom.make({ status: "empty" as const }).pipe(Atom.keepAlive),
+      ),
+    },
+  };
+});
+
+vi.mock("./server", async () => {
+  const { Atom } = await import("effect/unstable/reactivity");
+  return {
+    environmentServerConfigsAtom: Atom.make(new Map()).pipe(Atom.keepAlive),
+  };
+});
+
 vi.mock("./threads", () => ({
   threadEnvironment: {},
 }));
