@@ -1008,7 +1008,7 @@ export function ProviderInstanceCard({
         aria-hidden
         className={cn(
           "provider-update-marker size-3.5 motion-reduce:animate-none",
-          versionAdvisory.emphasis === "strong" ? "text-warning" : "text-update-foreground",
+          versionAdvisory.emphasis === "strong" ? "text-warning" : "text-muted-foreground",
         )}
       />
       <span className="sr-only">Update available</span>
@@ -1115,7 +1115,7 @@ export function ProviderInstanceCard({
                           "size-5 rounded-sm p-0",
                           versionAdvisory.emphasis === "strong"
                             ? "text-warning hover:text-warning"
-                            : "text-update-foreground hover:text-update-foreground",
+                            : "text-muted-foreground hover:text-foreground",
                         )}
                         aria-label="Update available — view details"
                         disabled={writeBlocked}
@@ -1149,7 +1149,7 @@ export function ProviderInstanceCard({
                         <Button
                           type="button"
                           size="xs"
-                          variant="default"
+                          variant="outline"
                           className="w-full"
                           disabled={isUpdating || writeBlocked}
                           onClick={onRunUpdate}
