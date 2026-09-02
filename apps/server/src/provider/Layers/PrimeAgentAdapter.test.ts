@@ -636,8 +636,11 @@ exec ${process.execPath} ${mockAgentPath} "$@"
 
     const serializedNativeWrites = encodeUnknownJsonString(nativeWrites);
     assert.isAbove(nativeWrites.length, 0);
-    assert.include(serializedNativeWrites, '"direction":"outgoing"');
+    // #8187 made raw ACP protocol logging opt-in via verboseProtocolLogging, which
+    // no production adapter sets. Request logs still flow; protocol frames — the
+    // only place a thought chunk could have reached disk — no longer do at all.
     assert.notInclude(serializedNativeWrites, '"direction":"incoming"');
+    assert.notInclude(serializedNativeWrites, '"direction":"outgoing"');
     assert.notInclude(serializedNativeWrites, "private-thought-sentinel");
     assert.notInclude(serializedNativeWrites, "agent_thought_chunk");
 
