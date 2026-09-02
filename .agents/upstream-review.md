@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "9b2d04317c68233782e0630464ac86d77d0686f3"
-reviewed-through-date: "2026-09-01"
+reviewed-through: "beae2147a9487ec47ac992319f2216914b4cb62d"
+reviewed-through-date: "2026-09-02"
 ---
 
 # T3 upstream review log
@@ -14,6 +14,54 @@ Deferred decisions remain listed after the cursor advances so later sessions can
 Two standing sections outlive any single batch and must be read on every review: the `## Deferred register` holds change sets that were candidates and were consciously not adopted, and the `## Upstream watch list` holds upstream work that never entered a review range at all, so no commit range can surface it.
 
 ## Review batches
+
+## 2026-09-02 — `9b2d04317c68233782e0630464ac86d77d0686f3..beae2147a9487ec47ac992319f2216914b4cb62d`
+
+The maintainer's standing instruction for this batch was to stop escalating
+adoption decisions: adopt by default, and bring back only changes that would
+delete or reverse a Pylon product decision. Two previously deferred items were
+re-opened under that rule and both adopted — `#9023`, deferred on an access-model
+concern that upstream had already reasoned about in `docs/internals/environment-auth.md`
+in the same commit, and `#8600`, deferred on file count, which is merge cost
+rather than a product decision.
+
+Adopted, in merge order: `#8919`/`#8959`/`#8978` (mobile media chain, PR #241),
+`#8881`/`#8831`/`#8043` (settings search, PR #242), `#9078`/`#9084` (Claude
+remote model manifest, PR #246), `#8812`/`#8809`/`#6471` (pull-request surface,
+PR #248), `#9013` (scroll bounds, PR #249), `#8803` remainder + `#9023` (media
+preview, PR #251), `#8988`/`#9000`/`#9032`/`#8187`/`#8368` (server perf, PR #252),
+`#8600` (server-side settlement, PR #253).
+
+Skipped: `#9062` and its revert `#9096`; `#9008` (deletes two Pylon regression
+tests); three CodeRabbit configs. `#9024` was already on `pylon`.
+
+Recurring carve-outs worth naming, because each would have landed silently:
+
+- `videoMimeType` was moved by upstream into `packages/shared/src/video.ts` in
+  the pre-fix MIME-first form, twice in this batch. Pylon's extension-first body
+  (`f9eb4230d`, the `.ts` → `video/mp2t` fix) was re-applied both times and
+  upstream's contradicting test rewritten.
+- `checkClaudeProviderStatus` gained a 6th parameter rather than losing Pylon's
+  5th: upstream's `modelCatalog` and Pylon's `resolveUsage` collided positionally.
+- The remotely fetched model manifest kept Pylon's bounds and
+  `onExcessProperty: "error"`, which does not survive `.pipe(Schema.check(...))`
+  and had to move onto the decoding schema.
+- `#8988` narrowed a projection read to three `user-input.*` kinds, silently
+  zeroing the pending-input count Pylon also feeds from `interaction.*`.
+- `#8600`'s `isUnpublishedBranch` rewrite produced no conflict and no type error
+  and simply did not apply; only its own test caught it.
+
+Three defects were found by tests rather than review and are recorded here
+because they are the shape to expect: a hunk that does not apply cleanly _and
+does not conflict_, an upstream narrowing that does not know about a fork-only
+enum member, and a fork optimization whose premise an upstream rewrite retires.
+
+DEF-7 was re-checked and stays open; its 2026-11-01 floor is unreached. DEF-8
+stays open. Filed for later: issue #244 (pre-existing double Stop control during
+the dictation error phase).
+
+**92 upstream commits after this cursor are untriaged.** They were not reviewed
+in this batch and no decision has been made on any of them.
 
 ## 2026-09-01 — `1f8ed54add4133ac39effceded8fc1fff12d8e03..9b2d04317c68233782e0630464ac86d77d0686f3`
 
