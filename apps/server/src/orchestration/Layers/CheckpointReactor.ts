@@ -29,6 +29,7 @@ import {
 } from "../../checkpointing/Utils.ts";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { PrimeAgentRecoveryLedger } from "../../provider/prime/PrimeAgentRecoveryLedger.ts";
 import { CheckpointReactor, type CheckpointReactorShape } from "../Services/CheckpointReactor.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -85,6 +86,9 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  const recoveryLedger = Option.getOrUndefined(
+    yield* Effect.serviceOption(PrimeAgentRecoveryLedger),
+  );
   const checkpointStore = yield* CheckpointStore.CheckpointStore;
   const receiptBus = yield* RuntimeReceiptBus;
   const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
@@ -823,6 +827,21 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
+      if (recoveryLedger !== undefined) {
+        yield* Effect.gen(function* () {
+          yield* recoveryLedger.markCheckpointQuiesced({
+            threadId: event.threadId,
+            updatedAt: yield* nowIso,
+          });
+          yield* recoveryLedger.deleteIfSettled(event.threadId);
+        }).pipe(
+          Effect.catchCause(() =>
+            Effect.logWarning("failed to settle Prime Agent recovery checkpoint proof", {
+              threadId: event.threadId,
+            }),
+          ),
+        );
+      }
       return;
     }
   });

@@ -78,6 +78,13 @@ export interface PrimeAgentDaemonManager {
     PrimeAgentDaemonClient,
     PrimeAgentDaemonManagerOpenError
   >;
+  /** Exact caller-owned worker environment captured before any Prime worker launch. */
+  readonly launchEnvironment?: Readonly<Record<string, string>>;
+  readonly recoveryEnabled?: boolean;
+  readonly platform?: NodeJS.Platform;
+  readonly architecture?: string;
+  /** Keeps the compatible supervisor alive while at least one ledger authority can be adopted. */
+  readonly retainForRecovery?: () => () => void;
   /** Directly accepted by DaemonClient.enableAutoReconnect({ recoverDaemon }). */
   readonly recover: () => Promise<void>;
 }
@@ -96,6 +103,9 @@ export interface PrimeAgentDaemonManagerInput {
   readonly platform?: NodeJS.Platform;
   /** Test-only temp-directory injection. */
   readonly tempDir?: string;
+  /** Enables retention only after the selected package passed Pylon managed-distribution proof. */
+  readonly recoveryEnabled?: boolean;
+  readonly architecture?: string;
   /** Tests may supply the already validated public bridge without importing a real installation. */
   readonly bridge?: PrimeAgentDaemonBridge;
 }
@@ -112,6 +122,10 @@ const daemonHelloSchema = Schema.Struct({
     name: Schema.String,
     version: Schema.Int,
   }),
+  schemaRevision: Schema.optional(Schema.Int),
+  appVersion: Schema.optional(Schema.String),
+  buildId: Schema.optional(Schema.String),
+  supervisorGeneration: Schema.optional(Schema.String),
   serverCapabilities: Schema.Array(Schema.String),
 });
 const decodeDaemonHello = Schema.decodeUnknownOption(daemonHelloSchema);
@@ -282,6 +296,29 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     );
   }
   const bridge = input.bridge ?? (yield* loadPrimeAgentDaemonBridge(input.executablePath));
+  const recoveryEnabled =
+    input.recoveryEnabled === true && bridge.recoverableOwnedSessionAdoptionAvailable === true;
+  const launchEnvironment = Object.fromEntries(
+    Object.entries(
+      makePrimeAgentDaemonEnvironment({
+        settings: input.settings,
+        environment: input.environment ?? hostEnvironment,
+      }),
+    ).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+  let recoveryRetainers = 0;
+  let retainedExistingDaemon = false;
+  let adoptedExistingDaemon = false;
+  const retainForRecovery = () => {
+    recoveryRetainers += 1;
+    if (retainedExistingDaemon) adoptedExistingDaemon = true;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      recoveryRetainers = Math.max(0, recoveryRetainers - 1);
+    };
+  };
   const defaultSocket = bridge.defaultDaemonSocketPath();
   const socket =
     paths.socket === defaultSocket
@@ -666,19 +703,41 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     );
     const existing = yield* probeExistingDaemon();
     if (Option.isSome(existing)) {
+      const hello = decodeDaemonHello(existing.value.hello);
+      const recoverable =
+        recoveryEnabled &&
+        Option.isSome(hello) &&
+        (hello.value.schemaRevision ?? 0) >= 30 &&
+        typeof hello.value.supervisorGeneration === "string" &&
+        hello.value.supervisorGeneration.length > 0 &&
+        [
+          "daemon_recoverable_owned_session_adoption_v1",
+          "caller_owned_session_environment_cleanup_v1",
+          "authoritative_owned_session_cleanup_v1",
+        ].every((capability) => hello.value.serverCapabilities.includes(capability));
+      if (recoverable) {
+        retainedExistingDaemon = true;
+        return existing.value;
+      }
       yield* retireExistingDaemon(existing.value);
     }
+    retainedExistingDaemon = false;
     yield* removeSocket();
 
     const processScope = yield* Scope.make("sequential");
-    const environment = makePrimeAgentDaemonEnvironment({
-      settings: input.settings,
-      environment: input.environment ?? hostEnvironment,
-    });
     const command = ChildProcess.make(
       input.executablePath,
       ["--mode", "daemon", "--daemon-socket", socket, "--offline", "--session-dir", sessionDir],
-      { env: environment, extendEnv: false },
+      recoveryEnabled
+        ? {
+            env: launchEnvironment,
+            extendEnv: false,
+            detached: true,
+            stdin: "ignore",
+            stdout: "ignore",
+            stderr: "ignore",
+          }
+        : { env: launchEnvironment, extendEnv: false },
     );
     const handle = yield* spawner.spawn(command).pipe(
       Effect.provideService(Scope.Scope, processScope),
@@ -688,8 +747,10 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       Effect.onError(() => Scope.close(processScope, Exit.void).pipe(Effect.ignore)),
     );
     const state = { handle, scope: processScope } satisfies RunningDaemon;
-    yield* Effect.forkIn(drainProcessOutput(handle.stdout, "stdout"), processScope);
-    yield* Effect.forkIn(drainProcessOutput(handle.stderr, "stderr"), processScope);
+    if (!recoveryEnabled) {
+      yield* Effect.forkIn(drainProcessOutput(handle.stdout, "stdout"), processScope);
+      yield* Effect.forkIn(drainProcessOutput(handle.stderr, "stderr"), processScope);
+    }
 
     const readinessClient = yield* connectClient({ bridge, socket, timeoutMs }).pipe(
       Effect.retry({
@@ -699,6 +760,7 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       Effect.onError(() => stopCapturedDaemon(state, false)),
     );
     running = state;
+    retainedExistingDaemon = false;
     return readinessClient;
   });
 
@@ -719,10 +781,26 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       closing = true;
       const captured = running;
       running = undefined;
-      if (captured) yield* stopCapturedDaemon(captured);
+      if (recoveryRetainers > 0) {
+        // The standalone process scope is deliberately left open. The daemon is detached
+        // from this Pylon process and retains the exact same supervisor generation.
+        return;
+      }
+      if (captured) {
+        yield* stopCapturedDaemon(captured);
+        return;
+      }
+      if (retainedExistingDaemon) {
+        // Do not revoke an untouched compatible supervisor owned by another
+        // process. Once this manager adopts one of its recoverable sessions,
+        // it owns the surviving supervisor and must retire it on clean shutdown.
+        if (!adoptedExistingDaemon) return;
+        const client = yield* connectClient({ bridge, socket, timeoutMs });
+        yield* retireExistingDaemon(client);
+      }
     }),
   );
-  yield* Effect.addFinalizer(() => shutdown);
+  yield* Effect.addFinalizer(() => shutdown.pipe(Effect.ignore));
 
   return {
     bridge,
@@ -730,6 +808,11 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
     sessionDir,
     prepare,
     openClient,
+    launchEnvironment,
+    recoveryEnabled,
+    platform,
+    architecture: input.architecture ?? "unsupported",
+    retainForRecovery,
     recover: () => runPromise(prepare()),
   } satisfies PrimeAgentDaemonManager;
 });

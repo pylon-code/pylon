@@ -450,11 +450,26 @@ function makeFakeCodexAdapter(
     sessions.set(threadId, update(existing));
   };
 
+  const setPrepareTurnRecovery = (
+    prepareTurnRecovery:
+      | NonNullable<ProviderAdapterShape<ProviderAdapterError>["prepareTurnRecovery"]>
+      | undefined,
+  ): void => {
+    const mutable = adapter as {
+      prepareTurnRecovery?: NonNullable<
+        ProviderAdapterShape<ProviderAdapterError>["prepareTurnRecovery"]
+      >;
+    };
+    if (prepareTurnRecovery === undefined) delete mutable.prepareTurnRecovery;
+    else mutable.prepareTurnRecovery = prepareTurnRecovery;
+  };
+
   return {
     adapter,
     emit,
     removeSession,
     updateSession,
+    setPrepareTurnRecovery,
     startSession,
     sendTurn,
     followUp,
@@ -2188,6 +2203,83 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("persists turn.started before a pending provider send completes", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      const sendStarted = yield* Deferred.make<void>();
+      const releaseSend = yield* Deferred.make<void>();
+      routing.codex.sendTurn.mockImplementationOnce((input) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(sendStarted, undefined);
+          yield* Deferred.await(releaseSend);
+          return {
+            threadId: input.threadId,
+            turnId: TurnId.make(`turn-${String(input.threadId)}`),
+          };
+        }),
+      );
+
+      const threadId = asThreadId("thread-started-event-directory");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const admissionRequestId = CommandId.make("request-started-event-directory");
+      const turnId = TurnId.make("turn-started-event-directory");
+      const eventId = asEventId("evt-started-event-directory");
+      const published = yield* provider.streamEvents.pipe(
+        Stream.filter((event) => event.eventId === eventId),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const send = yield* provider
+        .sendTurn({
+          threadId,
+          input: "hold until durable",
+          attachments: [],
+          admissionRequestId,
+          sessionIncarnationId: session.sessionIncarnationId,
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(sendStarted);
+
+      routing.codex.emit({
+        type: "turn.started",
+        eventId,
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        turnId,
+        admissionRequestId,
+        sessionIncarnationId: session.sessionIncarnationId,
+        payload: {},
+      });
+      yield* Fiber.join(published);
+
+      const persisted = Option.getOrThrow(yield* runtimeRepository.getByThreadId({ threadId }));
+      assert.equal(persisted.status, "running");
+      assert.deepEqual(persisted.runtimePayload, {
+        activeTurnId: turnId,
+        activeTurnRequestId: admissionRequestId,
+        admissionRequestId,
+        cwd: process.cwd(),
+        lastError: null,
+        lastRuntimeEvent: "turn.started",
+        lastRuntimeEventAt: "2026-01-01T00:00:00.000Z",
+        model: null,
+        sessionIncarnationId: session.sessionIncarnationId,
+      });
+
+      yield* Deferred.succeed(releaseSend, undefined);
+      yield* Fiber.join(send);
+    }),
+  );
+
   it.effect("does not persist running after a concurrent send is interrupted", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
@@ -2628,6 +2720,129 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         [],
       );
     }),
+  );
+
+  it.effect("retains a live same-incarnation replacement after an old session exit", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-live-same-incarnation-exit");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const received = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const consumer = yield* Stream.take(provider.streamEvents, 2).pipe(
+        Stream.runForEach((event) => Ref.update(received, (events) => [...events, event])),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      fanout.codex.emit({
+        type: "session.exited",
+        eventId: asEventId("evt-live-same-incarnation-old-exit"),
+        provider: CODEX_DRIVER,
+        threadId,
+        sessionIncarnationId: session.sessionIncarnationId,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: { exitKind: "graceful" },
+      });
+      fanout.codex.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-live-same-incarnation-current-output"),
+        provider: CODEX_DRIVER,
+        threadId,
+        sessionIncarnationId: session.sessionIncarnationId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        delta: "current",
+      });
+      yield* Fiber.join(consumer);
+
+      assert.deepEqual(
+        (yield* Ref.get(received)).map((event) => event.eventId),
+        [
+          asEventId("evt-live-same-incarnation-old-exit"),
+          asEventId("evt-live-same-incarnation-current-output"),
+        ],
+      );
+    }),
+  );
+
+  it.effect("keeps a logical incarnation current across a recovery attachment swap", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-recovery-attachment-swap");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const admissionRequestId = CommandId.make("cmd-recovery-attachment-swap");
+      fanout.codex.setPrepareTurnRecovery((input) =>
+        Effect.gen(function* () {
+          fanout.codex.removeSession(threadId);
+          fanout.codex.emit({
+            type: "session.exited",
+            eventId: asEventId("evt-recovery-attachment-old-exit"),
+            provider: CODEX_DRIVER,
+            threadId,
+            sessionIncarnationId: session.sessionIncarnationId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            payload: { exitKind: "graceful" },
+          });
+          yield* Effect.yieldNow;
+          yield* fanout.codex.startSession({
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            runtimeMode: session.runtimeMode,
+            ...(session.cwd === undefined ? {} : { cwd: session.cwd }),
+            sessionIncarnationId: session.sessionIncarnationId,
+          });
+          fanout.codex.emit({
+            type: "turn.started",
+            eventId: asEventId("evt-recovery-attachment-current-turn"),
+            provider: CODEX_DRIVER,
+            threadId,
+            turnId: asTurnId("turn-recovery-attachment-swap"),
+            admissionRequestId: input.admissionRequestId,
+            sessionIncarnationId: session.sessionIncarnationId,
+            createdAt: "2026-01-01T00:00:01.000Z",
+            payload: {},
+          });
+        }),
+      );
+      const received = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const consumer = yield* Stream.take(provider.streamEvents, 2).pipe(
+        Stream.runForEach((event) => Ref.update(received, (events) => [...events, event])),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      yield* provider.sendTurn({
+        threadId,
+        input: "continue after the exact attachment swap",
+        admissionRequestId,
+        sessionIncarnationId: session.sessionIncarnationId,
+      });
+      yield* Fiber.join(consumer);
+
+      assert.deepEqual(
+        (yield* Ref.get(received)).map((event) => event.eventId),
+        [
+          asEventId("evt-recovery-attachment-old-exit"),
+          asEventId("evt-recovery-attachment-current-turn"),
+        ],
+      );
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          fanout.codex.setPrepareTurnRecovery(undefined);
+        }),
+      ),
+    ),
   );
 
   it.effect("retains a stopping incarnation until its delayed exit is ingested", () =>
@@ -3479,7 +3694,7 @@ describe("agent browser access", () => {
     const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
     return makeProviderServiceLive(options).pipe(
       Layer.provide(providerAdapterLayer),
-      Layer.provide(directoryLayer),
+      Layer.provideMerge(directoryLayer),
       Layer.provide(ServerSettings.ServerSettingsService.layerTest({ enableAgentBrowserAccess })),
       Layer.provide(serverConfigTestLayer),
       Layer.provide(AnalyticsService.layerTest),
@@ -3598,6 +3813,93 @@ describe("agent browser access", () => {
 
         assert.equal(yield* Deferred.await(revoked), threadId);
         assert.isUndefined(McpProviderSession.readMcpProviderSession(threadId));
+      }).pipe(Effect.provide(providerLayer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("restores MCP and the directory binding before exposing recovered activity", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-restart-adoption");
+      const codex = makeFakeCodexAdapter();
+      const order: string[] = [];
+      const recoveredTurnId = TurnId.make("turn-restart-adoption");
+      const recoveredRequestId = CommandId.make("request-restart-adoption");
+      let recoveredSession: ProviderSession | undefined;
+      const recoveryAdapter: ProviderAdapterShape<ProviderAdapterError> = {
+        ...codex.adapter,
+        recoverSession: (input) =>
+          Effect.gen(function* () {
+            assert.isDefined(McpProviderSession.readMcpProviderSession(threadId));
+            order.push("recover");
+            const session = yield* codex.startSession(input);
+            recoveredSession = {
+              ...session,
+              status: "running",
+              activeTurnId: recoveredTurnId,
+              activeTurnRequestId: recoveredRequestId,
+            };
+            return recoveredSession;
+          }),
+        activateRecoveredSession: () =>
+          Effect.sync(() => {
+            order.push("activate");
+            codex.emit({
+              type: "content.delta",
+              eventId: asEventId("evt-restart-adopted-output"),
+              provider: CODEX_DRIVER,
+              threadId,
+              turnId: recoveredTurnId,
+              sessionIncarnationId: recoveredSession!.sessionIncarnationId,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              delta: "recovered",
+            });
+          }),
+      };
+      const providerLayer = makeAgentBrowserProviderLayer(
+        true,
+        { ...codex, adapter: recoveryAdapter },
+        {
+          issueMcpCredential: (request) =>
+            Effect.sync(() => {
+              order.push("mcp");
+              return issuedBrowserCredential(request.threadId);
+            }),
+          revokeMcpCredential: () => Effect.void,
+        },
+      );
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project",
+          runtimeMode: "full-access",
+        });
+        codex.removeSession(threadId);
+        order.length = 0;
+        const recoveredEvents = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+        const consumer = yield* Stream.take(provider.streamEvents, 1).pipe(
+          Stream.runForEach((event) => Ref.update(recoveredEvents, (events) => [...events, event])),
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+
+        yield* provider.recoverRestartSessions!();
+        yield* Fiber.join(consumer);
+
+        assert.deepEqual(order, ["mcp", "recover", "activate"]);
+        const [recoveredEvent] = yield* Ref.get(recoveredEvents);
+        assert.equal(recoveredEvent?.eventId, asEventId("evt-restart-adopted-output"));
+        assert.equal(recoveredEvent?.turnId, recoveredTurnId);
+        assert.equal(recoveredEvent?.admissionRequestId, recoveredRequestId);
+        const binding = Option.getOrThrow(yield* directory.getBinding(threadId));
+        assert.equal(
+          (binding.runtimePayload as { readonly lastRuntimeEvent?: string }).lastRuntimeEvent,
+          "provider.restart-adopted",
+        );
       }).pipe(Effect.provide(providerLayer));
     }).pipe(Effect.provide(NodeServices.layer)),
   );

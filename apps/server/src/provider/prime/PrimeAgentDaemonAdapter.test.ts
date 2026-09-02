@@ -1376,6 +1376,10 @@ describe("PrimeAgentDaemonAdapter", () => {
           lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
         });
         yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "owned", 1),
+        });
+        yield* offer(captures, {
           _tag: "MessageCompleted",
           message: assistantMessage("wrong owner contamination"),
           attribution: {
@@ -2100,6 +2104,68 @@ describe("PrimeAgentDaemonAdapter", () => {
           },
         });
         expect(encodeUnknownJson(turnEvents)).toContain("already observed answer");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("replays one missed terminal response after the admitted user boundary", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        captures.rlmConnectionGeneration = 1;
+        captures.rlmContinuityValid = false;
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "response missed during reconnect" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+        });
+        const prompt = {
+          role: "user",
+          timestamp: 1,
+          text: "response missed during reconnect",
+          imageMimeTypes: [],
+          imageDigests: [],
+        } satisfies PrimeDaemonMessage;
+        const answer = { ...assistantMessage("replayed terminal answer"), timestamp: 2 };
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: prompt,
+          attribution: { scope: "prompt", correlationId },
+        });
+
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          state: { ...initialSnapshot().state, messageCount: 2 },
+          messages: [prompt, answer],
+          replayContinuity: "complete",
+          connectionGeneration: 1,
+          promptLifecycles: {
+            records: [lifecycleSnapshot(correlationId, "completed", 3, { usage })],
+            expired: [],
+          },
+        });
+        const result = yield* Fiber.join(turnFiber);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(captures.reconnectResolutions).toContainEqual({
+          generation: 1,
+          reconciled: true,
+          terminalResponseObserved: false,
+        });
+        expect(encodeUnknownJson(turnEvents)).toContain("replayed terminal answer");
+        expect(turnEvents.findLast((event) => event.type === "turn.completed")).toMatchObject({
+          payload: { state: "completed", usage: { totalTokens: usage.totalTokens } },
+        });
       }),
     ).pipe(Effect.provide(testLayer)),
   );

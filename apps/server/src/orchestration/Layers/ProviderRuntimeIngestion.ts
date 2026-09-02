@@ -37,6 +37,7 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { PrimeAgentRecoveryLedger } from "../../provider/prime/PrimeAgentRecoveryLedger.ts";
 import {
   rateLimitFromRuntimeEventPayload,
   usageWindowsFromRuntimeEventPayload,
@@ -1507,8 +1508,23 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  const recoveryLedger = Option.getOrUndefined(
+    yield* Effect.serviceOption(PrimeAgentRecoveryLedger),
+  );
   const providerRegistry = yield* ProviderRegistry;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const settleRecoveryTerminalProjection = (threadId: ThreadId, updatedAt: string) =>
+    recoveryLedger === undefined
+      ? Effect.void
+      : recoveryLedger.markTerminalProjected({ threadId, updatedAt }).pipe(
+          Effect.andThen(recoveryLedger.deleteIfSettled(threadId)),
+          Effect.catchCause(() =>
+            Effect.logWarning("failed to settle Prime Agent terminal projection proof", {
+              threadId,
+            }),
+          ),
+          Effect.asVoid,
+        );
   const serverSettingsService = yield* ServerSettingsService;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
@@ -2228,6 +2244,9 @@ const make = Effect.gen(function* () {
         if ((cleared.eventCount ?? 0) > 0 && stoppedLineageStillProjected) {
           yield* clearTurnStateForSession(thread.id);
         }
+        if ((cleared.eventCount ?? 0) > 0) {
+          yield* settleRecoveryTerminalProjection(thread.id, event.createdAt);
+        }
         return;
       }
       const eventMatchesStoppedSession =
@@ -2566,6 +2585,9 @@ const make = Effect.gen(function* () {
               "thread-session-set",
             );
             if ((applied.eventCount ?? 0) === 0) return;
+            if (event.type === "turn.completed" || event.type === "session.exited") {
+              yield* settleRecoveryTerminalProjection(thread.id, event.createdAt);
+            }
           }
 
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {

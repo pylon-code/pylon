@@ -2,7 +2,7 @@
 
 This ledger records Pylon's treatment of the public `DaemonAgentConnection` surface shipped by
 Prime Agent 0.8.1 (daemon protocol 7, schema 22) and Pylon's optional fork extension at protocol 7,
-schema 24. Parity here means that every useful public outcome is either integrated through a typed
+schema 30. Parity here means that every useful public outcome is either integrated through a typed
 provider-neutral contract or has an explicit product and safety decision. It does not mean exposing a
 raw method tunnel.
 
@@ -207,11 +207,35 @@ modes because bounded plan progress reaches Pylon. It does not advertise `propos
 hidden instead of synthesizing one with a hidden prompt.
 
 Any transcript mismatch, incomplete streaming snapshot, MCP reattachment failure, or unvalidated barrier
-fails the canonical turn once and disposes the uncertain native session. This recovery is in-memory only;
-a Pylon server restart does not adopt native execution that outlives the server process. Instead, a
-replacement waits beyond Prime's bounded client-owned disconnect grace for the daemon to release the old
-worker, then recreates the exact saved session. It never steals ownership from a live client; if ownership
-remains active after that bounded wait, Pylon preserves the structured `SessionAlreadyActiveError`. When
+fails the canonical turn once and disposes the uncertain native session.
+
+### Pylon process restart recovery
+
+An admitted Full access turn can outlive the Pylon server process only when a Pylon-managed Prime
+publication, its exact package root and build, the supported macOS/Linux host architecture, and the same
+retained supervisor generation all match the private recovery ledger. The ledger also binds the provider
+instance and Pylon session incarnation to Prime's protocol, schema, capabilities, active/native session,
+correlation, cursor, recovery configuration, exact launch environment, MCP owner, and bounded transcript
+progress. It is server-private: recovery handles, native identifiers, correlations, cursors, snapshots,
+paths, prompts, tool data, and transport errors never enter public contracts, events, receipts, or logs.
+
+Preparation writes native ownership before prompt submission and records the exact turn only after Prime
+admits that prompt. At startup, a replacement claims ownership with a SQLite compare-and-swap before SDK
+adoption. It rotates the ledger authority, restores scoped MCP ownership, confirms adoption, installs the
+existing Pylon incarnation fence, and only then releases exact retained replay and live events. Startup
+performs this adoption pass before generic orphan reconciliation. A terminal reached while Pylon was down
+therefore settles the original turn and checkpoint once without another prompt or `turn.started`.
+
+Graceful process shutdown detaches an eligible owned worker and leaves its compatible supervisor alive;
+explicit Stop and normal terminal cleanup still require Prime's authoritative owned-session cleanup proof.
+The private row is deleted only after that proof, terminal projection delivery, and checkpoint quiescence.
+A competing Pylon process cannot win the same ledger generation, and a process that did not spawn a
+compatible supervisor never shuts it down.
+
+Supervised and other approval-required sessions, ACP mode, stock/manual or unverified distributions,
+native Windows, copied state, a replaced supervisor, an unsupported host, unresolved interaction state,
+partial replay, transcript mismatch, or any other unproven identity/continuity retain the existing precise
+orphan result. Pylon does not steal, re-submit, disclose, or synthesize native work in those cases. When
 both bounded stats reads succeed, the usage delta includes child billing that Prime attributes after the original message event. The native autonomous-status result is
 discarded at the provider boundary. Older connections without the barrier retain response-boundary
 behavior. An error- or tool-terminated native run completion without a

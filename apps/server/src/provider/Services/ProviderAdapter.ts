@@ -99,6 +99,26 @@ export interface ProviderAdapterShape<TError> {
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
+  /** Server-private hook. Prime uses it to replace an idle ordinary owner with a recoverable one. */
+  readonly prepareTurnRecovery?: (input: ProviderSendTurnInput) => Effect.Effect<void, TError>;
+
+  /** Server-private startup hook. It must fail closed and never submit provider input. */
+  readonly recoverSession?: (input: {
+    readonly threadId: ThreadId;
+    readonly providerInstanceId: import("@t3tools/contracts").ProviderInstanceId;
+    readonly sessionIncarnationId: import("@t3tools/contracts").RuntimeSessionId;
+    readonly runtimeMode: ProviderSessionStartInput["runtimeMode"];
+    readonly cwd: string;
+    readonly modelSelection?: import("@t3tools/contracts").ModelSelection;
+    readonly resumeCursor: unknown;
+  }) => Effect.Effect<ProviderSession | null, TError>;
+
+  /** Releases retained frames only after ProviderService installs exact incarnation fencing. */
+  readonly activateRecoveredSession?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+
+  /** Process shutdown can detach recoverable ownership instead of implementing explicit Stop. */
+  readonly shutdown?: () => Effect.Effect<void, TError>;
+
   /**
    * Interrupt an active turn.
    */
