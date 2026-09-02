@@ -40,6 +40,8 @@ import {
   themeAllowsSidebarArtwork,
 } from "~/themePalette";
 import * as Struct from "effect/Struct";
+import { toastManager } from "~/components/ui/toast";
+import { isHostedStaticApp } from "~/hostedPairing";
 import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
 import {
   type EnvironmentPresentation,
@@ -318,6 +320,20 @@ export function usePrimarySettings<T = UnifiedSettings>(
   return useMergedSettings(useAtomValue(primaryServerSettingsAtom), selector);
 }
 
+export const PRIMARY_SETTINGS_UNAVAILABLE_MESSAGE =
+  "This setting is saved on a server, and the hosted app is not anchored to one. Change it from the desktop app or from the server's own address.";
+
+/**
+ * Whether primary-scoped server settings have a server to live on. The
+ * hosted app connects to every environment as a remote, so it has no primary:
+ * `usePrimarySettings` reads schema defaults there and writes have nowhere
+ * to go. Desktop and server-served web always have one.
+ */
+export function usePrimarySettingsAvailable(): boolean {
+  const primaryEnvironment = usePrimaryEnvironment();
+  return primaryEnvironment !== null || !isHostedStaticApp();
+}
+
 /**
  * Whether an environment can hold every shared key right now. Gated on the
  * auto-settlement capability because it is the newest of the shared keys: a
@@ -385,11 +401,22 @@ function useUpdateSettingsTarget(
           });
         } else {
           const { sharedPatch, localPatch } = splitSharedServerPatch(serverPatch);
-          if (environmentId && Object.keys(localPatch).length > 0) {
-            void persistServerSettings({
-              environmentId,
-              input: { patch: localPatch },
+          // Dropping the write silently leaves the control looking saved.
+          const warnUnsaved = () =>
+            toastManager.add({
+              type: "warning",
+              title: "Setting not saved",
+              description: PRIMARY_SETTINGS_UNAVAILABLE_MESSAGE,
             });
+          if (Object.keys(localPatch).length > 0) {
+            if (environmentId) {
+              void persistServerSettings({
+                environmentId,
+                input: { patch: localPatch },
+              });
+            } else {
+              warnUnsaved();
+            }
           }
           if (Object.keys(sharedPatch).length > 0) {
             const targets = new Set(connectedEnvironmentIds);
