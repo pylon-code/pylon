@@ -2175,7 +2175,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           // for it, so there is no iteration budget to exhaust on a slow
           // machine and no wall-clock assumption to get wrong.
           const secondProbeSpawned = yield* Deferred.make<void>();
-          const serverSettings = yield* makeMutableServerSettingsService(
+          const allowLazySettingsStream = yield* Deferred.make<void>();
+          const mutableServerSettings = yield* makeMutableServerSettingsService(
             decodeServerSettings(
               deepMerge(encodedDefaultServerSettings, {
                 providers: {
@@ -2189,6 +2190,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               }),
             ),
           );
+          const serverSettings = {
+            ...mutableServerSettings,
+            streamChanges: Stream.unwrap(
+              Deferred.await(allowLazySettingsStream).pipe(
+                Effect.as(mutableServerSettings.streamChanges),
+              ),
+            ),
+          } satisfies ServerSettingsModule.ServerSettingsService["Service"];
           const scope = yield* Scope.make();
           yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
           const providerRegistryLayer = ProviderRegistryLive.pipe(
@@ -2252,7 +2261,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             assert.deepStrictEqual(spawnedCommands, [firstMissing]);
 
             // Drive a settings change. The Hydration layer's
-            // `SettingsWatcherLive` consumes this via `streamChanges`,
+            // `SettingsWatcherLive` consumes this via `subscribeChanges`,
             // calls `reconcile`, which rebuilds the codex instance (the
             // envelope changed because `binaryPath` differs → `entryEqual`
             // is false). The registry's `Stream.runForEach(
@@ -2264,6 +2273,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 codex: { enabled: true, binaryPath: secondMissing },
               },
             });
+            // Start the lazy stream only after publishing. A watcher that did
+            // not subscribe before forking has already lost this update.
+            yield* Deferred.succeed(allowLazySettingsStream, undefined);
 
             // Wait for the reprobe itself rather than sampling for its
             // after-effects. The settings change propagates through the
