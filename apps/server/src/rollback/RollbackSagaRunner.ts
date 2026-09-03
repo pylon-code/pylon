@@ -1,4 +1,10 @@
-import { CommandId, type CheckpointRef } from "@t3tools/contracts";
+import {
+  CommandId,
+  OrchestrationRollbackRecoveryError,
+  type CheckpointRef,
+  type OrchestrationRollbackRecoveryAction,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -26,6 +32,10 @@ export const RollbackFaultInjector = Context.Reference<RollbackFaultHook>(
 
 export interface RollbackSagaRunnerShape {
   readonly run: (operationId: string, recovering: boolean) => Effect.Effect<void>;
+  readonly recover: (input: {
+    readonly threadId: ThreadId;
+    readonly action: OrchestrationRollbackRecoveryAction;
+  }) => Effect.Effect<void, OrchestrationRollbackRecoveryError>;
 }
 export class RollbackSagaRunner extends Context.Service<
   RollbackSagaRunner,
@@ -61,14 +71,40 @@ export const make = Effect.gen(function* () {
   const after = (label: string, operationId: string) => fault(label, operationId);
   const statusCommand = Effect.fn("RollbackSagaRunner.statusCommand")(function* (
     state: RollbackSagaState,
-    status: "pending" | "recovering" | "manual-recovery" | null,
+    status: "pending" | "recovering" | "manual-recovery" | "completed" | "failed" | null,
   ) {
     const createdAt = yield* nowIso;
+    const allowedActions =
+      status !== "manual-recovery"
+        ? []
+        : state.projectionCommitSequence !== null
+          ? (["retry-verification"] as const)
+          : state.compensation === "manual"
+            ? (["resume-compensation"] as const)
+            : [];
+    const detail =
+      status === "pending"
+        ? "Rewriting the provider conversation, Pylon history, and workspace to the selected message."
+        : status === "recovering"
+          ? "Verifying the provider conversation, Pylon history, and workspace before releasing the thread."
+          : status === "manual-recovery"
+            ? `The thread remains fenced because automatic rollback recovery could not be proved (${state.lastErrorCode ?? "verification unavailable"}).`
+            : status === "completed"
+              ? "Rollback completed and all rewritten state was verified."
+              : status === "failed"
+                ? "Rollback did not complete. Pylon restored and verified the original provider conversation and workspace; no thread content was removed."
+                : undefined;
     yield* engine.dispatch({
       type: "thread.rollback.status.set",
-      commandId: CommandId.make(`server:rollback-status:${state.operationId}:${status ?? "clear"}`),
+      commandId: CommandId.make(
+        `server:rollback-status:${state.operationId}:${status ?? "clear"}:${state.phase}:${state.updatedAt}`,
+      ),
       threadId: state.threadId,
       status,
+      targetTurnCount: state.targetRevision,
+      sourceRevision: state.sourceRevision,
+      ...(detail === undefined ? {} : { detail }),
+      allowedActions: [...allowedActions],
       createdAt,
     });
   });
@@ -123,6 +159,7 @@ export const make = Effect.gen(function* () {
       yield* publishPhase(released.value.state);
       yield* after(`persisted:${released.value.state.phase}`, released.value.operationId);
     }
+    return released;
   });
 
   const compensate = Effect.fn("RollbackSagaRunner.compensate")(function* (
@@ -226,8 +263,13 @@ export const make = Effect.gen(function* () {
       preimage: null,
       updatedAt: yield* nowIso,
     };
-    yield* statusCommand(terminalState, null).pipe(Effect.ignore);
-    yield* releaseTerminal(record, terminalState);
+    const persisted = yield* update(record, terminalState);
+    if (Option.isNone(persisted)) return;
+    const statusPublished = yield* statusCommand(persisted.value.state, "failed").pipe(
+      Effect.result,
+    );
+    if (statusPublished._tag === "Failure") return;
+    yield* releaseTerminal(persisted.value, persisted.value.state);
   });
 
   const step = Effect.fn("RollbackSagaRunner.step")(function* (initial: RollbackSagaRecord) {
@@ -536,7 +578,13 @@ export const make = Effect.gen(function* () {
             preimage: null,
             updatedAt: yield* nowIso,
           };
-          yield* releaseTerminal(record, terminalState);
+          const persisted = yield* update(record, terminalState);
+          if (Option.isNone(persisted)) return;
+          const statusPublished = yield* statusCommand(persisted.value.state, "completed").pipe(
+            Effect.result,
+          );
+          if (statusPublished._tag === "Failure") return;
+          yield* releaseTerminal(persisted.value, persisted.value.state);
           return;
         }
         case "compensation-workspace-started":
@@ -544,9 +592,21 @@ export const make = Effect.gen(function* () {
         case "compensation-provider-started":
           return yield* compensate(record, state.lastErrorCode ?? "reconcile-compensation");
         case "manual-recovery":
-        case "compensated":
-        case "complete":
           return;
+        case "compensated": {
+          const statusPublished = yield* statusCommand(state, "failed").pipe(Effect.result);
+          if (statusPublished._tag === "Success") {
+            yield* releaseTerminal(record, state);
+          }
+          return;
+        }
+        case "complete": {
+          const statusPublished = yield* statusCommand(state, "completed").pipe(Effect.result);
+          if (statusPublished._tag === "Success") {
+            yield* releaseTerminal(record, state);
+          }
+          return;
+        }
       }
     }
   });
@@ -579,7 +639,94 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  return RollbackSagaRunner.of({ run });
+  const recoveryError = (
+    reason: "not-found" | "action-not-allowed" | "operation-busy",
+    message: string,
+  ) => new OrchestrationRollbackRecoveryError({ reason, message });
+
+  const recover: RollbackSagaRunnerShape["recover"] = Effect.fn("RollbackSagaRunner.recover")(
+    function* (input) {
+      const active = yield* repository
+        .getActiveByThread(input.threadId)
+        .pipe(
+          Effect.mapError(() =>
+            recoveryError("not-found", "Pylon could not read the fenced rollback operation."),
+          ),
+        );
+      if (Option.isNone(active)) {
+        return yield* recoveryError(
+          "not-found",
+          "No fenced rollback operation exists for this thread.",
+        );
+      }
+      const state = active.value.state;
+      const allowed =
+        state.phase === "manual-recovery" &&
+        ((input.action === "retry-verification" && state.projectionCommitSequence !== null) ||
+          (input.action === "resume-compensation" &&
+            state.projectionCommitSequence === null &&
+            state.compensation === "manual"));
+      if (!allowed) {
+        return yield* recoveryError(
+          "action-not-allowed",
+          "That recovery action is not safe for the rollback's current durable phase.",
+        );
+      }
+
+      const claimed = yield* repository
+        .claim(active.value.operationId, ownerId)
+        .pipe(
+          Effect.mapError(() =>
+            recoveryError("operation-busy", "Another client is already recovering this rollback."),
+          ),
+        );
+      if (Option.isNone(claimed)) {
+        return yield* recoveryError(
+          "operation-busy",
+          "Another client is already recovering this rollback.",
+        );
+      }
+      const claimedState = claimed.value.state;
+      const nextState: RollbackSagaState = {
+        ...claimedState,
+        phase:
+          input.action === "retry-verification"
+            ? "projection-committed"
+            : "compensation-workspace-started",
+        attempt: 0,
+        compensation: input.action === "retry-verification" ? "none" : "required",
+        lastErrorCode: null,
+        updatedAt: yield* nowIso,
+      };
+      const updated = yield* repository
+        .updateOwned({
+          operationId: claimed.value.operationId,
+          ownerId,
+          expectedVersion: claimed.value.version,
+          state: nextState,
+        })
+        .pipe(
+          Effect.mapError(() =>
+            recoveryError(
+              "operation-busy",
+              "The rollback recovery phase changed on another client.",
+            ),
+          ),
+        );
+      if (Option.isNone(updated)) {
+        yield* repository.releaseOwnerOwned(claimed.value.operationId, ownerId).pipe(Effect.ignore);
+        return yield* recoveryError(
+          "operation-busy",
+          "The rollback recovery phase changed on another client.",
+        );
+      }
+      yield* publishPhase(updated.value.state);
+      yield* repository.releaseOwnerOwned(updated.value.operationId, ownerId).pipe(Effect.ignore);
+      yield* run(updated.value.operationId, true);
+    },
+  );
+
+  return RollbackSagaRunner.of({ run, recover });
 });
 
 export const layer = Layer.effect(RollbackSagaRunner, make);

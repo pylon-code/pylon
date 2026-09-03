@@ -73,6 +73,8 @@ import {
   OrchestrationGetTurnDiffInput,
   OrchestrationRpcSchemas,
   OrchestrationGetWorkflowScriptError,
+  OrchestrationRollbackRecoveryError,
+  OrchestrationRollbackRecoveryInput,
 } from "./orchestration.ts";
 import {
   ProviderAskSessionSideQuestionError,
@@ -209,6 +211,7 @@ import {
   ServerConfigStreamEvent,
   ServerConfig,
   ServerProviderUpdateError,
+  ServerProviderMutationBusyError,
   ServerProviderLoginCancelInput,
   ServerProviderLoginError,
   ServerProviderLoginResult,
@@ -347,6 +350,9 @@ export const WS_METHODS = {
   providerAbortSessionCompaction: "provider.abortSessionCompaction",
   providerSetSessionAutoCompaction: "provider.setSessionAutoCompaction",
   providerRefineSessionHarness: "provider.refineSessionHarness",
+
+  // Durable rollback recovery
+  rollbackRecover: "rollback.recover",
 
   // Server meta
   serverProbe: "server.probe",
@@ -591,10 +597,19 @@ export const WsProviderRefineSessionHarnessRpc = Rpc.make(WS_METHODS.providerRef
   error: Schema.Union([ProviderRefineSessionHarnessError, EnvironmentAuthorizationError]),
 });
 
+export const WsRollbackRecoverRpc = Rpc.make(WS_METHODS.rollbackRecover, {
+  payload: OrchestrationRollbackRecoveryInput,
+  error: Schema.Union([OrchestrationRollbackRecoveryError, EnvironmentAuthorizationError]),
+});
+
 export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
   payload: ServerProviderUpdateInput,
   success: ServerProviderUpdatedPayload,
-  error: Schema.Union([ServerProviderUpdateError, EnvironmentAuthorizationError]),
+  error: Schema.Union([
+    ServerProviderUpdateError,
+    ServerProviderMutationBusyError,
+    EnvironmentAuthorizationError,
+  ]),
 });
 
 export const WsServerGetPrimeManagedMaintenanceRpc = Rpc.make(
@@ -672,6 +687,7 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
   error: Schema.Union([
     ServerSettingsUpdateConflictError,
     ServerSettingsError,
+    ServerProviderMutationBusyError,
     EnvironmentAuthorizationError,
   ]),
 });
@@ -1332,6 +1348,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderAbortSessionCompactionRpc,
   WsProviderSetSessionAutoCompactionRpc,
   WsProviderRefineSessionHarnessRpc,
+  WsRollbackRecoverRpc,
   WsServerUpdateProviderRpc,
   WsServerGetPrimeManagedMaintenanceRpc,
   WsServerRunPrimeManagedMaintenanceRpc,

@@ -89,6 +89,41 @@ layer("RollbackSagaRepository", (it) => {
     }),
   );
 
+  it.effect("blocks only provider instances owned by nonterminal rollback sagas", () =>
+    Effect.gen(function* () {
+      const repository = yield* RollbackSagaRepository;
+      const fencedThread = ThreadId.make("thread-provider-fence");
+      yield* repository.admit(
+        makeState("operation-provider-fence", fencedThread, "workspace-provider-fence"),
+      );
+      let ranBusyMutation = false;
+
+      const blocked = yield* repository
+        .withProviderMutationFence(
+          Effect.succeed([providerInstanceId]),
+          Effect.sync(() => {
+            ranBusyMutation = true;
+          }),
+        )
+        .pipe(Effect.result);
+      assert.equal(blocked._tag, "Failure");
+      if (blocked._tag === "Failure") {
+        assert.equal(blocked.failure._tag, "ServerProviderMutationBusyError");
+        assert.equal(blocked.failure.reason, "rollback-active");
+        assert.deepEqual(blocked.failure.providerInstanceIds, [providerInstanceId]);
+        assert.includeMembers([...blocked.failure.threadIds], [fencedThread]);
+      }
+      assert.isFalse(ranBusyMutation);
+
+      const unrelated = ProviderInstanceId.make("unrelated-provider");
+      const allowed = yield* repository.withProviderMutationFence(
+        Effect.succeed([unrelated]),
+        Effect.succeed("updated"),
+      );
+      assert.equal(allowed, "updated");
+    }),
+  );
+
   it.effect(
     "uses owner and version CAS, clears stale startup owners, and releases the lease last",
     () =>

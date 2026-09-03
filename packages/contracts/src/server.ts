@@ -824,6 +824,12 @@ export const ServerConfig = Schema.Struct({
    */
   threadSnapshotPagination: Schema.optionalKey(Schema.Boolean),
   /**
+   * Whether thread subscriptions accept an explicit opt-in for rollback-status
+   * events. Clients must not request the new closed-union member from servers
+   * that do not advertise this capability.
+   */
+  rollbackStatusStreaming: Schema.optionalKey(Schema.Boolean),
+  /**
    * Palettes published by this environment's machine. Never sent in a config
    * snapshot: the theme stream emits the current set before any change, so a
    * snapshot carrying it too would hand every subscriber the same array twice
@@ -1061,6 +1067,23 @@ export class ServerProviderLoginError extends Schema.TaggedErrorClass<ServerProv
 ) {
   override get message(): string {
     return `Provider sign-in failed: ${this.reason}`;
+  }
+}
+
+export class ServerProviderMutationBusyError extends Schema.TaggedErrorClass<ServerProviderMutationBusyError>()(
+  "ServerProviderMutationBusyError",
+  {
+    reason: Schema.Literals(["rollback-active", "rollback-state-unavailable"]),
+    providerInstanceIds: Schema.Array(ProviderInstanceId),
+    threadIds: Schema.Array(ThreadId),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    if (this.reason === "rollback-state-unavailable") {
+      return "Provider settings are temporarily locked because rollback ownership could not be verified.";
+    }
+    return "Provider settings are temporarily locked while conversation rollback is active.";
   }
 }
 

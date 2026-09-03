@@ -40,7 +40,7 @@ const makeSession = (overrides: Partial<OrchestrationSession> = {}): Orchestrati
   ...overrides,
 });
 
-const makeReadModel = (session: OrchestrationSession): OrchestrationReadModel => ({
+const makeReadModel = (session: OrchestrationSession, sourceEpoch = 0): OrchestrationReadModel => ({
   snapshotSequence: 0,
   projects: [],
   threads: [
@@ -54,6 +54,7 @@ const makeReadModel = (session: OrchestrationSession): OrchestrationReadModel =>
       branch: null,
       worktreePath: null,
       latestTurn: null,
+      sourceEpoch,
       createdAt: NOW,
       updatedAt: NOW,
       archivedAt: null,
@@ -471,6 +472,110 @@ it.layer(NodeServices.layer)("session lifecycle CAS decider", (it) => {
           },
         },
       });
+    }),
+  );
+
+  it.effect("rejects a turn composed against an older rollback source epoch", () =>
+    Effect.gen(function* () {
+      const session = makeSession({
+        status: "ready",
+        pendingTurnRequestId: undefined,
+        pendingTurnMessageId: undefined,
+        pendingTurnRequestedAt: undefined,
+        pendingTurnDeadlineAt: undefined,
+        pendingTurnSessionId: undefined,
+      });
+      const command = {
+        type: "thread.turn.start" as const,
+        commandId: CommandId.make("command-stale-source-epoch"),
+        threadId: THREAD_ID,
+        message: {
+          messageId: MessageId.make("message-stale-source-epoch"),
+          role: "user" as const,
+          text: "Keep this unsent",
+          attachments: [],
+        },
+        modelSelection: { instanceId: INSTANCE_ID, model: "gpt-5.4" },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        sourceEpoch: 1,
+        createdAt: NOW,
+      };
+
+      const rejected = yield* decideOrchestrationCommand({
+        command,
+        readModel: makeReadModel(session, 2),
+      }).pipe(Effect.result);
+      expect(rejected._tag).toBe("Failure");
+      if (rejected._tag === "Failure") {
+        expect(rejected.failure.message).toContain(
+          "Thread source epoch mismatch: expected 1; actual 2.",
+        );
+      }
+
+      const accepted = yield* decideOrchestrationCommand({
+        command: {
+          ...command,
+          commandId: CommandId.make("command-current-source-epoch"),
+          sourceEpoch: 2,
+        },
+        readModel: makeReadModel(session, 2),
+      });
+      const events = Array.isArray(accepted) ? accepted : [accepted];
+      expect(events.map((event) => event.type)).toContain("thread.message-sent");
+      expect(
+        events.find((event) => event.type === "thread.turn-start-requested")?.payload.sourceEpoch,
+      ).toBe(2);
+    }),
+  );
+
+  it.effect("rejects a forged turn start while rollback recovery is active", () =>
+    Effect.gen(function* () {
+      const session = makeSession({
+        status: "ready",
+        pendingTurnRequestId: undefined,
+        pendingTurnMessageId: undefined,
+        pendingTurnRequestedAt: undefined,
+        pendingTurnDeadlineAt: undefined,
+        pendingTurnSessionId: undefined,
+      });
+      const readModel = makeReadModel(session, 2);
+      const rollingBack = {
+        ...readModel,
+        threads: readModel.threads.map((thread) => ({
+          ...thread,
+          rollbackStatus: {
+            state: "recovering" as const,
+            updatedAt: NOW,
+          },
+        })),
+      };
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.make("command-during-rollback"),
+          threadId: THREAD_ID,
+          message: {
+            messageId: MessageId.make("message-during-rollback"),
+            role: "user",
+            text: "Do not race rollback",
+            attachments: [],
+          },
+          modelSelection: { instanceId: INSTANCE_ID, model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          sourceEpoch: 2,
+          createdAt: NOW,
+        },
+        readModel: rollingBack,
+      }).pipe(Effect.result);
+
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.message).toContain(
+          "cannot start a turn while rollback recovery is active",
+        );
+      }
     }),
   );
 });

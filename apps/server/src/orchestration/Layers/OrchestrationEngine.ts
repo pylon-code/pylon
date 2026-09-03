@@ -251,6 +251,44 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
+        if (
+          envelope.command.type === "thread.checkpoint.revert" &&
+          Option.isSome(rollbackRepository)
+        ) {
+          const active = yield* rollbackRepository.value
+            .getActiveByThread(envelope.command.threadId)
+            .pipe(
+              Effect.mapError(
+                () =>
+                  new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail: "Rollback admission state could not be read.",
+                  }),
+              ),
+            );
+          if (Option.isSome(active)) {
+            if (
+              active.value.state.targetRevision !== envelope.command.turnCount ||
+              active.value.state.sourceRevision !== envelope.command.expectedSourceRevision
+            ) {
+              return yield* new OrchestrationCommandInvariantError({
+                commandType: envelope.command.type,
+                detail: "Another rollback target already owns this thread.",
+              });
+            }
+            yield* commandReceiptRepository.upsert({
+              commandId: envelope.command.commandId,
+              aggregateKind: "thread",
+              aggregateId: envelope.command.threadId,
+              acceptedAt: yield* nowIso,
+              resultSequence: commandReadModel.snapshotSequence,
+              status: "accepted",
+              error: null,
+            });
+            return { sequence: commandReadModel.snapshotSequence };
+          }
+        }
+
         yield* assertRollbackFenceAllows(envelope.command);
 
         const eventBase = yield* decideOrchestrationCommand({
@@ -288,6 +326,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 ),
                 threadId: preparedRollback.value.threadId,
                 status: "pending",
+                targetTurnCount: preparedRollback.value.targetRevision,
+                sourceRevision: preparedRollback.value.sourceRevision,
+                detail:
+                  "Rewriting the provider conversation, Pylon history, and workspace to the selected message.",
+                allowedActions: [],
                 createdAt: preparedRollback.value.createdAt,
               },
               readModel: commandReadModel,
@@ -414,7 +457,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           sequence: committedCommand.lastSequence,
           eventCount: committedCommand.committedEvents.length,
         };
-      }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`)),
+      }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`), (processCommand) =>
+        envelope.command.type === "thread.checkpoint.revert" && Option.isSome(rollbackRepository)
+          ? rollbackRepository.value.withMutationFence(processCommand)
+          : processCommand,
+      ),
     ).pipe(
       Effect.flatMap((exit) =>
         Effect.gen(function* () {

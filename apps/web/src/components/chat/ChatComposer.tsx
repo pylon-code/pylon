@@ -524,6 +524,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
   supportedRuntimeModes: ReadonlyArray<RuntimeMode>;
+  disabled: boolean;
   onToggleInteractionMode: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
@@ -548,6 +549,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
                   : "text-secondary-label hover:text-foreground",
               )}
               type="button"
+              disabled={props.disabled}
               onClick={props.onToggleInteractionMode}
               aria-label={interactionModeTooltip}
             />
@@ -574,6 +576,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
       <Tooltip>
         <Select
           value={props.runtimeMode}
+          disabled={props.disabled}
           onValueChange={(value) => props.onRuntimeModeChange(value!)}
         >
           <TooltipTrigger
@@ -1635,6 +1638,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [],
   );
   const contextCompactionConnected =
+    !isSendDisabled &&
     (activeThread?.session?.status === "ready" || activeThread?.session?.status === "running") &&
     !isConnecting &&
     environmentUnavailable === null;
@@ -1715,16 +1719,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [sessionHarnessRefinementUnknownScope, setSessionHarnessRefinementUnknownScope] = useState<
     string | null
   >(null);
-  const sessionHarnessRefinementAvailable = canRefineSessionHarness({
-    provider: activeSessionProviderStatus,
-    hasActiveThread: activeThreadId !== null,
-    runtimeMode: activeThread?.session?.runtimeMode ?? runtimeMode,
-    sessionStatus: activeThread?.session?.status,
-    isConnecting,
-    environmentAvailable: environmentUnavailable === null,
-    restored: activeThread?.session?.restored === true,
-    sessionStartedAt: activeThread?.session?.startedAt,
-  });
+  const sessionHarnessRefinementAvailable =
+    !isSendDisabled &&
+    canRefineSessionHarness({
+      provider: activeSessionProviderStatus,
+      hasActiveThread: activeThreadId !== null,
+      runtimeMode: activeThread?.session?.runtimeMode ?? runtimeMode,
+      sessionStatus: activeThread?.session?.status,
+      isConnecting,
+      environmentAvailable: environmentUnavailable === null,
+      restored: activeThread?.session?.restored === true,
+      sessionStartedAt: activeThread?.session?.startedAt,
+    });
   const harnessRefinementControlState = sessionHarnessRefinementControlState({
     lifecycle: sessionHarnessRefinementLifecycle,
     locallyPending: pendingSessionHarnessRefinement?.scopeKey === sessionHarnessRefinementScopeKey,
@@ -5094,6 +5100,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           interactionMode={interactionMode}
                           runtimeMode={resolvedRuntimeMode}
                           supportedRuntimeModes={composerProviderControls.supportedRuntimeModes}
+                          disabled={isSendDisabled}
                           onToggleInteractionMode={toggleInteractionMode}
                           onRuntimeModeChange={handleRuntimeModeChange}
                         />
@@ -5108,7 +5115,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                               data-testid="quick-question-trigger"
                               aria-label="Quick question"
                               className="shrink-0"
-                              onClick={() => setIsQuickQuestionOpen(true)}
+                              disabled={isSendDisabled}
+                              onClick={() => {
+                                if (!isSendDisabled) setIsQuickQuestionOpen(true);
+                              }}
                             />
                           }
                         >
@@ -5262,7 +5272,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         </div>
       </form>
       <QuickQuestionDialog
-        available={quickQuestionAvailable}
+        available={quickQuestionAvailable && !isSendDisabled}
         identity={quickQuestionIdentity}
         open={isQuickQuestionOpen}
         onOpenChange={setIsQuickQuestionOpen}

@@ -3,7 +3,6 @@ import {
   type ChatFileAttachment,
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
-  supportsServerProviderConversationRollback,
   type EnvironmentId,
   type MessageId,
   type ModelSelection,
@@ -38,6 +37,12 @@ import {
 import { deriveReportedTurnCosts } from "@t3tools/client-runtime/state/turn-costs";
 import { canAskSessionSideQuestion } from "@t3tools/client-runtime/state/session-side-question";
 import { wasBootstrapThreadDeleted } from "@t3tools/client-runtime/errors";
+import {
+  buildRollbackConfirmation,
+  deriveRollbackTargets,
+  isRollbackActive,
+  type RollbackTarget,
+} from "@t3tools/client-runtime/rollback";
 import { type CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import {
   changeRequestAutoSettles,
@@ -191,6 +196,7 @@ import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs, type PullRequestTabStatus } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
+import { RollbackStatusBanner } from "./RollbackStatusBanner";
 import {
   canMessageSessionAgent,
   deriveAgentPanelModel,
@@ -1454,6 +1460,9 @@ function ChatViewContent(props: ChatViewProps) {
   const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
     reportFailure: false,
   });
+  const recoverThreadRollback = useAtomCommand(threadEnvironment.recoverRollback, {
+    reportFailure: false,
+  });
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
   const closePreview = useAtomCommand(previewEnvironment.close, "preview close");
   const { environments } = useEnvironments();
@@ -1604,6 +1613,7 @@ function ChatViewContent(props: ChatViewProps) {
   >({});
   const [isConnecting, _setIsConnecting] = useState(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
+  const [rollbackRecoveryPending, setRollbackRecoveryPending] = useState(false);
   const [maximizedRightPanelThreadKey, setMaximizedRightPanelThreadKey] = useState<string | null>(
     null,
   );
@@ -3103,8 +3113,7 @@ function ChatViewContent(props: ChatViewProps) {
     attachDraftHeroComposerAnchorRef,
     captureDraftHeroComposerRect,
   ] = useDraftHeroLayoutTransition(isDraftHeroState);
-  const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
-    useTurnDiffSummaries(activeThread);
+  const { turnDiffSummaries } = useTurnDiffSummaries(activeThread);
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
     const byMessageId = new Map<MessageId, TurnDiffSummary>();
     for (const summary of turnDiffSummaries) {
@@ -3113,38 +3122,34 @@ function ChatViewContent(props: ChatViewProps) {
     }
     return byMessageId;
   }, [turnDiffSummaries]);
-  const revertTurnCountByUserMessageId = useMemo(() => {
-    const byUserMessageId = new Map<MessageId, number>();
-    for (let index = 0; index < timelineEntries.length; index += 1) {
-      const entry = timelineEntries[index];
-      if (!entry || entry.kind !== "message" || entry.message.role !== "user") {
-        continue;
-      }
-
-      for (let nextIndex = index + 1; nextIndex < timelineEntries.length; nextIndex += 1) {
-        const nextEntry = timelineEntries[nextIndex];
-        if (!nextEntry || nextEntry.kind !== "message") {
-          continue;
-        }
-        if (nextEntry.message.role === "user") {
-          break;
-        }
-        const summary = turnDiffSummaryByAssistantMessageId.get(nextEntry.message.id);
-        if (!summary) {
-          continue;
-        }
-        const turnCount =
-          summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId];
-        if (typeof turnCount !== "number") {
-          break;
-        }
-        byUserMessageId.set(entry.message.id, Math.max(0, turnCount - 1));
-        break;
-      }
-    }
-
-    return byUserMessageId;
-  }, [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId]);
+  const rollbackTargetsByUserMessageId = useMemo(
+    () =>
+      activeThread ? deriveRollbackTargets(activeThread) : new Map<MessageId, RollbackTarget>(),
+    [activeThread],
+  );
+  const revertTurnCountByUserMessageId = useMemo(
+    () =>
+      new Map(
+        [...rollbackTargetsByUserMessageId].map(([messageId, target]) => [
+          messageId,
+          target.targetTurnCount,
+        ]),
+      ),
+    [rollbackTargetsByUserMessageId],
+  );
+  const rollbackActive = isRollbackActive(activeThread?.rollbackStatus);
+  const rollbackTargetIdle =
+    activeThread?.session !== null &&
+    activeThread?.session !== undefined &&
+    (activeThread.session.status === "idle" || activeThread.session.status === "ready") &&
+    activeThread.session.activeTurnId === null &&
+    activeThread.session.pendingTurnRequestId === undefined &&
+    activeThread.session.activeTurnRequestId === undefined &&
+    activeThread.latestTurn?.state !== "running" &&
+    !rollbackActive &&
+    phase !== "running" &&
+    !isSendBusy &&
+    !isConnecting;
 
   const gitCwd = activeProject
     ? projectScriptCwd({
@@ -3867,7 +3872,7 @@ function ChatViewContent(props: ChatViewProps) {
 
   const handleRuntimeModeChange = useCallback(
     (mode: RuntimeMode) => {
-      if (mode === runtimeMode) return;
+      if (rollbackActive || mode === runtimeMode) return;
       setComposerDraftRuntimeMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { runtimeMode: mode });
@@ -3876,6 +3881,7 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [
       isLocalDraftThread,
+      rollbackActive,
       runtimeMode,
       scheduleComposerFocus,
       composerDraftTarget,
@@ -3886,7 +3892,7 @@ function ChatViewContent(props: ChatViewProps) {
 
   const handleInteractionModeChange = useCallback(
     (mode: ProviderInteractionMode) => {
-      if (mode === interactionMode) return;
+      if (rollbackActive || mode === interactionMode) return;
       setComposerDraftInteractionMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { interactionMode: mode });
@@ -3896,6 +3902,7 @@ function ChatViewContent(props: ChatViewProps) {
     [
       interactionMode,
       isLocalDraftThread,
+      rollbackActive,
       scheduleComposerFocus,
       composerDraftTarget,
       setComposerDraftInteractionMode,
@@ -5855,9 +5862,9 @@ function ChatViewContent(props: ChatViewProps) {
   ]);
 
   const onRevertToTurnCount = useCallback(
-    async (turnCount: number) => {
+    async (target: RollbackTarget) => {
       const localApi = readLocalApi();
-      if (!localApi || !activeThread || isRevertingCheckpoint) return;
+      if (!localApi || !activeThread || isRevertingCheckpoint || !rollbackTargetIdle) return;
 
       if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
         setThreadError(
@@ -5866,18 +5873,13 @@ function ChatViewContent(props: ChatViewProps) {
         );
         return;
       }
-      if (phase === "running" || isSendBusy || isConnecting) {
+      if (isSendBusy || isConnecting) {
         setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
         return;
       }
-      const confirmed = await localApi.dialogs.confirm(
-        [
-          `Revert this thread to checkpoint ${turnCount}?`,
-          "This will discard newer messages and turn diffs in this thread.",
-          "This action cannot be undone.",
-        ].join("\n"),
-        { variant: "destructive" },
-      );
+      const confirmed = await localApi.dialogs.confirm(buildRollbackConfirmation(target.label), {
+        variant: "destructive",
+      });
       if (!confirmed) {
         return;
       }
@@ -5888,7 +5890,8 @@ function ChatViewContent(props: ChatViewProps) {
         environmentId,
         input: {
           threadId: activeThread.id,
-          turnCount,
+          turnCount: target.targetTurnCount,
+          expectedSourceRevision: target.expectedSourceRevision,
         },
       });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -5910,8 +5913,30 @@ function ChatViewContent(props: ChatViewProps) {
       isSendBusy,
       phase,
       revertThreadCheckpoint,
+      rollbackTargetIdle,
       setThreadError,
     ],
+  );
+
+  const onRecoverRollback = useCallback(
+    async (action: "retry-verification" | "resume-compensation") => {
+      if (!activeThread || rollbackRecoveryPending) return;
+      setRollbackRecoveryPending(true);
+      setThreadError(activeThread.id, null);
+      const result = await recoverThreadRollback({
+        environmentId,
+        input: { threadId: activeThread.id, action },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Rollback recovery could not resume.",
+        );
+      }
+      setRollbackRecoveryPending(false);
+    },
+    [activeThread, environmentId, recoverThreadRollback, rollbackRecoveryPending, setThreadError],
   );
 
   const onSend = async (
@@ -5924,6 +5949,10 @@ function ChatViewContent(props: ChatViewProps) {
     delivery: "immediate" | "follow-up" = "immediate",
   ) => {
     e?.preventDefault();
+    if (rollbackActive && activeThread) {
+      setThreadError(activeThread.id, "This thread is fenced while Pylon verifies rollback state.");
+      return;
+    }
     const notifyDirectAnnotationAttached = () => {
       if (!directAnnotation) return;
       toastManager.add(
@@ -6558,6 +6587,7 @@ function ChatViewContent(props: ChatViewProps) {
                 titleSeed: title,
                 runtimeMode,
                 interactionMode,
+                sourceEpoch: activeThread.sourceEpoch ?? 0,
                 ...(bootstrap ? { bootstrap } : {}),
                 createdAt: messageCreatedAt,
               },
@@ -7011,7 +7041,7 @@ function ChatViewContent(props: ChatViewProps) {
   );
 
   const onClearSessionInputQueue = useCallback(async () => {
-    if (!activeThreadId) return;
+    if (!activeThreadId || rollbackActive) return;
     const result = await clearThreadSessionInputQueue({
       environmentId,
       input: { threadId: activeThreadId },
@@ -7027,11 +7057,11 @@ function ChatViewContent(props: ChatViewProps) {
       type: "success",
       title: "Pending session inputs cleared",
     });
-  }, [activeThreadId, clearThreadSessionInputQueue, environmentId, setThreadError]);
+  }, [activeThreadId, clearThreadSessionInputQueue, environmentId, rollbackActive, setThreadError]);
 
   const onRemoveOnlySessionInputQueueItem = useCallback(
     async (queue: "steering" | "follow-up") => {
-      if (!activeThreadId) return;
+      if (!activeThreadId || rollbackActive) return;
       const result = await removeOnlyThreadSessionInputQueueItem({
         environmentId,
         input: { threadId: activeThreadId, queue },
@@ -7048,12 +7078,18 @@ function ChatViewContent(props: ChatViewProps) {
         title: `Pending ${queue === "steering" ? "steering" : "follow-up"} input removed`,
       });
     },
-    [activeThreadId, environmentId, removeOnlyThreadSessionInputQueueItem, setThreadError],
+    [
+      activeThreadId,
+      environmentId,
+      removeOnlyThreadSessionInputQueueItem,
+      rollbackActive,
+      setThreadError,
+    ],
   );
 
   const onSetSessionInputQueueMode = useCallback(
     async (queue: "steering" | "follow-up", mode: "all-at-once" | "one-at-a-time") => {
-      if (!activeThreadId || !sessionProviderAdmissionAvailable) return;
+      if (!activeThreadId || rollbackActive || !sessionProviderAdmissionAvailable) return;
       const result = await setThreadSessionInputQueueMode({
         environmentId,
         input: { threadId: activeThreadId, queue, mode },
@@ -7073,6 +7109,7 @@ function ChatViewContent(props: ChatViewProps) {
     [
       activeThreadId,
       environmentId,
+      rollbackActive,
       sessionProviderAdmissionAvailable,
       setThreadError,
       setThreadSessionInputQueueMode,
@@ -7396,6 +7433,7 @@ function ChatViewContent(props: ChatViewProps) {
             titleSeed: activeThread.title,
             runtimeMode,
             interactionMode: nextInteractionMode,
+            sourceEpoch: activeThread.sourceEpoch ?? 0,
             ...(nextInteractionMode === "default" && activeProposedPlan
               ? {
                   sourceProposedPlan: {
@@ -7532,6 +7570,7 @@ function ChatViewContent(props: ChatViewProps) {
           titleSeed: nextThreadTitle,
           runtimeMode,
           interactionMode: "default",
+          sourceEpoch: 0,
           sourceProposedPlan: {
             threadId: activeThread.id,
             planId: activeProposedPlan.id,
@@ -7810,6 +7849,7 @@ function ChatViewContent(props: ChatViewProps) {
           titleSeed: nextThreadTitle,
           runtimeMode,
           interactionMode,
+          sourceEpoch: 0,
           createdAt,
         },
       });
@@ -7893,6 +7933,9 @@ function ChatViewContent(props: ChatViewProps) {
       if (!activeThread) {
         return null;
       }
+      if (rollbackActive) {
+        return "Provider changes are blocked while Pylon verifies rollback state.";
+      }
       const reason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
         hasStartedSession: activeThread.session !== null,
@@ -7902,7 +7945,7 @@ function ChatViewContent(props: ChatViewProps) {
       });
       return reason ? `${reason.description} Start a new thread to use this model.` : null;
     },
-    [activeThread, providerStatuses],
+    [activeThread, providerStatuses, rollbackActive],
   );
 
   const onProviderModelSelect = useCallback(
@@ -8051,16 +8094,14 @@ function ChatViewContent(props: ChatViewProps) {
   );
   // Both the Map and the revert handler are read from refs at call-time so
   // the callback reference is fully stable and never busts context identity.
-  const revertTurnCountRef = useRef(revertTurnCountByUserMessageId);
-  revertTurnCountRef.current = revertTurnCountByUserMessageId;
+  const rollbackTargetsRef = useRef(rollbackTargetsByUserMessageId);
+  rollbackTargetsRef.current = rollbackTargetsByUserMessageId;
   const onRevertToTurnCountRef = useRef(onRevertToTurnCount);
   onRevertToTurnCountRef.current = onRevertToTurnCount;
   const onRevertUserMessage = useCallback((messageId: MessageId) => {
-    const targetTurnCount = revertTurnCountRef.current.get(messageId);
-    if (typeof targetTurnCount !== "number") {
-      return;
-    }
-    void onRevertToTurnCountRef.current(targetTurnCount);
+    const target = rollbackTargetsRef.current.get(messageId);
+    if (!target) return;
+    void onRevertToTurnCountRef.current(target);
   }, []);
 
   // Empty state: no active thread
@@ -8331,6 +8372,11 @@ function ChatViewContent(props: ChatViewProps) {
                 status={visibleProviderStatus}
                 onDismiss={() => setDismissedProviderStatusBannerKey(providerStatusBannerKey)}
               />
+              <RollbackStatusBanner
+                status={activeThread.rollbackStatus}
+                recoveryPending={rollbackRecoveryPending}
+                onRecover={onRecoverRollback}
+              />
             </div>
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
@@ -8355,9 +8401,9 @@ function ChatViewContent(props: ChatViewProps) {
                 onOpenTurnDiff={onOpenTurnDiff}
                 revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
                 onRevertUserMessage={onRevertUserMessage}
-                supportsConversationRollback={supportsServerProviderConversationRollback(
-                  activeProviderStatus,
-                )}
+                supportsConversationRollback={
+                  rollbackTargetIdle && rollbackTargetsByUserMessageId.size > 0
+                }
                 onUseArtifactTemplate={useArtifactTemplate}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
@@ -8489,13 +8535,15 @@ function ChatViewContent(props: ChatViewProps) {
                             isConnecting={isConnecting}
                             isSendBusy={isSendBusy}
                             sendDisabledReason={
-                              feedbackUploading
-                                ? "Sending feedback"
-                                : threadDetailLoading
-                                  ? "Messages loading"
-                                  : activeSessionInteraction
-                                    ? "Resolve the session request to continue"
-                                    : providerAdmissionDisabledReason
+                              rollbackActive
+                                ? "Rollback verification in progress"
+                                : feedbackUploading
+                                  ? "Sending feedback"
+                                  : threadDetailLoading
+                                    ? "Messages loading"
+                                    : activeSessionInteraction
+                                      ? "Resolve the session request to continue"
+                                      : providerAdmissionDisabledReason
                             }
                             isPreparingWorktree={isPreparingWorktree}
                             bannerItems={composerBannerItems}
@@ -8603,7 +8651,7 @@ function ChatViewContent(props: ChatViewProps) {
                               <BranchToolbar
                                 environmentId={activeThread.environmentId}
                                 threadId={activeThread.id}
-                                showGitControls={isGitRepo}
+                                showGitControls={isGitRepo && !rollbackActive}
                                 {...(routeKind === "draft" && draftId ? { draftId } : {})}
                                 onEnvModeChange={onEnvModeChange}
                                 startFromOrigin={startFromOrigin}

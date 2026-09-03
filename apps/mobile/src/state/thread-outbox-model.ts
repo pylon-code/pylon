@@ -12,6 +12,7 @@ import {
   IsoDateTime,
   MessageId,
   ModelSelection,
+  NonNegativeInt,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
@@ -29,7 +30,7 @@ import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 
-const THREAD_OUTBOX_SCHEMA_VERSION = 6;
+const THREAD_OUTBOX_SCHEMA_VERSION = 7;
 const THREAD_OUTBOX_MAX_RETRY_DELAY_MS = 16_000;
 
 const QueuedThreadCreationSchema = Schema.Struct({
@@ -51,15 +52,18 @@ const ThreadOutboxDeliveryHoldSchema = Schema.Struct({
     "provider-binding-unresolved",
     "project-workspace-unavailable",
     "thread-missing",
+    "source-epoch-stale",
     "admission-rejected",
   ]),
   reason: Schema.String,
   boundInstanceId: Schema.optional(Schema.String),
   queuedInstanceId: Schema.optional(Schema.String),
+  queuedSourceEpoch: Schema.optional(NonNegativeInt),
+  currentSourceEpoch: Schema.optional(NonNegativeInt),
 });
 
 export const QueuedThreadMessageSchema = Schema.Struct({
-  schemaVersion: Schema.Literals([1, 2, 3, 4, 5, THREAD_OUTBOX_SCHEMA_VERSION]),
+  schemaVersion: Schema.Literals([1, 2, 3, 4, 5, 6, THREAD_OUTBOX_SCHEMA_VERSION]),
   environmentId: EnvironmentId,
   threadId: ThreadId,
   messageId: MessageId,
@@ -69,6 +73,7 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  sourceEpoch: Schema.optional(NonNegativeInt),
   deliveryHold: Schema.optional(ThreadOutboxDeliveryHoldSchema),
   // Present when the queued item creates a brand-new thread (pending task)
   // instead of appending a turn to an existing one.
@@ -99,10 +104,13 @@ export interface ThreadOutboxDeliveryHold {
     | "provider-binding-unresolved"
     | "project-workspace-unavailable"
     | "thread-missing"
+    | "source-epoch-stale"
     | "admission-rejected";
   readonly reason: string;
   readonly boundInstanceId?: string;
   readonly queuedInstanceId?: string;
+  readonly queuedSourceEpoch?: number;
+  readonly currentSourceEpoch?: number;
 }
 
 export interface QueuedThreadMessage {
@@ -115,6 +123,7 @@ export interface QueuedThreadMessage {
   readonly modelSelection?: ModelSelectionType;
   readonly runtimeMode?: RuntimeModeType;
   readonly interactionMode?: ProviderInteractionModeType;
+  readonly sourceEpoch?: number;
   readonly deliveryHold?: ThreadOutboxDeliveryHold;
   readonly creation?: QueuedThreadCreation;
   readonly destination?: QueuedThreadCreation;
@@ -125,6 +134,7 @@ export interface ThreadSettingsSnapshot {
   readonly modelSelection: ModelSelectionType;
   readonly runtimeMode: RuntimeModeType;
   readonly interactionMode: ProviderInteractionModeType;
+  readonly sourceEpoch?: number;
   readonly session?: {
     readonly providerInstanceId?: ModelSelectionType["instanceId"] | undefined;
   } | null;
@@ -317,6 +327,7 @@ export function retryQueuedThreadMessage(
     readonly modelSelection?: ModelSelectionType;
     readonly runtimeMode?: RuntimeModeType;
     readonly interactionMode?: ProviderInteractionModeType;
+    readonly sourceEpoch?: number;
   },
 ): QueuedThreadMessage {
   const { deliveryHold: _hold, ...retry } = message;
@@ -327,6 +338,7 @@ export function retryQueuedThreadMessage(
     ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
     ...(input.runtimeMode === undefined ? {} : { runtimeMode: input.runtimeMode }),
     ...(input.interactionMode === undefined ? {} : { interactionMode: input.interactionMode }),
+    ...(input.sourceEpoch === undefined ? {} : { sourceEpoch: input.sourceEpoch }),
   };
 }
 
@@ -464,6 +476,22 @@ export function resolveConfirmedThreadOutboxPlan(input: {
 }): ConfirmedThreadOutboxPlan {
   if (input.message.deliveryHold !== undefined) return { action: "wait" };
   const creation = input.message.creation;
+  if (creation === undefined && input.thread != null) {
+    const queuedSourceEpoch = input.message.sourceEpoch ?? 0;
+    const currentSourceEpoch = input.thread.sourceEpoch ?? 0;
+    if (queuedSourceEpoch !== currentSourceEpoch) {
+      return {
+        action: "hold",
+        hold: {
+          kind: "source-epoch-stale",
+          reason:
+            "This message was composed before the thread was rolled back. Review it and explicitly reconfirm before sending.",
+          queuedSourceEpoch,
+          currentSourceEpoch,
+        },
+      };
+    }
+  }
   if (creation === undefined && input.thread == null) {
     if (input.shellStatus !== "live") return { action: "wait" };
     return {
@@ -599,6 +627,36 @@ export function shouldRetryThreadOutboxDelivery(error: unknown): boolean {
     return true;
   }
   return isTransportConnectionErrorMessage(errorMessage(error));
+}
+
+export function sourceEpochMismatchHold(error: unknown): ThreadOutboxDeliveryHold | null {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("_tag" in error) ||
+    error._tag !== "OrchestrationDispatchCommandError" ||
+    !("reason" in error) ||
+    error.reason !== "source-epoch-mismatch"
+  ) {
+    return null;
+  }
+  return {
+    kind: "source-epoch-stale",
+    reason:
+      "This message was composed before the thread was rolled back. Review it and explicitly reconfirm before sending.",
+    ...(typeof (error as unknown as { expectedSourceEpoch?: unknown }).expectedSourceEpoch ===
+    "number"
+      ? {
+          queuedSourceEpoch: (error as unknown as { expectedSourceEpoch: number })
+            .expectedSourceEpoch,
+        }
+      : {}),
+    ...(typeof (error as unknown as { actualSourceEpoch?: unknown }).actualSourceEpoch === "number"
+      ? {
+          currentSourceEpoch: (error as unknown as { actualSourceEpoch: number }).actualSourceEpoch,
+        }
+      : {}),
+  };
 }
 
 export type ThreadOutboxCommandStage = "settings-sync" | "start-turn";

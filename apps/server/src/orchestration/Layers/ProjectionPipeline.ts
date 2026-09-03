@@ -646,6 +646,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId: null,
             rollbackStatus: null,
             rollbackUpdatedAt: null,
+            sourceEpoch: 0,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
             archivedAt: null,
@@ -1012,6 +1013,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId,
             rollbackStatus: null,
             rollbackUpdatedAt: event.occurredAt,
+            sourceEpoch: existingRow.value.sourceEpoch + 1,
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);

@@ -404,6 +404,13 @@ export type OrchestrationCheckpointFile = typeof OrchestrationCheckpointFile.Typ
 export const OrchestrationCheckpointStatus = Schema.Literals(["ready", "missing", "error"]);
 export type OrchestrationCheckpointStatus = typeof OrchestrationCheckpointStatus.Type;
 
+export const OrchestrationRollbackTargetAvailability = Schema.Struct({
+  state: Schema.Literals(["available", "unavailable"]),
+  reason: TrimmedNonEmptyString,
+});
+export type OrchestrationRollbackTargetAvailability =
+  typeof OrchestrationRollbackTargetAvailability.Type;
+
 export const OrchestrationCheckpointSummary = Schema.Struct({
   turnId: TurnId,
   checkpointTurnCount: NonNegativeInt,
@@ -412,6 +419,8 @@ export const OrchestrationCheckpointSummary = Schema.Struct({
   files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
+  /** Server-owned, target-specific proof. It never contains a provider-native anchor. */
+  rollbackAvailability: Schema.optional(OrchestrationRollbackTargetAvailability),
 });
 export type OrchestrationCheckpointSummary = typeof OrchestrationCheckpointSummary.Type;
 
@@ -589,13 +598,38 @@ export const OrchestrationRollbackPublicState = Schema.Literals([
   "pending",
   "recovering",
   "manual-recovery",
+  "completed",
+  "failed",
 ]);
 export type OrchestrationRollbackPublicState = typeof OrchestrationRollbackPublicState.Type;
+export const OrchestrationRollbackRecoveryAction = Schema.Literals([
+  "retry-verification",
+  "resume-compensation",
+]);
+export type OrchestrationRollbackRecoveryAction = typeof OrchestrationRollbackRecoveryAction.Type;
 export const OrchestrationRollbackStatus = Schema.Struct({
   state: OrchestrationRollbackPublicState,
   updatedAt: IsoDateTime,
+  targetTurnCount: Schema.optional(NonNegativeInt),
+  sourceRevision: Schema.optional(NonNegativeInt),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  allowedActions: Schema.optional(Schema.Array(OrchestrationRollbackRecoveryAction)),
 });
 export type OrchestrationRollbackStatus = typeof OrchestrationRollbackStatus.Type;
+
+export const OrchestrationRollbackRecoveryInput = Schema.Struct({
+  threadId: ThreadId,
+  action: OrchestrationRollbackRecoveryAction,
+});
+export type OrchestrationRollbackRecoveryInput = typeof OrchestrationRollbackRecoveryInput.Type;
+
+export class OrchestrationRollbackRecoveryError extends Schema.TaggedErrorClass<OrchestrationRollbackRecoveryError>()(
+  "OrchestrationRollbackRecoveryError",
+  {
+    reason: Schema.Literals(["not-found", "action-not-allowed", "operation-busy"]),
+    message: TrimmedNonEmptyString,
+  },
+) {}
 
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
@@ -611,6 +645,8 @@ export const OrchestrationThread = Schema.Struct({
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   rollbackStatus: Schema.optional(Schema.NullOr(OrchestrationRollbackStatus)),
+  /** Server-owned source generation; advances only after a committed rollback. */
+  sourceEpoch: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -699,6 +735,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   rollbackStatus: Schema.optional(Schema.NullOr(OrchestrationRollbackStatus)),
+  /** Server-owned source generation; advances only after a committed rollback. */
+  sourceEpoch: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -825,6 +863,12 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
    * snapshot or catch-up replay and before it begins emitting live events.
    */
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Explicitly opts into `thread.rollback-status-updated`, which was added to
+   * the closed event union after thread streaming shipped. Absent means the
+   * subscriber is a legacy client and those frames are filtered.
+   */
+  rollbackStatusEvents: Schema.optionalKey(Schema.Boolean),
   /**
    * When provided, the fallback snapshot frame (sent when `afterSequence` is
    * missing or the catch-up gap is too large) is windowed to the last
@@ -1094,6 +1138,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /** Source epoch observed by the client when it composed this turn. */
+  sourceEpoch: Schema.optional(NonNegativeInt),
   /** Server-observed durable time; absent on historical/frozen-client events. */
   admissionRequestedAt: Schema.optional(IsoDateTime),
   /** Absolute durable provider admission deadline. */
@@ -1117,6 +1163,8 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /** Source epoch observed by the client when it composed this turn. */
+  sourceEpoch: Schema.optional(NonNegativeInt),
   /** Server-observed durable time; absent on historical/frozen-client events. */
   admissionRequestedAt: Schema.optional(IsoDateTime),
   /** Absolute durable provider admission deadline. */
@@ -1344,6 +1392,7 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.optional(MessageId),
   checkpointTurnCount: NonNegativeInt,
+  rollbackAvailability: Schema.optional(OrchestrationRollbackTargetAvailability),
   createdAt: IsoDateTime,
 });
 
@@ -1371,6 +1420,10 @@ const ThreadRollbackStatusSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   status: Schema.NullOr(OrchestrationRollbackPublicState),
+  targetTurnCount: Schema.optional(NonNegativeInt),
+  sourceRevision: Schema.optional(NonNegativeInt),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  allowedActions: Schema.optional(Schema.Array(OrchestrationRollbackRecoveryAction)),
   createdAt: IsoDateTime,
 });
 
@@ -1641,6 +1694,8 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  /** Source epoch observed by the client when it composed this turn. */
+  sourceEpoch: Schema.optional(NonNegativeInt),
   /** Server-observed durable time; absent on historical/frozen-client events. */
   admissionRequestedAt: Schema.optional(IsoDateTime),
   /** Absolute durable provider admission deadline. */
@@ -1692,6 +1747,10 @@ export const ThreadCheckpointRevertRequestedPayload = Schema.Struct({
 export const ThreadRollbackStatusUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   status: Schema.NullOr(OrchestrationRollbackPublicState),
+  targetTurnCount: Schema.optional(NonNegativeInt),
+  sourceRevision: Schema.optional(NonNegativeInt),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  allowedActions: Schema.optional(Schema.Array(OrchestrationRollbackRecoveryAction)),
   updatedAt: IsoDateTime,
 });
 
@@ -1737,6 +1796,7 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
+  rollbackAvailability: Schema.optional(OrchestrationRollbackTargetAvailability),
 });
 
 export const ThreadActivityAppendedPayload = Schema.Struct({
@@ -2164,6 +2224,9 @@ export class OrchestrationDispatchCommandError extends Schema.TaggedErrorClass<O
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),
+    reason: Schema.optional(Schema.Literal("source-epoch-mismatch")),
+    expectedSourceEpoch: Schema.optional(NonNegativeInt),
+    actualSourceEpoch: Schema.optional(NonNegativeInt),
     bootstrapThreadDisposition: Schema.optional(Schema.Literal("deleted")),
   },
 ) {}

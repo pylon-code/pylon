@@ -900,6 +900,10 @@ describe("applyThreadDetailEvent", () => {
         payload: {
           threadId: ThreadId.make("thread-1"),
           status: "manual-recovery",
+          targetTurnCount: 1,
+          sourceRevision: 3,
+          detail: "The workspace could not be verified.",
+          allowedActions: ["resume-compensation"],
           updatedAt: "2026-04-01T03:30:00.000Z",
         },
       });
@@ -907,6 +911,10 @@ describe("applyThreadDetailEvent", () => {
       if (pending.kind === "updated") {
         expect(pending.thread.rollbackStatus).toEqual({
           state: "manual-recovery",
+          targetTurnCount: 1,
+          sourceRevision: 3,
+          detail: "The workspace could not be verified.",
+          allowedActions: ["resume-compensation"],
           updatedAt: "2026-04-01T03:30:00.000Z",
         });
       }
@@ -993,7 +1001,11 @@ describe("applyThreadDetailEvent", () => {
         // msg-3 (turn-2) is filtered, msg-1 (no turn) and msg-2 (turn-1) remain
         expect(result.thread.messages).toHaveLength(2);
         expect(result.thread.latestTurn?.turnId).toBe("turn-1");
-        expect(result.thread.rollbackStatus).toBeNull();
+        expect(result.thread.rollbackStatus).toEqual({
+          state: "recovering",
+          detail: "Rollback committed. Pylon is verifying cleanup before the thread is released.",
+          updatedAt: "2026-04-01T04:00:00.000Z",
+        });
       }
     });
   });

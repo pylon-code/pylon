@@ -11,6 +11,8 @@ import {
   type CodexArtifactTemplate,
 } from "@t3tools/client-runtime/codex-artifact-templates";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
+import { isRollbackActive, type RollbackTarget } from "@t3tools/client-runtime/rollback";
+import { getMobileRollbackStatusPresentation } from "./rollback-status-presentation";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { HeaderHeightContext } from "@react-navigation/elements";
@@ -20,6 +22,7 @@ import type {
   MessageId,
   ModelSelection,
   OrchestrationThreadShell,
+  OrchestrationRollbackStatus,
   ProviderApprovalDecision,
   ProviderAskSessionSideQuestionResult,
   ProviderInteractionMode,
@@ -47,6 +50,8 @@ import {
   AppState,
   Keyboard,
   Platform,
+  Pressable,
+  Text,
   useWindowDimensions,
   View,
   type GestureResponderEvent,
@@ -144,6 +149,14 @@ export interface ThreadDetailScreenProps {
   readonly threadSyncStatus?: EnvironmentThreadStatus;
   /** Non-null when older turns exist beyond the loaded window. */
   readonly loadEarlier?: { readonly loading: boolean; readonly onLoadEarlier: () => void } | null;
+  readonly rollbackStatus: OrchestrationRollbackStatus | null | undefined;
+  readonly rollbackTargets: ReadonlyMap<string, RollbackTarget>;
+  readonly rollbackTargetIdle: boolean;
+  readonly rollbackCommandPending: boolean;
+  readonly onRevertMessage: (target: RollbackTarget) => void;
+  readonly onRecoverRollback: (
+    action: "retry-verification" | "resume-compensation",
+  ) => Promise<void>;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectWorkspaceRoot: string | null;
@@ -286,6 +299,56 @@ const USER_INPUT_TOGGLE_TIMING = {
   duration: USER_INPUT_TOGGLE_DURATION_MS,
   easing: Easing.out(Easing.cubic),
 };
+
+function RollbackStatusSurface(props: {
+  readonly status: OrchestrationRollbackStatus | null | undefined;
+  readonly pending: boolean;
+  readonly onRecover: (action: "retry-verification" | "resume-compensation") => Promise<void>;
+}) {
+  if (!props.status) return null;
+  const presentation = getMobileRollbackStatusPresentation(props.status);
+  const { severe, title, actions } = presentation;
+  return (
+    <View
+      accessibilityRole={presentation.accessibilityRole}
+      accessibilityLiveRegion={presentation.accessibilityLiveRegion}
+      className={`mb-3 gap-2 rounded-2xl border px-3 py-2.5 ${
+        severe ? "border-red-500/50 bg-red-500/10" : "border-adaptive-neutral-300-700 bg-screen"
+      }`}
+    >
+      <Text className={`font-t3-semibold text-sm ${severe ? "text-red-500" : "text-foreground"}`}>
+        {title}
+      </Text>
+      <Text className="font-t3-regular text-xs text-foreground-muted">{presentation.detail}</Text>
+      {actions.length > 0 ? (
+        <View className="flex-row flex-wrap gap-2">
+          {actions.includes("retry-verification") ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Retry rollback verification"
+              disabled={props.pending}
+              onPress={() => void props.onRecover("retry-verification")}
+              className="min-h-11 justify-center rounded-xl border border-adaptive-neutral-300-700 px-3 disabled:opacity-50"
+            >
+              <Text className="font-t3-medium text-sm text-foreground">Retry verification</Text>
+            </Pressable>
+          ) : null}
+          {actions.includes("resume-compensation") ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Resume rollback compensation"
+              disabled={props.pending}
+              onPress={() => void props.onRecover("resume-compensation")}
+              className="min-h-11 justify-center rounded-xl border border-adaptive-neutral-300-700 px-3 disabled:opacity-50"
+            >
+              <Text className="font-t3-medium text-sm text-foreground">Resume compensation</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
 
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const insets = useSafeAreaInsets();
@@ -814,6 +877,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             onEndFollowEnabledChange={setEndFollowEnabled}
             skills={selectedProviderSkills}
             onUseArtifactTemplate={handleUseArtifactTemplate}
+            rollbackTargets={props.rollbackTargets}
+            rollbackTargetIdle={props.rollbackTargetIdle}
+            rollbackCommandPending={props.rollbackCommandPending}
+            onRevertMessage={props.onRevertMessage}
             loadEarlier={props.loadEarlier ?? null}
           />
         </View>
@@ -860,6 +927,31 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     />
                   </View>
                 ) : null}
+
+                <View className="px-4">
+                  <RollbackStatusSurface
+                    status={props.rollbackStatus}
+                    pending={props.rollbackCommandPending}
+                    onRecover={props.onRecoverRollback}
+                  />
+                  {props.localOutboxCount > 0 &&
+                  props.rollbackTargets.size > 0 &&
+                  !isRollbackActive(props.rollbackStatus) ? (
+                    <View
+                      accessibilityRole="summary"
+                      className="mb-3 rounded-xl border border-adaptive-neutral-300-700 bg-screen px-3 py-2"
+                    >
+                      <Text className="text-sm font-semibold text-foreground">
+                        Rollback paused for queued messages
+                      </Text>
+                      <Text className="mt-1 text-xs leading-5 text-foreground-muted">
+                        Send or cancel the queued{" "}
+                        {props.localOutboxCount === 1 ? "message" : "messages"} before starting
+                        rollback.
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
 
                 {props.activePendingApproval ||
                 props.activePendingUserInput ||
@@ -946,7 +1038,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   sessionInputBlocked={
                     props.activePendingApproval !== null ||
                     props.activePendingUserInput !== null ||
-                    props.activePendingInteraction !== null
+                    props.activePendingInteraction !== null ||
+                    props.rollbackStatus?.state === "pending" ||
+                    props.rollbackStatus?.state === "recovering" ||
+                    props.rollbackStatus?.state === "manual-recovery"
                   }
                   environmentId={props.environmentId}
                   projectCwd={props.projectWorkspaceRoot}

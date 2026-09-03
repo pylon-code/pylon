@@ -43,6 +43,15 @@ import { RollbackSagaRunner } from "../../rollback/RollbackSagaRunner.ts";
 import { RollbackWorkspace } from "../../rollback/RollbackWorkspace.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+const rollbackUnavailable = {
+  state: "unavailable" as const,
+  reason:
+    "Exact rollback requires an idle Pylon-managed native Prime session with a matching immutable checkpoint anchor.",
+};
+const rollbackAvailable = {
+  state: "available" as const,
+  reason: "Pylon verified an exact native provider anchor for this immutable checkpoint.",
+};
 
 type ReactorInput =
   | {
@@ -258,18 +267,18 @@ export const make = Effect.gen(function* () {
         Option.isNone(rollbackRepository) ||
         Option.isNone(rollbackWorkspace)
       )
-        return;
+        return rollbackUnavailable;
       const capabilities = yield* providerService
         .getCapabilities(session.value.providerInstanceId)
         .pipe(Effect.option);
       if (Option.isNone(capabilities) || capabilities.value.conversationRollback !== "absolute")
-        return;
+        return rollbackUnavailable;
       if (
         providerService.hasAbsoluteConversationRollback === undefined ||
         providerService.captureConversationAnchor === undefined ||
         !(yield* providerService.hasAbsoluteConversationRollback(input.threadId))
       )
-        return;
+        return rollbackUnavailable;
       const checkpoint = yield* rollbackWorkspace.value.resolveCheckpoint({
         cwd: input.cwd,
         checkpointRef: input.checkpointRef,
@@ -298,6 +307,7 @@ export const make = Effect.gen(function* () {
         anchorDigest: anchor.digest,
         capturedAt: input.capturedAt,
       });
+      return rollbackAvailable;
     },
   );
 
@@ -340,14 +350,21 @@ export const make = Effect.gen(function* () {
       cwd: input.cwd,
       checkpointRef: targetCheckpointRef,
     });
-    yield* capturePrivateCheckpointAnchor({
+    const rollbackAvailability = yield* capturePrivateCheckpointAnchor({
       threadId: input.threadId,
       cwd: input.cwd,
       checkpointTurnCount: input.turnCount,
       turnId: input.turnId,
       checkpointRef: targetCheckpointRef,
       capturedAt: input.createdAt,
-    });
+    }).pipe(
+      Effect.catch(() =>
+        Effect.logWarning("exact rollback anchor capture unavailable", {
+          threadId: input.threadId,
+          turnId: input.turnId,
+        }).pipe(Effect.as(rollbackUnavailable)),
+      ),
+    );
 
     // Refresh the workspace entry index so the @-mention file picker
     // reflects files created or deleted during this turn.
@@ -405,6 +422,7 @@ export const make = Effect.gen(function* () {
       files,
       ...(assistantMessageId === undefined ? {} : { assistantMessageId }),
       checkpointTurnCount: input.turnCount,
+      rollbackAvailability,
       createdAt: input.createdAt,
     });
     yield* receiptBus.publish({

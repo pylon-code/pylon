@@ -900,6 +900,11 @@ describe("OrchestrationEngine", () => {
         status: "ready",
         files: [],
         assistantMessageId: null,
+        rollbackAvailability: {
+          state: "unavailable",
+          reason:
+            "Exact rollback requires an idle Pylon-managed native Prime session with a matching immutable checkpoint anchor.",
+        },
         completedAt: createdAt,
       },
     ]);

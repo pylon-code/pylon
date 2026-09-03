@@ -17,9 +17,11 @@ import type {
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
+  CheckpointRef,
   CommandId,
   EnvironmentId,
   EventId,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionStartInput,
@@ -65,6 +67,8 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
+import { RollbackSagaRepositoryLive } from "../../persistence/Layers/RollbackSagas.ts";
+import { RollbackSagaRepository } from "../../persistence/Services/RollbackSagas.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   makeSqlitePersistenceLive,
@@ -536,6 +540,9 @@ function makeProviderServiceLayer() {
   const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
     Layer.provide(SqlitePersistenceMemory),
   );
+  const rollbackRepositoryLayer = RollbackSagaRepositoryLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
+  );
   const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
 
   const layer = it.layer(
@@ -545,6 +552,7 @@ function makeProviderServiceLayer() {
       }).pipe(
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
+        Layer.provide(rollbackRepositoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provide(serverConfigTestLayer),
         Layer.provideMerge(AnalyticsService.layerTest),
@@ -556,7 +564,7 @@ function makeProviderServiceLayer() {
         ),
       ),
       directoryLayer,
-
+      rollbackRepositoryLayer,
       runtimeRepositoryLayer,
       NodeServices.layer,
     ),
@@ -1282,6 +1290,68 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
       assert.equal(Math.max(...routing.startReservationCounts), 1);
       assert.equal(routing.startReservationCounts.at(-1), 0);
+    }),
+  );
+
+  it.effect("fences direct provider mutations while exact rollback is active", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const repository = yield* RollbackSagaRepository;
+      const threadId = asThreadId("thread-provider-rollback-fence");
+      const projectId = ProjectId.make("project-provider-rollback-fence");
+      const now = "2026-01-01T00:00:00.000Z";
+      yield* repository.admit({
+        operationId: "operation-provider-rollback-fence",
+        requestEventId: "request-provider-rollback-fence",
+        threadId,
+        projectId,
+        workspaceKey: "workspace-provider-rollback-fence",
+        workspaceCwd: "/tmp/project-provider-rollback-fence",
+        sourceRevision: 2,
+        targetRevision: 1,
+        sourceTurnId: null,
+        targetTurnId: null,
+        sourceCheckpointRef: CheckpointRef.make("checkpoint-source"),
+        sourceCheckpointOid: "2".repeat(40),
+        targetCheckpointRef: CheckpointRef.make("checkpoint-target"),
+        targetCheckpointOid: "1".repeat(40),
+        targetCheckpointDigest: "target-workspace",
+        providerInstanceId: codexInstanceId,
+        sessionIncarnationId: RuntimeSessionId.make("session-provider-rollback-fence"),
+        phase: "source-anchor-capture-started",
+        attempt: 0,
+        lastErrorCode: null,
+        compensation: "none",
+        cleanup: "pending",
+        sourceAnchor: null,
+        sourceAnchorDigest: null,
+        desiredAnchor: { leafId: "private-target" },
+        desiredAnchorDigest: "target-provider",
+        preimage: null,
+        workspaceReceiptDigest: null,
+        providerReceiptDigest: null,
+        projectionCommitSequence: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      routing.codex.messageSessionAgent.mockClear();
+      routing.codex.compactSession.mockClear();
+
+      const messageFailure = yield* Effect.flip(
+        provider.messageSessionAgent({
+          threadId,
+          agentId: RuntimeTaskId.make("agent-provider-rollback-fence"),
+          message: "Do not cross the rollback fence",
+        }),
+      );
+      const compactionFailure = yield* Effect.flip(provider.compactSession({ threadId }));
+
+      assert.instanceOf(messageFailure, ProviderValidationError);
+      assert.include(messageFailure.issue, "fenced by an active rollback operation");
+      assert.instanceOf(compactionFailure, ProviderValidationError);
+      assert.include(compactionFailure.issue, "fenced by an active rollback operation");
+      assert.equal(routing.codex.messageSessionAgent.mock.calls.length, 0);
+      assert.equal(routing.codex.compactSession.mock.calls.length, 0);
     }),
   );
 

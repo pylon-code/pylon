@@ -299,6 +299,7 @@ export function projectEvent(
             worktreePath: payload.worktreePath,
             continuedFromThreadId: payload.continuedFromThreadId ?? null,
             latestTurn: null,
+            sourceEpoch: 0,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
             archivedAt: null,
@@ -683,6 +684,9 @@ export function projectEvent(
             files: payload.files,
             assistantMessageId: payload.assistantMessageId,
             completedAt: payload.completedAt,
+            ...(payload.rollbackAvailability === undefined
+              ? {}
+              : { rollbackAvailability: payload.rollbackAvailability }),
           },
           event.type,
           "checkpoint",
@@ -742,7 +746,20 @@ export function projectEvent(
           rollbackStatus:
             event.payload.status === null
               ? null
-              : { state: event.payload.status, updatedAt: event.payload.updatedAt },
+              : {
+                  state: event.payload.status,
+                  updatedAt: event.payload.updatedAt,
+                  ...(event.payload.targetTurnCount === undefined
+                    ? {}
+                    : { targetTurnCount: event.payload.targetTurnCount }),
+                  ...(event.payload.sourceRevision === undefined
+                    ? {}
+                    : { sourceRevision: event.payload.sourceRevision }),
+                  ...(event.payload.detail === undefined ? {} : { detail: event.payload.detail }),
+                  ...(event.payload.allowedActions === undefined
+                    ? {}
+                    : { allowedActions: event.payload.allowedActions }),
+                },
           updatedAt: event.payload.updatedAt,
         }),
       });
@@ -792,7 +809,17 @@ export function projectEvent(
               proposedPlans,
               activities,
               latestTurn,
-              rollbackStatus: null,
+              sourceEpoch: (thread.sourceEpoch ?? 0) + 1,
+              rollbackStatus:
+                thread.rollbackStatus === null || thread.rollbackStatus === undefined
+                  ? null
+                  : {
+                      ...thread.rollbackStatus,
+                      state: "recovering",
+                      detail:
+                        "Rollback committed. Pylon is verifying cleanup before the thread is released.",
+                      updatedAt: event.occurredAt,
+                    },
               updatedAt: event.occurredAt,
             }),
           };

@@ -700,6 +700,7 @@ export function useThreadComposerState() {
       modelSelection,
       runtimeMode,
       interactionMode,
+      sourceEpoch: selectedThreadShell.sourceEpoch ?? 0,
       destination: {
         projectId: selectedThreadShell.projectId,
         ...(selectedThreadProject?.title === undefined
@@ -1330,6 +1331,7 @@ export function useThreadComposerState() {
       readonly modelSelection?: ModelSelection;
       readonly runtimeMode?: RuntimeMode;
       readonly interactionMode?: ProviderInteractionMode;
+      readonly sourceEpoch?: number;
     }) => {
       const metadata = makeQueuedMessageMetadata();
       return retryQueuedThreadMessage(queuedMessage, {
@@ -1396,7 +1398,31 @@ export function useThreadComposerState() {
           void recover({ draftKey: selectedThreadKey, startNewThread: false });
         },
       });
-      if (selectedCompatibleSelection !== null) {
+      if (hold.kind === "source-epoch-stale") {
+        actions.push({
+          text: "Review and reconfirm",
+          onPress: () => {
+            void updateThreadOutboxMessageIfCurrent(
+              queuedMessage,
+              freshRetry({ sourceEpoch: selectedThreadShell?.sourceEpoch ?? 0 }),
+            )
+              .then((updated) => {
+                if (!updated) {
+                  Alert.alert(
+                    "Pending send changed",
+                    "A newer queued copy was kept. Open Manage again to review it.",
+                  );
+                }
+              })
+              .catch((error: unknown) => {
+                Alert.alert(
+                  "Could not reconfirm pending send",
+                  error instanceof Error ? error.message : "The original hold was kept.",
+                );
+              });
+          },
+        });
+      } else if (selectedCompatibleSelection !== null) {
         const selectedProviderName =
           selectedThreadServerConfig?.providers.find(
             (provider) => provider.instanceId === selectedCompatibleSelection.instanceId,

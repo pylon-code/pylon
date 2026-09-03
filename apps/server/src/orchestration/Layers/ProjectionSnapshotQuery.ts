@@ -83,6 +83,15 @@ const THREAD_DETAIL_ACTIVITY_LIMIT = 500;
 // Snapshot payloads are decoded and projected in small sequential batches so
 // one client read does not retain the raw payloads for the full activity window.
 const THREAD_DETAIL_ACTIVITY_PAYLOAD_BATCH_SIZE = 25;
+const EXACT_ROLLBACK_AVAILABLE = {
+  state: "available" as const,
+  reason: "Pylon verified an exact native provider anchor for this immutable checkpoint.",
+};
+const EXACT_ROLLBACK_UNAVAILABLE = {
+  state: "unavailable" as const,
+  reason:
+    "Exact rollback requires an idle Pylon-managed native Prime session with a matching immutable checkpoint anchor.",
+};
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
@@ -128,6 +137,7 @@ const ProjectionThreadActivityIdRowSchema = Schema.Struct({
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
+    rollbackAvailable: Schema.Number,
   }),
 );
 const ProjectionLatestTurnDbRowSchema = Schema.Struct({
@@ -212,6 +222,16 @@ const ProjectionThreadCheckpointContextThreadRowSchema = Schema.Struct({
   projectId: ProjectId,
   workspaceRoot: Schema.String,
   worktreePath: Schema.NullOr(Schema.String),
+});
+const RollbackPublicDbRowSchema = Schema.Struct({
+  targetRevision: NonNegativeInt,
+  sourceRevision: NonNegativeInt,
+  phase: Schema.String,
+  terminal: Schema.Number,
+  lastErrorCode: Schema.NullOr(Schema.String),
+  compensation: Schema.String,
+  projectionCommitSequence: Schema.NullOr(NonNegativeInt),
+  updatedAt: Schema.String,
 });
 const FullThreadDiffContextLookupInput = Schema.Struct({
   threadId: ThreadId,
@@ -378,6 +398,76 @@ function mapSessionRow(
   };
 }
 
+function rollbackDetail(state: string, lastErrorCode: string | null): string {
+  if (state === "pending") {
+    return "Rewriting the provider conversation, Pylon history, and workspace to the selected message.";
+  }
+  if (state === "recovering") {
+    return "Verifying the provider conversation, Pylon history, and workspace before releasing the thread.";
+  }
+  if (state === "completed") {
+    return "Rollback completed and all rewritten state was verified.";
+  }
+  if (state === "failed") {
+    return "Rollback did not complete. Pylon restored and verified the original provider conversation and workspace; no thread content was removed.";
+  }
+  return `The thread remains fenced because automatic rollback recovery could not be proved (${lastErrorCode ?? "verification unavailable"}).`;
+}
+
+function mapRollbackStatus(
+  status: string | null,
+  updatedAt: string | null,
+  saga: Schema.Schema.Type<typeof RollbackPublicDbRowSchema> | null,
+) {
+  const sagaStatus =
+    saga === null
+      ? null
+      : saga.phase === "complete" && saga.terminal === 1
+        ? "completed"
+        : saga.phase === "compensated" && saga.terminal === 1
+          ? "failed"
+          : saga.phase === "manual-recovery"
+            ? "manual-recovery"
+            : saga.phase === "projection-committed" ||
+                saga.phase === "cleanup-started" ||
+                saga.phase === "complete" ||
+                saga.phase === "compensated" ||
+                saga.phase.startsWith("compensation-")
+              ? "recovering"
+              : "pending";
+  const shouldPreferSaga =
+    sagaStatus !== null &&
+    (status === null ||
+      status === "completed" ||
+      status === "failed" ||
+      sagaStatus === "completed" ||
+      sagaStatus === "failed" ||
+      sagaStatus === "manual-recovery");
+  const effectiveStatus = shouldPreferSaga ? sagaStatus : status;
+  const effectiveUpdatedAt = shouldPreferSaga ? saga?.updatedAt : updatedAt;
+  if (effectiveStatus === null || effectiveUpdatedAt == null) return null;
+  const actions =
+    effectiveStatus !== "manual-recovery" || saga === null
+      ? []
+      : saga.projectionCommitSequence !== null
+        ? (["retry-verification"] as const)
+        : saga.compensation === "manual"
+          ? (["resume-compensation"] as const)
+          : [];
+  return {
+    state: effectiveStatus as "pending" | "recovering" | "manual-recovery" | "completed" | "failed",
+    updatedAt: effectiveUpdatedAt,
+    ...(saga === null
+      ? {}
+      : {
+          targetTurnCount: saga.targetRevision,
+          sourceRevision: saga.sourceRevision,
+        }),
+    detail: rollbackDetail(effectiveStatus, saga?.lastErrorCode ?? null),
+    allowedActions: [...actions],
+  };
+}
+
 function mapProjectShellRow(
   row: Schema.Schema.Type<typeof ProjectionProjectDbRowSchema>,
   repositoryIdentity: OrchestrationProject["repositoryIdentity"],
@@ -509,6 +599,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -550,6 +641,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -593,6 +685,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -840,7 +933,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpoint_status AS "status",
           checkpoint_files_json AS "files",
           assistant_message_id AS "assistantMessageId",
-          completed_at AS "completedAt"
+          completed_at AS "completedAt",
+          EXISTS (
+            SELECT 1
+            FROM rollback_checkpoint_anchors AS rollback_anchor
+            INNER JOIN projection_thread_sessions AS rollback_session
+              ON rollback_session.thread_id = projection_turns.thread_id
+            WHERE rollback_anchor.thread_id = projection_turns.thread_id
+              AND rollback_anchor.checkpoint_turn_count = projection_turns.checkpoint_turn_count
+              AND rollback_anchor.provider_instance_id = rollback_session.provider_instance_id
+              AND rollback_anchor.session_incarnation_id = rollback_session.session_incarnation_id
+          ) AS "rollbackAvailable"
         FROM projection_turns
         WHERE checkpoint_turn_count IS NOT NULL
         ORDER BY thread_id ASC, checkpoint_turn_count ASC
@@ -1115,6 +1218,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           archived_at AS "archivedAt",
@@ -1137,6 +1241,27 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE thread_id = ${threadId}
           AND deleted_at IS NULL
           AND archived_at IS NULL
+        LIMIT 1
+      `,
+  });
+
+  const getLatestRollbackPublicRowByThread = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: RollbackPublicDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          json_extract(private_state_json, '$.targetRevision') AS "targetRevision",
+          json_extract(private_state_json, '$.sourceRevision') AS "sourceRevision",
+          phase,
+          terminal,
+          json_extract(private_state_json, '$.lastErrorCode') AS "lastErrorCode",
+          json_extract(private_state_json, '$.compensation') AS "compensation",
+          json_extract(private_state_json, '$.projectionCommitSequence') AS "projectionCommitSequence",
+          updated_at AS "updatedAt"
+        FROM rollback_sagas
+        WHERE thread_id = ${threadId}
+        ORDER BY created_at DESC, operation_id DESC
         LIMIT 1
       `,
   });
@@ -1379,7 +1504,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpoint_status AS "status",
           checkpoint_files_json AS "files",
           assistant_message_id AS "assistantMessageId",
-          completed_at AS "completedAt"
+          completed_at AS "completedAt",
+          EXISTS (
+            SELECT 1
+            FROM rollback_checkpoint_anchors AS rollback_anchor
+            INNER JOIN projection_thread_sessions AS rollback_session
+              ON rollback_session.thread_id = projection_turns.thread_id
+            WHERE rollback_anchor.thread_id = projection_turns.thread_id
+              AND rollback_anchor.checkpoint_turn_count = projection_turns.checkpoint_turn_count
+              AND rollback_anchor.provider_instance_id = rollback_session.provider_instance_id
+              AND rollback_anchor.session_incarnation_id = rollback_session.session_incarnation_id
+          ) AS "rollbackAvailable"
         FROM projection_turns
         WHERE thread_id = ${threadId}
           AND checkpoint_turn_count IS NOT NULL
@@ -1963,6 +2098,10 @@ pending_approval_requests AS (
                   files: row.files,
                   assistantMessageId: row.assistantMessageId,
                   completedAt: row.completedAt,
+                  rollbackAvailability:
+                    row.rollbackAvailable === 1
+                      ? EXACT_ROLLBACK_AVAILABLE
+                      : EXACT_ROLLBACK_UNAVAILABLE,
                 });
                 checkpointsByThread.set(row.threadId, threadCheckpoints);
               }
@@ -2093,6 +2232,7 @@ pending_approval_requests AS (
                   row.rollbackStatus == null || row.rollbackUpdatedAt == null
                     ? null
                     : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                sourceEpoch: row.sourceEpoch,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
                 archivedAt: row.archivedAt,
@@ -2309,6 +2449,7 @@ pending_approval_requests AS (
                     row.rollbackStatus == null || row.rollbackUpdatedAt == null
                       ? null
                       : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                  sourceEpoch: row.sourceEpoch,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   archivedAt: row.archivedAt,
@@ -2454,6 +2595,7 @@ pending_approval_requests AS (
                         row.rollbackStatus == null || row.rollbackUpdatedAt == null
                           ? null
                           : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                      sourceEpoch: row.sourceEpoch,
                       createdAt: row.createdAt,
                       updatedAt: row.updatedAt,
                       archivedAt: row.archivedAt,
@@ -2608,6 +2750,7 @@ pending_approval_requests AS (
                     row.rollbackStatus == null || row.rollbackUpdatedAt == null
                       ? null
                       : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                  sourceEpoch: row.sourceEpoch,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   archivedAt: row.archivedAt,
@@ -2823,6 +2966,8 @@ pending_approval_requests AS (
             files: row.files,
             assistantMessageId: row.assistantMessageId,
             completedAt: row.completedAt,
+            rollbackAvailability:
+              row.rollbackAvailable === 1 ? EXACT_ROLLBACK_AVAILABLE : EXACT_ROLLBACK_UNAVAILABLE,
           }),
         ),
       });
@@ -2910,6 +3055,7 @@ pending_approval_requests AS (
                 state: threadRow.value.rollbackStatus,
                 updatedAt: threadRow.value.rollbackUpdatedAt,
               },
+        sourceEpoch: threadRow.value.sourceEpoch,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
         archivedAt: threadRow.value.archivedAt,
@@ -3077,6 +3223,7 @@ pending_approval_requests AS (
         checkpointRows,
         latestTurnRow,
         sessionRow,
+        latestRollbackRow,
       ] = yield* Effect.all([
         getActiveThreadRowById({ threadId }).pipe(
           Effect.mapError(
@@ -3130,6 +3277,14 @@ pending_approval_requests AS (
             ),
           ),
         ),
+        getLatestRollbackPublicRowByThread({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadDetailById:getRollback:query",
+              "ProjectionSnapshotQuery.getThreadDetailById:getRollback:decodeRow",
+            ),
+          ),
+        ),
       ]);
 
       if (Option.isNone(threadRow)) {
@@ -3149,13 +3304,12 @@ pending_approval_requests AS (
           ? {}
           : { linkedPullRequest: threadRow.value.linkedPullRequest }),
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
-        rollbackStatus:
-          threadRow.value.rollbackStatus == null || threadRow.value.rollbackUpdatedAt == null
-            ? null
-            : {
-                state: threadRow.value.rollbackStatus,
-                updatedAt: threadRow.value.rollbackUpdatedAt,
-              },
+        rollbackStatus: mapRollbackStatus(
+          threadRow.value.rollbackStatus ?? null,
+          threadRow.value.rollbackUpdatedAt ?? null,
+          Option.getOrNull(latestRollbackRow),
+        ),
+        sourceEpoch: threadRow.value.sourceEpoch,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
         archivedAt: threadRow.value.archivedAt,
@@ -3194,6 +3348,8 @@ pending_approval_requests AS (
           files: row.files,
           assistantMessageId: row.assistantMessageId,
           completedAt: row.completedAt,
+          rollbackAvailability:
+            row.rollbackAvailable === 1 ? EXACT_ROLLBACK_AVAILABLE : EXACT_ROLLBACK_UNAVAILABLE,
         })),
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
       };

@@ -84,6 +84,7 @@ export type ThreadGitMenuProps = {
   readonly currentBranch: string | null;
   readonly gitStatus: VcsStatusResult | null;
   readonly gitOperationLabel: string | null;
+  readonly mutationBlocked?: boolean;
   readonly onOpenFilesInspector?: () => void;
   readonly onOpenGitInspector?: () => void;
   readonly onPull: () => Promise<void>;
@@ -113,7 +114,8 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
   const { gitStatus, gitOperationLabel, onPull, onRunAction } = props;
 
   const currentBranchLabel = gitStatus?.refName ?? props.currentBranch ?? "Detached HEAD";
-  const busy = gitOperationLabel !== null;
+  const mutationBlocked = props.mutationBlocked === true;
+  const busy = gitOperationLabel !== null || mutationBlocked;
   const isRepo = gitStatus?.isRepo ?? true;
   const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
   const isDefaultRef = gitStatus?.isDefaultRef ?? false;
@@ -216,13 +218,15 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
   }, [environmentId, props.onOpenFilesInspector, navigation, threadId]);
 
   const openReview = useCallback(() => {
+    if (mutationBlocked) return;
     navigation.navigate("ThreadReview", {
       environmentId: EnvironmentId.make(String(environmentId)),
       threadId: ThreadId.make(String(threadId)),
     });
-  }, [environmentId, navigation, threadId]);
+  }, [environmentId, mutationBlocked, navigation, threadId]);
 
   const openGitInspector = useCallback(() => {
+    if (mutationBlocked) return;
     if (props.onOpenGitInspector) {
       props.onOpenGitInspector();
       return;
@@ -231,10 +235,11 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
       environmentId: String(environmentId),
       threadId: String(threadId),
     });
-  }, [environmentId, props.onOpenGitInspector, navigation, threadId]);
+  }, [environmentId, mutationBlocked, props.onOpenGitInspector, navigation, threadId]);
 
   return {
     currentBranchLabel,
+    mutationBlocked,
     isRepo,
     openFiles,
     openGitInspector,
@@ -346,7 +351,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
             },
             {
               description: "Turn diffs and worktree changes",
-              disabled: !model.isRepo,
+              disabled: !model.isRepo || model.mutationBlocked,
               icon: { name: "text.bubble", type: "sfSymbol" },
               label: "Review changes",
               onPress: model.openReview,
@@ -354,6 +359,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
             },
             {
               description: "Commit, files, branches",
+              disabled: model.mutationBlocked,
               icon: { name: "ellipsis", type: "sfSymbol" },
               label: "More",
               onPress: model.openGitInspector,
@@ -373,6 +379,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       model.openFiles,
       model.openGitInspector,
       model.openReview,
+      model.mutationBlocked,
       model.quickAction.disabled,
       model.quickAction.label,
       model.quickActionHint,
@@ -524,7 +531,7 @@ export function ThreadGitMenu(props: ThreadGitMenuProps) {
       </NativeHeaderToolbar.MenuAction>
       <NativeHeaderToolbar.MenuAction
         icon="text.bubble"
-        disabled={!model.isRepo}
+        disabled={!model.isRepo || model.mutationBlocked}
         onPress={model.openReview}
         subtitle="Turn diffs and worktree changes"
       >
@@ -532,6 +539,7 @@ export function ThreadGitMenu(props: ThreadGitMenuProps) {
       </NativeHeaderToolbar.MenuAction>
       <NativeHeaderToolbar.MenuAction
         icon="ellipsis"
+        disabled={model.mutationBlocked}
         onPress={model.openGitInspector}
         subtitle="Commit, files, branches"
       >

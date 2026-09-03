@@ -123,6 +123,8 @@ const makeEnvironment = (
   };
 
   const repository: RollbackSagaRepositoryShape = {
+    withMutationFence: (effect) => effect,
+    withProviderMutationFence: (_providerInstanceIds, effect) => effect,
     admit: () => Effect.void,
     get: (id) => Effect.succeed(id === operationId ? Option.some(record) : Option.none()),
     getByRequestEvent: (eventId) =>
@@ -403,6 +405,13 @@ it.effect("commits last, clears private state, and never publishes private canar
       (command) => command.type === "thread.revert.complete",
     );
     assert.isAtLeast(completeIndex, 0);
+    const terminalStatus = snapshot.commands.findLast(
+      (command) => command.type === "thread.rollback.status.set",
+    );
+    assert.equal(terminalStatus?.status, "completed");
+    assert.equal(terminalStatus?.targetTurnCount, 1);
+    assert.equal(terminalStatus?.sourceRevision, 2);
+    assert.deepEqual(terminalStatus?.allowedActions, []);
     assert.isTrue(
       snapshot.runtimeReceipts.some(
         (receipt) => receipt.type === "rollback.saga.phase" && receipt.phase === "complete",
@@ -494,6 +503,12 @@ it.effect("compensates workspace and provider when the provider stays at source"
     assert.equal(snapshot.providerDigest, "provider-source");
     assert.equal(snapshot.projectionCommits, 0);
     assert.isFalse(snapshot.lease);
+    assert.isFalse(snapshot.commands.some((command) => command.type === "thread.revert.complete"));
+    const status = snapshot.commands.findLast(
+      (command) => command.type === "thread.rollback.status.set",
+    );
+    assert.equal(status?.status, "failed");
+    assert.include(status?.detail ?? "", "no thread content was removed");
   }),
 );
 
@@ -514,7 +529,9 @@ it.effect(
       assert.isTrue(
         snapshot.commands.some(
           (command) =>
-            command.type === "thread.rollback.status.set" && command.status === "manual-recovery",
+            command.type === "thread.rollback.status.set" &&
+            command.status === "manual-recovery" &&
+            command.allowedActions?.includes("resume-compensation"),
         ),
       );
 
@@ -525,6 +542,98 @@ it.effect(
         .commands.filter((command) => command.type === "thread.rollback.status.set");
       assert.equal(statusCommands.at(-1)?.status, "manual-recovery");
     }),
+);
+
+it.effect("resumes server-authorized compensation and reports a safe durable failure", () =>
+  Effect.gen(function* () {
+    const operationId = "operation-manual-resume-compensation";
+    const environment = makeEnvironment(operationId, "wrong-target");
+    const runner = yield* environment.makeRunner();
+    yield* runner.run(operationId, false);
+    assert.equal(environment.snapshot().record.state.phase, "manual-recovery");
+
+    yield* runner.recover({ threadId, action: "resume-compensation" });
+    const snapshot = environment.snapshot();
+    assert.equal(snapshot.record.state.phase, "compensated");
+    assert.isTrue(snapshot.record.terminal);
+    assert.isFalse(snapshot.lease);
+    assert.equal(snapshot.workspaceDigest, "workspace-source");
+    assert.equal(snapshot.providerDigest, "provider-source");
+    assert.isFalse(snapshot.commands.some((command) => command.type === "thread.revert.complete"));
+    const status = snapshot.commands.findLast(
+      (command) => command.type === "thread.rollback.status.set",
+    );
+    assert.equal(status?.status, "failed");
+    assert.deepEqual(status?.allowedActions, []);
+  }),
+);
+
+it.effect("retries post-commit verification without committing projection twice", () =>
+  Effect.gen(function* () {
+    const operationId = "operation-manual-retry-verification";
+    const environment = makeEnvironment(operationId);
+    const interrupted = yield* environment.makeRunner("persisted:projection-committed");
+    yield* runInterrupted(interrupted, operationId);
+    environment.setProviderDigest("provider-source");
+    environment.setProviderMode("stayed-source");
+    yield* environment.repository.clearOwnersForStartup();
+    const recovering = yield* environment.makeRunner();
+    yield* recovering.run(operationId, true);
+    const manual = environment.snapshot();
+    assert.equal(manual.record.state.phase, "manual-recovery");
+    const manualStatus = manual.commands.findLast(
+      (command) => command.type === "thread.rollback.status.set",
+    );
+    assert.deepEqual(manualStatus?.allowedActions, ["retry-verification"]);
+
+    environment.setProviderMode("success");
+    yield* recovering.recover({ threadId, action: "retry-verification" });
+    const complete = environment.snapshot();
+    assert.equal(complete.record.state.phase, "complete");
+    assert.isTrue(complete.record.terminal);
+    assert.equal(complete.projectionCommits, 1);
+    assert.equal(complete.providerDigest, "provider-target");
+    assert.equal(
+      complete.commands.findLast((command) => command.type === "thread.rollback.status.set")
+        ?.status,
+      "completed",
+    );
+  }),
+);
+
+it.effect("rejects recovery actions that the durable phase does not authorize", () =>
+  Effect.gen(function* () {
+    const environment = makeEnvironment("operation-action-not-allowed");
+    const runner = yield* environment.makeRunner();
+    const error = yield* runner.recover({ threadId, action: "retry-verification" }).pipe(
+      Effect.match({
+        onFailure: (failure) => failure,
+        onSuccess: () => null,
+      }),
+    );
+    assert.equal(error?.reason, "action-not-allowed");
+    assert.equal(environment.snapshot().record.state.phase, "source-anchor-capture-started");
+  }),
+);
+
+it.effect("lets only one client claim a permitted recovery action", () =>
+  Effect.gen(function* () {
+    const operationId = "operation-recovery-busy";
+    const environment = makeEnvironment(operationId, "wrong-target");
+    const runner = yield* environment.makeRunner();
+    yield* runner.run(operationId, false);
+    const claimed = yield* environment.repository.claim(operationId, "other-client");
+    assert.equal(claimed._tag, "Some");
+
+    const error = yield* runner.recover({ threadId, action: "resume-compensation" }).pipe(
+      Effect.match({
+        onFailure: (failure) => failure,
+        onSuccess: () => null,
+      }),
+    );
+    assert.equal(error?.reason, "operation-busy");
+    assert.equal(environment.snapshot().record.state.phase, "manual-recovery");
+  }),
 );
 
 it.effect("releases only the worker owner and retries post-commit cleanup idempotently", () =>

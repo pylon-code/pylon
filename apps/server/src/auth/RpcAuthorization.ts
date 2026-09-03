@@ -50,6 +50,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.providerAbortSessionCompaction]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerSetSessionAutoCompaction]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerRefineSessionHarness]: AuthOrchestrationOperateScope,
+  [WS_METHODS.rollbackRecover]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverUpdateProvider]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverGetPrimeManagedMaintenance]: AuthOrchestrationReadScope,
   [WS_METHODS.serverRunPrimeManagedMaintenance]: AuthOrchestrationOperateScope,

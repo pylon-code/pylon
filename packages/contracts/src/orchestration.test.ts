@@ -9,6 +9,8 @@ import {
   ClientOrchestrationCommand,
   ModelSelection,
   OrchestrationCommand,
+  OrchestrationCheckpointSummary,
+  OrchestrationRollbackStatus,
   OrchestrationDispatchCommandError,
   OrchestrationEvent,
   OrchestrationGetFullThreadDiffInput,
@@ -51,6 +53,10 @@ const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(Orchestration
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
 const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
 const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
+const decodeOrchestrationCheckpointSummary = Schema.decodeUnknownEffect(
+  OrchestrationCheckpointSummary,
+);
+const decodeOrchestrationRollbackStatus = Schema.decodeUnknownEffect(OrchestrationRollbackStatus);
 const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
 
 function getOptionValue(
@@ -1112,3 +1118,62 @@ it("isProviderSendTurnSupportedImageMimeType accepts raster formats and rejects 
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("IMAGE/JPEG"), true);
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("image/svg+xml"), false);
 });
+
+it.effect("rollback public contracts retain exact UX state without native provider anchors", () =>
+  Effect.gen(function* () {
+    const checkpoint = yield* decodeOrchestrationCheckpointSummary({
+      turnId: "turn-1",
+      checkpointTurnCount: 1,
+      checkpointRef: "checkpoint-1",
+      status: "ready",
+      files: [],
+      assistantMessageId: "assistant-1",
+      completedAt: "2026-04-01T00:00:00.000Z",
+      rollbackAvailability: {
+        state: "available",
+        reason: "Pylon verified an exact target.",
+        leafId: "PRIVATE_LEAF_CANARY",
+      },
+      nativeSessionId: "PRIVATE_SESSION_CANARY",
+      anchor: { leafId: "PRIVATE_ANCHOR_CANARY" },
+    });
+    assert.deepStrictEqual(checkpoint.rollbackAvailability, {
+      state: "available",
+      reason: "Pylon verified an exact target.",
+    });
+    assert.strictEqual(Object.hasOwn(checkpoint.rollbackAvailability ?? {}, "leafId"), false);
+    assert.strictEqual("nativeSessionId" in checkpoint, false);
+    assert.strictEqual("anchor" in checkpoint, false);
+
+    const status = yield* decodeOrchestrationRollbackStatus({
+      state: "manual-recovery",
+      targetTurnCount: 1,
+      sourceRevision: 3,
+      detail: "The target could not be verified.",
+      allowedActions: ["retry-verification"],
+      updatedAt: "2026-04-01T00:00:01.000Z",
+    });
+    assert.deepStrictEqual(status, {
+      state: "manual-recovery",
+      targetTurnCount: 1,
+      sourceRevision: 3,
+      detail: "The target could not be verified.",
+      allowedActions: ["retry-verification"],
+      updatedAt: "2026-04-01T00:00:01.000Z",
+    });
+  }),
+);
+
+it.effect("rollback public contracts reject client-invented recovery actions", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeOrchestrationRollbackStatus({
+        state: "manual-recovery",
+        detail: "Recovery is required.",
+        allowedActions: ["mark-complete"],
+        updatedAt: "2026-04-01T00:00:01.000Z",
+      }),
+    );
+    assert.strictEqual(result._tag, "Failure");
+  }),
+);
