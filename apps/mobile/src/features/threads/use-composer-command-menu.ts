@@ -2,6 +2,7 @@ import {
   dedupeProviderSkillsByName,
   getProviderSkillsForSlashMenu,
   getProviderSlashCommandsForSlashMenu,
+  isProviderSkillUserInvocable,
 } from "@t3tools/client-runtime/providerSkills";
 import type { ComposerPathSearchEntry } from "@t3tools/client-runtime/state/threads";
 import {
@@ -29,7 +30,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
-import { useComposerPathSearch } from "../../state/use-composer-path-search";
+import { useComposerPathSearch } from "../../state/queries";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
 
@@ -125,11 +126,15 @@ export function buildComposerCommandItems({
       true,
     );
 
+    // A provider expands a slash command only when it opens the whole message;
+    // elsewhere it arrives as literal text. `rangeStart` is the line start, so
+    // a `/foo` typed on a later line must not offer provider commands.
     const providerCommands: ComposerCommandItem[] = [];
-    for (const cmd of getProviderSlashCommandsForSlashMenu(
-      providerSlashCommands,
-      slashMenuSkills,
-    )) {
+    const expandableCommands =
+      trigger.rangeStart === 0
+        ? getProviderSlashCommandsForSlashMenu(providerSlashCommands, slashMenuSkills)
+        : [];
+    for (const cmd of expandableCommands) {
       if (!cmd.name.toLowerCase().includes(q)) continue;
       // Codex `/feedback` uploads an existing thread's session and logs, so it
       // has nothing to send before the thread exists.
@@ -160,7 +165,7 @@ export function buildComposerCommandItems({
 
   if (trigger.kind === "skill") {
     const enabledSkills = dedupeProviderSkillsByName(
-      (selectedProviderStatus?.skills ?? []).filter((s) => s.enabled),
+      (selectedProviderStatus?.skills ?? []).filter(isProviderSkillUserInvocable),
     );
     const normalizedQuery = normalizeSearchQuery(trigger.query, {
       trimLeadingPattern: /^\$+/,

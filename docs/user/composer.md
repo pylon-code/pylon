@@ -73,7 +73,8 @@ path** and **Open in file viewer**. These actions are available in expanded prev
 On mobile, touch and hold an inline image or use a preview's **Media actions** menu to see its
 source, copy the path or URL, or choose **Save or share**. Workspace media can open in the file
 viewer from the same menu. Saving downloads a copy only when you request it; it does not change
-how the video buffers during playback.
+how the video buffers during playback. On iOS, touch and hold a file reference in a message to
+copy its full or relative path or open it in the file viewer.
 
 Use Markdown image syntax to embed either kind of media:
 
@@ -149,6 +150,15 @@ slash menu** in **Settings → General** in the web or desktop app. Skill result
 `/skill:Skill Name` label and add the same `$name` skill token to your message. The original skill
 name remains searchable. If the provider also reports that skill as a native slash command, Pylon
 hides the duplicate native entry and keeps the `/skill:Skill Name` label.
+
+A skill token runs the skill wherever it sits in your message. T3 Code sends it to each provider in
+the form that provider runs, so the text before and after the token is kept. Skills that only you may
+start, and never the agent on its own, work the same way. A skill you switched off in the provider's
+settings does not appear in either menu.
+
+Provider commands such as `/compact` only run when they open the message, so the `/` menu offers
+them only there. T3 Code's own commands, such as `/model` and `/plan`, and skills stay available on
+any line.
 
 On desktop, press `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux from a new thread to
 start it in the background. Pylon opens another new thread and shows an **Open** action for the

@@ -1,6 +1,4 @@
 import {
-  DEFAULT_MODEL,
-  DEFAULT_MODEL_BY_PROVIDER,
   MODEL_SLUG_ALIASES_BY_PROVIDER,
   type ModelCapabilities,
   type ModelSelection,
@@ -41,6 +39,17 @@ export function getProviderOptionSelectionValue(
   return getRawSelectionValueById(selections, id);
 }
 
+/**
+ * Read one provider option off a model selection. Kept in Pylon because the
+ * Prime Agent backend resolves thinking level and service tier this way.
+ */
+export function getModelSelectionOptionValue(
+  modelSelection: ModelSelection | null | undefined,
+  id: string,
+): string | boolean | undefined {
+  return getProviderOptionSelectionValue(modelSelection?.options, id);
+}
+
 export function getProviderOptionStringSelectionValue(
   selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
   id: string,
@@ -55,13 +64,6 @@ export function getProviderOptionBooleanSelectionValue(
 ): boolean | undefined {
   const value = getProviderOptionSelectionValue(selections, id);
   return typeof value === "boolean" ? value : undefined;
-}
-
-export function getModelSelectionOptionValue(
-  modelSelection: ModelSelection | null | undefined,
-  id: string,
-): string | boolean | undefined {
-  return getProviderOptionSelectionValue(modelSelection?.options, id);
 }
 
 export function getModelSelectionStringOptionValue(
@@ -213,22 +215,6 @@ export function buildProviderOptionSelectionsFromDescriptors(
   return nextSelections.length > 0 ? nextSelections : undefined;
 }
 
-export function getModelSelectionOptionDescriptors(
-  modelSelection: ModelSelection | null | undefined,
-  caps?: ModelCapabilities | null | undefined,
-): ReadonlyArray<ProviderOptionDescriptor> {
-  if (!modelSelection) {
-    return [];
-  }
-  if (!caps) {
-    return [];
-  }
-  return getProviderOptionDescriptors({
-    caps,
-    selections: modelSelection.options,
-  });
-}
-
 export function isClaudeUltrathinkPrompt(text: string | null | undefined): boolean {
   return typeof text === "string" && /\bultrathink\b/i.test(text);
 }
@@ -296,21 +282,6 @@ export function resolveSelectableModel(
 
   const resolved = options.find((option) => option.slug === normalized);
   return resolved ? resolved.slug : null;
-}
-
-function resolveModelSlug(model: string | null | undefined, provider: ProviderDriverKind): string {
-  const normalized = normalizeModelSlug(model, provider);
-  if (!normalized) {
-    return DEFAULT_MODEL_BY_PROVIDER[provider] ?? DEFAULT_MODEL;
-  }
-  return normalized;
-}
-
-export function resolveModelSlugForProvider(
-  provider: ProviderDriverKind,
-  model: string | null | undefined,
-): string {
-  return resolveModelSlug(model, provider);
 }
 
 /** Trim a string, returning null for empty/missing values. */

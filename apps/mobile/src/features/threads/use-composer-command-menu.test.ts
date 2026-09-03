@@ -6,9 +6,7 @@ import {
 import { detectComposerTrigger } from "@t3tools/shared/composerTrigger";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-// The hook's data source pulls in the React Native query stack; the pure
-// builders under test never touch it.
-vi.mock("../../state/use-composer-path-search", () => ({
+vi.mock("../../state/queries", () => ({
   useComposerPathSearch: () => ({ entries: [], isPending: false }),
 }));
 

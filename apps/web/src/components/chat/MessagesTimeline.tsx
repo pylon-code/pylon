@@ -62,6 +62,7 @@ import {
   resolveDiffThemeName,
   resolveFileDiffPath,
 } from "../../lib/diffRendering";
+import { PREFERRED_HIGHLIGHTER } from "../../lib/syntaxHighlighting";
 import ChatMarkdown, { ChatMarkdownAssetImage } from "../ChatMarkdown";
 import {
   BotIcon,
@@ -2124,6 +2125,7 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
               collapsed: false,
               diffStyle: "unified",
               theme: resolveDiffThemeName(ctx.resolvedTheme),
+              preferredHighlighter: PREFERRED_HIGHLIGHTER,
             }}
           />
         ))}

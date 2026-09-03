@@ -6,7 +6,7 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../Migrations.ts";
-import * as NodeSqliteClient from "../NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 it.layer(NodeServices.layer)("049_ProjectionThreadSessionPendingStop", (it) => {
   it.effect("adds the exact pending-stop target columns and remains idempotent", () =>

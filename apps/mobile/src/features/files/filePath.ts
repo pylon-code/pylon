@@ -1,8 +1,4 @@
-import {
-  isWorkspaceBrowserPreviewPath,
-  isWorkspaceImagePreviewPath,
-  isWorkspaceVideoPreviewPath,
-} from "@t3tools/shared/filePreview";
+import { isWorkspaceVideoPreviewPath } from "@t3tools/shared/filePreview";
 
 export interface FileBreadcrumb {
   readonly label: string;
@@ -14,7 +10,7 @@ function isWindowsAbsolutePath(value: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\");
 }
 
-function isAbsolutePath(value: string): boolean {
+export function isAbsolutePath(value: string): boolean {
   return value.startsWith("/") || isWindowsAbsolutePath(value);
 }
 
@@ -85,15 +81,12 @@ export function resolveWorkspaceRelativeFilePath(
     return null;
   }
 
-  return normalizeRelativePath(normalizedTarget.slice(normalizedRoot.length + 1));
-}
-
-export function isBrowserPreviewFile(path: string): boolean {
-  return isWorkspaceBrowserPreviewPath(path);
-}
-
-export function isImagePreviewFile(path: string): boolean {
-  return isWorkspaceImagePreviewPath(path);
+  const relativePath = normalizedTarget.slice(normalizedRoot.length + 1);
+  // `/repo/../x` starts with the root but escapes it.
+  if (relativePath.split("/").includes("..")) {
+    return null;
+  }
+  return normalizeRelativePath(relativePath);
 }
 
 export function isVideoPreviewFile(path: string): boolean {

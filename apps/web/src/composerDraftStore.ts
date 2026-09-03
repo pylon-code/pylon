@@ -1651,6 +1651,7 @@ function removeDraftThreadReferences(
     | "logicalProjectDraftThreadKeyByLogicalProjectKey"
   >,
   threadKey: string,
+  composerDestination?: ScopedThreadRef,
 ): Pick<
   ComposerDraftStoreState,
   | "draftThreadsByThreadKey"
@@ -1665,7 +1666,11 @@ function removeDraftThreadReferences(
   const { [threadKey]: _removedDraftThread, ...restDraftThreadsByThreadKey } =
     state.draftThreadsByThreadKey;
   const { [threadKey]: removedComposerDraft, ...restDraftsByThreadKey } = state.draftsByThreadKey;
-  revokeDraftThreadPreviewUrls(removedComposerDraft);
+  if (composerDestination && removedComposerDraft) {
+    restDraftsByThreadKey[composerTargetKey(composerDestination)] = removedComposerDraft;
+  } else {
+    revokeDraftThreadPreviewUrls(removedComposerDraft);
+  }
   return {
     draftsByThreadKey: restDraftsByThreadKey,
     draftThreadsByThreadKey: restDraftThreadsByThreadKey,
@@ -2892,10 +2897,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           }
           set((state) => {
             const existing = state.draftThreadsByThreadKey[threadKey];
-            if (!isDraftThreadPromoting(existing)) {
+            if (!existing || !isDraftThreadPromoting(existing)) {
               return state;
             }
-            return removeDraftThreadReferences(state, threadKey);
+            return removeDraftThreadReferences(state, threadKey, existing.promotedTo ?? undefined);
           });
         },
         clearDraftThread: (threadRef) => {

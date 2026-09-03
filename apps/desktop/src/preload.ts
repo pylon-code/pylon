@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.SET_CONNECTION_CATALOG_CHANNEL, catalog),
   clearConnectionCatalog: () => ipcRenderer.invoke(IpcChannels.CLEAR_CONNECTION_CATALOG_CHANNEL),
   discoverSshHosts: () => ipcRenderer.invoke(IpcChannels.DISCOVER_SSH_HOSTS_CHANNEL),
+  resolveSshHost: (alias) => ipcRenderer.invoke(IpcChannels.RESOLVE_SSH_HOST_CHANNEL, alias),
   ensureSshEnvironment: async (target, options) =>
     unwrapEnsureSshEnvironmentResult(
       await ipcRenderer.invoke(IpcChannels.ENSURE_SSH_ENVIRONMENT_CHANNEL, {
@@ -163,6 +164,25 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     return () => {
       ipcRenderer.removeListener(IpcChannels.UPDATE_STATE_CHANNEL, wrappedListener);
     };
+  },
+  appActivation: {
+    setReady: (ready) =>
+      ipcRenderer.invoke(IpcChannels.DESKTOP_APP_ACTIVATION_READY_CHANNEL, ready),
+    complete: (response) =>
+      ipcRenderer.invoke(IpcChannels.DESKTOP_APP_ACTIVATION_COMPLETE_CHANNEL, response),
+    onRequest: (listener) => {
+      const wrappedListener = (_event: Electron.IpcRendererEvent, request: unknown) => {
+        if (typeof request !== "object" || request === null) return;
+        listener(request as Parameters<typeof listener>[0]);
+      };
+      ipcRenderer.on(IpcChannels.DESKTOP_APP_ACTIVATION_REQUEST_CHANNEL, wrappedListener);
+      return () => {
+        ipcRenderer.removeListener(
+          IpcChannels.DESKTOP_APP_ACTIVATION_REQUEST_CHANNEL,
+          wrappedListener,
+        );
+      };
+    },
   },
   preview: {
     createTab: (tabId, defaults) =>

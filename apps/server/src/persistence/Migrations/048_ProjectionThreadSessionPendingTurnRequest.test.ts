@@ -10,7 +10,7 @@ import { OrchestrationProjectionPipeline } from "../../orchestration/Services/Pr
 import { OrchestrationEventStoreLive } from "../Layers/OrchestrationEventStore.ts";
 import { runMigrations } from "../Migrations.ts";
 import migration048 from "./048_ProjectionThreadSessionPendingTurnRequest.ts";
-import * as NodeSqliteClient from "../NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 const persistenceLayer = NodeSqliteClient.layerMemory();
 const layer = it.layer(

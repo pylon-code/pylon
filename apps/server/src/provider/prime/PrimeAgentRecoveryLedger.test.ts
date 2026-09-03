@@ -6,7 +6,7 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import migration050 from "../../persistence/Migrations/050_PrimeAgentRecoveryLedger.ts";
-import * as NodeSqliteClient from "../../persistence/NodeSqliteClient.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   make,
   PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS,
