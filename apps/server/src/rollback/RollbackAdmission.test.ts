@@ -124,6 +124,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
     captureConversationAnchor: () => Effect.succeed({ anchor: {}, digest: "source" }),
     inspectConversationAnchor: () => Effect.succeed({ anchor: {}, digest: "source" }),
     applyConversationAnchor: () => Effect.void,
+    releaseConversationAnchor: () => Effect.void,
     getSessionInputQueue: () =>
       Effect.succeed({
         steeringCount: options.queueCount ?? 0,
@@ -154,6 +155,11 @@ const makeHarness = (options: HarnessOptions = {}) => {
         Option.some({
           threadId,
           checkpointTurnCount: input.checkpointTurnCount,
+          turnId:
+            input.checkpointTurnCount === 0
+              ? null
+              : TurnId.make(`turn-${input.checkpointTurnCount}`),
+          sourceRevision: input.checkpointTurnCount,
           providerInstanceId,
           sessionIncarnationId,
           checkpointRef: input.checkpointTurnCount === 0 ? baselineRef : turnOneRef,

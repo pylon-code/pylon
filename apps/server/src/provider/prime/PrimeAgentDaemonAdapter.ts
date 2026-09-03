@@ -75,7 +75,11 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
-import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
+import {
+  BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES,
+  type ProviderConversationAnchorReceipt,
+  type ProviderConversationAnchorBinding,
+} from "../Services/ProviderAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 import { primeAgentSessionDirectory } from "../Layers/PrimeAgentAdapter.ts";
 import type {
@@ -172,6 +176,36 @@ function crashAtPrimeAgentRecoveryTestBarrier(stage: PrimeAgentRecoveryTestCrash
 }
 export const PRIME_AGENT_SIDE_QUESTION_TIMEOUT_MS = 2 * 60_000;
 const PRIME_AGENT_SIDE_QUESTION_MAX_ACTIVE = 4;
+const primeConversationLeafId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
+const primeConversationAnchorBinding = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("checkpoint"),
+    checkpointTurnCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    turnId: Schema.NullOr(Schema.String),
+    checkpointRef: Schema.String,
+    checkpointOid: Schema.String,
+    sourceRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("source"),
+    sourceRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    checkpointRef: Schema.String,
+    checkpointOid: Schema.String,
+    turnId: Schema.NullOr(Schema.String),
+  }),
+]);
+const primeConversationAnchor = Schema.Struct({
+  version: Schema.Literal(1),
+  provider: Schema.Literal("prime-agent"),
+  providerInstanceId: Schema.String,
+  runtimeGeneration: Schema.String,
+  sessionIncarnationId: Schema.String,
+  nativeSessionId: Schema.String,
+  leafId: primeConversationLeafId,
+  binding: Schema.optional(primeConversationAnchorBinding),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+type PrimeConversationAnchor = typeof primeConversationAnchor.Type;
+const decodePrimeConversationAnchor = Schema.decodeUnknownOption(primeConversationAnchor);
 const unavailableSessionGoal: SessionGoalUpdatedPayload = {
   available: false,
   active: false,
@@ -364,6 +398,12 @@ interface PrimeAgentDaemonSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly runtime: PrimeAgentDaemonSessionRuntime;
+  readonly rootConversationLeafId: string | undefined;
+  rootConversationCheckpointTurnCount: number | undefined;
+  readonly settledConversationLeafIds: Map<TurnId, string>;
+  rollbackSourceLeafId: string | undefined;
+  rollbackTargetLeafId: string | undefined;
+  rollbackQuarantined: boolean;
   readonly managedExtensionPath: string;
   readonly managedExtensionSource: string;
   managedPlanProjectionEnabled: boolean;
@@ -816,6 +856,10 @@ export function makePrimeAgentDaemonAdapter(
         new Error("The Prime Agent runtime context does not own this daemon adapter."),
       );
     }
+    const managedAbsoluteRollbackAvailable =
+      options?.recoveryManagedBuildId !== undefined &&
+      typeof manager.bridge.DaemonAgentConnection.prototype.getState === "function" &&
+      typeof manager.bridge.DaemonAgentConnection.prototype.navigateTree === "function";
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
@@ -853,6 +897,11 @@ export function makePrimeAgentDaemonAdapter(
             markAdmitted: (input: Parameters<PrimeAgentRecoveryLedgerShape["markAdmitted"]>[0]) =>
               guardGeneration(
                 rawRecoveryLedger.markAdmitted(input, { commitGuard }).pipe(Effect.orDie),
+                false,
+              ),
+            markIdle: (input: Parameters<PrimeAgentRecoveryLedgerShape["markIdle"]>[0]) =>
+              guardGeneration(
+                rawRecoveryLedger.markIdle(input, { commitGuard }).pipe(Effect.orDie),
                 false,
               ),
             updateTranscriptProgress: (
@@ -1126,12 +1175,14 @@ export function makePrimeAgentDaemonAdapter(
       context: PrimeAgentDaemonSessionContext,
       event: ProviderRuntimeEvent,
     ) =>
-      offerRuntimeEvent({
-        ...event,
-        // The immutable context owns the event even after its session map entry
-        // is deleted or replaced. Never infer incarnation from mutable routing.
-        sessionIncarnationId: context.sessionIncarnationId,
-      });
+      context.rollbackQuarantined
+        ? Effect.void
+        : offerRuntimeEvent({
+            ...event,
+            // The immutable context owns the event even after its session map entry
+            // is deleted or replaced. Never infer incarnation from mutable routing.
+            sessionIncarnationId: context.sessionIncarnationId,
+          });
 
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
@@ -1987,6 +2038,16 @@ export function makePrimeAgentDaemonAdapter(
             (turn.correlationId === undefined && turn.cancellationRequested))
             ? { state: "cancelled" }
             : outcome;
+        if (
+          managedAbsoluteRollbackAvailable &&
+          context.session.runtimeMode === "full-access" &&
+          context.runtime.conversationRollbackAvailable
+        ) {
+          const terminalLeaf = yield* context.runtime.inspectConversationLeaf.pipe(Effect.result);
+          if (terminalLeaf._tag === "Success") {
+            context.settledConversationLeafIds.set(turn.id, terminalLeaf.success);
+          }
+        }
         turn.pendingRunCompletionHandoff = undefined;
         if (
           effectiveOutcome.state === "failed" &&
@@ -2066,15 +2127,25 @@ export function makePrimeAgentDaemonAdapter(
           status: "ready",
           updatedAt: yield* nowIso,
         };
-        yield* Deferred.succeed(turn.completed, undefined).pipe(Effect.ignore);
         if (context.recoveryOwnerToken !== undefined && !context.stopRequested) {
-          context.stopRequested = true;
-          yield* Effect.forkDetach(
-            Effect.yieldNow.pipe(
-              Effect.andThen(withThreadLock(context.threadId, stopSessionInternal(context))),
-            ),
-          );
+          const retainedForRollback =
+            managedAbsoluteRollbackAvailable &&
+            context.runtime.conversationRollbackAvailable &&
+            (yield* recoveryLedger!.markIdle({
+              threadId: context.threadId,
+              ownerToken: context.recoveryOwnerToken,
+              updatedAt: yield* nowIso,
+            }));
+          if (!retainedForRollback) {
+            context.stopRequested = true;
+            yield* Effect.forkDetach(
+              Effect.yieldNow.pipe(
+                Effect.andThen(withThreadLock(context.threadId, stopSessionInternal(context))),
+              ),
+            );
+          }
         }
+        yield* Deferred.succeed(turn.completed, undefined).pipe(Effect.ignore);
         return true;
       });
 
@@ -4559,14 +4630,18 @@ export function makePrimeAgentDaemonAdapter(
               snapshotMessageCount: runtime.initialSnapshot.state.messageCount,
               snapshotMessages: runtime.initialSnapshot.messages,
             });
-            if (authority.turnId === null || !replay.valid) {
+            if (
+              !replay.valid ||
+              (authority.turnId === null &&
+                (replay.backlog.length > 0 || runtime.inputAdmissionBusy))
+            ) {
               return yield* new ProviderAdapterProcessError({
                 provider: PROVIDER,
                 threadId: input.threadId,
                 detail: "Prime Agent restart recovery could not prove complete event continuity.",
               });
             }
-            recoveryBacklog = replay.backlog;
+            if (authority.turnId !== null) recoveryBacklog = replay.backlog;
           }
 
           const now = yield* nowIso;
@@ -4575,7 +4650,10 @@ export function makePrimeAgentDaemonAdapter(
           const session: ProviderSession = {
             provider: PROVIDER,
             providerInstanceId: boundInstanceId,
-            status: recoveryStart?.kind === "adopt" ? "running" : "ready",
+            status:
+              recoveryStart?.kind === "adopt" && recoveryStart.authority.turnId !== null
+                ? "running"
+                : "ready",
             runtimeMode: input.runtimeMode,
             cwd,
             model,
@@ -4598,6 +4676,13 @@ export function makePrimeAgentDaemonAdapter(
             session,
             scope: sessionScope,
             runtime,
+            rootConversationLeafId:
+              recoveryStart === undefined ? runtime.initialConversationLeafId : undefined,
+            rootConversationCheckpointTurnCount: undefined,
+            settledConversationLeafIds: new Map(),
+            rollbackSourceLeafId: undefined,
+            rollbackTargetLeafId: undefined,
+            rollbackQuarantined: false,
             managedExtensionPath,
             managedExtensionSource,
             managedPlanProjectionEnabled: true,
@@ -4875,6 +4960,62 @@ export function makePrimeAgentDaemonAdapter(
       input: ProviderSendTurnInput,
     ) {
       if (!recoveryPlatformEligible) return;
+      const retained = sessions.get(input.threadId);
+      if (
+        managedAbsoluteRollbackAvailable &&
+        retained !== undefined &&
+        retained.recoveryOwnerToken !== undefined &&
+        !retained.stopped &&
+        !retained.stopRequested &&
+        retained.session.status === "ready" &&
+        retained.activeTurn === undefined
+      ) {
+        const retainedAuthority = Option.getOrUndefined(yield* recoveryLedger!.get(input.threadId));
+        if (
+          retainedAuthority === undefined ||
+          retainedAuthority.ownerToken !== retained.recoveryOwnerToken ||
+          retainedAuthority.turnId !== null ||
+          !retainedAuthority.terminalProjected ||
+          !retainedAuthority.checkpointQuiesced
+        ) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "prepareTurnRecovery",
+            reason: "busy",
+            issue: "Prime Agent is still retaining the previous turn for exact recovery.",
+          });
+        }
+        const restartInput = {
+          threadId: retained.threadId,
+          provider: PROVIDER,
+          providerInstanceId: boundInstanceId,
+          runtimeMode: retained.session.runtimeMode,
+          ...(retained.session.cwd === undefined ? {} : { cwd: retained.session.cwd }),
+          ...(retained.session.model === undefined
+            ? {}
+            : {
+                modelSelection: {
+                  instanceId: boundInstanceId,
+                  model: retained.session.model,
+                },
+              }),
+          resumeCursor: retained.session.resumeCursor,
+          sessionIncarnationId: retained.sessionIncarnationId,
+        } as const;
+        const completion = yield* withThreadMutationLock(
+          input.threadId,
+          stopSessionInternal(retained),
+        );
+        yield* Deferred.await(completion);
+        if (Option.isSome(yield* recoveryLedger!.get(input.threadId))) {
+          return yield* new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId: input.threadId,
+            detail: "Prime Agent could not retire the previous exact recovery authority.",
+          });
+        }
+        yield* startSession(restartInput);
+      }
       const plan = yield* withThreadMutationLock(
         input.threadId,
         Effect.gen(function* () {
@@ -4965,7 +5106,6 @@ export function makePrimeAgentDaemonAdapter(
       let authority = Option.getOrUndefined(yield* recoveryLedger!.get(input.threadId));
       const authorityMatches = (candidate: PrimeAgentRecoveryAuthority) =>
         candidate.threadId === input.threadId &&
-        candidate.turnId !== null &&
         candidate.providerInstanceId === input.providerInstanceId &&
         candidate.sessionIncarnationId === input.sessionIncarnationId &&
         candidate.packageRoot === manager.bridge.packageRoot &&
@@ -5367,15 +5507,20 @@ export function makePrimeAgentDaemonAdapter(
             if (context === undefined || context.stopped || !context.recoveryPendingActivation)
               return;
             const turn = context.activeTurn;
-            if (turn === undefined) {
+            if (
+              turn === undefined &&
+              (context.session.status !== "ready" || context.recoveryBacklog.length > 0)
+            ) {
               return yield* new ProviderAdapterProcessError({
                 provider: PROVIDER,
                 threadId,
                 detail: "Recovered Prime Agent execution lost its admitted turn.",
               });
             }
-            for (const message of context.recoveryBacklog) {
-              yield* publishDrafts(context, { _tag: "MessageCompleted", message }, turn);
+            if (turn !== undefined) {
+              for (const message of context.recoveryBacklog) {
+                yield* publishDrafts(context, { _tag: "MessageCompleted", message }, turn);
+              }
             }
             context.recoveryPendingActivation = false;
             context.eventFiber = yield* context.runtime.events.pipe(
@@ -7665,6 +7810,326 @@ export function makePrimeAgentDaemonAdapter(
           .filter((context) => !context.stopRequested && !context.stopped)
           .map((context) => ({ ...context.session })),
       );
+    const rollbackValidationError = (operation: string, issue: string) =>
+      new ProviderAdapterValidationError({
+        provider: PROVIDER,
+        operation,
+        issue,
+      });
+
+    const rollbackContext = (
+      threadId: ThreadId,
+      operation: string,
+    ): Effect.Effect<PrimeAgentDaemonSessionContext, ProviderAdapterError> =>
+      Effect.gen(function* () {
+        const context = sessions.get(threadId);
+        const generationCurrent = yield* commitGuard;
+        if (
+          !generationCurrent ||
+          !managedAbsoluteRollbackAvailable ||
+          context === undefined ||
+          context.stopped ||
+          context.stopRequested ||
+          context.session.runtimeMode !== "full-access" ||
+          !context.runtime.conversationRollbackAvailable ||
+          context.runtime.conversationRuntimeGeneration === undefined ||
+          context.runtime.inputAdmissionBusy ||
+          context.activeTurn !== undefined ||
+          context.nativeRunActive ||
+          context.nativeBashActive ||
+          context.backgroundQuiescencePending ||
+          context.nativeQueueActionActive ||
+          context.inputQueue.steeringCount !== 0 ||
+          context.inputQueue.followUpCount !== 0 ||
+          context.pendingApprovals.size !== 0 ||
+          context.pendingInteractions.size !== 0 ||
+          context.activeNativeChildren.size !== 0
+        ) {
+          return yield* rollbackValidationError(
+            operation,
+            "Exact Prime Agent conversation rollback is unavailable for this session.",
+          );
+        }
+        return context;
+      });
+
+    const requireRollbackContextCurrent = Effect.fn(
+      "PrimeAgentDaemonAdapter.requireRollbackContextCurrent",
+    )(function* (context: PrimeAgentDaemonSessionContext, operation: string) {
+      const current = yield* rollbackContext(context.threadId, operation);
+      if (current !== context) {
+        return yield* rollbackValidationError(
+          operation,
+          "The exact Prime Agent conversation owner changed during rollback.",
+        );
+      }
+    });
+
+    const anchorReceipt = (
+      context: PrimeAgentDaemonSessionContext,
+      leafId: string,
+      binding?: ProviderConversationAnchorBinding,
+    ): ProviderConversationAnchorReceipt => {
+      const identity = {
+        version: 1 as const,
+        provider: "prime-agent" as const,
+        providerInstanceId: String(boundInstanceId),
+        runtimeGeneration: context.runtime.conversationRuntimeGeneration!,
+        sessionIncarnationId: String(context.sessionIncarnationId),
+        nativeSessionId: context.runtime.sessionId,
+        leafId,
+      };
+      const anchor: Schema.Json =
+        binding === undefined ? identity : { ...identity, binding: { ...binding } };
+      const digest = NodeCrypto.createHash("sha256")
+        .update(JSON.stringify(identity), "utf8")
+        .digest("hex");
+      return { anchor, digest };
+    };
+
+    const decodeBoundAnchor = (
+      context: PrimeAgentDaemonSessionContext,
+      raw: Schema.Json,
+      operation: string,
+    ): Effect.Effect<PrimeConversationAnchor, ProviderAdapterError> => {
+      const decoded = decodePrimeConversationAnchor(raw);
+      return Option.isSome(decoded) &&
+        decoded.value.providerInstanceId === boundInstanceId &&
+        decoded.value.runtimeGeneration === context.runtime.conversationRuntimeGeneration &&
+        decoded.value.sessionIncarnationId === context.sessionIncarnationId &&
+        decoded.value.nativeSessionId === context.runtime.sessionId
+        ? Effect.succeed(decoded.value)
+        : Effect.fail(
+            rollbackValidationError(
+              operation,
+              "The private Prime Agent conversation anchor is stale or invalid.",
+            ),
+          );
+    };
+
+    const isAbsoluteRollbackAvailable = (threadId: ThreadId) =>
+      rollbackContext(threadId, "absoluteConversationRollback.isAvailable").pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+
+    const captureAbsoluteAnchor = Effect.fn("PrimeAgentDaemonAdapter.captureAbsoluteAnchor")(
+      function* (input: {
+        readonly threadId: ThreadId;
+        readonly binding: ProviderConversationAnchorBinding;
+      }) {
+        const context = yield* rollbackContext(
+          input.threadId,
+          "absoluteConversationRollback.captureAnchor",
+        );
+        let leafId: string | undefined;
+        if (input.binding.kind === "checkpoint") {
+          if (
+            input.binding.sourceRevision !== input.binding.checkpointTurnCount ||
+            (input.binding.checkpointTurnCount === 0 && input.binding.turnId !== null) ||
+            (input.binding.checkpointTurnCount > 0 && input.binding.turnId === null)
+          ) {
+            return yield* rollbackValidationError(
+              "absoluteConversationRollback.captureAnchor",
+              "The exact checkpoint binding is invalid.",
+            );
+          }
+          leafId =
+            input.binding.turnId === null
+              ? undefined
+              : context.settledConversationLeafIds.get(TurnId.make(input.binding.turnId));
+          if (leafId === undefined && context.rootConversationLeafId !== undefined) {
+            if (context.rootConversationCheckpointTurnCount === undefined) {
+              context.rootConversationCheckpointTurnCount = input.binding.checkpointTurnCount;
+            }
+            if (context.rootConversationCheckpointTurnCount === input.binding.checkpointTurnCount) {
+              leafId = context.rootConversationLeafId;
+            }
+          }
+        } else {
+          leafId = yield* context.runtime.inspectConversationLeaf.pipe(
+            Effect.mapError((error) =>
+              runtimeOperationError(input.threadId, "capture-conversation-anchor", error),
+            ),
+          );
+        }
+        if (leafId === undefined) {
+          return yield* rollbackValidationError(
+            "absoluteConversationRollback.captureAnchor",
+            "The exact Prime Agent conversation leaf is unavailable.",
+          );
+        }
+        if (input.binding.kind === "source") {
+          context.rollbackSourceLeafId = leafId;
+          context.rollbackQuarantined = true;
+          yield* context.runtime
+            .prepareConversationRollback({
+              desiredLeafId: leafId,
+              allowedSourceLeafId: leafId,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                runtimeOperationError(input.threadId, "prepare-conversation-rollback", error),
+              ),
+            );
+          yield* requireRollbackContextCurrent(
+            context,
+            "absoluteConversationRollback.captureAnchor",
+          );
+        }
+        return anchorReceipt(context, leafId, input.binding);
+      },
+    );
+
+    const inspectAbsoluteAnchor = Effect.fn("PrimeAgentDaemonAdapter.inspectAbsoluteAnchor")(
+      function* (threadId: ThreadId) {
+        const context = yield* rollbackContext(
+          threadId,
+          "absoluteConversationRollback.inspectAnchor",
+        );
+        const leafId = yield* context.runtime.inspectConversationLeaf.pipe(
+          Effect.mapError((error) =>
+            runtimeOperationError(threadId, "inspect-conversation-anchor", error),
+          ),
+        );
+        yield* requireRollbackContextCurrent(context, "absoluteConversationRollback.inspectAnchor");
+        if (
+          context.rollbackQuarantined &&
+          leafId !== context.rollbackSourceLeafId &&
+          leafId !== context.rollbackTargetLeafId
+        ) {
+          return yield* rollbackValidationError(
+            "absoluteConversationRollback.inspectAnchor",
+            "Prime Agent conversation state is outside the exact rollback boundary.",
+          );
+        }
+        return anchorReceipt(context, leafId);
+      },
+    );
+
+    const applyAbsoluteAnchor = Effect.fn("PrimeAgentDaemonAdapter.applyAbsoluteAnchor")(function* (
+      threadId: ThreadId,
+      rawAnchor: Schema.Json,
+    ) {
+      const context = yield* rollbackContext(threadId, "absoluteConversationRollback.applyAnchor");
+      const anchor = yield* decodeBoundAnchor(
+        context,
+        rawAnchor,
+        "absoluteConversationRollback.applyAnchor",
+      );
+      const applyingSource = anchor.leafId === context.rollbackSourceLeafId;
+      const allowedSourceLeafId = applyingSource
+        ? context.rollbackTargetLeafId
+        : context.rollbackSourceLeafId;
+      if (allowedSourceLeafId === undefined) {
+        return yield* rollbackValidationError(
+          "absoluteConversationRollback.applyAnchor",
+          "The exact Prime Agent source leaf is unavailable.",
+        );
+      }
+      if (!applyingSource) context.rollbackTargetLeafId = anchor.leafId;
+      context.rollbackQuarantined = true;
+      yield* context.runtime
+        .navigateConversationLeaf({
+          desiredLeafId: anchor.leafId,
+          allowedSourceLeafId,
+        })
+        .pipe(
+          Effect.mapError((error) =>
+            runtimeOperationError(threadId, "apply-conversation-anchor", error),
+          ),
+        );
+      yield* requireRollbackContextCurrent(context, "absoluteConversationRollback.applyAnchor");
+    });
+
+    const prepareAbsoluteRecovery = Effect.fn("PrimeAgentDaemonAdapter.prepareAbsoluteRecovery")(
+      function* (input: {
+        readonly threadId: ThreadId;
+        readonly sourceAnchor: Schema.Json;
+        readonly desiredAnchor: Schema.Json;
+        readonly expectedAnchor: Schema.Json;
+      }) {
+        const context = yield* rollbackContext(
+          input.threadId,
+          "absoluteConversationRollback.prepareRecovery",
+        );
+        const source = yield* decodeBoundAnchor(
+          context,
+          input.sourceAnchor,
+          "absoluteConversationRollback.prepareRecovery",
+        );
+        const desired = yield* decodeBoundAnchor(
+          context,
+          input.desiredAnchor,
+          "absoluteConversationRollback.prepareRecovery",
+        );
+        const expected = yield* decodeBoundAnchor(
+          context,
+          input.expectedAnchor,
+          "absoluteConversationRollback.prepareRecovery",
+        );
+        if (expected.leafId !== source.leafId && expected.leafId !== desired.leafId) {
+          return yield* rollbackValidationError(
+            "absoluteConversationRollback.prepareRecovery",
+            "The recovered Prime Agent rollback boundary is invalid.",
+          );
+        }
+        context.rollbackSourceLeafId = source.leafId;
+        context.rollbackTargetLeafId = desired.leafId;
+        context.rollbackQuarantined = true;
+        yield* context.runtime
+          .prepareConversationRollback({
+            desiredLeafId: expected.leafId,
+            allowedSourceLeafId: expected.leafId === source.leafId ? desired.leafId : source.leafId,
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              runtimeOperationError(input.threadId, "prepare-conversation-rollback", error),
+            ),
+          );
+        yield* requireRollbackContextCurrent(
+          context,
+          "absoluteConversationRollback.prepareRecovery",
+        );
+      },
+    );
+
+    const releaseAbsoluteAnchor = Effect.fn("PrimeAgentDaemonAdapter.releaseAbsoluteAnchor")(
+      function* (threadId: ThreadId, rawAnchor: Schema.Json) {
+        const context = yield* rollbackContext(
+          threadId,
+          "absoluteConversationRollback.releaseAnchor",
+        );
+        const anchor = yield* decodeBoundAnchor(
+          context,
+          rawAnchor,
+          "absoluteConversationRollback.releaseAnchor",
+        );
+        yield* context.runtime
+          .releaseConversationRollback(anchor.leafId)
+          .pipe(
+            Effect.mapError((error) =>
+              runtimeOperationError(threadId, "release-conversation-anchor", error),
+            ),
+          );
+        yield* requireRollbackContextCurrent(context, "absoluteConversationRollback.releaseAnchor");
+        context.rollbackQuarantined = false;
+        context.rollbackSourceLeafId = undefined;
+        context.rollbackTargetLeafId = undefined;
+      },
+    );
+
+    const absoluteConversationRollback = managedAbsoluteRollbackAvailable
+      ? {
+          isAvailable: isAbsoluteRollbackAvailable,
+          captureAnchor: captureAbsoluteAnchor,
+          inspectAnchor: inspectAbsoluteAnchor,
+          applyAnchor: applyAbsoluteAnchor,
+          releaseAnchor: releaseAbsoluteAnchor,
+          prepareRecovery: prepareAbsoluteRecovery,
+        }
+      : undefined;
+
     const hasSession: PrimeAgentAdapterShape["hasSession"] = (threadId) =>
       Effect.sync(() => {
         const context = sessions.get(threadId);
@@ -7791,8 +8256,11 @@ export function makePrimeAgentDaemonAdapter(
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
-        conversationRollback: BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.primeDaemon,
+        conversationRollback: managedAbsoluteRollbackAvailable
+          ? "absolute"
+          : BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.primeDaemon,
       },
+      ...(absoluteConversationRollback === undefined ? {} : { absoluteConversationRollback }),
       startSession,
       prepareTurnRecovery,
       recoverSession,

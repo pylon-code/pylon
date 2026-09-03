@@ -33,6 +33,7 @@ import type {
   ProviderSetSessionInputQueueModeInput,
   ProviderSession,
   ProviderSessionStartInput,
+  CheckpointRef,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
   ThreadId,
@@ -65,14 +66,43 @@ export interface ProviderConversationAnchorReceipt {
   readonly digest: string;
 }
 
+export type ProviderConversationAnchorBinding =
+  | {
+      readonly kind: "checkpoint";
+      readonly checkpointTurnCount: number;
+      readonly turnId: TurnId | null;
+      readonly checkpointRef: CheckpointRef;
+      readonly checkpointOid: string;
+      readonly sourceRevision: number;
+    }
+  | {
+      readonly kind: "source";
+      readonly sourceRevision: number;
+      readonly checkpointRef: CheckpointRef;
+      readonly checkpointOid: string;
+      readonly turnId: TurnId | null;
+    };
+
 export interface ProviderAbsoluteConversationRollback<TError> {
-  readonly captureAnchor: (
-    threadId: ThreadId,
-  ) => Effect.Effect<ProviderConversationAnchorReceipt, TError>;
+  /** Exact per-thread gates. Static adapter capability alone is not enough. */
+  readonly isAvailable: (threadId: ThreadId) => Effect.Effect<boolean, TError>;
+  readonly captureAnchor: (input: {
+    readonly threadId: ThreadId;
+    readonly binding: ProviderConversationAnchorBinding;
+  }) => Effect.Effect<ProviderConversationAnchorReceipt, TError>;
   readonly inspectAnchor: (
     threadId: ThreadId,
   ) => Effect.Effect<ProviderConversationAnchorReceipt, TError>;
   readonly applyAnchor: (threadId: ThreadId, anchor: Json) => Effect.Effect<void, TError>;
+  /** Holds native output until the saga commits and proves the final leaf. */
+  readonly releaseAnchor: (threadId: ThreadId, anchor: Json) => Effect.Effect<void, TError>;
+  /** Installs quarantine before retained restart-adoption frames are released. */
+  readonly prepareRecovery?: (input: {
+    readonly threadId: ThreadId;
+    readonly sourceAnchor: Json;
+    readonly desiredAnchor: Json;
+    readonly expectedAnchor: Json;
+  }) => Effect.Effect<void, TError>;
 }
 
 export interface ProviderAdapterCapabilities {

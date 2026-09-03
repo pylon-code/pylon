@@ -1603,7 +1603,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const recoverRestartSessions: ProviderServiceMethod<"recoverRestartSessions"> = Effect.fn(
     "recoverRestartSessions",
-  )(function* () {
+  )(function* (input) {
     const bindings = yield* directory.listBindings();
     for (const binding of bindings) {
       let adoptedAdapter: ProviderAdapterShape<ProviderAdapterError> | undefined;
@@ -1675,6 +1675,30 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           },
         );
         yield* requireAdapterGenerationCurrent(adapter, "ProviderService.recoverRestartSessions");
+        if (input?.unrecoverableAbsoluteRollbacks?.has(binding.threadId) === true) {
+          return yield* toValidationError(
+            "ProviderService.recoverRestartSessions",
+            "Pending exact rollback authority is incomplete for restart adoption.",
+          );
+        }
+        const pendingRollback = input?.pendingAbsoluteRollbacks?.get(binding.threadId);
+        if (pendingRollback !== undefined) {
+          const operations = adapter.absoluteConversationRollback;
+          if (
+            adapter.capabilities.conversationRollback !== "absolute" ||
+            operations?.prepareRecovery === undefined
+          ) {
+            return yield* toValidationError(
+              "ProviderService.recoverRestartSessions",
+              "Pending exact rollback quarantine is unavailable for the recovered session.",
+            );
+          }
+          yield* operations.prepareRecovery({
+            threadId: binding.threadId,
+            ...pendingRollback,
+          });
+          yield* requireAdapterGenerationCurrent(adapter, "ProviderService.recoverRestartSessions");
+        }
         yield* adapter.activateRecoveredSession(binding.threadId);
       }).pipe(
         Effect.catchCause((cause) =>
@@ -2892,6 +2916,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       operation: "ProviderService.absoluteConversationRollback",
       allowRecovery: true,
     });
+    yield* requireAdapterGenerationCurrent(
+      routed.adapter,
+      "ProviderService.absoluteConversationRollback",
+    );
     const operations = routed.adapter.absoluteConversationRollback;
     if (
       routed.adapter.capabilities.conversationRollback !== "absolute" ||
@@ -2913,17 +2941,31 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       operation: "ProviderService.hasAbsoluteConversationRollback",
       allowRecovery: true,
     });
-    return (
-      routed.adapter.capabilities.conversationRollback === "absolute" &&
-      routed.adapter.absoluteConversationRollback !== undefined
+    if (
+      routed.adapter.capabilities.conversationRollback !== "absolute" ||
+      routed.adapter.absoluteConversationRollback === undefined
+    ) {
+      return false;
+    }
+    yield* requireAdapterGenerationCurrent(
+      routed.adapter,
+      "ProviderService.hasAbsoluteConversationRollback",
     );
+    const available = yield* routed.adapter.absoluteConversationRollback
+      .isAvailable(threadId)
+      .pipe(Effect.orElseSucceed(() => false));
+    yield* requireAdapterGenerationCurrent(
+      routed.adapter,
+      "ProviderService.hasAbsoluteConversationRollback",
+    );
+    return available;
   });
 
   const captureConversationAnchor: NonNullable<ProviderServiceMethod<"captureConversationAnchor">> =
-    Effect.fn("captureConversationAnchor")(function* (threadId) {
-      const { operations } = yield* resolveAbsoluteConversationRollback(threadId);
-      return yield* operations
-        .captureAnchor(threadId)
+    Effect.fn("captureConversationAnchor")(function* (input) {
+      const { routed, operations } = yield* resolveAbsoluteConversationRollback(input.threadId);
+      const anchor = yield* operations
+        .captureAnchor(input)
         .pipe(
           Effect.mapError(() =>
             toValidationError(
@@ -2932,12 +2974,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ),
           ),
         );
+      yield* requireAdapterGenerationCurrent(
+        routed.adapter,
+        "ProviderService.captureConversationAnchor",
+      );
+      return anchor;
     });
 
   const inspectConversationAnchor: NonNullable<ProviderServiceMethod<"inspectConversationAnchor">> =
     Effect.fn("inspectConversationAnchor")(function* (threadId) {
-      const { operations } = yield* resolveAbsoluteConversationRollback(threadId);
-      return yield* operations
+      const { routed, operations } = yield* resolveAbsoluteConversationRollback(threadId);
+      const anchor = yield* operations
         .inspectAnchor(threadId)
         .pipe(
           Effect.mapError(() =>
@@ -2947,12 +2994,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ),
           ),
         );
+      yield* requireAdapterGenerationCurrent(
+        routed.adapter,
+        "ProviderService.inspectConversationAnchor",
+      );
+      return anchor;
     });
 
   const applyConversationAnchor: NonNullable<ProviderServiceMethod<"applyConversationAnchor">> =
     Effect.fn("applyConversationAnchor")(function* (input) {
-      const { operations } = yield* resolveAbsoluteConversationRollback(input.threadId);
-      return yield* operations
+      const { routed, operations } = yield* resolveAbsoluteConversationRollback(input.threadId);
+      yield* operations
         .applyAnchor(input.threadId, input.anchor)
         .pipe(
           Effect.mapError(() =>
@@ -2962,6 +3014,29 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ),
           ),
         );
+      yield* requireAdapterGenerationCurrent(
+        routed.adapter,
+        "ProviderService.applyConversationAnchor",
+      );
+    });
+
+  const releaseConversationAnchor: NonNullable<ProviderServiceMethod<"releaseConversationAnchor">> =
+    Effect.fn("releaseConversationAnchor")(function* (input) {
+      const { routed, operations } = yield* resolveAbsoluteConversationRollback(input.threadId);
+      yield* operations
+        .releaseAnchor(input.threadId, input.anchor)
+        .pipe(
+          Effect.mapError(() =>
+            toValidationError(
+              "ProviderService.releaseConversationAnchor",
+              "The provider could not prove the final conversation anchor.",
+            ),
+          ),
+        );
+      yield* requireAdapterGenerationCurrent(
+        routed.adapter,
+        "ProviderService.releaseConversationAnchor",
+      );
     });
 
   const rollbackConversation: ProviderServiceMethod<"rollbackConversation"> = Effect.fn(
@@ -3213,6 +3288,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     captureConversationAnchor,
     inspectConversationAnchor,
     applyConversationAnchor,
+    releaseConversationAnchor,
     uploadFeedback,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each

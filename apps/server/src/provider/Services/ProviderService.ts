@@ -64,6 +64,7 @@ import type { ProviderServiceError } from "../Errors.ts";
 import type {
   ProviderAdapterCapabilities,
   ProviderConversationAnchorReceipt,
+  ProviderConversationAnchorBinding,
 } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
@@ -95,7 +96,17 @@ export interface ProviderServiceShape {
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
 
   /** Adopt eligible surviving Prime executions before startup orphan reconciliation. */
-  readonly recoverRestartSessions?: () => Effect.Effect<void, ProviderServiceError>;
+  readonly recoverRestartSessions?: (input?: {
+    readonly unrecoverableAbsoluteRollbacks?: ReadonlySet<ThreadId>;
+    readonly pendingAbsoluteRollbacks?: ReadonlyMap<
+      ThreadId,
+      {
+        readonly sourceAnchor: Json;
+        readonly desiredAnchor: Json;
+        readonly expectedAnchor: Json;
+      }
+    >;
+  }) => Effect.Effect<void, ProviderServiceError>;
 
   /**
    * Interrupt a running provider turn.
@@ -259,13 +270,18 @@ export interface ProviderServiceShape {
   readonly hasAbsoluteConversationRollback?: (
     threadId: ThreadId,
   ) => Effect.Effect<boolean, ProviderServiceError>;
-  readonly captureConversationAnchor?: (
-    threadId: ThreadId,
-  ) => Effect.Effect<ProviderConversationAnchorReceipt, ProviderServiceError>;
+  readonly captureConversationAnchor?: (input: {
+    readonly threadId: ThreadId;
+    readonly binding: ProviderConversationAnchorBinding;
+  }) => Effect.Effect<ProviderConversationAnchorReceipt, ProviderServiceError>;
   readonly inspectConversationAnchor?: (
     threadId: ThreadId,
   ) => Effect.Effect<ProviderConversationAnchorReceipt, ProviderServiceError>;
   readonly applyConversationAnchor?: (input: {
+    readonly threadId: ThreadId;
+    readonly anchor: Json;
+  }) => Effect.Effect<void, ProviderServiceError>;
+  readonly releaseConversationAnchor?: (input: {
     readonly threadId: ThreadId;
     readonly anchor: Json;
   }) => Effect.Effect<void, ProviderServiceError>;

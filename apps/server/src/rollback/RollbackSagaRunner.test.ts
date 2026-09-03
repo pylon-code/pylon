@@ -51,6 +51,8 @@ const makeState = (operationId: string): RollbackSagaState => ({
   workspaceCwd: "/workspace/fake",
   sourceRevision: 2,
   targetRevision: 1,
+  sourceTurnId: null,
+  targetTurnId: null,
   sourceCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-runner/turn/2"),
   sourceCheckpointOid: "a".repeat(40),
   targetCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-runner/turn/1"),
@@ -97,6 +99,7 @@ const makeEnvironment = (
   };
   let lease = true;
   let providerDigest = "provider-source";
+  let currentProviderMode = providerMode;
   let workspaceDigest = "workspace-source";
   let preimageCleaned = false;
   let anchorsDeleted = false;
@@ -211,6 +214,7 @@ const makeEnvironment = (
         anchor: { leafId: providerDigest },
         digest: providerDigest,
       })),
+    releaseConversationAnchor: () => Effect.void,
     applyConversationAnchor: (input: { readonly anchor: unknown }) =>
       Effect.suspend(() => {
         const isTarget =
@@ -219,7 +223,7 @@ const makeEnvironment = (
           providerDigest = "provider-source";
           return Effect.void;
         }
-        switch (providerMode) {
+        switch (currentProviderMode) {
           case "success":
             providerDigest = "provider-target";
             return Effect.void;
@@ -336,6 +340,12 @@ const makeEnvironment = (
   return {
     repository,
     makeRunner,
+    setProviderDigest: (digest: string) => {
+      providerDigest = digest;
+    },
+    setProviderMode: (mode: ProviderMode) => {
+      currentProviderMode = mode;
+    },
     snapshot: () => ({
       record,
       lease,
@@ -410,6 +420,65 @@ it.effect("reconciles an unknown provider result by inspecting the exact target"
     assert.equal(snapshot.record.state.phase, "complete");
     assert.equal(snapshot.providerDigest, "provider-target");
     assert.equal(snapshot.projectionCommits, 1);
+  }),
+);
+
+it.effect("reapplies the target after a compatible reconnect returns to source", () =>
+  Effect.gen(function* () {
+    const operationId = "operation-reconnect-source";
+    const environment = makeEnvironment(operationId);
+    const interrupted = yield* environment.makeRunner("persisted:provider-applied");
+    yield* runInterrupted(interrupted, operationId);
+    assert.equal(environment.snapshot().record.state.phase, "provider-applied");
+
+    environment.setProviderDigest("provider-source");
+    yield* environment.repository.clearOwnersForStartup();
+    const recovered = yield* environment.makeRunner();
+    yield* recovered.run(operationId, true);
+    const snapshot = environment.snapshot();
+    assert.equal(snapshot.providerDigest, "provider-target");
+    assert.equal(snapshot.record.state.phase, "complete");
+    assert.equal(snapshot.projectionCommits, 1);
+  }),
+);
+
+it.effect("fails closed when reconnect inspection finds a third provider leaf", () =>
+  Effect.gen(function* () {
+    const operationId = "operation-reconnect-third-leaf";
+    const environment = makeEnvironment(operationId);
+    const interrupted = yield* environment.makeRunner("persisted:provider-applied");
+    yield* runInterrupted(interrupted, operationId);
+    environment.setProviderDigest("provider-third");
+    yield* environment.repository.clearOwnersForStartup();
+
+    const recovered = yield* environment.makeRunner();
+    yield* recovered.run(operationId, true);
+    const snapshot = environment.snapshot();
+    assert.equal(snapshot.record.state.phase, "manual-recovery");
+    assert.isFalse(snapshot.projectionCommitted);
+  }),
+);
+
+it.effect("enters manual recovery when the target cannot be reproved after projection", () =>
+  Effect.gen(function* () {
+    const operationId = "operation-post-projection-source";
+    const environment = makeEnvironment(operationId);
+    const interrupted = yield* environment.makeRunner("persisted:projection-committed");
+    yield* runInterrupted(interrupted, operationId);
+    assert.equal(environment.snapshot().record.state.phase, "projection-committed");
+    assert.equal(environment.snapshot().projectionCommits, 1);
+
+    environment.setProviderDigest("provider-source");
+    environment.setProviderMode("stayed-source");
+    yield* environment.repository.clearOwnersForStartup();
+    const recovered = yield* environment.makeRunner();
+    yield* recovered.run(operationId, true);
+
+    const snapshot = environment.snapshot();
+    assert.equal(snapshot.record.state.phase, "manual-recovery");
+    assert.equal(snapshot.record.state.attempt, 2);
+    assert.equal(snapshot.projectionCommits, 1);
+    assert.isFalse(snapshot.record.terminal);
   }),
 );
 

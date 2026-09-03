@@ -37,6 +37,8 @@ const makeState = (
   workspaceCwd: "/private/workspace/canary",
   sourceRevision: 2,
   targetRevision: 1,
+  sourceTurnId: null,
+  targetTurnId: null,
   sourceCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-rollback-a/turn/2"),
   sourceCheckpointOid: "a".repeat(40),
   targetCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-rollback-a/turn/1"),
@@ -160,6 +162,8 @@ layer("RollbackSagaRepository", (it) => {
           yield* repository.putCheckpointAnchor({
             threadId: threadA,
             checkpointTurnCount,
+            turnId: null,
+            sourceRevision: checkpointTurnCount,
             providerInstanceId,
             sessionIncarnationId,
             checkpointRef: CheckpointRef.make(
@@ -175,6 +179,8 @@ layer("RollbackSagaRepository", (it) => {
         yield* repository.putCheckpointAnchor({
           threadId: threadA,
           checkpointTurnCount: 1,
+          turnId: null,
+          sourceRevision: 1,
           providerInstanceId,
           sessionIncarnationId,
           checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-rollback-a/turn/1"),
@@ -188,6 +194,8 @@ layer("RollbackSagaRepository", (it) => {
           .putCheckpointAnchor({
             threadId: threadA,
             checkpointTurnCount: 1,
+            turnId: null,
+            sourceRevision: 1,
             providerInstanceId,
             sessionIncarnationId,
             checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-rollback-a/turn/1"),

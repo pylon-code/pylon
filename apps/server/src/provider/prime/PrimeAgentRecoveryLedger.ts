@@ -166,6 +166,15 @@ export interface PrimeAgentRecoveryLedgerShape {
     },
     options?: PrimeAgentRecoveryCommitOptions,
   ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
+  /** Retains exact native ownership after a settled turn for private rollback. */
+  readonly markIdle: (
+    input: {
+      readonly threadId: string;
+      readonly ownerToken: string;
+      readonly updatedAt: string;
+    },
+    options?: PrimeAgentRecoveryCommitOptions,
+  ) => Effect.Effect<boolean, PrimeAgentRecoveryLedgerError>;
   readonly discardPrepared: (
     input: { readonly threadId: string; readonly ownerToken: string },
     options?: PrimeAgentRecoveryCommitOptions,
@@ -566,6 +575,15 @@ export const make = Effect.gen(function* () {
       options,
     );
 
+  const markIdle: PrimeAgentRecoveryLedgerShape["markIdle"] = (input, options) =>
+    conditionalUpdate(
+      "markIdle",
+      `UPDATE prime_agent_recovery_ledger SET turn_id=NULL, state='active', updated_at=?
+       WHERE thread_id=? AND owner_token=? AND state='active' RETURNING thread_id`,
+      [input.updatedAt, input.threadId, input.ownerToken],
+      options,
+    );
+
   const discardPrepared: PrimeAgentRecoveryLedgerShape["discardPrepared"] = (input, options) =>
     conditionalUpdate(
       "discardPrepared",
@@ -819,6 +837,7 @@ export const make = Effect.gen(function* () {
     get,
     listActive,
     markAdmitted,
+    markIdle,
     discardPrepared,
     updateTranscriptProgress,
     claim,

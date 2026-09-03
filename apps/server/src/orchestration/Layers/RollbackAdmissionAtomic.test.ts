@@ -53,6 +53,8 @@ const admission = Layer.succeed(RollbackAdmission, {
         workspaceCwd: "/workspace/atomic",
         sourceRevision: 2,
         targetRevision: 1,
+        sourceTurnId: null,
+        targetTurnId: null,
         sourceCheckpointRef: checkpointRefForThreadTurn(threadId, 2),
         sourceCheckpointOid: "2".repeat(40),
         targetCheckpointRef: checkpointRefForThreadTurn(threadId, 1),

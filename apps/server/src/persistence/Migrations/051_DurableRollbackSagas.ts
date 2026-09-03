@@ -56,6 +56,8 @@ export default Effect.gen(function* () {
     CREATE TABLE IF NOT EXISTS rollback_checkpoint_anchors (
       thread_id TEXT NOT NULL,
       checkpoint_turn_count INTEGER NOT NULL,
+      turn_id TEXT,
+      source_revision INTEGER NOT NULL,
       provider_instance_id TEXT NOT NULL,
       session_incarnation_id TEXT NOT NULL,
       checkpoint_ref TEXT NOT NULL,

@@ -269,6 +269,11 @@ function fixture(options?: {
   readonly omitQueueMutation?: boolean;
   readonly queueMutationCapability?: boolean;
   readonly getStateImpl?: () => Promise<unknown>;
+  readonly navigateTreeImpl?: (
+    targetId: string,
+    options?: { readonly summarize?: boolean },
+  ) => Promise<unknown>;
+  readonly omitNavigateTree?: boolean;
   readonly setSteeringModeImpl?: (mode: "all" | "one-at-a-time") => Promise<unknown>;
   readonly setFollowUpModeImpl?: (mode: "all" | "one-at-a-time") => Promise<unknown>;
   readonly compactImpl?: () => Promise<unknown>;
@@ -475,6 +480,9 @@ function fixture(options?: {
       if (options?.omitRefine === true) {
         Object.defineProperty(this, "refine", { value: undefined });
       }
+      if (options?.omitNavigateTree === true) {
+        Object.defineProperty(this, "navigateTree", { value: undefined });
+      }
       if (options?.omitModelCatalog === true) {
         Object.defineProperty(this, "getModelCatalog", { value: undefined });
       }
@@ -547,6 +555,19 @@ function fixture(options?: {
         typeof current === "object" && current !== null && "state" in current
           ? current.state
           : undefined,
+      );
+    }
+    navigateTree(
+      targetId: string,
+      navigateOptions?: { readonly summarize?: boolean },
+    ): Promise<unknown> {
+      captures.connectionCalls.push({
+        method: "navigateTree",
+        args: [targetId, navigateOptions],
+      });
+      return (
+        options?.navigateTreeImpl?.(targetId, navigateOptions) ??
+        Promise.resolve({ cancelled: false })
       );
     }
     promptAndWait(
@@ -11629,6 +11650,112 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         operation: "session-stats",
         reason: "invalid-response",
       });
+    }),
+  );
+
+  it.effect("navigates exact private leaves without summary and proves release", () =>
+    Effect.gen(function* () {
+      let leafId = "leaf-source-private";
+      const test = fixture({
+        rawSnapshot: {
+          ...snapshot(),
+          state: { ...snapshot().state, leafId },
+        },
+        getStateImpl: () =>
+          Promise.resolve({
+            sessionId: "session-1",
+            activeSessionId: "active-secret-1",
+            leafId,
+          }),
+        navigateTreeImpl: (targetId) => {
+          leafId = targetId;
+          return Promise.resolve({ cancelled: false });
+        },
+      });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* test.make();
+          expect(runtime.conversationRollbackAvailable).toBe(true);
+          expect(runtime.initialConversationLeafId).toBe("leaf-source-private");
+          yield* runtime.navigateConversationLeaf({
+            desiredLeafId: "leaf-target-private",
+            allowedSourceLeafId: "leaf-source-private",
+          });
+          expect(yield* runtime.inspectConversationLeaf).toBe("leaf-target-private");
+          yield* runtime.releaseConversationRollback("leaf-target-private");
+        }),
+      );
+      expect(
+        test.captures.connectionCalls.filter((call) => call.method === "navigateTree"),
+      ).toEqual([
+        {
+          method: "navigateTree",
+          args: ["leaf-target-private", { summarize: false }],
+        },
+      ]);
+    }),
+  );
+
+  it.effect("rejects a third leaf and keeps response-loss target proof inspectable", () =>
+    Effect.gen(function* () {
+      let leafId = "leaf-source-private";
+      const test = fixture({
+        rawSnapshot: {
+          ...snapshot(),
+          state: { ...snapshot().state, leafId },
+        },
+        getStateImpl: () =>
+          Promise.resolve({
+            sessionId: "session-1",
+            activeSessionId: "active-secret-1",
+            leafId,
+          }),
+        navigateTreeImpl: (targetId) => {
+          leafId = targetId;
+          return Promise.reject(new Error("private daemon response was lost"));
+        },
+      });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* test.make();
+          const lostResponse = yield* runtime
+            .navigateConversationLeaf({
+              desiredLeafId: "leaf-target-private",
+              allowedSourceLeafId: "leaf-source-private",
+            })
+            .pipe(Effect.result);
+          expect(lostResponse._tag).toBe("Failure");
+          expect(yield* runtime.inspectConversationLeaf).toBe("leaf-target-private");
+          leafId = "leaf-third-private";
+          const fenced = yield* runtime
+            .prepareConversationRollback({
+              desiredLeafId: "leaf-target-private",
+              allowedSourceLeafId: "leaf-source-private",
+            })
+            .pipe(Effect.result);
+          expect(fenced._tag).toBe("Failure");
+        }),
+      );
+    }),
+  );
+
+  it.effect("keeps exact navigation unavailable without the public navigateTree method", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        rawSnapshot: {
+          ...snapshot(),
+          state: { ...snapshot().state, leafId: "leaf-private" },
+        },
+        omitNavigateTree: true,
+      });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* test.make();
+          expect(runtime.conversationRollbackAvailable).toBe(false);
+          const result = yield* runtime.inspectConversationLeaf.pipe(Effect.result);
+          expect(result._tag).toBe("Failure");
+        }),
+      );
     }),
   );
 });

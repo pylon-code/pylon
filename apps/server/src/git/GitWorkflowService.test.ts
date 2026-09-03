@@ -218,6 +218,8 @@ describe("GitWorkflowService", () => {
           workspaceCwd: "/repo",
           sourceRevision: 2,
           targetRevision: 1,
+          sourceTurnId: null,
+          targetTurnId: null,
           sourceCheckpointRef: "refs/source" as never,
           sourceCheckpointOid: "a".repeat(40),
           targetCheckpointRef: "refs/target" as never,
