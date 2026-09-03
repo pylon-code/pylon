@@ -44,12 +44,7 @@ import {
   type RollbackTarget,
 } from "@t3tools/client-runtime/rollback";
 import { type CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
-import {
-  changeRequestAutoSettles,
-  effectiveSettled,
-  effectiveSnoozed,
-  threadWokeAt,
-} from "@t3tools/client-runtime/state/thread-settled";
+import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import {
   codexFeedbackMessage,
   parseCodexFeedbackCommand,
@@ -4799,9 +4794,7 @@ function ChatViewContent(props: ChatViewProps) {
         : null,
     [activeThreadBranch, activeWorktreePath, envMode, gitStatusQuery.data?.refName, isServerThread],
   );
-  // Settled state of the open thread, resolved exactly like the sidebar
-  // partition (same shell, same capability gate, same PR auto-settle input)
-  // so the banner and the sidebar row never disagree.
+  // The server-projected settled state keeps the banner and sidebar in sync.
   const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
   const activeComposerPlan =
     activePlan && activePlan.turnId === activeLatestTurn?.turnId ? activePlan : null;
@@ -4857,9 +4850,6 @@ function ChatViewContent(props: ChatViewProps) {
       resizeObserver.disconnect();
     };
   }, [composerOverlayElement]);
-
-  const autoSettleAfterDays = useClientSettings((settings) => settings.sidebarAutoSettleAfterDays);
-  const autoSettleOnMerge = useClientSettings((settings) => settings.sidebarAutoSettleOnMerge);
   const linkedPullRequestStatus = useLinkedThreadPullRequest(
     activeThreadRef?.environmentId ?? null,
     linkedThreadPullRequest,
@@ -4880,18 +4870,6 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activeThreadPr, openThreadPullRequest]);
   const pullRequestSurfaceAvailable =
     supportsPullRequests && activeThreadPr !== null && threadRepository !== null;
-  // Primitive slice of the displayed PR for the settle-rule memos below:
-  // resolveDisplayedThreadPr returns a fresh object every render, so memoize
-  // on the fields the rules read instead of the object identity.
-  const activeThreadPrState = activeThreadPr?.state ?? null;
-  const activeThreadPrUpdatedAt = activeThreadPr?.updatedAt ?? null;
-  const activeThreadChangeRequest = useMemo(
-    () =>
-      activeThreadPrState === null
-        ? null
-        : { state: activeThreadPrState, updatedAt: activeThreadPrUpdatedAt },
-    [activeThreadPrState, activeThreadPrUpdatedAt],
-  );
   const supportsSettlement = serverConfig?.environment.capabilities.threadSettlement === true;
   const supportsSnooze = serverConfig?.environment.capabilities.threadSnooze === true;
   const supportsPinning = serverConfig?.environment.capabilities.threadPinning === true;
@@ -4922,21 +4900,13 @@ function ChatViewContent(props: ChatViewProps) {
     if (activeThreadRef === null || activeThreadWokeAt === null) return;
     markThreadVisited(scopedThreadKey(activeThreadRef), activeThreadWokeAt);
   }, [activeThreadRef, activeThreadWokeAt, markThreadVisited]);
-  // Mirror of the sidebar's Woke pill for the open thread. It uses the same
-  // visit comparison and change request settle rule.
+  // Mirror of the sidebar's Woke pill for the open thread.
   const activeThreadLastVisitedAt = useUiStateStore((store) =>
     activeThreadKey === null ? undefined : store.threadLastVisitedAtById[activeThreadKey],
   );
   const activeThreadWokeVisible = useMemo(() => {
     if (activeThreadWokeAt === null) return false;
-    if (
-      changeRequestAutoSettles(activeThreadChangeRequest, {
-        autoSettleOnMerge,
-        thread: activeThreadShell,
-      })
-    ) {
-      return false;
-    }
+    if (activeThreadShell?.settledOverride === "settled") return false;
     const wokeAtMs = Date.parse(activeThreadWokeAt);
     if (Number.isNaN(wokeAtMs)) return false;
     // Having the thread open counts as a visit at completedAt (the effect
@@ -4956,27 +4926,8 @@ function ChatViewContent(props: ChatViewProps) {
   }, [
     activeLatestTurn?.completedAt,
     activeThreadLastVisitedAt,
-    activeThreadChangeRequest,
     activeThreadShell,
     activeThreadWokeAt,
-    autoSettleOnMerge,
-  ]);
-  const activeThreadSettled = useMemo(() => {
-    if (activeThreadShell === null || !supportsSettlement) return false;
-    return effectiveSettled(activeThreadShell, {
-      now: `${nowMinute}:00.000Z`,
-      autoSettleAfterDays,
-      autoSettleOnMerge,
-      changeRequest: activeThreadChangeRequest,
-    });
-  }, [
-    activeThreadChangeRequest,
-    activeThreadShell,
-    autoSettleAfterDays,
-    autoSettleOnMerge,
-    changeRequestSnapshotByKey,
-    nowMinute,
-    supportsSettlement,
   ]);
   // ------------------------------------------------------------------
   // Cross-account handoff
@@ -5088,6 +5039,8 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadContinuedFrom, activeThreadId, allThreadShells, threadHandoffEntries],
   );
 
+  const activeThreadSettled =
+    supportsSettlement && activeThreadShell?.settledOverride === "settled";
   const unsettleThreadMutation = useAtomCommand(threadEnvironment.unsettle, {
     reportFailure: false,
   });
@@ -8311,7 +8264,6 @@ function ChatViewContent(props: ChatViewProps) {
             {...(routeKind === "draft" && draftId ? { draftId } : {})}
             activeThreadTitle={activeThread.title}
             isServerThread={isServerThread}
-            changeRequest={activeThreadChangeRequest}
             activeProjectName={activeProject?.title}
             activeProjectCwd={activeProject?.workspaceRoot ?? null}
             activeProjectFaviconPath={activeProject?.faviconPath ?? null}

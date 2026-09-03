@@ -620,6 +620,7 @@ function makeManager(input?: {
   textGeneration?: Partial<FakeGitTextGeneration>;
   serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   setupScriptRunner?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"];
+  gitConfigReads?: string[];
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
@@ -629,11 +630,30 @@ function makeManager(input?: {
 
   const serverSettingsLayer = ServerSettings.ServerSettingsService.layerTest(input?.serverSettings);
 
-  const vcsDriverLayer = GitVcsDriver.layer.pipe(
-    Layer.provideMerge(VcsProcess.layer),
-    Layer.provideMerge(NodeServices.layer),
-    Layer.provideMerge(serverConfigLayer),
-  );
+  const vcsDriverLayer = input?.gitConfigReads
+    ? Layer.effect(
+        GitVcsDriver.GitVcsDriver,
+        GitVcsDriver.make.pipe(
+          Effect.map((service) =>
+            GitVcsDriver.GitVcsDriver.of({
+              ...service,
+              readConfigValue: (cwd, key) =>
+                Effect.sync(() => input.gitConfigReads?.push(key)).pipe(
+                  Effect.andThen(service.readConfigValue(cwd, key)),
+                ),
+            }),
+          ),
+        ),
+      ).pipe(
+        Layer.provideMerge(VcsProcess.layer),
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(serverConfigLayer),
+      )
+    : GitVcsDriver.layer.pipe(
+        Layer.provideMerge(VcsProcess.layer),
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(serverConfigLayer),
+      );
   const sourceControlRegistryLayer = Layer.effect(
     SourceControlProviderRegistry.SourceControlProviderRegistry,
     GitHubSourceControlProvider.make.pipe(
@@ -955,6 +975,30 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("a warm PR cache does not reread repository identity for status", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/status-identity-cache"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/status-identity-cache"]);
+
+      const gitConfigReads: string[] = [];
+      const { manager } = yield* makeManager({ gitConfigReads });
+
+      yield* manager.remoteStatus({ cwd: repoDir }, { refreshUpstream: false });
+      gitConfigReads.length = 0;
+      yield* manager.remoteStatus({ cwd: repoDir }, { refreshUpstream: false });
+
+      const identityReads = gitConfigReads.filter(
+        (key) =>
+          key === "branch.feature/status-identity-cache.remote" || key === "remote.origin.url",
+      );
+      expect(identityReads).toHaveLength(0);
+    }),
+  );
+
   it.effect("status skips the provider lookup for a branch that was never pushed", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
@@ -971,6 +1015,446 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(status.refName).toBe("feature/never-pushed");
       expect(status.pr).toBeNull();
       expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(0);
+    }),
+  );
+
+  it.effect("branch PR lookup returns null when the repository has no remotes", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const { manager, ghCalls } = yield* makeManager();
+
+      const pullRequest = yield* manager.branchPullRequest({ cwd: repoDir, branch: "main" });
+
+      expect(pullRequest).toBeNull();
+      expect(ghCalls).toHaveLength(0);
+    }),
+  );
+
+  it.effect("branch PR lookup uses a saved tracked branch without changing checkout", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/saved-branch"]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/saved-branch"]);
+      yield* runGit(repoDir, ["checkout", "main"]);
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          prListSequence: [
+            // Fake gh returns raw JSON stdout, matching the CLI boundary under test.
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 216,
+                title: "Saved branch PR",
+                url: "https://github.com/pingdotgg/t3code/pull/216",
+                baseRefName: "main",
+                headRefName: "feature/saved-branch",
+                state: "OPEN",
+                updatedAt: "2026-04-03T15:00:00Z",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const pullRequest = yield* manager.branchPullRequest({
+        cwd: repoDir,
+        branch: "feature/saved-branch",
+      });
+
+      expect(pullRequest).toEqual({
+        state: "open",
+        updatedAt: "2026-04-03T15:00:00.000Z",
+      });
+      expect((yield* runGit(repoDir, ["branch", "--show-current"])).stdout.trim()).toBe("main");
+    }),
+  );
+
+  it.effect("branch PR lookup uses the default branch from a non-origin remote", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "upstream", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "upstream", "main"]);
+      yield* runGit(repoDir, ["checkout", "-b", "develop"]);
+      yield* runGit(repoDir, ["push", "-u", "upstream", "develop"]);
+      yield* runGit(remoteDir, ["symbolic-ref", "HEAD", "refs/heads/develop"]);
+      yield* runGit(repoDir, ["remote", "set-head", "upstream", "develop"]);
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          // Fake gh returns raw JSON stdout, matching the CLI boundary under test.
+          prListSequence: [
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 221,
+                title: "Merged main PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/221",
+                baseRefName: "develop",
+                headRefName: "main",
+                state: "MERGED",
+                updatedAt: "2026-04-08T15:00:00Z",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const pullRequest = yield* manager.branchPullRequest({ cwd: repoDir, branch: "main" });
+
+      expect(pullRequest).toEqual({
+        state: "merged",
+        updatedAt: "2026-04-08T15:00:00.000Z",
+      });
+    }),
+  );
+
+  it.effect("branch PR lookup uses the saved name after the local branch is deleted", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/deleted-local-branch"]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/deleted-local-branch"]);
+      yield* runGit(repoDir, ["checkout", "main"]);
+      yield* runGit(repoDir, ["branch", "-D", "feature/deleted-local-branch"]);
+      yield* runGit(repoDir, ["branch", "feature/deleted-local-branch/child"]);
+      yield* runGit(repoDir, [
+        "branch",
+        "--set-upstream-to",
+        "origin/main",
+        "feature/deleted-local-branch/child",
+      ]);
+
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListSequence: [
+            // Fake gh returns raw JSON stdout, matching the CLI boundary under test.
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 217,
+                title: "Deleted local branch PR",
+                url: "https://github.com/pingdotgg/t3code/pull/217",
+                baseRefName: "main",
+                headRefName: "feature/deleted-local-branch",
+                state: "MERGED",
+                updatedAt: "2026-04-04T15:00:00Z",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const pullRequest = yield* manager.branchPullRequest({
+        cwd: repoDir,
+        branch: "feature/deleted-local-branch",
+      });
+
+      expect(pullRequest).toEqual({
+        state: "merged",
+        updatedAt: "2026-04-04T15:00:00.000Z",
+      });
+      expect(ghCalls.some((call) => call.includes("--head feature/deleted-local-branch"))).toBe(
+        true,
+      );
+    }),
+  );
+
+  it.effect("branch PR lookup recovers a deleted fork branch from its remote-tracking ref", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const originDir = yield* createBareRemote();
+      const forkDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* configureRemote(repoDir, "team/fork", forkDir, "team/fork");
+      yield* runGit(repoDir, ["checkout", "-b", "feature/deleted-fork-branch"]);
+      yield* runGit(repoDir, ["push", "-u", "team/fork", "feature/deleted-fork-branch"]);
+      yield* runGit(repoDir, ["checkout", "main"]);
+      yield* runGit(repoDir, ["branch", "-D", "feature/deleted-fork-branch"]);
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "origin",
+        "git@github.com:pingdotgg/codething-mvp.git",
+        originDir,
+      );
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "team/fork",
+        "git@github.com:contributor/codething-mvp.git",
+        forkDir,
+      );
+
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            // Fake gh returns raw JSON stdout, matching the CLI boundary under test.
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            "contributor:feature/deleted-fork-branch": JSON.stringify([
+              {
+                number: 218,
+                title: "Deleted fork branch PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/218",
+                baseRefName: "main",
+                headRefName: "feature/deleted-fork-branch",
+                state: "MERGED",
+                updatedAt: "2026-04-05T15:00:00Z",
+                isCrossRepository: true,
+                headRepository: { nameWithOwner: "contributor/codething-mvp" },
+                headRepositoryOwner: { login: "contributor" },
+              },
+            ]),
+          },
+        },
+      });
+
+      const pullRequest = yield* manager.branchPullRequest({
+        cwd: repoDir,
+        branch: "feature/deleted-fork-branch",
+      });
+
+      expect(pullRequest).toEqual({
+        state: "merged",
+        updatedAt: "2026-04-05T15:00:00.000Z",
+      });
+      expect(
+        ghCalls.some((call) => call.includes("--head contributor:feature/deleted-fork-branch")),
+      ).toBe(true);
+    }),
+  );
+
+  it.effect("branch PR lookup rejects ambiguous deleted-branch remote refs", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const originDir = yield* createBareRemote();
+      const forkDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["remote", "add", "fork", forkDir]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/ambiguous-remote"]);
+      yield* runGit(repoDir, ["push", "origin", "feature/ambiguous-remote"]);
+      yield* runGit(repoDir, ["push", "fork", "feature/ambiguous-remote"]);
+      yield* runGit(repoDir, ["checkout", "main"]);
+      yield* runGit(repoDir, ["branch", "-D", "feature/ambiguous-remote"]);
+      const { manager, ghCalls } = yield* makeManager();
+
+      const error = yield* manager
+        .branchPullRequest({ cwd: repoDir, branch: "feature/ambiguous-remote" })
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "GitManagerError",
+        detail: "Multiple remotes track feature/ambiguous-remote. Its pull request is ambiguous.",
+      });
+      expect(ghCalls).toHaveLength(0);
+    }),
+  );
+
+  it.effect("branch PR lookup does not reuse a cached PR after the remote is repointed", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const originalRemoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originalRemoteDir]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/repointed-lookup"]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/repointed-lookup"]);
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "origin",
+        "git@github.com:old-owner/old-repository.git",
+        originalRemoteDir,
+      );
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListSequence: [
+            // Fake gh returns raw JSON stdout, matching the CLI boundary under test.
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 219,
+                title: "Old repository PR",
+                url: "https://github.com/old-owner/old-repository/pull/219",
+                baseRefName: "main",
+                headRefName: "feature/repointed-lookup",
+                state: "MERGED",
+                updatedAt: "2026-04-06T15:00:00Z",
+              },
+            ]),
+            "[]",
+          ],
+        },
+      });
+
+      const first = yield* manager.branchPullRequest({
+        cwd: repoDir,
+        branch: "feature/repointed-lookup",
+      });
+      expect(first?.state).toBe("merged");
+
+      const replacementRemoteDir = yield* createBareRemote();
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "origin",
+        "git@github.com:new-owner/new-repository.git",
+        replacementRemoteDir,
+      );
+
+      const second = yield* manager.branchPullRequest({
+        cwd: repoDir,
+        branch: "feature/repointed-lookup",
+      });
+
+      expect(second).toBeNull();
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
+    }),
+  );
+
+  it.effect("branch PR lookup shares the status cache for the same repository identity", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/shared-pr-cache"]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/shared-pr-cache"]);
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListSequence: [
+            // Fake gh returns raw JSON stdout, matching the CLI boundary under test.
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 220,
+                title: "Shared cache PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/220",
+                baseRefName: "main",
+                headRefName: "feature/shared-pr-cache",
+                state: "MERGED",
+                updatedAt: "2026-04-07T15:00:00Z",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const status = yield* manager.status({ cwd: repoDir });
+      const pullRequest = yield* manager.branchPullRequest({
+        cwd: repoDir,
+        branch: "feature/shared-pr-cache",
+      });
+
+      expect(status.pr?.state).toBe("merged");
+      expect(pullRequest?.state).toBe("merged");
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+    }),
+  );
+
+  it.effect("branch PR lookup propagates provider failures", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/lookup-failure"]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/lookup-failure"]);
+      yield* runGit(repoDir, ["checkout", "main"]);
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          failWith: new GitHubCli.GitHubCliUnavailableError({
+            command: "gh",
+            cwd: repoDir,
+            cause: new Error("gh is not available on PATH"),
+          }),
+        },
+      });
+
+      const error = yield* manager
+        .branchPullRequest({ cwd: repoDir, branch: "feature/lookup-failure" })
+        .pipe(Effect.flip);
+
+      expect(error._tag).toBe("SourceControlProviderError");
+    }),
+  );
+
+  it.effect("status finds a merged PR after its remote branch was deleted", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/merged-branch-deleted"]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/merged-branch-deleted"]);
+
+      // GitHub commonly deletes a pull request's head branch after merge. Git
+      // removes the remote-tracking ref, but preserves the local branch's
+      // remote and merge configuration as evidence that it was published.
+      yield* runGit(repoDir, ["push", "origin", "--delete", "feature/merged-branch-deleted"]);
+      const configuredRemote = yield* runGit(repoDir, [
+        "config",
+        "--get",
+        "branch.feature/merged-branch-deleted.remote",
+      ]);
+      const configuredMerge = yield* runGit(repoDir, [
+        "config",
+        "--get",
+        "branch.feature/merged-branch-deleted.merge",
+      ]);
+      const trackingRef = yield* runGit(repoDir, [
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/remotes/origin/feature/merged-branch-deleted",
+      ]);
+      expect(configuredRemote.stdout.trim()).toBe("origin");
+      expect(configuredMerge.stdout.trim()).toBe("refs/heads/feature/merged-branch-deleted");
+      expect(trackingRef.stdout.trim()).toBe("");
+
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListSequence: [
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 215,
+                title: "Merged branch was deleted",
+                url: "https://github.com/pingdotgg/t3code/pull/215",
+                baseRefName: "main",
+                headRefName: "feature/merged-branch-deleted",
+                state: "MERGED",
+                mergedAt: "2026-04-02T15:00:00Z",
+                updatedAt: "2026-04-02T15:00:00Z",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const status = yield* manager.status({ cwd: repoDir });
+
+      expect(status.hasUpstream).toBe(false);
+      expect(status.pr).toEqual({
+        number: 215,
+        title: "Merged branch was deleted",
+        url: "https://github.com/pingdotgg/t3code/pull/215",
+        baseRef: "main",
+        headRef: "feature/merged-branch-deleted",
+        state: "merged",
+        updatedAt: "2026-04-02T15:00:00.000Z",
+      });
+      expect(ghCalls.filter((call) => call.startsWith("pr list ")).length).toBeGreaterThan(0);
     }),
   );
 
@@ -1039,6 +1523,19 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
                 updatedAt: "2026-04-02T10:00:00Z",
               },
             ]),
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 512,
+                title: "Merged then pruned",
+                url: "https://github.com/pingdotgg/t3code/pull/512",
+                baseRefName: "main",
+                headRefName: "feature/merged-then-pruned",
+                state: "MERGED",
+                mergedAt: "2026-04-02T10:00:00Z",
+                updatedAt: "2026-04-02T10:00:00Z",
+              },
+            ]),
           ],
         },
       });
@@ -1048,11 +1545,11 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(first.pr?.state).toBe("merged");
 
       // Merging on the host deletes the remote head, and a prune drops the
-      // remote-tracking ref along with `@{upstream}`. From remote refs alone
-      // that is indistinguishable from a branch that was never published, so
-      // the unpublished-branch skip fires here. Skipping means "we did not
-      // ask", not "there is no PR": blanking the badge would also deny
-      // auto-settle the merged state it waits for.
+      // remote-tracking ref along with `@{upstream}`. #8600 made that
+      // distinguishable from a never-published branch: prune leaves
+      // `branch.<name>.remote` and `.merge` behind as evidence the branch was
+      // published, so the lookup runs instead of skipping and the badge comes
+      // from live state rather than the last-known fallback.
       yield* runGit(repoDir, ["push", "origin", "--delete", "feature/merged-then-pruned"]);
       yield* runGit(repoDir, ["fetch", "--prune", "origin"]);
 
@@ -1061,8 +1558,8 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
 
       expect(second.pr?.number).toBe(512);
       expect(second.pr?.state).toBe("merged");
-      // The saved API call is the point of the skip, so it must still be saved.
-      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+      // The branch is now identifiable as published, so asking again is correct.
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
     }),
   );
 
