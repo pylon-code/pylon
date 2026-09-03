@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
@@ -37,12 +38,33 @@ export const make = Effect.gen(function* () {
   const git = yield* GitManager.GitManager;
   const pullRequests = yield* PullRequestService.PullRequestService;
   const crypto = yield* Crypto.Crypto;
+  const fileSystem = yield* FileSystem.FileSystem;
 
   const sweep = Effect.fn("ThreadSettlementReactor.sweep")(function* () {
     const snapshot = yield* snapshots.getShellSnapshot();
     const now = DateTime.formatIso(yield* DateTime.now);
     const projects = new Map(snapshot.projects.map((project) => [project.id, project]));
     const candidates = snapshot.threads.filter((thread) => isAutoSettlementCandidate(thread, now));
+    // Use the same cwd as the sidebar so both paths share GitManager's PR cache.
+    const lookupCwdByThreadId = new Map<string, string>();
+    yield* Effect.forEach(
+      candidates,
+      (thread) =>
+        Effect.gen(function* () {
+          const project = projects.get(thread.projectId);
+          if (project === undefined || thread.linkedPullRequest != null) return;
+          const worktreeExists =
+            thread.worktreePath !== null &&
+            (yield* fileSystem.exists(thread.worktreePath).pipe(Effect.orElseSucceed(() => false)));
+          lookupCwdByThreadId.set(
+            thread.id,
+            worktreeExists && thread.worktreePath !== null
+              ? thread.worktreePath
+              : project.workspaceRoot,
+          );
+        }),
+      { concurrency: 8, discard: true },
+    );
     const lookupKey = (thread: (typeof candidates)[number]) => {
       if (thread.linkedPullRequest != null) {
         return JSON.stringify([
@@ -53,11 +75,9 @@ export const make = Effect.gen(function* () {
         ]);
       }
       if (thread.branch === null) return JSON.stringify(["none", thread.id]);
-      const project = projects.get(thread.projectId);
+      const cwd = lookupCwdByThreadId.get(thread.id);
       return JSON.stringify(
-        project === undefined
-          ? ["missing-project", thread.id]
-          : ["branch", project.workspaceRoot, thread.branch],
+        cwd === undefined ? ["missing-project", thread.id] : ["branch", cwd, thread.branch],
       );
     };
     const groups = Map.groupBy(candidates, lookupKey);
@@ -83,11 +103,11 @@ export const make = Effect.gen(function* () {
         } satisfies SettlementPullRequest;
       }
       if (thread.branch === null) return null;
-      const project = projects.get(thread.projectId);
-      if (project === undefined) {
+      const cwd = lookupCwdByThreadId.get(thread.id);
+      if (cwd === undefined) {
         return yield* Effect.die(new Error("thread project not found"));
       }
-      return yield* git.branchPullRequest({ cwd: project.workspaceRoot, branch: thread.branch });
+      return yield* git.branchPullRequest({ cwd, branch: thread.branch });
     });
 
     yield* Effect.forEach(
