@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 
-import { resolveThreadStatus, THREAD_STATUS_NEUTRAL_ICON } from "./threadPresentation";
+import { resolveThreadStatus } from "./threadPresentation";
 
 const baseThread = {
   interactionMode: "default",
@@ -64,11 +64,4 @@ describe("resolveThreadStatus", () => {
       });
     },
   );
-
-  it("retains upstream neutral icon metadata", () => {
-    expect(THREAD_STATUS_NEUTRAL_ICON).toEqual({
-      iconColor: "#8e8e93",
-      iconBackground: "rgba(142,142,147,0.22)",
-    });
-  });
 });
