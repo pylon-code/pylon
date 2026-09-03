@@ -840,6 +840,9 @@ export interface ChatComposerProps {
   composerTerminalContextsRef: React.RefObject<TerminalContextDraft[]>;
   composerElementContextsRef: React.RefObject<ElementContextDraft[]>;
   composerRef: React.RefObject<ChatComposerHandle | null>;
+  onPageScrollKeyDown: (key: "PageUp" | "PageDown") => void;
+  onPageScrollKeyUp: (key: string) => void;
+  onPageScrollRelease: () => void;
 
   // Cross-account handoff. Resolved by the parent, which owns the thread
   // creation the offer leads to; the composer only shows it.
@@ -969,6 +972,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     threadHandoffOffer,
     isContinuingThreadOnAccount,
     isStartingProviderConflictThread,
+    onPageScrollKeyDown,
+    onPageScrollKeyUp,
+    onPageScrollRelease,
     onSend,
     onQueueFollowUp,
     onClearSessionInputQueue,
@@ -5008,6 +5014,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                     onChange={onPromptChange}
                     onCommandKeyDown={onComposerCommandKey}
+                    onPageScrollKeyDown={onPageScrollKeyDown}
+                    onPageScrollKeyUp={onPageScrollKeyUp}
+                    onPageScrollRelease={onPageScrollRelease}
                     onPaste={onComposerPaste}
                     placeholder={
                       isComposerApprovalState
