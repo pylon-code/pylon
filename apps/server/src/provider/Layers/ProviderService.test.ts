@@ -3900,6 +3900,7 @@ const boundedListing = makeProviderServiceLayer({
   directory: {
     upsert: () => Effect.void,
     getProvider: () => Effect.die("ProviderService.listSessions does not use getProvider"),
+    removeExact: () => Effect.die("ProviderService.listSessions does not use removeExact"),
     getBinding,
     listThreadIds,
     listBindings: () => Effect.die("ProviderService.listSessions does not use listBindings"),
