@@ -1744,7 +1744,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 // keystroke makes resolveTranscriptCommit see a changed draft and
                 // discard the whole transcript as stale.
                 readOnly={voiceInput.freezesEditor}
-                skills={selectedProviderStatus?.skills ?? []}
+                skills={composerMenu.skills}
                 selection={composerMenu.selection}
                 onChangeText={props.onChangeDraftMessage}
                 onSelectionChange={composerMenu.onSelectionChange}
