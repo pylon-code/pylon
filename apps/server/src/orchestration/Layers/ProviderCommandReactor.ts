@@ -1610,7 +1610,9 @@ const make = Effect.gen(function* () {
       }
       const sendTurnRequest = yield* buildSendTurnRequestForThread({
         threadId: event.payload.threadId,
-        messageText: assistantCitationsToPlainText(message.text),
+        // Citations stay intact on the wire; ProviderService expands them for
+        // the provider. Only title and branch generation get plain text.
+        messageText: message.text,
         ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
         ...(event.payload.modelSelection !== undefined
           ? { modelSelection: event.payload.modelSelection }

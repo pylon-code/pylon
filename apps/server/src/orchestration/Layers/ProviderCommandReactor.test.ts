@@ -2831,6 +2831,9 @@ describe("ProviderCommandReactor", () => {
       thread?.messages.find((entry) => entry.id === asMessageId("user-message-title-formatted"))
         ?.text,
     ).toBe(prompt);
+    // Pylon admits a turn before starting it, so the provider send is
+    // asynchronous relative to drain(); wait for it rather than assume it.
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ input: prompt });
   });
 
