@@ -165,6 +165,56 @@ export const mergeProviderSnapshot = (
           : {}),
       };
 
+export interface ProviderCapacityOverlayBackend {
+  readonly backend: ServerProviderBackend;
+  readonly retentionIdentity?: string | undefined;
+}
+
+function newestRetainedUsage(
+  candidates: ReadonlyArray<ServerProviderBackend["usageLimits"]>,
+  nowMs: number,
+): ServerProviderBackend["usageLimits"] {
+  let newest: ServerProviderBackend["usageLimits"];
+  let newestMs = Number.NEGATIVE_INFINITY;
+  for (const candidate of candidates) {
+    if (!candidate || !isRetainedUsageFresh({ checkedAt: candidate.checkedAt, nowMs })) continue;
+    const checkedAtMs = Date.parse(candidate.checkedAt);
+    if (checkedAtMs > newestMs) {
+      newest = candidate;
+      newestMs = checkedAtMs;
+    }
+  }
+  return newest;
+}
+
+/** Keep only the newest same-account capacity across turn and periodic reads. */
+export function mergeProviderCapacityRefresh(input: {
+  readonly previousBackends: ReadonlyArray<ProviderCapacityOverlayBackend>;
+  readonly refresh: ProviderCapacityRefresh;
+  readonly nowMs: number;
+}): ReadonlyArray<ProviderCapacityOverlayBackend> {
+  return input.refresh.backends.map((read) => {
+    const overlay = {
+      backend: read.backend,
+      ...(read.retentionIdentity ? { retentionIdentity: read.retentionIdentity } : {}),
+    } satisfies ProviderCapacityOverlayBackend;
+    const { usageLimits: sharedUsage, ...withoutUsage } = read.backend;
+    if (!read.retentionIdentity) {
+      return read.didReadCapacity ? overlay : { ...overlay, backend: withoutUsage };
+    }
+    const previous = input.previousBackends.find(
+      (candidate) =>
+        candidate.backend.backend === read.backend.backend &&
+        candidate.retentionIdentity === read.retentionIdentity,
+    );
+    const retained = newestRetainedUsage([sharedUsage, previous?.backend.usageLimits], input.nowMs);
+    return {
+      ...overlay,
+      backend: retained ? { ...withoutUsage, usageLimits: retained } : withoutUsage,
+    };
+  });
+}
+
 export const haveProvidersChanged = (
   previousProviders: ReadonlyArray<ServerProvider>,
   nextProviders: ReadonlyArray<ServerProvider>,

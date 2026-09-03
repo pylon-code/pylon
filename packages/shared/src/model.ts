@@ -39,6 +39,17 @@ export function getProviderOptionSelectionValue(
   return getRawSelectionValueById(selections, id);
 }
 
+/**
+ * Read one provider option off a model selection. Kept in Pylon because the
+ * Prime Agent backend resolves thinking level and service tier this way.
+ */
+export function getModelSelectionOptionValue(
+  modelSelection: ModelSelection | null | undefined,
+  id: string,
+): string | boolean | undefined {
+  return getProviderOptionSelectionValue(modelSelection?.options, id);
+}
+
 export function getProviderOptionStringSelectionValue(
   selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
   id: string,
