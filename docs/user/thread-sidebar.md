@@ -19,6 +19,10 @@ live background work keep the thread active. Pylon settles from a closed or merg
 only when its timestamp is not older than the user's latest activity. If that timestamp is not
 available, the inactivity rule still applies. A manual un-settle also keeps the thread active.
 
+**Settled** lists threads by when their work finished, newest first. A thread you settle yourself
+sorts by the moment you settled it. A thread that settled on its own sorts by its last message or
+turn, not by when the server noticed it was inactive.
+
 Change these rules in **Settings > General**. The change is written to every environment you are
 connected to at that moment. An environment that is offline keeps its old value. When a connected
 environment holds a different value, **Settings > General** shows a warning that names it. Choose
