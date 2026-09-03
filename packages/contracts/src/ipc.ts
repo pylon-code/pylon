@@ -693,15 +693,6 @@ export interface DesktopPreviewRecordingFrame {
   receivedAt: string;
 }
 
-export const DesktopPreviewRecordingFrameSchema: Schema.Codec<DesktopPreviewRecordingFrame> =
-  Schema.Struct({
-    tabId: DesktopPreviewTabIdSchema,
-    data: Schema.String,
-    width: Schema.Number,
-    height: Schema.Number,
-    receivedAt: Schema.String,
-  });
-
 export interface DesktopPreviewRecordingSource {
   sourceId: string;
   width: number;
