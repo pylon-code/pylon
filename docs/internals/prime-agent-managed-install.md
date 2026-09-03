@@ -74,7 +74,9 @@ use-stock, and cleanup. Preview additionally requires `channel: preview` plus `a
 Web and desktop Provider Settings expose status, signed stable and explicit-preview actions, progress
 and terminal errors, exact rollback builds, switch-back, and cleanup. Mobile reads status for every
 Prime instance on each connected environment and directs host changes to web or desktop Provider
-Settings. Native Windows returns WSL2 guidance before filesystem, network, provider, or runtime I/O.
+Settings. Public maintenance build rows contain only build id, channel, and sequence. Binary paths and
+package roots remain environment-native server state and never cross the RPC boundary. Native Windows
+returns WSL2 guidance before filesystem, network, provider, or runtime I/O.
 
 ## Replay, offline, and cleanup rules
 

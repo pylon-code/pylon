@@ -12,6 +12,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Stream from "effect/Stream";
 
+import { makePrimeArtifactGraduationHarness } from "./PrimeAgentArtifactGraduation.test-fixture.ts";
 import type { PrimeDaemonEvent } from "./PrimeAgentDaemonEvents.ts";
 import { sanitizePrimeAgentDaemonEnvironment } from "./PrimeAgentDaemonBridge.ts";
 import { makePrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
@@ -20,11 +21,16 @@ import {
   type PrimeAgentDaemonSessionRuntime,
 } from "./PrimeAgentDaemonSessionRuntime.ts";
 
-const configuredExecutable = process.env.PYLON_REAL_PRIME_AGENT?.trim();
+const configuredArtifactDirectory = process.env.PYLON_PRIME_ARTIFACT_DIR?.trim();
+const configuredPreviewTag = process.env.PYLON_PRIME_PREVIEW_TAG?.trim();
+const configuredStockBinary = process.env.PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN?.trim();
 const configuredAuthHome = process.env.PYLON_REAL_PRIME_AGENT_AUTH_HOME?.trim();
+const configuredGraduationArtifact = Boolean(
+  configuredArtifactDirectory && configuredPreviewTag && configuredStockBinary,
+);
 const providerInstanceId = ProviderInstanceId.make("prime-real-integration");
 
-const makeTestIdentity = (agentHomePath: string) => ({
+const makeTestIdentity = (agentHomePath: string, executablePath: string) => ({
   instanceId: providerInstanceId,
   generation: { _tag: "PrimeAgentRuntimeGeneration" as const },
   configRevision: "real-integration-test",
@@ -41,7 +47,7 @@ const makeTestIdentity = (agentHomePath: string) => ({
   }),
   settings: {
     enabled: true,
-    binaryPath: configuredExecutable ?? "prime-agent",
+    binaryPath: executablePath,
     agentHomePath,
     launchArgs: "",
     customModels: [],
@@ -139,19 +145,13 @@ function drainEvents(input: {
   );
 }
 
-it.live.skipIf(!configuredExecutable)(
+it.live.skipIf(!configuredGraduationArtifact)(
   "covers real daemon Phase-1 turn, control, restart, interruption, and cleanup",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
         const platform = yield* HostProcessPlatform;
         if (platform === "win32") return;
-        if (!configuredExecutable || !NodePath.isAbsolute(configuredExecutable)) {
-          return yield* Effect.die(
-            new Error("PYLON_REAL_PRIME_AGENT must be an absolute executable path"),
-          );
-        }
-
         const fileSystem = yield* FileSystem.FileSystem;
         const root = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "pylon-real-prime-daemon-",
@@ -177,13 +177,37 @@ it.live.skipIf(!configuredExecutable)(
             }
           }
         }
+        const graduation = yield* Effect.promise(() =>
+          makePrimeArtifactGraduationHarness({
+            stateDir,
+            artifactDirectory: configuredArtifactDirectory!,
+            previewTag: configuredPreviewTag!,
+            stockBinaryPath: configuredStockBinary!,
+            platform,
+          }),
+        );
+        const installation = yield* Effect.promise(() =>
+          graduation.command({
+            commandId: "real-daemon-graduation-install",
+            action: "install",
+            channel: "preview",
+            allowPreview: true,
+            scheduleIfBusy: false,
+          }),
+        );
+        if (installation.status !== "succeeded") {
+          return yield* Effect.die(
+            new Error(`Verified Prime graduation install failed: ${installation.message}`),
+          );
+        }
+        const executablePath = graduation.binding().binaryPath;
 
         const first = yield* Effect.scoped(
           Effect.gen(function* () {
-            const identity = makeTestIdentity(agentHomePath);
+            const identity = makeTestIdentity(agentHomePath, executablePath);
             const runtimeContext = makeTestRuntimeContext(identity);
             const manager = yield* makePrimeAgentDaemonManager({
-              executablePath: configuredExecutable,
+              executablePath,
               identity,
               stateDir,
               tempDir: "/tmp",
@@ -382,10 +406,10 @@ it.live.skipIf(!configuredExecutable)(
 
         const restarted = yield* Effect.scoped(
           Effect.gen(function* () {
-            const identity = makeTestIdentity(agentHomePath);
+            const identity = makeTestIdentity(agentHomePath, executablePath);
             const runtimeContext = makeTestRuntimeContext(identity);
             const manager = yield* makePrimeAgentDaemonManager({
-              executablePath: configuredExecutable,
+              executablePath,
               identity,
               stateDir,
               tempDir: "/tmp",

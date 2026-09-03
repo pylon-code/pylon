@@ -35,6 +35,7 @@ import {
   type PrimePublicationFixture,
   type PrimeSlsaStatement,
   type VerifiedPrimePublication,
+  verifyPrimePublicationArtifactDirectory,
   verifyPrimePublicationFixture,
 } from "./PrimeAgentDistributionVerifier.ts";
 
@@ -777,6 +778,21 @@ describe("Pylon Prime publication verification", () => {
     expect(
       requireRealPrimePublicationFixture({ tag: BUILD_ID, artifactDirectory: "/tmp/prime-proof" }),
     ).toEqual({ tag: BUILD_ID, artifactDirectory: "/tmp/prime-proof" });
+  });
+
+  it("rejects an incomplete downloaded artifact fixture before trust or archive use", async () => {
+    const directory = await NodeFSP.realpath(
+      await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pylon-prime-artifact-fixture-")),
+    );
+    temporaryDirectories.push(directory);
+
+    await expect(
+      verifyPrimePublicationArtifactDirectory({
+        tag: BUILD_ID,
+        artifactDirectory: directory,
+        tufCachePath: NodePath.join(directory, "tuf"),
+      }),
+    ).rejects.toThrow(/fixture root set is not exact/u);
   });
 });
 

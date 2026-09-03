@@ -53,5 +53,6 @@ policy in [CONTRIBUTING.md](../CONTRIBUTING.md); agent rules in [AGENTS.md](../A
 - [Observability](./operations/observability.md)
 - [Relay observability](./operations/relay-observability.md)
 - [Prime Agent managed rollback](./operations/prime-agent-managed-rollback.md)
+- [Prime artifact graduation](./operations/prime-artifact-graduation.md)
 - [Rollback manual recovery](./operations/rollback-manual-recovery.md)
 - [Mobile app store screenshots](./operations/mobile-app-store-screenshots.md)

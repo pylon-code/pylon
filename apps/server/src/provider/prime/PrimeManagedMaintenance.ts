@@ -217,7 +217,6 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
             buildId: build.buildId,
             channel: build.channel,
             sequence: build.sequence,
-            binaryPath: build.binaryPath,
           })),
           scheduled: result.scheduled ? contractReceipt(result.scheduled) : null,
           operation: result.operation ? contractReceipt(result.operation) : null,

@@ -1,0 +1,179 @@
+name: Prime artifact graduation
+
+on:
+  workflow_dispatch:
+    inputs:
+      preview_tag:
+        description: Exact immutable Pylon Prime preview tag (pylon-build-g<sha>-r<recipe>)
+        required: true
+        type: string
+      second_preview_tag:
+        description: Optional later immutable preview tag for a real update proof
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prime-artifact-graduation-${{ inputs.preview_tag }}-${{ inputs.second_preview_tag || 'no-update' }}
+  cancel-in-progress: false
+
+jobs:
+  graduate:
+    name: Verify and exercise exact Prime publication
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: prime-graduation
+    steps:
+      - name: Validate immutable inputs and allocate runner-local paths
+        env:
+          PREVIEW_TAG: ${{ inputs.preview_tag }}
+          SECOND_PREVIEW_TAG: ${{ inputs.second_preview_tag }}
+        run: |
+          set -euo pipefail
+          preview_pattern='^pylon-build-g[0-9a-f]{12}-r[1-9][0-9]*$'
+          [[ "$PREVIEW_TAG" =~ $preview_pattern ]]
+          if test -n "$SECOND_PREVIEW_TAG"; then
+            [[ "$SECOND_PREVIEW_TAG" =~ $preview_pattern ]]
+            test "$SECOND_PREVIEW_TAG" != "$PREVIEW_TAG"
+          fi
+          install -d -m 700 "$RUNNER_TEMP/prime-graduation-results" "$RUNNER_TEMP/prime-sigstore-tuf"
+          {
+            echo "PYLON_PRIME_GRADUATION_REQUIRED=1"
+            echo "PYLON_PRIME_PREVIEW_TAG=$PREVIEW_TAG"
+            echo "PYLON_PRIME_SECOND_PREVIEW_TAG=$SECOND_PREVIEW_TAG"
+            echo "PYLON_PRIME_ARTIFACT_DIR=$RUNNER_TEMP/prime-preview"
+            if test -n "$SECOND_PREVIEW_TAG"; then
+              echo "PYLON_PRIME_SECOND_ARTIFACT_DIR=$RUNNER_TEMP/prime-preview-second"
+            else
+              echo "PYLON_PRIME_SECOND_ARTIFACT_DIR="
+            fi
+            echo "PYLON_PRIME_STOCK_TARBALL=$RUNNER_TEMP/prime-stock/prime-agent-0.8.1.tgz"
+            echo "PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN=$RUNNER_TEMP/prime-stock-install/node_modules/.bin/prime-agent"
+            echo "PYLON_PRIME_GRADUATION_RESULT=$RUNNER_TEMP/prime-graduation-results/cases.json"
+            echo "PYLON_REAL_PRIME_AGENT_MULTI_PROOF=1"
+            echo "PYLON_REAL_PRIME_AGENT_MULTI_COUNT=2"
+          } >> "$GITHUB_ENV"
+
+      - name: Checkout exact Pylon revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15 # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Download exact public preview, attestations, and frozen stock package
+        env:
+          PREVIEW_TAG: ${{ inputs.preview_tag }}
+        run: |
+          set -euo pipefail
+          node apps/server/scripts/prime-artifact-graduation.ts download-preview \
+            --tag "$PREVIEW_TAG" \
+            --artifact-directory "$RUNNER_TEMP/prime-preview"
+          node apps/server/scripts/prime-artifact-graduation.ts download-stock \
+            --stock-directory "$RUNNER_TEMP/prime-stock"
+
+      - name: Download optional exact second preview
+        if: inputs.second_preview_tag != ''
+        env:
+          SECOND_PREVIEW_TAG: ${{ inputs.second_preview_tag }}
+        run: |
+          set -euo pipefail
+          node apps/server/scripts/prime-artifact-graduation.ts download-preview \
+            --tag "$SECOND_PREVIEW_TAG" \
+            --artifact-directory "$RUNNER_TEMP/prime-preview-second"
+
+      - name: Verify downloaded publication before any preview extraction or execution
+        env:
+          PREVIEW_TAG: ${{ inputs.preview_tag }}
+        run: |
+          set -euo pipefail
+          node apps/server/scripts/prime-artifact-graduation.ts verify-preview \
+            --tag "$PREVIEW_TAG" \
+            --artifact-directory "$RUNNER_TEMP/prime-preview" \
+            --tuf-cache "$RUNNER_TEMP/prime-sigstore-tuf" \
+            --output "$RUNNER_TEMP/prime-graduation-results/verification.json"
+
+      - name: Verify optional second publication before any preview extraction or execution
+        if: inputs.second_preview_tag != ''
+        env:
+          SECOND_PREVIEW_TAG: ${{ inputs.second_preview_tag }}
+        run: |
+          set -euo pipefail
+          node apps/server/scripts/prime-artifact-graduation.ts verify-preview \
+            --tag "$SECOND_PREVIEW_TAG" \
+            --artifact-directory "$RUNNER_TEMP/prime-preview-second" \
+            --tuf-cache "$RUNNER_TEMP/prime-sigstore-tuf" \
+            --output "$RUNNER_TEMP/prime-graduation-results/second-verification.json"
+
+      - name: Install frozen stock fixture without lifecycle scripts
+        run: |
+          set -euo pipefail
+          npm install \
+            --prefix "$RUNNER_TEMP/prime-stock-install" \
+            --ignore-scripts \
+            --no-audit \
+            --no-fund \
+            --package-lock=false \
+            "$PYLON_PRIME_STOCK_TARBALL"
+          test -x "$PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN"
+
+      - name: Run real bridge, managed store, restart, crash-receipt, and native multi evidence
+        run: |
+          set -euo pipefail
+          vp test run \
+            apps/server/src/provider/prime/PrimeAgentArtifactGraduation.integration.test.ts \
+            apps/server/src/provider/prime/PrimeAgentDaemonBridge.test.ts \
+            apps/server/src/provider/Drivers/PrimeAgentDriver.test.ts \
+            apps/server/src/provider/prime/PrimeAgentRestartAdoption.real.test.mjs \
+            apps/server/src/provider/prime/PrimeAgentMultipleInstances.integration.test.ts \
+            --no-file-parallelism \
+            --maxWorkers=1 \
+            --reporter=json \
+            --outputFile="$RUNNER_TEMP/prime-graduation-results/vitest.json"
+
+      - name: Assert the protected gate ran with zero skips
+        run: |
+          set -euo pipefail
+          node apps/server/scripts/prime-artifact-graduation.ts assert-results \
+            --test-output "$RUNNER_TEMP/prime-graduation-results/vitest.json" \
+            --verification "$RUNNER_TEMP/prime-graduation-results/verification.json" \
+            --graduation-result "$RUNNER_TEMP/prime-graduation-results/cases.json" \
+            --output "$RUNNER_TEMP/prime-graduation-results/graduation-summary.json"
+
+      - name: Publish bounded secret-free job summary
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016
+          node -e '
+            const fs = require("node:fs");
+            const result = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/prime-graduation-results/graduation-summary.json", "utf8"));
+            const preview = result.graduation.preview.map((entry) => `- ${entry.tag}: ${entry.rootSha256}`).join("\n");
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `# Prime artifact graduation\n\n**Result:** passed\n\n**Run URL (required for stable approval):** ${process.env.RUN_URL}\n\n## Verified preview roots\n${preview}\n\n**Tests:** ${result.tests.passed} passed, ${result.tests.skipped} skipped\n`);
+          '
+
+      - name: Upload bounded graduation evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: prime-artifact-graduation-${{ inputs.preview_tag }}
+          path: |
+            ${{ runner.temp }}/prime-graduation-results/verification.json
+            ${{ runner.temp }}/prime-graduation-results/second-verification.json
+            ${{ runner.temp }}/prime-graduation-results/cases.json
+            ${{ runner.temp }}/prime-graduation-results/graduation-summary.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
