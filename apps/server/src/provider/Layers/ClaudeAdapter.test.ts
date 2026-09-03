@@ -2363,6 +2363,12 @@ describe("ClaudeAdapterLive", () => {
           resultContextWindow: 200_000,
         });
 
+        // The usage event is offered to the runtime stream after the turn
+        // closes, so drain until both snapshots land rather than racing the
+        // interrupt against the second one.
+        for (let attempt = 0; attempt < 200 && usageSnapshots.length < 2; attempt += 1) {
+          yield* Effect.yieldNow;
+        }
         yield* Fiber.interrupt(usageFiber);
 
         // The query is session-scoped: two turns, one call.
