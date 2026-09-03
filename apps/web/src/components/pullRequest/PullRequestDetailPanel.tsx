@@ -62,7 +62,7 @@ import { useProjects } from "~/state/entities";
 import { useEnvironments } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { useLiveRefresh } from "~/hooks/useLiveRefresh";
-import { pullRequestEnvironment } from "~/state/pullRequests";
+import { pullRequestEnvironment, useSharedPullRequestSummary } from "~/state/pullRequests";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { vcsEnvironment } from "~/state/vcs";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
@@ -582,12 +582,20 @@ export function PullRequestDetailPanel({
     reference.repository,
     reference.number,
   ]);
-  const coreDetail = resolveDisplayedPullRequestDetail({
+  const resolvedCoreDetail = resolveDisplayedPullRequestDetail({
     live: detailQuery.data,
     cached: cachedDetail,
     environmentId,
     reference,
   });
+  const sharedSummary = useSharedPullRequestSummary(environmentId, reference, resolvedCoreDetail);
+  const coreDetail = useMemo(
+    () =>
+      resolvedCoreDetail === null || sharedSummary === null || sharedSummary === resolvedCoreDetail
+        ? resolvedCoreDetail
+        : { ...resolvedCoreDetail, ...sharedSummary },
+    [resolvedCoreDetail, sharedSummary],
+  );
   const activity = activityQuery.data;
   const detail = useMemo(
     () =>
@@ -651,16 +659,16 @@ export function PullRequestDetailPanel({
     }
     activityRevision.current = next;
   }, [activityQuery.refresh, coreDetail, pullRequestKey]);
-  useEffect(() => {
-    if (!detail) return;
+  useLayoutEffect(() => {
+    if (!resolvedCoreDetail) return;
     onStateChange?.({
-      projectId: detail.projectId,
-      repository: detail.repository,
-      number: detail.number,
-      state: detail.state,
-      isDraft: detail.isDraft,
+      projectId: resolvedCoreDetail.projectId,
+      isDraft: resolvedCoreDetail.isDraft ?? false,
+      repository: resolvedCoreDetail.repository,
+      number: resolvedCoreDetail.number,
+      state: resolvedCoreDetail.state,
     });
-  }, [detail, onStateChange]);
+  }, [onStateChange, resolvedCoreDetail]);
   // Core detail is cheap enough to re-read while this stays open. Activity is heavier, so the
   // revision effect above reads it only after this same pull request reports a change. Keyed by
   // the pull request rather than by the panel, because this one panel shows a different pull

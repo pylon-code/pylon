@@ -40,11 +40,22 @@ export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
 
-  const sweep = Effect.fn("ThreadSettlementReactor.sweep")(function* () {
+  const sweep = Effect.fn("ThreadSettlementReactor.sweep")(function* (
+    mergedPullRequest: PullRequestService.PullRequestMergeEvent | null,
+  ) {
     const snapshot = yield* snapshots.getShellSnapshot();
     const now = DateTime.formatIso(yield* DateTime.now);
     const projects = new Map(snapshot.projects.map((project) => [project.id, project]));
-    const candidates = snapshot.threads.filter((thread) => isAutoSettlementCandidate(thread, now));
+    const candidates = snapshot.threads.filter(
+      (thread) =>
+        isAutoSettlementCandidate(thread, now) &&
+        (mergedPullRequest === null ||
+          (thread.linkedPullRequest != null &&
+            thread.linkedPullRequest.projectId === mergedPullRequest.projectId &&
+            thread.linkedPullRequest.repository.toLowerCase() ===
+              mergedPullRequest.repository.toLowerCase() &&
+            thread.linkedPullRequest.number === mergedPullRequest.number)),
+    );
     // Use the same cwd as the sidebar so both paths share GitManager's PR cache.
     const lookupCwdByThreadId = new Map<string, string>();
     yield* Effect.forEach(
@@ -86,6 +97,12 @@ export const make = Effect.gen(function* () {
       thread: (typeof candidates)[number],
     ) {
       if (thread.linkedPullRequest != null) {
+        if (mergedPullRequest !== null) {
+          return {
+            state: "merged",
+            updatedAt: mergedPullRequest.mergedAt,
+          } satisfies SettlementPullRequest;
+        }
         if (!projects.has(thread.linkedPullRequest.projectId)) {
           return yield* Effect.die(new Error("linked pull request project not found"));
         }
@@ -165,8 +182,8 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const worker = yield* makeDrainableWorker(() =>
-    sweep().pipe(
+  const runSweep = (mergedPullRequest: PullRequestService.PullRequestMergeEvent | null) =>
+    sweep(mergedPullRequest).pipe(
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.failCause(cause)
@@ -174,13 +191,14 @@ export const make = Effect.gen(function* () {
               cause: Cause.pretty(cause),
             }),
       ),
-    ),
-  );
+    );
+  const worker = yield* makeDrainableWorker(() => runSweep(null));
 
   const start: ThreadSettlementReactor["Service"]["start"] = Effect.fn(
     "ThreadSettlementReactor.start",
   )(function* () {
     const settingsChanges = yield* settingsService.subscribeChanges;
+    const mergedPullRequests = yield* pullRequests.subscribeMerges;
     const initialSettings = yield* settingsService.getSettings.pipe(Effect.orDie);
     let lastAfterDays = initialSettings.sidebarAutoSettleAfterDays;
     let lastOnMerge = initialSettings.sidebarAutoSettleOnMerge;
@@ -203,6 +221,7 @@ export const make = Effect.gen(function* () {
         return worker.enqueue(undefined);
       }),
     );
+    yield* forkParked(Stream.runForEach(mergedPullRequests, runSweep));
   });
 
   return { start, drain: worker.drain } satisfies ThreadSettlementReactor["Service"];

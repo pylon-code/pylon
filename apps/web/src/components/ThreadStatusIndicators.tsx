@@ -12,7 +12,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
 import { useProject } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
-import { linkedPullRequestDetailAtom } from "../state/pullRequests";
+import { linkedPullRequestDetailAtom, useSharedPullRequestSummary } from "../state/pullRequests";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { vcsEnvironment } from "../state/vcs";
 import { useUiStateStore } from "../uiStateStore";
@@ -48,7 +48,7 @@ export function useLinkedThreadPullRequest(
   environmentId: EnvironmentId | null,
   linkedPullRequest: ThreadLinkedPullRequest | null | undefined,
 ): LinkedThreadPullRequestStatus | null {
-  const detail = useEnvironmentQuery(
+  const queried = useEnvironmentQuery(
     environmentId === null || linkedPullRequest == null
       ? null
       : linkedPullRequestDetailAtom({
@@ -60,6 +60,7 @@ export function useLinkedThreadPullRequest(
           },
         }),
   ).data;
+  const detail = useSharedPullRequestSummary(environmentId, linkedPullRequest ?? null, queried);
 
   return useMemo(
     () =>
