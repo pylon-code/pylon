@@ -9,10 +9,10 @@ const TextAncestorContext = React.createContext<[boolean, ViewStyle]>([
   StyleSheet.create({}),
 ]);
 
-const textDefaults: TextProps = {
+const textDefaults = {
   allowFontScaling: true,
   selectable: true,
-};
+} satisfies TextProps;
 
 const useTextAncestorContext = () => React.useContext(TextAncestorContext);
 
@@ -85,16 +85,14 @@ function MarkdownTextPrimitiveChild({
   });
 
   if (!isAncestor) {
+    // Press handlers are delivered by the text runs; the container never sees them.
+    const { onPress: _onPress, onLongPress: _onLongPress, ...containerProps } = rest;
     return (
       <TextAncestorContext.Provider value={contextValue}>
         <T3MarkdownTextNativeComponent
           {...textDefaults}
-          {...rest}
-          // ellipsizeMode={rest.ellipsizeMode ?? rest.lineBreakMode ?? 'tail'}
+          {...containerProps}
           style={[flattenedStyle]}
-          // @ts-expect-error Weirdness
-          onPress={undefined}
-          onLongPress={undefined}
         >
           {nativeChildren}
         </T3MarkdownTextNativeComponent>
