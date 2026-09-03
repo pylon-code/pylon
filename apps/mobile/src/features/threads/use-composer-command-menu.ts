@@ -126,11 +126,15 @@ export function buildComposerCommandItems({
       true,
     );
 
+    // A provider expands a slash command only when it opens the whole message;
+    // elsewhere it arrives as literal text. `rangeStart` is the line start, so
+    // a `/foo` typed on a later line must not offer provider commands.
     const providerCommands: ComposerCommandItem[] = [];
-    for (const cmd of getProviderSlashCommandsForSlashMenu(
-      providerSlashCommands,
-      slashMenuSkills,
-    )) {
+    const expandableCommands =
+      trigger.rangeStart === 0
+        ? getProviderSlashCommandsForSlashMenu(providerSlashCommands, slashMenuSkills)
+        : [];
+    for (const cmd of expandableCommands) {
       if (!cmd.name.toLowerCase().includes(q)) continue;
       // Codex `/feedback` uploads an existing thread's session and logs, so it
       // has nothing to send before the thread exists.

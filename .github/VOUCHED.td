@@ -9,6 +9,8 @@
 #   -github:username reason for denouncement
 #
 # Keep entries sorted alphabetically.
+github:0x4bs3nt
+github:Adamulek123
 github:adityavardhansharma
 github:binbandit
 github:chuks-qua
