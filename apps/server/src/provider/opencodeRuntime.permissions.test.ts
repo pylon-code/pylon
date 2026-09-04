@@ -1,5 +1,6 @@
 import * as NodeAssert from "node:assert/strict";
 
+import * as RegExpUtils from "effect/RegExp";
 import { describe, it } from "vite-plus/test";
 
 import { buildOpenCodePermissionRules, toOpenCodePermissionReply } from "./opencodeRuntime.ts";
@@ -7,9 +8,14 @@ import { buildOpenCodePermissionRules, toOpenCodePermissionReply } from "./openc
 function actionFor(
   runtimeMode: Parameters<typeof buildOpenCodePermissionRules>[0],
   permission: string,
+  target = "*",
 ) {
-  return buildOpenCodePermissionRules(runtimeMode).find((rule) => rule.permission === permission)
-    ?.action;
+  // OpenCode uses the last matching rule. Its wildcards match directory separators.
+  return buildOpenCodePermissionRules(runtimeMode).findLast(
+    (rule) =>
+      (rule.permission === "*" || rule.permission === permission) &&
+      new RegExp(`^${RegExpUtils.escape(rule.pattern).replaceAll("\\*", ".*")}$`, "s").test(target),
+  )?.action;
 }
 
 describe("buildOpenCodePermissionRules", () => {
@@ -27,12 +33,38 @@ describe("buildOpenCodePermissionRules", () => {
     NodeAssert.equal(actionFor("auto", "edit"), "ask");
   });
 
-  it("keeps asking for everything else in the auto modes", () => {
-    for (const runtimeMode of ["auto-accept-edits", "auto"] as const) {
+  it("allows workspace reads and task updates without asking in supervised modes", () => {
+    for (const runtimeMode of ["approval-required", "auto-accept-edits", "auto"] as const) {
+      for (const permission of ["read", "glob", "grep", "lsp", "skill", "todowrite"]) {
+        NodeAssert.equal(actionFor(runtimeMode, permission, "src/index.ts"), "allow");
+      }
+    }
+  });
+
+  it("preserves OpenCode's environment-file approval rules", () => {
+    for (const runtimeMode of ["approval-required", "auto-accept-edits", "auto"] as const) {
+      for (const target of [
+        ".env",
+        ".env.local",
+        "config/service.env",
+        "config/service.env.local",
+      ]) {
+        NodeAssert.equal(actionFor(runtimeMode, "read", target), "ask");
+      }
+      for (const target of [".env.example", "config/service.env.example"]) {
+        NodeAssert.equal(actionFor(runtimeMode, "read", target), "allow");
+      }
+    }
+  });
+
+  it("still asks before commands, network access, external directories and unknown tools", () => {
+    for (const runtimeMode of ["approval-required", "auto-accept-edits", "auto"] as const) {
       NodeAssert.equal(actionFor(runtimeMode, "bash"), "ask");
       NodeAssert.equal(actionFor(runtimeMode, "webfetch"), "ask");
+      NodeAssert.equal(actionFor(runtimeMode, "websearch"), "ask");
       NodeAssert.equal(actionFor(runtimeMode, "external_directory"), "ask");
-      NodeAssert.equal(actionFor(runtimeMode, "*"), "ask");
+      NodeAssert.equal(actionFor(runtimeMode, "doom_loop"), "ask");
+      NodeAssert.equal(actionFor(runtimeMode, "custom_tool"), "ask");
     }
   });
 
@@ -45,14 +77,13 @@ describe("buildOpenCodePermissionRules", () => {
 });
 
 describe("toOpenCodePermissionReply", () => {
-  it("maps every accept-family decision to an approval", () => {
-    NodeAssert.equal(toOpenCodePermissionReply("accept"), "once");
-    NodeAssert.equal(toOpenCodePermissionReply("acceptForSession"), "always");
-    NodeAssert.equal(toOpenCodePermissionReply("acceptAlways"), "always");
-  });
-
-  it("still rejects the decline and cancel decisions", () => {
-    NodeAssert.equal(toOpenCodePermissionReply("decline"), "reject");
-    NodeAssert.equal(toOpenCodePermissionReply("cancel"), "reject");
+  it.each([
+    ["accept", "once"],
+    ["acceptForSession", "always"],
+    ["acceptAlways", "always"],
+    ["decline", "reject"],
+    ["cancel", "reject"],
+  ] as const)("maps %s to %s", (decision, reply) => {
+    NodeAssert.equal(toOpenCodePermissionReply(decision), reply);
   });
 });
