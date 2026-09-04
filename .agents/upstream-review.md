@@ -15,6 +15,30 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-04 (targeted) — `beae2147a9487ec47ac992319f2216914b4cb62d..95103905f5`, lifecycle reliability only
+
+**Cursor deliberately not advanced.** This was a targeted review, not a full
+batch. The developer asked, after the 2026-09-04 lost-message incident (Pylon
+PRs #264–#267), whether upstream held fixes Pylon was missing on the same
+paths: the Claude adapter's lifecycle emissions, synthetic turns, and
+`ProviderRuntimeIngestion` admission gating. Only commits touching those paths
+were assessed; the rest of the range stays undecided.
+
+Answer to the question that prompted it: **no**. Upstream's adapter maps
+`system/status` to running and opens synthetic turns exactly as Pylon's did, and
+upstream has no strict admission gate at all — the gate and the steer intent are
+Pylon-only (`8d3fd193d7`, `3ba49ed5a2`). The incident was Pylon's, and so is the fix.
+Three upstream commits on the same files are still worth having; one landed here.
+
+| Change set | Upstream               | Decision | Pylon reference                             | Rationale or revisit condition                                                                                                                                                                                                                                                                                                                                      |
+| ---------- | ---------------------- | -------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L1         | `560afffdea` / `#9135` | adopted  | `upstream/2026-09-04-lifecycle-reliability` | Claude Agent SDK 0.3.170 → 0.3.260 plus failure classification for results the CLI abandons: `terminal_reason` values and 529 overloads now mark the turn failed with a user-facing reason instead of a silent success. Clean cherry-pick onto the adapter after #265; Pylon's handshake and between-turn guards sit above the changed code. 88 adapter tests pass. |
+| L2         | `01f3e50eca` / `#9653` | pending  | —                                           | OpenCode approvals and stop, and the `turn.aborted` terminal mapping in ingestion. Not standalone: it sits on `#9005`, `#8778`, `#9282`, and `#9293` in `OpenCodeAdapter.ts`, none of which Pylon has. Adopt as that five-commit series in order, oldest first, in the next OpenCode batch — not as a lone cherry-pick.                                             |
+| L3         | `5b7d72aad1` / `#9167` | pending  | —                                           | Continue active threads across server self-updates. 26 files; 344 lines in `serverRuntimeStartup.ts`, which Pylon reworked for Prime turn adoption after restart (`c6881c331a`) and durable rollback (`937b3010c1`). Manual port with a Pylon-first reconciliation of the two restart models, not a cherry-pick. Depends on `#7719`, already adopted 2026-08-21.    |
+
+Deferred register and watch list: read, unchanged. DEF-7 and DEF-8 conditions
+were not re-evaluated in this targeted pass; the next full batch owes them a check.
+
 ## 2026-09-02 — `9b2d04317c68233782e0630464ac86d77d0686f3..beae2147a9487ec47ac992319f2216914b4cb62d`
 
 The maintainer's standing instruction for this batch was to stop escalating
