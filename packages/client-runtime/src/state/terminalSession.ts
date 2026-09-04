@@ -32,6 +32,7 @@ export interface TerminalSessionState {
   readonly hasRunningSubprocess: boolean;
   readonly updatedAt: string | null;
   readonly version: number;
+  readonly lifecycleVersion: number;
 }
 
 export interface TerminalBufferState {
@@ -40,6 +41,7 @@ export interface TerminalBufferState {
   readonly error: string | null;
   readonly updatedAt: string | null;
   readonly version: number;
+  readonly lifecycleVersion: number;
 }
 
 export interface KnownTerminalSessionTarget {
@@ -67,6 +69,7 @@ export const EMPTY_TERMINAL_BUFFER_STATE = Object.freeze<TerminalBufferState>({
   error: null,
   updatedAt: null,
   version: 0,
+  lifecycleVersion: 0,
 });
 
 export const EMPTY_TERMINAL_SESSION_STATE = Object.freeze<TerminalSessionState>({
@@ -77,6 +80,7 @@ export const EMPTY_TERMINAL_SESSION_STATE = Object.freeze<TerminalSessionState>(
   hasRunningSubprocess: false,
   updatedAt: null,
   version: 0,
+  lifecycleVersion: 0,
 });
 
 let terminalAttachGeneration = 0;
@@ -103,6 +107,7 @@ function terminalBufferStateFromSnapshot(
     error: null,
     updatedAt: snapshot.updatedAt,
     version: current.version + 1,
+    lifecycleVersion: current.lifecycleVersion,
   };
 }
 
@@ -124,6 +129,7 @@ export function combineTerminalSessionState(
     hasRunningSubprocess: summary?.hasRunningSubprocess ?? false,
     updatedAt: latestTimestamp(summary?.updatedAt ?? null, buffer.updatedAt),
     version: buffer.version,
+    lifecycleVersion: buffer.lifecycleVersion,
   };
 }
 
@@ -134,8 +140,16 @@ export function applyTerminalAttachStreamEvent(
 ): TerminalBufferState {
   switch (event.type) {
     case "snapshot":
+      return {
+        ...terminalBufferStateFromSnapshot(event.snapshot, maxBufferBytes, current),
+        lifecycleVersion:
+          current.version === 0 ? current.lifecycleVersion : current.lifecycleVersion + 1,
+      };
     case "restarted":
-      return terminalBufferStateFromSnapshot(event.snapshot, maxBufferBytes, current);
+      return {
+        ...terminalBufferStateFromSnapshot(event.snapshot, maxBufferBytes, current),
+        lifecycleVersion: current.lifecycleVersion + 1,
+      };
     case "output":
       return {
         ...current,
