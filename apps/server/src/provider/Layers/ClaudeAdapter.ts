@@ -3142,6 +3142,28 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const status = turnStatusFromResult(message);
     const errorMessage = resultUserFacingError(message);
 
+    // A resumed session replays its handshake (system/init + result with
+    // num_turns 0) even after the first prompt is already in flight. A real
+    // turn always makes at least one request, so a zero-turn success that
+    // arrives before the turn produced anything is the handshake, not the
+    // turn ending. Completing here would close the user's turn empty and
+    // push the actual answer into a synthetic turn.
+    const turnState = context.turnState;
+    if (
+      turnState !== undefined &&
+      status === "completed" &&
+      message.num_turns === 0 &&
+      turnState.items.length === 0 &&
+      turnState.assistantTextBlockOrder.length === 0 &&
+      context.inFlightTools.size === 0
+    ) {
+      yield* Effect.logInfo("claude.turn.handshake-result-inside-turn", {
+        threadId: context.session.threadId,
+        turnId: turnState.turnId,
+      });
+      return;
+    }
+
     if (status === "failed") {
       yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
     }
@@ -3277,6 +3299,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "status":
+        // The CLI reports its own request cycle here. Between turns (a
+        // background task finishing re-invokes the model) there is no turn
+        // to attach it to, and the assistant output that follows opens a
+        // synthetic turn of its own. Projecting it would mark the thread
+        // running with nothing to steer into.
+        if (!context.turnState) {
+          return;
+        }
         yield* offerRuntimeEvent(context.sessionIncarnationId, {
           ...base,
           type: "session.state.changed",
