@@ -2349,7 +2349,36 @@ const make = Effect.gen(function* () {
         return;
       }
       let admissionAcceptedByCas = false;
-      if (event.type === "turn.started" && strictSessionIncarnation !== undefined) {
+      // A turn the provider opened on its own (Claude continuing after a
+      // background task finishes) carries no admission request id. It is
+      // admitted when the incarnation-tracked session is idle: nothing pending
+      // and no active turn. Its output then passes for as long as it is the
+      // active turn and the session still has no admitted request id. Any
+      // event that does carry a request id keeps needing the exact match, so
+      // stale admitted turns stay fenced.
+      const gateEventTurnId = toTurnId(event.turnId);
+      const providerInitiatedTurnStart =
+        event.type === "turn.started" &&
+        strictSessionIncarnation !== undefined &&
+        event.admissionRequestId === undefined &&
+        event.sessionIncarnationId === strictSessionIncarnation &&
+        gateEventTurnId !== undefined &&
+        thread.session?.pendingTurnRequestId === undefined &&
+        thread.session?.activeTurnId === null &&
+        (thread.session.status === "ready" || thread.session.status === "running");
+      const providerInitiatedTurnOutput =
+        strictSessionIncarnation !== undefined &&
+        event.admissionRequestId === undefined &&
+        thread.session?.activeTurnRequestId === undefined &&
+        thread.session?.activeTurnId != null &&
+        gateEventTurnId !== undefined &&
+        sameId(thread.session.activeTurnId, gateEventTurnId);
+
+      if (
+        event.type === "turn.started" &&
+        strictSessionIncarnation !== undefined &&
+        !providerInitiatedTurnStart
+      ) {
         const eventTurnId = toTurnId(event.turnId);
         if (
           thread.session?.status !== "starting" ||
@@ -2404,6 +2433,8 @@ const make = Effect.gen(function* () {
         if (
           !admissionAcceptedByCas &&
           isTurnScoped &&
+          !providerInitiatedTurnStart &&
+          !providerInitiatedTurnOutput &&
           (activeRequestId === undefined || event.admissionRequestId !== activeRequestId)
         ) {
           return;
@@ -2512,7 +2543,11 @@ const make = Effect.gen(function* () {
             return true;
           case "turn.started":
             if (activeTurnId === null) {
-              return turnStartedMatchesPendingAdmission || turnStartedIsLegacyUncorrelated;
+              return (
+                turnStartedMatchesPendingAdmission ||
+                turnStartedIsLegacyUncorrelated ||
+                providerInitiatedTurnStart
+              );
             }
             if (!conflictsWithActiveTurn) return true;
             return conflictingTurnStartIsPendingTurnStart;
