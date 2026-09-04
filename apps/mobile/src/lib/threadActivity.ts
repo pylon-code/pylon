@@ -1615,9 +1615,6 @@ function deriveThreadFeedTurnFolds(
       pendingUserBoundary = entry.message.createdAt;
       continue;
     }
-    if (entry.type === "activity-group" && isContextCompactionActivityGroup(entry)) {
-      continue;
-    }
     const turnId =
       entry.type === "message" && entry.message.role === "assistant"
         ? entry.message.turnId
@@ -1666,6 +1663,16 @@ function deriveThreadFeedTurnFolds(
         .map((entry) => entry.id),
     );
     if (hiddenEntryIds.size === 0) {
+      continue;
+    }
+    // A lone compaction row stays visible on its own; it only folds away as
+    // part of a turn that already folds other work.
+    const hidesNonCompactionWork = entries.some(
+      (entry) =>
+        hiddenEntryIds.has(entry.id) &&
+        !(entry.type === "activity-group" && isContextCompactionActivityGroup(entry)),
+    );
+    if (!hidesNonCompactionWork) {
       continue;
     }
 

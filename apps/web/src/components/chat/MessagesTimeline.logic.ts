@@ -799,15 +799,23 @@ function deriveTurnFolds(input: {
       // when the turn settles makes a still-running fleet invisible.
       if (
         entry.kind === "work" &&
-        (entry.entry.agentSpawn !== undefined ||
-          entry.entry.sourceActivityKind === "context-compaction" ||
-          workLogEntryIsMissingResponse(entry.entry))
+        (entry.entry.agentSpawn !== undefined || workLogEntryIsMissingResponse(entry.entry))
       ) {
         continue;
       }
       hiddenEntryIds.add(entry.id);
     }
     if (hiddenEntryIds.size === 0) {
+      continue;
+    }
+    // A lone compaction row stays visible on its own; it only folds away as
+    // part of a turn that already folds other work.
+    const hidesNonCompactionWork = group.entries.some(
+      (entry) =>
+        hiddenEntryIds.has(entry.id) &&
+        !(entry.kind === "work" && entry.entry.sourceActivityKind === "context-compaction"),
+    );
+    if (!hidesNonCompactionWork) {
       continue;
     }
 
