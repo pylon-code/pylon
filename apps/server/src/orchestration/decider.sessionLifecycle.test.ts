@@ -417,6 +417,64 @@ it.layer(NodeServices.layer)("session lifecycle CAS decider", (it) => {
     }),
   );
 
+  it.effect("starts a new turn instead of steering when a running session has no active turn", () =>
+    Effect.gen(function* () {
+      // Claude flips the session to "running" on its own system/status
+      // notifications between turns, so status alone cannot prove a turn
+      // exists. Steering nothing would hand the provider a turn the admission
+      // gate can never correlate, and the user's message would vanish.
+      const runningWithoutTurn = makeSession({
+        status: "running",
+        pendingTurnRequestId: undefined,
+        pendingTurnMessageId: undefined,
+        pendingTurnRequestedAt: undefined,
+        pendingTurnDeadlineAt: undefined,
+        pendingTurnSessionId: undefined,
+        activeTurnRequestId: undefined,
+        activeTurnId: null,
+      });
+      const commandId = CommandId.make("cmd-running-without-turn");
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.start",
+          commandId,
+          threadId: THREAD_ID,
+          message: {
+            messageId: MessageId.make("message-running-without-turn"),
+            role: "user",
+            text: "nothing is running, start a turn",
+            attachments: [],
+          },
+          modelSelection: { instanceId: INSTANCE_ID, model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(runningWithoutTurn),
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.message-sent",
+        "thread.session-set",
+        "thread.turn-start-requested",
+      ]);
+      expect(events[1]).toMatchObject({
+        type: "thread.session-set",
+        payload: {
+          session: {
+            status: "starting",
+            pendingTurnRequestId: commandId,
+            activeTurnId: null,
+          },
+        },
+      });
+      expect(events[2]).toMatchObject({
+        type: "thread.turn-start-requested",
+        payload: { admissionIntent: { kind: "start", expectedActiveTurnRequestId: null } },
+      });
+    }),
+  );
+
   it.effect("captures the exact stop target and projects stopped atomically", () =>
     Effect.gen(function* () {
       const turnId = TurnId.make("turn-stop-target");

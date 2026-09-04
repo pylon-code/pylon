@@ -1033,12 +1033,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      // Steering needs a turn to steer into. A session can sit in "running"
+      // with no active turn (Claude reports system/status between turns), and
+      // steering there hands the provider a turn ingestion can never correlate
+      // to an admission, so the user's message silently disappears. Only an
+      // active turn makes the session steerable; otherwise start exactly.
+      const hasSteerableTurn =
+        targetThread.session?.status === "running" && targetThread.session.activeTurnId !== null;
       const admissionIntent = {
         kind:
           targetThread.session?.providerInstanceId !== undefined &&
           targetThread.session.providerInstanceId !== effectiveModelSelection.instanceId
             ? ("compatible-transition" as const)
-            : targetThread.session?.status === "running" && !providerSettingsChanged
+            : hasSteerableTurn && !providerSettingsChanged
               ? ("steer" as const)
               : ("start" as const),
         expectedProviderInstanceId: targetThread.session?.providerInstanceId ?? null,
@@ -1071,7 +1078,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
       const admissionPendingEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
-      if (targetThread.session?.status !== "running" || providerSettingsChanged) {
+      if (!hasSteerableTurn || providerSettingsChanged) {
         admissionPendingEvents.push({
           ...(yield* withEventBase({
             aggregateKind: "thread",
