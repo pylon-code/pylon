@@ -573,7 +573,12 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  if (thread.session?.status === "running" || thread.session?.status === "starting") {
+  // "running" alone is not work: a provider can report it between turns
+  // (Claude system/status) with nothing in flight. Only an active turn is.
+  if (
+    thread.session?.status === "starting" ||
+    (thread.session?.status === "running" && thread.session.activeTurnId != null)
+  ) {
     return "working";
   }
   // A failed session outranks lingering background liveness: the user must
@@ -801,7 +806,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.session?.status === "running") {
+  if (thread.session?.status === "running" && thread.session.activeTurnId != null) {
     return {
       label: "Working",
       colorClass: "text-sky-600 dark:text-sky-300/80",

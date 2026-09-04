@@ -218,6 +218,29 @@ describe("resolveThreadListV2Status", () => {
   });
 });
 
+describe("resolveThreadListV2Status running without a turn", () => {
+  it("does not report working for a running session with no active turn", () => {
+    expect(
+      resolveThreadListV2Status(
+        makeThread({
+          id: ThreadId.make("t"),
+          title: "t",
+          session: {
+            threadId: ThreadId.make("t"),
+            status: "running",
+            providerName: "Codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: NOW,
+          },
+        }),
+      ),
+    ).toBe("ready");
+  });
+});
+
 describe("resolveThreadListV2SwipeActions", () => {
   it("offers settle and snooze for an active snoozable thread", () => {
     expect(

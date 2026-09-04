@@ -707,6 +707,18 @@ describe("resolveSidebarThreadStatus", () => {
     ).toBe("working");
   });
 
+  it("does not report working for a running session with no active turn", () => {
+    // A provider can report running between turns (Claude system/status).
+    // Without a turn there is nothing being worked on; background liveness,
+    // if any, is the honest signal.
+    expect(
+      resolveSidebarThreadStatus({
+        ...idle,
+        session: { ...session, activeTurnId: null },
+      }),
+    ).toBe("ready");
+  });
+
   it("distinguishes background delegation from root work", () => {
     expect(
       resolveSidebarThreadStatus({
@@ -1221,6 +1233,14 @@ describe("resolveThreadStatusPill", () => {
       dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
       pulse: false,
     });
+  });
+
+  it("shows no pill for a running session with no active turn", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...baseThread, session: { ...baseThread.session, activeTurnId: null } },
+      }),
+    ).toBeNull();
   });
 
   it("uses upstream sky pulses for running and connecting", () => {

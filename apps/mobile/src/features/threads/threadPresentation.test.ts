@@ -48,13 +48,22 @@ describe("resolveThreadStatus", () => {
     });
   });
 
+  it("shows no status for a running session with no active turn", () => {
+    expect(
+      resolveThreadStatus({
+        ...baseThread,
+        session: { status: "running", activeTurnId: null },
+      } as EnvironmentThreadShell),
+    ).toBeNull();
+  });
+
   it.each(["running", "starting"] as const)(
     "uses upstream sky while the session is %s",
     (status) => {
       expect(
         resolveThreadStatus({
           ...baseThread,
-          session: { status },
+          session: status === "running" ? { status, activeTurnId: "turn-1" } : { status },
         } as EnvironmentThreadShell),
       ).toMatchObject({
         pillClassName: "bg-adaptive-sky-500-a12-a16",

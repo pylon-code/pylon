@@ -398,7 +398,9 @@ export function isLatestTurnSettled(
   if (!latestTurn?.startedAt) return false;
   if (!latestTurn.completedAt) return false;
   if (!session) return true;
-  if (session.status === "running") return false;
+  // A running session with no active turn has nothing in flight; the latest
+  // turn is as settled as it will get.
+  if (session.status === "running" && session.activeTurnId != null) return false;
   return true;
 }
 
