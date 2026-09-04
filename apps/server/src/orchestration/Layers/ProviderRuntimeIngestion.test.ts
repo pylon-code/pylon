@@ -1162,6 +1162,92 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.activeTurnRequestId).toBe(requestId);
   });
 
+  it("admits a provider-initiated turn and its output on an idle incarnation-tracked session", async () => {
+    // Claude continues on its own when a background task finishes: the
+    // adapter opens a synthetic turn with no admission request id. The strict
+    // gate must still let that turn and its output through when the session is
+    // idle, or the continuation runs invisibly.
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const instanceId = ProviderInstanceId.make("codex");
+    const incarnationId = RuntimeSessionId.make("session-provider-initiated");
+    const turnId = asTurnId("turn-provider-initiated");
+    const seededAt = "2026-01-01T00:00:00.000Z";
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-provider-initiated-seed"),
+      threadId,
+      session: {
+        threadId,
+        status: "ready",
+        providerName: ProviderDriverKind.make("codex"),
+        providerInstanceId: instanceId,
+        runtimeMode: "approval-required",
+        sessionIncarnationId: incarnationId,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: seededAt,
+      },
+      createdAt: seededAt,
+    });
+    const eventBase = {
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: instanceId,
+      sessionIncarnationId: incarnationId,
+      threadId,
+      turnId,
+      createdAt: "2026-01-01T00:00:01.000Z",
+    } as const;
+
+    harness.emit({
+      ...eventBase,
+      type: "turn.started",
+      eventId: asEventId("evt-provider-initiated-start"),
+      payload: {},
+    });
+    let thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running" && entry.session.activeTurnId === turnId,
+    );
+    expect(thread.session?.activeTurnRequestId).toBeUndefined();
+
+    // Output from some other turn is still stale and stays out.
+    harness.emit({
+      ...eventBase,
+      turnId: asTurnId("turn-provider-initiated-other"),
+      type: "item.completed",
+      eventId: asEventId("evt-provider-initiated-stale-item"),
+      itemId: asItemId("item-provider-initiated-stale"),
+      payload: { itemType: "assistant_message", detail: "stale output" },
+    });
+    harness.emit({
+      ...eventBase,
+      type: "item.completed",
+      eventId: asEventId("evt-provider-initiated-item"),
+      itemId: asItemId("item-provider-initiated"),
+      payload: { itemType: "assistant_message", detail: "Background continuation output" },
+    });
+    thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message) =>
+          message.role === "assistant" && message.text === "Background continuation output",
+      ),
+    );
+    expect(thread.messages.some((message) => message.text === "stale output")).toBe(false);
+
+    harness.emit({
+      ...eventBase,
+      type: "turn.completed",
+      eventId: asEventId("evt-provider-initiated-complete"),
+      payload: { state: "completed" },
+    });
+    thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "ready" && entry.session.activeTurnId === null,
+    );
+    expect(thread.session?.sessionIncarnationId).toBe(incarnationId);
+  });
+
   it("filters stale session A lifecycle and content before accepting session B", async () => {
     const harness = await createHarness();
     const threadId = asThreadId("thread-1");
