@@ -1663,6 +1663,87 @@ describe("ProviderCommandReactor", () => {
     }),
   );
 
+  effectIt.effect("steers a running admitted turn without reopening admission", () =>
+    Effect.gen(function* () {
+      // The everyday steer: a user message lands while an admitted turn is
+      // running. It must reach the provider tagged with the running turn's
+      // request id, and the session must stay as it was: no restart, no
+      // pending admission, same active turn.
+      const testClock = yield* TestClock.make();
+      yield* testClock.setTime(PROVIDER_TURN_ADMISSION_TIMEOUT_MS + 1);
+      const requestId = CommandId.make("cmd-steer-admitted-boot");
+      const messageId = asMessageId("message-steer-admitted-boot");
+      const sessionIncarnationId = RuntimeSessionId.make("session-steer-admitted");
+      const activeTurnId = asTurnId("turn-steer-admitted");
+      const runningSession = {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        status: "running" as const,
+        runtimeMode: "approval-required" as const,
+        threadId: ThreadId.make("thread-1"),
+        cwd: "/tmp/provider-project",
+        sessionIncarnationId,
+        activeTurnRequestId: requestId,
+        activeTurnId,
+        createdAt: isoAt(0),
+        updatedAt: isoAt(1),
+      };
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          clock: testClock,
+          overdueTurnStartBeforeReactor: {
+            commandId: requestId,
+            messageId,
+            createdAt: isoAt(0),
+            sessionIncarnationId,
+          },
+          inventoryEffect: () => Effect.succeed([runningSession]),
+          initialRuntimeSessions: [runningSession],
+        }),
+      );
+      const before = yield* Effect.promise(() => harness.readModel());
+      const runningThread = before.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(runningThread?.session?.status).toBe("running");
+      expect(runningThread?.session?.activeTurnRequestId).toBe(requestId);
+
+      const steerRequestId = CommandId.make("cmd-steer-admitted");
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: steerRequestId,
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-steer-admitted"),
+          role: "user",
+          text: "actually, also run the tests",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: isoAt(PROVIDER_TURN_ADMISSION_TIMEOUT_MS + 2),
+      });
+      yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+
+      const sent = harness.sendTurn.mock.calls[0]?.[0] as ProviderSendTurnInput;
+      expect(sent.input).toBe("actually, also run the tests");
+      expect(sent.admissionRequestId).toBe(requestId);
+      expect(harness.startSession.mock.calls.map((call) => JSON.stringify(call[1]))).toEqual([]);
+      expect(sent.sessionIncarnationId).toBe(sessionIncarnationId);
+
+      const after = yield* Effect.promise(() => harness.readModel());
+      const thread = after.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(thread?.session?.status).toBe("running");
+      expect(thread?.session?.activeTurnId).toBe(activeTurnId);
+      expect(thread?.session?.activeTurnRequestId).toBe(requestId);
+      expect(thread?.session?.pendingTurnRequestId).toBeUndefined();
+      expect(thread?.messages.map((message) => message.id)).toContain(
+        asMessageId("user-message-steer-admitted"),
+      );
+      expect(
+        thread?.activities.filter((activity) => activity.kind === "provider.turn.start.failed"),
+      ).toHaveLength(0);
+    }),
+  );
+
   for (const inventoryStatus of ["ready", "absent"] as const) {
     effectIt.effect(`fails an overdue ${inventoryStatus} per-instance inventory as absence`, () =>
       Effect.gen(function* () {
