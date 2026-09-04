@@ -1,0 +1,90 @@
+# Run a selected workspace package or test files on a Windows runner.
+# Manual only; normal Pylon CI keeps its existing required checks.
+#
+#   gh workflow run windows-tests.yml --ref <branch> -f package=packages/shared
+#   gh workflow run windows-tests.yml --ref <branch> -f package=apps/server \
+#     -f files="src/process/externalLauncher.test.ts src/cli/theme.test.ts"
+#   gh run watch && gh run view --log-failed
+name: Windows Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Workspace directory to test, e.g. apps/server or packages/shared."
+        type: string
+        default: "apps/server"
+        required: true
+      files:
+        description: "Space-separated test files relative to the package directory. Empty runs the package's whole suite. Requires package."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ inputs.package }})
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      # setup-vp's own cache restores a Linux-shaped store on Windows, which is
+      # slower than no cache (see #7975). Cache pnpm's Windows store directly.
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Resolve package cache path
+        id: package_cache_path
+        shell: pwsh
+        run: '"path=$(vp pm cache dir)" >> $env:GITHUB_OUTPUT'
+
+      - name: Cache packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.package_cache_path.outputs.path }}
+          key: windows-tests-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install
+        run: vp install
+
+      - name: Ensure Electron runtime is installed
+        if: inputs.package == 'apps/desktop'
+        run: vp run --filter "@t3tools/desktop" ensure:electron
+
+      # `vp run ... test -- <files>` does not forward positional args to vitest,
+      # so file-scoped runs call `vp test run` inside the package instead.
+      - name: Test
+        shell: pwsh
+        env:
+          TEST_PACKAGE: ${{ inputs.package }}
+          TEST_FILES: ${{ inputs.files }}
+        run: |
+          $package = $env:TEST_PACKAGE
+          $files = $env:TEST_FILES
+          if ([string]::IsNullOrWhiteSpace($package)) {
+            throw 'Choose a workspace package.'
+          }
+          if (-not (Test-Path (Join-Path $package 'package.json') -PathType Leaf)) {
+            throw 'The selected directory is not a workspace package.'
+          }
+          Set-Location $package
+          if ([string]::IsNullOrWhiteSpace($files)) {
+            vp test run
+          } else {
+            $testFiles = $files -split '\s+' | Where-Object { $_ -ne '' }
+            vp test run @testFiles
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
