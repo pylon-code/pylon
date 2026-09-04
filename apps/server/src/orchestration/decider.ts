@@ -1033,13 +1033,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
-      // Steering needs a turn to steer into. A session can sit in "running"
-      // with no active turn (Claude reports system/status between turns), and
-      // steering there hands the provider a turn ingestion can never correlate
-      // to an admission, so the user's message silently disappears. Only an
-      // active turn makes the session steerable; otherwise start exactly.
+      // Steering needs an admitted turn to steer into. A session can sit in
+      // "running" with no active turn (Claude reports system/status between
+      // turns) or with a turn the provider opened on its own (Claude continuing
+      // after a background task). Steering there hands the provider a turn
+      // ingestion can never correlate to an admission, so the user's message
+      // silently disappears. Under an incarnation-tracked session every
+      // admitted turn carries its request id, so a running turn without one is
+      // provider-initiated and gets an exact start instead. Sessions without an
+      // incarnation predate admission tracking and keep plain steering.
       const hasSteerableTurn =
-        targetThread.session?.status === "running" && targetThread.session.activeTurnId !== null;
+        targetThread.session?.status === "running" &&
+        targetThread.session.activeTurnId !== null &&
+        (targetThread.session.activeTurnRequestId !== undefined ||
+          targetThread.session.sessionIncarnationId === undefined);
       const admissionIntent = {
         kind:
           targetThread.session?.providerInstanceId !== undefined &&
